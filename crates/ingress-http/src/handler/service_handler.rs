@@ -180,7 +180,7 @@ where
             let mut service_invocation =
                 ServiceInvocation::initialize(invocation_id, invocation_target, Source::Ingress);
             service_invocation.with_related_span(SpanRelation::Parent(ingress_span_context));
-            service_invocation.completion_retention_time =
+            service_invocation.completion_retention_duration =
                 invocation_target_meta.compute_retention(idempotency_key.is_some());
             if let Some(key) = idempotency_key {
                 service_invocation.idempotency_key = Some(key);

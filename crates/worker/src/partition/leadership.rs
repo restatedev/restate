@@ -46,6 +46,7 @@ use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 use super::storage::invoker::InvokerStorageReader;
 use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
 use crate::partition::action_effect_handler::ActionEffectHandler;
+use crate::partition::cleaner::Cleaner;
 use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
 use crate::partition::{shuffle, storage};
@@ -87,6 +88,7 @@ pub(crate) struct LeaderState {
 
     invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
+    cleaner_task_id: TaskId,
 }
 
 pub enum State {
@@ -131,6 +133,7 @@ pub(crate) struct LeadershipState<I, N> {
 
     partition_processor_metadata: PartitionProcessorMetadata,
     num_timers_in_memory_limit: Option<usize>,
+    cleanup_interval: Duration,
     channel_size: usize,
     invoker_tx: I,
     network_tx: N,
@@ -142,9 +145,11 @@ where
     I: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
     N: NetworkSender + 'static,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         partition_processor_metadata: PartitionProcessorMetadata,
         num_timers_in_memory_limit: Option<usize>,
+        cleanup_interval: Duration,
         channel_size: usize,
         invoker_tx: I,
         bifrost: Bifrost,
@@ -155,6 +160,7 @@ where
             state: State::Follower,
             partition_processor_metadata,
             num_timers_in_memory_limit,
+            cleanup_interval,
             channel_size,
             invoker_tx,
             bifrost,
@@ -344,9 +350,29 @@ where
                 metadata(),
             );
 
+            let cleaner = Cleaner::new(
+                self.partition_processor_metadata.partition_id,
+                leader_epoch,
+                self.partition_processor_metadata.node_id,
+                partition_storage.clone().into_inner(),
+                self.bifrost.clone(),
+                self.partition_processor_metadata
+                    .partition_key_range
+                    .clone(),
+                self.cleanup_interval,
+            );
+
+            let cleaner_task_id = task_center().spawn_child(
+                TaskKind::Cleaner,
+                "cleaner",
+                Some(self.partition_processor_metadata.partition_id),
+                cleaner.run(),
+            )?;
+
             self.state = State::Leader(LeaderState {
                 leader_epoch,
                 shuffle_task_id,
+                cleaner_task_id,
                 shuffle_hint_tx,
                 timer_service,
                 action_effect_handler,
@@ -409,13 +435,16 @@ where
         if let State::Leader(LeaderState {
             leader_epoch,
             shuffle_task_id,
+            cleaner_task_id,
             ..
         }) = self.state
         {
             let shuffle_handle = OptionFuture::from(task_center().cancel_task(shuffle_task_id));
+            let cleaner_handle = OptionFuture::from(task_center().cancel_task(cleaner_task_id));
 
-            let (shuffle_result, abort_result) = tokio::join!(
+            let (shuffle_result, cleaner_result, abort_result) = tokio::join!(
                 shuffle_handle,
+                cleaner_handle,
                 self.invoker_tx.abort_all_partition((
                     self.partition_processor_metadata.partition_id,
                     leader_epoch
@@ -426,6 +455,9 @@ where
 
             if let Some(shuffle_result) = shuffle_result {
                 shuffle_result.expect("graceful termination of shuffle task");
+            }
+            if let Some(cleaner_result) = cleaner_result {
+                cleaner_result.expect("graceful termination of cleaner task");
             }
         }
 
@@ -685,6 +717,7 @@ mod tests {
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
     use std::ops::RangeInclusive;
+    use std::time::Duration;
     use test_log::test;
 
     const PARTITION_ID: PartitionId = PartitionId::MIN;
@@ -724,6 +757,7 @@ mod tests {
             let mut state = LeadershipState::new(
                 PARTITION_PROCESSOR_METADATA,
                 None,
+                Duration::from_secs(60 * 60),
                 42,
                 invoker_tx,
                 bifrost.clone(),

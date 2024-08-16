@@ -130,8 +130,8 @@ fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, output: &mut String,
 
 #[inline]
 fn fill_timestamps(row: &mut SysInvocationStatusRowBuilder, stat: &StatusTimestamps) {
-    row.created_at(stat.creation_time().as_u64() as i64);
-    row.modified_at(stat.modification_time().as_u64() as i64);
+    row.created_at(unsafe { stat.creation_time() }.as_u64() as i64);
+    row.modified_at(unsafe { stat.modification_time() }.as_u64() as i64);
 }
 
 #[inline]

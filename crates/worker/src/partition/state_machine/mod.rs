@@ -737,7 +737,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                                 span_context: span_context.clone(),
                                 headers: metadata.headers,
                                 execution_time: metadata.execution_time,
-                                completion_retention_time: Some(metadata.completion_retention_time),
+                                completion_retention_duration: Some(
+                                    metadata.completion_retention_duration,
+                                ),
                                 idempotency_key: metadata.idempotency_key,
                                 response_sink: metadata.response_sinks.into_iter().next(),
                                 submit_notification_sink: None,
@@ -1635,14 +1637,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
         let journal_length = invocation_metadata.journal_metadata.length;
-        let completion_retention_time = invocation_metadata.completion_retention_time;
+        let completion_retention_time = invocation_metadata.completion_retention_duration;
 
         self.notify_invocation_result(
             ctx,
             invocation_id,
             invocation_metadata.invocation_target.clone(),
             invocation_metadata.journal_metadata.span_context.clone(),
-            invocation_metadata.timestamps.creation_time(),
+            unsafe { invocation_metadata.timestamps.creation_time() },
             Ok(()),
         );
 
@@ -1713,7 +1715,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             invocation_id,
             invocation_metadata.invocation_target.clone(),
             invocation_metadata.journal_metadata.span_context.clone(),
-            invocation_metadata.timestamps.creation_time(),
+            unsafe { invocation_metadata.timestamps.creation_time() },
             Err((error.code(), error.to_string())),
         );
 
@@ -1733,7 +1735,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Self::consume_inbox(ctx, &invocation_metadata.invocation_target).await?;
 
         // Store the completed status or free it
-        if !invocation_metadata.completion_retention_time.is_zero() {
+        if !invocation_metadata.completion_retention_duration.is_zero() {
             let (completed_invocation, completion_retention_time) =
                 CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
@@ -2262,7 +2264,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         span_context: span_context.clone(),
                         headers: request.headers,
                         execution_time: None,
-                        completion_retention_time: *completion_retention_time,
+                        completion_retention_duration: *completion_retention_time,
                         idempotency_key: None,
                         submit_notification_sink: None,
                     };
@@ -2312,7 +2314,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     span_context: span_context.clone(),
                     headers: request.headers,
                     execution_time: delay,
-                    completion_retention_time: *completion_retention_time,
+                    completion_retention_duration: *completion_retention_time,
                     idempotency_key: None,
                     submit_notification_sink: None,
                 };
@@ -2761,17 +2763,21 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             "Effect: Store completed invocation"
         );
 
+        // New table invocations are cleaned using the Cleaner task.
+        if let SourceTable::Old = completed_invocation.source_table {
+            ctx.action_collector
+                .push(Action::ScheduleInvocationStatusCleanup {
+                    invocation_id,
+                    retention,
+                });
+        }
+
         ctx.storage
             .store_invocation_status(
                 &invocation_id,
                 InvocationStatus::Completed(completed_invocation),
             )
             .await?;
-        ctx.action_collector
-            .push(Action::ScheduleInvocationStatusCleanup {
-                invocation_id,
-                retention,
-            });
 
         Ok(())
     }
@@ -3205,7 +3211,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .get_response_sinks_mut()
             .expect("No response sinks available")
             .insert(additional_response_sink);
-        previous_invocation_status.update_timestamps();
+        if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
+            timestamps.update();
+        }
 
         ctx.storage
             .store_invocation_status(&invocation_id, previous_invocation_status)
@@ -3518,7 +3526,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         journal_meta.length = entry_index + 1;
 
         // Update timestamps
-        previous_invocation_status.update_timestamps();
+        if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
+            timestamps.update();
+        }
 
         // Store invocation status
         state_storage

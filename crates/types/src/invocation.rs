@@ -268,7 +268,7 @@ pub struct ServiceInvocation {
     pub headers: Vec<Header>,
     /// Time when the request should be executed
     pub execution_time: Option<MillisSinceEpoch>,
-    pub completion_retention_time: Option<Duration>,
+    pub completion_retention_duration: Option<Duration>,
     pub idempotency_key: Option<ByteString>,
 
     // Where to send the response, if any
@@ -302,7 +302,7 @@ impl ServiceInvocation {
             span_context: ServiceInvocationSpanContext::empty(),
             headers: vec![],
             execution_time: None,
-            completion_retention_time: None,
+            completion_retention_duration: None,
             idempotency_key: None,
             submit_notification_sink: None,
         }
@@ -866,7 +866,7 @@ mod mocks {
                 span_context: Default::default(),
                 headers: vec![],
                 execution_time: None,
-                completion_retention_time: None,
+                completion_retention_duration: None,
                 idempotency_key: None,
                 submit_notification_sink: None,
             }

@@ -183,6 +183,7 @@ pub enum Timer {
     // TODO remove this variant when removing the old invocation status table
     Invoke(ServiceInvocation),
     CompleteJournalEntry(InvocationId, u32),
+    // TODO remove this variant when removing the old invocation status table
     CleanInvocationStatus(InvocationId),
     NeoInvoke(InvocationId),
 }

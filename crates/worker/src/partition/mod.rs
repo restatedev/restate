@@ -47,6 +47,7 @@ use crate::partition::state_machine::{ActionCollector, StateMachine};
 use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
 
 mod action_effect_handler;
+mod cleaner;
 mod leadership;
 pub mod shuffle;
 mod state_machine;
@@ -68,6 +69,7 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
 
     num_timers_in_memory_limit: Option<usize>,
     enable_new_invocation_status_table: bool,
+    cleanup_interval: Duration,
     channel_size: usize,
 
     status: PartitionProcessorStatus,
@@ -88,6 +90,7 @@ where
         partition_key_range: RangeInclusive<PartitionKey>,
         status: PartitionProcessorStatus,
         num_timers_in_memory_limit: Option<usize>,
+        cleanup_interval: Duration,
         enable_new_invocation_status_table: bool,
         channel_size: usize,
         control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
@@ -101,6 +104,7 @@ where
             status,
             num_timers_in_memory_limit,
             enable_new_invocation_status_table,
+            cleanup_interval,
             channel_size,
             invoker_tx,
             control_rx,
@@ -118,6 +122,7 @@ where
             partition_id,
             partition_key_range,
             num_timers_in_memory_limit,
+            cleanup_interval,
             enable_new_invocation_status_table,
             channel_size,
             invoker_tx,
@@ -155,6 +160,7 @@ where
                 partition_key_range.clone(),
             ),
             num_timers_in_memory_limit,
+            cleanup_interval,
             channel_size,
             invoker_tx,
             bifrost.clone(),

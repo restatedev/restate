@@ -112,15 +112,21 @@ message NeoInvocationStatus {
     InvocationTarget invocation_target = 2;
     Source source = 3;
     SpanContext span_context = 4;
+    repeated ServiceInvocationResponseSink response_sinks = 7;
+    Duration completion_retention_duration = 11;
+
+    // Timestamps
     uint64 creation_time = 5;
     uint64 modification_time = 6;
-    repeated ServiceInvocationResponseSink response_sinks = 7;
+    optional uint64 inboxed_transition_time = 19;
+    optional uint64 scheduled_transition_time = 20;
+    optional uint64 running_transition_time = 21;
+    optional uint64 completed_transition_time = 22;
 
     // Scheduled/Inboxed
     optional bytes argument = 8;
     repeated Header headers = 9;
     optional uint64 execution_time = 10;
-    Duration completion_retention_time = 11;
     optional string idempotency_key = 12;
 
     // Inboxed
