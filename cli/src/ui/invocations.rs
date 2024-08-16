@@ -107,6 +107,7 @@ pub fn invocation_status_style(status: InvocationState) -> Style {
     match status {
         InvocationState::Unknown => DStyle::new().red(),
         InvocationState::Pending => DStyle::new().yellow(),
+        InvocationState::Scheduled => DStyle::new().blue(),
         InvocationState::Ready => DStyle::new().blue(),
         InvocationState::Running => DStyle::new().green(),
         InvocationState::Suspended => DStyle::new().dim(),
