@@ -458,9 +458,7 @@ pub struct MetadataStoreClientOptions {
     )
 )]
 pub enum MetadataStore {
-    /// Connects to another node that is running Metadata Store
-    /// over gRPC.
-    /// The remote node must run with MetadataStore Role
+    /// Connects to an embedded metadata store that is run by nodes that run with the MetadataStore role.
     Embedded {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         address: AdvertisedAddress,

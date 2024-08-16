@@ -25,6 +25,7 @@ derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
+etcd-client = { workspace = true }
 futures = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
@@ -54,7 +55,6 @@ tonic = { workspace = true, features = [
 ] }
 tower = { workspace = true }
 tracing = { workspace = true }
-etcd-client = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

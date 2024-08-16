@@ -4,51 +4,65 @@ use crate::metadata_store::{
 use anyhow::Context;
 use bytes::Bytes;
 use bytestring::ByteString;
-use etcd_client::{Client, Compare, CompareOp, KeyValue, KvClient, Txn, TxnOp, TxnOpResponse};
+use etcd_client::{Client, Compare, CompareOp, Error as EtcdError, KeyValue, KvClient, Txn, TxnOp};
 
-impl From<etcd_client::Error> for ReadError {
-    fn from(value: etcd_client::Error) -> Self {
-        Self::Network(value.into())
+impl From<EtcdError> for ReadError {
+    fn from(value: EtcdError) -> Self {
+        match value {
+            err @ EtcdError::IoError(_) => Self::Network(err.into()),
+            err @ EtcdError::TransportError(_) => Self::Network(err.into()),
+            any => Self::Store(any.into()),
+        }
     }
 }
 
-impl From<etcd_client::Error> for WriteError {
-    fn from(value: etcd_client::Error) -> Self {
-        Self::Network(value.into())
+impl From<EtcdError> for WriteError {
+    fn from(value: EtcdError) -> Self {
+        match value {
+            err @ EtcdError::IoError(_) => Self::Network(err.into()),
+            err @ EtcdError::TransportError(_) => Self::Network(err.into()),
+            any => Self::Store(any.into()),
+        }
     }
 }
 
-//todo: version of the kv is reset to 1 if the key was deleted then recrated.
-// this means that a key can change (by means of deletion and recreation) and will
-// always have version 1!
-// The only way to detect this is to also track the "mod revision" of the store as part
-// of the VersionValue.
-//
-// The problem is that the restate Version is only u32 while both etcd version and mod version
-// are both i64.
-//
-// Changing the Version to have a u64 value also delays the problem for later since it will be a while before
-// mod_revision or version hit the u32::MAX but that's totally dependent on how frequent the changes are
-//
-// The correct solution is of course to make Version u128.
-// What we do here is ONLY relying on the "version" of the key combined with the fact that we never actually delete the key
-// but instead put a "tombstone" in place so version doesn't reset
 trait ToVersion {
+    //todo: version of the kv is reset to 1 if the key was deleted then recrated.
+    // this means that a key can change (by means of deletion and recreation) and will
+    // always have version 1!
+    //
+    // The only way to detect this is to also track the "mod revision" of the store as part
+    // of the VersionValue.
+    //
+    // The problem is that the restate Version is only u32 while both etcd version and mod version
+    // are both i64.
+    //
+    // Changing the Version to have a u64 value also delays the problem for later since it will be a while before
+    // mod_revision or version hit the u32::MAX but that's totally dependent on how frequent the changes are
+    //
+    // The correct solution is of course to make Version u128.
+    //
+    // What is implemented instead in current code is to use the lower 32bit of the Etcd version. We return an error
+    // if this value exceeds the u32::MAX.
+    // Objects will be deleted normally (it means version will reset) so it's up to the user of the store to make sure
+    // to use a tombstone instead of relying on actual delete (if needed).
+    //
+    // This is done instead of implementing the tombstone mechanism directly into the the Etcd store implementation because
+    // delete is not used right now, and also because the Etcd implementation is a temporary solution.
     fn to_version(self) -> Result<Version, ReadError>;
 }
 
 impl ToVersion for &KeyValue {
     fn to_version(self) -> Result<Version, ReadError> {
-        if self.version() > u32::MAX as i64 {
-            return Err(ReadError::Codec(
-                "[etcd] key version exceeds max u32".into(),
-            ));
-        }
+        let version = Version::from(u32::try_from(self.version()).map_err(|e| {
+            ReadError::Internal(format!("[etcd] key version exceeds max u32: {}", e))
+        })?);
 
-        Ok(Version::from(self.version() as u32))
+        Ok(version)
     }
 }
 
+#[derive(Clone)]
 pub struct EtcdMetadataStore {
     client: Client,
 }
@@ -63,65 +77,30 @@ impl EtcdMetadataStore {
         Ok(Self { client })
     }
 
-    // put updates the key if and only if the key does not exist
-    // and because we never actually delete the key there is a possibility
-    // that the key exists, but it's value is nilled (that still considered "does not exist").
-    // this is why we run this complex transaction where we
-    // - check if the key exists but empty (value is empty bytes)
-    // - otherwise, we run an (or_else) branch where itself is a transaction
-    //   where we check if the key actually does not exist at all!
-    // - Then do a PUT
-    pub async fn put_not_exist(
+    /// deletes a key only if and only if the current value in store
+    /// has the exact given version
+    async fn delete_if_has_version(
         &self,
         client: &mut KvClient,
         key: Bytes,
-        value: Bytes,
+        version: i64,
     ) -> Result<bool, WriteError> {
-        // an or_else branch is executed if the and_then branch of the
-        // root transaction was not executed (failed condition)
-        // this means that checked if the value exists but empty always
-        // done first. Otherwise we check if the value does not exist at all
-        let or_else = Txn::new()
-            .when(vec![Compare::version(key.clone(), CompareOp::Equal, 0)])
-            .and_then(vec![TxnOp::put(key.clone(), value.clone(), None)]);
-
         let txn = Txn::new()
-            .when(vec![Compare::value(
+            .when(vec![Compare::version(
                 key.clone(),
                 CompareOp::Equal,
-                Vec::default(),
+                version,
             )])
-            .and_then(vec![TxnOp::put(key, value, None)])
-            .or_else(vec![TxnOp::txn(or_else)]);
+            .and_then(vec![TxnOp::delete(key, None)]);
+
         let response = client.txn(txn).await?;
 
-        // to check if the put operation has actually been "executed"
-        // we need to check the success of the individual branches.
-        // and we can't really rely on the response.success() output
-        // the reason is if the or_else branch was executed this is
-        // still considered a failure, while in our case that can still
-        // be a success, unless the or_else branch itself failed as well
-        if let Some(resp) = response.op_responses().into_iter().next() {
-            match resp {
-                TxnOpResponse::Txn(txn) => {
-                    // this means we had to enter the else branch
-                    // and had to run the or_else transaction
-                    return Ok(txn.succeeded());
-                }
-                TxnOpResponse::Put(_) => {
-                    return Ok(response.succeeded());
-                }
-                _ => {
-                    unreachable!()
-                }
-            }
-        }
         Ok(response.succeeded())
     }
 
-    // only update the key if has the exact given version
-    // otherwise returns false
-    pub async fn put_with_version(
+    /// puts a key/value if and only if the current value in store
+    /// has the exact given version
+    async fn put_if_has_version(
         &self,
         client: &mut KvClient,
         key: Bytes,
@@ -144,8 +123,6 @@ impl EtcdMetadataStore {
 
 #[async_trait::async_trait]
 impl MetadataStore for EtcdMetadataStore {
-    /// Gets the value and its current version for the given key. If key-value pair is not present,
-    /// then return [`None`].
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         let mut client = self.client.kv_client();
         let mut response = client.get(key.into_bytes(), None).await?;
@@ -170,8 +147,6 @@ impl MetadataStore for EtcdMetadataStore {
         Ok(Some(VersionedValue::new(version, value.into())))
     }
 
-    /// Gets the current version for the given key. If key-value pair is not present, then return
-    /// [`None`].
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
         let mut client = self.client.kv_client();
         let mut response = client.get(key.into_bytes(), None).await?;
@@ -196,13 +171,6 @@ impl MetadataStore for EtcdMetadataStore {
         Ok(Some(version))
     }
 
-    /// Puts the versioned value under the given key following the provided precondition. If the
-    /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
-    ///
-    /// NOTE: this implementation disregard that version attached on the value and depends only on the
-    /// auto version provided by etcd
-    ///
-    /// it's up to the caller of this function to make sure that both versions are in sync.
     async fn put(
         &self,
         key: ByteString,
@@ -216,7 +184,7 @@ impl MetadataStore for EtcdMetadataStore {
             }
             Precondition::DoesNotExist => {
                 if !self
-                    .put_not_exist(&mut client, key.into_bytes(), value.value)
+                    .put_if_has_version(&mut client, key.into_bytes(), value.value, 0)
                     .await?
                 {
                     // pre condition failed.
@@ -227,7 +195,7 @@ impl MetadataStore for EtcdMetadataStore {
             }
             Precondition::MatchesVersion(version) => {
                 if !self
-                    .put_with_version(
+                    .put_if_has_version(
                         &mut client,
                         key.into_bytes(),
                         value.value,
@@ -245,8 +213,6 @@ impl MetadataStore for EtcdMetadataStore {
         Ok(())
     }
 
-    /// Deletes the key-value pair for the given key following the provided precondition. If the
-    /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
     async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
         let mut client = self.client.kv_client();
         match precondition {
@@ -255,7 +221,7 @@ impl MetadataStore for EtcdMetadataStore {
             }
             Precondition::DoesNotExist => {
                 if !self
-                    .put_not_exist(&mut client, key.into_bytes(), Vec::default().into())
+                    .delete_if_has_version(&mut client, key.into_bytes(), 0)
                     .await?
                 {
                     // pre condition failed.
@@ -266,12 +232,7 @@ impl MetadataStore for EtcdMetadataStore {
             }
             Precondition::MatchesVersion(version) => {
                 if !self
-                    .put_with_version(
-                        &mut client,
-                        key.into_bytes(),
-                        Vec::default().into(),
-                        u32::from(version) as i64,
-                    )
+                    .delete_if_has_version(&mut client, key.into_bytes(), u32::from(version) as i64)
                     .await?
                 {
                     return Err(WriteError::FailedPrecondition(

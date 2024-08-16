@@ -31,6 +31,8 @@ pub enum ReadError {
     Internal(String),
     #[error("codec error: {0}")]
     Codec(GenericError),
+    #[error("store error: {0}")]
+    Store(GenericError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +45,8 @@ pub enum WriteError {
     Internal(String),
     #[error("codec error: {0}")]
     Codec(GenericError),
+    #[error("store error: {0}")]
+    Store(GenericError),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -291,6 +295,8 @@ pub enum ReadWriteError {
     Codec(GenericError),
     #[error("retries for operation on key '{0}' exhausted")]
     RetriesExhausted(ByteString),
+    #[error("store error: {0}")]
+    Store(GenericError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -319,6 +325,7 @@ impl From<ReadError> for ReadWriteError {
             ReadError::Network(err) => ReadWriteError::Network(err),
             ReadError::Internal(msg) => ReadWriteError::Internal(msg),
             ReadError::Codec(err) => ReadWriteError::Codec(err),
+            ReadError::Store(err) => ReadWriteError::Store(err),
         }
     }
 }
@@ -332,6 +339,7 @@ impl From<WriteError> for ReadWriteError {
             WriteError::Network(err) => ReadWriteError::Network(err),
             WriteError::Internal(msg) => ReadWriteError::Internal(msg),
             WriteError::Codec(err) => ReadWriteError::Codec(err),
+            WriteError::Store(err) => ReadWriteError::Store(err),
         }
     }
 }
@@ -351,11 +359,14 @@ impl<E> MetadataStoreClientError for ReadModifyWriteError<E> {
 
 impl MetadataStoreClientError for ReadWriteError {
     fn is_network_error(&self) -> bool {
+        // we don't use the catch all pattern _ to make sure
+        // new errors are explicitly handled
         match self {
             ReadWriteError::Network(_) => true,
             ReadWriteError::Internal(_) => false,
             ReadWriteError::Codec(_) => false,
             ReadWriteError::RetriesExhausted(_) => false,
+            ReadWriteError::Store(_) => false,
         }
     }
 }
@@ -363,10 +374,11 @@ impl MetadataStoreClientError for ReadWriteError {
 impl MetadataStoreClientError for WriteError {
     fn is_network_error(&self) -> bool {
         match self {
-            WriteError::FailedPrecondition(_) => false,
             WriteError::Network(_) => true,
+            WriteError::FailedPrecondition(_) => false,
             WriteError::Internal(_) => false,
             WriteError::Codec(_) => false,
+            WriteError::Store(_) => false,
         }
     }
 }
