@@ -514,6 +514,7 @@ impl InFlightInvocationMetadata {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletedInvocation {
     pub invocation_target: InvocationTarget,
+    pub span_context: ServiceInvocationSpanContext,
     pub source: Source,
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
@@ -536,6 +537,7 @@ impl CompletedInvocation {
         (
             Self {
                 invocation_target: in_flight_invocation_metadata.invocation_target,
+                span_context: in_flight_invocation_metadata.journal_metadata.span_context,
                 source: in_flight_invocation_metadata.source,
                 idempotency_key: in_flight_invocation_metadata.idempotency_key,
                 timestamps: in_flight_invocation_metadata.timestamps,

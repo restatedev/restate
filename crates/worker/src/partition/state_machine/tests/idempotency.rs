@@ -295,6 +295,7 @@ async fn complete_already_completed_invocation() {
         &invocation_id,
         InvocationStatus::Completed(CompletedInvocation {
             invocation_target: invocation_target.clone(),
+            span_context: Default::default(),
             source: Source::Ingress,
             idempotency_key: Some(idempotency_key.clone()),
             timestamps: StatusTimestamps::now(),
@@ -928,6 +929,7 @@ async fn timer_cleanup() {
         InvocationStatus::Completed(CompletedInvocation {
             invocation_target,
             source: Source::Ingress,
+            span_context: Default::default(),
             idempotency_key: Some(idempotency_key.clone()),
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(Bytes::from_static(b"123")),
