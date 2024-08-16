@@ -212,7 +212,7 @@ mod tests {
     }
 
     // Start paused makes sure the timer is immediately fired
-    #[test(tokio::main(flavor = "current_thread", start_paused = true))]
+    #[test(tokio::test(start_paused = true))]
     pub async fn cleanup_works() {
         let env = TestCoreEnvBuilder::new_with_mock_network()
             .with_partition_table(PartitionTable::with_equally_sized_partitions(
@@ -280,6 +280,9 @@ mod tests {
             .run(),
         )
         .unwrap();
+
+        // By yielding once we let the cleaner task run, and perform the cleanup
+        tokio::task::yield_now().await;
 
         // All the invocation ids were created with same partition keys, hence same partition id.
         let partition_id = env
