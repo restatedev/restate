@@ -135,7 +135,7 @@ where
             let Some(expiration_time) = SystemTime::from(completed_time)
                 .checked_add(completed_invocation.completion_retention_duration)
             else {
-                // If sum overflow, then the duration is too large and the invocation won't be cleaned up
+                // If sum overflow, then the cleanup time lies far enough in the future
                 continue;
             };
 
@@ -214,7 +214,6 @@ mod tests {
     // Start paused makes sure the timer is immediately fired
     #[test(tokio::main(flavor = "current_thread", start_paused = true))]
     pub async fn cleanup_works() {
-        // set numbers of partitions to 1 to easily find all sent messages by the shuffle
         let env = TestCoreEnvBuilder::new_with_mock_network()
             .with_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
@@ -258,6 +257,7 @@ mod tests {
                 not_expired_invocation_2,
                 InvocationStatus::Completed(CompletedInvocation {
                     completion_retention_duration: Duration::ZERO,
+                    // StatusTimestamps::now() don't set the completed_transition_time()
                     timestamps: StatusTimestamps::now(),
                     ..CompletedInvocation::mock_neo()
                 }),
