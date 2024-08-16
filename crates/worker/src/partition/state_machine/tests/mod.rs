@@ -10,8 +10,10 @@
 
 use super::*;
 
+mod delayed_send;
 mod idempotency;
 mod kill_cancel;
+mod matchers;
 mod workflow;
 
 use crate::partition::types::{InvokerEffect, InvokerEffectKind};
@@ -27,13 +29,16 @@ use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_storage_api::inbox_table::ReadOnlyInboxTable;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
     ReadOnlyInvocationStatusTable, SourceTable,
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::OutboxTable;
-use restate_storage_api::service_status_table::{VirtualObjectStatus, VirtualObjectStatusTable};
+use restate_storage_api::service_status_table::{
+    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
+};
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_storage_api::Transaction;
 use restate_test_util::matchers::*;
@@ -78,6 +83,17 @@ impl MockStateMachine {
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
             SourceTable::Old,
+        ))
+        .await
+    }
+
+    pub async fn create_with_neo_invocation_status_table() -> Self {
+        Self::create_with_state_machine(StateMachine::new(
+            0,    /* inbox_seq_number */
+            0,    /* outbox_seq_number */
+            None, /* outbox_head_seq_number */
+            PartitionKey::MIN..=PartitionKey::MAX,
+            SourceTable::New,
         ))
         .await
     }
@@ -840,6 +856,123 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
     assert_eq!(
         state_machine.state_machine.outbox_head_seq_number,
         Some(outbox_tail_index + 1)
+    );
+
+    Ok(())
+}
+
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResult {
+    let tc = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()
+        .expect("task_center builds");
+    let mut state_machine = tc
+        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+        .await;
+
+    let (first_invocation_id, invocation_target) =
+        InvocationId::mock_with(InvocationTarget::mock_virtual_object());
+    let keyed_service_id = invocation_target.as_keyed_service_id().unwrap();
+    let second_invocation_id = InvocationId::generate(&invocation_target);
+
+    // Let's start the first invocation
+    let actions = state_machine
+        .apply(Command::Invoke(ServiceInvocation {
+            invocation_id: first_invocation_id,
+            invocation_target: invocation_target.clone(),
+            ..ServiceInvocation::mock()
+        }))
+        .await;
+    assert_that!(
+        actions,
+        contains(matchers::actions::invoke_for_id(first_invocation_id))
+    );
+    assert_that!(
+        state_machine
+            .rocksdb_storage
+            .get_virtual_object_status(&keyed_service_id)
+            .await,
+        ok(eq(VirtualObjectStatus::Locked(first_invocation_id)))
+    );
+
+    // Let's start the second invocation
+    let actions = state_machine
+        .apply(Command::Invoke(ServiceInvocation {
+            invocation_id: second_invocation_id,
+            invocation_target: invocation_target.clone(),
+            ..ServiceInvocation::mock()
+        }))
+        .await;
+
+    // This should have not been invoked, but it should rather be in the inbox
+    assert_that!(
+        actions,
+        not(contains(matchers::actions::invoke_for_id(
+            second_invocation_id
+        )))
+    );
+    assert_that!(
+        state_machine
+            .rocksdb_storage
+            .inbox(&keyed_service_id)
+            .try_collect::<Vec<_>>()
+            .await,
+        ok(contains(matchers::storage::invocation_inbox_entry(
+            second_invocation_id,
+            &invocation_target
+        )))
+    );
+    assert_that!(
+        state_machine
+            .rocksdb_storage
+            .get_virtual_object_status(&keyed_service_id)
+            .await,
+        ok(eq(VirtualObjectStatus::Locked(first_invocation_id)))
+    );
+
+    // Send the End Effect to terminate the first invocation
+    let actions = state_machine
+        .apply(Command::InvokerEffect(InvokerEffect {
+            invocation_id: first_invocation_id,
+            kind: InvokerEffectKind::End,
+        }))
+        .await;
+    // At this point we expect the invoke for the second, and also the lock updated
+    assert_that!(
+        actions,
+        contains(matchers::actions::invoke_for_id(second_invocation_id))
+    );
+    assert_that!(
+        state_machine
+            .rocksdb_storage
+            .get_virtual_object_status(&keyed_service_id)
+            .await,
+        ok(eq(VirtualObjectStatus::Locked(second_invocation_id)))
+    );
+
+    let _ = state_machine
+        .apply(Command::InvokerEffect(InvokerEffect {
+            invocation_id: second_invocation_id,
+            kind: InvokerEffectKind::End,
+        }))
+        .await;
+
+    // After the second was completed too, the inbox is empty and the service is unlocked
+    assert_that!(
+        state_machine
+            .rocksdb_storage
+            .inbox(&keyed_service_id)
+            .try_collect::<Vec<_>>()
+            .await,
+        ok(empty())
+    );
+    assert_that!(
+        state_machine
+            .rocksdb_storage
+            .get_virtual_object_status(&keyed_service_id)
+            .await,
+        ok(eq(VirtualObjectStatus::Unlocked))
     );
 
     Ok(())

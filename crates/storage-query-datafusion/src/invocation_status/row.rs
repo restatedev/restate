@@ -61,11 +61,11 @@ pub(crate) fn append_invocation_status_row(
     match invocation_status {
         InvocationStatus::Scheduled(scheduled) => {
             row.status("scheduled");
-            fill_invoked_by(&mut row, output, scheduled.source);
+            fill_invoked_by(&mut row, output, scheduled.metadata.source);
         }
         InvocationStatus::Inboxed(inboxed) => {
             row.status("inboxed");
-            fill_invoked_by(&mut row, output, inboxed.source);
+            fill_invoked_by(&mut row, output, inboxed.metadata.source);
         }
         InvocationStatus::Invoked(metadata) => {
             row.status("invoked");

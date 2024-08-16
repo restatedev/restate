@@ -348,21 +348,23 @@ pub mod v1 {
                     neo_invocation_status::Status::Scheduled => {
                         Ok(crate::invocation_status_table::InvocationStatus::Scheduled(
                             crate::invocation_status_table::ScheduledInvocation {
-                                response_sinks,
-                                timestamps,
-                                invocation_target,
-                                argument: expect_or_fail!(argument)?,
-                                source,
-                                span_context: expect_or_fail!(span_context)?.try_into()?,
-                                headers,
-                                execution_time: MillisSinceEpoch::new(expect_or_fail!(
-                                    execution_time
-                                )?),
-                                completion_retention_time: completion_retention_time
-                                    .unwrap_or_default()
-                                    .try_into()?,
-                                idempotency_key: idempotency_key.map(ByteString::from),
-                                source_table: crate::invocation_status_table::SourceTable::New,
+                                metadata:
+                                    crate::invocation_status_table::PreFlightInvocationMetadata {
+                                        response_sinks,
+                                        timestamps,
+                                        invocation_target,
+                                        argument: expect_or_fail!(argument)?,
+                                        source,
+                                        span_context: expect_or_fail!(span_context)?.try_into()?,
+                                        headers,
+                                        execution_time: execution_time.map(MillisSinceEpoch::new),
+                                        completion_retention_time: completion_retention_time
+                                            .unwrap_or_default()
+                                            .try_into()?,
+                                        idempotency_key: idempotency_key.map(ByteString::from),
+                                        source_table:
+                                            crate::invocation_status_table::SourceTable::New,
+                                    },
                             },
                         ))
                     }
@@ -370,19 +372,23 @@ pub mod v1 {
                         Ok(crate::invocation_status_table::InvocationStatus::Inboxed(
                             crate::invocation_status_table::InboxedInvocation {
                                 inbox_sequence_number: expect_or_fail!(inbox_sequence_number)?,
-                                response_sinks,
-                                timestamps,
-                                invocation_target,
-                                argument: expect_or_fail!(argument)?,
-                                source,
-                                span_context: expect_or_fail!(span_context)?.try_into()?,
-                                headers,
-                                execution_time: execution_time.map(MillisSinceEpoch::new),
-                                completion_retention_time: completion_retention_time
-                                    .unwrap_or_default()
-                                    .try_into()?,
-                                idempotency_key: idempotency_key.map(ByteString::from),
-                                source_table: crate::invocation_status_table::SourceTable::New,
+                                metadata:
+                                    crate::invocation_status_table::PreFlightInvocationMetadata {
+                                        response_sinks,
+                                        timestamps,
+                                        invocation_target,
+                                        argument: expect_or_fail!(argument)?,
+                                        source,
+                                        span_context: expect_or_fail!(span_context)?.try_into()?,
+                                        headers,
+                                        execution_time: execution_time.map(MillisSinceEpoch::new),
+                                        completion_retention_time: completion_retention_time
+                                            .unwrap_or_default()
+                                            .try_into()?,
+                                        idempotency_key: idempotency_key.map(ByteString::from),
+                                        source_table:
+                                            crate::invocation_status_table::SourceTable::New,
+                                    },
                             },
                         ))
                     }
@@ -463,17 +469,20 @@ pub mod v1 {
                 match value {
                     crate::invocation_status_table::InvocationStatus::Scheduled(
                         crate::invocation_status_table::ScheduledInvocation {
-                            response_sinks,
-                            timestamps,
-                            invocation_target,
-                            argument,
-                            source,
-                            span_context,
-                            headers,
-                            execution_time,
-                            completion_retention_time,
-                            idempotency_key,
-                            source_table: _,
+                            metadata:
+                                crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    response_sinks,
+                                    timestamps,
+                                    invocation_target,
+                                    argument,
+                                    source,
+                                    span_context,
+                                    headers,
+                                    execution_time,
+                                    completion_retention_time,
+                                    idempotency_key,
+                                    source_table: _,
+                                },
                         },
                     ) => NeoInvocationStatus {
                         status: neo_invocation_status::Status::Scheduled.into(),
@@ -488,7 +497,7 @@ pub mod v1 {
                             .collect(),
                         argument: Some(argument),
                         headers: headers.into_iter().map(Into::into).collect(),
-                        execution_time: Some(execution_time.as_u64()),
+                        execution_time: execution_time.map(|t| t.as_u64()),
                         completion_retention_time: Some(completion_retention_time.into()),
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: None,
@@ -500,18 +509,21 @@ pub mod v1 {
                     },
                     crate::invocation_status_table::InvocationStatus::Inboxed(
                         crate::invocation_status_table::InboxedInvocation {
+                            metadata:
+                                crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    response_sinks,
+                                    timestamps,
+                                    invocation_target,
+                                    argument,
+                                    source,
+                                    span_context,
+                                    headers,
+                                    execution_time,
+                                    completion_retention_time,
+                                    idempotency_key,
+                                    source_table: _,
+                                },
                             inbox_sequence_number,
-                            response_sinks,
-                            timestamps,
-                            invocation_target,
-                            argument,
-                            source,
-                            span_context,
-                            headers,
-                            execution_time,
-                            completion_retention_time,
-                            idempotency_key,
-                            source_table: _,
                         },
                     ) => NeoInvocationStatus {
                         status: neo_invocation_status::Status::Inboxed.into(),
@@ -1041,20 +1053,22 @@ pub mod v1 {
 
                 Ok(crate::invocation_status_table::InboxedInvocation {
                     inbox_sequence_number: value.inbox_sequence_number,
-                    response_sinks,
-                    timestamps: crate::invocation_status_table::StatusTimestamps::new(
-                        MillisSinceEpoch::new(value.creation_time),
-                        MillisSinceEpoch::new(value.modification_time),
-                    ),
-                    source,
-                    span_context,
-                    headers,
-                    argument: value.argument,
-                    execution_time,
-                    idempotency_key,
-                    completion_retention_time,
-                    invocation_target,
-                    source_table: crate::invocation_status_table::SourceTable::Old,
+                    metadata: crate::invocation_status_table::PreFlightInvocationMetadata {
+                        response_sinks,
+                        timestamps: crate::invocation_status_table::StatusTimestamps::new(
+                            MillisSinceEpoch::new(value.creation_time),
+                            MillisSinceEpoch::new(value.modification_time),
+                        ),
+                        source,
+                        span_context,
+                        headers,
+                        argument: value.argument,
+                        execution_time,
+                        idempotency_key,
+                        completion_retention_time,
+                        invocation_target,
+                        source_table: crate::invocation_status_table::SourceTable::Old,
+                    },
                 })
             }
         }
@@ -1062,18 +1076,21 @@ pub mod v1 {
         impl From<crate::invocation_status_table::InboxedInvocation> for Inboxed {
             fn from(value: crate::invocation_status_table::InboxedInvocation) -> Self {
                 let crate::invocation_status_table::InboxedInvocation {
-                    invocation_target,
+                    metadata:
+                        crate::invocation_status_table::PreFlightInvocationMetadata {
+                            response_sinks,
+                            timestamps,
+                            invocation_target,
+                            argument,
+                            source,
+                            span_context,
+                            headers,
+                            execution_time,
+                            completion_retention_time,
+                            idempotency_key,
+                            source_table: _,
+                        },
                     inbox_sequence_number,
-                    response_sinks,
-                    timestamps,
-                    argument,
-                    source,
-                    span_context,
-                    headers,
-                    execution_time,
-                    completion_retention_time,
-                    idempotency_key,
-                    source_table: _,
                 } = value;
 
                 let headers = headers.into_iter().map(Into::into).collect();

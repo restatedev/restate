@@ -29,10 +29,12 @@ use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
 use restate_storage_api::invocation_status_table;
-use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation,
-    ReadOnlyInvocationStatusTable,
+    PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
+};
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, ScheduledInvocation, SourceTable,
 };
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::journal_table::ReadOnlyJournalTable;
@@ -65,7 +67,6 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
-use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
 use restate_types::journal::Completion;
 use restate_types::journal::CompletionResult;
@@ -396,7 +397,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     ) -> Result<(), Error> {
         match command {
             Command::Invoke(service_invocation) => {
-                self.handle_invoke(&mut ctx, service_invocation).await
+                self.on_service_invocation(&mut ctx, service_invocation)
+                    .await
             }
             Command::InvocationResponse(InvocationResponse {
                 id,
@@ -450,31 +452,133 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 Ok(())
             }
             Command::ScheduleTimer(timer) => {
-                Self::do_register_timer(&mut ctx, timer, Default::default()).await?;
+                Self::register_timer(&mut ctx, timer, Default::default()).await?;
                 Ok(())
             }
         }
     }
 
-    async fn handle_invoke<State: StateReader + StateStorage + IdempotencyTable>(
+    async fn on_service_invocation<State: StateReader + StateStorage + IdempotencyTable>(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
-        mut service_invocation: ServiceInvocation,
+        service_invocation: ServiceInvocation,
     ) -> Result<(), Error> {
+        let invocation_id = service_invocation.invocation_id;
         debug_assert!(
             self.partition_key_range.contains(&service_invocation.partition_key()),
             "Service invocation with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
             service_invocation.partition_key(),
             self.partition_key_range);
 
-        Span::record_invocation_id(&service_invocation.invocation_id);
+        Span::record_invocation_id(&invocation_id);
         Span::record_invocation_target(&service_invocation.invocation_target);
         service_invocation
             .span_context
             .as_parent()
             .attach_to_span(&Span::current());
 
-        // If an idempotency key is set, handle idempotency
+        // Phases of an invocation
+        // 1. Try deduplicate it first
+        // 1.1. Deduplicate using idempotency id
+        // 1.2. Deduplicate for "run once" workflow semantics (only for workflow handlers of workflows services)
+        // 2. Check if we need to schedule it
+        // 3. Check if we need to inbox it (only for exclusive handlers of virtual objects services)
+        // 4. Execute it
+
+        // 1.1. Handle deduplication for idempotency id
+        let Some(service_invocation) = self
+            .handle_service_invocation_idempotency_id(ctx, service_invocation)
+            .await?
+        else {
+            // Invocation was deduplicated, nothing else to do here
+            return Ok(());
+        };
+
+        // 1.2. Handle deduplication for workflows
+        let Some(mut service_invocation) = self
+            .handle_service_invocation_workflow_run(ctx, service_invocation)
+            .await?
+        else {
+            // Invocation was deduplicated, nothing else to do here
+            return Ok(());
+        };
+
+        // Prepare PreFlightInvocationMetadata structure
+        let submit_notification_sink = service_invocation.submit_notification_sink.take();
+        let pre_flight_invocation_metadata = PreFlightInvocationMetadata::from_service_invocation(
+            service_invocation,
+            self.default_invocation_status_source_table,
+        );
+
+        // 2. Check if we need to schedule it
+        let Some(pre_flight_invocation_metadata) = self
+            .handle_service_invocation_execution_time(
+                ctx,
+                invocation_id,
+                pre_flight_invocation_metadata,
+            )
+            .await?
+        else {
+            // Invocation was scheduled, send back the ingress attach notification and return
+            Self::send_submit_notification_if_needed(
+                ctx,
+                invocation_id,
+                None,
+                submit_notification_sink,
+            );
+            return Ok(());
+        };
+
+        // 3. Check if we need to inbox it (only for exclusive methods of virtual objects)
+        let Some(pre_flight_invocation_metadata) = self
+            .handle_service_invocation_exclusive_handler(
+                ctx,
+                invocation_id,
+                pre_flight_invocation_metadata,
+            )
+            .await?
+        else {
+            // Invocation was inboxed, send back the ingress attach notification and return
+            Self::send_submit_notification_if_needed(
+                ctx,
+                invocation_id,
+                None,
+                submit_notification_sink,
+            );
+            // Invocation was inboxed, nothing else to do here
+            return Ok(());
+        };
+
+        // 4. Execute it
+        Self::send_submit_notification_if_needed(
+            ctx,
+            invocation_id,
+            None,
+            submit_notification_sink,
+        );
+
+        let (in_flight_invocation_metadata, invocation_input) =
+            InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
+                pre_flight_invocation_metadata,
+            );
+
+        Self::init_journal_and_invoke(
+            ctx,
+            invocation_id,
+            in_flight_invocation_metadata,
+            invocation_input,
+        )
+        .await
+    }
+
+    /// Returns the invocation in case the invocation is not a duplicate
+    async fn handle_service_invocation_idempotency_id<
+        State: StateReader + StateStorage + IdempotencyTable,
+    >(
+        &mut self,
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        service_invocation: ServiceInvocation,
+    ) -> Result<Option<ServiceInvocation>, Error> {
         if let Some(idempotency_id) = service_invocation.compute_idempotency_id() {
             if service_invocation.invocation_target.invocation_target_ty()
                 == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
@@ -496,10 +600,20 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         Some(attached_invocation_id),
                         service_invocation.submit_notification_sink,
                     );
+                    debug_if_leader!(
+                        ctx.is_leader,
+                        restate.idempotency.id = ?idempotency_id,
+                        "Invocation is a duplicate"
+                    );
 
                     // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
-                    return Ok(());
+                    return Ok(None);
                 }
+
+                debug_if_leader!(
+                        ctx.is_leader,
+                        restate.idempotency.id = ?idempotency_id,
+                        "First time we see this idempotency id, invocation will be processed");
 
                 // Idempotent invocation needs to be processed for the first time, let's roll!
                 Self::do_store_idempotency_id(
@@ -510,64 +624,15 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 .await?;
             }
         }
+        Ok(Some(service_invocation))
+    }
 
-        // If an execution_time is set, we schedule the invocation to be processed later
-        if let Some(execution_time) = service_invocation.execution_time {
-            let span_context = service_invocation.span_context.clone();
-            Self::do_register_timer(
-                ctx,
-                TimerKeyValue::invoke(execution_time, service_invocation),
-                span_context,
-            )
-            .await?;
-            // The span will be created later on invocation
-            return Ok(());
-        }
-
-        // If it's exclusive, we need to acquire the exclusive lock
-        if service_invocation.invocation_target.invocation_target_ty()
-            == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-        {
-            let keyed_service_id = service_invocation
-                .invocation_target
-                .as_keyed_service_id()
-                .expect(
-                    "When the handler type is Exclusive, the invocation target must have a key",
-                );
-
-            let service_status = ctx
-                .storage
-                .get_virtual_object_status(&keyed_service_id)
-                .await?;
-
-            // If locked, enqueue in inbox and be done with it
-            if let VirtualObjectStatus::Locked(_) = service_status {
-                let inbox_seq_number = self
-                    .enqueue_into_inbox(
-                        ctx,
-                        InboxEntry::Invocation(keyed_service_id, service_invocation.invocation_id),
-                    )
-                    .await?;
-                Self::send_submit_notification_if_needed(
-                    ctx,
-                    service_invocation.invocation_id,
-                    None,
-                    service_invocation.submit_notification_sink.take(),
-                );
-                Self::do_store_inboxed_invocation(
-                    ctx,
-                    service_invocation.invocation_id,
-                    InboxedInvocation::from_service_invocation(
-                        service_invocation,
-                        inbox_seq_number,
-                        self.default_invocation_status_source_table,
-                    ),
-                )
-                .await?;
-                return Ok(());
-            }
-        }
-
+    /// Returns the invocation in case the invocation is not a duplicate
+    async fn handle_service_invocation_workflow_run<State: StateReader + StateStorage>(
+        &mut self,
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        mut service_invocation: ServiceInvocation,
+    ) -> Result<Option<ServiceInvocation>, Error> {
         if service_invocation.invocation_target.invocation_target_ty()
             == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
         {
@@ -625,24 +690,229 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     Some(original_invocation_id),
                     service_invocation.submit_notification_sink.take(),
                 );
-                return Ok(());
+
+                debug_if_leader!(
+                    ctx.is_leader,
+                    "Invocation to workflow method is a duplicate"
+                );
+
+                return Ok(None);
             }
+            debug_if_leader!(
+                ctx.is_leader,
+                "First time we see this workflow id, invocation will be processed"
+            );
+
+            ctx.storage
+                .store_service_status(
+                    &keyed_service_id,
+                    VirtualObjectStatus::Locked(service_invocation.invocation_id),
+                )
+                .await?;
+        }
+        Ok(Some(service_invocation))
+    }
+
+    /// Returns the invocation in case the invocation should run immediately
+    async fn handle_service_invocation_execution_time<State: StateStorage>(
+        &mut self,
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: InvocationId,
+        metadata: PreFlightInvocationMetadata,
+    ) -> Result<Option<PreFlightInvocationMetadata>, Error> {
+        if let Some(execution_time) = metadata.execution_time {
+            let span_context = metadata.span_context.clone();
+            match self.default_invocation_status_source_table {
+                SourceTable::Old => {
+                    // TODO remove this code once we remove the Old table
+                    Self::register_timer(
+                        ctx,
+                        TimerKeyValue::invoke(
+                            execution_time,
+                            ServiceInvocation {
+                                invocation_id,
+                                invocation_target: metadata.invocation_target,
+                                argument: metadata.argument,
+                                source: metadata.source,
+                                span_context: span_context.clone(),
+                                headers: metadata.headers,
+                                execution_time: metadata.execution_time,
+                                completion_retention_time: Some(metadata.completion_retention_time),
+                                idempotency_key: metadata.idempotency_key,
+                                response_sink: metadata.response_sinks.into_iter().next(),
+                                submit_notification_sink: None,
+                            },
+                        ),
+                        span_context,
+                    )
+                    .await?;
+                }
+                SourceTable::New => {
+                    debug_if_leader!(ctx.is_leader, "Store scheduled invocation");
+
+                    Self::register_timer(
+                        ctx,
+                        TimerKeyValue::neo_invoke(execution_time, invocation_id),
+                        span_context,
+                    )
+                    .await?;
+
+                    ctx.storage
+                        .store_invocation_status(
+                            &invocation_id.clone(),
+                            InvocationStatus::Scheduled(
+                                ScheduledInvocation::from_pre_flight_invocation_metadata(metadata),
+                            ),
+                        )
+                        .await?;
+                }
+            }
+            // The span will be created later on invocation
+            return Ok(None);
         }
 
-        Self::send_submit_notification_if_needed(
-            ctx,
-            service_invocation.invocation_id,
-            None,
-            service_invocation.submit_notification_sink.take(),
-        );
+        Ok(Some(metadata))
+    }
 
-        // We're ready to invoke the service!
-        Self::do_invoke_service(
+    /// Returns the invocation in case the invocation was not inboxed
+    async fn handle_service_invocation_exclusive_handler<State: StateStorage + StateReader>(
+        &mut self,
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: InvocationId,
+        metadata: PreFlightInvocationMetadata,
+    ) -> Result<Option<PreFlightInvocationMetadata>, Error> {
+        if metadata.invocation_target.invocation_target_ty()
+            == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+        {
+            let keyed_service_id = metadata.invocation_target.as_keyed_service_id().expect(
+                "When the handler type is Exclusive, the invocation target must have a key",
+            );
+
+            let service_status = ctx
+                .storage
+                .get_virtual_object_status(&keyed_service_id)
+                .await?;
+
+            if let VirtualObjectStatus::Locked(_) = service_status {
+                // If locked, enqueue in inbox and be done with it
+                let inbox_seq_number = self
+                    .enqueue_into_inbox(
+                        ctx,
+                        InboxEntry::Invocation(keyed_service_id, invocation_id),
+                    )
+                    .await?;
+
+                debug_if_leader!(
+                    ctx.is_leader,
+                    restate.outbox.seq = inbox_seq_number,
+                    "Store inboxed invocation"
+                );
+                ctx.storage
+                    .store_invocation_status(
+                        &invocation_id,
+                        InvocationStatus::Inboxed(
+                            InboxedInvocation::from_pre_flight_invocation_metadata(
+                                metadata,
+                                inbox_seq_number,
+                            ),
+                        ),
+                    )
+                    .await?;
+
+                return Ok(None);
+            } else {
+                // If unlocked, lock it
+                debug_if_leader!(
+                    ctx.is_leader,
+                    restate.service.id = %keyed_service_id,
+                    "Locking service"
+                );
+
+                ctx.storage
+                    .store_service_status(
+                        &keyed_service_id,
+                        VirtualObjectStatus::Locked(invocation_id),
+                    )
+                    .await?;
+            }
+        }
+        Ok(Some(metadata))
+    }
+
+    async fn init_journal_and_invoke<State: StateStorage>(
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: InvocationId,
+        mut in_flight_invocation_metadata: InFlightInvocationMetadata,
+        invocation_input: InvocationInput,
+    ) -> Result<(), Error> {
+        let invoke_input_journal = Self::init_journal(
             ctx,
-            service_invocation,
-            self.default_invocation_status_source_table,
+            invocation_id,
+            &mut in_flight_invocation_metadata,
+            invocation_input,
         )
         .await?;
+
+        Self::invoke(
+            ctx,
+            invocation_id,
+            in_flight_invocation_metadata,
+            invoke_input_journal,
+        )
+        .await
+    }
+
+    async fn init_journal<State: StateStorage>(
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: InvocationId,
+        in_flight_invocation_metadata: &mut InFlightInvocationMetadata,
+        invocation_input: InvocationInput,
+    ) -> Result<InvokeInputJournal, Error> {
+        debug_if_leader!(ctx.is_leader, "Init journal with input entry");
+
+        // In our current data model, ServiceInvocation has always an input, so initial length is 1
+        in_flight_invocation_metadata.journal_metadata.length = 1;
+
+        let input_entry =
+            Codec::serialize_as_input_entry(invocation_input.headers, invocation_input.argument);
+
+        ctx.storage
+            .store_journal_entry(&invocation_id, 0, input_entry.clone())
+            .await?;
+
+        Ok(InvokeInputJournal::CachedJournal(
+            restate_invoker_api::JournalMetadata::new(
+                in_flight_invocation_metadata.journal_metadata.length,
+                in_flight_invocation_metadata
+                    .journal_metadata
+                    .span_context
+                    .clone(),
+                None,
+            ),
+            vec![input_entry.erase_enrichment()],
+        ))
+    }
+
+    async fn invoke<State: StateStorage>(
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: InvocationId,
+        in_flight_invocation_metadata: InFlightInvocationMetadata,
+        invoke_input_journal: InvokeInputJournal,
+    ) -> Result<(), Error> {
+        debug_if_leader!(ctx.is_leader, "Invoke");
+
+        ctx.action_collector.push(Action::Invoke {
+            invocation_id,
+            invocation_target: in_flight_invocation_metadata.invocation_target.clone(),
+            invoke_input_journal,
+        });
+        ctx.storage
+            .store_invocation_status(
+                &invocation_id,
+                InvocationStatus::Invoked(in_flight_invocation_metadata),
+            )
+            .await?;
+
         Ok(())
     }
 
@@ -651,10 +921,20 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         inbox_entry: InboxEntry,
     ) -> Result<MessageIndex, Error> {
-        let inbox_seq_number = self.inbox_seq_number;
-        Self::do_enqueue_into_inbox(ctx, self.inbox_seq_number, inbox_entry).await?;
+        let seq_number = self.inbox_seq_number;
+        debug_if_leader!(
+            ctx.is_leader,
+            restate.inbox.seq = seq_number,
+            "Enqueue inbox entry"
+        );
+
+        ctx.storage
+            .enqueue_into_inbox(seq_number, inbox_entry)
+            .await?;
+        // need to store the next inbox sequence number
+        ctx.storage.store_inbox_seq_number(seq_number + 1).await?;
         self.inbox_seq_number += 1;
-        Ok(inbox_seq_number)
+        Ok(seq_number)
     }
 
     /// If an invocation id is returned, the request has been resolved and no further processing is needed
@@ -867,10 +1147,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         let InboxedInvocation {
             inbox_sequence_number,
-            response_sinks,
-            span_context,
-            invocation_target,
-            ..
+            metadata:
+                PreFlightInvocationMetadata {
+                    response_sinks,
+                    span_context,
+                    invocation_target,
+                    ..
+                },
         } = inboxed_invocation;
 
         // Reply back to callers with error, and publish end trace
@@ -1170,15 +1453,65 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
                 // ServiceInvocations scheduled with a timer are always owned by the same partition processor
                 // where the invocation should be executed
-                self.handle_invoke(ctx, service_invocation).await
+                self.on_service_invocation(ctx, service_invocation).await
             }
             Timer::CleanInvocationStatus(invocation_id) => {
                 self.try_purge_invocation(ctx, invocation_id).await
             }
-            _ => {
-                todo!("Unimplemented")
-            }
+            Timer::NeoInvoke(invocation_id) => self.on_neo_invoke_timer(ctx, invocation_id).await,
         }
+    }
+
+    async fn on_neo_invoke_timer<State: StateReader + StateStorage>(
+        &mut self,
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: InvocationId,
+    ) -> Result<(), Error> {
+        debug_if_leader!(
+            ctx.is_leader,
+            "Handle scheduled invocation timer with invocation id {invocation_id}"
+        );
+        let invocation_status = Self::get_invocation_status_and_trace(ctx, &invocation_id).await?;
+
+        if let InvocationStatus::Free = &invocation_status {
+            warn!("Fired a timer for an unknown invocation. The invocation might have been deleted/purged previously.");
+            return Ok(());
+        }
+
+        let_assert!(
+            InvocationStatus::Scheduled(scheduled_invocation) = invocation_status,
+            "Invocation {} should be in scheduled status",
+            invocation_id
+        );
+
+        // Scheduled invocations have been deduplicated already in on_service_invocation, and they already sent back the submit notification.
+
+        // 3. Check if we need to inbox it (only for exclusive methods of virtual objects)
+        let Some(pre_flight_invocation_metadata) = self
+            .handle_service_invocation_exclusive_handler(
+                ctx,
+                invocation_id,
+                scheduled_invocation.metadata,
+            )
+            .await?
+        else {
+            // Invocation was inboxed, nothing else to do here
+            return Ok(());
+        };
+
+        // 4. Execute it
+        let (in_flight_invocation_metadata, invocation_input) =
+            InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
+                pre_flight_invocation_metadata,
+            );
+
+        Self::init_journal_and_invoke(
+            ctx,
+            invocation_id,
+            in_flight_invocation_metadata,
+            invocation_input,
+        )
+        .await
     }
 
     async fn try_invoker_effect<
@@ -1314,7 +1647,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         );
 
         // Pop from inbox
-        Self::try_pop_inbox(ctx, &invocation_metadata.invocation_target).await?;
+        Self::consume_inbox(ctx, &invocation_metadata.invocation_target).await?;
 
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
@@ -1366,7 +1699,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn fail_invocation<State: StateStorage + ReadOnlyInvocationStatusTable>(
+    async fn fail_invocation<State: StateReader + StateStorage + ReadOnlyInvocationStatusTable>(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
@@ -1397,7 +1730,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         .await?;
 
         // Pop from inbox
-        Self::try_pop_inbox(ctx, &invocation_metadata.invocation_target).await?;
+        Self::consume_inbox(ctx, &invocation_metadata.invocation_target).await?;
 
         // Store the completed status or free it
         if !invocation_metadata.completion_retention_time.is_zero() {
@@ -1461,7 +1794,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn try_pop_inbox<State: StateStorage + ReadOnlyInvocationStatusTable>(
+    async fn consume_inbox<State: StateReader + StateStorage + ReadOnlyInvocationStatusTable>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_target: &InvocationTarget,
     ) -> Result<(), Error> {
@@ -1469,14 +1802,69 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         if invocation_target.invocation_target_ty()
             == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
         {
-            Self::do_pop_inbox(
-                ctx,
-                invocation_target.as_keyed_service_id().expect(
-                    "When the handler type is Exclusive, the invocation target must have a key",
-                ),
-            )
-            .await?
+            let keyed_service_id = invocation_target.as_keyed_service_id().expect(
+                "When the handler type is Exclusive, the invocation target must have a key",
+            );
+
+            debug_if_leader!(
+                ctx.is_leader,
+                rpc.service = %keyed_service_id,
+                "Consume inbox"
+            );
+
+            // Pop until we find the first inbox entry.
+            // Note: the inbox seq numbers can have gaps.
+            while let Some(inbox_entry) = ctx.storage.pop_inbox(&keyed_service_id).await? {
+                match inbox_entry.inbox_entry {
+                    InboxEntry::Invocation(_, invocation_id) => {
+                        let inboxed_status =
+                            Self::get_invocation_status_and_trace(ctx, &invocation_id).await?;
+
+                        let_assert!(
+                            InvocationStatus::Inboxed(inboxed_invocation) = inboxed_status,
+                            "InvocationStatus must contain an Inboxed invocation for the id {}",
+                            invocation_id
+                        );
+
+                        debug_if_leader!(
+                            ctx.is_leader,
+                            rpc.service = %keyed_service_id,
+                            "Invoke inboxed"
+                        );
+
+                        // Lock the service
+                        ctx.storage
+                            .store_service_status(
+                                &keyed_service_id,
+                                VirtualObjectStatus::Locked(invocation_id),
+                            )
+                            .await?;
+
+                        let (in_flight_invocation_meta, invocation_input) =
+                            InFlightInvocationMetadata::from_inboxed_invocation(inboxed_invocation);
+                        Self::init_journal_and_invoke(
+                            ctx,
+                            invocation_id,
+                            in_flight_invocation_meta,
+                            invocation_input,
+                        )
+                        .await?;
+
+                        // Started a new invocation
+                        return Ok(());
+                    }
+                    InboxEntry::StateMutation(state_mutation) => {
+                        Self::mutate_state(ctx.storage, state_mutation).await?;
+                    }
+                }
+            }
+
+            // We consumed the inbox, nothing else to do here
+            ctx.storage
+                .store_service_status(&keyed_service_id, VirtualObjectStatus::Unlocked)
+                .await?;
         }
+
         Ok(())
     }
 
@@ -1833,7 +2221,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     Entry::Sleep(SleepEntry { wake_up_time, .. }) =
                         journal_entry.deserialize_entry_ref::<Codec>()?
                 );
-                Self::do_register_timer(
+                Self::register_timer(
                     ctx,
                     TimerKeyValue::complete_journal_entry(
                         MillisSinceEpoch::new(wake_up_time),
@@ -2279,40 +2667,25 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             request_id,
         }) = submit_notification_sink
         {
-            Self::do_ingress_submit_notification(
-                ctx,
-                IngressResponseEnvelope {
+            let attached_invocation_id = attached_invocation_id.unwrap_or(original_invocation_id);
+
+            debug_if_leader!(
+                ctx.is_leader,
+                "Sending ingress attach invocation {} to {}",
+                original_invocation_id,
+                attached_invocation_id,
+            );
+
+            ctx.action_collector
+                .push(Action::IngressSubmitNotification(IngressResponseEnvelope {
                     target_node: node_id,
                     inner: ingress::SubmittedInvocationNotification {
                         request_id,
                         original_invocation_id,
-                        attached_invocation_id: attached_invocation_id
-                            .unwrap_or(original_invocation_id),
+                        attached_invocation_id,
                     },
-                },
-            );
+                }));
         }
-    }
-
-    pub(super) async fn do_invoke_service<S: StateStorage>(
-        ctx: &mut StateMachineApplyContext<'_, S>,
-        service_invocation: ServiceInvocation,
-        source_table: invocation_status_table::SourceTable,
-    ) -> Result<(), Error> {
-        debug_if_leader!(ctx.is_leader, "Effect: Invoke service");
-
-        let invocation_id = service_invocation.invocation_id;
-        let (in_flight_invocation_meta, invocation_input) =
-            InFlightInvocationMetadata::from_service_invocation(service_invocation, source_table);
-        Self::invoke_service(
-            ctx.storage,
-            ctx.action_collector,
-            invocation_id,
-            in_flight_invocation_meta,
-            invocation_input,
-        )
-        .await?;
-        Ok(())
     }
 
     async fn do_resume_service<S: StateStorage>(
@@ -2376,28 +2749,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn do_store_inboxed_invocation<S: StateStorage>(
-        ctx: &mut StateMachineApplyContext<'_, S>,
-        invocation_id: InvocationId,
-        inboxed_invocation: InboxedInvocation,
-    ) -> Result<(), Error> {
-        debug_if_leader!(
-            ctx.is_leader,
-            restate.invocation.id = %invocation_id,
-            restate.outbox.seq = inboxed_invocation.inbox_sequence_number,
-            "Effect: Store inboxed invocation"
-        );
-
-        ctx.storage
-            .store_invocation_status(
-                &invocation_id,
-                InvocationStatus::Inboxed(inboxed_invocation),
-            )
-            .await?;
-
-        Ok(())
-    }
-
     async fn do_store_completed_invocation<S: StateStorage>(
         ctx: &mut StateMachineApplyContext<'_, S>,
         invocation_id: InvocationId,
@@ -2438,41 +2789,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx.storage
             .store_invocation_status(&invocation_id, InvocationStatus::Free)
             .await?;
-
-        Ok(())
-    }
-
-    async fn do_enqueue_into_inbox<S: StateStorage>(
-        ctx: &mut StateMachineApplyContext<'_, S>,
-        seq_number: MessageIndex,
-        inbox_entry: InboxEntry,
-    ) -> Result<(), Error> {
-        debug_if_leader!(
-            ctx.is_leader,
-            restate.inbox.seq = seq_number,
-            "Effect: Enqueue invocation in inbox"
-        );
-
-        ctx.storage
-            .enqueue_into_inbox(seq_number, inbox_entry)
-            .await?;
-        // need to store the next inbox sequence number
-        ctx.storage.store_inbox_seq_number(seq_number + 1).await?;
-
-        Ok(())
-    }
-
-    async fn do_pop_inbox<S: StateStorage + ReadOnlyInvocationStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, S>,
-        service_id: ServiceId,
-    ) -> Result<(), Error> {
-        debug_if_leader!(
-            ctx.is_leader,
-            rpc.service = %service_id.service_name,
-            "Effect: Pop inbox"
-        );
-
-        Self::pop_from_inbox(ctx.storage, ctx.action_collector, service_id).await?;
 
         Ok(())
     }
@@ -2657,7 +2973,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn do_register_timer<S: StateStorage>(
+    async fn register_timer<S: StateStorage>(
         ctx: &mut StateMachineApplyContext<'_, S>,
         timer_value: TimerKeyValue,
         span_context: ServiceInvocationSpanContext,
@@ -2682,7 +2998,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     restate.journal.index = entry_index,
                     restate.timer.wake_up_time = %timer_value.wake_up_time(),
                     restate.timer.key = %TimerKeyDisplay(timer_value.key()),
-                    "Effect: Register Sleep timer"
+                    "Register Sleep timer"
                 )
             }
             Timer::Invoke(service_invocation) => {
@@ -2694,7 +3010,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     restate.invocation.target = %service_invocation.invocation_target,
                     restate.timer.wake_up_time = %timer_value.wake_up_time(),
                     restate.timer.key = %TimerKeyDisplay(timer_value.key()),
-                    "Effect: Register background invoke timer"
+                    "Register background invoke timer"
                 )
             }
             Timer::NeoInvoke(invocation_id) => {
@@ -2704,7 +3020,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     restate.invocation.id = %invocation_id,
                     restate.timer.wake_up_time = %timer_value.wake_up_time(),
                     restate.timer.key = %TimerKeyDisplay(timer_value.key()),
-                    "Effect: Register background invoke timer"
+                    "Register background invoke timer"
                 )
             }
             Timer::CleanInvocationStatus(_) => {
@@ -2712,7 +3028,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     ctx.is_leader,
                     restate.timer.wake_up_time = %timer_value.wake_up_time(),
                     restate.timer.key = %TimerKeyDisplay(timer_value.key()),
-                    "Effect: Register cleanup invocation status timer"
+                    "Register cleanup invocation status timer"
                 )
             }
         };
@@ -3071,21 +3387,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .push(Action::IngressResponse(ingress_response));
     }
 
-    fn do_ingress_submit_notification<S>(
-        ctx: &mut StateMachineApplyContext<'_, S>,
-        attach_notification: IngressResponseEnvelope<ingress::SubmittedInvocationNotification>,
-    ) {
-        debug_if_leader!(
-            ctx.is_leader,
-            "Effect: Ingress attach invocation {} to {}",
-            attach_notification.inner.original_invocation_id,
-            attach_notification.inner.attached_invocation_id,
-        );
-
-        ctx.action_collector
-            .push(Action::IngressSubmitNotification(attach_notification));
-    }
-
     async fn do_put_promise<S: PromiseTable>(
         ctx: &mut StateMachineApplyContext<'_, S>,
         service_id: ServiceId,
@@ -3109,53 +3410,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     "Effect: Clear all promises");
 
         ctx.storage.delete_all_promises(&service_id).await;
-
-        Ok(())
-    }
-
-    async fn pop_from_inbox<S>(
-        state_storage: &mut S,
-        collector: &mut ActionCollector,
-        service_id: ServiceId,
-    ) -> Result<(), Error>
-    where
-        S: StateStorage + ReadOnlyInvocationStatusTable,
-    {
-        // Pop until we find the first inbox entry.
-        // Note: the inbox seq numbers can have gaps.
-        while let Some(inbox_entry) = state_storage.pop_inbox(&service_id).await? {
-            match inbox_entry.inbox_entry {
-                InboxEntry::Invocation(_, invocation_id) => {
-                    let inboxed_status =
-                        state_storage.get_invocation_status(&invocation_id).await?;
-
-                    let_assert!(
-                        InvocationStatus::Inboxed(inboxed_invocation) = inboxed_status,
-                        "InvocationStatus must contain an Inboxed invocation for the id {}",
-                        invocation_id
-                    );
-
-                    let (in_flight_invocation_meta, invocation_input) =
-                        InFlightInvocationMetadata::from_inboxed_invocation(inboxed_invocation);
-                    Self::invoke_service(
-                        state_storage,
-                        collector,
-                        invocation_id,
-                        in_flight_invocation_meta,
-                        invocation_input,
-                    )
-                    .await?;
-                    return Ok(());
-                }
-                InboxEntry::StateMutation(state_mutation) => {
-                    Self::mutate_state(state_storage, state_mutation).await?;
-                }
-            }
-        }
-
-        state_storage
-            .store_service_status(&service_id, VirtualObjectStatus::Unlocked)
-            .await?;
 
         Ok(())
     }
@@ -3197,72 +3451,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         for (key, value) in state {
             state_storage.store_state(&service_id, key, value).await?
         }
-
-        Ok(())
-    }
-
-    async fn invoke_service<S: StateStorage>(
-        state_storage: &mut S,
-        collector: &mut ActionCollector,
-        invocation_id: InvocationId,
-        mut in_flight_invocation_metadata: InFlightInvocationMetadata,
-        invocation_input: InvocationInput,
-    ) -> Result<(), Error> {
-        // In our current data model, ServiceInvocation has always an input, so initial length is 1
-        in_flight_invocation_metadata.journal_metadata.length = 1;
-
-        let invocation_target_type = in_flight_invocation_metadata
-            .invocation_target
-            .invocation_target_ty();
-        if invocation_target_type
-            == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-            || invocation_target_type
-                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-        {
-            state_storage
-                .store_service_status(
-                    &in_flight_invocation_metadata
-                        .invocation_target
-                        .as_keyed_service_id()
-                        .unwrap(),
-                    VirtualObjectStatus::Locked(invocation_id),
-                )
-                .await?;
-        }
-        state_storage
-            .store_invocation_status(
-                &invocation_id,
-                InvocationStatus::Invoked(in_flight_invocation_metadata.clone()),
-            )
-            .await?;
-
-        let input_entry =
-            Codec::serialize_as_input_entry(invocation_input.headers, invocation_input.argument);
-        let (entry_header, serialized_entry) = input_entry.into_inner();
-
-        collector.push(Action::Invoke {
-            invocation_id,
-            invocation_target: in_flight_invocation_metadata.invocation_target,
-            invoke_input_journal: InvokeInputJournal::CachedJournal(
-                restate_invoker_api::JournalMetadata::new(
-                    in_flight_invocation_metadata.journal_metadata.length,
-                    in_flight_invocation_metadata.journal_metadata.span_context,
-                    None,
-                ),
-                vec![PlainRawEntry::new(
-                    entry_header.clone().erase_enrichment(),
-                    serialized_entry.clone(),
-                )],
-            ),
-        });
-
-        state_storage
-            .store_journal_entry(
-                &invocation_id,
-                0,
-                EnrichedRawEntry::new(entry_header, serialized_entry),
-            )
-            .await?;
 
         Ok(())
     }
