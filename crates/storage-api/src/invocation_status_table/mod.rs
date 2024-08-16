@@ -605,4 +605,27 @@ mod test_util {
             }
         }
     }
+
+    impl CompletedInvocation {
+        pub fn mock_neo() -> Self {
+            let mut timestamps = StatusTimestamps::now();
+            timestamps.record_running_transition_time();
+            timestamps.record_completed_transition_time();
+
+            CompletedInvocation {
+                invocation_target: InvocationTarget::virtual_object(
+                    "MyService",
+                    "MyKey",
+                    "mock",
+                    VirtualObjectHandlerType::Exclusive,
+                ),
+                source: Source::Ingress,
+                idempotency_key: None,
+                timestamps,
+                response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                completion_retention_duration: Duration::from_secs(60 * 60),
+                source_table: SourceTable::New,
+            }
+        }
+    }
 }

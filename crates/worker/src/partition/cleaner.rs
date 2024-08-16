@@ -161,3 +161,150 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use futures::{stream, Stream};
+    use googletest::prelude::*;
+    use restate_core::{TaskKind, TestCoreEnvBuilder};
+    use restate_storage_api::invocation_status_table::{
+        CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, StatusTimestamps,
+    };
+    use restate_types::identifiers::{InvocationId, InvocationUuid};
+    use restate_types::invocation::InvocationTarget;
+    use restate_types::partition_table::{FindPartition, PartitionTable};
+    use restate_types::Version;
+    use std::future::Future;
+    use test_log::test;
+
+    #[allow(dead_code)]
+    struct MockInvocationStatusReader(Vec<(InvocationId, InvocationStatus)>);
+
+    impl ReadOnlyInvocationStatusTable for MockInvocationStatusReader {
+        fn get_invocation_status(
+            &mut self,
+            _: &InvocationId,
+        ) -> impl Future<Output = restate_storage_api::Result<InvocationStatus>> + Send {
+            todo!();
+            #[allow(unreachable_code)]
+            std::future::pending()
+        }
+
+        fn invoked_invocations(
+            &mut self,
+            _: RangeInclusive<PartitionKey>,
+        ) -> impl Stream<Item = restate_storage_api::Result<(InvocationId, InvocationTarget)>> + Send
+        {
+            todo!();
+            #[allow(unreachable_code)]
+            stream::empty()
+        }
+
+        fn all_invocation_statuses(
+            &self,
+            _: RangeInclusive<PartitionKey>,
+        ) -> impl Stream<Item = restate_storage_api::Result<(InvocationId, InvocationStatus)>> + Send
+        {
+            stream::iter(self.0.clone()).map(Ok)
+        }
+    }
+
+    // Start paused makes sure the timer is immediately fired
+    #[test(tokio::main(flavor = "current_thread", start_paused = true))]
+    pub async fn cleanup_works() {
+        // set numbers of partitions to 1 to easily find all sent messages by the shuffle
+        let env = TestCoreEnvBuilder::new_with_mock_network()
+            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+                Version::MIN,
+                1,
+            ))
+            .build()
+            .await;
+        let tc = &env.tc;
+        let bifrost = tc
+            .run_in_scope(
+                "init bifrost",
+                None,
+                Bifrost::init_in_memory(env.metadata.clone()),
+            )
+            .await;
+
+        let expired_invocation = InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::new());
+        let not_expired_invocation_1 =
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::new());
+        let not_expired_invocation_2 =
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::new());
+        let not_completed_invocation =
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::new());
+
+        let mock_storage = MockInvocationStatusReader(vec![
+            (
+                expired_invocation,
+                InvocationStatus::Completed(CompletedInvocation {
+                    completion_retention_duration: Duration::ZERO,
+                    ..CompletedInvocation::mock_neo()
+                }),
+            ),
+            (
+                not_expired_invocation_1,
+                InvocationStatus::Completed(CompletedInvocation {
+                    completion_retention_duration: Duration::MAX,
+                    ..CompletedInvocation::mock_neo()
+                }),
+            ),
+            (
+                not_expired_invocation_2,
+                InvocationStatus::Completed(CompletedInvocation {
+                    completion_retention_duration: Duration::ZERO,
+                    timestamps: StatusTimestamps::now(),
+                    ..CompletedInvocation::mock_neo()
+                }),
+            ),
+            (
+                not_completed_invocation,
+                InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+            ),
+        ]);
+
+        tc.spawn_child(
+            TaskKind::Cleaner,
+            "cleaner",
+            Some(PartitionId::MIN),
+            Cleaner::new(
+                PartitionId::MIN,
+                LeaderEpoch::INITIAL,
+                GenerationalNodeId::new(1, 1),
+                mock_storage,
+                bifrost.clone(),
+                RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
+                Duration::from_secs(1),
+            )
+            .run(),
+        )
+        .unwrap();
+
+        // All the invocation ids were created with same partition keys, hence same partition id.
+        let partition_id = env
+            .metadata
+            .partition_table_snapshot()
+            .find_partition_id(expired_invocation.partition_key())
+            .unwrap();
+
+        let mut log_entries = bifrost.read_all(partition_id.into()).await.unwrap();
+        let bifrost_message = log_entries
+            .remove(0)
+            .try_decode::<Envelope>()
+            .unwrap()
+            .unwrap();
+
+        assert_that!(
+            bifrost_message.command,
+            pat!(Command::PurgeInvocation(pat!(PurgeInvocationRequest {
+                invocation_id: eq(expired_invocation)
+            })))
+        );
+        assert_that!(log_entries, empty());
+    }
+}
