@@ -62,6 +62,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
 
             CASE
                 WHEN ss.status = 'inboxed' THEN 'pending'
+                WHEN ss.status = 'scheduled' THEN 'scheduled'
                 WHEN ss.status = 'completed' THEN 'completed'
                 WHEN ss.status = 'suspended' THEN 'suspended'
                 WHEN sis.in_flight THEN 'running'
