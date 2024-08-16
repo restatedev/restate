@@ -149,18 +149,19 @@ impl Stream for LocalLogletReadStream {
             return Poll::Ready(None);
         }
 
-        let next_offset = self.read_pointer;
-
         let perf_guard = RocksDbPerfGuard::new("local-loglet-next");
         loop {
             // We have reached the limit we are allowed to read
-            if self.read_to.is_some_and(|read_to| next_offset > read_to) {
+            if self
+                .read_to
+                .is_some_and(|read_to| self.read_pointer > read_to)
+            {
                 self.terminated = true;
                 return Poll::Ready(None);
             }
             // Are we reading after commit offset?
             // We are at tail. We need to wait until new records have been released.
-            if next_offset >= self.last_known_tail {
+            if self.read_pointer >= self.last_known_tail {
                 let maybe_tail_state = match self.tail_watch.poll_next_unpin(cx) {
                     Poll::Ready(t) => t,
                     Poll::Pending => {
@@ -186,17 +187,17 @@ impl Stream for LocalLogletReadStream {
             let last_known_tail = self.last_known_tail;
 
             // assert that we are behind tail
-            assert!(last_known_tail > next_offset);
+            assert!(last_known_tail > self.read_pointer);
 
-            // Trim point is the the slot **before** the first readable record (if it exists)
+            // Trim point is the slot **before** the first readable record (if it exists)
             // trim point might have been updated since last time.
             let trim_point = LogletOffset(self.loglet.trim_point_offset.load(Ordering::Relaxed));
             let head_offset = trim_point.next();
             // Are we reading behind the loglet head? -> TrimGap
-            assert!(next_offset > LogletOffset::from(0));
+            assert!(self.read_pointer > LogletOffset::from(0));
 
-            if next_offset < head_offset {
-                let trim_gap = LogEntry::new_trim_gap(next_offset, trim_point);
+            if self.read_pointer < head_offset {
+                let trim_gap = LogEntry::new_trim_gap(self.read_pointer, trim_point);
                 // next record should be beyond at the head
                 self.read_pointer = head_offset;
                 let key = RecordKey::new(self.log_id, trim_point);
@@ -206,7 +207,7 @@ impl Stream for LocalLogletReadStream {
                 return Poll::Ready(Some(Ok(trim_gap)));
             }
 
-            let key = RecordKey::new(self.log_id, next_offset);
+            let key = RecordKey::new(self.log_id, self.read_pointer);
             if self.iterator.valid() {
                 // can move to next.
                 self.iterator.next();
@@ -232,7 +233,7 @@ impl Stream for LocalLogletReadStream {
                 // doesn't exist but we expect it to!
                 error!(
                     log_id = self.log_id,
-                    next_offset = %next_offset,
+                    read_pointer = %self.read_pointer,
                     trim_point = %potentially_different_trim_point,
                     last_known_tail = %self.last_known_tail,
                     "poll_next() has moved to a non-existent record, that should not happen!"

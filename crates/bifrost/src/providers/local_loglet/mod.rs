@@ -271,13 +271,19 @@ impl LogletBase for LocalLoglet {
 
 #[cfg(test)]
 mod tests {
+    use futures::TryStreamExt;
+    use googletest::prelude::eq;
+    use googletest::{assert_that, elements_are};
+    use test_log::test;
+
+    use crate::loglet::Loglet;
+    use crate::Header;
     use restate_core::TestCoreEnvBuilder;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
     use restate_types::logs::metadata::{LogletParams, ProviderKind};
-
-    use crate::loglet::Loglet;
+    use restate_types::logs::Keys;
 
     use super::*;
 
@@ -381,5 +387,52 @@ mod tests {
         node_env.tc.shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
+    }
+
+    #[test(tokio::test)]
+    async fn read_stream_with_filters() -> googletest::Result<()> {
+        run_in_test_env(|loglet| async {
+            loglet.append(("record-1", Keys::Single(1)).into()).await?;
+            loglet.append(("record-2", Keys::Single(2)).into()).await?;
+            let offset = loglet.append(("record-3", Keys::Single(1)).into()).await?;
+
+            let key_filter = KeyFilter::Include(1);
+            let read_stream = loglet
+                .create_read_stream(key_filter, LogletOffset::OLDEST, Some(offset))
+                .await?;
+
+            let records: Vec<_> = read_stream
+                .try_collect::<Vec<_>>()
+                .await?
+                .into_iter()
+                .map(|log_entry| {
+                    (
+                        log_entry.sequence_number(),
+                        log_entry.decode_unchecked::<String>(),
+                    )
+                })
+                .collect();
+
+            assert_that!(
+                records,
+                elements_are![
+                    eq((LogletOffset::from(1), "record-1".to_owned())),
+                    eq((LogletOffset::from(3), "record-3".to_owned()))
+                ]
+            );
+
+            Ok(())
+        })
+        .await
+    }
+
+    impl From<(&str, Keys)> for ErasedInputRecord {
+        fn from((value, keys): (&str, Keys)) -> Self {
+            ErasedInputRecord {
+                header: Header::default(),
+                keys,
+                body: Arc::new(value.to_owned()),
+            }
+        }
     }
 }
