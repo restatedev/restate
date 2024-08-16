@@ -8,108 +8,143 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+use anyhow::Result;
+use bytes::BytesMut;
 use futures::StreamExt;
 use hdrhistogram::Histogram;
 use tracing::info;
 
 use restate_bifrost::LogEntry;
 use restate_bifrost::{Bifrost, Error as BifrostError};
-use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
+use restate_core::{cancellation_watcher, TaskCenter, TaskHandle, TaskKind};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, WithKeys};
 
 use crate::util::print_latencies;
 use crate::Arguments;
 
 #[derive(Debug, Clone, clap::Parser)]
-pub struct WriteToReadOpts {}
+pub struct WriteToReadOpts {
+    /// Maximum number of records to be written to bifrost loglet on every append attempt.
+    #[clap(long, default_value = "2000")]
+    max_batch_size: usize,
+
+    /// Number of records that can be buffered in background appender before back-pressure kicks
+    /// in.
+    #[clap(long, default_value = "5000")]
+    write_buffer_size: usize,
+
+    /// The number of records to write during this test
+    #[clap(long, default_value = "400000")]
+    num_records: usize,
+
+    /// The payload size of each record in bytes. Default is 500 bytes
+    #[clap(long, default_value = "500")]
+    payload_size: usize,
+}
 
 pub async fn run(
     _common_args: &Arguments,
-    _args: &WriteToReadOpts,
+    args: &WriteToReadOpts,
     tc: TaskCenter,
     bifrost: Bifrost,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let log_id = LogId::from(0);
-    let clock = quanta::Clock::new();
     // Create two tasks, one that writes to the log continously and another one that reads from the
     // log and measures the latency. Collect latencies in a histogram and print the histogram
     // before the test ends.
-    let reader_task = tc.spawn(TaskKind::TestRunner, "test-log-reader", None, {
-        let bifrost = bifrost.clone();
-        let clock = clock.clone();
-        async move {
-            let mut read_stream =
-                bifrost.create_reader(log_id, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
-            let mut counter = 0;
-            let mut cancel = std::pin::pin!(cancellation_watcher());
-            let mut lag_latencies = Histogram::<u64>::new(3)?;
-            let mut on_record = |record: Result<LogEntry, BifrostError>| {
-                if let Ok(record) = record {
-                    let data = record.try_decode::<String>().expect("data record")?;
-                    let latency_raw: u64 = data.parse()?;
-                    let latency = clock.scaled(latency_raw).elapsed();
-                    lag_latencies.record(latency.as_nanos() as u64)?;
-                } else {
-                    panic!("Unexpected error");
-                }
-                anyhow::Ok(())
-            };
-            loop {
-                counter += 1;
-                tokio::select! {
-                    _ = &mut cancel =>  {
-                        // test is over. print histogram
-                        info!("Reader stopping");
-                        break;
+    let reader_task: TaskHandle<Result<_>> =
+        tc.spawn_unmanaged(TaskKind::TestRunner, "test-log-reader", None, {
+            let args = args.clone();
+            let bifrost = bifrost.clone();
+            async move {
+                let mut read_stream =
+                    bifrost.create_reader(log_id, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
+                let mut cancel = std::pin::pin!(cancellation_watcher());
+                let mut read_latency = Histogram::<u64>::new(3)?;
+                let mut on_record = |record: Result<LogEntry, BifrostError>| {
+                    if let Ok(record) = record {
+                        let record = record.as_record().unwrap();
+                        read_latency.record(record.created_at().elapsed().as_nanos() as u64)?;
+                        //let data = record.decode_arc::<String>().expect("data record")?;
+                    } else {
+                        panic!("Unexpected error");
                     }
-                    record = read_stream.next() => {
-                        let record = record.expect("stream will not terminate");
-                        on_record(record)?;
-                    }
-                }
-                if counter % 1000 == 0 {
-                    info!("Read {} records", counter);
-                }
-            }
-
-            println!("Total records read: {}", counter);
-            print_latencies("read lag", lag_latencies);
-            Ok(())
-        }
-    })?;
-
-    let writer_task = tc.spawn(TaskKind::TestRunner, "test-log-appender", None, {
-        let bifrost = bifrost.clone();
-        let clock = clock.clone();
-        async move {
-            let mut append_latencies = Histogram::<u64>::new(3)?;
-            let mut counter = 0;
-            let mut appender = bifrost.create_appender(log_id)?;
-            loop {
-                counter += 1;
-                let start = Instant::now();
-                let data = clock.raw().to_string().with_no_keys();
-                if appender.append(data).await.is_err() {
-                    println!("Total records written: {}", counter);
-                    print_latencies("append latency", append_latencies);
-                    break;
+                    anyhow::Ok(())
                 };
-
-                append_latencies.record(start.elapsed().as_nanos() as u64)?;
-                if counter % 1000 == 0 {
-                    info!("Appended {} records", counter);
+                let start = Instant::now();
+                for counter in 1..=args.num_records {
+                    tokio::select! {
+                        _ = &mut cancel =>  {
+                            // test is over. print histogram
+                            info!("Reader stopping");
+                            break;
+                        }
+                        record = read_stream.next() => {
+                            let record = record.expect("stream will not terminate");
+                            on_record(record)?;
+                        }
+                    }
+                    if counter % 10000 == 0 {
+                        info!("Read {} records", counter);
+                    }
                 }
+                let total_time = start.elapsed();
+                info!(
+                    "Reader stopped. Total time: {:?}. Read throughput: {} ops/s",
+                    total_time,
+                    args.num_records as f64 / total_time.as_secs_f64(),
+                );
+                Ok(read_latency)
             }
-            anyhow::Ok(())
-        }
-    })?;
+        })?;
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    let writer_task: TaskHandle<Result<_>> =
+        tc.spawn_unmanaged(TaskKind::TestRunner, "test-log-appender", None, {
+            let bifrost = bifrost.clone();
+            let tc = tc.clone();
+            let args = args.clone();
+            let data = BytesMut::zeroed(args.payload_size).freeze().with_no_keys();
+            async move {
+                let mut append_latency = Histogram::<u64>::new(3)?;
+                let appender_handle = bifrost
+                    .create_background_appender(
+                        log_id,
+                        args.write_buffer_size,
+                        args.max_batch_size,
+                    )?
+                    .start(tc, "writer", None)?;
+                let sender = appender_handle.sender();
+                let start = Instant::now();
+                for counter in 1..=args.num_records {
+                    let start = Instant::now();
+                    sender.enqueue(data.clone()).await.unwrap();
 
-    tc.cancel_task(reader_task).unwrap().await?;
-    info!("Reader stopped");
-    let _ = tc.cancel_task(writer_task);
+                    append_latency.record(start.elapsed().as_nanos() as u64)?;
+                    if counter % 10000 == 0 {
+                        info!("Appended {} records", counter);
+                    }
+                }
+                info!("Appender waiting for drain");
+                appender_handle.drain().await?;
+
+                let total_time = start.elapsed();
+                println!(
+                    "Total records written: {}. Total time: {:?}, append throughput: {} ops/s",
+                    args.num_records,
+                    total_time,
+                    args.num_records as f64 / total_time.as_secs_f64(),
+                );
+                Ok(append_latency)
+            }
+        })?;
+
+    let (append_latency, read_latency) = tokio::join!(writer_task, reader_task);
+    let (append_latency, read_latency) = (append_latency??, read_latency??);
+
+    print_latencies("APPEND LATENCY", append_latency);
+    print_latencies("READ LAG", read_latency);
+    tc.shutdown_node("completed", 0).await;
     Ok(())
 }

@@ -254,7 +254,7 @@ impl<T: StorageEncode> WithKeys for T {
 /// or without implementing [`restate_bifrost::HasRecordKeys`] on your message type.
 ///
 /// When reading these records, you must directly decode with the inner type T.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BodyWithKeys<T> {
     inner: T,
     keys: Keys,

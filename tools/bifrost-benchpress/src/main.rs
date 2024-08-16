@@ -47,6 +47,10 @@ fn main() -> anyhow::Result<()> {
         reset_base_temp_dir()
     };
 
+    if rlimit::increase_nofile_limit(u64::MAX).is_err() {
+        eprintln!("WARN: Failed to increase the number of open file descriptors limit.");
+    }
+
     // We capture the absolute path of the config file on startup before we change the current
     // working directory (base-dir arg)
     let config_path = cli_args
