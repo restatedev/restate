@@ -168,7 +168,7 @@ impl MockStateMachine {
 
 type TestResult = Result<(), anyhow::Error>;
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn start_invocation() -> TestResult {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -189,7 +189,7 @@ async fn start_invocation() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn shared_invocation_skips_inbox() -> TestResult {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -238,7 +238,7 @@ async fn shared_invocation_skips_inbox() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn awakeable_completion_received_before_entry() -> TestResult {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -328,7 +328,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn complete_awakeable_with_success() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -376,7 +376,7 @@ async fn complete_awakeable_with_success() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn complete_awakeable_with_failure() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -427,7 +427,7 @@ async fn complete_awakeable_with_failure() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn invoke_with_headers() -> TestResult {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -474,7 +474,7 @@ async fn invoke_with_headers() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn mutate_state() -> anyhow::Result<()> {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -546,7 +546,7 @@ async fn mutate_state() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn clear_all_user_states() -> anyhow::Result<()> {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -588,7 +588,7 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn get_state_keys() -> TestResult {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -634,7 +634,7 @@ async fn get_state_keys() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -766,7 +766,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn truncate_outbox_from_empty() -> Result<(), Error> {
     // An outbox message with index 0 has been successfully processed, and must now be truncated
     let outbox_index = 0;
@@ -801,7 +801,7 @@ async fn truncate_outbox_from_empty() -> Result<(), Error> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn truncate_outbox_with_gap() -> Result<(), Error> {
     // The outbox contains items [3..=5], and the range must be truncated after message 5 is processed
     let outbox_head_index = 3;
@@ -861,7 +861,7 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResult {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())

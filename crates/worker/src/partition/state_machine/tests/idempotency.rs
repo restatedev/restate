@@ -28,7 +28,7 @@ use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
 use test_log::test;
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn start_and_complete_idempotent_invocation() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -143,7 +143,7 @@ async fn start_and_complete_idempotent_invocation() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn start_and_complete_idempotent_invocation_neo_table() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -265,7 +265,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn complete_already_completed_invocation() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -351,7 +351,7 @@ async fn complete_already_completed_invocation() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn known_invocation_id_but_missing_completion() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -422,7 +422,7 @@ async fn known_invocation_id_but_missing_completion() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn attach_with_service_invocation_command_while_executing() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -539,7 +539,7 @@ async fn attach_with_service_invocation_command_while_executing() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn attach_with_send_service_invocation() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -668,7 +668,7 @@ async fn attach_with_send_service_invocation() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn attach_inboxed_with_send_service_invocation() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -786,7 +786,7 @@ async fn attach_inboxed_with_send_service_invocation() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn attach_command() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -900,7 +900,7 @@ async fn attach_command() {
 }
 
 // TODO remove this once we remove the old invocation status table
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn timer_cleanup() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())

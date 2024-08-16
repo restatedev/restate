@@ -22,7 +22,7 @@ use restate_types::journal::enriched::{CallEnrichmentResult, EnrichedEntryHeader
 use restate_types::service_protocol;
 use test_log::test;
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn kill_inboxed_invocation() -> anyhow::Result<()> {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -116,7 +116,7 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn kill_call_tree() -> anyhow::Result<()> {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -231,7 +231,7 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn cancel_invoked_invocation() -> Result<(), Error> {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -366,7 +366,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn cancel_suspended_invocation() -> Result<(), Error> {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())

@@ -16,7 +16,7 @@ use restate_types::time::MillisSinceEpoch;
 use std::time::{Duration, SystemTime};
 use test_log::test;
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn send_with_delay() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -102,7 +102,7 @@ async fn send_with_delay() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn send_with_delay_to_locked_virtual_object() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -208,7 +208,7 @@ async fn send_with_delay_to_locked_virtual_object() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn send_with_delay_and_idempotency_key() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())

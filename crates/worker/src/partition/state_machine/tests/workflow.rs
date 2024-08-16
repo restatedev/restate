@@ -23,7 +23,7 @@ use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
 use test_log::test;
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn start_workflow_method() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -206,7 +206,7 @@ async fn start_workflow_method() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn attach_by_workflow_key() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -365,7 +365,7 @@ async fn attach_by_workflow_key() {
 }
 
 // TODO remove this once we remove the old invocation status table
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn timer_cleanup() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
