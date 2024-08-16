@@ -264,7 +264,7 @@ mod tests {
             ),
         ]);
 
-        tc.spawn_child(
+        tc.spawn(
             TaskKind::Cleaner,
             "cleaner",
             Some(PartitionId::MIN),
