@@ -434,7 +434,7 @@ pub enum LogFormat {
 #[serde(rename_all = "kebab-case")]
 pub struct MetadataStoreClientOptions {
     /// Metadata store server to bootstrap the node from.
-    pub metadata_store_client: MetadataStore,
+    pub metadata_store_client: MetadataStoreClient,
 
     /// # Backoff policy used by the metadata store client
     ///
@@ -457,7 +457,7 @@ pub struct MetadataStoreClientOptions {
         description = "Definition of a bootstrap metadata store"
     )
 )]
-pub enum MetadataStore {
+pub enum MetadataStoreClient {
     /// Connects to an embedded metadata store that is run by nodes that run with the MetadataStore role.
     Embedded {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
@@ -474,7 +474,7 @@ pub enum MetadataStore {
 impl Default for MetadataStoreClientOptions {
     fn default() -> Self {
         Self {
-            metadata_store_client: MetadataStore::Embedded {
+            metadata_store_client: MetadataStoreClient::Embedded {
                 address: "http://127.0.0.1:5123"
                     .parse()
                     .expect("valid metadata store address"),

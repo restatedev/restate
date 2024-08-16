@@ -15,7 +15,7 @@ mod service;
 
 use restate_core::metadata_store::{providers::EtcdMetadataStore, MetadataStoreClient};
 use restate_types::{
-    config::{MetadataStore, MetadataStoreClientOptions},
+    config::{MetadataStoreClient as MetadataStoreClientConfig, MetadataStoreClientOptions},
     errors::GenericError,
 };
 pub use service::LocalMetadataStoreService;
@@ -29,11 +29,11 @@ pub async fn create_client(
     let backoff_policy = Some(metadata_store_client_options.metadata_store_client_backoff_policy);
 
     let client = match metadata_store_client_options.metadata_store_client {
-        MetadataStore::Embedded { address } => {
+        MetadataStoreClientConfig::Embedded { address } => {
             let store = LocalMetadataStoreClient::new(address);
             MetadataStoreClient::new(store, backoff_policy)
         }
-        MetadataStore::Etcd { addresses } => {
+        MetadataStoreClientConfig::Etcd { addresses } => {
             let store = EtcdMetadataStore::new(addresses).await?;
             MetadataStoreClient::new(store, backoff_policy)
         }

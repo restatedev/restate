@@ -4,7 +4,9 @@ use crate::metadata_store::{
 use anyhow::Context;
 use bytes::Bytes;
 use bytestring::ByteString;
-use etcd_client::{Client, Compare, CompareOp, Error as EtcdError, KeyValue, KvClient, Txn, TxnOp};
+use etcd_client::{
+    Client, Compare, CompareOp, Error as EtcdError, GetOptions, KeyValue, KvClient, Txn, TxnOp,
+};
 
 impl From<EtcdError> for ReadError {
     fn from(value: EtcdError) -> Self {
@@ -79,7 +81,7 @@ impl EtcdMetadataStore {
 
     /// deletes a key only if and only if the current value in store
     /// has the exact given version
-    async fn delete_if_has_version(
+    async fn delete_if_version_matches(
         &self,
         client: &mut KvClient,
         key: Bytes,
@@ -100,7 +102,7 @@ impl EtcdMetadataStore {
 
     /// puts a key/value if and only if the current value in store
     /// has the exact given version
-    async fn put_if_has_version(
+    async fn put_if_version_matches(
         &self,
         client: &mut KvClient,
         key: Bytes,
@@ -138,18 +140,14 @@ impl MetadataStore for EtcdMetadataStore {
         let version = (&kv).to_version()?;
         let (_, value) = kv.into_key_value();
 
-        if value.is_empty() {
-            // we keep an empty value in place of
-            // deleted keys to work around the version limitation
-            return Ok(None);
-        }
-
         Ok(Some(VersionedValue::new(version, value.into())))
     }
 
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
         let mut client = self.client.kv_client();
-        let mut response = client.get(key.into_bytes(), None).await?;
+        let mut response = client
+            .get(key.into_bytes(), Some(GetOptions::new().with_keys_only()))
+            .await?;
 
         // return first value because this suppose to be an exact match
         // not a scan
@@ -160,13 +158,6 @@ impl MetadataStore for EtcdMetadataStore {
 
         // please read todo! on implementation of .to_version()
         let version = (&kv).to_version()?;
-        let (_, value) = kv.into_key_value();
-
-        if value.is_empty() {
-            // we keep an empty value in place of deleted
-            // keys to work around the version limitation
-            return Ok(None);
-        }
 
         Ok(Some(version))
     }
@@ -184,7 +175,7 @@ impl MetadataStore for EtcdMetadataStore {
             }
             Precondition::DoesNotExist => {
                 if !self
-                    .put_if_has_version(&mut client, key.into_bytes(), value.value, 0)
+                    .put_if_version_matches(&mut client, key.into_bytes(), value.value, 0)
                     .await?
                 {
                     // pre condition failed.
@@ -195,7 +186,7 @@ impl MetadataStore for EtcdMetadataStore {
             }
             Precondition::MatchesVersion(version) => {
                 if !self
-                    .put_if_has_version(
+                    .put_if_version_matches(
                         &mut client,
                         key.into_bytes(),
                         value.value,
@@ -221,7 +212,7 @@ impl MetadataStore for EtcdMetadataStore {
             }
             Precondition::DoesNotExist => {
                 if !self
-                    .delete_if_has_version(&mut client, key.into_bytes(), 0)
+                    .delete_if_version_matches(&mut client, key.into_bytes(), 0)
                     .await?
                 {
                     // pre condition failed.
@@ -232,7 +223,11 @@ impl MetadataStore for EtcdMetadataStore {
             }
             Precondition::MatchesVersion(version) => {
                 if !self
-                    .delete_if_has_version(&mut client, key.into_bytes(), u32::from(version) as i64)
+                    .delete_if_version_matches(
+                        &mut client,
+                        key.into_bytes(),
+                        u32::from(version) as i64,
+                    )
                     .await?
                 {
                     return Err(WriteError::FailedPrecondition(
