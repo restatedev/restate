@@ -1778,7 +1778,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     result: result.clone(),
                 })).await?,
                 ServiceInvocationResponseSink::Ingress { node_id, request_id } => {
-                    self.ingress_response(ctx, IngressResponseEnvelope{ target_node: node_id, inner: ingress::InvocationResponse {
+                    Self::send_ingress_response(ctx, IngressResponseEnvelope{ target_node: node_id, inner: ingress::InvocationResponse {
                         request_id,
                         invocation_id,
                         response: match result.clone() {
@@ -2383,7 +2383,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
         }
 
-        Self::do_append_journal_entry(
+        Self::append_journal_entry(
             ctx,
             invocation_id,
             InvocationStatus::Invoked(invocation_metadata),
@@ -2391,7 +2391,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             journal_entry,
         )
         .await?;
-        Self::do_send_stored_entry_ack_to_invoker(ctx, invocation_id, entry_index);
+        ctx.action_collector.push(Action::AckStoredEntry {
+            invocation_id,
+            entry_index,
+        });
 
         Ok(())
     }
@@ -2495,13 +2498,29 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         creation_time: MillisSinceEpoch,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {
-        Self::do_trace_invocation_result(
-            ctx,
-            (invocation_id, invocation_target),
-            creation_time,
-            span_context,
-            result,
-        )
+        let (result, error) = match result {
+            Ok(_) => ("Success", false),
+            Err(_) => ("Failure", true),
+        };
+
+        info_span_if_leader!(
+            ctx.is_leader,
+            span_context.is_sampled(),
+            span_context.causing_span_relation(),
+            "invoke",
+            otel.name = format!("invoke {invocation_target}"),
+            rpc.service = %invocation_target.service_name(),
+            rpc.method = %invocation_target.handler_name(),
+            restate.invocation.id = %invocation_id,
+            restate.invocation.target = %invocation_target,
+            restate.invocation.result = result,
+            error = error, // jaeger uses this tag to show an error icon
+            // without converting to i64 this field will encode as a string
+            // however, overflowing i64 seems unlikely
+            restate.internal.start_time = i64::try_from(creation_time.as_u64()).expect("creation time should fit into i64"),
+            restate.internal.span_id = %span_context.span_context().span_id(),
+            restate.internal.trace_id = %span_context.span_context().trace_id()
+        );
     }
 
     async fn handle_outgoing_message<State: StateStorage>(
@@ -2630,12 +2649,34 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    fn ingress_response<State>(
-        &mut self,
+    fn send_ingress_response<State>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         ingress_response: IngressResponseEnvelope<ingress::InvocationResponse>,
     ) {
-        Self::do_ingress_response(ctx, ingress_response);
+        match &ingress_response.inner {
+            ingress::InvocationResponse {
+                response: IngressResponseResult::Success(_, _),
+                request_id,
+                ..
+            } => debug_if_leader!(
+                ctx.is_leader,
+                "Effect: Send response with ingress request id {:?} to ingress: Success",
+                request_id
+            ),
+            ingress::InvocationResponse {
+                response: IngressResponseResult::Failure(e),
+                request_id,
+                ..
+            } => debug_if_leader!(
+                ctx.is_leader,
+                "Effect: Send response with ingress request id {:?} to ingress: Failure({})",
+                request_id,
+                e
+            ),
+        };
+
+        ctx.action_collector
+            .push(Action::IngressResponse(ingress_response));
     }
 
     // Gets the invocation status from storage and also adds tracing info to effects
@@ -3089,13 +3130,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn do_append_journal_entry<S: StateStorage>(
+    async fn append_journal_entry<S: StateStorage>(
         ctx: &mut StateMachineApplyContext<'_, S>,
         invocation_id: InvocationId,
         // We pass around the invocation_status here to avoid an additional read.
         // We could in theory get rid of this here (and in other places, such as StoreDeploymentId),
         // by using a merge operator in rocksdb.
-        previous_invocation_status: InvocationStatus,
+        mut previous_invocation_status: InvocationStatus,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) -> Result<(), Error> {
@@ -3103,18 +3144,34 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             ctx.is_leader,
             restate.journal.index = entry_index,
             restate.invocation.id = %invocation_id,
-            "Effect: Write journal entry {:?} to storage",
+            "Write journal entry {:?} to storage",
             journal_entry.header().as_entry_type()
         );
 
-        Self::append_journal_entry(
-            ctx.storage,
-            invocation_id,
-            previous_invocation_status,
-            entry_index,
-            journal_entry,
-        )
-        .await?;
+        // Store journal entry
+        ctx.storage
+            .store_journal_entry(&invocation_id, entry_index, journal_entry)
+            .await?;
+
+        // update the journal metadata length
+        let journal_meta = previous_invocation_status
+            .get_journal_metadata_mut()
+            .expect("At this point there must be a journal");
+        debug_assert_eq!(
+            journal_meta.length, entry_index,
+            "journal should not have gaps"
+        );
+        journal_meta.length = entry_index + 1;
+
+        // Update timestamps
+        if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
+            timestamps.update();
+        }
+
+        // Store invocation status
+        ctx.storage
+            .store_invocation_status(&invocation_id, previous_invocation_status)
+            .await?;
 
         Ok(())
     }
@@ -3258,38 +3315,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    fn do_trace_invocation_result<S>(
-        ctx: &mut StateMachineApplyContext<'_, S>,
-        (invocation_id, invocation_target): InvocationIdAndTarget,
-        creation_time: MillisSinceEpoch,
-        span_context: ServiceInvocationSpanContext,
-        result: Result<(), (InvocationErrorCode, String)>,
-    ) {
-        let (result, error) = match result {
-            Ok(_) => ("Success", false),
-            Err(_) => ("Failure", true),
-        };
-
-        info_span_if_leader!(
-            ctx.is_leader,
-            span_context.is_sampled(),
-            span_context.causing_span_relation(),
-            "invoke",
-            otel.name = format!("invoke {invocation_target}"),
-            rpc.service = %invocation_target.service_name(),
-            rpc.method = %invocation_target.handler_name(),
-            restate.invocation.id = %invocation_id,
-            restate.invocation.target = %invocation_target,
-            restate.invocation.result = result,
-            error = error, // jaeger uses this tag to show an error icon
-            // without converting to i64 this field will encode as a string
-            // however, overflowing i64 seems unlikely
-            restate.internal.start_time = i64::try_from(creation_time.as_u64()).expect("creation time should fit into i64"),
-            restate.internal.span_id = %span_context.span_context().span_id(),
-            restate.internal.trace_id = %span_context.span_context().trace_id()
-        );
-    }
-
     fn do_trace_background_invoke<S>(
         ctx: &mut StateMachineApplyContext<'_, S>,
         (invocation_id, invocation_target): InvocationIdAndTarget,
@@ -3339,17 +3364,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .push(Action::AbortInvocation(invocation_id));
     }
 
-    fn do_send_stored_entry_ack_to_invoker<S>(
-        ctx: &mut StateMachineApplyContext<'_, S>,
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-    ) {
-        ctx.action_collector.push(Action::AckStoredEntry {
-            invocation_id,
-            entry_index,
-        });
-    }
-
     async fn do_mutate_state<S: StateStorage>(
         ctx: &mut StateMachineApplyContext<'_, S>,
         state_mutation: ExternalStateMutation,
@@ -3363,36 +3377,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Self::mutate_state(ctx.storage, state_mutation).await?;
 
         Ok(())
-    }
-
-    fn do_ingress_response<S>(
-        ctx: &mut StateMachineApplyContext<'_, S>,
-        ingress_response: IngressResponseEnvelope<ingress::InvocationResponse>,
-    ) {
-        match &ingress_response.inner {
-            ingress::InvocationResponse {
-                response: IngressResponseResult::Success(_, _),
-                request_id,
-                ..
-            } => debug_if_leader!(
-                ctx.is_leader,
-                "Effect: Send response with ingress request id {:?} to ingress: Success",
-                request_id
-            ),
-            ingress::InvocationResponse {
-                response: IngressResponseResult::Failure(e),
-                request_id,
-                ..
-            } => debug_if_leader!(
-                ctx.is_leader,
-                "Effect: Send response with ingress request id {:?} to ingress: Failure({})",
-                request_id,
-                e
-            ),
-        };
-
-        ctx.action_collector
-            .push(Action::IngressResponse(ingress_response));
     }
 
     async fn do_put_promise<S: PromiseTable>(
@@ -3501,41 +3485,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 .await?;
             Ok(false)
         }
-    }
-
-    async fn append_journal_entry<S: StateStorage>(
-        state_storage: &mut S,
-        invocation_id: InvocationId,
-        mut previous_invocation_status: InvocationStatus,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    ) -> Result<(), Error> {
-        // Store journal entry
-        state_storage
-            .store_journal_entry(&invocation_id, entry_index, journal_entry)
-            .await?;
-
-        // update the journal metadata length
-        let journal_meta = previous_invocation_status
-            .get_journal_metadata_mut()
-            .expect("At this point there must be a journal");
-        debug_assert_eq!(
-            journal_meta.length, entry_index,
-            "journal should not have gaps"
-        );
-        journal_meta.length = entry_index + 1;
-
-        // Update timestamps
-        if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
-            timestamps.update();
-        }
-
-        // Store invocation status
-        state_storage
-            .store_invocation_status(&invocation_id, previous_invocation_status)
-            .await?;
-
-        Ok(())
     }
 }
 
