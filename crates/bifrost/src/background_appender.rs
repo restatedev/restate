@@ -230,9 +230,7 @@ impl<T: StorageEncode> LogSender<T> {
     {
         let permit = match self.tx.try_reserve() {
             Ok(permit) => permit,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                return Err(EnqueueError::WouldBlock(record))
-            }
+            Err(mpsc::error::TrySendError::Full(_)) => return Err(EnqueueError::Full(record)),
             Err(mpsc::error::TrySendError::Closed(_)) => return Err(EnqueueError::Closed(record)),
         };
 
@@ -251,9 +249,7 @@ impl<T: StorageEncode> LogSender<T> {
     {
         let permit = match self.tx.try_reserve() {
             Ok(permit) => permit,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                return Err(EnqueueError::WouldBlock(record))
-            }
+            Err(mpsc::error::TrySendError::Full(_)) => return Err(EnqueueError::Full(record)),
             Err(mpsc::error::TrySendError::Closed(_)) => return Err(EnqueueError::Closed(record)),
         };
 
@@ -290,9 +286,7 @@ impl<T: StorageEncode> LogSender<T> {
     {
         let permits = match self.tx.try_reserve_many(records.len()) {
             Ok(permit) => permit,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                return Err(EnqueueError::WouldBlock(records))
-            }
+            Err(mpsc::error::TrySendError::Full(_)) => return Err(EnqueueError::Full(records)),
             Err(mpsc::error::TrySendError::Closed(_)) => return Err(EnqueueError::Closed(records)),
         };
 
