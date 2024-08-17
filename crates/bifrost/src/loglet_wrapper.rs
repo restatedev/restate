@@ -13,20 +13,18 @@ use std::task::Poll;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 
+use restate_core::ShutdownError;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
 use tracing::instrument;
 
 use crate::loglet::{
-    AppendError, Loglet, LogletBase, LogletOffset, LogletReadStream, OperationError,
-    SendableLogletReadStream,
+    AppendError, Loglet, LogletOffset, LogletReadStream, OperationError, SendableLogletReadStream,
 };
 use crate::record::ErasedInputRecord;
-use crate::{LogEntry, LsnExt};
+use crate::{Commit, LogEntry, LsnExt};
 use crate::{Result, TailState};
 
 #[cfg(any(test, feature = "test-util"))]
@@ -75,7 +73,7 @@ impl LogletWrapper {
         self.segment_index
     }
 
-    pub async fn create_wrapped_read_stream(
+    pub async fn create_read_stream(
         self,
         filter: KeyFilter,
         start_lsn: Lsn,
@@ -114,7 +112,7 @@ impl LogletWrapper {
     pub async fn read(&self, from: Lsn) -> Result<LogEntry<Lsn>, OperationError> {
         let mut stream = self
             .clone()
-            .create_wrapped_read_stream(KeyFilter::Any, from)
+            .create_read_stream(KeyFilter::Any, from)
             .await?;
         stream.next().await.unwrap_or_else(|| {
             // We are trying to read past the the last record.
@@ -140,56 +138,23 @@ impl LogletWrapper {
             .await?;
         stream.next().await.transpose()
     }
-}
 
-impl PartialEq for LogletWrapper {
-    fn eq(&self, other: &Self) -> bool {
-        self.segment_index == other.segment_index
-    }
-}
-
-#[async_trait]
-impl LogletBase for LogletWrapper {
-    type Offset = Lsn;
-
-    /// This should never be used directly. Instead, use `create_wrapped_read_stream()` instead.
-    async fn create_read_stream(
-        self: Arc<Self>,
-        _filter: KeyFilter,
-        _after: Self::Offset,
-        _to: Option<Self::Offset>,
-    ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {
-        unreachable!("create_read_stream on LogletWrapper should never be used directly")
+    #[allow(unused)]
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn append(&self, payload: ErasedInputRecord) -> Result<Lsn, AppendError> {
+        let commit = self
+            .enqueue_batch(Arc::new([payload]))
+            .await
+            .map_err(AppendError::Shutdown)?;
+        commit.await
     }
 
-    #[instrument(
-        level = "trace",
-        skip(self),
-        ret,
-        fields(
-            segment_index = %self.segment_index,
-            loglet = ?self.loglet,
-        )
-    )]
-    async fn append(&self, record: ErasedInputRecord) -> Result<Lsn, AppendError> {
-        if self.tail_lsn.is_some() {
-            return Err(AppendError::Sealed);
-        }
-
-        let offset = self.loglet.append(record).await?;
-        // Return the LSN given the loglet offset.
-        Ok(self.base_lsn.offset_by(offset))
-    }
-
-    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {
+    pub fn watch_tail(&self) -> impl Stream<Item = TailState<Lsn>> {
         let base_lsn = self.base_lsn;
-        self.loglet
-            .watch_tail()
-            .map(move |tail_state| {
-                let offset = std::cmp::max(tail_state.offset(), LogletOffset::OLDEST);
-                TailState::new(tail_state.is_sealed(), base_lsn.offset_by(offset))
-            })
-            .boxed()
+        self.loglet.watch_tail().map(move |tail_state| {
+            let offset = std::cmp::max(tail_state.offset(), LogletOffset::OLDEST);
+            TailState::new(tail_state.is_sealed(), base_lsn.offset_by(offset))
+        })
     }
 
     #[instrument(
@@ -202,15 +167,28 @@ impl LogletBase for LogletWrapper {
             count = payloads.len(),
         )
     )]
-    async fn append_batch(&self, payloads: Arc<[ErasedInputRecord]>) -> Result<Lsn, AppendError> {
-        if self.tail_lsn.is_some() {
-            return Err(AppendError::Sealed);
-        }
-        let offset = self.loglet.append_batch(payloads).await?;
-        Ok(self.base_lsn.offset_by(offset))
+    pub async fn append_batch(
+        &self,
+        payloads: Arc<[ErasedInputRecord]>,
+    ) -> Result<Lsn, AppendError> {
+        self.enqueue_batch(payloads)
+            .await
+            .map_err(AppendError::Shutdown)?
+            .await
     }
 
-    async fn find_tail(&self) -> Result<TailState<Lsn>, OperationError> {
+    pub async fn enqueue_batch(
+        &self,
+        payloads: Arc<[ErasedInputRecord]>,
+    ) -> Result<Commit, ShutdownError> {
+        if self.tail_lsn.is_some() {
+            return Ok(Commit::sealed());
+        }
+        let commit = self.loglet.enqueue_batch(payloads).await?;
+        Ok(Commit::passthrough(self.base_lsn, commit))
+    }
+
+    pub async fn find_tail(&self) -> Result<TailState<Lsn>, OperationError> {
         if let Some(tail) = self.tail_lsn {
             return Ok(TailState::Sealed(tail));
         }
@@ -222,27 +200,33 @@ impl LogletBase for LogletWrapper {
             .map(|o| self.base_lsn.offset_by(o)))
     }
 
-    async fn get_trim_point(&self) -> Result<Option<Lsn>, OperationError> {
+    pub async fn get_trim_point(&self) -> Result<Option<Lsn>, OperationError> {
         let offset = self.loglet.get_trim_point().await?;
         Ok(offset.map(|o| self.base_lsn.offset_by(o)))
     }
 
     // trim_point is inclusive.
-    async fn trim(&self, trim_point: Self::Offset) -> Result<(), OperationError> {
+    pub async fn trim(&self, trim_point: Lsn) -> Result<(), OperationError> {
         // trimming to INVALID is no-op
-        if trim_point == Self::Offset::INVALID {
+        if trim_point == Lsn::INVALID {
             return Ok(());
         }
         let trim_point = trim_point.into_offset(self.base_lsn);
         self.loglet.trim(trim_point).await
     }
 
-    async fn seal(&self) -> Result<(), OperationError> {
+    pub async fn seal(&self) -> Result<(), OperationError> {
         if self.tail_lsn.is_some() {
             return Ok(());
         }
 
         self.loglet.seal().await
+    }
+}
+
+impl PartialEq for LogletWrapper {
+    fn eq(&self, other: &Self) -> bool {
+        self.segment_index == other.segment_index
     }
 }
 

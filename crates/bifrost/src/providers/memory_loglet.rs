@@ -28,8 +28,8 @@ use restate_types::storage::PolyBytes;
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
-    AppendError, Loglet, LogletBase, LogletOffset, LogletProvider, LogletProviderFactory,
-    LogletReadStream, OperationError, SendableLogletReadStream,
+    Loglet, LogletCommit, LogletOffset, LogletProvider, LogletProviderFactory, LogletReadStream,
+    OperationError, SendableLogletReadStream,
 };
 use crate::record::ErasedInputRecord;
 use crate::Record;
@@ -316,31 +316,29 @@ impl Stream for MemoryReadStream {
 }
 
 #[async_trait]
-impl LogletBase for MemoryLoglet {
-    type Offset = LogletOffset;
-
+impl Loglet for MemoryLoglet {
     async fn create_read_stream(
         self: Arc<Self>,
         filter: KeyFilter,
-        from: Self::Offset,
-        to: Option<Self::Offset>,
-    ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {
+        from: LogletOffset,
+        to: Option<LogletOffset>,
+    ) -> Result<SendableLogletReadStream<LogletOffset>, OperationError> {
         Ok(Box::pin(
             MemoryReadStream::create(self, filter, from, to).await,
         ))
     }
 
-    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {
+    fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn append_batch(
+    async fn enqueue_batch(
         &self,
         payloads: Arc<[ErasedInputRecord]>,
-    ) -> Result<LogletOffset, AppendError> {
+    ) -> Result<LogletCommit, ShutdownError> {
         let mut log = self.log.lock().unwrap();
         if self.sealed.load(Ordering::Relaxed) {
-            return Err(AppendError::Sealed);
+            return Ok(LogletCommit::sealed());
         }
         let mut last_committed_offset =
             LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
@@ -355,7 +353,7 @@ impl LogletBase for MemoryLoglet {
         }
         // mark as committed immediately.
         self.advance_commit_offset(last_committed_offset);
-        Ok(last_committed_offset)
+        Ok(LogletCommit::resolved(last_committed_offset))
     }
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
@@ -381,7 +379,7 @@ impl LogletBase for MemoryLoglet {
         }
     }
 
-    async fn trim(&self, new_trim_point: Self::Offset) -> Result<(), OperationError> {
+    async fn trim(&self, new_trim_point: LogletOffset) -> Result<(), OperationError> {
         let mut log = self.log.lock().unwrap();
         let actual_trim_point = new_trim_point.min(LogletOffset(
             self.last_committed_offset.load(Ordering::Relaxed),

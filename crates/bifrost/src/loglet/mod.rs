@@ -18,13 +18,16 @@ pub(crate) mod util;
 pub use error::*;
 use futures::stream::BoxStream;
 pub use provider::{LogletProvider, LogletProviderFactory};
+use restate_core::ShutdownError;
+use tokio::sync::oneshot;
 
 use std::ops::Add;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{ready, Poll};
 
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{FutureExt, Stream};
 
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
 
@@ -101,16 +104,12 @@ impl SequenceNumber for LogletOffset {
 ///                      ^ Last Committed
 ///                      ^  -- Last released (optional and internal)
 ///
-///       1 -> Offset::OLDEST
-///       0 -> Offset::INVALID
+///       1 -> LogletOffset::OLDEST
+///       0 -> LogletOffset::INVALID
 /// ```
-pub trait Loglet: LogletBase<Offset = LogletOffset> {}
-impl<T> Loglet for T where T: LogletBase<Offset = LogletOffset> {}
 
 #[async_trait]
-pub trait LogletBase: Send + Sync + std::fmt::Debug {
-    type Offset: SequenceNumber;
-
+pub trait Loglet: Send + Sync + std::fmt::Debug {
     /// Create a read stream that streams record from a single loglet instance.
     ///
     /// `to`: The offset of the last record to be read (inclusive). If `None`, the
@@ -118,14 +117,9 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     async fn create_read_stream(
         self: Arc<Self>,
         filter: KeyFilter,
-        from: Self::Offset,
-        to: Option<Self::Offset>,
-    ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError>;
-
-    /// Append a record to the loglet.
-    async fn append(&self, record: ErasedInputRecord) -> Result<Self::Offset, AppendError> {
-        self.append_batch(Arc::new([record])).await
-    }
+        from: LogletOffset,
+        to: Option<LogletOffset>,
+    ) -> Result<SendableLogletReadStream<LogletOffset>, OperationError>;
 
     /// Create a stream watching the state of tail for this loglet
     ///
@@ -138,14 +132,29 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     /// point at which readers should stop **before**, therefore, when reading, if the next offset
     /// to read == the tail, it means that you can only read this offset if the tail watch moves
     /// beyond it to a higher tail while remaining unsealed.
-    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>>;
+    fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>>;
 
-    /// Append a batch of records to the loglet. The returned offset (on success) is the offset of
-    /// the last committed record in the batch)
-    async fn append_batch(
+    /// Enqueues a batch of records for the loglet to write. This function blocks when the loglet cannot
+    /// accept this batch as a form of back-pressure. Once the batch is accepted, it will be committed
+    /// in the background and the caller doesn't need to await for the commit status.
+    ///
+    /// That said, if commit confirmation is needed, use the returned future `LogletCommit` to wait
+    /// for commit completion and to acquire the **last offset** in that batch.
+    ///
+    /// Note: For pipelined writes. The order of records/batches is determined by the order of
+    /// calling this function from a single source. The user must wait for this function to return
+    /// before appending the next batch in a stream of ordered records.
+    ///
+    /// However, awaiting the returned `LogletCommit` is optional and can happen concurrently and in
+    /// any order. In the case of pipelined writes, loglets must acknowledge writes
+    /// only after all previously enqueued writes have been durably committed. The loglet should
+    /// retry failing appends indefinitely until the loglet is sealed. In that case, such commits
+    /// might still appear to future readers but without returning the commit acknowledgement to
+    /// the original writer.
+    async fn enqueue_batch(
         &self,
         payloads: Arc<[ErasedInputRecord]>,
-    ) -> Result<Self::Offset, AppendError>;
+    ) -> Result<LogletCommit, ShutdownError>;
 
     /// The tail is *the first unwritten position* in the loglet.
     ///
@@ -154,12 +163,12 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     /// after the next `append()` call.
     ///
     /// If the loglet is empty, the loglet should return TailState::Open(Offset::OLDEST).
-    async fn find_tail(&self) -> Result<TailState<Self::Offset>, OperationError>;
+    async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError>;
 
     /// The offset of the slot **before** the first readable record (if it exists), or the offset
     /// before the next slot that will be written to. Must not return Self::INVALID. If the loglet
     /// is never trimmed, this must return `None`.
-    async fn get_trim_point(&self) -> Result<Option<Self::Offset>, OperationError>;
+    async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError>;
 
     /// Trim the loglet prefix up to and including the `trim_point`.
     /// If trim_point equal or higher than the loglet tail, the loglet trims its data until the tail.
@@ -169,7 +178,7 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     ///
     /// Passing `Offset::INVALID` is a no-op. (success)
     /// Passing `Offset::OLDEST` trims the first record in the loglet (if exists).
-    async fn trim(&self, trim_point: Self::Offset) -> Result<(), OperationError>;
+    async fn trim(&self, trim_point: LogletOffset) -> Result<(), OperationError>;
 
     /// Seal the loglet. This operation is idempotent.
     ///
@@ -190,3 +199,35 @@ pub trait LogletReadStream<S: SequenceNumber>:
 }
 
 pub type SendableLogletReadStream<S = Lsn> = Pin<Box<dyn LogletReadStream<S> + Send>>;
+
+pub struct LogletCommit {
+    rx: oneshot::Receiver<Result<LogletOffset, AppendError>>,
+}
+
+impl LogletCommit {
+    pub(crate) fn sealed() -> Self {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(Err(AppendError::Sealed));
+        Self { rx }
+    }
+
+    pub(crate) fn resolved(offset: LogletOffset) -> Self {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(Ok(offset));
+        Self { rx }
+    }
+}
+
+impl std::future::Future for LogletCommit {
+    type Output = Result<LogletOffset, AppendError>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Self::Output> {
+        match ready!(self.rx.poll_unpin(cx)) {
+            Ok(res) => Poll::Ready(res),
+            Err(_) => Poll::Ready(Err(AppendError::Shutdown(ShutdownError))),
+        }
+    }
+}
