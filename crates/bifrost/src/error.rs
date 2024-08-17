@@ -45,7 +45,7 @@ pub enum Error {
 #[derive(thiserror::Error, Debug)]
 pub enum EnqueueError<T> {
     #[error("the operation rejected due to backpressure")]
-    WouldBlock(T),
+    Full(T),
     #[error("appender is draining, closed, or crashed")]
     Closed(T),
 }
