@@ -34,9 +34,7 @@ use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
 use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::{
-    AppendError, LogletBase, LogletOffset, OperationError, SendableLogletReadStream,
-};
+use crate::loglet::{AppendError, Loglet, LogletOffset, OperationError, SendableLogletReadStream};
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
@@ -122,21 +120,19 @@ impl LocalLoglet {
 }
 
 #[async_trait]
-impl LogletBase for LocalLoglet {
-    type Offset = LogletOffset;
-
+impl Loglet for LocalLoglet {
     async fn create_read_stream(
         self: Arc<Self>,
         filter: KeyFilter,
-        from: Self::Offset,
-        to: Option<Self::Offset>,
-    ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {
+        from: LogletOffset,
+        to: Option<LogletOffset>,
+    ) -> Result<SendableLogletReadStream<LogletOffset>, OperationError> {
         Ok(Box::pin(
             LocalLogletReadStream::create(self, filter, from, to).await?,
         ))
     }
 
-    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {
+    fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
         Box::pin(self.tail_watch.to_stream())
     }
 
@@ -206,7 +202,7 @@ impl LogletBase for LocalLoglet {
         })
     }
 
-    async fn get_trim_point(&self) -> Result<Option<Self::Offset>, OperationError> {
+    async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
         let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
 
         if current_trim_point == LogletOffset::INVALID {
@@ -218,7 +214,7 @@ impl LogletBase for LocalLoglet {
 
     /// Trim the log to the minimum of new_trim_point and last_committed_offset
     /// new_trim_point is inclusive (will be trimmed)
-    async fn trim(&self, new_trim_point: Self::Offset) -> Result<(), OperationError> {
+    async fn trim(&self, new_trim_point: LogletOffset) -> Result<(), OperationError> {
         let effective_trim_point = new_trim_point.min(LogletOffset(
             self.last_committed_offset.load(Ordering::Relaxed),
         ));
