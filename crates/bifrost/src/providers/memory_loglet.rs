@@ -28,8 +28,8 @@ use restate_types::storage::PolyBytes;
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
-    AppendError, Loglet, LogletBase, LogletOffset, LogletProvider, LogletProviderFactory,
-    LogletReadStream, OperationError, SendableLogletReadStream,
+    AppendError, Loglet, LogletOffset, LogletProvider, LogletProviderFactory, LogletReadStream,
+    OperationError, SendableLogletReadStream,
 };
 use crate::record::ErasedInputRecord;
 use crate::Record;
@@ -316,21 +316,19 @@ impl Stream for MemoryReadStream {
 }
 
 #[async_trait]
-impl LogletBase for MemoryLoglet {
-    type Offset = LogletOffset;
-
+impl Loglet for MemoryLoglet {
     async fn create_read_stream(
         self: Arc<Self>,
         filter: KeyFilter,
-        from: Self::Offset,
-        to: Option<Self::Offset>,
-    ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {
+        from: LogletOffset,
+        to: Option<LogletOffset>,
+    ) -> Result<SendableLogletReadStream<LogletOffset>, OperationError> {
         Ok(Box::pin(
             MemoryReadStream::create(self, filter, from, to).await,
         ))
     }
 
-    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {
+    fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
         Box::pin(self.tail_watch.to_stream())
     }
 
@@ -381,7 +379,7 @@ impl LogletBase for MemoryLoglet {
         }
     }
 
-    async fn trim(&self, new_trim_point: Self::Offset) -> Result<(), OperationError> {
+    async fn trim(&self, new_trim_point: LogletOffset) -> Result<(), OperationError> {
         let mut log = self.log.lock().unwrap();
         let actual_trim_point = new_trim_point.min(LogletOffset(
             self.last_committed_offset.load(Ordering::Relaxed),

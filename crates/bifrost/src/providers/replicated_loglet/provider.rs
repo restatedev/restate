@@ -74,7 +74,7 @@ impl LogletProvider for ReplicatedLogletProvider {
         _log_id: LogId,
         _segment_index: SegmentIndex,
         _params: &LogletParams,
-    ) -> Result<Arc<dyn Loglet<Offset = LogletOffset>>, Error> {
+    ) -> Result<Arc<dyn Loglet>, Error> {
         todo!("Not implemented yet")
     }
 

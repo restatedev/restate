@@ -21,7 +21,7 @@ use restate_types::logs::{LogId, Lsn};
 use restate_types::retries::RetryIter;
 
 use crate::bifrost::BifrostInner;
-use crate::loglet::{AppendError, LogletBase};
+use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::record::ErasedInputRecord;
 use crate::{Error, InputRecord, Result};
