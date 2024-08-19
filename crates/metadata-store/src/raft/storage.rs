@@ -125,9 +125,7 @@ impl RocksDbStorage {
     fn find_last_index(db: &DB) -> u64 {
         let cf = db.cf_handle(RAFT_CF).expect("RAFT_CF exists");
         let start = Self::raft_entry_key(0);
-        // end is exclusive so switch to the next discriminator
-        let mut end = [0; 9];
-        end[0] = RAFT_ENTRY_DISCRIMINATOR + 1;
+        let end = Self::raft_entry_key(u64::MAX);
 
         let mut options = ReadOptions::default();
         options.set_async_io(true);

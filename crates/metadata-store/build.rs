@@ -21,5 +21,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .protoc_arg("--experimental_allow_proto3_optional")
         .compile_protos(&["./proto/metadata_store_svc.proto"], &["proto"])?;
 
+    tonic_build::configure()
+        .bytes(["."])
+        .file_descriptor_set_path(out_dir.join("raft_metadata_store_svc.bin"))
+        .protoc_arg("--experimental_allow_proto3_optional")
+        .compile_protos(&["./proto/raft_metadata_store_svc.proto"], &["proto"])?;
+
     Ok(())
 }
