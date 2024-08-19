@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::raft::networking::Networking;
 use crate::raft::storage;
 use crate::raft::storage::RocksDbStorage;
 use crate::{
@@ -23,7 +24,8 @@ use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Messa
 use raft::{Config, RawNode};
 use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{Precondition, VersionedValue};
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, RaftOptions, RocksDbOptions};
+use restate_types::live::BoxedLiveLoad;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::{flexbuffers_storage_encode_decode, Version};
 use slog::o;
@@ -64,6 +66,8 @@ pub enum Error {
 pub struct RaftMetadataStore {
     _logger: slog::Logger,
     raw_node: RawNode<RocksDbStorage>,
+    networking: Networking,
+    raft_rx: mpsc::Receiver<Message>,
     tick_interval: time::Interval,
 
     callbacks: HashMap<Ulid, Callback>,
@@ -74,28 +78,38 @@ pub struct RaftMetadataStore {
 }
 
 impl RaftMetadataStore {
-    pub async fn create() -> Result<Self, BuildError> {
+    pub async fn create(
+        raft_options: &RaftOptions,
+        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        mut networking: Networking,
+        raft_rx: mpsc::Receiver<Message>,
+    ) -> Result<Self, BuildError> {
         let (request_tx, request_rx) = mpsc::channel(2);
 
         let config = Config {
-            id: 1,
+            id: raft_options.id,
             ..Default::default()
         };
 
-        let rocksdb_options = Configuration::updateable()
-            .map(|configuration| &configuration.common.rocksdb)
-            .boxed();
         let mut metadata_store_options =
             Configuration::updateable().map(|configuration| &configuration.metadata_store);
-        let mut store =
+        let mut storage =
             RocksDbStorage::create(metadata_store_options.live_load(), rocksdb_options).await?;
-        let conf_state = ConfState::from((vec![1], vec![]));
-        store.store_conf_state(conf_state).await?;
+
+        // todo: Only write configuration on initialization
+        let voters: Vec<_> = raft_options.peers.keys().cloned().collect();
+        let conf_state = ConfState::from((voters, vec![]));
+        storage.store_conf_state(conf_state).await?;
+
+        // todo: Persist address information with configuration
+        for (peer, address) in &raft_options.peers {
+            networking.register_address(*peer, address.clone());
+        }
 
         let drain = TracingSlogDrain;
         let logger = slog::Logger::root(drain, o!());
 
-        let raw_node = RawNode::new(&config, store, &logger)?;
+        let raw_node = RawNode::new(&config, storage, &logger)?;
 
         let mut tick_interval = time::interval(Duration::from_millis(100));
         tick_interval.set_missed_tick_behavior(MissedTickBehavior::Burst);
@@ -104,6 +118,8 @@ impl RaftMetadataStore {
             // we only need to keep it alive
             _logger: logger,
             raw_node,
+            raft_rx,
+            networking,
             tick_interval,
             callbacks: HashMap::default(),
             kv_entries: HashMap::default(),
@@ -123,6 +139,13 @@ impl RaftMetadataStore {
             tokio::select! {
                 _ = &mut cancellation => {
                     break;
+                },
+                raft = self.raft_rx.recv() => {
+                    if let Some(raft) = raft {
+                        self.raw_node.step(raft)?;
+                    } else {
+                        break;
+                    }
                 }
                 Some(request) = self.request_rx.recv() => {
                     // todo: Unclear whether every replica should be allowed to propose. Maybe
@@ -226,8 +249,12 @@ impl RaftMetadataStore {
         self.callbacks.insert(callback.request_id, callback);
     }
 
-    fn send_messages(&self, _messages: Vec<Message>) {
-        // todo: Send messages to other peers
+    fn send_messages(&mut self, messages: Vec<Message>) {
+        for message in messages {
+            if let Err(err) = self.networking.try_send(message) {
+                debug!("failed sending message: {err}");
+            }
+        }
     }
 
     async fn handle_committed_entries(
