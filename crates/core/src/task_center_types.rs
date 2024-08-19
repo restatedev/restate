@@ -77,6 +77,7 @@ pub enum TaskKind {
     IngressServer,
     RoleRunner,
     SystemService,
+    #[strum(props(OnCancel = "abort", runtime = "ingress"))]
     Ingress,
     PartitionProcessor,
     #[strum(props(OnError = "log"))]
