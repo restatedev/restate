@@ -6500,6 +6500,7 @@ dependencies = [
  "bytestring",
  "codederror",
  "derive_builder",
+ "derive_more",
  "flexbuffers",
  "futures",
  "googletest",

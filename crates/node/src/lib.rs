@@ -319,9 +319,13 @@ impl Node {
                     .boxed(),
             )
             .boxed(),
-            Kind::Raft => RaftMetadataStoreService::new(
+            Kind::Raft(_) => RaftMetadataStoreService::new(
                 health_status,
                 updateable_config.clone().map(|c| &c.metadata_store).boxed(),
+                updateable_config
+                    .clone()
+                    .map(|config| &config.metadata_store.rocksdb)
+                    .boxed(),
             )
             .boxed(),
         }
