@@ -8,17 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::grpc::client::GrpcMetadataStoreClient;
 use restate_core::metadata_store::providers::create_object_store_based_meta_store;
 use restate_core::metadata_store::{providers::EtcdMetadataStore, MetadataStoreClient};
+use restate_core::network::NetworkServerBuilder;
+use restate_rocksdb::RocksError;
+use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::health::HealthStatus;
+use restate_types::live::BoxedLiveLoad;
+use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{
     config::{MetadataStoreClient as MetadataStoreClientConfig, MetadataStoreClientOptions},
     errors::GenericError,
 };
 
-use crate::grpc::client::GrpcMetadataStoreClient;
-
 mod store;
 
+use crate::MetadataStoreRunner;
 pub use store::LocalMetadataStore;
 
 /// Creates a [`MetadataStoreClient`] for the [`GrpcMetadataStoreClient`].
@@ -48,6 +54,20 @@ pub async fn create_client(
     };
 
     Ok(client)
+}
+
+pub async fn create_store(
+    metadata_store_options: &MetadataStoreOptions,
+    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    health_status: HealthStatus<MetadataServerStatus>,
+    server_builder: &mut NetworkServerBuilder,
+) -> Result<MetadataStoreRunner<LocalMetadataStore>, RocksError> {
+    let store = LocalMetadataStore::create(metadata_store_options, rocksdb_options).await?;
+    Ok(MetadataStoreRunner::new(
+        store,
+        health_status,
+        server_builder,
+    ))
 }
 
 #[cfg(test)]

@@ -245,9 +245,9 @@ impl Node {
             && config.has_role(Role::HttpIngress)
             // todo remove once the safe fallback version supports the HttpIngress role
             || !config
-                .ingress
-                .experimental_feature_enable_separate_ingress_role
-                && config.has_role(Role::Worker)
+            .ingress
+            .experimental_feature_enable_separate_ingress_role
+            && config.has_role(Role::Worker)
         {
             Some(IngressRole::create(
                 updateable_config
