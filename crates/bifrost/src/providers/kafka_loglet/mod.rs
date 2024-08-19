@@ -26,7 +26,7 @@ use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 use restate_types::config::KafkaLogletOptions;
 use restate_types::flexbuffers_storage_encode_decode;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::{KeyFilter, Keys, LogId, SequenceNumber};
+use restate_types::logs::{KeyFilter, Keys, LogId};
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::{PolyBytes, StorageCodec};
 use std::collections::BTreeMap;
@@ -242,7 +242,28 @@ impl LogletBase for KafkaLoglet {
     }
 
     fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {
-        stream::repeat(TailState::Open(Self::Offset::INVALID)).boxed()
+        let consumer: BaseConsumer =
+            initialize_consumer(&self.client_config, &self.topic, self.partition)
+                .expect("hope that client creation won't fail");
+        let topic = self.topic.clone();
+        let partition = self.partition;
+
+        stream::unfold(consumer, move |consumer| {
+            let topic = topic.clone();
+            async move {
+                loop {
+                    // sleep for a second to not busy polling
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+
+                    if let Ok((_, high)) = consumer.fetch_watermarks(&topic, partition, None) {
+                        let offset = Self::kafka_offset_to_loglet_offset(high)
+                            .expect("Kafka offset to fit into LogletOffset");
+                        return Some((TailState::Open(offset), consumer));
+                    }
+                }
+            }
+        })
+        .boxed()
     }
 
     async fn append_batch(
