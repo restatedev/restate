@@ -23,6 +23,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 derive_builder = { workspace = true }
+derive_more = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }

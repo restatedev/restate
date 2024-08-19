@@ -241,7 +241,9 @@ where
                     }
                 }
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
-                    scheduler.on_cluster_state_update(cluster_state).await?;
+                    if let Err(err) = scheduler.on_cluster_state_update(cluster_state).await {
+                        warn!("Could not perform scheduling operation: {err}");
+                    }
                 }
                 Some(cmd) = self.command_rx.recv() => {
                     self.on_cluster_cmd(cmd, bifrost_admin).await;
