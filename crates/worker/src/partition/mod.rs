@@ -399,6 +399,9 @@ where
                     self.leadership_state.handle_action_effect(action_effects).await?;
                 },
             }
+            // Allow other tasks on this thread to run, but only if we have exhausted the coop
+            // budget.
+            tokio::task::consume_budget().await;
         }
 
         debug!(restate.node = %metadata().my_node_id(), %self.partition_id, "Shutting partition processor down.");
