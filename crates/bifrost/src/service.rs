@@ -22,7 +22,7 @@ use restate_types::logs::metadata::ProviderKind;
 
 use crate::bifrost::BifrostInner;
 use crate::providers::local_loglet;
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(any(test, feature = "memory-loglet"))]
 use crate::providers::memory_loglet;
 use crate::watchdog::{Watchdog, WatchdogCommand};
 use crate::{loglet::LogletProviderFactory, Bifrost};
@@ -60,7 +60,7 @@ impl BifrostService {
         self
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(any(test, feature = "memory-loglet"))]
     pub fn enable_in_memory_loglet(mut self) -> Self {
         let factory = memory_loglet::Factory::default();
         self.factories.insert(factory.kind(), Box::new(factory));
