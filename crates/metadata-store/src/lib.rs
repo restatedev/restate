@@ -16,8 +16,6 @@ mod util;
 
 use crate::grpc::handler::MetadataStoreHandler;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
-use crate::local::LocalMetadataStore;
-use crate::raft::RaftMetadataStore;
 use bytestring::ByteString;
 use restate_core::metadata_store::VersionedValue;
 pub use restate_core::metadata_store::{
@@ -192,13 +190,20 @@ pub async fn create_metadata_store(
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<BoxedMetadataStoreService> {
     match metadata_store_options.kind {
-        Kind::Local => {
-            let store = LocalMetadataStore::create(metadata_store_options, rocksdb_options).await?;
-            Ok(MetadataStoreRunner::new(store, health_status, server_builder).boxed())
-        }
-        Kind::Raft => {
-            let store = RaftMetadataStore::create().await?;
-            Ok(MetadataStoreRunner::new(store, health_status, server_builder).boxed())
+        Kind::Local => local::create_store(
+            metadata_store_options,
+            rocksdb_options,
+            health_status,
+            server_builder,
+        )
+        .await
+        .map_err(anyhow::Error::from)
+        .map(|store| store.boxed()),
+        Kind::Raft(ref raft_options) => {
+            raft::create_store(raft_options, rocksdb_options, health_status, server_builder)
+                .await
+                .map_err(anyhow::Error::from)
+                .map(|store| store.boxed())
         }
     }
 }
