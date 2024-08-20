@@ -78,6 +78,7 @@ pub async fn run(
                     if counter % 10000 == 0 {
                         info!("Read {} records", counter);
                     }
+                    tokio::task::consume_budget().await
                 }
                 let total_time = start.elapsed();
                 info!(
@@ -118,6 +119,7 @@ pub async fn run(
                     if counter % 10000 == 0 {
                         info!("Appended {} records", counter);
                     }
+                    tokio::task::consume_budget().await
                 }
                 info!("Appender waiting for drain");
                 appender_handle.drain().await?;
