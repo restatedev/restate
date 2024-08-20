@@ -10,7 +10,7 @@
 
 pub mod local_loglet;
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(any(test, feature = "memory-loglet"))]
 pub mod memory_loglet;
 #[cfg(feature = "replicated-loglet")]
 pub mod replicated_loglet;

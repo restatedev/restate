@@ -17,6 +17,7 @@ console = [
 io-uring = [
     "rocksdb/io-uring"
 ]
+memory-loglet = ["restate-bifrost/memory-loglet"]
 
 [dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }
