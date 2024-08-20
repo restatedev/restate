@@ -851,10 +851,11 @@ pub mod v1 {
                 .map(|deployment_id| deployment_id.parse().expect("valid deployment id"));
 
             if let Some(deployment_id) = deployment_id {
-                let service_protocol_version =
-                    service_protocol_version.ok_or(ConversionError::invalid_data(anyhow!(
+                let service_protocol_version = service_protocol_version.ok_or_else(|| {
+                    ConversionError::invalid_data(anyhow!(
                         "service_protocol_version has not been set"
-                    )))?;
+                    ))
+                })?;
                 let service_protocol_version =
                     ServiceProtocolVersion::try_from(service_protocol_version).map_err(|_| {
                         ConversionError::unexpected_enum_variant(
