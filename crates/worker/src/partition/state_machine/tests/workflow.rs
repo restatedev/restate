@@ -23,15 +23,9 @@ use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
 use test_log::test;
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn start_workflow_method() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
@@ -40,7 +34,7 @@ async fn start_workflow_method() {
     let request_id_2 = IngressRequestId::default();
 
     // Send fresh invocation
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -61,7 +55,7 @@ async fn start_workflow_method() {
     );
 
     // Assert service is locked
-    let mut txn = state_machine.storage().transaction();
+    let mut txn = test_env.storage().transaction();
     assert_that!(
         txn.get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
             .await
@@ -71,7 +65,7 @@ async fn start_workflow_method() {
     txn.commit().await.unwrap();
 
     // Sending another invocation won't re-execute
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: InvocationId::mock_random(),
             invocation_target: invocation_target.clone(),
@@ -107,7 +101,7 @@ async fn start_workflow_method() {
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");
-    let actions = state_machine
+    let actions = test_env
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
@@ -163,9 +157,8 @@ async fn start_workflow_method() {
     );
 
     // InvocationStatus contains completed
-    let invocation_status = state_machine
+    let invocation_status = test_env
         .storage()
-        .transaction()
         .get_invocation_status(&invocation_id)
         .await
         .unwrap();
@@ -178,7 +171,7 @@ async fn start_workflow_method() {
 
     // Sending a new request will not be completed because we don't support attach semantics
     let request_id_3 = IngressRequestId::default();
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -206,15 +199,9 @@ async fn start_workflow_method() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn attach_by_workflow_key() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
@@ -224,7 +211,7 @@ async fn attach_by_workflow_key() {
     let request_id_3 = IngressRequestId::default();
 
     // Send fresh invocation
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -245,7 +232,7 @@ async fn attach_by_workflow_key() {
     );
 
     // Sending another invocation won't re-execute
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::AttachInvocation(AttachInvocationRequest {
             invocation_query: InvocationQuery::Workflow(
                 invocation_target.as_keyed_service_id().unwrap(),
@@ -266,7 +253,7 @@ async fn attach_by_workflow_key() {
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");
-    let actions = state_machine
+    let actions = test_env
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
@@ -321,9 +308,8 @@ async fn attach_by_workflow_key() {
     );
 
     // InvocationStatus contains completed
-    let invocation_status = state_machine
+    let invocation_status = test_env
         .storage()
-        .transaction()
         .get_invocation_status(&invocation_id)
         .await
         .unwrap();
@@ -335,7 +321,7 @@ async fn attach_by_workflow_key() {
     );
 
     // Sending another attach will be completed immediately
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::AttachInvocation(AttachInvocationRequest {
             invocation_query: InvocationQuery::Workflow(
                 invocation_target.as_keyed_service_id().unwrap(),
@@ -365,21 +351,15 @@ async fn attach_by_workflow_key() {
 }
 
 // TODO remove this once we remove the old invocation status table
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn timer_cleanup() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
 
     // Prepare idempotency metadata and completed status
-    let mut txn = state_machine.storage().transaction();
+    let mut txn = test_env.storage().transaction();
     txn.put_invocation_status(
         &invocation_id,
         InvocationStatus::Completed(CompletedInvocation {
@@ -402,7 +382,7 @@ async fn timer_cleanup() {
     txn.commit().await.unwrap();
 
     // Send timer fired command
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::Timer(TimerKeyValue::new(
             TimerKey {
                 kind: TimerKeyKind::Invoke {
@@ -414,7 +394,7 @@ async fn timer_cleanup() {
         )))
         .await;
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .transaction()
             .get_invocation_status(&invocation_id)
@@ -423,7 +403,7 @@ async fn timer_cleanup() {
         pat!(InvocationStatus::Free)
     );
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .transaction()
             .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
@@ -435,19 +415,13 @@ async fn timer_cleanup() {
 
 #[test(tokio::test)]
 async fn purge_completed_workflow() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
 
     // Prepare idempotency metadata and completed status
-    let mut txn = state_machine.storage().transaction();
+    let mut txn = test_env.storage().transaction();
     txn.put_invocation_status(
         &invocation_id,
         InvocationStatus::Completed(CompletedInvocation {
@@ -465,13 +439,13 @@ async fn purge_completed_workflow() {
     txn.commit().await.unwrap();
 
     // Send timer fired command
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::PurgeInvocation(PurgeInvocationRequest {
             invocation_id,
         }))
         .await;
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .get_invocation_status(&invocation_id)
             .await
@@ -479,7 +453,7 @@ async fn purge_completed_workflow() {
         pat!(InvocationStatus::Free)
     );
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
             .await

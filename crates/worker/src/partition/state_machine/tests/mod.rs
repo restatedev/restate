@@ -23,7 +23,7 @@ use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use googletest::matcher::Matcher;
 use googletest::{all, assert_that, pat, property};
-use restate_core::{task_center, TaskCenterBuilder};
+use restate_core::{task_center, TaskCenter, TaskCenterBuilder};
 use restate_invoker_api::{EffectKind, InvokeInputJournal};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
@@ -63,15 +63,16 @@ use restate_types::{ingress, GenerationalNodeId};
 use std::collections::{HashMap, HashSet};
 use test_log::test;
 
-// Test utility to test the StateMachine
-pub struct MockStateMachine {
+pub struct TestEnv {
+    #[allow(dead_code)]
+    task_center: TaskCenter,
     state_machine: StateMachine<ProtobufRawEntryCodec>,
     // TODO for the time being we use rocksdb storage because we have no mocks for storage interfaces.
     //  Perhaps we could make these tests faster by having those.
-    rocksdb_storage: PartitionStore,
+    storage: PartitionStore,
 }
 
-impl MockStateMachine {
+impl TestEnv {
     pub fn partition_id(&self) -> PartitionId {
         PartitionId::MIN
     }
@@ -101,35 +102,42 @@ impl MockStateMachine {
     pub async fn create_with_state_machine(
         state_machine: StateMachine<ProtobufRawEntryCodec>,
     ) -> Self {
-        task_center().run_in_scope_sync("db-manager-init", None, || {
-            RocksDbManager::init(Constant::new(CommonOptions::default()))
-        });
-        let worker_options = Live::from_value(WorkerOptions::default());
-        info!(
-            "Using RocksDB temp directory {}",
-            worker_options.pinned().storage.data_dir().display()
-        );
-        let manager = PartitionStoreManager::create(
-            worker_options.clone().map(|c| &c.storage),
-            worker_options.clone().map(|c| &c.storage.rocksdb).boxed(),
-            &[],
-        )
-        .await
-        .unwrap();
-        let rocksdb_storage = manager
-            .open_partition_store(
-                PartitionId::MIN,
-                RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
-                OpenMode::CreateIfMissing,
-                &worker_options.pinned().storage.rocksdb,
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
+
+        tc.run_in_scope("init", None, async {
+            RocksDbManager::init(Constant::new(CommonOptions::default()));
+            let worker_options = Live::from_value(WorkerOptions::default());
+            info!(
+                "Using RocksDB temp directory {}",
+                worker_options.pinned().storage.data_dir().display()
+            );
+            let manager = PartitionStoreManager::create(
+                worker_options.clone().map(|c| &c.storage),
+                worker_options.clone().map(|c| &c.storage.rocksdb).boxed(),
+                &[],
             )
             .await
             .unwrap();
+            let rocksdb_storage = manager
+                .open_partition_store(
+                    PartitionId::MIN,
+                    RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
+                    OpenMode::CreateIfMissing,
+                    &worker_options.pinned().storage.rocksdb,
+                )
+                .await
+                .unwrap();
 
-        Self {
-            state_machine,
-            rocksdb_storage,
-        }
+            Self {
+                task_center: task_center(),
+                state_machine,
+                storage: rocksdb_storage,
+            }
+        })
+        .await
     }
 
     pub async fn apply(&mut self, command: Command) -> Vec<Action> {
@@ -137,7 +145,7 @@ impl MockStateMachine {
         let mut transaction = crate::partition::storage::Transaction::new(
             partition_id,
             0..=PartitionKey::MAX,
-            self.rocksdb_storage.transaction(),
+            self.storage.transaction(),
         );
         let mut action_collector = ActionCollector::default();
         self.state_machine
@@ -162,42 +170,25 @@ impl MockStateMachine {
     }
 
     pub fn storage(&mut self) -> &mut PartitionStore {
-        &mut self.rocksdb_storage
+        &mut self.storage
     }
 }
 
 type TestResult = Result<(), anyhow::Error>;
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn start_invocation() -> TestResult {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
-    let id = mock_start_invocation(&mut state_machine).await;
+    let mut test_env = TestEnv::create().await;
+    let id = mock_start_invocation(&mut test_env).await;
 
-    let invocation_status = state_machine
-        .storage()
-        .transaction()
-        .get_invocation_status(&id)
-        .await
-        .unwrap();
+    let invocation_status = test_env.storage().get_invocation_status(&id).await.unwrap();
     assert_that!(invocation_status, pat!(InvocationStatus::Invoked(_)));
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn shared_invocation_skips_inbox() -> TestResult {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::virtual_object(
         "MySvc",
@@ -207,7 +198,7 @@ async fn shared_invocation_skips_inbox() -> TestResult {
     );
 
     // Let's lock the virtual object
-    let mut tx = state_machine.rocksdb_storage.transaction();
+    let mut tx = test_env.storage.transaction();
     tx.put_virtual_object_status(
         &invocation_target.as_keyed_service_id().unwrap(),
         VirtualObjectStatus::Locked(InvocationId::mock_random()),
@@ -217,13 +208,12 @@ async fn shared_invocation_skips_inbox() -> TestResult {
 
     // Start the invocation
     let invocation_id =
-        mock_start_invocation_with_invocation_target(&mut state_machine, invocation_target.clone())
+        mock_start_invocation_with_invocation_target(&mut test_env, invocation_target.clone())
             .await;
 
     // Should be in invoked status
-    let invocation_status = state_machine
+    let invocation_status = test_env
         .storage()
-        .transaction()
         .get_invocation_status(&invocation_id)
         .await
         .unwrap();
@@ -238,19 +228,13 @@ async fn shared_invocation_skips_inbox() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn awakeable_completion_received_before_entry() -> TestResult {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
-    let invocation_id = mock_start_invocation(&mut state_machine).await;
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = mock_start_invocation(&mut test_env).await;
 
     // Send completion first
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::InvocationResponse(InvocationResponse {
             id: invocation_id,
             entry_index: 1,
@@ -272,7 +256,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     //   * If the awakeable entry has been received, everything goes through the regular flow of the journal reader.
     //   * If the awakeable entry has not been received yet, when receiving it the completion will be sent through.
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: InvokerEffectKind::JournalEntry {
@@ -295,9 +279,8 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     );
 
     // The entry should be in storage
-    let entry = state_machine
-        .rocksdb_storage
-        .transaction()
+    let entry = test_env
+        .storage
         .get_journal_entry(&invocation_id, 1)
         .await
         .unwrap()
@@ -310,7 +293,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
         )))
     );
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: InvokerEffectKind::Suspended {
@@ -328,16 +311,10 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn complete_awakeable_with_success() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
-    let invocation_id = mock_start_invocation(&mut state_machine).await;
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = mock_start_invocation(&mut test_env).await;
 
     let callee_invocation_id = InvocationId::mock_random();
     let callee_entry_index = 10;
@@ -350,7 +327,7 @@ async fn complete_awakeable_with_success() {
         },
     ));
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: EffectKind::JournalEntry {
@@ -376,16 +353,10 @@ async fn complete_awakeable_with_success() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn complete_awakeable_with_failure() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
-    let invocation_id = mock_start_invocation(&mut state_machine).await;
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = mock_start_invocation(&mut test_env).await;
 
     let callee_invocation_id = InvocationId::mock_random();
     let callee_entry_index = 10;
@@ -398,7 +369,7 @@ async fn complete_awakeable_with_failure() {
         },
     ));
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: EffectKind::JournalEntry {
@@ -427,20 +398,14 @@ async fn complete_awakeable_with_failure() {
     );
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn invoke_with_headers() -> TestResult {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
     let service_id = ServiceId::mock_random();
     let invocation_id =
-        mock_start_invocation_with_service_id(&mut state_machine, service_id.clone()).await;
+        mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: InvokerEffectKind::JournalEntry {
@@ -474,19 +439,13 @@ async fn invoke_with_headers() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn mutate_state() -> anyhow::Result<()> {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
     let invocation_target = InvocationTarget::mock_virtual_object();
     let keyed_service_id = invocation_target.as_keyed_service_id().unwrap();
     let invocation_id =
-        mock_start_invocation_with_invocation_target(&mut state_machine, invocation_target.clone())
+        mock_start_invocation_with_invocation_target(&mut test_env, invocation_target.clone())
             .await;
 
     let first_state_mutation: HashMap<Bytes, Bytes> = [
@@ -503,22 +462,22 @@ async fn mutate_state() -> anyhow::Result<()> {
 
     // state should be empty
     assert_eq!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_all_user_states_for_service(&keyed_service_id)
             .count()
             .await,
         0
     );
 
-    state_machine
+    test_env
         .apply(Command::PatchState(ExternalStateMutation {
             service_id: keyed_service_id.clone(),
             version: None,
             state: first_state_mutation,
         }))
         .await;
-    state_machine
+    test_env
         .apply(Command::PatchState(ExternalStateMutation {
             service_id: keyed_service_id.clone(),
             version: None,
@@ -528,15 +487,15 @@ async fn mutate_state() -> anyhow::Result<()> {
 
     // terminating the ongoing invocation should trigger popping from the inbox until the
     // next invocation is found
-    state_machine
+    test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: InvokerEffectKind::End,
         }))
         .await;
 
-    let all_states: HashMap<_, _> = state_machine
-        .rocksdb_storage
+    let all_states: HashMap<_, _> = test_env
+        .storage
         .get_all_user_states_for_service(&keyed_service_id)
         .try_collect()
         .await?;
@@ -546,19 +505,13 @@ async fn mutate_state() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn clear_all_user_states() -> anyhow::Result<()> {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
     let service_id = ServiceId::new("MySvc", "my-key");
 
     // Fill with some state the service K/V store
-    let mut txn = state_machine.rocksdb_storage.transaction();
+    let mut txn = test_env.storage.transaction();
     txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")
         .await;
     txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")
@@ -566,9 +519,9 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
     txn.commit().await.unwrap();
 
     let invocation_id =
-        mock_start_invocation_with_service_id(&mut state_machine, service_id.clone()).await;
+        mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
 
-    state_machine
+    test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: InvokerEffectKind::JournalEntry {
@@ -578,8 +531,8 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
         }))
         .await;
 
-    let states: Vec<restate_storage_api::Result<(Bytes, Bytes)>> = state_machine
-        .rocksdb_storage
+    let states: Vec<restate_storage_api::Result<(Bytes, Bytes)>> = test_env
+        .storage
         .get_all_user_states_for_service(&service_id)
         .collect()
         .await;
@@ -588,26 +541,20 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn get_state_keys() -> TestResult {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
     let service_id = ServiceId::mock_random();
     let invocation_id =
-        mock_start_invocation_with_service_id(&mut state_machine, service_id.clone()).await;
+        mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
 
     // Mock some state
-    let mut txn = state_machine.rocksdb_storage.transaction();
+    let mut txn = test_env.storage.transaction();
     txn.put_user_state(&service_id, b"key1", b"value1").await;
     txn.put_user_state(&service_id, b"key2", b"value2").await;
     txn.commit().await.unwrap();
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: InvokerEffectKind::JournalEntry {
@@ -634,15 +581,9 @@ async fn get_state_keys() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn send_ingress_response_to_multiple_targets() -> TestResult {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
     let (invocation_id, invocation_target) =
         InvocationId::mock_with(InvocationTarget::mock_virtual_object());
 
@@ -652,7 +593,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let request_id_2 = IngressRequestId::default();
     let request_id_3 = IngressRequestId::default();
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -679,7 +620,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     );
 
     // Let's add another ingress
-    let mut txn = state_machine.rocksdb_storage.transaction();
+    let mut txn = test_env.storage.transaction();
     let mut invocation_status = txn.get_invocation_status(&invocation_id).await.unwrap();
     invocation_status.get_response_sinks_mut().unwrap().insert(
         ServiceInvocationResponseSink::Ingress {
@@ -699,7 +640,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
 
     // Now let's send the output entry
     let response_bytes = Bytes::from_static(b"123");
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: InvokerEffectKind::JournalEntry {
@@ -714,7 +655,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     assert_that!(actions, not(contains(pat!(Action::IngressResponse(_)))));
 
     // Send the End Effect
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: InvokerEffectKind::End,
@@ -766,27 +707,19 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn truncate_outbox_from_empty() -> Result<(), Error> {
     // An outbox message with index 0 has been successfully processed, and must now be truncated
     let outbox_index = 0;
 
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
-    let _ = state_machine
-        .apply(Command::TruncateOutbox(outbox_index))
-        .await;
+    let _ = test_env.apply(Command::TruncateOutbox(outbox_index)).await;
 
     assert_that!(
-        state_machine
-            .rocksdb_storage
-            .get_outbox_message(state_machine.partition_id(), 0)
+        test_env
+            .storage
+            .get_outbox_message(test_env.partition_id(), 0)
             .await?,
         none()
     );
@@ -796,80 +729,64 @@ async fn truncate_outbox_from_empty() -> Result<(), Error> {
     // explicitly track the head sequence number as the next position beyond the last known
     // truncation point. It's only safe to leave the head as None when the outbox is known to be
     // empty.
-    assert_eq!(state_machine.state_machine.outbox_head_seq_number, Some(1));
+    assert_eq!(test_env.state_machine.outbox_head_seq_number, Some(1));
 
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn truncate_outbox_with_gap() -> Result<(), Error> {
     // The outbox contains items [3..=5], and the range must be truncated after message 5 is processed
     let outbox_head_index = 3;
     let outbox_tail_index = 5;
 
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope(
-            "mock-state-machine",
-            None,
-            MockStateMachine::create_with_state_machine(
-                StateMachine::<ProtobufRawEntryCodec>::new(
-                    0,
-                    outbox_tail_index,
-                    Some(outbox_head_index),
-                    PartitionKey::MIN..=PartitionKey::MAX,
-                    SourceTable::New,
-                ),
-            ),
-        )
+    let mut test_env =
+        TestEnv::create_with_state_machine(StateMachine::<ProtobufRawEntryCodec>::new(
+            0,
+            outbox_tail_index,
+            Some(outbox_head_index),
+            PartitionKey::MIN..=PartitionKey::MAX,
+            SourceTable::New,
+        ))
         .await;
 
-    state_machine
+    test_env
         .apply(Command::TruncateOutbox(outbox_tail_index))
         .await;
 
     assert_that!(
-        state_machine
-            .rocksdb_storage
-            .get_outbox_message(state_machine.partition_id(), 3)
+        test_env
+            .storage
+            .get_outbox_message(test_env.partition_id(), 3)
             .await?,
         none()
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
-            .get_outbox_message(state_machine.partition_id(), 4)
+        test_env
+            .storage
+            .get_outbox_message(test_env.partition_id(), 4)
             .await?,
         none()
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
-            .get_outbox_message(state_machine.partition_id(), 5)
+        test_env
+            .storage
+            .get_outbox_message(test_env.partition_id(), 5)
             .await?,
         none()
     );
 
     assert_eq!(
-        state_machine.state_machine.outbox_head_seq_number,
+        test_env.state_machine.outbox_head_seq_number,
         Some(outbox_tail_index + 1)
     );
 
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResult {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let (first_invocation_id, invocation_target) =
         InvocationId::mock_with(InvocationTarget::mock_virtual_object());
@@ -877,7 +794,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     let second_invocation_id = InvocationId::generate(&invocation_target);
 
     // Let's start the first invocation
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: first_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -889,15 +806,15 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         contains(matchers::actions::invoke_for_id(first_invocation_id))
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_virtual_object_status(&keyed_service_id)
             .await,
         ok(eq(VirtualObjectStatus::Locked(first_invocation_id)))
     );
 
     // Let's start the second invocation
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: second_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -913,8 +830,8 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         )))
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .inbox(&keyed_service_id)
             .try_collect::<Vec<_>>()
             .await,
@@ -924,15 +841,15 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         )))
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_virtual_object_status(&keyed_service_id)
             .await,
         ok(eq(VirtualObjectStatus::Locked(first_invocation_id)))
     );
 
     // Send the End Effect to terminate the first invocation
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id: first_invocation_id,
             kind: InvokerEffectKind::End,
@@ -944,14 +861,14 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         contains(matchers::actions::invoke_for_id(second_invocation_id))
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_virtual_object_status(&keyed_service_id)
             .await,
         ok(eq(VirtualObjectStatus::Locked(second_invocation_id)))
     );
 
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id: second_invocation_id,
             kind: InvokerEffectKind::End,
@@ -960,16 +877,16 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     // After the second was completed too, the inbox is empty and the service is unlocked
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .inbox(&keyed_service_id)
             .try_collect::<Vec<_>>()
             .await,
         ok(empty())
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_virtual_object_status(&keyed_service_id)
             .await,
         ok(eq(VirtualObjectStatus::Unlocked))
@@ -979,7 +896,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 }
 
 async fn mock_start_invocation_with_service_id(
-    state_machine: &mut MockStateMachine,
+    state_machine: &mut TestEnv,
     service_id: ServiceId,
 ) -> InvocationId {
     mock_start_invocation_with_invocation_target(
@@ -990,7 +907,7 @@ async fn mock_start_invocation_with_service_id(
 }
 
 async fn mock_start_invocation_with_invocation_target(
-    state_machine: &mut MockStateMachine,
+    state_machine: &mut TestEnv,
     invocation_target: InvocationTarget,
 ) -> InvocationId {
     let invocation_id = InvocationId::generate(&invocation_target);
@@ -1023,7 +940,7 @@ async fn mock_start_invocation_with_invocation_target(
     invocation_id
 }
 
-async fn mock_start_invocation(state_machine: &mut MockStateMachine) -> InvocationId {
+async fn mock_start_invocation(state_machine: &mut TestEnv) -> InvocationId {
     mock_start_invocation_with_invocation_target(
         state_machine,
         InvocationTarget::mock_virtual_object(),

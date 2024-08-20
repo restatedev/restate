@@ -22,22 +22,16 @@ use restate_types::journal::enriched::{CallEnrichmentResult, EnrichedEntryHeader
 use restate_types::service_protocol;
 use test_log::test;
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn kill_inboxed_invocation() -> anyhow::Result<()> {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let (invocation_id, invocation_target) =
         InvocationId::mock_with(InvocationTarget::mock_virtual_object());
     let (inboxed_id, inboxed_target) = InvocationId::mock_with(invocation_target.clone());
     let caller_id = InvocationId::mock_random();
 
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -45,7 +39,7 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
         }))
         .await;
 
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: inboxed_id,
             invocation_target: inboxed_target,
@@ -57,7 +51,7 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
         }))
         .await;
 
-    let current_invocation_status = state_machine
+    let current_invocation_status = test_env
         .storage()
         .get_invocation_status(&inboxed_id)
         .await?;
@@ -65,15 +59,14 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
     // assert that inboxed invocation is in invocation_status
     assert!(let InvocationStatus::Inboxed(_) = current_invocation_status);
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::TerminateInvocation(InvocationTermination::kill(
             inboxed_id,
         )))
         .await;
 
-    let current_invocation_status = state_machine
+    let current_invocation_status = test_env
         .storage()
-        .transaction()
         .get_invocation_status(&inboxed_id)
         .await?;
 
@@ -101,10 +94,9 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
         }))
     );
 
-    let partition_id = state_machine.partition_id();
-    let outbox_message = state_machine
+    let partition_id = test_env.partition_id();
+    let outbox_message = test_env
         .storage()
-        .transaction()
         .get_next_outbox_message(partition_id, 0)
         .await?;
 
@@ -116,15 +108,9 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn kill_call_tree() -> anyhow::Result<()> {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let call_invocation_id = InvocationId::mock_random();
     let background_call_invocation_id = InvocationId::mock_random();
@@ -134,7 +120,7 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     let invocation_id = InvocationId::generate(&invocation_target);
     let enqueued_invocation_id_on_same_target = InvocationId::generate(&invocation_target);
 
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -143,7 +129,7 @@ async fn kill_call_tree() -> anyhow::Result<()> {
         .await;
 
     // Let's enqueue an invocation afterward
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: enqueued_invocation_id_on_same_target,
             invocation_target: invocation_target.clone(),
@@ -152,7 +138,7 @@ async fn kill_call_tree() -> anyhow::Result<()> {
         .await;
 
     // Let's add some journal entries
-    let mut tx = state_machine.rocksdb_storage.transaction();
+    let mut tx = test_env.storage.transaction();
     tx.put_journal_entry(
         &invocation_id,
         1,
@@ -178,7 +164,7 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     tx.commit().await?;
 
     // Now let's send the termination command
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::TerminateInvocation(InvocationTermination::kill(
             invocation_id,
         )))
@@ -186,15 +172,15 @@ async fn kill_call_tree() -> anyhow::Result<()> {
 
     // Invocation should be gone
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_invocation_status(&invocation_id)
             .await?,
         pat!(InvocationStatus::Free)
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_journal(&invocation_id, 4)
             .try_collect::<Vec<_>>()
             .await?,
@@ -231,15 +217,9 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn cancel_invoked_invocation() -> Result<(), Error> {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let call_invocation_id = InvocationId::mock_random();
     let background_call_invocation_id = InvocationId::mock_random();
@@ -248,7 +228,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::generate(&invocation_target);
 
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -257,8 +237,8 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
         .await;
 
     // Let's add some journal entries
-    let partition_id = state_machine.partition_id();
-    let mut tx = state_machine.rocksdb_storage.transaction();
+    let partition_id = test_env.partition_id();
+    let mut tx = test_env.storage.transaction();
     let journal = create_termination_journal(
         call_invocation_id,
         background_call_invocation_id,
@@ -301,7 +281,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     .await;
     tx.commit().await?;
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::TerminateInvocation(InvocationTermination::cancel(
             invocation_id,
         )))
@@ -309,8 +289,8 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
 
     // Invocation shouldn't be gone
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_invocation_status(&invocation_id)
             .await?,
         pat!(InvocationStatus::Invoked { .. })
@@ -318,9 +298,9 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
 
     // Timer is gone
     assert_that!(
-        state_machine
-            .rocksdb_storage
-            .next_timers_greater_than(state_machine.partition_id(), None, usize::MAX)
+        test_env
+            .storage
+            .next_timers_greater_than(test_env.partition_id(), None, usize::MAX)
             .try_collect::<Vec<_>>()
             .await?,
         empty()
@@ -328,22 +308,22 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
 
     // Entries are completed
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_journal_entry(&invocation_id, 4)
             .await?,
         some(pat!(JournalEntry::Entry(entry_completed_matcher())))
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_journal_entry(&invocation_id, 5)
             .await?,
         some(pat!(JournalEntry::Entry(entry_completed_matcher())))
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_journal_entry(&invocation_id, 6)
             .await?,
         some(pat!(JournalEntry::Entry(entry_completed_matcher())))
@@ -366,15 +346,9 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(tokio::test)]
 async fn cancel_suspended_invocation() -> Result<(), Error> {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let call_invocation_id = InvocationId::mock_random();
     let background_call_invocation_id = InvocationId::mock_random();
@@ -383,7 +357,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::generate(&invocation_target);
 
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -392,8 +366,8 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         .await;
 
     // Let's add some journal entries
-    let partition_id = state_machine.partition_id();
-    let mut tx = state_machine.rocksdb_storage.transaction();
+    let partition_id = test_env.partition_id();
+    let mut tx = test_env.storage.transaction();
     let journal = create_termination_journal(
         call_invocation_id,
         background_call_invocation_id,
@@ -442,7 +416,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     .await;
     tx.commit().await?;
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::TerminateInvocation(InvocationTermination::cancel(
             invocation_id,
         )))
@@ -450,8 +424,8 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 
     // Invocation shouldn't be gone
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_invocation_status(&invocation_id)
             .await?,
         pat!(InvocationStatus::Invoked { .. })
@@ -459,9 +433,9 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 
     // Timer is gone
     assert_that!(
-        state_machine
-            .rocksdb_storage
-            .next_timers_greater_than(state_machine.partition_id(), None, usize::MAX)
+        test_env
+            .storage
+            .next_timers_greater_than(test_env.partition_id(), None, usize::MAX)
             .try_collect::<Vec<_>>()
             .await?,
         empty()
@@ -469,22 +443,22 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 
     // Entries are completed
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_journal_entry(&invocation_id, 4)
             .await?,
         some(pat!(JournalEntry::Entry(entry_completed_matcher())))
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_journal_entry(&invocation_id, 5)
             .await?,
         some(pat!(JournalEntry::Entry(entry_completed_matcher())))
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .get_journal_entry(&invocation_id, 6)
             .await?,
         some(pat!(JournalEntry::Entry(entry_completed_matcher())))
