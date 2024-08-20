@@ -20,6 +20,7 @@ use futures::Stream;
 use metrics::gauge;
 use restate_types::live::Live;
 use restate_types::logs::SequenceNumber;
+use restate_types::schema::Schema;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
 use tokio::time;
@@ -35,6 +36,7 @@ use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle
 use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskId, TaskKind};
 use restate_core::{RuntimeError, TaskCenter};
 use restate_invoker_impl::InvokerHandle;
+use restate_invoker_impl::Service as InvokerService;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -59,6 +61,7 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 
+use crate::invoker_integration::EntryEnricher;
 use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
 use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
@@ -607,6 +610,20 @@ impl PartitionProcessorManager {
         let bifrost = self.bifrost.clone();
         let node_id = self.metadata.my_node_id();
 
+        let schema = self.metadata.updateable_schema();
+
+        let invoker: InvokerService<
+            InvokerStorageReader<PartitionStore>,
+            EntryEnricher<Schema, ProtobufRawEntryCodec>,
+            Schema,
+        > = InvokerService::from_options(
+            &config.common.service_client,
+            &config.worker.invoker,
+            EntryEnricher::new(schema.clone()),
+            schema.clone(),
+        )
+        .unwrap();
+
         let pp_builder = PartitionProcessorBuilder::new(
             node_id,
             partition_id,
@@ -618,7 +635,7 @@ impl PartitionProcessorManager {
             options.internal_queue_length(),
             control_rx,
             watch_tx,
-            self.invoker_handle.clone(),
+            invoker.handle(),
         );
 
         // the name is also used as thread names for the corresponding tokio runtimes, let's keep
@@ -627,6 +644,9 @@ impl PartitionProcessorManager {
             .name_cache
             .entry(partition_id)
             .or_insert_with(|| Box::leak(Box::new(format!("pp-{}", partition_id))));
+
+        let invoker_name = Box::leak(Box::new(format!("invoker-{}", partition_id)));
+        let invoker_config = self.updateable_config.clone().map(|c| &c.worker.invoker);
 
         let maybe_task_id = self.task_center.start_runtime(
             TaskKind::PartitionProcessor,
@@ -645,6 +665,13 @@ impl PartitionProcessorManager {
                             &options.storage.rocksdb,
                         )
                         .await?;
+
+                    restate_core::task_center().spawn_child(
+                        TaskKind::SystemService,
+                        invoker_name,
+                        Some(pp_builder.partition_id),
+                        invoker.run(invoker_config),
+                    )?;
 
                     pp_builder
                         .build::<ProtobufRawEntryCodec>(networking, bifrost, partition_store)
