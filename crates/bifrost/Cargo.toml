@@ -10,7 +10,8 @@ publish = false
 [features]
 default = []
 replicated-loglet = ["restate-types/replicated-loglet"]
-test-util = []
+memory-loglet = ["restate-types/memory-loglet"]
+test-util = ["memory-loglet"]
 
 [dependencies]
 restate-core = { workspace = true }

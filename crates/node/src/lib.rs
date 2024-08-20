@@ -182,6 +182,10 @@ impl Node {
         );
         let bifrost_svc = BifrostService::new(tc.clone(), metadata.clone())
             .enable_local_loglet(&updateable_config);
+
+        #[cfg(feature = "memory-loglet")]
+        let bifrost_svc = bifrost_svc.enable_in_memory_loglet();
+
         #[cfg(feature = "replicated-loglet")]
         let bifrost_svc = bifrost_svc.with_factory(replicated_loglet_factory);
 
