@@ -11,8 +11,9 @@ publish = false
 default = []
 
 replicated-loglet = []
+memory-loglet = []
 schemars = ["dep:schemars", "restate-serde-util/schema"]
-test-util = ["dep:tempfile", "dep:restate-test-util"]
+test-util = ["memory-loglet", "dep:tempfile", "dep:restate-test-util"]
 
 [dependencies]
 restate-base64-util = { workspace = true }
