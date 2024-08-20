@@ -304,7 +304,8 @@ where
                 std::future::ready(Ok(entry
                     .as_ref()
                     .is_ok_and(|(_, envelope)| envelope.matches_key_query(&key_query))))
-            });
+            })
+            .ready_chunks(128);
 
         info!("PartitionProcessor starting up.");
 
@@ -337,62 +338,69 @@ where
                         old.updated_at = MillisSinceEpoch::now();
                     });
                 }
-                record = log_reader.next() => {
-                    let command_start = Instant::now();
-                    let Some(record) = record else {
+                records = log_reader.next() => {
+                    let Some(records) = records else {
                         // read stream terminated!
                         anyhow::bail!("Read stream terminated for partition processor");
                     };
-                    let record = record??;
-                    trace!(lsn = %record.0, "Processing bifrost record for '{}': {:?}", record.1.command.name(), record.1.header);
 
                     let mut transaction = partition_storage.create_transaction();
-
-                    // clear buffers used when applying the next record
+                    // clear buffers used when applying the next records
                     action_collector.clear();
 
-                    let leadership_change = self.apply_record(
-                        record,
-                        &mut transaction,
-                        &mut action_collector).await?;
+                    for record in records.into_iter() {
+                        let command_start = Instant::now();
 
-                    if let Some((header, announce_leader)) = leadership_change {
-                        // commit all changes so far, this is important so that the actuators see all changes
-                        // when becoming leader.
-                        transaction.commit().await?;
+                        let record = record??;
+                        trace!(lsn = %record.0, "Processing bifrost record for '{}': {:?}", record.1.command.name(), record.1.header);
 
-                        // We can ignore all actions collected so far because as a new leader we have to instruct the
-                        // actuators afresh.
-                        action_collector.clear();
+                        let leadership_change = self.apply_record(
+                            record,
+                            &mut transaction,
+                            &mut action_collector).await?;
 
-                        self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
-                        if let Source::Processor { node_id, .. } = header.source {
-                            // all new AnnounceLeader messages should come from a PartitionProcessor
-                            self.status.last_observed_leader_node = Some(node_id);
-                        } else if announce_leader.node_id.is_some() {
-                            // older AnnounceLeader messages have the announce_leader.node_id set
-                            self.status.last_observed_leader_node = announce_leader.node_id;
+                        if let Some((header, announce_leader)) = leadership_change {
+                            // commit all changes so far, this is important so that the actuators see all changes
+                            // when becoming leader.
+                            transaction.commit().await?;
+                            let actions_start = Instant::now();
+                            self.leadership_state.handle_actions(action_collector.drain(..)).await?;
+                            record_actions_latency.record(actions_start.elapsed());
+
+                            // // We can ignore all actions collected so far because as a new leader we have to instruct the
+                            // // actuators afresh.
+                            // action_collector.clear();
+
+                            self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
+                            if let Source::Processor { node_id, .. } = header.source {
+                                // all new AnnounceLeader messages should come from a PartitionProcessor
+                                self.status.last_observed_leader_node = Some(node_id);
+                            } else if announce_leader.node_id.is_some() {
+                                // older AnnounceLeader messages have the announce_leader.node_id set
+                                self.status.last_observed_leader_node = announce_leader.node_id;
+                            }
+
+                            let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_storage).await?;
+
+                            Span::current().record("is_leader", is_leader);
+
+                            if is_leader {
+                                self.status.effective_mode = RunMode::Leader;
+                            } else {
+                                self.status.effective_mode = RunMode::Follower;
+                            }
+
+                            transaction = partition_storage.create_transaction();
+                            action_collector.clear();
                         }
-
-                        let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_storage).await?;
-
-                        Span::current().record("is_leader", is_leader);
-
-                        if is_leader {
-                            self.status.effective_mode = RunMode::Leader;
-                        } else {
-                            self.status.effective_mode = RunMode::Follower;
-                        }
-
                         apply_record_latency.record(command_start.elapsed());
-                    } else {
-                        // Commit our changes and notify actuators about actions if we are the leader
-                        transaction.commit().await?;
-                        apply_record_latency.record(command_start.elapsed());
-                        let actions_start = Instant::now();
-                        self.leadership_state.handle_actions(action_collector.drain(..)).await?;
-                        record_actions_latency.record(actions_start.elapsed());
                     }
+
+                    // Commit our changes and notify actuators about actions if we are the leader
+                    transaction.commit().await?;
+                    let actions_start = Instant::now();
+                    self.leadership_state.handle_actions(action_collector.drain(..)).await?;
+                    record_actions_latency.record(actions_start.elapsed());
                 },
                 Some(action_effects) = self.leadership_state.next_action_effects() => {
                     actuator_effects_handled.increment(action_effects.len() as u64);
