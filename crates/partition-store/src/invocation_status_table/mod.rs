@@ -145,16 +145,26 @@ fn get_invocation_status<S: StorageAccess>(
 ) -> Result<InvocationStatus> {
     let _x = RocksDbPerfGuard::new("get-invocation-status");
 
+    // todo: Remove this once we remove the old InvocationStatus
     // Try read the old one first
-    if let Some(s) = storage
-        .get_value::<_, InvocationStatusV2>(create_neo_invocation_status_key(invocation_id))?
+    // The underlying assumption is that an invocation status will never exist in both old and new
+    // invocation status table.
+    if let Some(s) =
+        storage.get_value::<_, InvocationStatus>(create_invocation_status_key(invocation_id))?
     {
-        return Ok(s.0);
+        return Ok(s);
     }
-    // TODO remove this once we remove the old InvocationStatus
+
+    // todo: Read first from new invocation status table once the runtime writes to this table
     storage
-        .get_value::<_, InvocationStatus>(create_invocation_status_key(invocation_id))
-        .map(|value| value.unwrap_or(InvocationStatus::Free))
+        .get_value::<_, InvocationStatusV2>(create_neo_invocation_status_key(invocation_id))
+        .map(|value| {
+            if let Some(invocation_status) = value {
+                invocation_status.0
+            } else {
+                InvocationStatus::Free
+            }
+        })
 }
 
 fn delete_invocation_status<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) {
