@@ -28,8 +28,12 @@ use super::leadership::ActionEffect;
 
 // Constants since it's very unlikely that we can derive a meaningful configuration
 // that the user can reason about.
-const BIFROST_QUEUE_SIZE: usize = 1000;
-const MAX_BIFROST_APPEND_BATCH: usize = 100;
+//
+// The queue size is small to reduce the tail latency. This comes at the cost of throughput but
+// this runs within a single processor and the expected throughput is bound by the overall
+// throughput of the processor itself.
+const BIFROST_QUEUE_SIZE: usize = 20;
+const MAX_BIFROST_APPEND_BATCH: usize = 5000;
 
 /// Responsible for proposing [ActionEffect].
 pub(super) struct ActionEffectHandler {
