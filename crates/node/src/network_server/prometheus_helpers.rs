@@ -10,11 +10,9 @@
 
 use std::fmt::Write;
 
-use metrics::gauge;
 use metrics_exporter_prometheus::formatting;
 use restate_rocksdb::RocksDb;
 use rocksdb::statistics::{HistogramData, Ticker};
-use tokio::runtime::RuntimeMetrics;
 
 static PREFIX: &str = "restate";
 
@@ -168,36 +166,4 @@ pub fn format_rocksdb_histogram_for_prometheus(
         data.count(),
     );
     let _ = writeln!(out);
-}
-
-pub fn submit_tokio_metrics(runtime: &'static str, stats: RuntimeMetrics) {
-    gauge!("restate.tokio.num_workers", "runtime" => runtime).set(stats.num_workers() as f64);
-    gauge!("restate.tokio.blocking_threads", "runtime" => runtime)
-        .set(stats.num_blocking_threads() as f64);
-    gauge!("restate.tokio.blocking_queue_depth", "runtime" => runtime)
-        .set(stats.blocking_queue_depth() as f64);
-    gauge!("restate.tokio.num_alive_tasks", "runtime" => runtime)
-        .set(stats.num_alive_tasks() as f64);
-    gauge!("restate.tokio.io_driver_ready_count", "runtime" => runtime)
-        .set(stats.io_driver_ready_count() as f64);
-    gauge!("restate.tokio.remote_schedule_count", "runtime" => runtime)
-        .set(stats.remote_schedule_count() as f64);
-    // per worker stats
-    for idx in 0..stats.num_workers() {
-        gauge!("restate.tokio.worker_overflow_count", "runtime" => runtime, "worker" =>
-            idx.to_string())
-        .set(stats.worker_overflow_count(idx) as f64);
-        gauge!("restate.tokio.worker_poll_count", "runtime" => runtime, "worker" => idx.to_string())
-            .set(stats.worker_poll_count(idx) as f64);
-        gauge!("restate.tokio.worker_park_count", "runtime" => runtime, "worker" => idx.to_string())
-            .set(stats.worker_park_count(idx) as f64);
-        gauge!("restate.tokio.worker_noop_count", "runtime" => runtime, "worker" => idx.to_string())
-            .set(stats.worker_noop_count(idx) as f64);
-        gauge!("restate.tokio.worker_steal_count", "runtime" => runtime, "worker" => idx.to_string())
-            .set(stats.worker_steal_count(idx) as f64);
-        gauge!("restate.tokio.worker_total_busy_duration_seconds", "runtime" => runtime, "worker" => idx.to_string())
-            .set(stats.worker_total_busy_duration(idx).as_secs_f64());
-        gauge!("restate.tokio.worker_mean_poll_time", "runtime" => runtime, "worker" => idx.to_string())
-            .set(stats.worker_mean_poll_time(idx).as_secs_f64());
-    }
 }
