@@ -60,47 +60,8 @@ impl Appender {
         &mut self,
         body: impl Into<InputRecord<T>>,
     ) -> Result<Lsn> {
-        self.bifrost_inner.fail_if_shutting_down()?;
-
         let body = body.into().into_erased();
-        let mut retry_iter = self
-            .config
-            .live_load()
-            .bifrost
-            .append_retry_policy()
-            .into_iter();
-        let mut attempt = 0;
-
-        loop {
-            attempt += 1;
-            let loglet = match self.loglet_cache.as_mut() {
-                None => self
-                    .loglet_cache
-                    .insert(self.bifrost_inner.writeable_loglet(self.log_id).await?),
-                Some(wrapper) => wrapper,
-            };
-
-            match loglet.append(body.clone()).await {
-                Ok(lsn) => return Ok(lsn),
-                Err(AppendError::Sealed) => {
-                    info!(
-                        attempt = attempt,
-                        segment_index = %loglet.segment_index(),
-                        "Append will be retried (loglet being sealed), waiting for tail to be determined"
-                    );
-                    let new_loglet = Self::wait_next_unsealed_loglet(
-                        self.log_id,
-                        &self.bifrost_inner,
-                        loglet.segment_index(),
-                        &mut retry_iter,
-                    )
-                    .await?;
-                    self.loglet_cache = Some(new_loglet);
-                }
-                Err(AppendError::Shutdown(e)) => return Err(Error::Shutdown(e)),
-                Err(AppendError::Other(e)) => return Err(Error::LogletError(e)),
-            }
-        }
+        self.append_batch_erased(Arc::new([body])).await
     }
 
     /// Appends a batch of records to the log.
