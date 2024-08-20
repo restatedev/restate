@@ -70,6 +70,7 @@ pub struct BifrostOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     append_retry_max_interval: humantime::Duration,
 
+    #[cfg(feature = "kafka-loglet")]
     pub kafka_loglet: KafkaLogletOptions,
 }
 
@@ -106,6 +107,7 @@ impl Default for BifrostOptions {
             append_retry_min_interval: Duration::from_millis(10).into(),
             append_retry_max_interval: Duration::from_secs(1).into(),
             seal_retry_interval: Duration::from_secs(2).into(),
+            #[cfg(feature = "kafka-loglet")]
             kafka_loglet: KafkaLogletOptions::default(),
         }
     }

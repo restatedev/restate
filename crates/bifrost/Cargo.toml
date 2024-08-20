@@ -12,6 +12,7 @@ default = []
 replicated-loglet = ["restate-types/replicated-loglet"]
 memory-loglet = ["restate-types/memory-loglet"]
 test-util = ["memory-loglet"]
+kafka-loglet = ["dep:rdkafka"]
 
 [dependencies]
 restate-core = { workspace = true }
@@ -28,7 +29,7 @@ futures = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }
-rdkafka = { workspace = true }
+rdkafka = { workspace = true, optional = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }

@@ -15,7 +15,9 @@ options_schema = [
     "dep:schemars",
     "restate-admin/options_schema",
     "restate-worker/options_schema",
-    "restate-metadata-store/options_schema"]
+    "restate-metadata-store/options_schema",
+]
+kafka-loglet = []
 
 [dependencies]
 restate-admin = { workspace = true, features = ["servers"] }
@@ -56,7 +58,7 @@ once_cell = { workspace = true }
 prost-types = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
-semver = {  version = "1.0", features = ["serde"] }
+semver = { version = "1.0", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
