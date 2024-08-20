@@ -17,6 +17,8 @@ mod provider;
 mod read_stream;
 mod record_format;
 
+pub use self::provider::Factory;
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -26,7 +28,8 @@ use metrics::{counter, histogram, Histogram};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
-pub use self::provider::Factory;
+use restate_core::ShutdownError;
+use restate_types::logs::{KeyFilter, SequenceNumber};
 
 use self::log_store::LogStoreError;
 use self::log_store::RocksDbLogStore;
@@ -40,8 +43,6 @@ use crate::providers::local_loglet::metric_definitions::{
 };
 use crate::record::ErasedInputRecord;
 use crate::{Result, TailState};
-use restate_core::ShutdownError;
-use restate_types::logs::{KeyFilter, SequenceNumber};
 
 #[derive(derive_more::Debug)]
 struct LocalLoglet {
@@ -392,9 +393,13 @@ mod tests {
     #[test(tokio::test)]
     async fn read_stream_with_filters() -> googletest::Result<()> {
         run_in_test_env(|loglet| async {
-            loglet.append(("record-1", Keys::Single(1)).into()).await?;
-            loglet.append(("record-2", Keys::Single(2)).into()).await?;
-            let offset = loglet.append(("record-3", Keys::Single(1)).into()).await?;
+            let batch: Arc<[ErasedInputRecord]> = vec![
+                ("record-1", Keys::Single(1)).into(),
+                ("record-2", Keys::Single(2)).into(),
+                ("record-3", Keys::Single(1)).into(),
+            ]
+            .into();
+            let offset = loglet.enqueue_batch(batch).await?.await?;
 
             let key_filter = KeyFilter::Include(1);
             let read_stream = loglet
