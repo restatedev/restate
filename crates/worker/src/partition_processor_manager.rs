@@ -32,8 +32,8 @@ use restate_core::network::MessageRouterBuilder;
 use restate_core::network::NetworkSender;
 use restate_core::network::Networking;
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
-use restate_core::TaskCenter;
 use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskId, TaskKind};
+use restate_core::{RuntimeError, TaskCenter};
 use restate_invoker_impl::InvokerHandle;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
@@ -628,7 +628,7 @@ impl PartitionProcessorManager {
             .entry(partition_id)
             .or_insert_with(|| Box::leak(Box::new(format!("pp-{}", partition_id))));
 
-        let task_id = self.task_center.spawn_child(
+        let maybe_task_id = self.task_center.start_runtime(
             TaskKind::PartitionProcessor,
             task_name,
             Some(pp_builder.partition_id),
@@ -636,7 +636,7 @@ impl PartitionProcessorManager {
                 let storage_manager = self.partition_store_manager.clone();
                 let options = options.clone();
                 let key_range = key_range.clone();
-                async move {
+                move || async move {
                     let partition_store = storage_manager
                         .open_partition_store(
                             partition_id,
@@ -653,7 +653,18 @@ impl PartitionProcessorManager {
                         .await
                 }
             },
-        )?;
+        );
+
+        let task_id = match maybe_task_id {
+            Ok(task_id) => Ok(task_id),
+            Err(RuntimeError::AlreadyExists(name)) => {
+                panic!(
+                    "The partition processor runtime {} is already running!",
+                    name
+                )
+            }
+            Err(RuntimeError::Shutdown(e)) => Err(e),
+        }?;
 
         Ok(ProcessorState::new(
             partition_id,
