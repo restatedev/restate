@@ -10,46 +10,65 @@
 
 use std::time::Instant;
 
+use bytes::BytesMut;
 use hdrhistogram::Histogram;
 use tracing::info;
 
 use restate_bifrost::Bifrost;
 use restate_core::TaskCenter;
-use restate_types::logs::LogId;
+use restate_types::logs::{LogId, WithKeys};
 
-use crate::util::print_latencies;
+use crate::util::{print_latencies, DummyPayload};
 use crate::Arguments;
+
+const LOG_ID: LogId = LogId::new(0);
 
 #[derive(Debug, Clone, clap::Parser)]
 pub struct AppendLatencyOpts {
-    #[arg(long, default_value = "5000")]
+    /// The number of records to write during this test
+    #[arg(long, default_value = "1000000")]
     pub num_records: u64,
+
+    /// The payload size of each record in bytes. Default is 500 bytes
+    #[clap(long, default_value = "500")]
+    payload_size: usize,
 }
 
 pub async fn run(
     _common_args: &Arguments,
-    opts: &AppendLatencyOpts,
+    args: &AppendLatencyOpts,
     _tc: TaskCenter,
     bifrost: Bifrost,
 ) -> anyhow::Result<()> {
-    let log_id = LogId::from(0);
-    let data = "1".repeat(1024);
+    let blob = BytesMut::zeroed(args.payload_size).freeze();
     let mut append_latencies = Histogram::<u64>::new(3)?;
     let mut counter = 0;
-    let mut appender = bifrost.create_appender(log_id)?;
+    let mut appender = bifrost.create_appender(LOG_ID)?;
+    let start = Instant::now();
     loop {
-        if counter >= opts.num_records {
+        if counter >= args.num_records {
             break;
         }
         counter += 1;
-        let start = Instant::now();
-        let _ = appender.append(data.clone()).await?;
-        append_latencies.record(start.elapsed().as_nanos() as u64)?;
+        let start_append = Instant::now();
+        let record = DummyPayload {
+            precise_ts: 0,
+            blob: blob.clone(),
+        };
+        let _ = appender.append(record.with_no_keys()).await?;
+        append_latencies.record(start_append.elapsed().as_nanos() as u64)?;
         if counter % 1000 == 0 {
             info!("Appended {} records", counter);
         }
     }
-    println!("Total records written: {}", counter);
+
+    let total_time = start.elapsed();
+    println!(
+        "Total records written: {}. Total time: {:?}, append throughput: {} ops/s",
+        args.num_records,
+        total_time,
+        args.num_records as f64 / total_time.as_secs_f64(),
+    );
     print_latencies("append latency", append_latencies);
     Ok(())
 }
