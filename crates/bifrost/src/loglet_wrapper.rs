@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use futures::{Stream, StreamExt};
 
+use restate_core::ShutdownError;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
 use tracing::instrument;
@@ -23,7 +24,7 @@ use crate::loglet::{
     AppendError, Loglet, LogletOffset, LogletReadStream, OperationError, SendableLogletReadStream,
 };
 use crate::record::ErasedInputRecord;
-use crate::{LogEntry, LsnExt};
+use crate::{Commit, LogEntry, LsnExt};
 use crate::{Result, TailState};
 
 #[cfg(any(test, feature = "test-util"))]
@@ -138,23 +139,14 @@ impl LogletWrapper {
         stream.next().await.transpose()
     }
 
-    #[instrument(
-        level = "trace",
-        skip(self),
-        ret,
-        fields(
-            segment_index = %self.segment_index,
-            loglet = ?self.loglet,
-        )
-    )]
-    pub async fn append(&self, record: ErasedInputRecord) -> Result<Lsn, AppendError> {
-        if self.tail_lsn.is_some() {
-            return Err(AppendError::Sealed);
-        }
-
-        let offset = self.loglet.append(record).await?;
-        // Return the LSN given the loglet offset.
-        Ok(self.base_lsn.offset_by(offset))
+    #[allow(unused)]
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn append(&self, payload: ErasedInputRecord) -> Result<Lsn, AppendError> {
+        let commit = self
+            .enqueue_batch(Arc::new([payload]))
+            .await
+            .map_err(AppendError::Shutdown)?;
+        commit.await
     }
 
     pub fn watch_tail(&self) -> impl Stream<Item = TailState<Lsn>> {
@@ -179,11 +171,21 @@ impl LogletWrapper {
         &self,
         payloads: Arc<[ErasedInputRecord]>,
     ) -> Result<Lsn, AppendError> {
+        self.enqueue_batch(payloads)
+            .await
+            .map_err(AppendError::Shutdown)?
+            .await
+    }
+
+    pub async fn enqueue_batch(
+        &self,
+        payloads: Arc<[ErasedInputRecord]>,
+    ) -> Result<Commit, ShutdownError> {
         if self.tail_lsn.is_some() {
-            return Err(AppendError::Sealed);
+            return Ok(Commit::sealed());
         }
-        let offset = self.loglet.append_batch(payloads).await?;
-        Ok(self.base_lsn.offset_by(offset))
+        let commit = self.loglet.enqueue_batch(payloads).await?;
+        Ok(Commit::passthrough(self.base_lsn, commit))
     }
 
     pub async fn find_tail(&self) -> Result<TailState<Lsn>, OperationError> {
