@@ -22,7 +22,7 @@ use restate_types::Version;
 
 use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
-use crate::loglet::{LogletBase, LogletProvider};
+use crate::loglet::LogletProvider;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
 use crate::{Error, FindTailAttributes, InputRecord, LogReadStream, Result, TailState};

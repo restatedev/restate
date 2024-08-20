@@ -18,6 +18,7 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::stream::FusedStream;
 use futures::Stream;
+use futures::StreamExt;
 use pin_project::pin_project;
 
 use restate_core::MetadataKind;
@@ -32,7 +33,6 @@ use restate_types::Versioned;
 
 use crate::bifrost::BifrostInner;
 use crate::bifrost::MaybeLoglet;
-use crate::loglet::LogletBase;
 use crate::loglet::OperationError;
 use crate::loglet_wrapper::LogletReadStreamWrapper;
 use crate::Error;
@@ -205,7 +205,7 @@ impl Stream for LogReadStream {
                     };
                     // create sub-stream to read from this loglet.
                     let create_stream_fut = Box::pin(
-                        loglet.create_wrapped_read_stream(this.filter.clone(), *this.read_pointer),
+                        loglet.create_read_stream(this.filter.clone(), *this.read_pointer),
                     );
                     // => Create Substream
                     this.state
@@ -224,7 +224,7 @@ impl Stream for LogReadStream {
                     let safe_known_tail = substream.tail_lsn();
                     // If the substream's tail is unknown, we will need to watch the tail updates.
                     let tail_watch = if safe_known_tail.is_none() {
-                        Some(substream.loglet().watch_tail())
+                        Some(substream.loglet().watch_tail().boxed())
                     } else {
                         None
                     };
@@ -455,7 +455,6 @@ mod tests {
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
     use restate_types::Versioned;
 
-    use crate::loglet::LogletBase;
     use crate::{setup_panic_handler, BifrostAdmin, BifrostService, FindTailAttributes};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -23,7 +23,7 @@ use restate_types::logs::LogId;
 use super::log_store::RocksDbLogStore;
 use super::log_store_writer::RocksDbLogWriterHandle;
 use super::{metric_definitions, LocalLoglet};
-use crate::loglet::{Loglet, LogletOffset, LogletProvider, LogletProviderFactory, OperationError};
+use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::Error;
 
 pub struct Factory {
@@ -83,7 +83,7 @@ impl LogletProvider for LocalLogletProvider {
         log_id: LogId,
         segment_index: SegmentIndex,
         params: &LogletParams,
-    ) -> Result<Arc<dyn Loglet<Offset = LogletOffset>>, Error> {
+    ) -> Result<Arc<dyn Loglet>, Error> {
         let mut guard = self.active_loglets.lock();
         let loglet = match guard.entry((log_id, segment_index)) {
             hash_map::Entry::Vacant(entry) => {
