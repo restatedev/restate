@@ -44,7 +44,7 @@ use crate::Metadata;
 use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
 
 // todo: make this configurable
-const SEND_QUEUE_SIZE: usize = 1;
+const SEND_QUEUE_SIZE: usize = 1000;
 static_assertions::const_assert!(SEND_QUEUE_SIZE >= 1);
 
 struct ConnectionManagerInner {
