@@ -28,7 +28,7 @@ use restate_types::storage::PolyBytes;
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
-    AppendError, Loglet, LogletOffset, LogletProvider, LogletProviderFactory, LogletReadStream,
+    Loglet, LogletCommit, LogletOffset, LogletProvider, LogletProviderFactory, LogletReadStream,
     OperationError, SendableLogletReadStream,
 };
 use crate::record::ErasedInputRecord;
@@ -332,13 +332,13 @@ impl Loglet for MemoryLoglet {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn append_batch(
+    async fn enqueue_batch(
         &self,
         payloads: Arc<[ErasedInputRecord]>,
-    ) -> Result<LogletOffset, AppendError> {
+    ) -> Result<LogletCommit, ShutdownError> {
         let mut log = self.log.lock().unwrap();
         if self.sealed.load(Ordering::Relaxed) {
-            return Err(AppendError::Sealed);
+            return Ok(LogletCommit::sealed());
         }
         let mut last_committed_offset =
             LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
@@ -353,7 +353,7 @@ impl Loglet for MemoryLoglet {
         }
         // mark as committed immediately.
         self.advance_commit_offset(last_committed_offset);
-        Ok(last_committed_offset)
+        Ok(LogletCommit::resolved(last_committed_offset))
     }
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {

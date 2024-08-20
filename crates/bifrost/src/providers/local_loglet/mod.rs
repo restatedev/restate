@@ -34,7 +34,7 @@ use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
 use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::{AppendError, Loglet, LogletOffset, OperationError, SendableLogletReadStream};
+use crate::loglet::{Loglet, LogletCommit, LogletOffset, OperationError, SendableLogletReadStream};
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
@@ -136,15 +136,19 @@ impl Loglet for LocalLoglet {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn append_batch(
+    async fn enqueue_batch(
         &self,
         payloads: Arc<[ErasedInputRecord]>,
-    ) -> Result<LogletOffset, AppendError> {
+    ) -> Result<LogletCommit, ShutdownError> {
+        // NOTE: This implementation doesn't perform pipelined writes yet. This will block the caller
+        // while the underlying write is in progress and only return the Commit future as resolved.
+        // This is temporary until pipelined writes are fully supported.
+
         // An initial check if we are sealed or not, we are not worried about accepting an
         // append while sealing is taking place. We only care about *not* acknowledging
         // it if we lost the race and the seal was completed while waiting on this append.
         if self.sealed.load(Ordering::Relaxed) {
-            return Err(AppendError::Sealed);
+            return Ok(LogletCommit::sealed());
         }
 
         let num_payloads = payloads.len();
@@ -167,9 +171,9 @@ impl Loglet for LocalLoglet {
             // lock dropped
         };
 
-        let _ = receiver.await.unwrap_or_else(|_| {
+        let _ = receiver.await.map_err(|_| {
             warn!("Unsure if the local loglet record was written, the ack channel was dropped");
-            Err(ShutdownError.into())
+            ShutdownError
         })?;
 
         // AcqRel to ensure that the offset is visible to other threads and to synchronize sealed
@@ -184,10 +188,10 @@ impl Loglet for LocalLoglet {
         // Ensure that we don't acknowledge the append (even that it has happened) if the loglet
         // has been sealed already.
         if is_sealed {
-            return Err(AppendError::Sealed);
+            return Ok(LogletCommit::sealed());
         }
         self.append_latency.record(start_time.elapsed());
-        Ok(offset)
+        Ok(LogletCommit::resolved(offset))
     }
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {

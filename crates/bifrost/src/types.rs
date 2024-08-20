@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// TODO: Remove after fleshing the code out.
-#![allow(dead_code)]
+use std::task::{ready, Poll};
 
-use crate::loglet::LogletOffset;
+use futures::FutureExt;
+
 use restate_types::logs::{Lsn, SequenceNumber};
+
+use crate::loglet::{AppendError, LogletOffset};
 
 // Only implemented for LSNs
 pub(crate) trait LsnExt: SequenceNumber {
@@ -142,6 +144,55 @@ impl<Offset: SequenceNumber> TailState<Offset> {
     pub fn offset(&self) -> Offset {
         match self {
             TailState::Open(offset) | TailState::Sealed(offset) => *offset,
+        }
+    }
+}
+
+/// A future that resolves to the Lsn of the last Lsn in a committed batch.
+///
+/// Note: dropping this future doesn't cancel or stop the underlying enqueued append.
+pub struct Commit {
+    state: CommitState,
+}
+
+impl Commit {
+    pub(crate) fn passthrough(base_lsn: Lsn, inner: crate::loglet::LogletCommit) -> Self {
+        Self {
+            state: CommitState::Passthrough { base_lsn, inner },
+        }
+    }
+
+    pub(crate) fn sealed() -> Self {
+        Self {
+            state: CommitState::Sealed,
+        }
+    }
+}
+
+enum CommitState {
+    Sealed,
+    Passthrough {
+        base_lsn: Lsn,
+        inner: crate::loglet::LogletCommit,
+    },
+}
+
+impl std::future::Future for Commit {
+    type Output = Result<Lsn, AppendError>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Self::Output> {
+        match self.state {
+            CommitState::Sealed => Poll::Ready(Err(AppendError::Sealed)),
+            CommitState::Passthrough {
+                ref mut inner,
+                base_lsn,
+            } => {
+                let res = ready!(inner.poll_unpin(cx));
+                Poll::Ready(res.map(|offset| base_lsn.offset_by(offset)))
+            }
         }
     }
 }
