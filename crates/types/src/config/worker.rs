@@ -53,11 +53,21 @@ pub struct WorkerOptions {
     pub storage: StorageOptions,
 
     pub invoker: InvokerOptions,
+
+    /// # Maximum command batch size for partition processors
+    ///
+    /// The maximum number of commands a partition processor will apply in a batch. The larger this
+    /// value is, the higher the throughput and latency are.
+    max_command_batch_size: NonZeroUsize,
 }
 
 impl WorkerOptions {
     pub fn internal_queue_length(&self) -> usize {
         self.internal_queue_length.into()
+    }
+
+    pub fn max_command_batch_size(&self) -> usize {
+        self.max_command_batch_size.into()
     }
 
     pub fn num_timers_in_memory_limit(&self) -> Option<usize> {
@@ -76,12 +86,13 @@ impl WorkerOptions {
 impl Default for WorkerOptions {
     fn default() -> Self {
         Self {
-            internal_queue_length: NonZeroUsize::new(1000).unwrap(),
+            internal_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
             num_timers_in_memory_limit: None,
             cleanup_interval: Duration::from_secs(60 * 60).into(),
             experimental_feature_new_invocation_status_table: false,
             storage: StorageOptions::default(),
             invoker: Default::default(),
+            max_command_batch_size: NonZeroUsize::new(4).expect("Non zero number"),
         }
     }
 }

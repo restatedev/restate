@@ -10,11 +10,12 @@
 
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use assert2::let_assert;
-use futures::{StreamExt, TryStreamExt as _};
+use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
 use metrics::{counter, histogram};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
@@ -28,6 +29,7 @@ use restate_partition_store::{PartitionStore, RocksDBTransaction};
 use restate_storage_api::deduplication_table::{DedupInformation, DedupSequenceNumber, ProducerId};
 use restate_storage_api::{invocation_status_table, StorageError};
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
+use restate_types::config::WorkerOptions;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::logs::MatchKeyQuery;
@@ -40,7 +42,7 @@ use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 use self::storage::invoker::InvokerStorageReader;
 use crate::metric_definitions::{
     PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
-    PP_APPLY_RECORD_DURATION,
+    PP_APPLY_COMMAND_BATCH_SIZE, PP_APPLY_COMMAND_DURATION,
 };
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
 use crate::partition::state_machine::{ActionCollector, StateMachine};
@@ -71,6 +73,7 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     enable_new_invocation_status_table: bool,
     cleanup_interval: Duration,
     channel_size: usize,
+    max_command_batch_size: usize,
 
     status: PartitionProcessorStatus,
     invoker_tx: InvokerInputSender,
@@ -89,10 +92,7 @@ where
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
         status: PartitionProcessorStatus,
-        num_timers_in_memory_limit: Option<usize>,
-        cleanup_interval: Duration,
-        enable_new_invocation_status_table: bool,
-        channel_size: usize,
+        options: &WorkerOptions,
         control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         invoker_tx: InvokerInputSender,
@@ -102,10 +102,12 @@ where
             partition_id,
             partition_key_range,
             status,
-            num_timers_in_memory_limit,
-            enable_new_invocation_status_table,
-            cleanup_interval,
-            channel_size,
+            num_timers_in_memory_limit: options.num_timers_in_memory_limit(),
+            enable_new_invocation_status_table: options
+                .experimental_feature_new_invocation_status_table(),
+            cleanup_interval: options.cleanup_interval(),
+            channel_size: options.internal_queue_length(),
+            max_command_batch_size: options.max_command_batch_size(),
             invoker_tx,
             control_rx,
             status_watch_tx,
@@ -125,6 +127,7 @@ where
             cleanup_interval,
             enable_new_invocation_status_table,
             channel_size,
+            max_command_batch_size,
             invoker_tx,
             control_rx,
             status_watch_tx,
@@ -174,6 +177,7 @@ where
             leadership_state,
             state_machine,
             partition_storage: Some(partition_storage),
+            max_command_batch_size,
             bifrost,
             control_rx,
             status_watch_tx,
@@ -218,6 +222,8 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     status: PartitionProcessorStatus,
+
+    max_command_batch_size: usize,
 
     // will be taken by the `run` method to decouple transactions from self
     partition_storage: Option<PartitionStorage<PartitionStore>>,
@@ -288,8 +294,7 @@ where
             .map_ok(|entry| {
                 trace!(?entry, "Read entry");
                 let lsn = entry.sequence_number();
-                // todo: Use decode_arc and pass references of Envelope downwards
-                let Some(envelope) = entry.try_decode::<Envelope>() else {
+                let Some(envelope) = entry.try_decode_arc::<Envelope>() else {
                     // trim-gap
                     unimplemented!("Handling trim gap is currently not supported")
                 };
@@ -316,12 +321,15 @@ where
         let mut cancellation = std::pin::pin!(cancellation_watcher());
         let partition_id_str: &'static str = Box::leak(Box::new(self.partition_id.to_string()));
         // Telemetry setup
-        let apply_record_latency =
-            histogram!(PP_APPLY_RECORD_DURATION, PARTITION_LABEL => partition_id_str);
+        let apply_command_latency =
+            histogram!(PP_APPLY_COMMAND_DURATION, PARTITION_LABEL => partition_id_str);
         let record_actions_latency = histogram!(PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION);
+        let command_batch_size =
+            histogram!(PP_APPLY_COMMAND_BATCH_SIZE, PARTITION_LABEL => partition_id_str);
         let actuator_effects_handled = counter!(PARTITION_ACTUATOR_HANDLED);
 
         let mut action_collector = ActionCollector::default();
+        let mut command_buffer = Vec::with_capacity(self.max_command_batch_size);
 
         loop {
             tokio::select! {
@@ -337,62 +345,66 @@ where
                         old.updated_at = MillisSinceEpoch::now();
                     });
                 }
-                record = log_reader.next() => {
-                    let command_start = Instant::now();
-                    let Some(record) = record else {
-                        // read stream terminated!
-                        anyhow::bail!("Read stream terminated for partition processor");
-                    };
-                    let record = record??;
-                    trace!(lsn = %record.0, "Processing bifrost record for '{}': {:?}", record.1.command.name(), record.1.header);
+                operation = Self::read_commands(&mut log_reader, self.max_command_batch_size, &mut command_buffer) => {
+                    // check that reading has succeeded
+                    operation?;
+
+                    command_batch_size.record(command_buffer.len() as f64);
 
                     let mut transaction = partition_storage.create_transaction();
-
-                    // clear buffers used when applying the next record
+                    // clear buffers used when applying the next records
                     action_collector.clear();
 
-                    let leadership_change = self.apply_record(
-                        record,
-                        &mut transaction,
-                        &mut action_collector).await?;
+                    for (lsn, envelope) in command_buffer.drain(..) {
+                        let command_start = Instant::now();
 
-                    if let Some((header, announce_leader)) = leadership_change {
-                        // commit all changes so far, this is important so that the actuators see all changes
-                        // when becoming leader.
-                        transaction.commit().await?;
+                        trace!(%lsn, "Processing bifrost record for '{}': {:?}", envelope.command.name(), envelope.header);
 
-                        // We can ignore all actions collected so far because as a new leader we have to instruct the
-                        // actuators afresh.
-                        action_collector.clear();
+                        let leadership_change = self.apply_record(
+                            lsn,
+                            envelope,
+                            &mut transaction,
+                            &mut action_collector).await?;
 
-                        self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
-                        if let Source::Processor { node_id, .. } = header.source {
-                            // all new AnnounceLeader messages should come from a PartitionProcessor
-                            self.status.last_observed_leader_node = Some(node_id);
-                        } else if announce_leader.node_id.is_some() {
-                            // older AnnounceLeader messages have the announce_leader.node_id set
-                            self.status.last_observed_leader_node = announce_leader.node_id;
+                        apply_command_latency.record(command_start.elapsed());
+
+                        if let Some((header, announce_leader)) = leadership_change {
+                            // commit all changes so far, this is important so that the actuators see all changes
+                            // when becoming leader.
+                            transaction.commit().await?;
+
+                            // We can ignore all actions collected so far because as a new leader we have to instruct the
+                            // actuators afresh.
+                            action_collector.clear();
+
+                            self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
+                            if let Source::Processor { node_id, .. } = header.source {
+                                // all new AnnounceLeader messages should come from a PartitionProcessor
+                                self.status.last_observed_leader_node = Some(node_id);
+                            } else if announce_leader.node_id.is_some() {
+                                // older AnnounceLeader messages have the announce_leader.node_id set
+                                self.status.last_observed_leader_node = announce_leader.node_id;
+                            }
+
+                            let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_storage).await?;
+
+                            Span::current().record("is_leader", is_leader);
+
+                            if is_leader {
+                                self.status.effective_mode = RunMode::Leader;
+                            } else {
+                                self.status.effective_mode = RunMode::Follower;
+                            }
+
+                            transaction = partition_storage.create_transaction();
                         }
-
-                        let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_storage).await?;
-
-                        Span::current().record("is_leader", is_leader);
-
-                        if is_leader {
-                            self.status.effective_mode = RunMode::Leader;
-                        } else {
-                            self.status.effective_mode = RunMode::Follower;
-                        }
-
-                        apply_record_latency.record(command_start.elapsed());
-                    } else {
-                        // Commit our changes and notify actuators about actions if we are the leader
-                        transaction.commit().await?;
-                        apply_record_latency.record(command_start.elapsed());
-                        let actions_start = Instant::now();
-                        self.leadership_state.handle_actions(action_collector.drain(..)).await?;
-                        record_actions_latency.record(actions_start.elapsed());
                     }
+
+                    // Commit our changes and notify actuators about actions if we are the leader
+                    transaction.commit().await?;
+                    let actions_start = Instant::now();
+                    self.leadership_state.handle_actions(action_collector.drain(..)).await?;
+                    record_actions_latency.record(actions_start.elapsed());
                 },
                 Some(action_effects) = self.leadership_state.next_action_effects() => {
                     actuator_effects_handled.increment(action_effects.len() as u64);
@@ -437,20 +449,18 @@ where
 
     async fn apply_record(
         &mut self,
-        record: (Lsn, Envelope),
+        lsn: Lsn,
+        envelope: Arc<Envelope>,
         transaction: &mut Transaction<RocksDBTransaction<'_>>,
         action_collector: &mut ActionCollector,
     ) -> Result<Option<(Header, AnnounceLeader)>, state_machine::Error> {
-        let (lsn, envelope) = record;
         transaction.store_applied_lsn(lsn).await?;
 
         // Update replay status
-        self.status.last_applied_log_lsn = Some(record.0);
+        self.status.last_applied_log_lsn = Some(lsn);
         self.status.last_record_applied_at = Some(MillisSinceEpoch::now());
         match self.status.replay_status {
-            ReplayStatus::CatchingUp
-                if self.status.target_tail_lsn.is_some_and(|v| record.0 >= v) =>
-            {
+            ReplayStatus::CatchingUp if self.status.target_tail_lsn.is_some_and(|v| lsn >= v) => {
                 // finished catching up
                 self.status.replay_status = ReplayStatus::Active;
             }
@@ -474,6 +484,9 @@ where
                     )
                     .await;
             }
+
+            // todo: check whether it's worth passing the arc further down
+            let envelope = Arc::unwrap_or_clone(envelope);
 
             if let Command::AnnounceLeader(announce_leader) = envelope.command {
                 // leadership change detected, let's finish our transaction here
@@ -529,5 +542,45 @@ where
         };
 
         Ok(is_duplicate)
+    }
+
+    /// Tries to read as many records from the `log_reader` as are immediately available and stops
+    /// reading at `max_batching_size`.
+    async fn read_commands<S>(
+        log_reader: &mut S,
+        max_batching_size: usize,
+        record_buffer: &mut Vec<(Lsn, Arc<Envelope>)>,
+    ) -> anyhow::Result<()>
+    where
+        S: Stream<Item = Result<anyhow::Result<(Lsn, Arc<Envelope>)>, restate_bifrost::Error>>
+            + Unpin,
+    {
+        // beyond this point we must not await; otherwise we are no longer cancellation safe
+        let first_record = log_reader.next().await;
+
+        let Some(first_record) = first_record else {
+            // read stream terminated!
+            anyhow::bail!("Read stream terminated for partition processor");
+        };
+
+        record_buffer.clear();
+        record_buffer.push(first_record??);
+
+        while record_buffer.len() < max_batching_size {
+            // read more message from the stream but only if they are immediately available
+            if let Some(record) = log_reader.next().now_or_never() {
+                let Some(record) = record else {
+                    // read stream terminated!
+                    anyhow::bail!("Read stream terminated for partition processor");
+                };
+
+                record_buffer.push(record??);
+            } else {
+                // no more immediately available records found
+                break;
+            }
+        }
+
+        Ok(())
     }
 }

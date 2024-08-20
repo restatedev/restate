@@ -27,7 +27,8 @@ pub const PARTITION_LAST_PERSISTED_LOG_LSN: &str = "restate.partition.last_persi
 pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_leader";
 pub const PARTITION_IS_ACTIVE: &str = "restate.partition.is_active";
 
-pub const PP_APPLY_RECORD_DURATION: &str = "restate.partition.apply_record_duration.seconds";
+pub const PP_APPLY_COMMAND_DURATION: &str = "restate.partition.apply_command_duration.seconds";
+pub const PP_APPLY_COMMAND_BATCH_SIZE: &str = "restate.partition.apply_command_batch_size";
 pub const PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION: &str =
     "restate.partition.handle_action_batch_duration.seconds";
 pub const PARTITION_HANDLE_INVOKER_EFFECT_COMMAND: &str =
@@ -57,9 +58,14 @@ pub(crate) fn describe_metrics() {
         "Storage transactions committed by applying partition state machine commands"
     );
     describe_histogram!(
-        PP_APPLY_RECORD_DURATION,
+        PP_APPLY_COMMAND_DURATION,
         Unit::Seconds,
         "Time spent processing a single bifrost message"
+    );
+    describe_histogram!(
+        PP_APPLY_COMMAND_BATCH_SIZE,
+        Unit::Count,
+        "Size of the applied command batch"
     );
     describe_histogram!(
         PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
