@@ -5665,6 +5665,7 @@ dependencies = [
  "hyper-util",
  "metrics",
  "once_cell",
+ "parking_lot",
  "pin-project",
  "prost 0.13.1",
  "prost-types 0.13.1",

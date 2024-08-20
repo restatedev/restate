@@ -25,8 +25,6 @@ use crate::network_server::prometheus_helpers::{
 };
 use crate::network_server::state::NodeCtrlHandlerState;
 
-use super::prometheus_helpers::submit_tokio_metrics;
-
 const ROCKSDB_TICKERS: &[Ticker] = &[
     Ticker::BlockCacheBytesRead,
     Ticker::BlockCacheBytesWrite,
@@ -183,14 +181,7 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
     let mut out = String::new();
 
     // Default tokio runtime metrics
-    submit_tokio_metrics("default", state.task_center.default_runtime_metrics());
-    submit_tokio_metrics("ingress", state.task_center.ingress_runtime_metrics());
-
-    // Partition processor runtimes
-    let processor_runtimes = state.task_center.partition_processors_runtime_metrics();
-    for (task_name, metrics) in processor_runtimes {
-        submit_tokio_metrics(task_name, metrics);
-    }
+    state.task_center.submit_metrics();
 
     // Response content type is plain/text and that's expected.
     if let Some(prometheus_handle) = state.prometheus_handle {

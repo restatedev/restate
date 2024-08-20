@@ -13,10 +13,9 @@ use std::sync::Arc;
 use futures::FutureExt;
 use pin_project::pin_project;
 use tokio::sync::{mpsc, oneshot, Notify};
-use tokio_util::sync::CancellationToken;
 use tracing::{trace, warn};
 
-use restate_core::{task_center, ShutdownError, TaskCenter, TaskId};
+use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle};
 use restate_types::identifiers::PartitionId;
 use restate_types::storage::StorageEncode;
 
@@ -66,34 +65,24 @@ where
         partition_id: Option<PartitionId>,
     ) -> Result<AppenderHandle<T>, ShutdownError> {
         let (tx, rx) = tokio::sync::mpsc::channel(self.queue_capacity);
-        let drain_token = CancellationToken::new();
 
-        // todo: move to `spawn_detached()` when implemented
-        let task_id = task_center.spawn_child(
+        let handle = task_center.spawn_unmanaged(
             restate_core::TaskKind::BifrostAppender,
             name,
             partition_id,
-            {
-                let drain_token = drain_token.clone();
-                async move { self.run(rx, drain_token).await }
-            },
+            self.run(rx),
         )?;
 
         Ok(AppenderHandle {
+            inner_handle: Some(handle),
             sender: Some(LogSender {
                 tx,
                 _phantom: std::marker::PhantomData,
             }),
-            drain_token,
-            task_id,
         })
     }
 
-    async fn run(
-        self,
-        mut rx: mpsc::Receiver<AppendOperation>,
-        drain_handle: CancellationToken,
-    ) -> anyhow::Result<()> {
+    async fn run(self, mut rx: mpsc::Receiver<AppendOperation>) -> Result<()> {
         let Self {
             mut appender,
             max_batch_size,
@@ -103,7 +92,7 @@ where
         } = self;
 
         // fused to avoid a busy loop while draining.
-        let mut drain_fut = std::pin::pin!(drain_handle.cancelled().fuse());
+        let mut drain_fut = std::pin::pin!(cancellation_watcher().fuse());
         loop {
             tokio::select! {
                 _ = &mut drain_fut => {
@@ -176,15 +165,15 @@ where
 pub struct AppenderHandle<T> {
     // This is always Some(). This is only set to None on detach().
     sender: Option<LogSender<T>>,
-    // triggered on Drop
-    drain_token: CancellationToken,
-    task_id: TaskId,
+    inner_handle: Option<TaskHandle<Result<()>>>,
 }
 
 impl<T> Drop for AppenderHandle<T> {
     fn drop(&mut self) {
         // trigger drain on drop but don't block.
-        self.drain_token.cancel();
+        if let Some(handle) = self.inner_handle.as_ref() {
+            handle.cancel()
+        }
     }
 }
 
@@ -199,18 +188,19 @@ impl<T> AppenderHandle<T> {
         sender.unwrap()
     }
 
-    pub async fn drain(self) -> Result<(), ShutdownError> {
-        self.drain_token.cancel();
+    pub async fn drain(mut self) -> Result<(), ShutdownError> {
+        let handle = std::mem::take(&mut self.inner_handle);
+        // We are confident that handle is set. This is option just to support the Drop trait
+        // implementation requirements.
+        let handle = handle.unwrap();
+
+        // trigger the drain
+        handle.cancel();
         // wait for the receiver to drop (appender terminates)
         self.sender.as_ref().unwrap().tx.closed().await;
-        // todo: This is temporary until spawn_detached is implemented in TaskCenter
-        // which returns an owned join handle
-        let Some(task) = task_center().take_task(self.task_id) else {
-            // task already completed
-            return Ok(());
-        };
+
         // What to do if task panics!
-        if let Err(err) = task.await {
+        if let Err(err) = handle.await {
             warn!(
                 ?err,
                 "Appender task might have been cancelled or panicked while draining",
