@@ -2699,7 +2699,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 ..
             } => debug_if_leader!(
                 ctx.is_leader,
-                "Effect: Send response with ingress request id {:?} to ingress: Success",
+                "Send response to ingress with request id '{:?}': Success",
                 request_id
             ),
             ingress::InvocationResponse {
@@ -2708,7 +2708,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 ..
             } => debug_if_leader!(
                 ctx.is_leader,
-                "Effect: Send response with ingress request id {:?} to ingress: Failure({})",
+                "Send response to ingress with request id '{:?}': Failure({})",
                 request_id,
                 e
             ),
