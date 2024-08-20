@@ -9,13 +9,15 @@ publish = false
 
 [features]
 default = []
+# temporary. This feature should be default (or removed) once log-server is enabled by default.
+replicated-loglet = ["restate-types/replicated-loglet"]
 options_schema = ["dep:schemars"]
 test-util = []
 
 [dependencies]
 restate-core = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-types = { workspace = true, features = ["replicated-loglet"] }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
