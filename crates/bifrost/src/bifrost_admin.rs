@@ -22,7 +22,6 @@ use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::Version;
 
 use crate::error::AdminError;
-use crate::loglet::LogletBase;
 use crate::{Bifrost, Error, Result, TailState};
 
 /// Bifrost's Admin API

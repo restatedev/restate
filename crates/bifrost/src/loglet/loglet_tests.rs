@@ -24,7 +24,7 @@ use tokio_stream::StreamExt;
 use tracing::info;
 
 use super::{Loglet, LogletOffset};
-use crate::loglet::{AppendError, LogletBase, LogletReadStream};
+use crate::loglet::{AppendError, LogletReadStream};
 use crate::loglet_wrapper::LogletWrapper;
 use crate::{setup_panic_handler, TailState};
 
@@ -223,7 +223,7 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
     let read_from_offset = Lsn::new(6);
     let mut reader = loglet
         .clone()
-        .create_wrapped_read_stream(KeyFilter::Any, read_from_offset)
+        .create_read_stream(KeyFilter::Any, read_from_offset)
         .await?;
 
     {
@@ -316,7 +316,7 @@ pub async fn single_loglet_readstream_with_trims(
 
     let mut read_stream = loglet
         .clone()
-        .create_wrapped_read_stream(KeyFilter::Any, Lsn::OLDEST)
+        .create_read_stream(KeyFilter::Any, Lsn::OLDEST)
         .await?;
 
     let record = read_stream.next().await.unwrap()?;

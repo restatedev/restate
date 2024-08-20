@@ -22,7 +22,7 @@ use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_types::logs::{KeyFilter, SequenceNumber};
 
-use crate::loglet::{LogletBase, LogletOffset, LogletReadStream, OperationError};
+use crate::loglet::{Loglet, LogletOffset, LogletReadStream, OperationError};
 use crate::providers::local_loglet::record_format::decode_and_filter_record;
 use crate::providers::local_loglet::LogStoreError;
 use crate::{LogEntry, Result, TailState};
