@@ -169,10 +169,9 @@ fn tokio_pp_builder(pp_name: &'static str) -> tokio::runtime::Builder {
     });
 
     builder
-        .worker_threads(2)
-        .max_blocking_threads(2)
-        .event_interval(21)
-        .disable_lifo_slot();
+        .worker_threads(1)
+        .max_blocking_threads(1)
+        .event_interval(21);
 
     builder
 }
