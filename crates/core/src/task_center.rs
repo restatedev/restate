@@ -18,6 +18,7 @@ use futures::{Future, FutureExt};
 use metrics::{counter, gauge};
 use parking_lot::Mutex;
 use tokio::runtime::RuntimeMetrics;
+use tokio::task::LocalSet;
 use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -28,7 +29,8 @@ use restate_types::GenerationalNodeId;
 
 use crate::metric_definitions::{TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED};
 use crate::{
-    metric_definitions, Metadata, ShutdownError, ShutdownSourceErr, TaskHandle, TaskId, TaskKind,
+    metric_definitions, Metadata, RuntimeHandle, ShutdownError, ShutdownSourceErr, TaskHandle,
+    TaskId, TaskKind,
 };
 
 static WORKER_ID: AtomicUsize = const { AtomicUsize::new(0) };
@@ -53,6 +55,14 @@ pub struct TaskContext {
 pub enum TaskCenterBuildError {
     #[error(transparent)]
     Tokio(#[from] tokio::io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeError {
+    #[error("Runtime with name {0} already exists")]
+    AlreadyExists(String),
+    #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
 }
 
 /// Used to create a new task center. In practice, there should be a single task center for the
@@ -143,7 +153,7 @@ impl TaskCenterBuilder {
                 current_exit_code: AtomicI32::new(0),
                 managed_tasks: Mutex::new(HashMap::new()),
                 global_metadata: OnceLock::new(),
-                pp_runtimes: Mutex::new(HashMap::with_capacity(64)),
+                managed_runtimes: Mutex::new(HashMap::with_capacity(64)),
             }),
         })
     }
@@ -157,22 +167,6 @@ fn tokio_builder(prefix: &'static str, common_opts: &CommonOptions) -> tokio::ru
     });
 
     builder.worker_threads(common_opts.default_thread_pool_size());
-
-    builder
-}
-
-fn tokio_pp_builder(pp_name: &'static str) -> tokio::runtime::Builder {
-    let mut builder = tokio::runtime::Builder::new_multi_thread();
-    builder.enable_all().thread_name_fn(move || {
-        let id = WORKER_ID.fetch_add(1, Ordering::Relaxed);
-        format!("rs:{}-{}", pp_name, id)
-    });
-
-    builder
-        .worker_threads(2)
-        .max_blocking_threads(2)
-        .event_interval(21)
-        .disable_lifo_slot();
 
     builder
 }
@@ -194,8 +188,8 @@ impl TaskCenter {
         self.inner.ingress_runtime_handle.metrics()
     }
 
-    pub fn partition_processors_runtime_metrics(&self) -> Vec<(&'static str, RuntimeMetrics)> {
-        let guard = self.inner.pp_runtimes.lock();
+    pub fn managed_runtime_metrics(&self) -> Vec<(&'static str, RuntimeMetrics)> {
+        let guard = self.inner.managed_runtimes.lock();
         guard.iter().map(|(k, v)| (*k, v.metrics())).collect()
     }
 
@@ -205,7 +199,7 @@ impl TaskCenter {
         Self::submit_runtime_metrics("ingress", self.ingress_runtime_metrics());
 
         // Partition processor runtimes
-        let processor_runtimes = self.partition_processors_runtime_metrics();
+        let processor_runtimes = self.managed_runtime_metrics();
         for (task_name, metrics) in processor_runtimes {
             Self::submit_runtime_metrics(task_name, metrics);
         }
@@ -294,6 +288,7 @@ impl TaskCenter {
             info!("** Shutdown requested");
         }
         self.cancel_tasks(None, None).await;
+        self.shutdown_managed_runtimes();
         // notify outer components that we have completed the shutdown.
         self.inner.global_cancel_token.cancel();
         info!("** Shutdown completed in {:?}", start.elapsed());
@@ -357,31 +352,17 @@ impl TaskCenter {
         T: Send + 'static,
     {
         let kind_str: &'static str = kind.into();
+        let runtime_name: &'static str = kind.runtime().into();
         let tokio_task = tokio::task::Builder::new().name(name);
-        let inner_handle = if matches!(kind, TaskKind::PartitionProcessor) {
-            let mut guard = self.inner.pp_runtimes.lock();
-            // special case.
-            let runtime = guard
-                .entry(name)
-                .or_insert_with(|| tokio_pp_builder(name).build().unwrap())
-                .handle();
-
-            counter!(TC_SPAWN, "kind" => kind_str, "runtime" => name).increment(1);
-            tokio_task
-                .spawn_on(fut, runtime)
-                .expect("pp dedicated runtime can be spawned")
-        } else {
-            let runtime_name: &'static str = kind.runtime().into();
-            counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
-            let runtime = match kind.runtime() {
-                crate::AsyncRuntime::Inherit => &tokio::runtime::Handle::current(),
-                crate::AsyncRuntime::Default => &self.inner.default_runtime_handle,
-                crate::AsyncRuntime::Ingress => &self.inner.ingress_runtime_handle,
-            };
-            tokio_task
-                .spawn_on(fut, runtime)
-                .expect("runtime can spawn tasks")
+        counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
+        let runtime = match kind.runtime() {
+            crate::AsyncRuntime::Inherit => &tokio::runtime::Handle::current(),
+            crate::AsyncRuntime::Default => &self.inner.default_runtime_handle,
+            crate::AsyncRuntime::Ingress => &self.inner.ingress_runtime_handle,
         };
+        let inner_handle = tokio_task
+            .spawn_on(fut, runtime)
+            .expect("runtime can spawn tasks");
 
         TaskHandle {
             cancellation_token,
@@ -455,6 +436,147 @@ impl TaskCenter {
     {
         let cancel = CancellationToken::new();
         self.spawn_inner(kind, name, partition_id, cancel, future)
+    }
+
+    /// Must be called within a Localset-scoped task, not from a normal spawned task.
+    /// If ran from a non-localset task, this will panic.
+    pub fn spawn_local<F>(
+        &self,
+        kind: TaskKind,
+        name: &'static str,
+        future: F,
+    ) -> Result<TaskId, ShutdownError>
+    where
+        F: Future<Output = anyhow::Result<()>> + 'static,
+    {
+        let cancellation_token = CancellationToken::new();
+        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
+        let context = TaskContext {
+            id,
+            name,
+            kind,
+            cancellation_token: cancellation_token.clone(),
+            // We must be within task-context already. let's get inherit partition_id
+            partition_id: CONTEXT.with(|c| c.partition_id),
+            metadata: Some(metadata()),
+        };
+
+        Self::spawn_local_inner(self, context, future);
+        Ok(id)
+    }
+
+    fn spawn_local_inner<F>(tc: &TaskCenter, context: TaskContext, future: F)
+    where
+        F: Future<Output = anyhow::Result<()>> + 'static,
+    {
+        let cancel = context.cancellation_token.clone();
+        let name = context.name;
+        let task = Arc::new(Task {
+            context: context.clone(),
+            handle: Mutex::new(None),
+        });
+
+        let inner = tc.inner.clone();
+        inner
+            .managed_tasks
+            .lock()
+            .insert(context.id, Arc::clone(&task));
+        let mut handle_mut = task.handle.lock();
+
+        let fut = wrapper(tc.clone(), context, future);
+
+        let tokio_task = tokio::task::Builder::new().name(name);
+        let inner_handle = tokio_task
+            .spawn_local(fut)
+            //.spawn_local_on(fut, localset)
+            .expect("must run from a LocalSet");
+        *handle_mut = Some(TaskHandle {
+            cancellation_token: cancel,
+            inner_handle,
+        });
+
+        // drop the lock
+        drop(handle_mut);
+    }
+
+    pub fn start_runtime<F>(
+        &self,
+        root_task_kind: TaskKind,
+        runtime_name: &'static str,
+        partition_id: Option<PartitionId>,
+        run: impl FnOnce() -> F + Send + 'static,
+    ) -> Result<TaskId, RuntimeError>
+    where
+        F: Future<Output = anyhow::Result<()>> + 'static,
+    {
+        if self.inner.shutdown_requested.load(Ordering::Relaxed) {
+            return Err(ShutdownError.into());
+        }
+
+        let cancel = CancellationToken::new();
+        let metadata = self.clone_metadata();
+
+        // hold a lock while creating the runtime to avoid concurrent runtimes with the same name
+        let mut runtimes_guard = self.inner.managed_runtimes.lock();
+        if runtimes_guard.contains_key(runtime_name) {
+            warn!(
+                "Failed to start new runtime, a runtime with name {} already exists",
+                runtime_name
+            );
+            return Err(RuntimeError::AlreadyExists(runtime_name.to_owned()));
+        }
+
+        // todo: configure the runtime according to a new runtime kind perhaps?
+        let thread_builder = std::thread::Builder::new().name(format!("rt:{}", runtime_name));
+        let mut builder = tokio::runtime::Builder::new_current_thread();
+        let rt = builder
+            .enable_all()
+            .build()
+            .expect("runtime builder succeeds");
+        let tc = self.clone();
+
+        let rt_handle = Arc::new(RuntimeHandle {
+            cancellation_token: cancel.clone(),
+            inner: rt,
+        });
+
+        runtimes_guard.insert(runtime_name, rt_handle.clone());
+
+        // release the lock.
+        drop(runtimes_guard);
+
+        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
+        let context = TaskContext {
+            id,
+            name: runtime_name,
+            kind: root_task_kind,
+            cancellation_token: cancel,
+            partition_id,
+            metadata,
+        };
+
+        // start the work on the runtime
+        let _ = thread_builder
+            .spawn(move || {
+                let localset = LocalSet::new();
+                {
+                    let _local_guard = localset.enter();
+                    Self::spawn_local_inner(&tc, context, run()); // , &localset);
+                    rt_handle.inner.block_on(localset);
+                }
+                debug!("Runtime {} completed", runtime_name);
+                tc.drop_runtime(runtime_name);
+            })
+            .unwrap();
+
+        Ok(id)
+    }
+
+    fn drop_runtime(&self, name: &'static str) {
+        let mut runtimes_guard = self.inner.managed_runtimes.lock();
+        if runtimes_guard.remove(name).is_some() {
+            trace!("Runtime {} was dropped", name);
+        }
     }
 
     /// Spawn a new task that is a child of the current task. The child task will be cancelled if the parent
@@ -574,6 +696,15 @@ impl TaskCenter {
                 // Possibly one of:
                 //  * The task had not even fully started yet.
                 //  * It was shut down concurrently and already exited (or failed)
+            }
+        }
+    }
+
+    pub fn shutdown_managed_runtimes(&self) {
+        let mut runtimes = self.inner.managed_runtimes.lock();
+        for (_, runtime) in runtimes.drain() {
+            if let Some(runtime) = Arc::into_inner(runtime) {
+                runtime.inner.shutdown_background();
             }
         }
     }
@@ -757,7 +888,7 @@ impl TaskCenter {
 struct TaskCenterInner {
     default_runtime_handle: tokio::runtime::Handle,
     ingress_runtime_handle: tokio::runtime::Handle,
-    pp_runtimes: Mutex<HashMap<&'static str, tokio::runtime::Runtime>>,
+    managed_runtimes: Mutex<HashMap<&'static str, Arc<RuntimeHandle>>>,
     /// We hold on to the owned Runtime to ensure it's dropped when task center is dropped. If this
     /// is None, it means that it's the responsibility of the Handle owner to correctly drop
     /// tokio's runtime after dropping the task center.
@@ -811,7 +942,7 @@ task_local! {
 /// task-local variables and calls the payload function.
 async fn wrapper<F>(task_center: TaskCenter, context: TaskContext, future: F)
 where
-    F: Future<Output = anyhow::Result<()>> + Send + 'static,
+    F: Future<Output = anyhow::Result<()>> + 'static,
 {
     let id = context.id;
     trace!(kind = ?context.kind, name = ?context.name, "Starting task {}", context.id);
@@ -833,7 +964,7 @@ where
 /// Like wrapper but doesn't call on_finish nor it catches panics
 async fn unmanaged_wrapper<F, T>(task_center: TaskCenter, context: TaskContext, future: F) -> T
 where
-    F: Future<Output = T> + Send + 'static,
+    F: Future<Output = T> + 'static,
 {
     trace!(kind = ?context.kind, name = ?context.name, "Starting task {}", context.id);
 

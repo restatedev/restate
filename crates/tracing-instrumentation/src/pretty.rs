@@ -48,9 +48,21 @@ impl<'a> Display for FmtLevel<'a> {
     }
 }
 
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Pretty<T> {
+    display_thread_name: bool,
+    display_thread_id: bool,
     timer: T,
+}
+
+impl<T: Default> Default for Pretty<T> {
+    fn default() -> Self {
+        Self {
+            display_thread_name: true,
+            display_thread_id: false,
+            timer: Default::default(),
+        }
+    }
 }
 
 impl<T: FormatTime> Pretty<T> {
@@ -143,6 +155,25 @@ where
         } else {
             Style::new()
         };
+
+        let thread = self.display_thread_name || self.display_thread_id;
+
+        if thread {
+            write!(writer, "{} ", dimmed.paint("on"))?;
+            let thread = std::thread::current();
+            if self.display_thread_name {
+                if let Some(name) = thread.name() {
+                    write!(writer, "{}", name)?;
+                    if self.display_thread_id {
+                        writer.write_char(' ')?;
+                    }
+                }
+            }
+            if self.display_thread_id {
+                write!(writer, "{:?}", thread.id())?;
+            }
+            writer.write_char('\n')?;
+        }
 
         let span = event
             .parent()
