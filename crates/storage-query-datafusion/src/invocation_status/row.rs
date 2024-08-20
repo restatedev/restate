@@ -138,8 +138,23 @@ fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, output: &mut String,
 
 #[inline]
 fn fill_timestamps(row: &mut SysInvocationStatusRowBuilder, stat: &StatusTimestamps) {
+    // SAFETY: All these unsafe usages to get timestamps are ok,
+    //  as we don't use them as part of the PP state machine business logic.
+
     row.created_at(unsafe { stat.creation_time() }.as_u64() as i64);
     row.modified_at(unsafe { stat.modification_time() }.as_u64() as i64);
+    if let Some(inboxed_at) = unsafe { stat.inboxed_transition_time() } {
+        row.inboxed_at(inboxed_at.as_u64() as i64);
+    }
+    if let Some(scheduled_at) = unsafe { stat.scheduled_transition_time() } {
+        row.scheduled_at(scheduled_at.as_u64() as i64);
+    }
+    if let Some(running_at) = unsafe { stat.running_transition_time() } {
+        row.running_at(running_at.as_u64() as i64);
+    }
+    if let Some(completed_at) = unsafe { stat.completed_transition_time() } {
+        row.completed_at(completed_at.as_u64() as i64);
+    }
 }
 
 #[inline]

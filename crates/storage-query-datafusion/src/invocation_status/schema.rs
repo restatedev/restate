@@ -80,4 +80,16 @@ define_table!(sys_invocation_status(
     /// Timestamp indicating the last invocation status transition. For example, last time the
     /// status changed from `invoked` to `suspended`.
     modified_at: DataType::Date64,
+
+    /// Timestamp indicating when the invocation was inboxed, if ever.
+    inboxed_at: DataType::Date64,
+
+    /// Timestamp indicating when the invocation was scheduled, if ever.
+    scheduled_at: DataType::Date64,
+
+    /// Timestamp indicating when the invocation first transitioned to running, if ever.
+    running_at: DataType::Date64,
+
+    /// Timestamp indicating when the invocation was completed, if ever.
+    completed_at: DataType::Date64,
 ));
