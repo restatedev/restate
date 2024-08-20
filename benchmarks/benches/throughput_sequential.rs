@@ -17,8 +17,16 @@ use http::Uri;
 use pprof::criterion::{Output, PProfProfiler};
 use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{fmt, EnvFilter};
 
 fn throughput_benchmark(criterion: &mut Criterion) {
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
+
     let config = restate_benchmarks::restate_configuration();
     let tc = restate_benchmarks::spawn_restate(config);
 

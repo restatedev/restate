@@ -18,17 +18,17 @@ use futures_util::{future, TryFutureExt};
 use http::header::CONTENT_TYPE;
 use http::Uri;
 use pprof::flamegraph::Options;
+use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind};
+use restate_node::Node;
 use restate_rocksdb::RocksDbManager;
 use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_types::config::{
     CommonOptionsBuilder, Configuration, ConfigurationBuilder, WorkerOptionsBuilder,
 };
 use restate_types::live::Constant;
-use tokio::runtime::Runtime;
-
-use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind};
-use restate_node::Node;
 use restate_types::retries::RetryPolicy;
+use tokio::runtime::Runtime;
+use tracing::warn;
 
 pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     let client = reqwest::Client::builder()
@@ -81,12 +81,16 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     });
 
     assert!(health_response
-        .expect("Discovery must be successful")
+        .expect("health check must be successful")
         .status()
         .is_success(),);
 }
 
 pub fn spawn_restate(config: Configuration) -> TaskCenter {
+    if rlimit::increase_nofile_limit(u64::MAX).is_err() {
+        warn!("Failed to increase the number of open file descriptors limit.");
+    }
+
     let tc = TaskCenterBuilder::default()
         .options(config.common.clone())
         .build()

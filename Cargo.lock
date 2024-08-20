@@ -5509,9 +5509,12 @@ dependencies = [
  "restate-rocksdb",
  "restate-server",
  "restate-types",
+ "rlimit",
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
