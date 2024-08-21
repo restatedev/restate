@@ -94,18 +94,23 @@ impl From<LeaderEpoch> for crate::protobuf::common::LeaderEpoch {
 )]
 #[repr(transparent)]
 #[serde(transparent)]
-pub struct PartitionId(u64);
+pub struct PartitionId(u16);
+
+impl From<PartitionId> for u32 {
+    fn from(value: PartitionId) -> Self {
+        value.0 as u32
+    }
+}
 
 impl PartitionId {
     /// It's your responsibility to ensure the value is within the valid range.
-    pub const fn new_unchecked(v: u64) -> Self {
+    pub const fn new_unchecked(v: u16) -> Self {
         Self(v)
     }
 
-    pub const MIN: Self = Self(u64::MIN);
-    // LogIds (bifrost) are capped at 62bits to allow for internal logs, the largest
-    // partition ID cannot exceed this value.
-    pub const MAX: Self = Self((1 << 62) - 1);
+    pub const MIN: Self = Self(u16::MIN);
+    // 65535 partitions.
+    pub const MAX: Self = Self(u16::MAX);
 
     #[inline]
     pub fn next(self) -> Self {

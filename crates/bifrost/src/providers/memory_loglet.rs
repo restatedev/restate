@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{hash_map, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::ready;
 use std::task::Poll;
@@ -114,8 +114,8 @@ pub struct MemoryLoglet {
     #[debug(skip)]
     log: Mutex<Vec<ErasedInputRecord>>,
     // internal offset _before_ the loglet head. Loglet head is trim_point_offset.next()
-    trim_point_offset: AtomicU64,
-    last_committed_offset: AtomicU64,
+    trim_point_offset: AtomicU32,
+    last_committed_offset: AtomicU32,
     sealed: AtomicBool,
     // watches the tail state of ths loglet
     #[debug(skip)]
@@ -128,8 +128,8 @@ impl MemoryLoglet {
             params,
             log: Mutex::new(Vec::new()),
             // Trim point is 0 initially
-            trim_point_offset: AtomicU64::new(0),
-            last_committed_offset: AtomicU64::new(0),
+            trim_point_offset: AtomicU32::new(0),
+            last_committed_offset: AtomicU32::new(0),
             sealed: AtomicBool::new(false),
             tail_watch: TailOffsetWatch::new(TailState::new(false, LogletOffset::OLDEST)),
         })
@@ -224,7 +224,7 @@ impl MemoryReadStream {
     }
 }
 
-impl LogletReadStream<LogletOffset> for MemoryReadStream {
+impl LogletReadStream for MemoryReadStream {
     /// Current read pointer. This points to the next offset to be read.
     fn read_pointer(&self) -> LogletOffset {
         self.read_pointer
@@ -322,7 +322,7 @@ impl Loglet for MemoryLoglet {
         filter: KeyFilter,
         from: LogletOffset,
         to: Option<LogletOffset>,
-    ) -> Result<SendableLogletReadStream<LogletOffset>, OperationError> {
+    ) -> Result<SendableLogletReadStream, OperationError> {
         Ok(Box::pin(
             MemoryReadStream::create(self, filter, from, to).await,
         ))

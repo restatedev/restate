@@ -24,7 +24,7 @@ use tokio_stream::StreamExt;
 use tracing::info;
 
 use super::{Loglet, LogletOffset};
-use crate::loglet::{AppendError, LogletReadStream};
+use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::{setup_panic_handler, TailState};
 

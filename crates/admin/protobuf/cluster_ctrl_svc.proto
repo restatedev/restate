@@ -47,7 +47,7 @@ enum TailState {
 }
 
 message DescribeLogRequest {
-  uint64 log_id = 1;
+  uint32 log_id = 1;
 }
 
 message DescribeLogResponse {
@@ -65,6 +65,6 @@ message ListNodesResponse {
 }
 
 message TrimLogRequest {
-  uint64 log_id = 1;
+  uint32 log_id = 1;
   uint64 trim_point = 2;
 }

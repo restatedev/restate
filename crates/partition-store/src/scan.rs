@@ -13,7 +13,7 @@ use crate::scan::TableScan::{
     FullScanPartitionKeyRange, KeyRangeInclusiveInSinglePartition, SinglePartition,
     SinglePartitionKeyPrefix,
 };
-use crate::{ScanMode, TableKind};
+use crate::{PaddedPartitionId, ScanMode, TableKind};
 use bytes::BytesMut;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::ops::RangeInclusive;
@@ -65,6 +65,7 @@ impl<K: TableKey> From<TableScan<K>> for PhysicalScan {
                 }
             }
             SinglePartition(partition_id) => {
+                let partition_id = PaddedPartitionId::from(partition_id);
                 let mut prefix_start = BytesMut::with_capacity(
                     partition_id.serialized_length() + KeyKind::SERIALIZED_LENGTH,
                 );

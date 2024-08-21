@@ -9,7 +9,6 @@ publish = false
 
 [features]
 test-util = []
-serde = ["dep:serde"]
 
 [dependencies]
 restate-types = { workspace = true }
@@ -22,7 +21,7 @@ futures-util = { workspace = true }
 opentelemetry = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
-serde = { workspace = true, optional = true }
+serde = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 

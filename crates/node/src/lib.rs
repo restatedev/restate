@@ -450,7 +450,7 @@ impl Node {
 
         // sanity check
         if partition_table.num_partitions()
-            != u64::try_from(logs.num_logs()).expect("usize fits into u64")
+            != u16::try_from(logs.num_logs()).expect("usize fits into u16")
         {
             return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.num_logs())))?;
         }
@@ -510,7 +510,7 @@ impl Node {
     async fn fetch_or_insert_logs_configuration(
         metadata_store_client: &MetadataStoreClient,
         config: &Configuration,
-        num_partitions: u64,
+        num_partitions: u16,
     ) -> Result<Logs, Error> {
         Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
             metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {

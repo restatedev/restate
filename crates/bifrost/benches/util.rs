@@ -22,7 +22,7 @@ use tracing::warn;
 
 pub async fn spawn_environment(
     config: Configuration,
-    num_logs: u64,
+    num_logs: u16,
     provider: ProviderKind,
 ) -> TaskCenter {
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {

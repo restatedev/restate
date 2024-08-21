@@ -31,7 +31,7 @@ use super::keys::RecordKey;
 use super::LocalLoglet;
 
 pub(crate) struct LocalLogletReadStream {
-    log_id: u64,
+    loglet_id: u64,
     filter: KeyFilter,
     /// Buffer for serialization
     serde_buffer: BytesMut,
@@ -113,7 +113,7 @@ impl LocalLogletReadStream {
         };
 
         Ok(Self {
-            log_id: loglet.loglet_id,
+            loglet_id: loglet.loglet_id,
             filter,
             serde_buffer,
             loglet,
@@ -127,7 +127,7 @@ impl LocalLogletReadStream {
     }
 }
 
-impl LogletReadStream<LogletOffset> for LocalLogletReadStream {
+impl LogletReadStream for LocalLogletReadStream {
     /// Current read pointer. This points to the next offset to be read.
     fn read_pointer(&self) -> LogletOffset {
         self.read_pointer
@@ -200,14 +200,14 @@ impl Stream for LocalLogletReadStream {
                 let trim_gap = LogEntry::new_trim_gap(self.read_pointer, trim_point);
                 // next record should be beyond at the head
                 self.read_pointer = head_offset;
-                let key = RecordKey::new(self.log_id, trim_point);
+                let key = RecordKey::new(self.loglet_id, trim_point);
                 // park the iterator at the trim point, next iteration will seek it forward.
                 let key_bytes = key.encode_and_split(&mut self.serde_buffer);
                 self.iterator.seek(key_bytes);
                 return Poll::Ready(Some(Ok(trim_gap)));
             }
 
-            let key = RecordKey::new(self.log_id, self.read_pointer);
+            let key = RecordKey::new(self.loglet_id, self.read_pointer);
             if self.iterator.valid() {
                 // can move to next.
                 self.iterator.next();
@@ -232,7 +232,7 @@ impl Stream for LocalLogletReadStream {
                 // We have a bug! we shouldn't be in this location where the record
                 // doesn't exist but we expect it to!
                 error!(
-                    log_id = self.log_id,
+                    log_id = self.loglet_id,
                     read_pointer = %self.read_pointer,
                     trim_point = %potentially_different_trim_point,
                     last_known_tail = %self.last_known_tail,
@@ -246,9 +246,9 @@ impl Stream for LocalLogletReadStream {
             debug_assert_eq!(loaded_key.offset, key.offset);
 
             // Defensive, the upper_bound set on the iterator should prevent this.
-            if loaded_key.loglet_id != self.log_id {
+            if loaded_key.loglet_id != self.loglet_id {
                 warn!(
-                    log_id = self.log_id,
+                    log_id = self.loglet_id,
                     "read_after moved to the adjacent log {}, that should not happen.\
                     This is harmless but needs to be investigated!",
                     key.loglet_id,
