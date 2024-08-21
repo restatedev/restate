@@ -16,12 +16,13 @@ use serde::{Deserialize, Serialize};
 
 use restate_types::logs::{KeyFilter, MatchKeyQuery};
 
-use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn, SequenceNumber};
+use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn};
 use restate_types::storage::{
     PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode,
 };
 use restate_types::time::NanosSinceEpoch;
 
+use crate::loglet::LogletOffset;
 use crate::LsnExt;
 
 /// An entry in the log.
@@ -29,12 +30,28 @@ use crate::LsnExt;
 /// The entry might represent a data record or a placeholder for a trim gap if the log is trimmed
 /// at this position.
 #[derive(Debug)]
-pub struct LogEntry<S: SequenceNumber = Lsn> {
+pub struct LogEntry<S = Lsn> {
     offset: S,
     record: MaybeRecord<S>,
 }
 
-impl<S: SequenceNumber> LogEntry<S> {
+impl LogEntry<LogletOffset> {
+    pub(crate) fn with_base_lsn(self, base_lsn: Lsn) -> LogEntry<Lsn> {
+        let record = match self.record {
+            MaybeRecord::TrimGap(TrimGap { to }) => MaybeRecord::TrimGap(TrimGap {
+                to: base_lsn.offset_by(to),
+            }),
+            MaybeRecord::Data(record) => MaybeRecord::Data(record),
+        };
+
+        LogEntry {
+            offset: base_lsn.offset_by(self.offset),
+            record,
+        }
+    }
+}
+
+impl<S: Copy> LogEntry<S> {
     pub(crate) fn new_data(offset: S, record: Record) -> Self {
         Self {
             offset,
@@ -47,20 +64,6 @@ impl<S: SequenceNumber> LogEntry<S> {
         LogEntry {
             offset,
             record: MaybeRecord::TrimGap(TrimGap { to }),
-        }
-    }
-
-    pub(crate) fn with_base_lsn(self, base_lsn: Lsn) -> LogEntry<Lsn> {
-        let record = match self.record {
-            MaybeRecord::TrimGap(TrimGap { to }) => MaybeRecord::TrimGap(TrimGap {
-                to: base_lsn.offset_by(to),
-            }),
-            MaybeRecord::Data(record) => MaybeRecord::Data(record),
-        };
-
-        LogEntry {
-            offset: base_lsn.offset_by(self.offset),
-            record,
         }
     }
 
@@ -213,13 +216,13 @@ impl MatchKeyQuery for Record {
 }
 
 #[derive(Debug, derive_more::IsVariant)]
-enum MaybeRecord<S: SequenceNumber = Lsn> {
+enum MaybeRecord<S = Lsn> {
     TrimGap(TrimGap<S>),
     Data(Record),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct TrimGap<S: SequenceNumber> {
+struct TrimGap<S> {
     /// to is inclusive
     pub to: S,
 }
