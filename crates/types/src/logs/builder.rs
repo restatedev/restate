@@ -152,7 +152,7 @@ mod tests {
         // a builder with 2 logs
         let mut builder = LogsBuilder::default();
         let chain = builder.add_log(
-            LogId::from(1),
+            LogId::new(1),
             Chain::new(ProviderKind::InMemory, LogletParams::from("test1")),
         )?;
 
@@ -188,15 +188,15 @@ mod tests {
         // fails.
         assert_that!(
             builder.add_log(
-                LogId::from(1),
+                LogId::new(1),
                 Chain::new(ProviderKind::InMemory, LogletParams::from("test1"),)
             ),
-            err(pat!(BuilderError::LogAlreadyExists(eq(LogId::from(1)))))
+            err(pat!(BuilderError::LogAlreadyExists(eq(LogId::new(1)))))
         );
 
         builder
             .add_log(
-                LogId::from(2),
+                LogId::new(2),
                 Chain::new(ProviderKind::InMemory, LogletParams::from("test2")),
             )
             .unwrap();
@@ -206,7 +206,7 @@ mod tests {
 
         assert_eq!(
             Lsn::OLDEST,
-            logs.chain(&LogId::from(1)).unwrap().tail().base_lsn
+            logs.chain(&LogId::new(1)).unwrap().tail().base_lsn
         );
 
         Ok(())
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_add_segments() -> googletest::Result<()> {
-        let log_id = LogId::from(1);
+        let log_id = LogId::new(1);
         let mut builder = LogsBuilder::default();
         let mut chain = builder.add_log(
             log_id,
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn test_find_segments() -> googletest::Result<()> {
-        let log_id = LogId::from(1);
+        let log_id = LogId::new(1);
         let mut builder = LogsBuilder::default();
         let mut chain = builder.add_log(
             log_id,
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_trim_log_single_segment() -> googletest::Result<()> {
-        let log_id = LogId::from(1);
+        let log_id = LogId::new(1);
         let mut builder = LogsBuilder::default();
         builder.add_log(
             log_id,
@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_trim_log_multi_segment() -> googletest::Result<()> {
-        let log_id = LogId::from(1);
+        let log_id = LogId::new(1);
         let mut builder = LogsBuilder::default();
         let mut chain = builder.add_log(
             log_id,

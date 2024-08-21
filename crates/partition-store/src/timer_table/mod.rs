@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
-use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
+use crate::{PaddedPartitionId, PartitionStore, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
@@ -25,7 +25,7 @@ define_table_key!(
     Timers,
     KeyKind::Timers,
     TimersKey(
-        partition_id: PartitionId,
+        partition_id: PaddedPartitionId,
         timestamp: u64,
         kind: TimerKeyKind,
     )
@@ -34,7 +34,7 @@ define_table_key!(
 #[inline]
 fn write_timer_key(partition_id: PartitionId, timer_key: &TimerKey) -> TimersKey {
     TimersKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .timestamp(timer_key.timestamp)
         .kind(timer_key.kind.clone())
 }
@@ -114,7 +114,7 @@ fn exclusive_start_key_range(
         let lower_bound = write_timer_key(partition_id, &next_timer_key);
 
         let upper_bound = TimersKey::default()
-            .partition_id(partition_id)
+            .partition_id(partition_id.into())
             .timestamp(u64::MAX);
 
         TableScan::KeyRangeInclusiveInSinglePartition(partition_id, lower_bound, upper_bound)
