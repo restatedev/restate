@@ -42,6 +42,7 @@ async fn storage_test_environment() -> PartitionStore {
     //
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
+        .ingress_runtime_handle(tokio::runtime::Handle::current())
         .build()
         .expect("task_center builds");
     tc.run_in_scope_sync("db-manager-init", None, || {
