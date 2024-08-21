@@ -17,27 +17,30 @@ use restate_types::logs::{Lsn, SequenceNumber};
 use crate::loglet::{AppendError, LogletOffset};
 
 // Only implemented for LSNs
-pub(crate) trait LsnExt: SequenceNumber {
+pub(crate) trait LsnExt
+where
+    Self: Sized + Into<u64>,
+{
     /// Converts a loglet offset into the virtual address (LSN).
     ///
     /// # Panics
     ///
     /// On conversion overflow this function will panic.
     #[track_caller]
-    fn offset_by<S: SequenceNumber>(self, offset: S) -> Self {
+    fn offset_by(self, offset: LogletOffset) -> Lsn {
         // We subtract from OLDEST because loglets might start offsets from a non-zero value.
         // 1 is the oldest valid offset within a loglet, 0 is an invalid offset.
-        debug_assert!(offset >= S::OLDEST);
+        debug_assert!(offset >= LogletOffset::OLDEST);
         let self_raw: u64 = self.into();
-        let offset_raw: u64 = offset.into();
+        let offset_raw: u32 = offset.into();
 
         let offset_from_zero = offset_raw
-            .checked_sub(S::OLDEST.into())
-            .expect("offset is => OLDEST offset");
+            .checked_sub(LogletOffset::OLDEST.into())
+            .expect("offset is >= OLDEST offset");
 
-        Self::from(
+        Lsn::from(
             self_raw
-                .checked_add(offset_from_zero)
+                .checked_add(offset_from_zero as u64)
                 .expect("offset to lsn conversion to not overflow"),
         )
     }
@@ -53,13 +56,15 @@ pub(crate) trait LsnExt: SequenceNumber {
         assert!(base_lsn > Lsn::INVALID);
         let base_lsn_raw: u64 = base_lsn.into();
         let self_raw: u64 = self.into();
-        let oldest_offset: u64 = LogletOffset::OLDEST.into();
+        let oldest_offset: u32 = LogletOffset::OLDEST.into();
         assert!(self_raw >= base_lsn_raw);
 
-        LogletOffset(
+        LogletOffset::new(
             (self_raw - base_lsn_raw)
-                .checked_add(oldest_offset)
-                .expect("offset+base_lsn within LSN bounds"),
+                .checked_add(oldest_offset as u64)
+                .expect("offset+base_lsn within LSN bounds")
+                .try_into()
+                .expect("LogletOffset must fit within u32"),
         )
     }
 }
@@ -251,6 +256,7 @@ mod tests {
         assert_eq!(Lsn::from(109), base_lsn.offset_by(offset));
 
         // validate we panic on overflow
+        let base_lsn = Lsn::new(u64::from(Lsn::MAX) - 100);
         let offset = LogletOffset::MAX;
         assert!(std::panic::catch_unwind(|| base_lsn.offset_by(offset)).is_err());
     }
