@@ -13,6 +13,7 @@ use std::task::{ready, Poll};
 
 use futures::FutureExt;
 use strum::EnumProperty;
+use tokio::runtime::RuntimeMetrics;
 use tokio_util::sync::CancellationToken;
 
 use crate::ShutdownError;
@@ -186,5 +187,30 @@ impl<T> std::future::Future for TaskHandle<T> {
             Ok(v) => Poll::Ready(Ok(v)),
             Err(_) => Poll::Ready(Err(ShutdownError)),
         }
+    }
+}
+
+/// A handle for a dedicated runtime managed by task-center
+pub struct RuntimeHandle {
+    pub(crate) cancellation_token: CancellationToken,
+    pub(crate) inner: tokio::runtime::Runtime,
+}
+
+impl RuntimeHandle {
+    /// Trigger graceful shutdown of the runtime. This will trigger the cancellation token of the
+    /// root localset running on this runtime. Shutdown is not guaranteed, it depends on whether
+    /// the root localset awaits the cancellation token or not.
+    pub fn cancel(&self) {
+        self.cancellation_token.cancel()
+    }
+
+    pub fn metrics(&self) -> RuntimeMetrics {
+        self.inner.metrics()
+    }
+
+    /// Returns true if cancellation was requested. Note that this doesn't mean that
+    /// the runtime has been terminated.
+    pub fn is_cancellation_requested(&self) -> bool {
+        self.cancellation_token.is_cancelled()
     }
 }
