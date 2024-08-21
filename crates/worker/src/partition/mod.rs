@@ -25,9 +25,14 @@ use restate_bifrost::{Bifrost, FindTailAttributes};
 use restate_core::cancellation_watcher;
 use restate_core::metadata;
 use restate_core::network::Networking;
-use restate_partition_store::{PartitionStore, RocksDBTransaction};
-use restate_storage_api::deduplication_table::{DedupInformation, DedupSequenceNumber, ProducerId};
-use restate_storage_api::{invocation_status_table, StorageError};
+use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
+use restate_storage_api::deduplication_table::{
+    DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
+    ReadOnlyDeduplicationTable,
+};
+use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
+use restate_storage_api::outbox_table::ReadOnlyOutboxTable;
+use restate_storage_api::{invocation_status_table, StorageError, Transaction};
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::config::WorkerOptions;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
@@ -39,21 +44,20 @@ use restate_types::GenerationalNodeId;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
-use self::storage::invoker::InvokerStorageReader;
 use crate::metric_definitions::{
     PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
     PP_APPLY_COMMAND_BATCH_SIZE, PP_APPLY_COMMAND_DURATION,
 };
+use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
 use crate::partition::state_machine::{ActionCollector, StateMachine};
-use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
 
 mod action_effect_handler;
 mod cleaner;
+pub mod invoker_storage_reader;
 mod leadership;
 pub mod shuffle;
 mod state_machine;
-pub mod storage;
 pub mod types;
 
 /// Control messages from Manager to individual partition processor instances.
@@ -118,7 +122,7 @@ where
         self,
         networking: Networking,
         bifrost: Bifrost,
-        partition_store: PartitionStore,
+        mut partition_store: PartitionStore,
     ) -> Result<PartitionProcessor<Codec, InvokerInputSender>, StorageError> {
         let PartitionProcessorBuilder {
             partition_id,
@@ -135,17 +139,14 @@ where
             ..
         } = self;
 
-        let mut partition_storage =
-            PartitionStorage::new(partition_id, partition_key_range.clone(), partition_store);
-
         let state_machine = Self::create_state_machine::<Codec>(
-            &mut partition_storage,
+            &mut partition_store,
             partition_key_range.clone(),
             enable_new_invocation_status_table,
         )
         .await?;
 
-        let last_seen_leader_epoch = partition_storage
+        let last_seen_leader_epoch = partition_store
             .get_dedup_sequence_number(&ProducerId::self_producer())
             .await?
             .map(|dedup| {
@@ -176,8 +177,8 @@ where
             partition_key_range,
             leadership_state,
             state_machine,
-            partition_storage: Some(partition_storage),
             max_command_batch_size,
+            partition_store: Some(partition_store),
             bifrost,
             control_rx,
             status_watch_tx,
@@ -186,16 +187,16 @@ where
     }
 
     async fn create_state_machine<Codec>(
-        partition_storage: &mut PartitionStorage<PartitionStore>,
+        partition_store: &mut PartitionStore,
         partition_key_range: RangeInclusive<PartitionKey>,
         enable_new_invocation_status_table: bool,
     ) -> Result<StateMachine<Codec>, StorageError>
     where
         Codec: RawEntryCodec + Default + Debug,
     {
-        let inbox_seq_number = partition_storage.load_inbox_seq_number().await?;
-        let outbox_seq_number = partition_storage.load_outbox_seq_number().await?;
-        let outbox_head_seq_number = partition_storage.get_outbox_head_seq_number().await?;
+        let inbox_seq_number = partition_store.get_inbox_seq_number().await?;
+        let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
+        let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
 
         let state_machine = StateMachine::new(
             inbox_seq_number,
@@ -226,7 +227,7 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
     max_command_batch_size: usize,
 
     // will be taken by the `run` method to decouple transactions from self
-    partition_storage: Option<PartitionStorage<PartitionStore>>,
+    partition_store: Option<PartitionStore>,
 }
 
 impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
@@ -236,11 +237,11 @@ where
 {
     #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<()> {
-        let mut partition_storage = self
-            .partition_storage
+        let mut partition_store = self
+            .partition_store
             .take()
             .expect("partition storage must be configured");
-        let last_applied_lsn = partition_storage.load_applied_lsn().await?;
+        let last_applied_lsn = partition_store.get_applied_lsn().await?;
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
 
         self.status.last_applied_log_lsn = Some(last_applied_lsn);
@@ -351,8 +352,9 @@ where
 
                     command_batch_size.record(command_buffer.len() as f64);
 
-                    let mut transaction = partition_storage.create_transaction();
-                    // clear buffers used when applying the next records
+                    let mut transaction = partition_store.transaction();
+
+                    // clear buffers used when applying the next record
                     action_collector.clear();
 
                     for (lsn, envelope) in command_buffer.drain(..) {
@@ -386,7 +388,7 @@ where
                                 self.status.last_observed_leader_node = announce_leader.node_id;
                             }
 
-                            let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_storage).await?;
+                            let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_store).await?;
 
                             Span::current().record("is_leader", is_leader);
 
@@ -396,7 +398,7 @@ where
                                 self.status.effective_mode = RunMode::Follower;
                             }
 
-                            transaction = partition_storage.create_transaction();
+                            transaction = partition_store.transaction();
                         }
                     }
 
@@ -447,14 +449,14 @@ where
         Ok(())
     }
 
-    async fn apply_record(
+    async fn apply_record<'a, 'b: 'a>(
         &mut self,
         lsn: Lsn,
         envelope: Arc<Envelope>,
-        transaction: &mut Transaction<RocksDBTransaction<'_>>,
+        transaction: &mut PartitionStoreTransaction<'b>,
         action_collector: &mut ActionCollector,
     ) -> Result<Option<(Header, AnnounceLeader)>, state_machine::Error> {
-        transaction.store_applied_lsn(lsn).await?;
+        transaction.put_applied_lsn(lsn).await;
 
         // Update replay status
         self.status.last_applied_log_lsn = Some(lsn);
@@ -478,9 +480,9 @@ where
                     return Ok(None);
                 }
                 transaction
-                    .store_dedup_sequence_number(
+                    .put_dedup_seq_number(
                         dedup_information.producer_id.clone(),
-                        dedup_information.sequence_number,
+                        &dedup_information.sequence_number,
                     )
                     .await;
             }
@@ -524,7 +526,7 @@ where
 
     async fn is_outdated_or_duplicate(
         dedup_information: &DedupInformation,
-        dedup_resolver: &mut impl DedupSequenceNumberResolver,
+        dedup_resolver: &mut PartitionStoreTransaction<'_>,
     ) -> Result<bool, StorageError> {
         let last_dsn = dedup_resolver
             .get_dedup_sequence_number(&dedup_information.producer_id)

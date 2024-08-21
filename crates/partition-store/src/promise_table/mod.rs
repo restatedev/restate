@@ -12,7 +12,7 @@ use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan;
 use crate::{PartitionStore, TableKind, TableScanIterationDecision};
-use crate::{RocksDBTransaction, StorageAccess};
+use crate::{PartitionStoreTransaction, StorageAccess};
 use anyhow::anyhow;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -84,7 +84,7 @@ fn put_promise<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
     key: &ByteString,
-    metadata: Promise,
+    metadata: &Promise,
 ) {
     storage.put_kv(create_key(service_id, key), metadata);
 }
@@ -111,6 +111,7 @@ impl ReadOnlyPromiseTable for PartitionStore {
         service_id: &ServiceId,
         key: &ByteString,
     ) -> Result<Option<Promise>> {
+        self.assert_partition_key(service_id);
         get_promise(self, service_id, key)
     }
 
@@ -122,12 +123,13 @@ impl ReadOnlyPromiseTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyPromiseTable for RocksDBTransaction<'a> {
+impl<'a> ReadOnlyPromiseTable for PartitionStoreTransaction<'a> {
     async fn get_promise(
         &mut self,
         service_id: &ServiceId,
         key: &ByteString,
     ) -> Result<Option<Promise>> {
+        self.assert_partition_key(service_id);
         get_promise(self, service_id, key)
     }
 
@@ -139,12 +141,14 @@ impl<'a> ReadOnlyPromiseTable for RocksDBTransaction<'a> {
     }
 }
 
-impl<'a> PromiseTable for RocksDBTransaction<'a> {
-    async fn put_promise(&mut self, service_id: &ServiceId, key: &ByteString, metadata: Promise) {
-        put_promise(self, service_id, key, metadata)
+impl<'a> PromiseTable for PartitionStoreTransaction<'a> {
+    async fn put_promise(&mut self, service_id: &ServiceId, key: &ByteString, promise: &Promise) {
+        self.assert_partition_key(service_id);
+        put_promise(self, service_id, key, promise)
     }
 
     async fn delete_all_promises(&mut self, service_id: &ServiceId) {
+        self.assert_partition_key(service_id);
         delete_all_promises(self, service_id)
     }
 }

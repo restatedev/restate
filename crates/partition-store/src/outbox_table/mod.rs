@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Outbox;
-use crate::{PartitionStore, RocksDBTransaction, StorageAccess, TableScan};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan};
 
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
@@ -30,7 +30,7 @@ fn add_message<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
     message_index: u64,
-    outbox_message: OutboxMessage,
+    outbox_message: &OutboxMessage,
 ) {
     let key = OutboxKey::default()
         .partition_id(partition_id)
@@ -117,82 +117,56 @@ fn truncate_outbox<S: StorageAccess>(
 }
 
 impl ReadOnlyOutboxTable for PartitionStore {
-    async fn get_outbox_head_seq_number(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> Result<Option<u64>> {
-        get_outbox_head_seq_number(self, partition_id)
+    async fn get_outbox_head_seq_number(&mut self) -> Result<Option<u64>> {
+        get_outbox_head_seq_number(self, self.partition_id())
     }
 }
 
 impl OutboxTable for PartitionStore {
-    async fn add_message(
-        &mut self,
-        partition_id: PartitionId,
-        message_index: u64,
-        outbox_message: OutboxMessage,
-    ) {
-        add_message(self, partition_id, message_index, outbox_message)
+    async fn put_outbox_message(&mut self, message_index: u64, outbox_message: &OutboxMessage) {
+        add_message(self, self.partition_id(), message_index, outbox_message)
     }
 
     async fn get_next_outbox_message(
         &mut self,
-        partition_id: PartitionId,
         next_sequence_number: u64,
     ) -> Result<Option<(u64, OutboxMessage)>> {
-        get_next_outbox_message(self, partition_id, next_sequence_number)
+        get_next_outbox_message(self, self.partition_id(), next_sequence_number)
     }
 
-    async fn get_outbox_message(
-        &mut self,
-        partition_id: PartitionId,
-        sequence_number: u64,
-    ) -> Result<Option<OutboxMessage>> {
-        get_outbox_message(self, partition_id, sequence_number)
+    async fn get_outbox_message(&mut self, sequence_number: u64) -> Result<Option<OutboxMessage>> {
+        get_outbox_message(self, self.partition_id(), sequence_number)
     }
 
-    async fn truncate_outbox(&mut self, partition_id: PartitionId, range: RangeInclusive<u64>) {
-        truncate_outbox(self, partition_id, range)
+    async fn truncate_outbox(&mut self, range: RangeInclusive<u64>) {
+        truncate_outbox(self, self.partition_id(), range)
     }
 }
 
-impl<'a> ReadOnlyOutboxTable for RocksDBTransaction<'a> {
-    async fn get_outbox_head_seq_number(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> Result<Option<u64>> {
-        get_outbox_head_seq_number(self, partition_id)
+impl<'a> ReadOnlyOutboxTable for PartitionStoreTransaction<'a> {
+    async fn get_outbox_head_seq_number(&mut self) -> Result<Option<u64>> {
+        get_outbox_head_seq_number(self, self.partition_id())
     }
 }
 
-impl<'a> OutboxTable for RocksDBTransaction<'a> {
-    async fn add_message(
-        &mut self,
-        partition_id: PartitionId,
-        message_index: u64,
-        outbox_message: OutboxMessage,
-    ) {
-        add_message(self, partition_id, message_index, outbox_message)
+impl<'a> OutboxTable for PartitionStoreTransaction<'a> {
+    async fn put_outbox_message(&mut self, message_index: u64, outbox_message: &OutboxMessage) {
+        add_message(self, self.partition_id(), message_index, outbox_message)
     }
 
     async fn get_next_outbox_message(
         &mut self,
-        partition_id: PartitionId,
         next_sequence_number: u64,
     ) -> Result<Option<(u64, OutboxMessage)>> {
-        get_next_outbox_message(self, partition_id, next_sequence_number)
+        get_next_outbox_message(self, self.partition_id(), next_sequence_number)
     }
 
-    async fn get_outbox_message(
-        &mut self,
-        partition_id: PartitionId,
-        sequence_number: u64,
-    ) -> Result<Option<OutboxMessage>> {
-        get_outbox_message(self, partition_id, sequence_number)
+    async fn get_outbox_message(&mut self, sequence_number: u64) -> Result<Option<OutboxMessage>> {
+        get_outbox_message(self, self.partition_id(), sequence_number)
     }
 
-    async fn truncate_outbox(&mut self, partition_id: PartitionId, range: RangeInclusive<u64>) {
-        truncate_outbox(self, partition_id, range)
+    async fn truncate_outbox(&mut self, range: RangeInclusive<u64>) {
+        truncate_outbox(self, self.partition_id(), range)
     }
 }
 

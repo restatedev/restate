@@ -6495,6 +6495,7 @@ dependencies = [
  "bytestring",
  "codederror",
  "derive_builder",
+ "derive_more",
  "futures",
  "googletest",
  "humantime",

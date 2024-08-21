@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 use crate::{protobuf_storage_encode_decode, Result};
-use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use std::future::Future;
 use std::ops::RangeInclusive;
@@ -39,35 +39,25 @@ impl WithPartitionKey for OutboxMessage {
 }
 
 pub trait ReadOnlyOutboxTable {
-    fn get_outbox_head_seq_number(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> impl Future<Output = Result<Option<u64>>> + Send;
+    fn get_outbox_head_seq_number(&mut self) -> impl Future<Output = Result<Option<u64>>> + Send;
 }
 
 pub trait OutboxTable: ReadOnlyOutboxTable {
-    fn add_message(
+    fn put_outbox_message(
         &mut self,
-        partition_id: PartitionId,
         message_index: u64,
-        outbox_message: OutboxMessage,
+        outbox_message: &OutboxMessage,
     ) -> impl Future<Output = ()> + Send;
 
     fn get_next_outbox_message(
         &mut self,
-        partition_id: PartitionId,
         next_sequence_number: u64,
     ) -> impl Future<Output = Result<Option<(u64, OutboxMessage)>>> + Send;
 
     fn get_outbox_message(
         &mut self,
-        partition_id: PartitionId,
         sequence_number: u64,
     ) -> impl Future<Output = Result<Option<OutboxMessage>>> + Send;
 
-    fn truncate_outbox(
-        &mut self,
-        partition_id: PartitionId,
-        range: RangeInclusive<u64>,
-    ) -> impl Future<Output = ()> + Send;
+    fn truncate_outbox(&mut self, range: RangeInclusive<u64>) -> impl Future<Output = ()> + Send;
 }

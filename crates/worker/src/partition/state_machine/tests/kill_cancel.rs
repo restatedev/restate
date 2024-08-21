@@ -94,11 +94,7 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
         }))
     );
 
-    let partition_id = test_env.partition_id();
-    let outbox_message = test_env
-        .storage()
-        .get_next_outbox_message(partition_id, 0)
-        .await?;
+    let outbox_message = test_env.storage().get_next_outbox_message(0).await?;
 
     assert_that!(
         outbox_message,
@@ -142,24 +138,24 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     tx.put_journal_entry(
         &invocation_id,
         1,
-        uncompleted_invoke_entry(call_invocation_id),
+        &uncompleted_invoke_entry(call_invocation_id),
     )
     .await;
     tx.put_journal_entry(
         &invocation_id,
         2,
-        background_invoke_entry(background_call_invocation_id),
+        &background_invoke_entry(background_call_invocation_id),
     )
     .await;
     tx.put_journal_entry(
         &invocation_id,
         3,
-        completed_invoke_entry(finished_call_invocation_id),
+        &completed_invoke_entry(finished_call_invocation_id),
     )
     .await;
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await?;
     invocation_status.get_journal_metadata_mut().unwrap().length = 4;
-    tx.put_invocation_status(&invocation_id, invocation_status)
+    tx.put_invocation_status(&invocation_id, &invocation_status)
         .await;
     tx.commit().await?;
 
@@ -237,7 +233,6 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
         .await;
 
     // Let's add some journal entries
-    let partition_id = test_env.partition_id();
     let mut tx = test_env.storage.transaction();
     let journal = create_termination_journal(
         call_invocation_id,
@@ -257,18 +252,17 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
         })
         .unwrap();
     for (idx, entry) in journal.into_iter().enumerate() {
-        tx.put_journal_entry(&invocation_id, (idx + 1) as u32, entry)
+        tx.put_journal_entry(&invocation_id, (idx + 1) as u32, &entry)
             .await;
     }
     // Update journal length
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await?;
     invocation_status.get_journal_metadata_mut().unwrap().length =
         (journal_length + 1) as EntryIndex;
-    tx.put_invocation_status(&invocation_id, invocation_status)
+    tx.put_invocation_status(&invocation_id, &invocation_status)
         .await;
     // Add timer
-    tx.add_timer(
-        partition_id,
+    tx.put_timer(
         &TimerKey {
             timestamp: 1337,
             kind: TimerKeyKind::CompleteJournalEntry {
@@ -276,7 +270,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
                 journal_index: (sleep_entry_idx + 1) as u32,
             },
         },
-        Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
+        &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
     )
     .await;
     tx.commit().await?;
@@ -300,7 +294,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     assert_that!(
         test_env
             .storage
-            .next_timers_greater_than(test_env.partition_id(), None, usize::MAX)
+            .next_timers_greater_than(None, usize::MAX)
             .try_collect::<Vec<_>>()
             .await?,
         empty()
@@ -366,7 +360,6 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         .await;
 
     // Let's add some journal entries
-    let partition_id = test_env.partition_id();
     let mut tx = test_env.storage.transaction();
     let journal = create_termination_journal(
         call_invocation_id,
@@ -386,7 +379,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         })
         .unwrap();
     for (idx, entry) in journal.into_iter().enumerate() {
-        tx.put_journal_entry(&invocation_id, (idx + 1) as u32, entry)
+        tx.put_journal_entry(&invocation_id, (idx + 1) as u32, &entry)
             .await;
     }
     // Update journal length and suspend invocation
@@ -395,15 +388,14 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     in_flight_meta.journal_metadata.length = (journal_length + 1) as EntryIndex;
     tx.put_invocation_status(
         &invocation_id,
-        InvocationStatus::Suspended {
+        &InvocationStatus::Suspended {
             metadata: in_flight_meta,
             waiting_for_completed_entries: HashSet::from([3, 4, 5, 6]),
         },
     )
     .await;
     // Add timer
-    tx.add_timer(
-        partition_id,
+    tx.put_timer(
         &TimerKey {
             timestamp: 1337,
             kind: TimerKeyKind::CompleteJournalEntry {
@@ -411,7 +403,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
                 journal_index: (sleep_entry_idx + 1) as u32,
             },
         },
-        Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
+        &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
     )
     .await;
     tx.commit().await?;
@@ -435,7 +427,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     assert_that!(
         test_env
             .storage
-            .next_timers_greater_than(test_env.partition_id(), None, usize::MAX)
+            .next_timers_greater_than(None, usize::MAX)
             .try_collect::<Vec<_>>()
             .await?,
         empty()

@@ -39,7 +39,7 @@ pub trait VirtualObjectStatusTable: ReadOnlyVirtualObjectStatusTable {
     fn put_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
-        status: VirtualObjectStatus,
+        status: &VirtualObjectStatus,
     ) -> impl Future<Output = ()> + Send;
 
     fn delete_virtual_object_status(

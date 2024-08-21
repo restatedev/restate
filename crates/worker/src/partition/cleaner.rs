@@ -192,9 +192,8 @@ mod tests {
             std::future::pending()
         }
 
-        fn invoked_invocations(
+        fn all_invoked_invocations(
             &mut self,
-            _: RangeInclusive<PartitionKey>,
         ) -> impl Stream<Item = restate_storage_api::Result<(InvocationId, InvocationTarget)>> + Send
         {
             todo!();

@@ -13,7 +13,7 @@ use crate::keys::{define_table_key, KeyKind};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan::FullScanPartitionKeyRange;
 use crate::TableKind::Journal;
-use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
@@ -48,7 +48,7 @@ fn put_journal_entry<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journal_index: u32,
-    journal_entry: JournalEntry,
+    journal_entry: &JournalEntry,
 ) {
     let key = write_journal_entry_key(invocation_id, journal_index);
 
@@ -140,6 +140,7 @@ impl ReadOnlyJournalTable for PartitionStore {
         invocation_id: &InvocationId,
         journal_index: u32,
     ) -> Result<Option<JournalEntry>> {
+        self.assert_partition_key(invocation_id);
         let _x = RocksDbPerfGuard::new("get-journal-entry");
         get_journal_entry(self, invocation_id, journal_index)
     }
@@ -149,6 +150,7 @@ impl ReadOnlyJournalTable for PartitionStore {
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
+        self.assert_partition_key(invocation_id);
         stream::iter(get_journal(self, invocation_id, journal_length))
     }
 
@@ -160,12 +162,13 @@ impl ReadOnlyJournalTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyJournalTable for RocksDBTransaction<'a> {
+impl<'a> ReadOnlyJournalTable for PartitionStoreTransaction<'a> {
     async fn get_journal_entry(
         &mut self,
         invocation_id: &InvocationId,
         journal_index: u32,
     ) -> Result<Option<JournalEntry>> {
+        self.assert_partition_key(invocation_id);
         let _x = RocksDbPerfGuard::new("get-journal-entry");
         get_journal_entry(self, invocation_id, journal_index)
     }
@@ -175,6 +178,7 @@ impl<'a> ReadOnlyJournalTable for RocksDBTransaction<'a> {
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
+        self.assert_partition_key(invocation_id);
         stream::iter(get_journal(self, invocation_id, journal_length))
     }
 
@@ -186,17 +190,19 @@ impl<'a> ReadOnlyJournalTable for RocksDBTransaction<'a> {
     }
 }
 
-impl<'a> JournalTable for RocksDBTransaction<'a> {
+impl<'a> JournalTable for PartitionStoreTransaction<'a> {
     async fn put_journal_entry(
         &mut self,
         invocation_id: &InvocationId,
         journal_index: u32,
-        journal_entry: JournalEntry,
+        journal_entry: &JournalEntry,
     ) {
+        self.assert_partition_key(invocation_id);
         put_journal_entry(self, invocation_id, journal_index, journal_entry)
     }
 
     async fn delete_journal(&mut self, invocation_id: &InvocationId, journal_length: EntryIndex) {
+        self.assert_partition_key(invocation_id);
         let _x = RocksDbPerfGuard::new("delete-journal");
         delete_journal(self, invocation_id, journal_length)
     }

@@ -18,13 +18,13 @@ const FIXTURE_INVOCATION: InvocationUuid =
 async fn populate_data<T: VirtualObjectStatusTable>(txn: &mut T) {
     txn.put_virtual_object_status(
         &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-        VirtualObjectStatus::Locked(InvocationId::from_parts(1337, FIXTURE_INVOCATION)),
+        &VirtualObjectStatus::Locked(InvocationId::from_parts(1337, FIXTURE_INVOCATION)),
     )
     .await;
 
     txn.put_virtual_object_status(
         &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
-        VirtualObjectStatus::Locked(InvocationId::from_parts(1337, FIXTURE_INVOCATION)),
+        &VirtualObjectStatus::Locked(InvocationId::from_parts(1337, FIXTURE_INVOCATION)),
     )
     .await;
 }

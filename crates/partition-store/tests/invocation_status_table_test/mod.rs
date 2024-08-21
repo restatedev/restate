@@ -113,31 +113,31 @@ fn suspended_status(
 async fn populate_data<T: InvocationStatusTable>(txn: &mut T) {
     txn.put_invocation_status(
         &INVOCATION_ID_1,
-        invoked_status(INVOCATION_TARGET_1.clone(), SourceTable::Old),
+        &invoked_status(INVOCATION_TARGET_1.clone(), SourceTable::Old),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_2,
-        invoked_status(INVOCATION_TARGET_2.clone(), SourceTable::Old),
+        &invoked_status(INVOCATION_TARGET_2.clone(), SourceTable::Old),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_3,
-        suspended_status(INVOCATION_TARGET_3.clone(), SourceTable::Old),
+        &suspended_status(INVOCATION_TARGET_3.clone(), SourceTable::Old),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_4,
-        invoked_status(INVOCATION_TARGET_4.clone(), SourceTable::New),
+        &invoked_status(INVOCATION_TARGET_4.clone(), SourceTable::New),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_5,
-        suspended_status(INVOCATION_TARGET_5.clone(), SourceTable::New),
+        &suspended_status(INVOCATION_TARGET_5.clone(), SourceTable::New),
     )
     .await;
 }
@@ -159,7 +159,7 @@ async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
 }
 
 async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut T) {
-    let stream = txn.invoked_invocations(0..=u64::MAX);
+    let stream = txn.all_invoked_invocations();
 
     let expected = vec![
         (*INVOCATION_ID_1, INVOCATION_TARGET_1.clone()),

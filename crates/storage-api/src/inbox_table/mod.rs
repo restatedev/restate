@@ -100,8 +100,8 @@ pub trait ReadOnlyInboxTable {
 pub trait InboxTable: ReadOnlyPromiseTable {
     fn put_inbox_entry(
         &mut self,
-        service_id: &ServiceId,
-        inbox_entry: SequenceNumberInboxEntry,
+        sequence_number: MessageIndex,
+        inbox_entry: &InboxEntry,
     ) -> impl Future<Output = ()> + Send;
 
     fn delete_inbox_entry(

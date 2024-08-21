@@ -41,21 +41,21 @@ async fn test_idempotency_key() {
     let mut txn = rocksdb.transaction();
     txn.put_idempotency_metadata(
         &IDEMPOTENCY_ID_1,
-        IdempotencyMetadata {
+        &IdempotencyMetadata {
             invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_1),
         },
     )
     .await;
     txn.put_idempotency_metadata(
         &IDEMPOTENCY_ID_2,
-        IdempotencyMetadata {
+        &IdempotencyMetadata {
             invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_2),
         },
     )
     .await;
     txn.put_idempotency_metadata(
         &IDEMPOTENCY_ID_3,
-        IdempotencyMetadata {
+        &IdempotencyMetadata {
             invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_3),
         },
     )

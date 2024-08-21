@@ -15,7 +15,7 @@ use googletest::{assert_that, pat};
 use restate_partition_store::PartitionStore;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
 use restate_storage_api::Transaction;
-use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionId, ServiceId};
+use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use std::pin::pin;
 
@@ -23,11 +23,8 @@ const FIXTURE_INVOCATION_UUID: InvocationUuid =
     InvocationUuid::from_parts(1706027034946, 12345678900001);
 const FIXTURE_INVOCATION: InvocationId = InvocationId::from_parts(1337, FIXTURE_INVOCATION_UUID);
 
-const PARTITION1337: PartitionId = PartitionId::new_unchecked(1337);
-
 async fn populate_data<T: TimerTable>(txn: &mut T) {
-    txn.add_timer(
-        PARTITION1337,
+    txn.put_timer(
         &TimerKey {
             kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION.invocation_uuid(),
@@ -35,12 +32,11 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             },
             timestamp: 0,
         },
-        Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 0),
+        &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 0),
     )
     .await;
 
-    txn.add_timer(
-        PARTITION1337,
+    txn.put_timer(
         &TimerKey {
             kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION.invocation_uuid(),
@@ -48,30 +44,28 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             },
             timestamp: 0,
         },
-        Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 1),
+        &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 1),
     )
     .await;
 
     let service_invocation = ServiceInvocation {
         ..mock_service_invocation(ServiceId::new("svc-2", "key-2"))
     };
-    txn.add_timer(
-        PARTITION1337,
+    txn.put_timer(
         &TimerKey {
             kind: TimerKeyKind::Invoke {
                 invocation_uuid: service_invocation.invocation_id.invocation_uuid(),
             },
             timestamp: 1,
         },
-        Timer::Invoke(service_invocation),
+        &Timer::Invoke(service_invocation),
     )
     .await;
 
     //
     // add a successor and a predecessor partitions
     //
-    txn.add_timer(
-        PARTITION1337,
+    txn.put_timer(
         &TimerKey {
             kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION_UUID,
@@ -79,26 +73,13 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             },
             timestamp: 0,
         },
-        Timer::CompleteJournalEntry(InvocationId::from_parts(1336, FIXTURE_INVOCATION_UUID), 0),
-    )
-    .await;
-
-    txn.add_timer(
-        PartitionId::from(1338),
-        &TimerKey {
-            kind: TimerKeyKind::CompleteJournalEntry {
-                invocation_uuid: FIXTURE_INVOCATION_UUID,
-                journal_index: 0,
-            },
-            timestamp: 0,
-        },
-        Timer::CompleteJournalEntry(InvocationId::from_parts(1338, FIXTURE_INVOCATION_UUID), 0),
+        &Timer::CompleteJournalEntry(InvocationId::from_parts(1336, FIXTURE_INVOCATION_UUID), 0),
     )
     .await;
 }
 
 async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T) {
-    let mut stream = pin!(txn.next_timers_greater_than(PARTITION1337, None, usize::MAX));
+    let mut stream = pin!(txn.next_timers_greater_than(None, usize::MAX));
 
     let mut count = 0;
     while stream.next().await.is_some() {
@@ -116,7 +97,7 @@ async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
         },
         timestamp: 0,
     };
-    let mut stream = pin!(txn.next_timers_greater_than(PARTITION1337, Some(timer_key), usize::MAX));
+    let mut stream = pin!(txn.next_timers_greater_than(Some(timer_key), usize::MAX));
 
     if let Some(Ok((key, _))) = stream.next().await {
         // make sure that we skip the first timer that has a journal_index of 0
@@ -140,16 +121,13 @@ async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
 }
 
 async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
-    txn.delete_timer(
-        PARTITION1337,
-        &TimerKey {
-            kind: TimerKeyKind::CompleteJournalEntry {
-                invocation_uuid: FIXTURE_INVOCATION_UUID,
-                journal_index: 0,
-            },
-            timestamp: 0,
+    txn.delete_timer(&TimerKey {
+        kind: TimerKeyKind::CompleteJournalEntry {
+            invocation_uuid: FIXTURE_INVOCATION_UUID,
+            journal_index: 0,
         },
-    )
+        timestamp: 0,
+    })
     .await;
 }
 
@@ -161,8 +139,7 @@ async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
         },
         timestamp: 0,
     };
-    let mut stream =
-        pin!(txn.next_timers_greater_than(PARTITION1337, Some(timer_key), usize::MAX,));
+    let mut stream = pin!(txn.next_timers_greater_than(Some(timer_key), usize::MAX,));
 
     if let Some(Ok((key, _))) = stream.next().await {
         assert_that!(

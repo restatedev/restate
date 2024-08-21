@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Deduplication;
 use crate::{
-    PartitionStore, RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
 };
 use futures::Stream;
 use futures_util::stream;
@@ -72,46 +72,37 @@ fn get_all_sequence_numbers<S: StorageAccess>(
 impl ReadOnlyDeduplicationTable for PartitionStore {
     async fn get_dedup_sequence_number(
         &mut self,
-        partition_id: PartitionId,
         producer_id: &ProducerId,
     ) -> Result<Option<DedupSequenceNumber>> {
-        get_dedup_sequence_number(self, partition_id, producer_id)
+        get_dedup_sequence_number(self, self.partition_id(), producer_id)
     }
 
-    fn get_all_sequence_numbers(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> impl Stream<Item = Result<DedupInformation>> + Send {
-        get_all_sequence_numbers(self, partition_id)
+    fn get_all_sequence_numbers(&mut self) -> impl Stream<Item = Result<DedupInformation>> + Send {
+        get_all_sequence_numbers(self, self.partition_id())
     }
 }
 
-impl<'a> ReadOnlyDeduplicationTable for RocksDBTransaction<'a> {
+impl<'a> ReadOnlyDeduplicationTable for PartitionStoreTransaction<'a> {
     async fn get_dedup_sequence_number(
         &mut self,
-        partition_id: PartitionId,
         producer_id: &ProducerId,
     ) -> Result<Option<DedupSequenceNumber>> {
-        get_dedup_sequence_number(self, partition_id, producer_id)
+        get_dedup_sequence_number(self, self.partition_id(), producer_id)
     }
 
-    fn get_all_sequence_numbers(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> impl Stream<Item = Result<DedupInformation>> + Send {
-        get_all_sequence_numbers(self, partition_id)
+    fn get_all_sequence_numbers(&mut self) -> impl Stream<Item = Result<DedupInformation>> + Send {
+        get_all_sequence_numbers(self, self.partition_id())
     }
 }
 
-impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
+impl<'a> DeduplicationTable for PartitionStoreTransaction<'a> {
     async fn put_dedup_seq_number(
         &mut self,
-        partition_id: PartitionId,
         producer_id: ProducerId,
-        dedup_sequence_number: DedupSequenceNumber,
+        dedup_sequence_number: &DedupSequenceNumber,
     ) {
         let key = DeduplicationKey::default()
-            .partition_id(partition_id)
+            .partition_id(self.partition_id())
             .producer_id(producer_id);
         self.put_kv(key, dedup_sequence_number);
     }

@@ -11,9 +11,8 @@
 use crate::Result;
 use bytes::Bytes;
 use futures_util::Stream;
-use restate_types::identifiers::{PartitionKey, ServiceId};
+use restate_types::identifiers::ServiceId;
 use std::future::Future;
-use std::ops::RangeInclusive;
 
 pub trait ReadOnlyStateTable {
     fn get_user_state(
@@ -27,10 +26,7 @@ pub trait ReadOnlyStateTable {
         service_id: &ServiceId,
     ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send;
 
-    fn get_all_user_states(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send;
+    fn get_all_user_states(&self) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send;
 }
 
 pub trait StateTable: ReadOnlyStateTable {

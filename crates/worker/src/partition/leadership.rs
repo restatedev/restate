@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::OptionFuture;
-use futures::{future, stream, StreamExt};
+use futures::{future, stream, StreamExt, TryStreamExt};
 use metrics::counter;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -32,10 +32,14 @@ use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
+use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::timer_table::{TimerKey, TimerTable};
 use restate_timer::TokioClock;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::logs::LogId;
+use restate_types::message::MessageIndex;
 use restate_types::net::ingress;
 use restate_types::storage::StorageEncodeError;
 use restate_types::GenerationalNodeId;
@@ -43,18 +47,17 @@ use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
-use super::storage::invoker::InvokerStorageReader;
 use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
 use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::cleaner::Cleaner;
-use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
+use crate::partition::invoker_storage_reader::InvokerStorageReader;
+use crate::partition::shuffle;
+use crate::partition::shuffle::{HintSender, OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
-use crate::partition::{shuffle, storage};
 
 const BATCH_READY_UP_TO: usize = 10;
 
-type PartitionStorage = storage::PartitionStorage<PartitionStore>;
-type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, PartitionStorage>;
+type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -253,7 +256,7 @@ where
     pub async fn on_announce_leader(
         &mut self,
         announce_leader: AnnounceLeader,
-        partition_storage: &mut PartitionStorage,
+        partition_store: &mut PartitionStore,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
 
@@ -269,7 +272,7 @@ where
                     }
                     Ordering::Equal => {
                         debug!("Won the leadership campaign. Becoming the strong leader now.");
-                        self.become_leader(partition_storage).await?
+                        self.become_leader(partition_store).await?
                     }
                     Ordering::Greater => {
                         debug!("Observed an intermittent leader. Still believing to win the leadership campaign.");
@@ -295,10 +298,7 @@ where
         Ok(self.is_leader())
     }
 
-    async fn become_leader(
-        &mut self,
-        partition_storage: &mut PartitionStorage,
-    ) -> Result<(), Error> {
+    async fn become_leader(&mut self, partition_store: &mut PartitionStore) -> Result<(), Error> {
         if let State::Candidate(leader_epoch) = self.state {
             let invoker_rx = Self::resume_invoked_invocations(
                 &mut self.invoker_tx,
@@ -306,7 +306,7 @@ where
                 self.partition_processor_metadata
                     .partition_key_range
                     .clone(),
-                partition_storage,
+                partition_store,
                 self.channel_size,
             )
             .await?;
@@ -314,7 +314,7 @@ where
             let timer_service = Box::pin(TimerService::new(
                 TokioClock,
                 self.num_timers_in_memory_limit,
-                partition_storage.clone(),
+                TimerReader::from(partition_store.clone()),
             ));
 
             let (shuffle_tx, shuffle_rx) = mpsc::channel(self.channel_size);
@@ -325,7 +325,7 @@ where
                     leader_epoch,
                     self.partition_processor_metadata.node_id,
                 ),
-                partition_storage.clone(),
+                OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
                 self.channel_size,
                 self.bifrost.clone(),
@@ -354,7 +354,7 @@ where
                 self.partition_processor_metadata.partition_id,
                 leader_epoch,
                 self.partition_processor_metadata.node_id,
-                partition_storage.clone().into_inner(),
+                partition_store.clone(),
                 self.bifrost.clone(),
                 self.partition_processor_metadata
                     .partition_key_range
@@ -391,24 +391,23 @@ where
         invoker_handle: &mut I,
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
-        partition_storage: &mut PartitionStorage,
+        partition_store: &mut PartitionStore,
         channel_size: usize,
     ) -> Result<mpsc::Receiver<restate_invoker_api::Effect>, Error> {
         let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
 
-        let storage = partition_storage.clone_storage();
         invoker_handle
             .register_partition(
                 partition_leader_epoch,
                 partition_key_range,
-                InvokerStorageReader::new(storage),
+                InvokerStorageReader::new(partition_store.clone()),
                 invoker_tx,
             )
             .await
             .map_err(Error::Invoker)?;
 
         {
-            let invoked_invocations = partition_storage.scan_invoked_invocations();
+            let invoked_invocations = partition_store.all_invoked_invocations();
             tokio::pin!(invoked_invocations);
 
             let mut count = 0;
@@ -692,6 +691,47 @@ where
     }
 }
 
+#[derive(Debug, derive_more::From)]
+struct TimerReader(PartitionStore);
+
+impl restate_timer::TimerReader<TimerKeyValue> for TimerReader {
+    async fn get_timers(
+        &mut self,
+        num_timers: usize,
+        previous_timer_key: Option<TimerKey>,
+    ) -> Vec<TimerKeyValue> {
+        self.0
+            .next_timers_greater_than(previous_timer_key.as_ref(), num_timers)
+            .map(|result| result.map(|(timer_key, timer)| TimerKeyValue::new(timer_key, timer)))
+            // TODO: Update timer service to maintain transaction while reading the timer stream: See https://github.com/restatedev/restate/issues/273
+            // have to collect the stream because it depends on the local transaction
+            .try_collect::<Vec<_>>()
+            .await
+            // TODO: Extend TimerReader to return errors: See https://github.com/restatedev/restate/issues/274
+            .expect("timer deserialization should not fail")
+    }
+}
+
+#[derive(Debug, derive_more::From)]
+struct OutboxReader(PartitionStore);
+
+impl shuffle::OutboxReader for OutboxReader {
+    async fn get_next_message(
+        &mut self,
+        next_sequence_number: MessageIndex,
+    ) -> Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError> {
+        let result = if let Some((message_index, outbox_message)) =
+            self.0.get_next_outbox_message(next_sequence_number).await?
+        {
+            Some((message_index, outbox_message))
+        } else {
+            None
+        };
+
+        Ok(result)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TaskError {
     #[error(transparent)]
@@ -700,9 +740,7 @@ pub(crate) enum TaskError {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::leadership::{
-        LeadershipState, PartitionProcessorMetadata, PartitionStorage, State,
-    };
+    use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
     use restate_core::TestCoreEnv;
@@ -789,7 +827,7 @@ mod tests {
                 }
             );
 
-            let storage = partition_store_manager
+            let mut partition_store = partition_store_manager
                 .open_partition_store(
                     PARTITION_ID,
                     PARTITION_KEY_RANGE,
@@ -797,10 +835,8 @@ mod tests {
                     &rocksdb_options,
                 )
                 .await?;
-            let mut partition_storage =
-                PartitionStorage::new(PARTITION_ID, PARTITION_KEY_RANGE, storage);
             state
-                .on_announce_leader(announce_leader, &mut partition_storage)
+                .on_announce_leader(announce_leader, &mut partition_store)
                 .await?;
 
             assert!(matches!(state.state, State::Leader(_)));

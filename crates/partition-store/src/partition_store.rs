@@ -33,7 +33,7 @@ use restate_core::ShutdownError;
 use restate_rocksdb::{RocksDb, RocksError};
 use restate_storage_api::{Storage, StorageError, Transaction};
 
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 
 use crate::keys::KeyKind;
@@ -245,12 +245,18 @@ impl PartitionStore {
         }
     }
 
+    #[inline]
     pub fn partition_id(&self) -> PartitionId {
         self.partition_id
     }
 
     pub fn partition_key_range(&self) -> &RangeInclusive<PartitionKey> {
         &self.key_range
+    }
+
+    #[inline]
+    pub fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) {
+        assert_partition_key(&self.key_range, partition_key);
     }
 
     pub fn contains_partition_key(&self, key: PartitionKey) -> bool {
@@ -335,7 +341,7 @@ impl PartitionStore {
     }
 
     #[allow(clippy::needless_lifetimes)]
-    pub fn transaction(&mut self) -> RocksDBTransaction {
+    pub fn transaction(&mut self) -> PartitionStoreTransaction {
         let rocksdb = self.rocksdb.clone();
         // An optimization to avoid looking up the cf handle everytime, if we split into more
         // column families, we will need to cache those cfs here as well.
@@ -350,12 +356,14 @@ impl PartitionStore {
                 )
             });
 
-        RocksDBTransaction {
+        PartitionStoreTransaction {
             txn: self.raw_db.transaction(),
             data_cf_handle,
             rocksdb,
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
+            partition_id: self.partition_id,
+            partition_key_range: &self.key_range,
         }
     }
 
@@ -380,7 +388,7 @@ fn find_cf_handle<'a>(
 }
 
 impl Storage for PartitionStore {
-    type TransactionType<'a> = RocksDBTransaction<'a>;
+    type TransactionType<'a> = PartitionStoreTransaction<'a>;
 
     fn transaction(&mut self) -> Self::TransactionType<'_> {
         PartitionStore::transaction(self)
@@ -444,7 +452,9 @@ pub enum ScanMode {
     TotalOrder,
 }
 
-pub struct RocksDBTransaction<'a> {
+pub struct PartitionStoreTransaction<'a> {
+    partition_id: PartitionId,
+    partition_key_range: &'a RangeInclusive<PartitionKey>,
     txn: rocksdb::Transaction<'a, DB>,
     rocksdb: Arc<RocksDb>,
     data_cf_handle: Arc<BoundColumnFamily<'a>>,
@@ -452,7 +462,7 @@ pub struct RocksDBTransaction<'a> {
     value_buffer: &'a mut BytesMut,
 }
 
-impl<'a> RocksDBTransaction<'a> {
+impl<'a> PartitionStoreTransaction<'a> {
     pub(crate) fn prefix_iterator(
         &self,
         table: TableKind,
@@ -493,9 +503,35 @@ impl<'a> RocksDBTransaction<'a> {
         // Right now, everything is in one cf, return a reference and save CPU.
         &self.data_cf_handle
     }
+
+    #[inline]
+    pub(crate) fn partition_id(&self) -> PartitionId {
+        self.partition_id
+    }
+
+    pub(crate) fn partition_key_range(&self) -> &RangeInclusive<PartitionKey> {
+        self.partition_key_range
+    }
+
+    #[inline]
+    pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) {
+        assert_partition_key(self.partition_key_range, partition_key);
+    }
 }
 
-impl<'a> Transaction for RocksDBTransaction<'a> {
+#[inline]
+fn assert_partition_key(
+    partition_key_range: &RangeInclusive<PartitionKey>,
+    partition_key: &impl WithPartitionKey,
+) {
+    let partition_key = partition_key.partition_key();
+    assert!(partition_key_range.contains(&partition_key),
+            "Partition key '{}' is not part of PartitionStore's partition '{:?}'. This indicates a bug.",
+            partition_key,
+            partition_key_range);
+}
+
+impl<'a> Transaction for PartitionStoreTransaction<'a> {
     async fn commit(self) -> Result<()> {
         // We cannot directly commit the txn because it might fail because of unrelated concurrent
         // writes to RocksDB. However, it is safe to write the WriteBatch for a given partition,
@@ -523,7 +559,7 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
     }
 }
 
-impl<'a> StorageAccess for RocksDBTransaction<'a> {
+impl<'a> StorageAccess for PartitionStoreTransaction<'a> {
     type DBAccess<'b> = TransactionDB<'b> where Self: 'b;
 
     fn iterator_from<K: TableKey>(
@@ -628,13 +664,13 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn put_kv<K: TableKey, V: StorageEncode>(&mut self, key: K, value: V) {
+    fn put_kv<K: TableKey, V: StorageEncode>(&mut self, key: K, value: &V) {
         let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
         key.serialize_to(key_buffer);
         let key_buffer = key_buffer.split();
 
         let value_buffer = self.cleared_value_buffer_mut(0);
-        StorageCodec::encode(&value, value_buffer).unwrap();
+        StorageCodec::encode(value, value_buffer).unwrap();
         let value_buffer = value_buffer.split();
 
         self.put_cf(K::TABLE, key_buffer, value_buffer);

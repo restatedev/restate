@@ -73,10 +73,6 @@ pub struct TestEnv {
 }
 
 impl TestEnv {
-    pub fn partition_id(&self) -> PartitionId {
-        PartitionId::MIN
-    }
-
     pub async fn create() -> Self {
         Self::create_with_state_machine(StateMachine::new(
             0,    /* inbox_seq_number */
@@ -141,12 +137,7 @@ impl TestEnv {
     }
 
     pub async fn apply(&mut self, command: Command) -> Vec<Action> {
-        let partition_id = self.partition_id();
-        let mut transaction = crate::partition::storage::Transaction::new(
-            partition_id,
-            0..=PartitionKey::MAX,
-            self.storage.transaction(),
-        );
+        let mut transaction = self.storage.transaction();
         let mut action_collector = ActionCollector::default();
         self.state_machine
             .apply(command, &mut transaction, &mut action_collector, true)
@@ -201,7 +192,7 @@ async fn shared_invocation_skips_inbox() -> TestResult {
     let mut tx = test_env.storage.transaction();
     tx.put_virtual_object_status(
         &invocation_target.as_keyed_service_id().unwrap(),
-        VirtualObjectStatus::Locked(InvocationId::mock_random()),
+        &VirtualObjectStatus::Locked(InvocationId::mock_random()),
     )
     .await;
     tx.commit().await.unwrap();
@@ -634,7 +625,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
             request_id: request_id_3,
         },
     );
-    txn.put_invocation_status(&invocation_id, invocation_status)
+    txn.put_invocation_status(&invocation_id, &invocation_status)
         .await;
     txn.commit().await.unwrap();
 
@@ -716,13 +707,7 @@ async fn truncate_outbox_from_empty() -> Result<(), Error> {
 
     let _ = test_env.apply(Command::TruncateOutbox(outbox_index)).await;
 
-    assert_that!(
-        test_env
-            .storage
-            .get_outbox_message(test_env.partition_id(), 0)
-            .await?,
-        none()
-    );
+    assert_that!(test_env.storage.get_outbox_message(0).await?, none());
 
     // The head catches up to the next available sequence number on truncation. Since we don't know
     // in advance whether we will get asked to truncate a range of more than one outbox message, we
@@ -754,27 +739,9 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         .apply(Command::TruncateOutbox(outbox_tail_index))
         .await;
 
-    assert_that!(
-        test_env
-            .storage
-            .get_outbox_message(test_env.partition_id(), 3)
-            .await?,
-        none()
-    );
-    assert_that!(
-        test_env
-            .storage
-            .get_outbox_message(test_env.partition_id(), 4)
-            .await?,
-        none()
-    );
-    assert_that!(
-        test_env
-            .storage
-            .get_outbox_message(test_env.partition_id(), 5)
-            .await?,
-        none()
-    );
+    assert_that!(test_env.storage.get_outbox_message(3).await?, none());
+    assert_that!(test_env.storage.get_outbox_message(4).await?, none());
+    assert_that!(test_env.storage.get_outbox_message(5).await?, none());
 
     assert_eq!(
         test_env.state_machine.outbox_head_seq_number,

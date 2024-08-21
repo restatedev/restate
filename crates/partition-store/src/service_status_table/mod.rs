@@ -12,7 +12,7 @@ use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableScan::FullScanPartitionKeyRange;
 use crate::{PartitionStore, TableKind};
-use crate::{RocksDBTransaction, StorageAccess};
+use crate::{PartitionStoreTransaction, StorageAccess};
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
@@ -46,13 +46,13 @@ fn write_status_key(service_id: &ServiceId) -> ServiceStatusKey {
 fn put_virtual_object_status<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
-    status: VirtualObjectStatus,
+    status: &VirtualObjectStatus,
 ) {
     let key = ServiceStatusKey::default()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
-    if status == VirtualObjectStatus::Unlocked {
+    if *status == VirtualObjectStatus::Unlocked {
         storage.delete_key(&key);
     } else {
         storage.put_kv(key, status);
@@ -103,6 +103,7 @@ impl ReadOnlyVirtualObjectStatusTable for PartitionStore {
         &mut self,
         service_id: &ServiceId,
     ) -> Result<VirtualObjectStatus> {
+        self.assert_partition_key(service_id);
         get_virtual_object_status(self, service_id)
     }
 
@@ -114,11 +115,12 @@ impl ReadOnlyVirtualObjectStatusTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyVirtualObjectStatusTable for RocksDBTransaction<'a> {
+impl<'a> ReadOnlyVirtualObjectStatusTable for PartitionStoreTransaction<'a> {
     async fn get_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
     ) -> Result<VirtualObjectStatus> {
+        self.assert_partition_key(service_id);
         get_virtual_object_status(self, service_id)
     }
 
@@ -130,16 +132,18 @@ impl<'a> ReadOnlyVirtualObjectStatusTable for RocksDBTransaction<'a> {
     }
 }
 
-impl<'a> VirtualObjectStatusTable for RocksDBTransaction<'a> {
+impl<'a> VirtualObjectStatusTable for PartitionStoreTransaction<'a> {
     async fn put_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
-        status: VirtualObjectStatus,
+        status: &VirtualObjectStatus,
     ) {
+        self.assert_partition_key(service_id);
         put_virtual_object_status(self, service_id, status)
     }
 
     async fn delete_virtual_object_status(&mut self, service_id: &ServiceId) {
+        self.assert_partition_key(service_id);
         delete_virtual_object_status(self, service_id)
     }
 }

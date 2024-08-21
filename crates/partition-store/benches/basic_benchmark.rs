@@ -27,18 +27,15 @@ async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {
     //
     // write
     //
-    for i in 0..100000 {
-        let mut txn = rocksdb.transaction();
-        for j in 0..10 {
-            txn.put_dedup_seq_number(
-                PartitionId::from(i),
-                ProducerId::Partition(PartitionId::from(j)),
-                DedupSequenceNumber::Sn(0),
-            )
-            .await;
-        }
-        txn.commit().await.unwrap();
+    let mut txn = rocksdb.transaction();
+    for j in 0..100000 {
+        txn.put_dedup_seq_number(
+            ProducerId::Partition(PartitionId::from(j)),
+            &DedupSequenceNumber::Sn(0),
+        )
+        .await;
     }
+    txn.commit().await.unwrap();
 }
 
 fn basic_writing_reading_benchmark(c: &mut Criterion) {

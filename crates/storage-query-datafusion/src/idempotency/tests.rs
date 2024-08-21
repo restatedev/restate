@@ -40,7 +40,7 @@ async fn get_idempotency_key() {
             "my-handler".into(),
             "my-idempotency-key".into(),
         ),
-        IdempotencyMetadata {
+        &IdempotencyMetadata {
             invocation_id: invocation_id_1,
         },
     )
@@ -53,7 +53,7 @@ async fn get_idempotency_key() {
             "my-handler-2".into(),
             "my-idempotency-key".into(),
         ),
-        IdempotencyMetadata {
+        &IdempotencyMetadata {
             invocation_id: invocation_id_2,
         },
     )

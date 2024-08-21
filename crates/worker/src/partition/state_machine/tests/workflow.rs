@@ -362,7 +362,7 @@ async fn timer_cleanup() {
     let mut txn = test_env.storage().transaction();
     txn.put_invocation_status(
         &invocation_id,
-        InvocationStatus::Completed(CompletedInvocation {
+        &InvocationStatus::Completed(CompletedInvocation {
             invocation_target: invocation_target.clone(),
             span_context: Default::default(),
             source: Source::Ingress,
@@ -376,7 +376,7 @@ async fn timer_cleanup() {
     .await;
     txn.put_virtual_object_status(
         &invocation_target.as_keyed_service_id().unwrap(),
-        VirtualObjectStatus::Locked(invocation_id),
+        &VirtualObjectStatus::Locked(invocation_id),
     )
     .await;
     txn.commit().await.unwrap();
@@ -424,7 +424,7 @@ async fn purge_completed_workflow() {
     let mut txn = test_env.storage().transaction();
     txn.put_invocation_status(
         &invocation_id,
-        InvocationStatus::Completed(CompletedInvocation {
+        &InvocationStatus::Completed(CompletedInvocation {
             invocation_target: invocation_target.clone(),
             idempotency_key: None,
             ..CompletedInvocation::mock_neo()
@@ -433,7 +433,7 @@ async fn purge_completed_workflow() {
     .await;
     txn.put_virtual_object_status(
         &invocation_target.as_keyed_service_id().unwrap(),
-        VirtualObjectStatus::Locked(invocation_id),
+        &VirtualObjectStatus::Locked(invocation_id),
     )
     .await;
     txn.commit().await.unwrap();

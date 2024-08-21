@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
-use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
@@ -136,7 +136,7 @@ fn add_timer<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
     key: &TimerKey,
-    timer: Timer,
+    timer: &Timer,
 ) {
     let key = write_timer_key(partition_id, key);
 
@@ -168,47 +168,45 @@ fn next_timers_greater_than<S: StorageAccess>(
 }
 
 impl TimerTable for PartitionStore {
-    async fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) {
-        add_timer(self, partition_id, key, timer)
+    async fn put_timer(&mut self, key: &TimerKey, timer: &Timer) {
+        add_timer(self, self.partition_id(), key, timer)
     }
 
-    async fn delete_timer(&mut self, partition_id: PartitionId, key: &TimerKey) {
-        delete_timer(self, partition_id, key)
+    async fn delete_timer(&mut self, key: &TimerKey) {
+        delete_timer(self, self.partition_id(), key)
     }
 
     fn next_timers_greater_than(
         &mut self,
-        partition_id: PartitionId,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
     ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send {
         stream::iter(next_timers_greater_than(
             self,
-            partition_id,
+            self.partition_id(),
             exclusive_start,
             limit,
         ))
     }
 }
 
-impl<'a> TimerTable for RocksDBTransaction<'a> {
-    async fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) {
-        add_timer(self, partition_id, key, timer)
+impl<'a> TimerTable for PartitionStoreTransaction<'a> {
+    async fn put_timer(&mut self, key: &TimerKey, timer: &Timer) {
+        add_timer(self, self.partition_id(), key, timer)
     }
 
-    async fn delete_timer(&mut self, partition_id: PartitionId, key: &TimerKey) {
-        delete_timer(self, partition_id, key)
+    async fn delete_timer(&mut self, key: &TimerKey) {
+        delete_timer(self, self.partition_id(), key)
     }
 
     fn next_timers_greater_than(
         &mut self,
-        partition_id: PartitionId,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
     ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send {
         stream::iter(next_timers_greater_than(
             self,
-            partition_id,
+            self.partition_id(),
             exclusive_start,
             limit,
         ))

@@ -557,9 +557,8 @@ pub trait ReadOnlyInvocationStatusTable {
         invocation_id: &InvocationId,
     ) -> impl Future<Output = Result<InvocationStatus>> + Send;
 
-    fn invoked_invocations(
+    fn all_invoked_invocations(
         &mut self,
-        partition_key_range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send;
 
     fn all_invocation_statuses(
@@ -572,7 +571,7 @@ pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
     fn put_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
-        status: InvocationStatus,
+        status: &InvocationStatus,
     ) -> impl Future<Output = ()> + Send;
 
     fn delete_invocation_status(

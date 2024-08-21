@@ -16,7 +16,7 @@ use futures::StreamExt;
 use googletest::all;
 use googletest::prelude::{assert_that, eq};
 use restate_core::TaskCenterBuilder;
-use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
+use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId, WithPartitionKey};
 
@@ -35,21 +35,15 @@ async fn get_inbox() {
     let invocation_id_1 =
         InvocationId::from_parts(service_id.partition_key(), InvocationUuid::new());
     tx.put_inbox_entry(
-        &service_id,
-        SequenceNumberInboxEntry {
-            inbox_sequence_number: 0,
-            inbox_entry: InboxEntry::Invocation(service_id.clone(), invocation_id_1),
-        },
+        0,
+        &InboxEntry::Invocation(service_id.clone(), invocation_id_1),
     )
     .await;
     let invocation_id_2 =
         InvocationId::from_parts(service_id.partition_key(), InvocationUuid::new());
     tx.put_inbox_entry(
-        &service_id,
-        SequenceNumberInboxEntry {
-            inbox_sequence_number: 1,
-            inbox_entry: InboxEntry::Invocation(service_id.clone(), invocation_id_2),
-        },
+        1,
+        &InboxEntry::Invocation(service_id.clone(), invocation_id_2),
     )
     .await;
     tx.commit().await.unwrap();

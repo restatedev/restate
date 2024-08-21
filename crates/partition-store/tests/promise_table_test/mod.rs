@@ -58,11 +58,11 @@ async fn test_promise_table() {
 
     // Fill in some data
     let mut txn = rocksdb.transaction();
-    txn.put_promise(&SERVICE_ID_1, &PROMISE_KEY_1, PROMISE_COMPLETED)
+    txn.put_promise(&SERVICE_ID_1, &PROMISE_KEY_1, &PROMISE_COMPLETED)
         .await;
-    txn.put_promise(&SERVICE_ID_1, &PROMISE_KEY_2, promise_not_completed.clone())
+    txn.put_promise(&SERVICE_ID_1, &PROMISE_KEY_2, &promise_not_completed)
         .await;
-    txn.put_promise(&SERVICE_ID_2, &PROMISE_KEY_3, PROMISE_COMPLETED)
+    txn.put_promise(&SERVICE_ID_2, &PROMISE_KEY_3, &PROMISE_COMPLETED)
         .await;
     txn.commit().await.unwrap();
 

@@ -45,7 +45,7 @@ use restate_types::schema::Schema;
 pub use self::error::*;
 pub use self::handle::*;
 use crate::ingress_integration::InvocationStorageReaderImpl;
-use crate::partition::storage::invoker::InvokerStorageReader;
+use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
 type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<

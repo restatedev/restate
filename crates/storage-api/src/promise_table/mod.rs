@@ -64,7 +64,7 @@ pub trait PromiseTable: ReadOnlyPromiseTable {
         &mut self,
         service_id: &ServiceId,
         key: &ByteString,
-        metadata: Promise,
+        promise: &Promise,
     ) -> impl Future<Output = ()> + Send;
 
     fn delete_all_promises(&mut self, service_id: &ServiceId) -> impl Future<Output = ()> + Send;

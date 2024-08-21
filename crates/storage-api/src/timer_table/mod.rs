@@ -10,9 +10,7 @@
 
 use crate::{protobuf_storage_encode_decode, Result};
 use futures_util::Stream;
-use restate_types::identifiers::{
-    InvocationId, InvocationUuid, PartitionId, PartitionKey, WithPartitionKey,
-};
+use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::time::MillisSinceEpoch;
 use std::cmp::Ordering;
@@ -255,22 +253,13 @@ impl WithPartitionKey for Timer {
 protobuf_storage_encode_decode!(Timer);
 
 pub trait TimerTable {
-    fn add_timer(
-        &mut self,
-        partition_id: PartitionId,
-        timer_key: &TimerKey,
-        timer: Timer,
-    ) -> impl Future<Output = ()> + Send;
+    fn put_timer(&mut self, timer_key: &TimerKey, timer: &Timer)
+        -> impl Future<Output = ()> + Send;
 
-    fn delete_timer(
-        &mut self,
-        partition_id: PartitionId,
-        timer_key: &TimerKey,
-    ) -> impl Future<Output = ()> + Send;
+    fn delete_timer(&mut self, timer_key: &TimerKey) -> impl Future<Output = ()> + Send;
 
     fn next_timers_greater_than(
         &mut self,
-        partition_id: PartitionId,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
     ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send;

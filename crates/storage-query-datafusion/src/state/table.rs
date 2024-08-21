@@ -50,9 +50,9 @@ impl ScanLocalPartition for StateScanner {
 
     fn scan_partition_store(
         partition_store: &PartitionStore,
-        range: RangeInclusive<PartitionKey>,
+        _range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send {
-        partition_store.get_all_user_states(range)
+        partition_store.get_all_user_states()
     }
 
     fn append_row(row_builder: &mut Self::Builder, _: &mut String, value: Self::Item) {

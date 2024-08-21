@@ -48,9 +48,13 @@ static INBOX_ENTRIES: Lazy<Vec<SequenceNumberInboxEntry>> = Lazy::new(|| {
 });
 
 async fn populate_data<T: InboxTable>(table: &mut T) {
-    for inbox_entry in INBOX_ENTRIES.iter() {
+    for SequenceNumberInboxEntry {
+        inbox_sequence_number,
+        inbox_entry,
+    } in INBOX_ENTRIES.iter()
+    {
         table
-            .put_inbox_entry(inbox_entry.service_id(), inbox_entry.clone())
+            .put_inbox_entry(*inbox_sequence_number, inbox_entry)
             .await;
     }
 }

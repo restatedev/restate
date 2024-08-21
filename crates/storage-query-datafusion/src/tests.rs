@@ -73,7 +73,7 @@ async fn query_sys_invocation() {
     let mut tx = engine.partition_store().transaction();
     tx.put_invocation_status(
         &invocation_id,
-        InvocationStatus::Invoked(InFlightInvocationMetadata {
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
             invocation_target: invocation_target.clone(),
             response_sinks: Default::default(),
             ..InFlightInvocationMetadata::mock()

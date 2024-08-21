@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableKind::State;
-use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -142,6 +142,7 @@ impl ReadOnlyStateTable for PartitionStore {
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> impl Future<Output = Result<Option<Bytes>>> + Send {
+        self.assert_partition_key(service_id);
         future::ready(get_user_state(self, service_id, state_key))
     }
 
@@ -149,23 +150,22 @@ impl ReadOnlyStateTable for PartitionStore {
         &mut self,
         service_id: &ServiceId,
     ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
+        self.assert_partition_key(service_id);
         stream::iter(get_all_user_states_for_service(self, service_id))
     }
 
-    fn get_all_user_states(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send {
-        get_all_user_states(self, range)
+    fn get_all_user_states(&self) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send {
+        get_all_user_states(self, self.partition_key_range().clone())
     }
 }
 
-impl<'a> ReadOnlyStateTable for RocksDBTransaction<'a> {
+impl<'a> ReadOnlyStateTable for PartitionStoreTransaction<'a> {
     fn get_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> impl Future<Output = Result<Option<Bytes>>> + Send {
+        self.assert_partition_key(service_id);
         future::ready(get_user_state(self, service_id, state_key))
     }
 
@@ -173,24 +173,23 @@ impl<'a> ReadOnlyStateTable for RocksDBTransaction<'a> {
         &mut self,
         service_id: &ServiceId,
     ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
+        self.assert_partition_key(service_id);
         stream::iter(get_all_user_states_for_service(self, service_id))
     }
 
-    fn get_all_user_states(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send {
-        get_all_user_states(self, range)
+    fn get_all_user_states(&self) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send {
+        get_all_user_states(self, self.partition_key_range().clone())
     }
 }
 
-impl<'a> StateTable for RocksDBTransaction<'a> {
+impl<'a> StateTable for PartitionStoreTransaction<'a> {
     fn put_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
         state_value: impl AsRef<[u8]>,
     ) -> impl Future<Output = ()> + Send {
+        self.assert_partition_key(service_id);
         put_user_state(self, service_id, state_key, state_value);
         future::ready(())
     }
@@ -200,6 +199,7 @@ impl<'a> StateTable for RocksDBTransaction<'a> {
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
     ) -> impl Future<Output = ()> + Send {
+        self.assert_partition_key(service_id);
         delete_user_state(self, service_id, state_key);
         future::ready(())
     }
@@ -208,6 +208,7 @@ impl<'a> StateTable for RocksDBTransaction<'a> {
         &mut self,
         service_id: &ServiceId,
     ) -> impl Future<Output = Result<()>> + Send {
+        self.assert_partition_key(service_id);
         future::ready(delete_all_user_state(self, service_id))
     }
 }

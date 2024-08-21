@@ -108,21 +108,16 @@ impl PartialOrd for EpochSequenceNumber {
 pub trait ReadOnlyDeduplicationTable {
     fn get_dedup_sequence_number(
         &mut self,
-        partition_id: PartitionId,
         producer_id: &ProducerId,
     ) -> impl Future<Output = Result<Option<DedupSequenceNumber>>> + Send;
 
-    fn get_all_sequence_numbers(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> impl Stream<Item = Result<DedupInformation>> + Send;
+    fn get_all_sequence_numbers(&mut self) -> impl Stream<Item = Result<DedupInformation>> + Send;
 }
 
 pub trait DeduplicationTable: ReadOnlyDeduplicationTable {
     fn put_dedup_seq_number(
         &mut self,
-        partition_id: PartitionId,
         producer_id: ProducerId,
-        dedup_sequence_number: DedupSequenceNumber,
+        dedup_sequence_number: &DedupSequenceNumber,
     ) -> impl Future<Output = ()> + Send;
 }

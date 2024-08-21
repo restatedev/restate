@@ -12,7 +12,7 @@ use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan;
 use crate::{PartitionStore, TableKind};
-use crate::{RocksDBTransaction, StorageAccess};
+use crate::{PartitionStoreTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
@@ -86,7 +86,7 @@ fn all_idempotency_metadata<S: StorageAccess>(
 fn put_idempotency_metadata<S: StorageAccess>(
     storage: &mut S,
     idempotency_id: &IdempotencyId,
-    metadata: IdempotencyMetadata,
+    metadata: &IdempotencyMetadata,
 ) {
     storage.put_kv(create_key(idempotency_id), metadata);
 }
@@ -101,6 +101,7 @@ impl ReadOnlyIdempotencyTable for PartitionStore {
         &mut self,
         idempotency_id: &IdempotencyId,
     ) -> Result<Option<IdempotencyMetadata>> {
+        self.assert_partition_key(idempotency_id);
         get_idempotency_metadata(self, idempotency_id)
     }
 
@@ -112,11 +113,12 @@ impl ReadOnlyIdempotencyTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyIdempotencyTable for RocksDBTransaction<'a> {
+impl<'a> ReadOnlyIdempotencyTable for PartitionStoreTransaction<'a> {
     async fn get_idempotency_metadata(
         &mut self,
         idempotency_id: &IdempotencyId,
     ) -> Result<Option<IdempotencyMetadata>> {
+        self.assert_partition_key(idempotency_id);
         get_idempotency_metadata(self, idempotency_id)
     }
 
@@ -128,16 +130,18 @@ impl<'a> ReadOnlyIdempotencyTable for RocksDBTransaction<'a> {
     }
 }
 
-impl<'a> IdempotencyTable for RocksDBTransaction<'a> {
+impl<'a> IdempotencyTable for PartitionStoreTransaction<'a> {
     async fn put_idempotency_metadata(
         &mut self,
         idempotency_id: &IdempotencyId,
-        metadata: IdempotencyMetadata,
+        metadata: &IdempotencyMetadata,
     ) {
+        self.assert_partition_key(idempotency_id);
         put_idempotency_metadata(self, idempotency_id, metadata)
     }
 
     async fn delete_idempotency_metadata(&mut self, idempotency_id: &IdempotencyId) {
+        self.assert_partition_key(idempotency_id);
         delete_idempotency_metadata(self, idempotency_id)
     }
 }

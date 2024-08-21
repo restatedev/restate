@@ -266,11 +266,11 @@ async fn complete_already_completed_invocation() {
 
     // Prepare idempotency metadata and completed status
     let mut txn = test_env.storage().transaction();
-    txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
+    txn.put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
         .await;
     txn.put_invocation_status(
         &invocation_id,
-        InvocationStatus::Completed(CompletedInvocation {
+        &InvocationStatus::Completed(CompletedInvocation {
             invocation_target: invocation_target.clone(),
             span_context: ServiceInvocationSpanContext::default(),
             source: Source::Ingress,
@@ -346,7 +346,7 @@ async fn known_invocation_id_but_missing_completion() {
 
     // Prepare idempotency metadata
     let mut txn = test_env.storage.transaction();
-    txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
+    txn.put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
         .await;
     txn.commit().await.unwrap();
 
@@ -641,7 +641,7 @@ async fn attach_inboxed_with_send_service_invocation() {
         let mut tx = test_env.storage.transaction();
         tx.put_virtual_object_status(
             &invocation_target.as_keyed_service_id().unwrap(),
-            VirtualObjectStatus::Locked(InvocationId::generate(&invocation_target)),
+            &VirtualObjectStatus::Locked(InvocationId::generate(&invocation_target)),
         )
         .await;
         tx.commit().await.unwrap();
@@ -862,11 +862,11 @@ async fn timer_cleanup() {
 
     // Prepare idempotency metadata and completed status
     let mut txn = test_env.storage().transaction();
-    txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
+    txn.put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
         .await;
     txn.put_invocation_status(
         &invocation_id,
-        InvocationStatus::Completed(CompletedInvocation {
+        &InvocationStatus::Completed(CompletedInvocation {
             invocation_target,
             source: Source::Ingress,
             span_context: Default::default(),
@@ -927,11 +927,11 @@ async fn purge_completed_idempotent_invocation() {
 
     // Prepare idempotency metadata and completed status
     let mut txn = test_env.storage().transaction();
-    txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
+    txn.put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
         .await;
     txn.put_invocation_status(
         &invocation_id,
-        InvocationStatus::Completed(CompletedInvocation {
+        &InvocationStatus::Completed(CompletedInvocation {
             invocation_target,
             idempotency_key: Some(idempotency_key.clone()),
             ..CompletedInvocation::mock_neo()

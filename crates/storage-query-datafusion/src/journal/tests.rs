@@ -44,7 +44,7 @@ async fn get_entries() {
     tx.put_journal_entry(
         &journal_invocation_id,
         0,
-        JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(Entry::Input(
+        &JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(Entry::Input(
             InputEntry {
                 value: Default::default(),
             },
@@ -56,7 +56,7 @@ async fn get_entries() {
     tx.put_journal_entry(
         &journal_invocation_id,
         1,
-        JournalEntry::Entry(EnrichedRawEntry::new(
+        &JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Call {
                 is_completed: false,
                 enrichment_result: Some(CallEnrichmentResult {
@@ -73,7 +73,7 @@ async fn get_entries() {
     tx.put_journal_entry(
         &journal_invocation_id,
         2,
-        JournalEntry::Entry(EnrichedRawEntry::new(
+        &JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Run {},
             service_protocol::RunEntryMessage {
                 name: "my-side-effect".to_string(),
@@ -146,7 +146,7 @@ async fn select_count_star() {
     tx.put_journal_entry(
         &journal_invocation_id,
         0,
-        JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(Entry::Input(
+        &JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(Entry::Input(
             InputEntry {
                 value: Default::default(),
             },
@@ -156,7 +156,7 @@ async fn select_count_star() {
     tx.put_journal_entry(
         &journal_invocation_id,
         1,
-        JournalEntry::Entry(EnrichedRawEntry::new(
+        &JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Call {
                 is_completed: false,
                 enrichment_result: Some(CallEnrichmentResult {
@@ -173,7 +173,7 @@ async fn select_count_star() {
     tx.put_journal_entry(
         &journal_invocation_id,
         2,
-        JournalEntry::Entry(EnrichedRawEntry::new(
+        &JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Run {},
             service_protocol::RunEntryMessage {
                 name: "my-side-effect".to_string(),

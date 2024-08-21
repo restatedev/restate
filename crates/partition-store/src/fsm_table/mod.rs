@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind};
 use crate::TableKind::PartitionStateMachine;
-use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_storage_api::Result;
 use restate_types::identifiers::PartitionId;
@@ -39,7 +39,7 @@ fn put<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
     state_id: u64,
-    state_value: impl StorageEncode,
+    state_value: &impl StorageEncode,
 ) {
     let key = PartitionStateMachineKey::default()
         .partition_id(partition_id)
@@ -55,35 +55,34 @@ fn clear<S: StorageAccess>(storage: &mut S, partition_id: PartitionId, state_id:
 }
 
 impl ReadOnlyFsmTable for PartitionStore {
-    async fn get<T>(&mut self, partition_id: PartitionId, state_id: u64) -> Result<Option<T>>
+    async fn get<T>(&mut self, state_id: u64) -> Result<Option<T>>
     where
         T: StorageDecode,
     {
-        get(self, partition_id, state_id)
+        get(self, self.partition_id(), state_id)
     }
 }
 
-impl<'a> ReadOnlyFsmTable for RocksDBTransaction<'a> {
-    async fn get<T>(&mut self, partition_id: PartitionId, state_id: u64) -> Result<Option<T>>
+impl<'a> ReadOnlyFsmTable for PartitionStoreTransaction<'a> {
+    async fn get<T>(&mut self, state_id: u64) -> Result<Option<T>>
     where
         T: StorageDecode,
     {
-        get(self, partition_id, state_id)
+        get(self, self.partition_id(), state_id)
     }
 }
 
-impl<'a> FsmTable for RocksDBTransaction<'a> {
+impl<'a> FsmTable for PartitionStoreTransaction<'a> {
     fn put(
         &mut self,
-        partition_id: PartitionId,
         state_id: u64,
         state_value: impl StorageEncode,
     ) -> impl Future<Output = ()> + Send {
-        put(self, partition_id, state_id, state_value);
+        put(self, self.partition_id(), state_id, &state_value);
         future::ready(())
     }
 
-    async fn clear(&mut self, partition_id: PartitionId, state_id: u64) {
-        clear(self, partition_id, state_id)
+    async fn clear(&mut self, state_id: u64) {
+        clear(self, self.partition_id(), state_id)
     }
 }

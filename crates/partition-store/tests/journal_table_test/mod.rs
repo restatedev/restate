@@ -26,10 +26,12 @@ use std::time::Duration;
 
 // false positive because of Bytes
 #[allow(clippy::declare_interior_mutable_const)]
-const MOCK_SLEEP_JOURNAL_ENTRY: JournalEntry = JournalEntry::Entry(EnrichedRawEntry::new(
-    EnrichedEntryHeader::ClearState {},
-    Bytes::new(),
-));
+static MOCK_SLEEP_JOURNAL_ENTRY: JournalEntry = const {
+    JournalEntry::Entry(EnrichedRawEntry::new(
+        EnrichedEntryHeader::ClearState {},
+        Bytes::new(),
+    ))
+};
 
 static MOCK_INVOKE_JOURNAL_ENTRY: Lazy<JournalEntry> = Lazy::new(|| {
     JournalEntry::Entry(EnrichedRawEntry::new(
@@ -53,15 +55,15 @@ const MOCK_INVOCATION_ID_1: InvocationId =
     InvocationId::from_parts(1, InvocationUuid::from_parts(1706027034946, 12345678900001));
 
 async fn populate_data<T: JournalTable>(txn: &mut T) {
-    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 0, MOCK_SLEEP_JOURNAL_ENTRY)
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 0, &MOCK_SLEEP_JOURNAL_ENTRY)
         .await;
-    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 1, MOCK_SLEEP_JOURNAL_ENTRY)
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 1, &MOCK_SLEEP_JOURNAL_ENTRY)
         .await;
-    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 2, MOCK_SLEEP_JOURNAL_ENTRY)
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 2, &MOCK_SLEEP_JOURNAL_ENTRY)
         .await;
-    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 3, MOCK_SLEEP_JOURNAL_ENTRY)
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 3, &MOCK_SLEEP_JOURNAL_ENTRY)
         .await;
-    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 4, MOCK_INVOKE_JOURNAL_ENTRY.clone())
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 4, &MOCK_INVOKE_JOURNAL_ENTRY)
         .await;
 }
 

@@ -38,7 +38,7 @@ pub trait IdempotencyTable: ReadOnlyIdempotencyTable {
     fn put_idempotency_metadata(
         &mut self,
         idempotency_id: &IdempotencyId,
-        metadata: IdempotencyMetadata,
+        metadata: &IdempotencyMetadata,
     ) -> impl Future<Output = ()> + Send;
 
     fn delete_idempotency_metadata(

@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Inbox;
-use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use bytestring::ByteString;
 use futures::Stream;
@@ -21,6 +21,7 @@ use restate_storage_api::inbox_table::{
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
+use restate_types::message::MessageIndex;
 use restate_types::storage::StorageCodec;
 use std::future::Future;
 use std::io::Cursor;
@@ -94,6 +95,7 @@ impl ReadOnlyInboxTable for PartitionStore {
         &mut self,
         service_id: &ServiceId,
     ) -> impl Future<Output = Result<Option<SequenceNumberInboxEntry>>> + Send {
+        self.assert_partition_key(service_id);
         futures::future::ready(peek_inbox(self, service_id))
     }
 
@@ -101,6 +103,7 @@ impl ReadOnlyInboxTable for PartitionStore {
         &mut self,
         service_id: &ServiceId,
     ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+        self.assert_partition_key(service_id);
         inbox(self, service_id)
     }
 
@@ -112,11 +115,12 @@ impl ReadOnlyInboxTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyInboxTable for RocksDBTransaction<'a> {
+impl<'a> ReadOnlyInboxTable for PartitionStoreTransaction<'a> {
     fn peek_inbox(
         &mut self,
         service_id: &ServiceId,
     ) -> impl Future<Output = Result<Option<SequenceNumberInboxEntry>>> + Send {
+        self.assert_partition_key(service_id);
         futures::future::ready(peek_inbox(self, service_id))
     }
 
@@ -124,6 +128,7 @@ impl<'a> ReadOnlyInboxTable for RocksDBTransaction<'a> {
         &mut self,
         service_id: &ServiceId,
     ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+        self.assert_partition_key(service_id);
         inbox(self, service_id)
     }
 
@@ -135,15 +140,15 @@ impl<'a> ReadOnlyInboxTable for RocksDBTransaction<'a> {
     }
 }
 
-impl<'a> InboxTable for RocksDBTransaction<'a> {
+impl<'a> InboxTable for PartitionStoreTransaction<'a> {
     async fn put_inbox_entry(
         &mut self,
-        service_id: &ServiceId,
-        SequenceNumberInboxEntry {
-            inbox_sequence_number,
-            inbox_entry,
-        }: SequenceNumberInboxEntry,
+        inbox_sequence_number: MessageIndex,
+        inbox_entry: &InboxEntry,
     ) {
+        let service_id = inbox_entry.service_id();
+        self.assert_partition_key(service_id);
+
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
             .service_name(service_id.service_name.clone())
@@ -154,6 +159,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
     }
 
     async fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: u64) {
+        self.assert_partition_key(service_id);
         delete_inbox_entry(self, service_id, sequence_number);
     }
 
@@ -161,6 +167,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         &mut self,
         service_id: &ServiceId,
     ) -> Result<Option<SequenceNumberInboxEntry>> {
+        self.assert_partition_key(service_id);
         let _x = RocksDbPerfGuard::new("pop-inbox");
         let result = peek_inbox(self, service_id);
 
@@ -172,7 +179,11 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
     }
 }
 
-fn delete_inbox_entry(txn: &mut RocksDBTransaction, service_id: &ServiceId, sequence_number: u64) {
+fn delete_inbox_entry(
+    txn: &mut PartitionStoreTransaction,
+    service_id: &ServiceId,
+    sequence_number: u64,
+) {
     let key = InboxKey::default()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())

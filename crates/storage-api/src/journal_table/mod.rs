@@ -12,7 +12,7 @@ use crate::{protobuf_storage_encode_decode, Result};
 use futures_util::Stream;
 use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::CompletionResult;
+use restate_types::journal::{CompletionResult, EntryType};
 use std::future::Future;
 use std::ops::RangeInclusive;
 
@@ -21,6 +21,28 @@ use std::ops::RangeInclusive;
 pub enum JournalEntry {
     Entry(EnrichedRawEntry),
     Completion(CompletionResult),
+}
+
+impl JournalEntry {
+    pub fn entry_type(&self) -> JournalEntryType {
+        match self {
+            JournalEntry::Entry(entry) => JournalEntryType::Entry(entry.header().as_entry_type()),
+            JournalEntry::Completion(_) => JournalEntryType::Completion,
+        }
+    }
+
+    pub fn is_resumable(&self) -> bool {
+        match self {
+            JournalEntry::Entry(entry) => entry.header().is_completed().unwrap_or(true),
+            JournalEntry::Completion(_) => false,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum JournalEntryType {
+    Entry(EntryType),
+    Completion,
 }
 
 protobuf_storage_encode_decode!(JournalEntry);
@@ -49,7 +71,7 @@ pub trait JournalTable: ReadOnlyJournalTable {
         &mut self,
         invocation_id: &InvocationId,
         journal_index: u32,
-        journal_entry: JournalEntry,
+        journal_entry: &JournalEntry,
     ) -> impl Future<Output = ()> + Send;
 
     fn delete_journal(

@@ -12,7 +12,7 @@ use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableScan::FullScanPartitionKeyRange;
 use crate::{PartitionStore, TableKind, TableScanIterationDecision};
-use crate::{RocksDBTransaction, StorageAccess};
+use crate::{PartitionStoreTransaction, StorageAccess};
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
@@ -91,9 +91,9 @@ fn invocation_id_from_neo_key_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Resu
 fn put_invocation_status<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
-    status: InvocationStatus,
+    status: &InvocationStatus,
 ) {
-    match &status {
+    match status {
         InvocationStatus::Inboxed(InboxedInvocation {
             metadata: PreFlightInvocationMetadata { source_table, .. },
             ..
@@ -112,7 +112,8 @@ fn put_invocation_status<S: StorageAccess>(
                 SourceTable::New => {
                     storage.put_kv(
                         create_neo_invocation_status_key(invocation_id),
-                        InvocationStatusV2(status),
+                        // todo: remove clone
+                        &InvocationStatusV2(status.clone()),
                     );
                 }
             }
@@ -128,7 +129,8 @@ fn put_invocation_status<S: StorageAccess>(
             // The scheduled variant is only on the NeoInvocationStatus
             storage.put_kv(
                 create_neo_invocation_status_key(invocation_id),
-                InvocationStatusV2(status),
+                // todo: remove clone
+                &InvocationStatusV2(status.clone()),
             );
         }
         InvocationStatus::Free => {
@@ -279,14 +281,17 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
         &mut self,
         invocation_id: &InvocationId,
     ) -> Result<InvocationStatus> {
+        self.assert_partition_key(invocation_id);
         get_invocation_status(self, invocation_id)
     }
 
-    fn invoked_invocations(
+    fn all_invoked_invocations(
         &mut self,
-        partition_key_range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send {
-        stream::iter(invoked_invocations(self, partition_key_range))
+        stream::iter(invoked_invocations(
+            self,
+            self.partition_key_range().clone(),
+        ))
     }
 
     fn all_invocation_statuses(
@@ -297,20 +302,22 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyInvocationStatusTable for RocksDBTransaction<'a> {
+impl<'a> ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'a> {
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
     ) -> Result<InvocationStatus> {
+        self.assert_partition_key(invocation_id);
         get_invocation_status(self, invocation_id)
     }
 
-    // TODO once the invoker uses only InvocationId, we can remove returning the fid here.
-    fn invoked_invocations(
+    fn all_invoked_invocations(
         &mut self,
-        partition_key_range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send {
-        stream::iter(invoked_invocations(self, partition_key_range))
+        stream::iter(invoked_invocations(
+            self,
+            self.partition_key_range().clone(),
+        ))
     }
 
     fn all_invocation_statuses(
@@ -321,16 +328,18 @@ impl<'a> ReadOnlyInvocationStatusTable for RocksDBTransaction<'a> {
     }
 }
 
-impl<'a> InvocationStatusTable for RocksDBTransaction<'a> {
+impl<'a> InvocationStatusTable for PartitionStoreTransaction<'a> {
     async fn put_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
-        status: InvocationStatus,
+        status: &InvocationStatus,
     ) {
+        self.assert_partition_key(invocation_id);
         put_invocation_status(self, invocation_id, status)
     }
 
     async fn delete_invocation_status(&mut self, invocation_id: &InvocationId) {
+        self.assert_partition_key(invocation_id);
         delete_invocation_status(self, invocation_id)
     }
 }

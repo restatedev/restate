@@ -136,7 +136,7 @@ async fn send_with_delay_to_locked_virtual_object() {
     let mut tx = test_env.storage.transaction();
     tx.put_virtual_object_status(
         &invocation_target.as_keyed_service_id().unwrap(),
-        VirtualObjectStatus::Locked(InvocationId::generate(&invocation_target)),
+        &VirtualObjectStatus::Locked(InvocationId::generate(&invocation_target)),
     )
     .await;
     tx.commit().await.unwrap();

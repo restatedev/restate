@@ -41,6 +41,7 @@ use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::StorageError;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
@@ -71,8 +72,7 @@ use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
 use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
-use crate::partition::storage::invoker::InvokerStorageReader;
-use crate::partition::storage::PartitionStorage;
+use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::PartitionProcessorControlCommand;
 use crate::PartitionProcessorBuilder;
 
@@ -826,11 +826,10 @@ impl PersistedLogLsnWatchdog {
         let mut new_persisted_lsns = BTreeMap::new();
         let mut modified = false;
 
-        for partition_store in partition_stores {
+        for mut partition_store in partition_stores {
             let partition_id = partition_store.partition_id();
-            let mut partition_storage = PartitionStorage::from(partition_store);
 
-            let applied_lsn = partition_storage.load_applied_lsn().await?;
+            let applied_lsn = partition_store.get_applied_lsn().await?;
 
             if let Some(applied_lsn) = applied_lsn {
                 let previously_applied_lsn = self
@@ -848,7 +847,6 @@ impl PersistedLogLsnWatchdog {
                         applied_lsn = %applied_lsn,
                         "Flush partition store to persist applied lsn"
                     );
-                    let partition_store = partition_storage.into_inner();
                     partition_store.flush_memtables(true).await?;
                     new_persisted_lsns.insert(partition_id, applied_lsn);
                     modified = true;
@@ -870,11 +868,12 @@ impl PersistedLogLsnWatchdog {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::storage::PartitionStorage;
     use crate::partition_processor_manager::PersistedLogLsnWatchdog;
     use restate_core::{TaskKind, TestCoreEnv};
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::fsm_table::FsmTable;
+    use restate_storage_api::Transaction;
     use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::Constant;
@@ -904,7 +903,7 @@ mod tests {
         )
         .await?;
 
-        let partition_store = partition_store_manager
+        let mut partition_store = partition_store_manager
             .open_partition_store(
                 PartitionId::MIN,
                 all_partition_keys,
@@ -936,10 +935,9 @@ mod tests {
                 .await
                 .is_err()
         );
-        let mut partition_storage = PartitionStorage::from(partition_store);
-        let mut txn = partition_storage.create_transaction();
+        let mut txn = partition_store.transaction();
         let lsn = Lsn::OLDEST + Lsn::from(storage_options.persist_lsn_threshold);
-        txn.store_applied_lsn(lsn).await?;
+        txn.put_applied_lsn(lsn).await;
         txn.commit().await?;
 
         watch_rx.changed().await?;
@@ -952,8 +950,8 @@ mod tests {
 
         // we are short by one to hit the persist lsn threshold
         let next_lsn = lsn.prev() + Lsn::from(storage_options.persist_lsn_threshold);
-        let mut txn = partition_storage.create_transaction();
-        txn.store_applied_lsn(next_lsn).await?;
+        let mut txn = partition_store.transaction();
+        txn.put_applied_lsn(next_lsn).await;
         txn.commit().await?;
 
         // await the persist lsn interval so that we have a chance to see the update
@@ -967,8 +965,8 @@ mod tests {
         );
 
         let next_persisted_lsn = next_lsn + Lsn::from(1);
-        let mut txn = partition_storage.create_transaction();
-        txn.store_applied_lsn(next_persisted_lsn).await?;
+        let mut txn = partition_store.transaction();
+        txn.put_applied_lsn(next_persisted_lsn).await;
         txn.commit().await?;
 
         watch_rx.changed().await?;
