@@ -103,7 +103,7 @@ pub struct StateMachine<Codec> {
 
     /// This is used to establish whether for new invocations we should use the NeoInvocationStatus or not.
     /// The neo table is enabled via [restate_types::config::WorkerOptions::experimental_feature_new_invocation_status_table].
-    default_invocation_status_source_table: invocation_status_table::SourceTable,
+    default_invocation_status_source_table: SourceTable,
 
     _codec: PhantomData<Codec>,
 }

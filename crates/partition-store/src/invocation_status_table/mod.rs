@@ -46,7 +46,7 @@ fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatu
 
 define_table_key!(
     TableKind::InvocationStatus,
-    KeyKind::NeoInvocationStatus,
+    KeyKind::InvocationStatusV2,
     NeoInvocationStatusKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid
