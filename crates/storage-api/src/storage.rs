@@ -75,10 +75,9 @@ pub mod v1 {
         use std::str::FromStr;
 
         use anyhow::anyhow;
-        use bytes::{Buf, BufMut, Bytes};
+        use bytes::{Buf, Bytes};
         use bytestring::ByteString;
         use opentelemetry::trace::TraceState;
-        use prost::Message;
         use restate_types::deployment::PinnedDeployment;
 
         use crate::storage::v1::dedup_sequence_number::Variant;
@@ -98,19 +97,19 @@ pub mod v1 {
         };
         use crate::storage::v1::{
             enriched_entry_header, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status, invocation_target, neo_invocation_status, outbox_message, promise,
+            invocation_status, invocation_status_v2, invocation_target, outbox_message, promise,
             response_result, source, span_relation, submit_notification_sink, timer,
             virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
             EnrichedEntryHeader, EntryResult, EpochSequenceNumber, Header, IdempotencyMetadata,
             InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
-            InvocationTarget, JournalEntry, JournalEntryId, JournalMeta, KvPair,
-            NeoInvocationStatus, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
+            InvocationStatusV2, InvocationTarget, JournalEntry, JournalEntryId, JournalMeta,
+            KvPair, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
             ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext, SpanRelation,
             StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
         };
         use crate::StorageError;
         use restate_types::errors::{IdDecodeError, InvocationError};
-        use restate_types::identifiers::{DeploymentId, WithInvocationId, WithPartitionKey};
+        use restate_types::identifiers::{WithInvocationId, WithPartitionKey};
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::service_protocol::ServiceProtocolVersion;
@@ -298,11 +297,11 @@ pub mod v1 {
             };
         }
 
-        impl TryFrom<NeoInvocationStatus> for crate::invocation_status_table::NeoInvocationStatus {
+        impl TryFrom<InvocationStatusV2> for crate::invocation_status_table::InvocationStatusV2 {
             type Error = ConversionError;
 
-            fn try_from(value: NeoInvocationStatus) -> Result<Self, Self::Error> {
-                let NeoInvocationStatus {
+            fn try_from(value: InvocationStatusV2) -> Result<Self, Self::Error> {
+                let InvocationStatusV2 {
                     status,
                     invocation_target,
                     source,
@@ -353,7 +352,7 @@ pub mod v1 {
                     .collect::<Result<Vec<_>, ConversionError>>()?;
 
                 match status.try_into().unwrap_or_default() {
-                    neo_invocation_status::Status::Scheduled => {
+                    invocation_status_v2::Status::Scheduled => {
                         Ok(crate::invocation_status_table::InvocationStatus::Scheduled(
                             crate::invocation_status_table::ScheduledInvocation {
                                 metadata:
@@ -377,7 +376,7 @@ pub mod v1 {
                             },
                         ))
                     }
-                    neo_invocation_status::Status::Inboxed => {
+                    invocation_status_v2::Status::Inboxed => {
                         Ok(crate::invocation_status_table::InvocationStatus::Inboxed(
                             crate::invocation_status_table::InboxedInvocation {
                                 inbox_sequence_number: expect_or_fail!(inbox_sequence_number)?,
@@ -402,7 +401,7 @@ pub mod v1 {
                             },
                         ))
                     }
-                    neo_invocation_status::Status::Invoked => {
+                    invocation_status_v2::Status::Invoked => {
                         Ok(crate::invocation_status_table::InvocationStatus::Invoked(
                             crate::invocation_status_table::InFlightInvocationMetadata {
                                 response_sinks,
@@ -425,7 +424,7 @@ pub mod v1 {
                             },
                         ))
                     }
-                    neo_invocation_status::Status::Suspended => Ok(
+                    invocation_status_v2::Status::Suspended => Ok(
                         crate::invocation_status_table::InvocationStatus::Suspended {
                             metadata: crate::invocation_status_table::InFlightInvocationMetadata {
                                 response_sinks,
@@ -451,7 +450,7 @@ pub mod v1 {
                                 .collect(),
                         },
                     ),
-                    neo_invocation_status::Status::Completed => {
+                    invocation_status_v2::Status::Completed => {
                         Ok(crate::invocation_status_table::InvocationStatus::Completed(
                             crate::invocation_status_table::CompletedInvocation {
                                 timestamps,
@@ -472,13 +471,13 @@ pub mod v1 {
                         value.status,
                     )),
                 }
-                .map(crate::invocation_status_table::NeoInvocationStatus)
+                .map(crate::invocation_status_table::InvocationStatusV2)
             }
         }
 
-        impl From<crate::invocation_status_table::NeoInvocationStatus> for NeoInvocationStatus {
+        impl From<crate::invocation_status_table::InvocationStatusV2> for InvocationStatusV2 {
             fn from(
-                crate::invocation_status_table::NeoInvocationStatus(value): crate::invocation_status_table::NeoInvocationStatus,
+                crate::invocation_status_table::InvocationStatusV2(value): crate::invocation_status_table::InvocationStatusV2,
             ) -> Self {
                 match value {
                     crate::invocation_status_table::InvocationStatus::Scheduled(
@@ -498,8 +497,8 @@ pub mod v1 {
                                     source_table: _,
                                 },
                         },
-                    ) => NeoInvocationStatus {
-                        status: neo_invocation_status::Status::Scheduled.into(),
+                    ) => InvocationStatusV2 {
+                        status: invocation_status_v2::Status::Scheduled.into(),
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
@@ -551,8 +550,8 @@ pub mod v1 {
                                 },
                             inbox_sequence_number,
                         },
-                    ) => NeoInvocationStatus {
-                        status: neo_invocation_status::Status::Inboxed.into(),
+                    ) => InvocationStatusV2 {
+                        status: invocation_status_v2::Status::Inboxed.into(),
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
@@ -607,8 +606,8 @@ pub mod v1 {
                             ),
                         };
 
-                        NeoInvocationStatus {
-                            status: neo_invocation_status::Status::Invoked.into(),
+                        InvocationStatusV2 {
+                            status: invocation_status_v2::Status::Invoked.into(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -672,8 +671,8 @@ pub mod v1 {
                             ),
                         };
 
-                        NeoInvocationStatus {
-                            status: neo_invocation_status::Status::Suspended.into(),
+                        InvocationStatusV2 {
+                            status: invocation_status_v2::Status::Suspended.into(),
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -727,8 +726,8 @@ pub mod v1 {
                             completion_retention_duration,
                             source_table: _,
                         },
-                    ) => NeoInvocationStatus {
-                        status: neo_invocation_status::Status::Completed.into(),
+                    ) => InvocationStatusV2 {
+                        status: invocation_status_v2::Status::Completed.into(),
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
@@ -2621,7 +2620,7 @@ pub mod v1 {
                         timer::Value::Invoke(si) => crate::timer_table::Timer::Invoke(
                             restate_types::invocation::ServiceInvocation::try_from(si)?,
                         ),
-                        timer::Value::NeoInvoke(id) => crate::timer_table::Timer::NeoInvoke(
+                        timer::Value::ScheduledInvoke(id) => crate::timer_table::Timer::NeoInvoke(
                             restate_types::identifiers::InvocationId::try_from(id)?,
                         ),
                         timer::Value::CleanInvocationStatus(clean_invocation_status) => {
@@ -2650,7 +2649,7 @@ pub mod v1 {
                             entry_index,
                         }),
                         crate::timer_table::Timer::NeoInvoke(invocation_id) => {
-                            timer::Value::NeoInvoke(InvocationId::from(invocation_id))
+                            timer::Value::ScheduledInvoke(InvocationId::from(invocation_id))
                         }
                         crate::timer_table::Timer::Invoke(si) => {
                             timer::Value::Invoke(ServiceInvocation::from(si))

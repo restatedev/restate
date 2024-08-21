@@ -10,66 +10,66 @@ package dev.restate.storage.domain.v1;
 // ---------------------------------------------------------------------
 
 message InvocationTarget {
-    enum Ty {
-        UNKNOWN_TY = 0;
-        SERVICE = 1;
-        VIRTUAL_OBJECT_EXCLUSIVE = 2;
-        VIRTUAL_OBJECT_SHARED = 3;
-        WORKFLOW_WORKFLOW = 4;
-        WORKFLOW_SHARED = 5;
-    }
+  enum Ty {
+    UNKNOWN_TY = 0;
+    SERVICE = 1;
+    VIRTUAL_OBJECT_EXCLUSIVE = 2;
+    VIRTUAL_OBJECT_SHARED = 3;
+    WORKFLOW_WORKFLOW = 4;
+    WORKFLOW_SHARED = 5;
+  }
 
-    Ty service_and_handler_ty = 1;
-    bytes name = 2;
-    bytes handler = 3;
-    bytes key = 4;
+  Ty service_and_handler_ty = 1;
+  bytes name = 2;
+  bytes handler = 3;
+  bytes key = 4;
 }
 
 message ServiceId {
-    bytes service_name = 1;
-    bytes service_key = 2;
+  bytes service_name = 1;
+  bytes service_key = 2;
 }
 
 message GenerationalNodeId {
-    uint32 id = 1;
-    uint32 generation = 2;
+  uint32 id = 1;
+  uint32 generation = 2;
 }
 
 message KvPair {
-    bytes key = 1;
-    bytes value = 2;
+  bytes key = 1;
+  bytes value = 2;
 }
 
 message Duration {
-    uint64 secs = 1;
-    uint32 nanos = 2;
+  uint64 secs = 1;
+  uint32 nanos = 2;
 }
 
 message InvocationId {
-    uint64 partition_key = 1;
-    bytes invocation_uuid = 2;
+  uint64 partition_key = 1;
+  bytes invocation_uuid = 2;
 }
 
 message SequenceNumber {
-    uint64 sequence_number = 1;
+  uint64 sequence_number = 1;
 }
 
 message JournalEntryId {
-    uint64 partition_key = 1;
-    bytes invocation_uuid = 2;
-    uint32 entry_index = 3;
+  uint64 partition_key = 1;
+  bytes invocation_uuid = 2;
+  uint32 entry_index = 3;
 }
 
 message EntryResult {
-    message Failure {
-        uint32 error_code = 1;
-        bytes message = 2;
-    }
+  message Failure {
+    uint32 error_code = 1;
+    bytes message = 2;
+  }
 
-    oneof result {
-        bytes value = 1;
-        Failure failure = 2;
-    }
+  oneof result {
+    bytes value = 1;
+    Failure failure = 2;
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -77,392 +77,392 @@ message EntryResult {
 // ---------------------------------------------------------------------
 
 message JournalMeta {
-    uint32 length = 1;
-    SpanContext span_context = 2;
+  uint32 length = 1;
+  SpanContext span_context = 2;
 }
 
 message Source {
-    message Service {
-        InvocationId invocation_id = 1;
-        InvocationTarget invocation_target = 2;
-    }
+  message Service {
+    InvocationId invocation_id = 1;
+    InvocationTarget invocation_target = 2;
+  }
 
-    oneof source {
-        google.protobuf.Empty ingress = 9;
-        Service service = 10;
-        google.protobuf.Empty internal = 11;
-    }
+  oneof source {
+    google.protobuf.Empty ingress = 9;
+    Service service = 10;
+    google.protobuf.Empty internal = 11;
+  }
 }
 
-// This is the new InvocationStatus message, which replaces the InvocationStatus defined below.
-message NeoInvocationStatus {
+// Next generation InvocationStatus message, which will replace InvocationStatus in a future version.
+message InvocationStatusV2 {
 
-    enum Status {
-        UNKNOWN_STATUS = 0;
-        SCHEDULED = 1;
-        INBOXED = 2;
-        INVOKED = 3;
-        SUSPENDED = 4;
-        COMPLETED = 5;
-    }
+  enum Status {
+    UNKNOWN_STATUS = 0;
+    SCHEDULED = 1;
+    INBOXED = 2;
+    INVOKED = 3;
+    SUSPENDED = 4;
+    COMPLETED = 5;
+  }
 
-    Status status = 1;
+  Status status = 1;
 
-    // Common
-    InvocationTarget invocation_target = 2;
-    Source source = 3;
-    SpanContext span_context = 4;
-    repeated ServiceInvocationResponseSink response_sinks = 7;
-    Duration completion_retention_duration = 11;
+  // Common
+  InvocationTarget invocation_target = 2;
+  Source source = 3;
+  SpanContext span_context = 4;
+  repeated ServiceInvocationResponseSink response_sinks = 7;
+  Duration completion_retention_duration = 11;
 
-    // Timestamps
-    uint64 creation_time = 5;
-    uint64 modification_time = 6;
-    optional uint64 inboxed_transition_time = 19;
-    optional uint64 scheduled_transition_time = 20;
-    optional uint64 running_transition_time = 21;
-    optional uint64 completed_transition_time = 22;
+  // Timestamps
+  uint64 creation_time = 5;
+  uint64 modification_time = 6;
+  optional uint64 inboxed_transition_time = 19;
+  optional uint64 scheduled_transition_time = 20;
+  optional uint64 running_transition_time = 21;
+  optional uint64 completed_transition_time = 22;
 
-    // Scheduled/Inboxed
-    optional bytes argument = 8;
-    repeated Header headers = 9;
-    optional uint64 execution_time = 10;
-    optional string idempotency_key = 12;
+  // Scheduled/Inboxed
+  optional bytes argument = 8;
+  repeated Header headers = 9;
+  optional uint64 execution_time = 10;
+  optional string idempotency_key = 12;
 
-    // Inboxed
-    optional uint64 inbox_sequence_number = 13;
+  // Inboxed
+  optional uint64 inbox_sequence_number = 13;
 
-    // Invoked/Suspended
-    uint32 journal_length = 14;
-    optional string deployment_id = 15;
-    optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
+  // Invoked/Suspended
+  uint32 journal_length = 14;
+  optional string deployment_id = 15;
+  optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
 
-    // Suspended
-    repeated uint32 waiting_for_completed_entries = 17;
+  // Suspended
+  repeated uint32 waiting_for_completed_entries = 17;
 
-    // Completed
-    ResponseResult result = 18;
+  // Completed
+  ResponseResult result = 18;
 }
 
 // TODO remove this after 1.1
 message InvocationStatus {
 
-    message Invoked {
-        InvocationTarget invocation_target = 1;
-        JournalMeta journal_meta = 2;
-        repeated ServiceInvocationResponseSink response_sinks = 3;
-        uint64 creation_time = 4;
-        uint64 modification_time = 5;
-        optional string deployment_id = 7;
-        Source source = 8;
-        Duration completion_retention_time = 9;
-        optional string idempotency_key = 10;
-        optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 11;
-    }
+  message Invoked {
+    InvocationTarget invocation_target = 1;
+    JournalMeta journal_meta = 2;
+    repeated ServiceInvocationResponseSink response_sinks = 3;
+    uint64 creation_time = 4;
+    uint64 modification_time = 5;
+    optional string deployment_id = 7;
+    Source source = 8;
+    Duration completion_retention_time = 9;
+    optional string idempotency_key = 10;
+    optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 11;
+  }
 
-    message Suspended {
-        InvocationTarget invocation_target = 1;
-        JournalMeta journal_meta = 2;
-        repeated ServiceInvocationResponseSink response_sinks = 3;
-        uint64 creation_time = 4;
-        uint64 modification_time = 5;
-        repeated uint32 waiting_for_completed_entries = 6;
-        optional string deployment_id = 7;
-        Source source = 8;
-        Duration completion_retention_time = 9;
-        optional string idempotency_key = 10;
-        optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 11;
-    }
+  message Suspended {
+    InvocationTarget invocation_target = 1;
+    JournalMeta journal_meta = 2;
+    repeated ServiceInvocationResponseSink response_sinks = 3;
+    uint64 creation_time = 4;
+    uint64 modification_time = 5;
+    repeated uint32 waiting_for_completed_entries = 6;
+    optional string deployment_id = 7;
+    Source source = 8;
+    Duration completion_retention_time = 9;
+    optional string idempotency_key = 10;
+    optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 11;
+  }
 
-    message Completed {
-        InvocationTarget invocation_target = 1;
-        ResponseResult result = 2;
-        Source source = 3;
-        uint64 creation_time = 4;
-        uint64 modification_time = 5;
+  message Completed {
+    InvocationTarget invocation_target = 1;
+    ResponseResult result = 2;
+    Source source = 3;
+    uint64 creation_time = 4;
+    uint64 modification_time = 5;
 
-        optional string idempotency_key = 12;
-    }
+    optional string idempotency_key = 12;
+  }
 
-    message Free {
-    }
+  message Free {
+  }
 
-    message Inboxed {
-        InvocationTarget invocation_target = 1;
+  message Inboxed {
+    InvocationTarget invocation_target = 1;
 
-        uint64 inbox_sequence_number = 2;
-        repeated ServiceInvocationResponseSink response_sinks = 3;
-        uint64 creation_time = 4;
-        uint64 modification_time = 5;
+    uint64 inbox_sequence_number = 2;
+    repeated ServiceInvocationResponseSink response_sinks = 3;
+    uint64 creation_time = 4;
+    uint64 modification_time = 5;
 
-        bytes argument = 7;
-        Source source = 8;
-        SpanContext span_context = 9;
-        repeated Header headers = 10;
-        uint64 execution_time = 11;
-        Duration completion_retention_time = 12;
-        optional string idempotency_key = 13;
-    }
+    bytes argument = 7;
+    Source source = 8;
+    SpanContext span_context = 9;
+    repeated Header headers = 10;
+    uint64 execution_time = 11;
+    Duration completion_retention_time = 12;
+    optional string idempotency_key = 13;
+  }
 
-    oneof status {
-        Invoked invoked = 1;
-        Suspended suspended = 2;
-        Free free = 3;
-        Completed completed = 4;
-        Inboxed inboxed = 5;
-    }
+  oneof status {
+    Invoked invoked = 1;
+    Suspended suspended = 2;
+    Free free = 3;
+    Completed completed = 4;
+    Inboxed inboxed = 5;
+  }
 }
 
 message VirtualObjectStatus {
-    message Locked {
-        InvocationId invocation_id = 1;
-    }
+  message Locked {
+    InvocationId invocation_id = 1;
+  }
 
-    oneof status {
-        Locked locked = 1;
-    }
+  oneof status {
+    Locked locked = 1;
+  }
 }
 
 message ServiceInvocationResponseSink {
 
-    message PartitionProcessor {
-        bytes caller = 1;
-        uint32 entry_index = 2;
-    }
+  message PartitionProcessor {
+    bytes caller = 1;
+    uint32 entry_index = 2;
+  }
 
-    message Ingress {
-        GenerationalNodeId node_id = 1;
-        bytes request_id = 2;
-    }
+  message Ingress {
+    GenerationalNodeId node_id = 1;
+    bytes request_id = 2;
+  }
 
-    message None {
-    }
+  message None {
+  }
 
-    oneof response_sink {
-        None none = 1;
-        PartitionProcessor partition_processor = 2;
-        Ingress ingress = 3;
-    }
+  oneof response_sink {
+    None none = 1;
+    PartitionProcessor partition_processor = 2;
+    Ingress ingress = 3;
+  }
 }
 
 message SpanContext {
-    bytes trace_id = 1;
-    uint64 span_id = 2;
-    uint32 trace_flags = 3;
-    bool is_remote = 4;
-    string trace_state = 5;
-    optional SpanRelation span_relation = 6;
+  bytes trace_id = 1;
+  uint64 span_id = 2;
+  uint32 trace_flags = 3;
+  bool is_remote = 4;
+  string trace_state = 5;
+  optional SpanRelation span_relation = 6;
 }
 
 message SpanRelation {
-    message Parent {
-        uint64 span_id = 1;
-    }
+  message Parent {
+    uint64 span_id = 1;
+  }
 
-    message Linked {
-        bytes trace_id = 1;
-        uint64 span_id = 2;
-    }
+  message Linked {
+    bytes trace_id = 1;
+    uint64 span_id = 2;
+  }
 
-    oneof kind {
-        Parent parent = 1;
-        Linked linked = 2;
-    }
+  oneof kind {
+    Parent parent = 1;
+    Linked linked = 2;
+  }
 }
 
 message Header {
-    string name = 1;
-    string value = 2;
+  string name = 1;
+  string value = 2;
 }
 
 message ServiceInvocation {
-    InvocationId invocation_id = 1;
-    InvocationTarget invocation_target = 2;
-    bytes argument = 3;
-    ServiceInvocationResponseSink response_sink = 4;
-    SpanContext span_context = 5;
-    Source source = 6;
-    repeated Header headers = 7;
-    uint64 execution_time = 8;
-    Duration completion_retention_time = 9;
-    optional string idempotency_key = 10;
-    SubmitNotificationSink submit_notification_sink = 11;
+  InvocationId invocation_id = 1;
+  InvocationTarget invocation_target = 2;
+  bytes argument = 3;
+  ServiceInvocationResponseSink response_sink = 4;
+  SpanContext span_context = 5;
+  Source source = 6;
+  repeated Header headers = 7;
+  uint64 execution_time = 8;
+  Duration completion_retention_time = 9;
+  optional string idempotency_key = 10;
+  SubmitNotificationSink submit_notification_sink = 11;
 }
 
 message StateMutation {
-    ServiceId service_id = 1;
-    optional string version = 2;
-    repeated KvPair kv_pairs = 3;
+  ServiceId service_id = 1;
+  optional string version = 2;
+  repeated KvPair kv_pairs = 3;
 }
 
 message InboxEntry {
-    message Invocation {
-        InvocationId invocation_id = 1;
-        ServiceId service_id = 2;
-    }
+  message Invocation {
+    InvocationId invocation_id = 1;
+    ServiceId service_id = 2;
+  }
 
-    oneof entry {
-        Invocation invocation = 1;
-        StateMutation state_mutation = 2;
-    }
+  oneof entry {
+    Invocation invocation = 1;
+    StateMutation state_mutation = 2;
+  }
 }
 
 message InvocationResolutionResult {
-    message Success {
-        InvocationId invocation_id = 1;
-        InvocationTarget invocation_target = 2;
-        SpanContext span_context = 3;
-        Duration completion_retention_time = 4;
-    }
-
-    oneof result {
-        google.protobuf.Empty none = 1;
-        Success success = 2;
-    }
-}
-
-message BackgroundCallResolutionResult {
+  message Success {
     InvocationId invocation_id = 1;
     InvocationTarget invocation_target = 2;
     SpanContext span_context = 3;
     Duration completion_retention_time = 4;
+  }
+
+  oneof result {
+    google.protobuf.Empty none = 1;
+    Success success = 2;
+  }
+}
+
+message BackgroundCallResolutionResult {
+  InvocationId invocation_id = 1;
+  InvocationTarget invocation_target = 2;
+  SpanContext span_context = 3;
+  Duration completion_retention_time = 4;
 }
 message EnrichedEntryHeader {
 
-    message Input {
-    }
+  message Input {
+  }
 
-    message Output {
-    }
+  message Output {
+  }
 
-    message GetState {
-        bool is_completed = 1;
-    }
+  message GetState {
+    bool is_completed = 1;
+  }
 
-    message SetState {
-    }
+  message SetState {
+  }
 
-    message ClearState {
-    }
+  message ClearState {
+  }
 
-    message GetStateKeys {
-        bool is_completed = 1;
-    }
+  message GetStateKeys {
+    bool is_completed = 1;
+  }
 
-    message ClearAllState {
-    }
+  message ClearAllState {
+  }
 
-    message GetPromise {
-        bool is_completed = 1;
-    }
+  message GetPromise {
+    bool is_completed = 1;
+  }
 
-    message PeekPromise {
-        bool is_completed = 1;
-    }
+  message PeekPromise {
+    bool is_completed = 1;
+  }
 
-    message CompletePromise {
-        bool is_completed = 1;
-    }
+  message CompletePromise {
+    bool is_completed = 1;
+  }
 
-    message Sleep {
-        bool is_completed = 1;
-    }
+  message Sleep {
+    bool is_completed = 1;
+  }
 
-    message Invoke {
-        bool is_completed = 1;
-        InvocationResolutionResult resolution_result = 2;
-    }
+  message Invoke {
+    bool is_completed = 1;
+    InvocationResolutionResult resolution_result = 2;
+  }
 
-    message BackgroundCall {
-        BackgroundCallResolutionResult resolution_result = 1;
-    }
+  message BackgroundCall {
+    BackgroundCallResolutionResult resolution_result = 1;
+  }
 
-    message Awakeable {
-        bool is_completed = 1;
-    }
+  message Awakeable {
+    bool is_completed = 1;
+  }
 
-    message CompleteAwakeable {
-        InvocationId invocation_id = 1;
-        uint32 entry_index = 2;
-    }
+  message CompleteAwakeable {
+    InvocationId invocation_id = 1;
+    uint32 entry_index = 2;
+  }
 
-    message SideEffect {
-    }
+  message SideEffect {
+  }
 
-    message Custom {
-        uint32 code = 1;
-    }
+  message Custom {
+    uint32 code = 1;
+  }
 
-    oneof kind {
-        Input input = 1;
-        Output output = 2;
-        GetState get_state = 3;
-        SetState set_state = 4;
-        ClearState clear_state = 5;
-        ClearAllState clear_all_state = 12;
-        GetStateKeys get_state_keys = 13;
-        GetPromise get_promise = 15;
-        PeekPromise peek_promise = 16;
-        CompletePromise complete_promise = 17;
-        Sleep sleep = 6;
-        Invoke invoke = 7;
-        BackgroundCall background_call = 8;
-        Awakeable awakeable = 9;
-        CompleteAwakeable complete_awakeable = 10;
-        Custom custom = 11;
-        SideEffect side_effect = 14;
-    }
+  oneof kind {
+    Input input = 1;
+    Output output = 2;
+    GetState get_state = 3;
+    SetState set_state = 4;
+    ClearState clear_state = 5;
+    ClearAllState clear_all_state = 12;
+    GetStateKeys get_state_keys = 13;
+    GetPromise get_promise = 15;
+    PeekPromise peek_promise = 16;
+    CompletePromise complete_promise = 17;
+    Sleep sleep = 6;
+    Invoke invoke = 7;
+    BackgroundCall background_call = 8;
+    Awakeable awakeable = 9;
+    CompleteAwakeable complete_awakeable = 10;
+    Custom custom = 11;
+    SideEffect side_effect = 14;
+  }
 }
 
 message JournalEntry {
 
-    message Entry {
-        EnrichedEntryHeader header = 1;
-        bytes raw_entry = 2;
+  message Entry {
+    EnrichedEntryHeader header = 1;
+    bytes raw_entry = 2;
+  }
+
+  message CompletionResult {
+    message Empty {
     }
 
-    message CompletionResult {
-        message Empty {
-        }
-
-        message Success {
-            bytes value = 1;
-        }
-
-        message Failure {
-            uint32 error_code = 1;
-            bytes message = 2;
-        }
-
-        oneof result {
-            Empty empty = 2;
-            Success success = 3;
-            Failure failure = 4;
-        }
+    message Success {
+      bytes value = 1;
     }
 
-    oneof kind {
-        Entry entry = 1;
-        CompletionResult completion_result = 2;
+    message Failure {
+      uint32 error_code = 1;
+      bytes message = 2;
     }
+
+    oneof result {
+      Empty empty = 2;
+      Success success = 3;
+      Failure failure = 4;
+    }
+  }
+
+  oneof kind {
+    Entry entry = 1;
+    CompletionResult completion_result = 2;
+  }
 }
 
 
 
 message ResponseResult {
-    message ResponseSuccess {
-        bytes value = 1;
-    }
+  message ResponseSuccess {
+    bytes value = 1;
+  }
 
-    message ResponseFailure {
-        uint32 failure_code = 1;
-        bytes failure_message = 2;
-    }
+  message ResponseFailure {
+    uint32 failure_code = 1;
+    bytes failure_message = 2;
+  }
 
-    oneof response_result {
-        ResponseSuccess response_success = 1;
-        ResponseFailure response_failure = 2;
-    }
+  oneof response_result {
+    ResponseSuccess response_success = 1;
+    ResponseFailure response_failure = 2;
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -470,33 +470,33 @@ message ResponseResult {
 // ---------------------------------------------------------------------
 
 message OutboxMessage {
-    // removed OutboxIngressResponse variant
-    reserved 3;
+  // removed OutboxIngressResponse variant
+  reserved 3;
 
-    message OutboxServiceInvocation {
-        ServiceInvocation service_invocation = 1;
-    }
+  message OutboxServiceInvocation {
+    ServiceInvocation service_invocation = 1;
+  }
 
-    message OutboxServiceInvocationResponse {
-        InvocationId invocation_id = 1;
-        uint32 entry_index = 2;
-        ResponseResult response_result = 3;
-    }
+  message OutboxServiceInvocationResponse {
+    InvocationId invocation_id = 1;
+    uint32 entry_index = 2;
+    ResponseResult response_result = 3;
+  }
 
-    message OutboxKill {
-        InvocationId invocation_id = 1;
-    }
+  message OutboxKill {
+    InvocationId invocation_id = 1;
+  }
 
-    message OutboxCancel {
-        InvocationId invocation_id = 1;
-    }
+  message OutboxCancel {
+    InvocationId invocation_id = 1;
+  }
 
-    oneof outbox_message {
-        OutboxServiceInvocation service_invocation_case = 1;
-        OutboxServiceInvocationResponse service_invocation_response = 2;
-        OutboxKill kill = 4;
-        OutboxCancel cancel = 5;
-    }
+  oneof outbox_message {
+    OutboxServiceInvocation service_invocation_case = 1;
+    OutboxServiceInvocationResponse service_invocation_response = 2;
+    OutboxKill kill = 4;
+    OutboxCancel cancel = 5;
+  }
 
 }
 
@@ -506,27 +506,27 @@ message OutboxMessage {
 
 message Timer {
 
-    message CompleteSleepEntry {
-        InvocationId invocation_id = 1;
-        uint32 entry_index = 2;
-    }
+  message CompleteSleepEntry {
+    InvocationId invocation_id = 1;
+    uint32 entry_index = 2;
+  }
 
-    message CleanInvocationStatus {
-        InvocationId invocation_id = 1;
-    }
+  message CleanInvocationStatus {
+    InvocationId invocation_id = 1;
+  }
 
-    oneof value {
-        /// This variant is used for scheduled invocations recorded with NeoInvocationStatus
-        InvocationId neo_invoke = 1;
-        CompleteSleepEntry complete_sleep_entry = 100;
-        ServiceInvocation invoke = 101;
-        CleanInvocationStatus clean_invocation_status = 102;
-    }
+  oneof value {
+    // Scheduled invocations recorded with InvocationStatusV2
+    InvocationId scheduled_invoke = 1;
+    CompleteSleepEntry complete_sleep_entry = 100;
+    ServiceInvocation invoke = 101;
+    CleanInvocationStatus clean_invocation_status = 102;
+  }
 }
 
 message SequencedTimer {
-    uint64 seq_number = 1;
-    Timer timer = 2;
+  uint64 seq_number = 1;
+  Timer timer = 2;
 }
 
 // ---------------------------------------------------------------------
@@ -536,18 +536,18 @@ message SequencedTimer {
 // Sequence number which is prefixed by the epoch of the producer. Epoch sequence
 // numbers sort lexicographically based on (leader_epoch, sequence_number).
 message EpochSequenceNumber {
-    uint64 leader_epoch = 1;
-    uint64 sequence_number = 2;
+  uint64 leader_epoch = 1;
+  uint64 sequence_number = 2;
 }
 
 // Sequence number which is used for deduplicating incoming messages.
 message DedupSequenceNumber {
-    oneof variant {
-        // Variant which is used for deduplicating messages across epoch/leadership changes
-        uint64 sequence_number = 1;
-        // Variant which is used for guarding against messages from previous epochs/leaders
-        EpochSequenceNumber epoch_sequence_number = 2;
-    }
+  oneof variant {
+    // Variant which is used for deduplicating messages across epoch/leadership changes
+    uint64 sequence_number = 1;
+    // Variant which is used for guarding against messages from previous epochs/leaders
+    EpochSequenceNumber epoch_sequence_number = 2;
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -555,18 +555,18 @@ message DedupSequenceNumber {
 // ---------------------------------------------------------------------
 
 message IdempotencyMetadata {
-    InvocationId invocation_id = 1;
+  InvocationId invocation_id = 1;
 }
 
 message SubmitNotificationSink {
-    message Ingress {
-        GenerationalNodeId node_id = 1;
-        bytes request_id = 2;
-    }
+  message Ingress {
+    GenerationalNodeId node_id = 1;
+    bytes request_id = 2;
+  }
 
-    oneof notification_sink {
-        Ingress ingress = 2;
-    }
+  oneof notification_sink {
+    Ingress ingress = 2;
+  }
 }
 
 
