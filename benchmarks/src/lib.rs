@@ -99,16 +99,17 @@ pub fn spawn_restate(config: Configuration) -> TaskCenter {
     restate_types::config::set_current_config(config.clone());
     let updateable_config = Configuration::updateable();
 
-    tc.run_in_scope_sync("db-manager-init", None, || {
-        RocksDbManager::init(Constant::new(config.common))
+    tc.block_on("benchmark", None, async {
+        RocksDbManager::init(Constant::new(config.common));
+
+        tc.spawn(TaskKind::SystemBoot, "restate", None, async move {
+            let node = Node::create(updateable_config)
+                .await
+                .expect("Restate node must build");
+            cloned_tc.run_in_scope("startup", None, node.start()).await
+        })
+        .unwrap();
     });
-    tc.spawn(TaskKind::SystemBoot, "benchmark", None, async move {
-        let node = Node::create(updateable_config)
-            .await
-            .expect("Restate node must build");
-        cloned_tc.run_in_scope("startup", None, node.start()).await
-    })
-    .unwrap();
 
     tc
 }
