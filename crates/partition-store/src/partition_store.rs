@@ -22,7 +22,6 @@ use restate_types::config::Configuration;
 use rocksdb::DBCompressionType;
 use rocksdb::DBPinnableSlice;
 use rocksdb::DBRawIteratorWithThreadMode;
-use rocksdb::MultiThreaded;
 use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::{BoundColumnFamily, SliceTransform};
@@ -41,8 +40,7 @@ use crate::keys::TableKey;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 
-pub type DB = rocksdb::OptimisticTransactionDB<MultiThreaded>;
-type TransactionDB<'a> = rocksdb::Transaction<'a, DB>;
+pub type DB = rocksdb::DB;
 
 pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
 pub type DBIteratorTransaction<'b> = DBRawIteratorWithThreadMode<'b, rocksdb::Transaction<'b, DB>>;
@@ -401,7 +399,8 @@ impl PartitionStore {
             });
 
         PartitionStoreTransaction {
-            txn: self.raw_db.transaction(),
+            write_batch_with_index: rocksdb::WriteBatchWithIndex::new(0, true),
+            raw_db: self.raw_db.as_ref(),
             data_cf_handle,
             rocksdb,
             key_buffer: &mut self.key_buffer,
@@ -499,7 +498,8 @@ pub enum ScanMode {
 pub struct PartitionStoreTransaction<'a> {
     partition_id: PartitionId,
     partition_key_range: &'a RangeInclusive<PartitionKey>,
-    txn: rocksdb::Transaction<'a, DB>,
+    write_batch_with_index: rocksdb::WriteBatchWithIndex,
+    raw_db: &'a DB,
     rocksdb: Arc<RocksDb>,
     data_cf_handle: Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
@@ -512,14 +512,15 @@ impl<'a> PartitionStoreTransaction<'a> {
         table: TableKind,
         _key_kind: KeyKind,
         prefix: Bytes,
-    ) -> DBIteratorTransaction {
+    ) -> DBIterator {
         let table = self.table_handle(table);
-        let mut opts = ReadOptions::default();
+        let mut opts = rocksdb::ReadOptions::default();
         opts.set_iterate_range(PrefixRange(prefix.clone()));
         opts.set_prefix_same_as_start(true);
         opts.set_total_order_seek(false);
 
-        let mut it = self.txn.raw_iterator_cf_opt(table, opts);
+        let it = self.raw_db.raw_iterator_cf_opt(table, opts);
+        let mut it = self.write_batch_with_index.iterator_with_base_cf(it, table);
         it.seek(prefix);
         it
     }
@@ -531,14 +532,16 @@ impl<'a> PartitionStoreTransaction<'a> {
         scan_mode: ScanMode,
         from: Bytes,
         to: Bytes,
-    ) -> DBIteratorTransaction {
+    ) -> DBIterator {
         let table = self.table_handle(table);
-        let mut opts = ReadOptions::default();
+        let mut opts = rocksdb::ReadOptions::default();
         // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
         // binding.
         opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
         opts.set_iterate_range(from.clone()..to);
-        let mut it = self.txn.raw_iterator_cf_opt(table, opts);
+
+        let it = self.raw_db.raw_iterator_cf_opt(table, opts);
+        let mut it = self.write_batch_with_index.iterator_with_base_cf(it, table);
         it.seek(from);
         it
     }
@@ -580,8 +583,7 @@ impl<'a> Transaction for PartitionStoreTransaction<'a> {
         // We cannot directly commit the txn because it might fail because of unrelated concurrent
         // writes to RocksDB. However, it is safe to write the WriteBatch for a given partition,
         // because there can only be a single writer (the leading PartitionProcessor).
-        let write_batch = self.txn.get_writebatch();
-        if write_batch.is_empty() {
+        if self.write_batch_with_index.is_empty() {
             return Ok(());
         }
         let io_mode = if Configuration::pinned()
@@ -597,14 +599,20 @@ impl<'a> Transaction for PartitionStoreTransaction<'a> {
         // We disable WAL since bifrost is our durable distributed log.
         opts.disable_wal(true);
         self.rocksdb
-            .write_tx_batch(Priority::High, io_mode, opts, write_batch)
+            .write_batch_with_index(
+                "partition-store-txn-commit",
+                Priority::High,
+                io_mode,
+                opts,
+                self.write_batch_with_index,
+            )
             .await
             .map_err(|error| StorageError::Generic(error.into()))
     }
 }
 
 impl<'a> StorageAccess for PartitionStoreTransaction<'a> {
-    type DBAccess<'b> = TransactionDB<'b> where Self: 'b;
+    type DBAccess<'b> = DB where Self: 'b;
 
     fn iterator_from<K: TableKey>(
         &self,
@@ -660,21 +668,26 @@ impl<'a> StorageAccess for PartitionStoreTransaction<'a> {
     #[inline]
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
         let table = self.table_handle(table);
-        self.txn
-            .get_pinned_cf(table, key)
+        self.write_batch_with_index
+            .get_pinned_from_batch_and_db_cf(
+                self.raw_db,
+                table,
+                key,
+                &rocksdb::ReadOptions::default(),
+            )
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
     #[inline]
-    fn put_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
-        let table = self.table_handle(table);
-        self.txn.put_cf(table, key, value).unwrap();
+    fn put_cf(&mut self, _table: TableKind, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+        self.write_batch_with_index
+            .put_cf(&self.data_cf_handle, key, value);
     }
 
     #[inline]
-    fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) {
-        let table = self.table_handle(table);
-        self.txn.delete_cf(table, key).unwrap();
+    fn delete_cf(&mut self, _table: TableKind, key: impl AsRef<[u8]>) {
+        self.write_batch_with_index
+            .delete_cf(&self.data_cf_handle, key);
     }
 }
 

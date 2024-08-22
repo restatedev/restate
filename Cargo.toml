@@ -151,7 +151,7 @@ reqwest = { version = "0.12.5", default-features = false, features = [
     "stream",
 ] }
 rlimit = { version = "0.10.1" }
-rocksdb = { version = "0.29.0", package = "rust-rocksdb", features = ["multi-threaded-cf"], git = "https://github.com/restatedev/rust-rocksdb", rev = "8b621f1b4fb15ed0ba4a4b9da239432159e40b01" }
+rocksdb = { version = "0.29.0", package = "rust-rocksdb", features = ["multi-threaded-cf"], git = "https://github.com/restatedev/rust-rocksdb", rev = "c6a279a40416cb47bbf576ffb190523d55818073" }
 rustls = { version = "0.23.11", default-features = false, features = ["ring"] }
 schemars = { version = "0.8", features = ["bytes", "enumset"] }
 serde = { version = "1.0", features = ["derive"] }

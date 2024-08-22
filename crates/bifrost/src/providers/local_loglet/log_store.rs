@@ -87,7 +87,8 @@ impl RocksDbLogStore {
             // it's also a small cf so it should be quick.
             .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
             .ensure_column_families(cfs)
-            .build_as_db();
+            .build()
+            .expect("valid spec");
         let db_name = db_spec.name().clone();
         // todo: use the returned rocksdb object when open_db returns Arc<RocksDb>
         let _ = db_manager.open_db(updateable_options, db_spec).await?;

@@ -68,7 +68,8 @@ impl PartitionStoreManager {
                 cf_options(per_partition_memory_budget),
             )
             .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
-            .build_as_optimistic_db();
+            .build()
+            .expect("valid spec");
 
         let manager = RocksDbManager::get();
         let raw_db = manager.open_db(updateable_opts, db_spec).await?;

@@ -135,11 +135,11 @@ impl RocksDbManager {
         self.dbs.read().get(&name).cloned()
     }
 
-    pub async fn open_db<T: RocksAccess + Send + Sync + 'static>(
+    pub async fn open_db(
         &'static self,
         mut updateable_opts: BoxedLiveLoad<RocksDbOptions>,
-        mut db_spec: DbSpec<T>,
-    ) -> Result<Arc<T>, RocksError> {
+        mut db_spec: DbSpec,
+    ) -> Result<Arc<rocksdb::DB>, RocksError> {
         if self
             .shutting_down
             .load(std::sync::atomic::Ordering::Acquire)
@@ -154,7 +154,7 @@ impl RocksDbManager {
         self.amend_db_options(&mut db_spec.db_options, &options);
 
         // todo: move to bg thread pool
-        let db = Arc::new(RocksAccess::open_db(
+        let db = Arc::new(rocksdb::DB::open_db(
             &db_spec,
             self.default_cf_options(&options),
         )?);
