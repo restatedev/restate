@@ -36,8 +36,8 @@ use restate_core::network::Networking;
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskId, TaskKind};
 use restate_core::{RuntimeError, TaskCenter};
-use restate_invoker_impl::ChannelStatusReader;
 use restate_invoker_impl::Service as InvokerService;
+use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -108,6 +108,8 @@ pub enum Error {
     MetadataStore(#[from] ReadModifyWriteError),
     #[error("could not send command to partition processor since it is busy")]
     PartitionProcessorBusy,
+    #[error(transparent)]
+    InvokerBuild(#[from] BuildError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -630,7 +632,7 @@ impl PartitionProcessorManager {
         &mut self,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
-    ) -> Result<ProcessorState, ShutdownError> {
+    ) -> Result<ProcessorState, Error> {
         let (control_tx, control_rx) = mpsc::channel(2);
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());
@@ -653,8 +655,7 @@ impl PartitionProcessorManager {
             &config.worker.invoker,
             EntryEnricher::new(schema.clone()),
             schema.clone(),
-        )
-        .unwrap();
+        )?;
 
         self.invokers_status_reader
             .push(key_range.clone(), invoker.status_reader());
