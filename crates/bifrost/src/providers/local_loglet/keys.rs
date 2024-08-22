@@ -49,6 +49,8 @@ impl RecordKey {
         buf.reserve(Self::serialized_size());
         buf.put_u8(b'd');
         buf.put_u64(self.loglet_id);
+        // despite offset being 32bit, for backward compatibility and future-proofing, we keep the
+        // storage layer as u64 but we assert that the actual value fits u32 on read.
         buf.put_u64(self.offset.into());
     }
 
@@ -57,7 +59,8 @@ impl RecordKey {
         let c = data.get_u8();
         debug_assert_eq!(c, b'd');
         let loglet_id = data.get_u64();
-        let offset = LogletOffset::from(data.get_u64());
+        let offset =
+            LogletOffset::new(u32::try_from(data.get_u64()).expect("offset must fit within u32"));
         Self { loglet_id, offset }
     }
 }
