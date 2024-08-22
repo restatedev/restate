@@ -18,7 +18,7 @@ use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
-    InvocationStatusTable, NeoInvocationStatus, PreFlightInvocationMetadata,
+    InvocationStatusTable, InvocationStatusV2, PreFlightInvocationMetadata,
     ReadOnlyInvocationStatusTable, ScheduledInvocation, SourceTable,
 };
 use restate_storage_api::{Result, StorageError};
@@ -46,7 +46,7 @@ fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatu
 
 define_table_key!(
     TableKind::InvocationStatus,
-    KeyKind::NeoInvocationStatus,
+    KeyKind::InvocationStatusV2,
     NeoInvocationStatusKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid
@@ -112,7 +112,7 @@ fn put_invocation_status<S: StorageAccess>(
                 SourceTable::New => {
                     storage.put_kv(
                         create_neo_invocation_status_key(invocation_id),
-                        NeoInvocationStatus(status),
+                        InvocationStatusV2(status),
                     );
                 }
             }
@@ -128,7 +128,7 @@ fn put_invocation_status<S: StorageAccess>(
             // The scheduled variant is only on the NeoInvocationStatus
             storage.put_kv(
                 create_neo_invocation_status_key(invocation_id),
-                NeoInvocationStatus(status),
+                InvocationStatusV2(status),
             );
         }
         InvocationStatus::Free => {
@@ -147,7 +147,7 @@ fn get_invocation_status<S: StorageAccess>(
 
     // Try read the old one first
     if let Some(s) = storage
-        .get_value::<_, NeoInvocationStatus>(create_neo_invocation_status_key(invocation_id))?
+        .get_value::<_, InvocationStatusV2>(create_neo_invocation_status_key(invocation_id))?
     {
         return Ok(s.0);
     }
@@ -219,7 +219,7 @@ fn all_invocation_status<S: StorageAccess>(
             >(range.clone())))
             .map(|(mut key, mut value)| {
                 let state_key = NeoInvocationStatusKey::deserialize_from(&mut key)?;
-                let state_value = StorageCodec::decode::<NeoInvocationStatus, _>(&mut value)
+                let state_value = StorageCodec::decode::<InvocationStatusV2, _>(&mut value)
                     .map_err(|err| StorageError::Conversion(err.into()))?
                     .0;
 
@@ -254,7 +254,7 @@ fn read_invoked_neo_full_invocation_id(
 ) -> Result<Option<(InvocationId, InvocationTarget)>> {
     // TODO this can be improved by simply parsing InvocationTarget and the Status enum
     let invocation_id = invocation_id_from_neo_key_bytes(&mut k)?;
-    let invocation_status = StorageCodec::decode::<NeoInvocationStatus, _>(v)
+    let invocation_status = StorageCodec::decode::<InvocationStatusV2, _>(v)
         .map_err(|err| StorageError::Generic(err.into()))?
         .0;
     if let InvocationStatus::Invoked(invocation_meta) = invocation_status {

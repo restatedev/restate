@@ -333,9 +333,9 @@ protobuf_storage_encode_decode!(InvocationStatus);
 
 /// Wrapper used by the table implementation, don't use it!
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct NeoInvocationStatus(pub InvocationStatus);
+pub struct InvocationStatusV2(pub InvocationStatus);
 
-protobuf_storage_encode_decode!(NeoInvocationStatus);
+protobuf_storage_encode_decode!(InvocationStatusV2);
 
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]

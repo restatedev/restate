@@ -90,7 +90,7 @@ impl TableKind {
     pub const fn key_kinds(self) -> &'static [KeyKind] {
         match self {
             Self::State => &[KeyKind::State],
-            Self::InvocationStatus => &[KeyKind::InvocationStatus, KeyKind::NeoInvocationStatus],
+            Self::InvocationStatus => &[KeyKind::InvocationStatus, KeyKind::InvocationStatusV2],
             Self::ServiceStatus => &[KeyKind::ServiceStatus],
             Self::Idempotency => &[KeyKind::Idempotency],
             Self::Inbox => &[KeyKind::Inbox],
