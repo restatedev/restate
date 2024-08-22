@@ -308,7 +308,7 @@ impl PartitionProcessorManager {
         }
     }
 
-    pub fn status_reader(&self) -> MultiplexedInvokerStatusReader {
+    pub fn invokers_status_reader(&self) -> MultiplexedInvokerStatusReader {
         self.invokers_status_reader.clone()
     }
 
@@ -683,7 +683,7 @@ impl PartitionProcessorManager {
         let invoker_name = Box::leak(Box::new(format!("invoker-{}", partition_id)));
         let invoker_config = self.updateable_config.clone().map(|c| &c.worker.invoker);
 
-        let maybe_task_id = self.task_center.start_runtime(
+        let maybe_task_id: Result<TaskId, RuntimeError> = self.task_center.start_runtime(
             TaskKind::PartitionProcessor,
             task_name,
             Some(pp_builder.partition_id),
