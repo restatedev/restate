@@ -168,14 +168,13 @@ impl Worker {
             router_builder,
             networking,
             bifrost,
-            invoker.handle(),
         );
 
         let storage_query_context = QueryContext::create(
             &config.admin.query_engine,
             partition_processor_manager.handle(),
             partition_store_manager.clone(),
-            invoker.status_reader(),
+            partition_processor_manager.status_reader(),
             schema.clone(),
         )
         .await?;
