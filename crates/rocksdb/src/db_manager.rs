@@ -280,7 +280,10 @@ impl RocksDbManager {
         // no need to retain 1000 log files by default.
         //
         db_options.set_keep_log_file_num(2);
-        db_options.set_recycle_log_file_num(4);
+        if !opts.rocksdb_disable_wal() {
+            // RocksDB does not support recycling wal log files if wal is disabled when writing
+            db_options.set_recycle_log_file_num(4);
+        }
         // Disable WAL archiving.
         // the following two options has to be both 0 to disable WAL log archive.
         db_options.set_wal_size_limit_mb(0);
