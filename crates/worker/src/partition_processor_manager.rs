@@ -654,7 +654,7 @@ impl PartitionProcessorManager {
             &config.common.service_client,
             &config.worker.invoker,
             EntryEnricher::new(schema.clone()),
-            schema.clone(),
+            schema,
         )?;
 
         self.invokers_status_reader
