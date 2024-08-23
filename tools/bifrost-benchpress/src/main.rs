@@ -142,7 +142,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_environment(config: Live<Configuration>, num_logs: u64) -> (TaskCenter, Bifrost) {
+fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (TaskCenter, Bifrost) {
     let tc = TaskCenterBuilder::default()
         .options(config.pinned().common.clone())
         .build()

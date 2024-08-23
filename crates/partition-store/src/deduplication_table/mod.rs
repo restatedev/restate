@@ -11,7 +11,8 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Deduplication;
 use crate::{
-    PartitionStore, RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+    PaddedPartitionId, PartitionStore, RocksDBTransaction, StorageAccess, TableScan,
+    TableScanIterationDecision,
 };
 use futures::Stream;
 use futures_util::stream;
@@ -28,7 +29,7 @@ use std::io::Cursor;
 define_table_key!(
     Deduplication,
     KeyKind::Deduplication,
-    DeduplicationKey(partition_id: PartitionId, producer_id: ProducerId)
+    DeduplicationKey(partition_id: PaddedPartitionId, producer_id: ProducerId)
 );
 
 fn get_dedup_sequence_number<S: StorageAccess>(
@@ -38,7 +39,7 @@ fn get_dedup_sequence_number<S: StorageAccess>(
 ) -> Result<Option<DedupSequenceNumber>> {
     let _x = RocksDbPerfGuard::new("get-dedup-seq");
     let key = DeduplicationKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .producer_id(producer_id.clone());
 
     storage.get_value(key)
@@ -111,7 +112,7 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
         dedup_sequence_number: DedupSequenceNumber,
     ) {
         let key = DeduplicationKey::default()
-            .partition_id(partition_id)
+            .partition_id(partition_id.into())
             .producer_id(producer_id);
         self.put_kv(key, dedup_sequence_number);
     }

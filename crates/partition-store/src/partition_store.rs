@@ -53,11 +53,55 @@ const DB_PREFIX_LENGTH: usize = KeyKind::SERIALIZED_LENGTH + std::mem::size_of::
 // If this changes, we need to know.
 const_assert_eq!(DB_PREFIX_LENGTH, 10);
 
+/// An internal representation of PartitionId that pads the underlying u16 into u64 to align with
+/// partition-key length. This should only be used as a replacement to PartitionId when
+/// compatibility with old u64-sized PartitionId is needed. Additionally. This must be aligned with
+/// the size of PartitionKey to match the prefix length requirements in rocksdb.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    derive_more::Deref,
+    derive_more::From,
+    derive_more::Into,
+    derive_more::Add,
+    derive_more::Display,
+    derive_more::FromStr,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct PaddedPartitionId(u64);
+
+impl PaddedPartitionId {
+    pub fn new(id: PartitionId) -> Self {
+        Self(u16::from(id) as u64)
+    }
+}
+
+impl From<PartitionId> for PaddedPartitionId {
+    fn from(value: PartitionId) -> Self {
+        Self(u16::from(value) as u64)
+    }
+}
+
+impl From<PaddedPartitionId> for PartitionId {
+    fn from(value: PaddedPartitionId) -> Self {
+        Self::from(u16::try_from(value.0).expect("partition_id must fit in u16"))
+    }
+}
+
 // Ensures that both types have the same length, this makes it possible to
 // share prefix extractor in rocksdb.
 const_assert_eq!(
     std::mem::size_of::<PartitionKey>(),
-    std::mem::size_of::<PartitionId>(),
+    std::mem::size_of::<PaddedPartitionId>(),
 );
 
 pub(crate) type Result<T> = std::result::Result<T, StorageError>;

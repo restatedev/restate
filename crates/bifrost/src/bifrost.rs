@@ -558,7 +558,7 @@ mod tests {
 
             // Ensure original clone writes to the same underlying loglet.
             let lsn = clean_bifrost_clone
-                .create_appender(LogId::from(0))?
+                .create_appender(LogId::new(0))?
                 .append("")
                 .await?;
             assert_eq!(max_lsn + Lsn::from(1), lsn);
@@ -573,7 +573,7 @@ mod tests {
             max_lsn = lsn;
 
             let tail = bifrost
-                .find_tail(LogId::from(0), FindTailAttributes::default())
+                .find_tail(LogId::new(0), FindTailAttributes::default())
                 .await?;
             assert_eq!(max_lsn.next(), tail.offset());
 
@@ -602,7 +602,7 @@ mod tests {
             let bifrost = Bifrost::init_with_factory(metadata(), factory).await;
 
             let start = tokio::time::Instant::now();
-            let lsn = bifrost.create_appender(LogId::from(0))?.append("").await?;
+            let lsn = bifrost.create_appender(LogId::new(0))?.append("").await?;
             assert_eq!(Lsn::from(1), lsn);
             // The append was properly delayed
             assert_eq!(delay, start.elapsed());

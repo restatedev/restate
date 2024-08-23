@@ -35,7 +35,8 @@ message NodeState {
 message AliveNode {
   restate.common.NodeId generational_node_id = 1;
   google.protobuf.Timestamp last_heartbeat_at = 2;
-  map<uint64, PartitionProcessorStatus> partitions = 3;
+  // partition id is u16 but protobuf doesn't support u16. This must be a value that's safe to convert to u16
+  map<uint32, PartitionProcessorStatus> partitions = 3;
 }
 
 message DeadNode { google.protobuf.Timestamp last_seen_alive = 1; }

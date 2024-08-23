@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind};
 use crate::TableKind::PartitionStateMachine;
-use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
+use crate::{PaddedPartitionId, PartitionStore, RocksDBTransaction, StorageAccess};
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_storage_api::Result;
 use restate_types::identifiers::PartitionId;
@@ -21,7 +21,7 @@ use std::future::Future;
 define_table_key!(
     PartitionStateMachine,
     KeyKind::Fsm,
-    PartitionStateMachineKey(partition_id: PartitionId, state_id: u64)
+    PartitionStateMachineKey(partition_id: PaddedPartitionId, state_id: u64)
 );
 
 fn get<T: StorageDecode, S: StorageAccess>(
@@ -30,7 +30,7 @@ fn get<T: StorageDecode, S: StorageAccess>(
     state_id: u64,
 ) -> Result<Option<T>> {
     let key = PartitionStateMachineKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .state_id(state_id);
     storage.get_value(key)
 }
@@ -42,14 +42,14 @@ fn put<S: StorageAccess>(
     state_value: impl StorageEncode,
 ) {
     let key = PartitionStateMachineKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .state_id(state_id);
     storage.put_kv(key, state_value);
 }
 
 fn clear<S: StorageAccess>(storage: &mut S, partition_id: PartitionId, state_id: u64) {
     let key = PartitionStateMachineKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .state_id(state_id);
     storage.delete_key(&key);
 }

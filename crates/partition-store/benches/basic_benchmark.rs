@@ -27,7 +27,7 @@ async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {
     //
     // write
     //
-    for i in 0..100000 {
+    for i in 0..u16::MAX {
         let mut txn = rocksdb.transaction();
         for j in 0..10 {
             txn.put_dedup_seq_number(

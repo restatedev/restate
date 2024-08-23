@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::warn;
@@ -224,7 +224,7 @@ pub struct StorageOptions {
     /// By default this uses the value defined in `bootstrap-num-partitions` in the common section of
     /// the config.
     #[serde(skip_serializing_if = "Option::is_none")]
-    num_partitions_to_share_memory_budget: Option<NonZeroU64>,
+    num_partitions_to_share_memory_budget: Option<NonZeroU16>,
 
     /// The memory budget for rocksdb memtables in bytes
     ///
@@ -296,11 +296,11 @@ impl StorageOptions {
             .get()
     }
 
-    pub fn num_partitions_to_share_memory_budget(&self) -> u64 {
+    pub fn num_partitions_to_share_memory_budget(&self) -> u16 {
         self.num_partitions_to_share_memory_budget
             .unwrap_or_else(|| {
                 warn!("num-partitions-to-share-memory-budget is not set, defaulting to 10");
-                NonZeroU64::new(10).unwrap()
+                NonZeroU16::new(10).unwrap()
             })
             .get()
     }

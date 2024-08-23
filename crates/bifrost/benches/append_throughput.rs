@@ -25,7 +25,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 mod util;
 
-async fn append_records_multi_log(bifrost: Bifrost, log_id_range: Range<u64>, count_per_log: u64) {
+async fn append_records_multi_log(bifrost: Bifrost, log_id_range: Range<u32>, count_per_log: u64) {
     let mut appends = FuturesUnordered::new();
     for log_id in log_id_range {
         for _ in 0..count_per_log {
@@ -80,7 +80,7 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
 
     let provider = restate_types::logs::metadata::ProviderKind::Local;
     let total_num_logs = 64;
-    let num_logs_per_run = 10;
+    let num_logs_per_run: u32 = 10;
     info!("Benchmark starting in {}", tmp_base.path().display());
     let local_opts = LocalLogletOptionsBuilder::default().build().unwrap();
     let config = ConfigurationBuilder::default()
@@ -127,7 +127,7 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
                 tc.run_in_scope(
                     "bench",
                     None,
-                    append_seq(bifrost.clone(), LogId::from(1), count_per_run),
+                    append_seq(bifrost.clone(), LogId::new(1), count_per_run),
                 )
             });
         });
@@ -147,7 +147,7 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
                             None,
                             append_records_concurrent_single_log(
                                 bifrost.clone(),
-                                LogId::from(1),
+                                LogId::new(1),
                                 count_per_run,
                             ),
                         )
@@ -160,7 +160,9 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
     for count_per_run in [10, 100, 1000].iter() {
         group
             .sample_size(10)
-            .throughput(Throughput::Elements(count_per_run * num_logs_per_run))
+            .throughput(Throughput::Elements(
+                count_per_run * num_logs_per_run as u64,
+            ))
             .bench_with_input(
                 BenchmarkId::new("concurrent_multi_log", count_per_run),
                 count_per_run,
