@@ -35,8 +35,8 @@ pub struct LogStateUpdates {
 /// Represents a single update to the log state.
 #[derive(Debug, Serialize, Deserialize)]
 enum LogStateUpdate {
-    ReleasePointer(u64),
-    TrimPoint(u64),
+    ReleasePointer(u32),
+    TrimPoint(u32),
     Seal,
 }
 
@@ -131,8 +131,8 @@ flexbuffers_storage_encode_decode!(LogStateUpdates);
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct LogState {
-    pub release_pointer: u64,
-    pub trim_point: u64,
+    pub release_pointer: u32,
+    pub trim_point: u32,
     pub seal: bool,
 }
 

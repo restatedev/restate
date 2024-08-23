@@ -73,6 +73,11 @@ pub struct TestEnv {
 }
 
 impl TestEnv {
+    pub async fn shutdown(self) {
+        self.task_center.shutdown_node("test complete", 0).await;
+        RocksDbManager::get().shutdown().await;
+    }
+
     pub fn partition_id(&self) -> PartitionId {
         PartitionId::MIN
     }
@@ -104,6 +109,7 @@ impl TestEnv {
     ) -> Self {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
+            .ingress_runtime_handle(tokio::runtime::Handle::current())
             .build()
             .expect("task_center builds");
 
@@ -183,6 +189,7 @@ async fn start_invocation() -> TestResult {
 
     let invocation_status = test_env.storage().get_invocation_status(&id).await.unwrap();
     assert_that!(invocation_status, pat!(InvocationStatus::Invoked(_)));
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -225,6 +232,7 @@ async fn shared_invocation_skips_inbox() -> TestResult {
             }
         )))
     );
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -308,6 +316,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
             invocation_id: eq(invocation_id)
         }))
     );
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -351,6 +360,7 @@ async fn complete_awakeable_with_success() {
             )
         }))
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -396,6 +406,7 @@ async fn complete_awakeable_with_failure() {
             )
         }))
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -436,6 +447,7 @@ async fn invoke_with_headers() -> TestResult {
             )
         }))
     );
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -502,6 +514,7 @@ async fn mutate_state() -> anyhow::Result<()> {
 
     assert_eq!(all_states, second_state_mutation);
 
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -538,6 +551,7 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
         .await;
     assert_that!(states, empty());
 
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -578,6 +592,7 @@ async fn get_state_keys() -> TestResult {
             ))
         }))
     );
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -704,6 +719,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         )
     );
 
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -731,6 +747,7 @@ async fn truncate_outbox_from_empty() -> Result<(), Error> {
     // empty.
     assert_eq!(test_env.state_machine.outbox_head_seq_number, Some(1));
 
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -781,6 +798,7 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         Some(outbox_tail_index + 1)
     );
 
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -892,6 +910,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         ok(eq(VirtualObjectStatus::Unlocked))
     );
 
+    test_env.shutdown().await;
     Ok(())
 }
 

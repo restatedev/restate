@@ -20,9 +20,7 @@ use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
 use tracing::instrument;
 
-use crate::loglet::{
-    AppendError, Loglet, LogletOffset, LogletReadStream, OperationError, SendableLogletReadStream,
-};
+use crate::loglet::{AppendError, Loglet, LogletOffset, OperationError, SendableLogletReadStream};
 use crate::record::ErasedInputRecord;
 use crate::{Commit, LogEntry, LsnExt};
 use crate::{Result, TailState};
@@ -211,6 +209,8 @@ impl LogletWrapper {
         if trim_point == Lsn::INVALID {
             return Ok(());
         }
+        // saturate to the loglet max possible offset.
+        let trim_point = trim_point.min(Lsn::new(LogletOffset::MAX.into()));
         let trim_point = trim_point.into_offset(self.base_lsn);
         self.loglet.trim(trim_point).await
     }
@@ -234,13 +234,13 @@ impl PartialEq for LogletWrapper {
 pub struct LogletReadStreamWrapper {
     pub(crate) base_lsn: Lsn,
     loglet: LogletWrapper,
-    inner_read_stream: SendableLogletReadStream<LogletOffset>,
+    inner_read_stream: SendableLogletReadStream,
 }
 
 impl LogletReadStreamWrapper {
     pub fn new(
         loglet: LogletWrapper,
-        inner_read_stream: SendableLogletReadStream<LogletOffset>,
+        inner_read_stream: SendableLogletReadStream,
         base_lsn: Lsn,
     ) -> Self {
         Self {
@@ -265,15 +265,15 @@ impl LogletReadStreamWrapper {
     pub fn loglet(&self) -> &LogletWrapper {
         &self.loglet
     }
-}
 
-impl LogletReadStream<Lsn> for LogletReadStreamWrapper {
-    fn read_pointer(&self) -> Lsn {
+    #[allow(unused)]
+    pub fn read_pointer(&self) -> Lsn {
         self.base_lsn
             .offset_by(self.inner_read_stream.read_pointer())
     }
 
-    fn is_terminated(&self) -> bool {
+    #[allow(unused)]
+    pub fn is_terminated(&self) -> bool {
         self.inner_read_stream.is_terminated()
     }
 }
