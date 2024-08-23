@@ -6498,6 +6498,7 @@ dependencies = [
  "futures",
  "googletest",
  "humantime",
+ "itertools 0.13.0",
  "metrics",
  "opentelemetry",
  "pin-project",

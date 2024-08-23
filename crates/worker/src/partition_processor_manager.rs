@@ -18,8 +18,10 @@ use futures::future::OptionFuture;
 use futures::stream::StreamExt;
 use futures::Stream;
 use metrics::gauge;
+use restate_invoker_api::StatusHandle;
 use restate_types::live::Live;
 use restate_types::logs::SequenceNumber;
+use restate_types::schema::Schema;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
 use tokio::time;
@@ -34,7 +36,8 @@ use restate_core::network::Networking;
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskId, TaskKind};
 use restate_core::{RuntimeError, TaskCenter};
-use restate_invoker_impl::InvokerHandle;
+use restate_invoker_impl::Service as InvokerService;
+use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -59,6 +62,7 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 
+use crate::invoker_integration::EntryEnricher;
 use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
 use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
@@ -88,12 +92,12 @@ pub struct PartitionProcessorManager {
         Pin<Box<dyn Stream<Item = MessageEnvelope<ControlProcessors>> + Send + Sync + 'static>>,
     networking: Networking,
     bifrost: Bifrost,
-    invoker_handle: InvokerHandle<InvokerStorageReader<PartitionStore>>,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
     latest_attach_response: Option<(GenerationalNodeId, AttachResponse)>,
 
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
+    invokers_status_reader: MultiplexedInvokerStatusReader,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +108,8 @@ pub enum Error {
     MetadataStore(#[from] ReadModifyWriteError),
     #[error("could not send command to partition processor since it is busy")]
     PartitionProcessorBusy,
+    #[error(transparent)]
+    InvokerBuild(#[from] BuildError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -238,6 +244,34 @@ impl PartitionProcessorHandle {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct MultiplexedInvokerStatusReader {
+    readers: Vec<(RangeInclusive<PartitionKey>, ChannelStatusReader)>,
+}
+
+impl MultiplexedInvokerStatusReader {
+    fn push(&mut self, key_range: RangeInclusive<PartitionKey>, reader: ChannelStatusReader) {
+        self.readers.push((key_range, reader));
+    }
+}
+
+impl StatusHandle for MultiplexedInvokerStatusReader {
+    type Iterator =
+        std::iter::Flatten<std::vec::IntoIter<<ChannelStatusReader as StatusHandle>::Iterator>>;
+
+    async fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
+        let mut iterators = vec![];
+
+        for (range, reader) in self.readers.iter() {
+            if keys.start() <= range.end() && keys.end() >= range.start() {
+                // if this partition is actually overlapping with the search range
+                iterators.push(reader.read_status(keys.clone()).await)
+            }
+        }
+        iterators.into_iter().flatten()
+    }
+}
+
 impl PartitionProcessorManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -249,7 +283,6 @@ impl PartitionProcessorManager {
         router_builder: &mut MessageRouterBuilder,
         networking: Networking,
         bifrost: Bifrost,
-        invoker_handle: InvokerHandle<InvokerStorageReader<PartitionStore>>,
     ) -> Self {
         let attach_router = RpcRouter::new(networking.clone(), router_builder);
         let incoming_get_state = router_builder.subscribe_to_stream(2);
@@ -268,13 +301,17 @@ impl PartitionProcessorManager {
             incoming_update_processors,
             networking,
             bifrost,
-            invoker_handle,
             attach_router,
             rx,
             tx,
             latest_attach_response: None,
             persisted_lsns_rx: None,
+            invokers_status_reader: MultiplexedInvokerStatusReader::default(),
         }
+    }
+
+    pub fn invokers_status_reader(&self) -> MultiplexedInvokerStatusReader {
+        self.invokers_status_reader.clone()
     }
 
     pub fn handle(&self) -> ProcessorsManagerHandle {
@@ -595,7 +632,7 @@ impl PartitionProcessorManager {
         &mut self,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
-    ) -> Result<ProcessorState, ShutdownError> {
+    ) -> Result<ProcessorState, Error> {
         let (control_tx, control_rx) = mpsc::channel(2);
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());
@@ -606,6 +643,22 @@ impl PartitionProcessorManager {
         let networking = self.networking.clone();
         let bifrost = self.bifrost.clone();
         let node_id = self.metadata.my_node_id();
+
+        let schema = self.metadata.updateable_schema();
+
+        let invoker: InvokerService<
+            InvokerStorageReader<PartitionStore>,
+            EntryEnricher<Schema, ProtobufRawEntryCodec>,
+            Schema,
+        > = InvokerService::from_options(
+            &config.common.service_client,
+            &config.worker.invoker,
+            EntryEnricher::new(schema.clone()),
+            schema.clone(),
+        )?;
+
+        self.invokers_status_reader
+            .push(key_range.clone(), invoker.status_reader());
 
         let pp_builder = PartitionProcessorBuilder::new(
             node_id,
@@ -618,7 +671,7 @@ impl PartitionProcessorManager {
             options.internal_queue_length(),
             control_rx,
             watch_tx,
-            self.invoker_handle.clone(),
+            invoker.handle(),
         );
 
         // the name is also used as thread names for the corresponding tokio runtimes, let's keep
@@ -628,7 +681,10 @@ impl PartitionProcessorManager {
             .entry(partition_id)
             .or_insert_with(|| Box::leak(Box::new(format!("pp-{}", partition_id))));
 
-        let maybe_task_id = self.task_center.start_runtime(
+        let invoker_name = Box::leak(Box::new(format!("invoker-{}", partition_id)));
+        let invoker_config = self.updateable_config.clone().map(|c| &c.worker.invoker);
+
+        let maybe_task_id: Result<TaskId, RuntimeError> = self.task_center.start_runtime(
             TaskKind::PartitionProcessor,
             task_name,
             Some(pp_builder.partition_id),
@@ -645,6 +701,13 @@ impl PartitionProcessorManager {
                             &options.storage.rocksdb,
                         )
                         .await?;
+
+                    restate_core::task_center().spawn_child(
+                        TaskKind::SystemService,
+                        invoker_name,
+                        Some(pp_builder.partition_id),
+                        invoker.run(invoker_config),
+                    )?;
 
                     pp_builder
                         .build::<ProtobufRawEntryCodec>(networking, bifrost, partition_store)

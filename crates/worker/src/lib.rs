@@ -33,12 +33,9 @@ use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
-use restate_invoker_impl::{
-    InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
-};
+use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_types::config::Configuration;
@@ -48,7 +45,6 @@ use restate_types::schema::Schema;
 pub use self::error::*;
 pub use self::handle::*;
 use crate::ingress_integration::InvocationStorageReaderImpl;
-use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
@@ -97,12 +93,6 @@ pub struct Worker {
     updateable_config: Live<Configuration>,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
-    #[allow(clippy::type_complexity)]
-    invoker: InvokerService<
-        InvokerStorageReader<PartitionStore>,
-        EntryEnricher<Schema, ProtobufRawEntryCodec>,
-        Schema,
-    >,
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
@@ -152,13 +142,6 @@ impl Worker {
             InvocationStorageReaderImpl::new(partition_store_manager.clone()),
         );
 
-        let invoker = InvokerService::from_options(
-            &config.common.service_client,
-            &config.worker.invoker,
-            EntryEnricher::new(schema.clone()),
-            schema.clone(),
-        )?;
-
         let partition_processor_manager = PartitionProcessorManager::new(
             task_center(),
             updateable_config.clone(),
@@ -168,14 +151,13 @@ impl Worker {
             router_builder,
             networking,
             bifrost,
-            invoker.handle(),
         );
 
         let storage_query_context = QueryContext::create(
             &config.admin.query_engine,
             partition_processor_manager.handle(),
             partition_store_manager.clone(),
-            invoker.status_reader(),
+            partition_processor_manager.invokers_status_reader(),
             schema.clone(),
         )
         .await?;
@@ -189,7 +171,6 @@ impl Worker {
             updateable_config,
             storage_query_context,
             storage_query_postgres,
-            invoker,
             external_client_ingress: ingress_http,
             ingress_kafka,
             subscription_controller_handle,
@@ -240,15 +221,6 @@ impl Worker {
             None,
             self.ingress_kafka
                 .run(self.updateable_config.clone().map(|c| &c.ingress)),
-        )?;
-
-        // Invoker service
-        tc.spawn_child(
-            TaskKind::SystemService,
-            "invoker",
-            None,
-            self.invoker
-                .run(self.updateable_config.clone().map(|c| &c.worker.invoker)),
         )?;
 
         tc.spawn_child(
