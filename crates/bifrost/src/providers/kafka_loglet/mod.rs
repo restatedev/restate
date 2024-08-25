@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::loglet::{
-    AppendError, Loglet, LogletBase, LogletOffset, LogletProvider, LogletProviderFactory,
+    AppendError, Loglet, LogletCommit, LogletOffset, LogletProvider, LogletProviderFactory,
     LogletReadStream, OperationError, SendableLogletReadStream,
 };
 use crate::record::ErasedInputRecord;
@@ -23,6 +23,7 @@ use rdkafka::consumer::{BaseConsumer, Consumer, StreamConsumer};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
 use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
+use restate_core::ShutdownError;
 use restate_types::config::KafkaLogletOptions;
 use restate_types::flexbuffers_storage_encode_decode;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
@@ -97,7 +98,7 @@ impl LogletProvider for KafkaLogletProvider {
         log_id: LogId,
         _segment_index: SegmentIndex,
         _params: &LogletParams,
-    ) -> crate::Result<Arc<dyn Loglet<Offset = LogletOffset>>> {
+    ) -> crate::Result<Arc<dyn Loglet>> {
         let partition: i32 = i32::try_from(u64::from(log_id)).expect("log_id should fit into i32");
 
         let mut guard = self.loglets.lock().await;
@@ -220,15 +221,13 @@ struct KafkaPayload {
 flexbuffers_storage_encode_decode!(KafkaPayload);
 
 #[async_trait]
-impl LogletBase for KafkaLoglet {
-    type Offset = LogletOffset;
-
+impl Loglet for KafkaLoglet {
     async fn create_read_stream(
         self: Arc<Self>,
         _filter: KeyFilter,
-        from: Self::Offset,
-        _to: Option<Self::Offset>,
-    ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {
+        from: LogletOffset,
+        _to: Option<LogletOffset>,
+    ) -> Result<SendableLogletReadStream<LogletOffset>, OperationError> {
         let consumer = initialize_consumer(&self.client_config, &self.topic, self.partition)?;
         seek(
             &consumer,
@@ -241,7 +240,7 @@ impl LogletBase for KafkaLoglet {
         Ok(Box::pin(KafkaLogletReadStream::new(consumer)))
     }
 
-    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {
+    fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
         let consumer: BaseConsumer =
             initialize_consumer(&self.client_config, &self.topic, self.partition)
                 .expect("hope that client creation won't fail");
@@ -266,16 +265,18 @@ impl LogletBase for KafkaLoglet {
         .boxed()
     }
 
-    async fn append_batch(
+    async fn enqueue_batch(
         &self,
         payloads: Arc<[ErasedInputRecord]>,
-    ) -> crate::Result<Self::Offset, AppendError> {
-        let last_offset = self.append_batch(payloads).await?;
-
-        Ok(last_offset)
+    ) -> crate::Result<LogletCommit, ShutdownError> {
+        let offset = self
+            .append_batch(payloads)
+            .await
+            .expect("append should not fail");
+        Ok(LogletCommit::resolved(offset))
     }
 
-    async fn find_tail(&self) -> crate::Result<TailState<Self::Offset>, OperationError> {
+    async fn find_tail(&self) -> crate::Result<TailState<LogletOffset>, OperationError> {
         let (_, high) = self
             .consumer
             .fetch_watermarks(&self.topic, self.partition, None)
@@ -284,11 +285,11 @@ impl LogletBase for KafkaLoglet {
         Ok(TailState::Open(Self::kafka_offset_to_loglet_offset(high)?))
     }
 
-    async fn get_trim_point(&self) -> crate::Result<Option<Self::Offset>, OperationError> {
+    async fn get_trim_point(&self) -> crate::Result<Option<LogletOffset>, OperationError> {
         Ok(None)
     }
 
-    async fn trim(&self, _trim_point: Self::Offset) -> crate::Result<(), OperationError> {
+    async fn trim(&self, _trim_point: LogletOffset) -> crate::Result<(), OperationError> {
         Ok(())
     }
 
