@@ -23,8 +23,11 @@ use opentelemetry_otlp::{SpanExporterBuilder, WithExportConfig};
 use opentelemetry_sdk::trace::BatchSpanProcessor;
 use pretty::Pretty;
 use restate_types::config::{CommonOptions, LogFormat};
+use std::collections::HashMap;
 use std::env;
 use std::fmt::Display;
+use tonic::codegen::http::HeaderMap;
+use tonic::metadata::MetadataMap;
 use tracing::{info, warn, Level};
 use tracing_subscriber::filter::{Filtered, ParseError};
 use tracing_subscriber::fmt::time::SystemTime;
@@ -62,7 +65,9 @@ where
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
     // only enable tracing if endpoint or json file is set.
-    if common_opts.tracing_endpoint.is_none() && common_opts.tracing_json_path.is_none() {
+    if common_opts.tracing.tracing_endpoint.is_none()
+        && common_opts.tracing.tracing_json_path.is_none()
+    {
         return Ok(None);
     }
 
@@ -91,11 +96,15 @@ where
     let mut tracer_provider_builder = opentelemetry_sdk::trace::TracerProvider::builder()
         .with_config(opentelemetry_sdk::trace::Config::default().with_resource(resource));
 
-    if let Some(endpoint) = &common_opts.tracing_endpoint {
+    if let Some(endpoint) = &common_opts.tracing.tracing_endpoint {
+        let header_map =
+            HeaderMap::from_iter(HashMap::from(common_opts.tracing.tracing_headers.clone()));
+
         let exporter = SpanExporterBuilder::from(
             opentelemetry_otlp::new_exporter()
                 .tonic()
-                .with_endpoint(endpoint),
+                .with_endpoint(endpoint)
+                .with_metadata(MetadataMap::from_headers(header_map)),
         )
         .build_span_exporter()?;
         let exporter = ResourceModifyingSpanExporter::new(exporter);
@@ -104,7 +113,7 @@ where
         );
     }
 
-    if let Some(path) = &common_opts.tracing_json_path {
+    if let Some(path) = &common_opts.tracing.tracing_json_path {
         let exporter = JaegerJsonExporter::new(
             path.into(),
             "trace".to_string(),
@@ -134,7 +143,7 @@ where
             .with_threads(false)
             .with_tracked_inactivity(false)
             .with_tracer(tracer)
-            .with_filter(EnvFilter::try_new(&common_opts.tracing_filter)?),
+            .with_filter(EnvFilter::try_new(&common_opts.tracing.tracing_filter)?),
     ))
 }
 
