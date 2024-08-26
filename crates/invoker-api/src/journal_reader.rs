@@ -14,6 +14,7 @@ use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryIndex;
+use restate_types::time::MillisSinceEpoch;
 use std::future::Future;
 
 /// Metadata associated with a journal
@@ -22,6 +23,11 @@ pub struct JournalMetadata {
     pub length: EntryIndex,
     pub span_context: ServiceInvocationSpanContext,
     pub pinned_deployment: Option<PinnedDeployment>,
+    /// This value is not agreed among Partition processor replicas right now.
+    ///
+    /// The upper bound for the total clock skew is the clock skew of the different machines
+    /// and the max time difference between two replicas applying the journal append command.
+    pub last_modification_date: MillisSinceEpoch,
 }
 
 impl JournalMetadata {
@@ -29,11 +35,13 @@ impl JournalMetadata {
         length: EntryIndex,
         span_context: ServiceInvocationSpanContext,
         pinned_deployment: Option<PinnedDeployment>,
+        last_modification_date: MillisSinceEpoch,
     ) -> Self {
         Self {
             pinned_deployment,
             span_context,
             length,
+            last_modification_date,
         }
     }
 }

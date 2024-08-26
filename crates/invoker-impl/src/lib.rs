@@ -80,6 +80,7 @@ trait InvocationTaskRunner<SR> {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        retry_count_since_last_stored_entry: u32,
         storage_reader: SR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
@@ -108,6 +109,7 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        retry_count_since_last_stored_entry: u32,
         storage_reader: SR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
@@ -125,6 +127,7 @@ where
                 opts.disable_eager_state,
                 opts.message_size_warning.get(),
                 opts.message_size_limit(),
+                retry_count_since_last_stored_entry,
                 storage_reader.clone(),
                 storage_reader,
                 self.entry_enricher.clone(),
@@ -870,7 +873,7 @@ where
         error: InvocationTaskError,
         mut ism: InvocationStateMachine,
     ) {
-        match ism.handle_task_error() {
+        match ism.handle_task_error(error.next_retry_interval_override()) {
             Some(next_retry_timer_duration) if error.is_transient() => {
                 counter!(INVOKER_INVOCATION_TASK,
                     "status" => TASK_OP_FAILED,
@@ -943,6 +946,7 @@ where
             partition,
             invocation_id,
             ism.invocation_target.clone(),
+            ism.retry_count_since_last_stored_entry,
             storage_reader,
             self.invocation_tasks_tx.clone(),
             completions_rx,
@@ -1120,6 +1124,7 @@ mod tests {
             partition: PartitionLeaderEpoch,
             invocation_id: InvocationId,
             invocation_target: InvocationTarget,
+            _retry_count_since_last_stored_entry: u32,
             storage_reader: SR,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Notification>,
