@@ -23,6 +23,7 @@ pub(super) struct InvocationStateMachine {
     pub(super) invocation_target: InvocationTarget,
     invocation_state: InvocationState,
     retry_iter: retries::RetryIter<'static>,
+    pub(super) retry_count_since_last_stored_entry: u32,
 }
 
 /// This struct tracks which entries the invocation task generates,
@@ -57,7 +58,7 @@ impl JournalTracker {
             self.last_entry_sent_to_partition_processor,
         ) {
             (_, None) => {
-                // The invocation task didn't generated new entries.
+                // The invocation task didn't generate new entries.
                 // We're always good to retry in this case.
                 true
             }
@@ -135,6 +136,7 @@ impl InvocationStateMachine {
             invocation_target,
             invocation_state: InvocationState::New,
             retry_iter: retry_policy.into_iter(),
+            retry_count_since_last_stored_entry: 0,
         }
     }
 
@@ -201,6 +203,8 @@ impl InvocationStateMachine {
             &self.invocation_state,
             InvocationState::InFlight { .. }
         ));
+
+        self.retry_count_since_last_stored_entry = 0;
 
         if let InvocationState::InFlight {
             journal_tracker,
@@ -271,7 +275,10 @@ impl InvocationStateMachine {
     }
 
     /// Returns Some() with the timer for the next retry, otherwise None if retry limit exhausted
-    pub(super) fn handle_task_error(&mut self) -> Option<Duration> {
+    pub(super) fn handle_task_error(
+        &mut self,
+        next_retry_interval_override: Option<Duration>,
+    ) -> Option<Duration> {
         let journal_tracker = match &self.invocation_state {
             InvocationState::InFlight {
                 journal_tracker, ..
@@ -289,9 +296,10 @@ impl InvocationStateMachine {
                 *journal_tracker
             }
         };
-        let next_timer = self.retry_iter.next();
 
+        let next_timer = next_retry_interval_override.or_else(|| self.retry_iter.next());
         if next_timer.is_some() {
+            self.retry_count_since_last_stored_entry += 1;
             self.invocation_state = InvocationState::WaitingRetry {
                 timer_fired: false,
                 journal_tracker,
@@ -339,14 +347,65 @@ mod tests {
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 
-        assert!(invocation_state_machine.handle_task_error().is_some());
+        assert!(invocation_state_machine.handle_task_error(None).is_some());
         check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         invocation_state_machine.notify_retry_timer_fired();
 
         // We stay in `WaitingForRetry`
-        assert!(invocation_state_machine.handle_task_error().is_some());
+        assert!(invocation_state_machine.handle_task_error(None).is_some());
         check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+    }
+
+    #[test(tokio::test)]
+    async fn handle_error_counts_attempts_on_same_entry() {
+        let mut invocation_state_machine = InvocationStateMachine::create(
+            InvocationTarget::mock_virtual_object(),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
+        );
+
+        // Start invocation
+        invocation_state_machine.start(
+            tokio::spawn(async {}).abort_handle(),
+            mpsc::unbounded_channel().0,
+        );
+
+        // Notify error
+        assert!(invocation_state_machine.handle_task_error(None).is_some());
+        assert_eq!(
+            invocation_state_machine.retry_count_since_last_stored_entry,
+            1
+        );
+
+        // Try to start again
+        invocation_state_machine.start(
+            tokio::spawn(async {}).abort_handle(),
+            mpsc::unbounded_channel().0,
+        );
+
+        // Get error again
+        assert!(invocation_state_machine.handle_task_error(None).is_some());
+        assert_eq!(
+            invocation_state_machine.retry_count_since_last_stored_entry,
+            2
+        );
+
+        // Try to start again
+        invocation_state_machine.start(
+            tokio::spawn(async {}).abort_handle(),
+            mpsc::unbounded_channel().0,
+        );
+        assert_eq!(
+            invocation_state_machine.retry_count_since_last_stored_entry,
+            2
+        );
+
+        // Now complete the entry
+        invocation_state_machine.notify_new_entry(1, false);
+        assert_eq!(
+            invocation_state_machine.retry_count_since_last_stored_entry,
+            0
+        );
     }
 
     #[test(tokio::test)]

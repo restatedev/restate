@@ -37,7 +37,10 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::{Deref, RangeInclusive};
 use strum::IntoEnumIterator;
-use tracing::warn;
+use tracing::{debug, warn};
+
+#[allow(clippy::declare_interior_mutable_const)]
+const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
 const SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v1+json";
@@ -215,6 +218,8 @@ impl ServiceDiscovery {
         let service_discovery_protocol_version =
             Self::retrieve_service_discovery_protocol_version(content_type)?;
 
+        let x_restate_server = parts.headers.remove(X_RESTATE_SERVER);
+
         let response = match service_discovery_protocol_version {
             ServiceDiscoveryProtocolVersion::Unspecified => {
                 unreachable!("unspecified service discovery protocol should not be chosen")
@@ -224,7 +229,11 @@ impl ServiceDiscovery {
             }
         };
 
-        Self::create_discovered_metadata_from_endpoint_response(endpoint.address(), response)
+        Self::create_discovered_metadata_from_endpoint_response(
+            endpoint.address(),
+            response,
+            x_restate_server,
+        )
     }
 
     fn retrieve_service_discovery_protocol_version(
@@ -270,6 +279,7 @@ impl ServiceDiscovery {
     fn create_discovered_metadata_from_endpoint_response(
         endpoint: &Endpoint,
         endpoint_response: endpoint_manifest::Endpoint,
+        x_restate_server: Option<HeaderValue>,
     ) -> Result<DiscoveredMetadata, DiscoveryError> {
         let protocol_type = match endpoint_response.protocol_mode {
             Some(endpoint_manifest::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
@@ -325,7 +335,21 @@ impl ServiceDiscovery {
         }
 
         let min_version = endpoint_response.min_protocol_version as i32;
-        let max_version = endpoint_response.max_protocol_version as i32;
+        let mut max_version = endpoint_response.max_protocol_version as i32;
+
+        // Fix for the SDK-Typescript bad protocol version,
+        //  see https://github.com/restatedev/sdk-typescript/pull/418
+        if let Some(x_restate_server) = x_restate_server {
+            if let Ok(x_restate_server) = x_restate_server.to_str() {
+                if x_restate_server.starts_with("restate-sdk-typescript/1.0.")
+                    || x_restate_server.starts_with("restate-sdk-typescript/1.1.")
+                    || x_restate_server.starts_with("restate-sdk-typescript/1.2.")
+                {
+                    debug!("Applying SDK-Typescript <= 1.2.1 workaround for endpoint.maxProtocolVersion");
+                    max_version = 1;
+                }
+            }
+        }
 
         if !ServiceProtocolVersion::is_compatible(min_version, max_version) {
             return Err(DiscoveryError::UnsupportedServiceProtocol {
@@ -422,7 +446,8 @@ mod tests {
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
                 &Endpoint::Http(Uri::default(), Version::HTTP_2),
-                response
+                response,
+                None
             ),
             Err(DiscoveryError::BadResponse(_))
         ));
@@ -445,7 +470,8 @@ mod tests {
                         .unwrap(),
                     None
                 ),
-                response
+                response,
+                None
             ),
             Err(DiscoveryError::BidirectionalNotSupported)
         ));
@@ -463,7 +489,8 @@ mod tests {
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
                 &Endpoint::Http(Uri::default(), Version::HTTP_2),
-                response
+                response,
+                None
             ),
             Err(DiscoveryError::BadResponse(_))
         ));
@@ -481,7 +508,8 @@ mod tests {
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
                 &Endpoint::Http(Uri::default(), Version::HTTP_2),
-                response
+                response,
+                None
             ),
             Err(DiscoveryError::BadResponse(_))
         ));
@@ -500,7 +528,8 @@ mod tests {
         assert!(
             matches!(ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
                 &Endpoint::Http(Uri::default(), Version::HTTP_2),
-                response
+                response,
+                    None
             ), Err(DiscoveryError::UnsupportedServiceProtocol { min_version, max_version }) if min_version == unsupported_version && max_version == unsupported_version )
         );
     }

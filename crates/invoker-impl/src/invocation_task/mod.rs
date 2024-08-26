@@ -57,6 +57,10 @@ const SERVICE_PROTOCOL_VERSION_V1: HeaderValue =
     HeaderValue::from_static("application/vnd.restate.invocation.v1");
 
 #[allow(clippy::declare_interior_mutable_const)]
+const SERVICE_PROTOCOL_VERSION_V2: HeaderValue =
+    HeaderValue::from_static("application/vnd.restate.invocation.v2");
+
+#[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -126,12 +130,14 @@ pub(crate) enum InvocationTaskError {
     #[code(unknown)]
     EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
 
-    #[error("Error message received from the SDK with related entry {0:?}: {1}")]
+    #[error("Error message received from the SDK with related entry {related_entry:?}: {error}")]
     #[code(restate_errors::RT0007)]
-    ErrorMessageReceived(
-        Option<InvocationErrorRelatedEntry>,
-        #[source] InvocationError,
-    ),
+    ErrorMessageReceived {
+        related_entry: Option<InvocationErrorRelatedEntry>,
+        next_retry_interval_override: Option<Duration>,
+        #[source]
+        error: InvocationError,
+    },
     #[error("cannot talk to service endpoint '{0}' because its service protocol versions [{}, {}] are incompatible with the server's service protocol versions [{}, {}].", .1.start(), .1.end(), i32::from(MIN_SERVICE_PROTOCOL_VERSION), i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
     #[code(restate_errors::RT0013)]
     IncompatibleServiceEndpoint(DeploymentId, RangeInclusive<i32>),
@@ -156,9 +162,19 @@ impl InvocationTaskError {
         true
     }
 
+    pub(crate) fn next_retry_interval_override(&self) -> Option<Duration> {
+        match self {
+            InvocationTaskError::ErrorMessageReceived {
+                next_retry_interval_override,
+                ..
+            } => *next_retry_interval_override,
+            _ => None,
+        }
+    }
+
     pub(crate) fn into_invocation_error(self) -> InvocationError {
         match self {
-            InvocationTaskError::ErrorMessageReceived(_, e) => e,
+            InvocationTaskError::ErrorMessageReceived { error, .. } => error,
             InvocationTaskError::EntryEnrichment(entry_index, entry_type, e) => {
                 let msg = format!(
                     "Error when processing entry {} of type {}: {}",
@@ -179,9 +195,10 @@ impl InvocationTaskError {
     pub(crate) fn into_invocation_error_report(mut self) -> InvocationErrorReport {
         let doc_error_code = codederror::CodedError::code(&self);
         let maybe_related_entry = match self {
-            InvocationTaskError::ErrorMessageReceived(ref mut related_entry, _) => {
-                related_entry.take()
-            }
+            InvocationTaskError::ErrorMessageReceived {
+                ref mut related_entry,
+                ..
+            } => related_entry.take(),
             _ => None,
         }
         .unwrap_or_default();
@@ -247,6 +264,7 @@ pub(super) struct InvocationTask<SR, JR, EE, DMR> {
     disable_eager_state: bool,
     message_size_warning: usize,
     message_size_limit: Option<usize>,
+    retry_count_since_last_stored_entry: u32,
 
     // Invoker tx/rx
     state_reader: SR,
@@ -307,6 +325,7 @@ where
         disable_eager_state: bool,
         message_size_warning: usize,
         message_size_limit: Option<usize>,
+        retry_count_since_last_stored_entry: u32,
         state_reader: SR,
         journal_reader: JR,
         entry_enricher: EE,
@@ -330,6 +349,7 @@ where
             invoker_rx,
             message_size_limit,
             message_size_warning,
+            retry_count_since_last_stored_entry,
         }
     }
 
@@ -479,6 +499,7 @@ fn service_protocol_version_to_header_value(
             unreachable!("unknown protocol version should never be chosen")
         }
         ServiceProtocolVersion::V1 => SERVICE_PROTOCOL_VERSION_V1,
+        ServiceProtocolVersion::V2 => SERVICE_PROTOCOL_VERSION_V2,
     }
 }
 

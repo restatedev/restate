@@ -767,6 +767,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     .span_context
                     .clone(),
                 None,
+                // This is safe to do as only the leader will execute the invoker command
+                MillisSinceEpoch::now(),
             ),
             vec![input_entry.erase_enrichment()],
         ))
