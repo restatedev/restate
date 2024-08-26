@@ -29,7 +29,7 @@ use std::task::{ready, Poll};
 use async_trait::async_trait;
 use futures::{FutureExt, Stream};
 
-use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, SequenceNumber};
 
 use crate::record::ErasedInputRecord;
 use crate::LogEntry;
@@ -48,18 +48,33 @@ use crate::{Result, TailState};
     derive_more::Into,
     derive_more::Display,
 )]
-pub struct LogletOffset(pub(crate) u64);
+pub struct LogletOffset(pub(crate) u32);
 
-impl Add<usize> for LogletOffset {
+impl LogletOffset {
+    pub const fn new(offset: u32) -> Self {
+        Self(offset)
+    }
+}
+
+impl From<LogletOffset> for u64 {
+    fn from(value: LogletOffset) -> Self {
+        u64::from(value.0)
+    }
+}
+
+impl Add<u32> for LogletOffset {
     type Output = Self;
-    fn add(self, rhs: usize) -> Self {
-        // we always assume that we are running on a 64bit cpu arch.
-        Self(self.0.saturating_add(rhs as u64))
+    fn add(self, rhs: u32) -> Self {
+        Self(
+            self.0
+                .checked_add(rhs)
+                .expect("loglet offset must not overflow over u32"),
+        )
     }
 }
 
 impl SequenceNumber for LogletOffset {
-    const MAX: Self = LogletOffset(u64::MAX);
+    const MAX: Self = LogletOffset(u32::MAX);
     const INVALID: Self = LogletOffset(0);
     const OLDEST: Self = LogletOffset(1);
 
@@ -119,7 +134,7 @@ pub trait Loglet: Send + Sync + std::fmt::Debug {
         filter: KeyFilter,
         from: LogletOffset,
         to: Option<LogletOffset>,
-    ) -> Result<SendableLogletReadStream<LogletOffset>, OperationError>;
+    ) -> Result<SendableLogletReadStream, OperationError>;
 
     /// Create a stream watching the state of tail for this loglet
     ///
@@ -188,17 +203,15 @@ pub trait Loglet: Send + Sync + std::fmt::Debug {
 }
 
 /// A stream of log records from a single loglet. Loglet streams are _always_ tailing streams.
-pub trait LogletReadStream<S: SequenceNumber>:
-    Stream<Item = Result<LogEntry<S>, OperationError>>
-{
+pub trait LogletReadStream: Stream<Item = Result<LogEntry<LogletOffset>, OperationError>> {
     /// Current read pointer. This points to the next offset to be read.
-    fn read_pointer(&self) -> S;
+    fn read_pointer(&self) -> LogletOffset;
 
     /// Returns true if the stream is terminated.
     fn is_terminated(&self) -> bool;
 }
 
-pub type SendableLogletReadStream<S = Lsn> = Pin<Box<dyn LogletReadStream<S> + Send>>;
+pub type SendableLogletReadStream = Pin<Box<dyn LogletReadStream + Send>>;
 
 pub struct LogletCommit {
     rx: oneshot::Receiver<Result<LogletOffset, AppendError>>,

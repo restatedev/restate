@@ -325,7 +325,9 @@ impl RocksDbLogWriterHandle {
         payloads: Arc<[ErasedInputRecord]>,
     ) -> Result<AckRecv, ShutdownError> {
         let (ack, receiver) = oneshot::channel();
-        let last_offset_in_batch = (start_offset + payloads.len()).prev();
+        // Do not allow more than 65k records in a single batch!
+        assert!(payloads.len() <= u16::MAX as usize);
+        let last_offset_in_batch = (start_offset + payloads.len() as u32).prev();
         let data_update = DataUpdate::PutRecords {
             first_offset: start_offset,
             payloads,

@@ -122,8 +122,7 @@ impl SequenceNumber for Lsn {
 
 pub trait SequenceNumber
 where
-    Self:
-        Copy + std::fmt::Debug + Sized + Into<u64> + From<u64> + Eq + PartialEq + Ord + PartialOrd,
+    Self: Copy + std::fmt::Debug + Sized + Into<u64> + Eq + PartialEq + Ord + PartialOrd,
 {
     /// The maximum possible sequence number, this is useful when creating a read stream
     const MAX: Self;

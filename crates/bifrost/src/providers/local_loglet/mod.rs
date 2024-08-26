@@ -19,7 +19,7 @@ mod record_format;
 
 pub use self::provider::Factory;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -52,12 +52,12 @@ struct LocalLoglet {
     #[debug(skip)]
     log_writer: RocksDbLogWriterHandle,
     // internal offset _before_ the loglet head. Loglet head is trim_point_offset.next()
-    trim_point_offset: AtomicU64,
+    trim_point_offset: AtomicU32,
     // used to order concurrent trim operations :-(
     #[debug(skip)]
     trim_point_lock: Mutex<()>,
     // In local loglet, the release point == the last committed offset
-    last_committed_offset: AtomicU64,
+    last_committed_offset: AtomicU32,
     #[debug(skip)]
     next_write_offset: Mutex<LogletOffset>,
     sealed: AtomicBool,
@@ -80,9 +80,9 @@ impl LocalLoglet {
             .map_err(OperationError::other)?;
         let log_state = log_state.unwrap_or_default();
 
-        let trim_point_offset = AtomicU64::new(log_state.trim_point);
+        let trim_point_offset = AtomicU32::new(log_state.trim_point);
         // In local loglet, the release point == the last committed offset
-        let last_committed_offset = AtomicU64::new(log_state.release_pointer);
+        let last_committed_offset = AtomicU32::new(log_state.release_pointer);
         let next_write_offset_raw = log_state.release_pointer + 1;
         let next_write_offset = Mutex::new(LogletOffset::from(next_write_offset_raw));
         let release_pointer = LogletOffset::from(log_state.release_pointer);
@@ -127,7 +127,7 @@ impl Loglet for LocalLoglet {
         filter: KeyFilter,
         from: LogletOffset,
         to: Option<LogletOffset>,
-    ) -> Result<SendableLogletReadStream<LogletOffset>, OperationError> {
+    ) -> Result<SendableLogletReadStream, OperationError> {
         Ok(Box::pin(
             LocalLogletReadStream::create(self, filter, from, to).await?,
         ))
@@ -152,7 +152,10 @@ impl Loglet for LocalLoglet {
             return Ok(LogletCommit::sealed());
         }
 
-        let num_payloads = payloads.len();
+        // Do not allow more than 65k records in a single batch!
+        assert!(payloads.len() <= u16::MAX as usize);
+        let num_payloads = payloads.len() as u32;
+
         counter!(BIFROST_LOCAL_APPEND).increment(num_payloads as u64);
         let start_time = std::time::Instant::now();
         // We hold the lock to ensure that offsets are enqueued in the order of
@@ -247,9 +250,7 @@ impl Loglet for LocalLoglet {
             .enqueue_trim(self.loglet_id, current_trim_point, effective_trim_point)
             .await?;
 
-        histogram!(BIFROST_LOCAL_TRIM_LENGTH).record(
-            u32::try_from(effective_trim_point.0 - current_trim_point.0).unwrap_or(u32::MAX),
-        );
+        histogram!(BIFROST_LOCAL_TRIM_LENGTH).record(effective_trim_point.0 - current_trim_point.0);
 
         Ok(())
     }
