@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::str::FromStr;
+
 /// A generational node identifier. Nodes with the same ID but different generations
 /// represent the same node across different instances (restarts) of its lifetime.
 ///
@@ -50,6 +52,36 @@ pub enum NodeId {
 #[display("{}:{}", _0, _1)]
 pub struct GenerationalNodeId(PlainNodeId, u32);
 
+#[derive(Debug, thiserror::Error)]
+#[error("invalid plain node id: {0}")]
+pub struct MalformedPlainNodeId(String);
+
+#[derive(Debug, thiserror::Error)]
+#[error("invalid generational node id: {0}")]
+pub struct MalformedGenerationalNodeId(String);
+
+impl FromStr for GenerationalNodeId {
+    type Err = MalformedGenerationalNodeId;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // generational node id can be in "N<id>:<generation>" format or <id>:<gen> format.
+        // parse the id and generation and construct GenerationalNodeId from this string
+        let (id_part, gen_part) = s
+            .split_once(':')
+            .ok_or_else(|| MalformedGenerationalNodeId(s.to_string()))?;
+        let id = id_part
+            .trim_start_matches('N')
+            .parse()
+            .map_err(|_| MalformedGenerationalNodeId(s.to_string()))?;
+
+        let generation = gen_part
+            .parse()
+            .map_err(|_| MalformedGenerationalNodeId(s.to_string()))?;
+
+        Ok(GenerationalNodeId::new(id, generation))
+    }
+}
+
 #[derive(
     Debug,
     Default,
@@ -61,7 +93,6 @@ pub struct GenerationalNodeId(PlainNodeId, u32);
     Copy,
     Hash,
     derive_more::From,
-    derive_more::FromStr,
     derive_more::Into,
     derive_more::Display,
     serde::Serialize,
@@ -71,6 +102,20 @@ pub struct GenerationalNodeId(PlainNodeId, u32);
 #[cfg_attr(feature = "schemars", schemars(transparent))]
 #[display("N{}", _0)]
 pub struct PlainNodeId(u32);
+
+impl FromStr for PlainNodeId {
+    type Err = MalformedPlainNodeId;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // plain id can be in "N<id>" format or <id> format.
+        let id = s
+            .trim_start_matches('N')
+            .parse()
+            .map_err(|_| MalformedPlainNodeId(s.to_string()))?;
+
+        Ok(PlainNodeId::new(id))
+    }
+}
 
 impl NodeId {
     pub fn new(id: u32, generation: Option<u32>) -> NodeId {
@@ -179,6 +224,10 @@ impl From<GenerationalNodeId> for crate::protobuf::common::NodeId {
 }
 
 impl PlainNodeId {
+    pub const fn new(id: u32) -> PlainNodeId {
+        PlainNodeId(id)
+    }
+
     pub fn with_generation(self, generation: u32) -> GenerationalNodeId {
         GenerationalNodeId(self, generation)
     }
@@ -254,6 +303,36 @@ mod tests {
         assert_eq!("N1:2", generational.to_string());
         assert_eq!("N1", PlainNodeId(1).to_string());
         assert_eq!("N1:2", GenerationalNodeId(PlainNodeId(1), 2).to_string());
+    }
+
+    #[test]
+    fn test_parse_plain_node_id_string() {
+        let plain = NodeId::Plain(PlainNodeId(25));
+        assert_eq!("N25", plain.to_string());
+        let parsed_1: PlainNodeId = "N25".parse().unwrap();
+        assert_eq!(parsed_1, plain);
+        let parsed_2: PlainNodeId = "25".parse().unwrap();
+        assert_eq!(parsed_2, plain);
+        // invalid
+        assert!("25:10".parse::<PlainNodeId>().is_err());
+        // invalid
+        assert!("N25:".parse::<PlainNodeId>().is_err());
+        // invalid
+        assert!("N25:10".parse::<PlainNodeId>().is_err());
+    }
+
+    #[test]
+    fn test_parse_generational_node_id_string() {
+        let generational = GenerationalNodeId::new(25, 18);
+        assert_eq!("N25:18", generational.to_string());
+        let parsed_1: GenerationalNodeId = "N25:18".parse().unwrap();
+        assert_eq!(parsed_1, generational);
+        let parsed_2: GenerationalNodeId = "25:18".parse().unwrap();
+        assert_eq!(parsed_2, generational);
+        // invalid
+        assert!("25".parse::<GenerationalNodeId>().is_err());
+        // invalid
+        assert!("N25".parse::<GenerationalNodeId>().is_err());
     }
 
     #[test]
