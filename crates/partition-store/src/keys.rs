@@ -314,12 +314,13 @@ macro_rules! define_table_key {
     })
 }
 
+use crate::PaddedPartitionId;
 use crate::TableKind;
 pub(crate) use define_table_key;
 use restate_storage_api::deduplication_table::ProducerId;
 use restate_storage_api::timer_table::TimerKeyKind;
 use restate_storage_api::StorageError;
-use restate_types::identifiers::{InvocationUuid, PartitionId};
+use restate_types::identifiers::InvocationUuid;
 
 pub(crate) trait KeyCodec: Sized {
     fn encode<B: BufMut>(&self, target: &mut B);
@@ -360,14 +361,14 @@ impl KeyCodec for ByteString {
     }
 }
 
-impl KeyCodec for PartitionId {
+impl KeyCodec for PaddedPartitionId {
     fn encode<B: BufMut>(&self, target: &mut B) {
         // store u64 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
         target.put_u64(**self);
     }
 
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        Ok(PartitionId::from(source.get_u64()))
+        Ok(PaddedPartitionId::from(source.get_u64()))
     }
 
     fn serialized_length(&self) -> usize {
@@ -467,8 +468,9 @@ impl KeyCodec for ProducerId {
     fn encode<B: BufMut>(&self, target: &mut B) {
         match self {
             ProducerId::Partition(p) => {
+                let p = PaddedPartitionId::from(*p);
                 target.put_u8(0);
-                KeyCodec::encode(p, target)
+                KeyCodec::encode(&p, target)
             }
             ProducerId::Other(i) => {
                 target.put_u8(1);
@@ -479,7 +481,10 @@ impl KeyCodec for ProducerId {
 
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         Ok(match source.get_u8() {
-            0 => ProducerId::Partition(KeyCodec::decode(source)?),
+            0 => {
+                let padded: PaddedPartitionId = KeyCodec::decode(source)?;
+                ProducerId::Partition(padded.into())
+            }
             1 => ProducerId::Other(KeyCodec::decode(source)?),
             i => {
                 return Err(StorageError::Generic(anyhow!(
@@ -492,7 +497,7 @@ impl KeyCodec for ProducerId {
 
     fn serialized_length(&self) -> usize {
         1 + match self {
-            ProducerId::Partition(p) => KeyCodec::serialized_length(p),
+            ProducerId::Partition(p) => KeyCodec::serialized_length(&PaddedPartitionId::from(*p)),
             ProducerId::Other(i) => KeyCodec::serialized_length(i),
         }
     }

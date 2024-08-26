@@ -8,13 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::TableKind::Deduplication;
-use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
-};
+use std::io::Cursor;
+
 use futures::Stream;
 use futures_util::stream;
+
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -23,12 +21,18 @@ use restate_storage_api::deduplication_table::{
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
 use restate_types::storage::StorageCodec;
-use std::io::Cursor;
+
+use crate::keys::{define_table_key, KeyKind, TableKey};
+use crate::TableKind::Deduplication;
+use crate::{
+    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
+    TableScanIterationDecision,
+};
 
 define_table_key!(
     Deduplication,
     KeyKind::Deduplication,
-    DeduplicationKey(partition_id: PartitionId, producer_id: ProducerId)
+    DeduplicationKey(partition_id: PaddedPartitionId, producer_id: ProducerId)
 );
 
 fn get_dedup_sequence_number<S: StorageAccess>(
@@ -38,7 +42,7 @@ fn get_dedup_sequence_number<S: StorageAccess>(
 ) -> Result<Option<DedupSequenceNumber>> {
     let _x = RocksDbPerfGuard::new("get-dedup-seq");
     let key = DeduplicationKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .producer_id(producer_id.clone());
 
     storage.get_value(key)
@@ -102,7 +106,7 @@ impl<'a> DeduplicationTable for PartitionStoreTransaction<'a> {
         dedup_sequence_number: &DedupSequenceNumber,
     ) {
         let key = DeduplicationKey::default()
-            .partition_id(self.partition_id())
+            .partition_id(self.partition_id().into())
             .producer_id(producer_id);
         self.put_kv(key, dedup_sequence_number);
     }

@@ -347,7 +347,7 @@ pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletPa
 
 /// Initializes the bifrost metadata with static log metadata, it creates a log for every partition
 /// with a chain of the default loglet provider kind.
-pub fn bootstrap_logs_metadata(default_provider: ProviderKind, num_partitions: u64) -> Logs {
+pub fn bootstrap_logs_metadata(default_provider: ProviderKind, num_partitions: u16) -> Logs {
     // Get metadata from somewhere
     let mut builder = LogsBuilder::default();
     #[allow(clippy::mutable_key_type)]

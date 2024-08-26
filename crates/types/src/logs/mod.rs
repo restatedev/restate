@@ -33,24 +33,28 @@ pub mod metadata;
     Serialize,
     Deserialize,
 )]
-pub struct LogId(u64);
+pub struct LogId(u32);
 
 impl LogId {
-    // Allows us to use the first 62 bits for log ids, while reserving space for
-    // internal logs as needed. Partitions cannot be larger than 2^62.
-    pub const MAX_PARTITION_LOG: LogId = LogId((1 << 62) - 1);
+    pub const MAX: LogId = LogId(u32::MAX);
     pub const MIN: LogId = LogId(0);
 }
 
 impl LogId {
-    pub const fn new(value: u64) -> Self {
+    pub const fn new(value: u32) -> Self {
         Self(value)
     }
 }
 
 impl From<PartitionId> for LogId {
     fn from(value: PartitionId) -> Self {
-        LogId(*value)
+        LogId(u32::from(*value))
+    }
+}
+
+impl From<u16> for LogId {
+    fn from(value: u16) -> Self {
+        LogId(u32::from(value))
     }
 }
 

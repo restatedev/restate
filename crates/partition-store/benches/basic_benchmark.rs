@@ -28,7 +28,7 @@ async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {
     // write
     //
     let mut txn = rocksdb.transaction();
-    for j in 0..100000 {
+    for j in 0..u16::MAX {
         txn.put_dedup_seq_number(
             ProducerId::Partition(PartitionId::from(j)),
             &DedupSequenceNumber::Sn(0),

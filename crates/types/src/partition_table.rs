@@ -60,7 +60,7 @@ impl Default for PartitionTable {
 }
 
 impl PartitionTable {
-    pub fn with_equally_sized_partitions(version: Version, number_partitions: u64) -> Self {
+    pub fn with_equally_sized_partitions(version: Version, number_partitions: u16) -> Self {
         let partitioner = EqualSizedPartitionPartitioner::new(number_partitions);
         let mut builder = PartitionTableBuilder::new(version);
 
@@ -94,8 +94,8 @@ impl PartitionTable {
         self.partitions.iter_mut()
     }
 
-    pub fn num_partitions(&self) -> u64 {
-        u64::try_from(self.partitions.len()).expect("number of partitions should fit into u64")
+    pub fn num_partitions(&self) -> u16 {
+        u16::try_from(self.partitions.len()).expect("number of partitions should fit into u16")
     }
 
     pub fn get_partition(&self, partition_id: &PartitionId) -> Option<&Partition> {
@@ -157,6 +157,8 @@ pub enum BuilderError {
     Overlap(PartitionId),
     #[error("partition '{0}' already exists")]
     Duplicate(PartitionId),
+    #[error("partition table has reached its limits")]
+    LimitReached,
 }
 
 #[derive(Debug, Default)]
@@ -182,6 +184,10 @@ impl PartitionTableBuilder {
     ) -> Result<(), BuilderError> {
         if self.inner.partitions.contains_key(&partition_id) {
             return Err(BuilderError::Duplicate(partition_id));
+        }
+
+        if self.inner.partitions.len() > usize::from(*PartitionId::MAX) {
+            return Err(BuilderError::LimitReached);
         }
 
         let start = *partition.key_range.start();
@@ -242,7 +248,7 @@ struct PartitionTableShadow {
     version: Version,
     // only needed for deserializing the FixedPartitionTable created in v1 of Restate. Can be
     // removed once we no longer support reading FixedPartitionTable data.
-    num_partitions: u64,
+    num_partitions: u16,
     // partitions field is used by the PartitionTable introduced in v1.1 of Restate.
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "Option<serde_with::Seq<(_, _)>>")]
@@ -286,14 +292,14 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
 
 #[derive(Debug)]
 pub struct EqualSizedPartitionPartitioner {
-    num_partitions: u64,
+    num_partitions: u16,
     next_partition_id: PartitionId,
 }
 
 impl EqualSizedPartitionPartitioner {
     const PARTITION_KEY_RANGE_END: u128 = 1 << 64;
 
-    fn new(num_partitions: u64) -> Self {
+    fn new(num_partitions: u16) -> Self {
         Self {
             num_partitions,
             next_partition_id: PartitionId::MIN,
@@ -301,7 +307,7 @@ impl EqualSizedPartitionPartitioner {
     }
 
     fn partition_id_to_partition_range(
-        num_partitions: u64,
+        num_partitions: u16,
         partition_id: PartitionId,
     ) -> RangeInclusive<PartitionKey> {
         let num_partitions = u128::from(num_partitions);
@@ -413,11 +419,11 @@ mod tests {
     #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct FixedPartitionTable {
         version: Version,
-        num_partitions: u64,
+        num_partitions: u16,
     }
 
     impl FixedPartitionTable {
-        pub fn new(version: Version, num_partitions: u64) -> Self {
+        pub fn new(version: Version, num_partitions: u16) -> Self {
             Self {
                 version,
                 num_partitions,

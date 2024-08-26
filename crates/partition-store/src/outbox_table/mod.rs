@@ -8,22 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::TableKind::Outbox;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan};
+use std::io::Cursor;
+use std::ops::RangeInclusive;
 
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
 use restate_types::storage::StorageCodec;
-use std::io::Cursor;
-use std::ops::RangeInclusive;
+
+use crate::keys::{define_table_key, KeyKind, TableKey};
+use crate::TableKind::Outbox;
+use crate::{
+    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
+};
 
 define_table_key!(
     Outbox,
     KeyKind::Outbox,
-    OutboxKey(partition_id: PartitionId, message_index: u64)
+    OutboxKey(partition_id: PaddedPartitionId, message_index: u64)
 );
 
 fn add_message<S: StorageAccess>(
@@ -33,7 +36,7 @@ fn add_message<S: StorageAccess>(
     outbox_message: &OutboxMessage,
 ) {
     let key = OutboxKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .message_index(message_index);
 
     storage.put_kv(key, outbox_message);
@@ -44,10 +47,10 @@ fn get_outbox_head_seq_number<S: StorageAccess>(
     partition_id: PartitionId,
 ) -> Result<Option<u64>> {
     let _x = RocksDbPerfGuard::new("get-head-outbox");
-    let start = OutboxKey::default().partition_id(partition_id);
+    let start = OutboxKey::default().partition_id(partition_id.into());
 
     let end = OutboxKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .message_index(u64::MAX);
 
     storage.get_first_blocking(
@@ -70,11 +73,11 @@ fn get_next_outbox_message<S: StorageAccess>(
 ) -> Result<Option<(u64, OutboxMessage)>> {
     let _x = RocksDbPerfGuard::new("get-next-outbox");
     let start = OutboxKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .message_index(next_sequence_number);
 
     let end = OutboxKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .message_index(u64::MAX);
 
     storage.get_first_blocking(
@@ -97,7 +100,7 @@ fn get_outbox_message<S: StorageAccess>(
 ) -> Result<Option<OutboxMessage>> {
     let _x = RocksDbPerfGuard::new("get-outbox");
     let outbox_key = OutboxKey::default()
-        .partition_id(partition_id)
+        .partition_id(partition_id.into())
         .message_index(sequence_number);
 
     storage.get_value(outbox_key)
@@ -109,7 +112,7 @@ fn truncate_outbox<S: StorageAccess>(
     range: RangeInclusive<u64>,
 ) {
     let _x = RocksDbPerfGuard::new("truncate-outbox");
-    let mut key = OutboxKey::default().partition_id(partition_id);
+    let mut key = OutboxKey::default().partition_id(partition_id.into());
     for seq in range {
         key.message_index = Some(seq);
         storage.delete_key(&key);

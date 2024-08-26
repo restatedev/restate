@@ -13,7 +13,7 @@ use once_cell::sync::Lazy;
 use restate_serde_util::NonZeroByteCount;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
@@ -80,8 +80,8 @@ pub struct CommonOptions {
     /// NOTE: This config entry only impacts the initial number of partitions, the
     /// value of this entry is ignored for bootstrapped nodes/clusters.
     ///
-    /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
-    pub(crate) bootstrap_num_partitions: NonZeroU64,
+    /// Cannot be higher than `65535` (You should almost never need as many partitions anyway)
+    pub(crate) bootstrap_num_partitions: NonZeroU16,
 
     /// # Shutdown grace timeout
     ///
@@ -261,7 +261,7 @@ impl CommonOptions {
         &self.cluster_name
     }
 
-    pub fn bootstrap_num_partitions(&self) -> u64 {
+    pub fn bootstrap_num_partitions(&self) -> u16 {
         self.bootstrap_num_partitions.into()
     }
 
@@ -339,7 +339,7 @@ impl Default for CommonOptions {
             metadata_store_client: MetadataStoreClientOptions::default(),
             bind_address: "0.0.0.0:5122".parse().unwrap(),
             advertised_address: AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap(),
-            bootstrap_num_partitions: NonZeroU64::new(24).unwrap(),
+            bootstrap_num_partitions: NonZeroU16::new(24).unwrap(),
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
             service_client: Default::default(),

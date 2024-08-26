@@ -900,7 +900,7 @@ mod tests {
 
     fn random_cluster_state(
         node_ids: &Vec<GenerationalNodeId>,
-        num_partitions: u64,
+        num_partitions: u16,
     ) -> ClusterState {
         let nodes = random_nodes_state(node_ids, num_partitions);
 
@@ -915,7 +915,7 @@ mod tests {
 
     fn random_nodes_state(
         node_ids: &Vec<GenerationalNodeId>,
-        num_partitions: u64,
+        num_partitions: u16,
     ) -> BTreeMap<PlainNodeId, NodeState> {
         let mut result = BTreeMap::default();
         let mut rng = rand::thread_rng();
@@ -949,7 +949,7 @@ mod tests {
     fn random_alive_node(
         rng: &mut ThreadRng,
         node_id: GenerationalNodeId,
-        num_partitions: u64,
+        num_partitions: u16,
     ) -> AliveNode {
         let partitions = random_partition_status(rng, num_partitions);
         AliveNode {
@@ -961,7 +961,7 @@ mod tests {
 
     fn random_partition_status(
         rng: &mut ThreadRng,
-        num_partitions: u64,
+        num_partitions: u16,
     ) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
         let mut result = BTreeMap::default();
 

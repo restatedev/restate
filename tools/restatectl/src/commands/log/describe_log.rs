@@ -31,7 +31,7 @@ use crate::util::grpc_connect;
 pub struct DescribeLogIdOpts {
     #[arg(short, long)]
     /// The log id to describe
-    log_id: u64,
+    log_id: u32,
 }
 
 async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> anyhow::Result<()> {
