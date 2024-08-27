@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use restate_core::ShutdownError;
+use restate_types::errors::{IntoMaybeRetryable, MaybeRetryableError};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum AppendError {
@@ -20,19 +21,19 @@ pub enum AppendError {
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
     #[error(transparent)]
-    Other(Arc<dyn LogletError>),
+    Other(Arc<dyn MaybeRetryableError + Send + Sync>),
 }
 
 impl AppendError {
     pub fn retryable<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
-        Self::Other(Arc::new(RetryableError(error)))
+        Self::Other(Arc::new(error.into_retryable()))
     }
 
     pub fn terminal<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
-        Self::Other(Arc::new(TerminalError(error)))
+        Self::Other(Arc::new(error.into_terminal()))
     }
 
-    pub fn other<E: LogletError + Send + Sync>(error: E) -> Self {
+    pub fn other<E: MaybeRetryableError + Send + Sync>(error: E) -> Self {
         Self::Other(Arc::new(error))
     }
 }
@@ -42,19 +43,19 @@ pub enum OperationError {
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
     #[error(transparent)]
-    Other(Arc<dyn LogletError>),
+    Other(Arc<dyn MaybeRetryableError + Send + Sync>),
 }
 
 impl OperationError {
     pub fn retryable<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
-        Self::Other(Arc::new(RetryableError(error)))
+        Self::Other(Arc::new(error.into_retryable()))
     }
 
     pub fn terminal<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
-        Self::Other(Arc::new(TerminalError(error)))
+        Self::Other(Arc::new(error.into_terminal()))
     }
 
-    pub fn other<E: LogletError + Send + Sync>(error: E) -> Self {
+    pub fn other<E: MaybeRetryableError + Send + Sync>(error: E) -> Self {
         Self::Other(Arc::new(error))
     }
 }
@@ -65,57 +66,5 @@ impl From<OperationError> for AppendError {
             OperationError::Shutdown(s) => AppendError::Shutdown(s),
             OperationError::Other(o) => AppendError::Other(o),
         }
-    }
-}
-
-// -- Helper Types --
-
-/// Represents a type-erased error from the loglet provider.
-pub trait LogletError: std::error::Error + Send + Sync + Debug + Display + 'static {
-    /// Signal upper layers whether this error should be retried or not.
-    fn retryable(&self) -> bool {
-        false
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-struct RetryableError<T>(#[source] T);
-
-impl<T> Display for RetryableError<T>
-where
-    T: Debug + Display + Send + Sync + std::error::Error + 'static,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[retryable] {}", self.0)
-    }
-}
-
-impl<T> LogletError for RetryableError<T>
-where
-    T: Debug + Display + Send + Sync + std::error::Error + 'static,
-{
-    fn retryable(&self) -> bool {
-        true
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-struct TerminalError<T>(#[source] T);
-
-impl<T> LogletError for TerminalError<T>
-where
-    T: Debug + Display + Send + Sync + std::error::Error + 'static,
-{
-    fn retryable(&self) -> bool {
-        false
-    }
-}
-
-impl<T> Display for TerminalError<T>
-where
-    T: Debug + Display + Send + Sync + std::error::Error + 'static,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[terminal] {}", self.0)
     }
 }

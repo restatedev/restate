@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use restate_types::errors::MaybeRetryableError;
 use rocksdb::{BoundColumnFamily, DBCompressionType, SliceTransform, DB};
 use static_assertions::const_assert;
 
@@ -23,7 +24,6 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use super::keys::{MetadataKey, MetadataKind, DATA_KEY_PREFIX_LENGTH};
 use super::log_state::{log_state_full_merge, log_state_partial_merge, LogState};
 use super::log_store_writer::LogStoreWriter;
-use crate::loglet::LogletError;
 
 // matches the default directory name
 pub(crate) const DB_NAME: &str = "local-loglet";
@@ -47,7 +47,7 @@ pub enum LogStoreError {
     RocksDbManager(#[from] RocksError),
 }
 
-impl LogletError for LogStoreError {
+impl MaybeRetryableError for LogStoreError {
     fn retryable(&self) -> bool {
         match self {
             LogStoreError::Encode(_) => false,
