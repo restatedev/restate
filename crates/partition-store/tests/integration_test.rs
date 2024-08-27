@@ -32,6 +32,7 @@ mod invocation_status_table_test;
 mod journal_table_test;
 mod outbox_table_test;
 mod promise_table_test;
+mod snapshot_exporter_test;
 mod state_table_test;
 mod timer_table_test;
 mod virtual_object_status_table_test;
@@ -79,7 +80,8 @@ async fn test_read_write() {
     outbox_table_test::run_tests(rocksdb.clone()).await;
     state_table_test::run_tests(rocksdb.clone()).await;
     virtual_object_status_table_test::run_tests(rocksdb.clone()).await;
-    timer_table_test::run_tests(rocksdb).await;
+    timer_table_test::run_tests(rocksdb.clone()).await;
+    snapshot_exporter_test::run_tests(rocksdb.clone()).await;
 }
 
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
