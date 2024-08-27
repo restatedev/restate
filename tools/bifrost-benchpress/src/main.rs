@@ -77,7 +77,7 @@ fn main() -> anyhow::Result<()> {
         Err(e) => {
             // We cannot use tracing here as it's not configured yet
             eprintln!("{}", e.decorate());
-            eprintln!("{:#?}", RestateCode::from(&e));
+            eprintln!("{:#?}", RestateCode::from_code(e.code()));
             std::process::exit(1);
         }
     };
