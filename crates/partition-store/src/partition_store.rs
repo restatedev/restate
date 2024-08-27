@@ -445,6 +445,7 @@ impl PartitionStore {
             .await?
             .ok_or(StorageError::DataIntegrityError)?;
 
+        // TODO move to a task wrapped in RocksDb
         let metadata = checkpoint
             .export_column_family(&data_cf_handle, output_dir)
             .map_err(|err| StorageError::Generic(err.into()))?;

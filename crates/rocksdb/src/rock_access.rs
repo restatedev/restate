@@ -11,8 +11,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use rocksdb::metadata::ExportImportFilesMetaData;
 use rocksdb::perf::MemoryUsageBuilder;
-use rocksdb::ColumnFamilyDescriptor;
+use rocksdb::{ColumnFamilyDescriptor, ImportColumnFamilyOptions};
 use tracing::trace;
 
 use crate::BoxedCfMatcher;
@@ -44,6 +45,13 @@ pub trait RocksAccess {
         name: CfName,
         default_cf_options: rocksdb::Options,
         cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
+    ) -> Result<(), RocksError>;
+    fn import_cf(
+        &self,
+        name: CfName,
+        default_cf_options: rocksdb::Options,
+        cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
+        metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError>;
     fn cfs(&self) -> Vec<CfName>;
 
@@ -143,6 +151,27 @@ impl RocksAccess for rocksdb::DB {
     ) -> Result<(), RocksError> {
         let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
         Ok(Self::create_cf(self, name.as_str(), &options)?)
+    }
+
+    fn import_cf(
+        &self,
+        name: CfName,
+        default_cf_options: rocksdb::Options,
+        cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
+        metadata: ExportImportFilesMetaData,
+    ) -> Result<(), RocksError> {
+        let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
+
+        let mut import_opts = ImportColumnFamilyOptions::default();
+        import_opts.set_move_files(true);
+
+        Ok(Self::create_column_family_with_import(
+            self,
+            &options,
+            name.as_str(),
+            &import_opts,
+            &metadata,
+        )?)
     }
 
     fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
