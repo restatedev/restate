@@ -180,6 +180,7 @@ where
         // If we have the invoker_rx and the protocol type is bidi stream,
         // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
         if protocol_type == ProtocolType::BidiStream {
+            trace!("Protocol is in bidi stream mode, will now start the send/receive loop");
             crate::shortcircuit!(
                 self.bidi_stream_loop(
                     &service_invocation_span_context,
@@ -189,12 +190,14 @@ where
                 .await
             );
         } else {
+            trace!("Protocol is in bidi stream mode, will now drop the sender side of the request");
             // Drop the http_stream_tx.
             // This is required in HTTP/1.1 to let the deployment send the headers back
             drop(http_stream_tx)
         }
 
         // We don't have the invoker_rx, so we simply consume the response
+        trace!("Sender side of the request has been dropped, now processing the response");
         let result = self
             .response_stream_loop(&service_invocation_span_context, &mut http_stream_rx)
             .await;
@@ -269,7 +272,7 @@ where
                 address,
                 http_version,
                 ..
-            } => Endpoint::Http(address, http_version),
+            } => Endpoint::Http(address, Some(http_version)),
         };
 
         headers.extend(deployment_metadata.delivery_options.additional_headers);
