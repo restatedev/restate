@@ -35,7 +35,7 @@ use restate_types::net::codec::{
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::CURRENT_PROTOCOL_VERSION;
 use restate_types::net::{AdvertisedAddress, MessageEnvelope};
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::node::{Header, Message};
 use restate_types::{GenerationalNodeId, NodeId, Version};
@@ -395,7 +395,13 @@ pub fn create_mock_nodes_config(node_id: u32, generation: u32) -> NodesConfigura
     let address = AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap();
     let node_id = GenerationalNodeId::new(node_id, generation);
     let roles = Role::Admin | Role::Worker;
-    let my_node = NodeConfig::new(format!("MyNode-{}", node_id), node_id, address, roles);
+    let my_node = NodeConfig::new(
+        format!("MyNode-{}", node_id),
+        node_id,
+        address,
+        roles,
+        LogServerConfig::default(),
+    );
     nodes_config.upsert_node(my_node);
     nodes_config
 }

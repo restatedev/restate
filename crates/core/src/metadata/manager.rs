@@ -573,7 +573,7 @@ mod tests {
 
     use restate_test_util::assert_eq;
     use restate_types::net::AdvertisedAddress;
-    use restate_types::nodes_config::{NodeConfig, Role};
+    use restate_types::nodes_config::{LogServerConfig, NodeConfig, Role};
     use restate_types::{GenerationalNodeId, Version};
 
     use crate::metadata::spawn_metadata_manager;
@@ -742,7 +742,13 @@ mod tests {
         let address = AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap();
         let node_id = GenerationalNodeId::new(1, 1);
         let roles = Role::Admin | Role::Worker;
-        let my_node = NodeConfig::new("MyNode-1".to_owned(), node_id, address, roles);
+        let my_node = NodeConfig::new(
+            "MyNode-1".to_owned(),
+            node_id,
+            address,
+            roles,
+            LogServerConfig::default(),
+        );
         nodes_config.upsert_node(my_node);
         nodes_config
     }

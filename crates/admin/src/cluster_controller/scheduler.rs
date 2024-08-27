@@ -435,7 +435,7 @@ mod tests {
     use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
     use restate_types::net::partition_processor_manager::{ControlProcessors, ProcessorCommand};
     use restate_types::net::AdvertisedAddress;
-    use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+    use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
     use restate_types::partition_table::PartitionTable;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
@@ -718,6 +718,7 @@ mod tests {
                 *node_id,
                 AdvertisedAddress::Http(Uri::default()),
                 Role::Worker.into(),
+                LogServerConfig::default(),
             );
             nodes_config.upsert_node(node_config);
         }

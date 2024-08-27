@@ -707,7 +707,7 @@ mod tests {
     use restate_types::net::{
         ProtocolVersion, RequestId, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
     };
-    use restate_types::nodes_config::{NodeConfig, NodesConfigError, Role};
+    use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfigError, Role};
     use restate_types::protobuf::node::message;
     use restate_types::protobuf::node::message::Body;
     use restate_types::Version;
@@ -913,6 +913,7 @@ mod tests {
             node_id,
             AdvertisedAddress::Uds("foobar1".into()),
             Role::Worker.into(),
+            LogServerConfig::default(),
         );
         nodes_config.upsert_node(node_config);
 
