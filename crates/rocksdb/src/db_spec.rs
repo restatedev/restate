@@ -35,6 +35,10 @@ impl DbName {
     pub fn new(name: &str) -> Self {
         Self(name.into())
     }
+
+    pub fn from_string(name: String) -> Self {
+        Self(SmartString::from(name))
+    }
 }
 
 #[derive(

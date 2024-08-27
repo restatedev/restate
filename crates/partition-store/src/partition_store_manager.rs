@@ -19,7 +19,7 @@ use tracing::debug;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
-use restate_types::config::RocksDbOptions;
+use restate_types::config::{data_dir, RocksDbOptions};
 use restate_types::config::StorageOptions;
 use restate_types::identifiers::PartitionId;
 use restate_types::identifiers::PartitionKey;
@@ -39,11 +39,14 @@ pub enum OpenMode {
     OpenExisting,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct PartitionStoreManager {
     lookup: Arc<Mutex<PartitionLookup>>,
-    rocksdb: Arc<RocksDb>,
-    raw_db: Arc<DB>,
+    // rocksdb: Arc<RocksDb>,
+    // raw_db: Arc<DB>,
+    storage_opts: StorageOptions,
+    #[debug(skip)]
+    updateable_opts: BoxedLiveLoad<RocksDbOptions>,
 }
 
 #[derive(Default, Debug)]
@@ -57,29 +60,31 @@ impl PartitionStoreManager {
         updateable_opts: BoxedLiveLoad<RocksDbOptions>,
         initial_partition_set: &[(PartitionId, RangeInclusive<PartitionKey>)],
     ) -> std::result::Result<Self, RocksError> {
-        let options = storage_opts.live_load();
-
-        let per_partition_memory_budget = options.rocksdb_memory_budget()
-            / options.num_partitions_to_share_memory_budget() as usize;
-
-        let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), options.data_dir(), db_options())
-            .add_cf_pattern(
-                CfPrefixPattern::new(PARTITION_CF_PREFIX),
-                cf_options(per_partition_memory_budget),
-            )
-            .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
-            .build()
-            .expect("valid spec");
-
-        let manager = RocksDbManager::get();
-        let raw_db = manager.open_db(updateable_opts, db_spec).await?;
-
-        let rocksdb = manager.get_db(DbName::new(DB_NAME)).unwrap();
+        // let options = storage_opts.live_load();
+        //
+        // let per_partition_memory_budget = options.rocksdb_memory_budget()
+        //     / options.num_partitions_to_share_memory_budget() as usize;
+        //
+        // let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), options.data_dir(), db_options())
+        //     .add_cf_pattern(
+        //         CfPrefixPattern::new(PARTITION_CF_PREFIX),
+        //         cf_options(per_partition_memory_budget),
+        //     )
+        //     .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
+        //     .build()
+        //     .expect("valid spec");
+        //
+        // let manager = RocksDbManager::get();
+        // let raw_db = manager.open_db(updateable_opts.clone(), db_spec).await?;
+        //
+        // let rocksdb = manager.get_db(DbName::new(DB_NAME)).unwrap();
 
         Ok(Self {
-            raw_db,
-            rocksdb,
+            // raw_db,
+            // rocksdb,
             lookup: Arc::default(),
+            updateable_opts,
+            storage_opts: storage_opts.live_load().clone(),
         })
     }
 
@@ -107,21 +112,42 @@ impl PartitionStoreManager {
         if let Some(store) = guard.live.get(&partition_id) {
             return Ok(store.clone());
         }
+
+        let db_manager = RocksDbManager::get();
+
+        let per_partition_memory_budget = self.storage_opts.rocksdb_memory_budget()
+            / self.storage_opts.num_partitions_to_share_memory_budget() as usize;
+
+        let path = data_dir(&format!("db-{partition_id}"));
+
+        let db_name = DbName::from_string(format!("db-{partition_id}"));
+        let db_spec = DbSpecBuilder::new(db_name.clone(), path, db_options())
+            .add_cf_pattern(
+                CfPrefixPattern::new(PARTITION_CF_PREFIX),
+                cf_options(per_partition_memory_budget),
+            )
+            .ensure_column_families(partition_ids_to_cfs::<RangeInclusive<PartitionKey>>(&[]))
+            .build()
+            .expect("valid spec");
+
+        let raw_db = db_manager.open_db(self.updateable_opts.clone(), db_spec).await?;
+        let rocksdb = db_manager.get_db(db_name).unwrap();
+
         let cf_name = cf_for_partition(partition_id);
-        let already_exists = self.rocksdb.inner().cf_handle(&cf_name).is_some();
+        let already_exists = rocksdb.inner().cf_handle(&cf_name).is_some();
 
         if !already_exists {
             if open_mode == OpenMode::CreateIfMissing {
                 debug!("Initializing storage for partition {}", partition_id);
-                self.rocksdb.open_cf(cf_name.clone(), opts).await?;
+                rocksdb.open_cf(cf_name.clone(), opts).await?;
             } else {
                 return Err(RocksError::AlreadyOpen);
             }
         }
 
         let partition_store = PartitionStore::new(
-            self.raw_db.clone(),
-            self.rocksdb.clone(),
+            raw_db,
+            rocksdb,
             cf_name,
             partition_id,
             partition_key_range,
