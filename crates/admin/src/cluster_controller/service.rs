@@ -437,7 +437,7 @@ mod tests {
         ControlProcessors, GetProcessorsState, ProcessorsStateResponse,
     };
     use restate_types::net::{AdvertisedAddress, MessageEnvelope};
-    use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+    use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
     use restate_types::{GenerationalNodeId, Version};
     use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -744,12 +744,14 @@ mod tests {
             GenerationalNodeId::new(1, 1),
             AdvertisedAddress::Uds("foobar".into()),
             Role::Worker.into(),
+            LogServerConfig::default(),
         ));
         nodes_config.upsert_node(NodeConfig::new(
             "node-2".to_owned(),
             GenerationalNodeId::new(2, 2),
             AdvertisedAddress::Uds("bar".into()),
             Role::Worker.into(),
+            LogServerConfig::default(),
         ));
         let builder = modify_builder(builder.with_nodes_config(nodes_config));
 

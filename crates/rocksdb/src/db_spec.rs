@@ -116,7 +116,7 @@ impl CfNameMatch for CfExactPattern {
 
 #[derive(Builder)]
 #[builder(pattern = "owned", build_fn(name = "build"))]
-pub struct DbSpec<T> {
+pub struct DbSpec {
     pub(crate) name: DbName,
     pub(crate) path: PathBuf,
     /// All column families that should be flushed on shutdown, no flush will be performed if empty
@@ -141,18 +141,16 @@ pub struct DbSpec<T> {
     /// a column family didn't match any, opening the database or the column family will fail with
     /// `UnknownColumnFamily` error
     pub(crate) cf_patterns: Vec<(BoxedCfMatcher, BoxedCfOptionUpdater)>,
-    #[builder(setter(skip))]
-    _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> DbSpec<T> {
+impl DbSpec {
     pub fn name(&self) -> &DbName {
         &self.name
     }
 }
 
-impl<T> DbSpecBuilder<T> {
-    pub fn new(name: DbName, path: PathBuf, db_options: rocksdb::Options) -> DbSpecBuilder<T> {
+impl DbSpecBuilder {
+    pub fn new(name: DbName, path: PathBuf, db_options: rocksdb::Options) -> DbSpecBuilder {
         Self {
             name: Some(name),
             path: Some(path),
@@ -180,17 +178,5 @@ impl<T> DbSpecBuilder<T> {
         cfs.push((Box::new(pattern), Box::new(options)));
         self.cf_patterns = Some(cfs);
         self
-    }
-}
-
-impl DbSpecBuilder<rocksdb::DB> {
-    pub fn build_as_db(self) -> DbSpec<rocksdb::DB> {
-        self.build().unwrap()
-    }
-}
-
-impl DbSpecBuilder<rocksdb::OptimisticTransactionDB> {
-    pub fn build_as_optimistic_db(self) -> DbSpec<rocksdb::OptimisticTransactionDB> {
-        self.build().unwrap()
     }
 }

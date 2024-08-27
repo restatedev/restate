@@ -46,8 +46,7 @@ pub enum Role {
     Admin,
     /// Serves the metadata store
     MetadataStore,
-    #[cfg(feature = "replicated-loglet")]
-    /// Serves a log server for replicated loglets
+    /// [IN DEVELOPMENT] Serves a log server for replicated loglets
     LogServer,
 }
 
@@ -85,6 +84,8 @@ pub struct NodeConfig {
     pub current_generation: GenerationalNodeId,
     pub address: AdvertisedAddress,
     pub roles: EnumSet<Role>,
+    #[serde(default)]
+    pub log_server_config: LogServerConfig,
 }
 
 impl NodeConfig {
@@ -93,12 +94,14 @@ impl NodeConfig {
         current_generation: GenerationalNodeId,
         address: AdvertisedAddress,
         roles: EnumSet<Role>,
+        log_server_config: LogServerConfig,
     ) -> Self {
         Self {
             name,
             current_generation,
             address,
             roles,
+            log_server_config,
         }
     }
 
@@ -217,6 +220,59 @@ impl Versioned for NodesConfiguration {
     }
 }
 
+#[derive(
+    Clone,
+    Debug,
+    Copy,
+    Default,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+enum StorageState {
+    /// The node is not expected to be a member in any write set and the node will self-provision
+    /// its log-store to `Disabled` once it's written its own storage marker on disk.
+    ///
+    /// The node can never transition back to `Provisioning` once it has transitioned into
+    /// `Disabled`.
+    ///
+    /// should read from: no
+    /// can write to: no
+    #[default]
+    Provisioning,
+    /// Node's storage is not expected to be accessed in reads nor write. The node is not
+    /// considered as part of the replicated log cluster (yet). Node can be safely decommissioned.
+    ///
+    /// should read from: no
+    /// can write to: no
+    Disabled,
+    /// Node is not picked in new write sets and it'll reject new writes on its own storage except for
+    /// critical metadata updates.
+    /// should read from: yes
+    /// can write to: no
+    ReadOnly,
+    /// Can be picked up in new write sets and accepts writes in existing write sets.
+    ///
+    /// should read from: yes
+    /// can write to: yes
+    ReadWrite,
+    /// Node detected that some/all of its local storage has been deleted and it cannot be used
+    /// as authoritative source for quorum-dependent queries.
+    ///
+    /// should read from: yes (non-quorum reads)
+    /// can write to: no
+    DataLoss,
+}
+
+#[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LogServerConfig {
+    storage_state: StorageState,
+}
+
 flexbuffers_storage_encode_decode!(NodesConfiguration);
 
 #[cfg(test)]
@@ -231,7 +287,13 @@ mod tests {
         let address: AdvertisedAddress = "unix:/tmp/my_socket".parse().unwrap();
         let roles = EnumSet::only(Role::Worker);
         let current_gen = GenerationalNodeId::new(1, 1);
-        let node = NodeConfig::new("node1".to_owned(), current_gen, address.clone(), roles);
+        let node = NodeConfig::new(
+            "node1".to_owned(),
+            current_gen,
+            address.clone(),
+            roles,
+            LogServerConfig::default(),
+        );
         config.upsert_node(node.clone());
 
         let res = config.find_node_by_id(NodeId::new_plain(2));
@@ -277,6 +339,7 @@ mod tests {
             future_gen.as_generational().unwrap(),
             address,
             roles,
+            LogServerConfig::default(),
         );
         config.upsert_node(node.clone());
 

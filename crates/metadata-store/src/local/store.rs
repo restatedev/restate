@@ -118,7 +118,8 @@ impl LocalMetadataStore {
                 cf_options(options.rocksdb_memory_budget()),
             )
             .ensure_column_families(cfs)
-            .build_as_db();
+            .build()
+            .expect("valid spec");
 
         let db = db_manager
             .open_db(updateable_rocksdb_options.clone(), db_spec)

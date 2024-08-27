@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use rocksdb::perf::MemoryUsageBuilder;
 use rocksdb::ColumnFamilyDescriptor;
-use rocksdb::MultiThreaded;
 use tracing::trace;
 
 use crate::BoxedCfMatcher;
@@ -25,19 +24,12 @@ use crate::RocksError;
 /// Operations in this trait can be IO blocking, prefer using `RocksDb` for efficient async access
 /// to the database.
 pub trait RocksAccess {
-    fn open_db(
-        db_spec: &DbSpec<Self>,
-        default_cf_options: rocksdb::Options,
-    ) -> Result<Self, RocksError>
+    fn open_db(db_spec: &DbSpec, default_cf_options: rocksdb::Options) -> Result<Self, RocksError>
     where
         Self: Sized;
     fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily>>;
-    // Transitional hack until we remove the usage of transaction db
-    // todo: remove when we remove optimistic transaction db
+    // todo: remove when we no longer need access to the raw db
     fn as_raw_db(&self) -> &rocksdb::DB;
-    // Transitional hack until we remove the usage of transaction db
-    // todo: remove when we remove optimistic transaction db
-    fn as_raw_optimistic_tx_db(&self) -> &rocksdb::OptimisticTransactionDB;
     fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError>;
     fn flush_wal(&self, sync: bool) -> Result<(), RocksError>;
     fn cancel_all_background_work(&self, wait: bool);
@@ -61,10 +53,9 @@ pub trait RocksAccess {
         write_options: &rocksdb::WriteOptions,
     ) -> Result<(), rocksdb::Error>;
 
-    // rust-rocksdb's interface is pita. Hopefully we remove the usage of transaction db soon.
-    fn write_tx_batch(
+    fn write_batch_with_index(
         &self,
-        batch: &rocksdb::WriteBatchWithTransaction<true>,
+        batch: &rocksdb::WriteBatchWithIndex,
         write_options: &rocksdb::WriteOptions,
     ) -> Result<(), rocksdb::Error>;
 }
@@ -89,8 +80,8 @@ fn prepare_cf_options(
     Err(RocksError::UnknownColumnFamily(cf.clone()))
 }
 
-fn prepare_descriptors<T>(
-    db_spec: &DbSpec<T>,
+fn prepare_descriptors(
+    db_spec: &DbSpec,
     default_cf_options: rocksdb::Options,
     all_cfs: &mut HashSet<CfName>,
 ) -> Result<Vec<ColumnFamilyDescriptor>, RocksError> {
@@ -110,10 +101,7 @@ fn prepare_descriptors<T>(
 }
 
 impl RocksAccess for rocksdb::DB {
-    fn open_db(
-        db_spec: &DbSpec<Self>,
-        default_cf_options: rocksdb::Options,
-    ) -> Result<Self, RocksError> {
+    fn open_db(db_spec: &DbSpec, default_cf_options: rocksdb::Options) -> Result<Self, RocksError> {
         let mut all_cfs: HashSet<CfName> =
             match rocksdb::DB::list_cf(&db_spec.db_options, &db_spec.path) {
                 Ok(existing) => existing.into_iter().map(Into::into).collect(),
@@ -146,9 +134,6 @@ impl RocksAccess for rocksdb::DB {
     fn as_raw_db(&self) -> &rocksdb::DB {
         self
     }
-    fn as_raw_optimistic_tx_db(&self) -> &rocksdb::OptimisticTransactionDB {
-        unreachable!()
-    }
 
     fn open_cf(
         &self,
@@ -210,127 +195,11 @@ impl RocksAccess for rocksdb::DB {
         self.write_opt(batch, write_options)
     }
 
-    fn write_tx_batch(
+    fn write_batch_with_index(
         &self,
-        _batch: &rocksdb::WriteBatchWithTransaction<true>,
-        _write_options: &rocksdb::WriteOptions,
-    ) -> Result<(), rocksdb::Error> {
-        unreachable!("not possible to perform tx commits on non-tx db")
-    }
-}
-
-impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
-    fn open_db(
-        db_spec: &DbSpec<Self>,
-        default_cf_options: rocksdb::Options,
-    ) -> Result<Self, RocksError> {
-        // copy pasta from DB, this will be removed as soon we as we remove the use of
-        // Optimistic Transaction DB
-        let mut all_cfs: HashSet<CfName> = match Self::list_cf(&db_spec.db_options, &db_spec.path) {
-            Ok(existing) => existing.into_iter().map(Into::into).collect(),
-            Err(e) => {
-                // Why it's okay to ignore this error? because we will attempt to open the
-                // database immediately after. If the database exists and we failed in reading
-                // the list of column families, rocksdb will fail on open (unless the list of
-                // column families we have in `ensure_column_families` exactly match what's in
-                // the database, in this case, it's okay to continue anyway)
-                trace!(
-                        db = %db_spec.name,
-                        owner = %db_spec.name,
-                        "Couldn't list cfs: {}", e);
-                HashSet::with_capacity(
-                    db_spec.ensure_column_families.len() + 1, /* +1 for default */
-                )
-            }
-        };
-
-        let descriptors = prepare_descriptors(db_spec, default_cf_options, &mut all_cfs)?;
-
-        rocksdb::OptimisticTransactionDB::open_cf_descriptors(
-            &db_spec.db_options,
-            &db_spec.path,
-            descriptors,
-        )
-        .map_err(RocksError::from_rocksdb_error)
-    }
-
-    fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily>> {
-        self.cf_handle(cf)
-    }
-
-    fn as_raw_db(&self) -> &rocksdb::DB {
-        unreachable!()
-    }
-    fn as_raw_optimistic_tx_db(&self) -> &rocksdb::OptimisticTransactionDB {
-        self
-    }
-
-    fn open_cf(
-        &self,
-        name: CfName,
-        default_cf_options: rocksdb::Options,
-        cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
-    ) -> Result<(), RocksError> {
-        let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
-        trace!("Opening CF: {}", name);
-        Ok(Self::create_cf(self, name.as_str(), &options)?)
-    }
-
-    fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
-        let mut flushopts = rocksdb::FlushOptions::default();
-        flushopts.set_wait(wait);
-        let cfs = cfs
-            .iter()
-            .filter_map(|name| self.cf_handle(name))
-            .collect::<Vec<_>>();
-        // a side effect of the awkward rust-rocksdb interface!
-        let cf_refs = cfs.iter().collect::<Vec<_>>();
-        Ok(self.flush_cfs_opt(&cf_refs, &flushopts)?)
-    }
-
-    fn flush_wal(&self, sync: bool) -> Result<(), RocksError> {
-        Ok(self.flush_wal(sync)?)
-    }
-
-    fn cancel_all_background_work(&self, wait: bool) {
-        self.cancel_all_background_work(wait)
-    }
-
-    fn set_options_cf(&self, cf: &CfName, opts: &[(&str, &str)]) -> Result<(), RocksError> {
-        let Some(handle) = self.cf_handle(cf) else {
-            return Err(RocksError::UnknownColumnFamily(cf.clone()));
-        };
-        Ok(self.set_options_cf(&handle, opts)?)
-    }
-
-    fn get_property_int_cf(&self, cf: &CfName, property: &str) -> Result<Option<u64>, RocksError> {
-        let Some(handle) = self.cf_handle(cf) else {
-            return Err(RocksError::UnknownColumnFamily(cf.clone()));
-        };
-        Ok(self.property_int_value_cf(&handle, property)?)
-    }
-
-    fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder) {
-        builder.add_db(self)
-    }
-
-    fn cfs(&self) -> Vec<CfName> {
-        self.cf_names().into_iter().map(CfName::from).collect()
-    }
-
-    fn write_batch(
-        &self,
-        _batch: &rocksdb::WriteBatch,
-        _write_options: &rocksdb::WriteOptions,
-    ) -> Result<(), rocksdb::Error> {
-        unreachable!("not possible to perform non-tx commits tx db")
-    }
-
-    fn write_tx_batch(
-        &self,
-        batch: &rocksdb::WriteBatchWithTransaction<true>,
+        batch: &rocksdb::WriteBatchWithIndex,
         write_options: &rocksdb::WriteOptions,
     ) -> Result<(), rocksdb::Error> {
-        self.write_opt(batch, write_options)
+        self.write_wbwi_opt(batch, write_options)
     }
 }
