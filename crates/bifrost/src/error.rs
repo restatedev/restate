@@ -11,10 +11,11 @@
 use std::sync::Arc;
 
 use restate_core::{ShutdownError, SyncError};
+use restate_types::errors::MaybeRetryableError;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn};
 
-use crate::loglet::{LogletError, OperationError};
+use crate::loglet::OperationError;
 
 /// Result type for bifrost operations.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -30,7 +31,7 @@ pub enum Error {
     #[error("operation failed due to an ongoing shutdown")]
     Shutdown(#[from] ShutdownError),
     #[error(transparent)]
-    LogletError(#[from] Arc<dyn LogletError + Send + Sync>),
+    LogletError(#[from] Arc<dyn MaybeRetryableError + Send + Sync>),
     #[error("failed syncing logs metadata: {0}")]
     MetadataSync(#[from] SyncError),
     /// Provider is unknown or disabled
