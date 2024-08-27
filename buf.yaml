@@ -1,0 +1,8 @@
+version: v2
+name: buf.build/restatedev/service-protocol
+lint:
+  use:
+    - DEFAULT
+breaking:
+  use:
+    - FILE
