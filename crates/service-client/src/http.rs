@@ -39,21 +39,12 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 #[derive(Clone, Debug)]
 pub struct HttpClient {
-    // alpn client defaults to http1.1, but can upgrade to http2 using ALPN for TLS servers
     alpn_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
-    // h2 client defaults to http2 and so supports unencrypted http2 servers
-    h2_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
 }
 
 impl HttpClient {
-    pub fn new(
-        alpn_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
-        h2_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
-    ) -> Self {
-        Self {
-            alpn_client,
-            h2_client,
-        }
+    fn new(alpn_client: hyper_util::client::legacy::Client<Connector, BoxBody>) -> Self {
+        Self { alpn_client }
     }
 
     pub fn from_options(options: &HttpOptions) -> HttpClient {
@@ -74,23 +65,18 @@ impl HttpClient {
             .with_native_roots()
             .expect("Can build native roots")
             .https_or_http()
+            .enable_http1()
             .enable_http2()
             .wrap_connector(http_connector);
 
         let proxy_connector = ProxyConnector::new(options.http_proxy.clone(), https_connector);
 
-        HttpClient::new(
-            builder.clone().build::<_, BoxBody>(proxy_connector.clone()), // h1 client with alpn upgrade support
-            {
-                builder.http2_only(true);
-                builder.build::<_, BoxBody>(proxy_connector) // h2-prior knowledge client
-            },
-        )
+        HttpClient::new(builder.clone().build::<_, BoxBody>(proxy_connector.clone()))
     }
 
     fn build_request<B>(
         uri: Uri,
-        version: Version,
+        version: Option<Version>,
         body: B,
         method: Method,
         path: PathAndQuery,
@@ -130,7 +116,9 @@ impl HttpClient {
             http_request_builder = http_request_builder.header(header, value)
         }
 
-        http_request_builder = http_request_builder.version(version);
+        if let Some(version) = version {
+            http_request_builder = http_request_builder.version(version);
+        }
 
         http_request_builder.body(BoxBody::new(body.map_err(|e| e.into())))
     }
@@ -138,7 +126,7 @@ impl HttpClient {
     pub fn request<B>(
         &self,
         uri: Uri,
-        version: Version,
+        version: Option<Version>,
         method: Method,
         body: B,
         path: PathAndQuery,
@@ -153,12 +141,7 @@ impl HttpClient {
             Err(err) => return future::ready(Err(err.into())).right_future(),
         };
 
-        let client = match request.version() {
-            Version::HTTP_2 => &self.h2_client,
-            _ => &self.alpn_client,
-        };
-
-        let fut = client.request(request);
+        let fut = self.alpn_client.request(request);
 
         Either::Left(async move {
             match fut.await {

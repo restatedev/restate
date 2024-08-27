@@ -16,6 +16,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
+use http::uri::Scheme;
 use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
 use restate_errors::warn_it;
@@ -51,21 +52,39 @@ pub async fn create_deployment<V>(
             use_http_11,
             force,
             dry_run,
-        } => (
-            DiscoverEndpoint::new(
-                Endpoint::Http(
-                    uri,
-                    if use_http_11 {
-                        http::Version::HTTP_11
-                    } else {
-                        http::Version::HTTP_2
-                    },
+        } => {
+            // Verify URI is absolute!
+            if uri.scheme().is_none() || uri.authority().is_none() {
+                return Err(MetaApiError::InvalidField(
+                    "uri",
+                    format!(
+                        "The provided uri {uri} is not absolute, only absolute URIs can be used."
+                    ),
+                ));
+            }
+
+            let is_using_https = uri.scheme().unwrap() == &Scheme::HTTPS;
+
+            (
+                DiscoverEndpoint::new(
+                    Endpoint::Http(
+                        uri,
+                        if use_http_11 {
+                            Some(http::Version::HTTP_11)
+                        } else if is_using_https {
+                            // ALPN will sort this out
+                            None
+                        } else {
+                            // By default, we use h2c on HTTP
+                            Some(http::Version::HTTP_2)
+                        },
+                    ),
+                    additional_headers.unwrap_or_default().into(),
                 ),
-                additional_headers.unwrap_or_default().into(),
-            ),
-            force,
-            dry_run,
-        ),
+                force,
+                dry_run,
+            )
+        }
         RegisterDeploymentRequest::Lambda {
             arn,
             assume_role_arn,
