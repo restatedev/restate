@@ -19,6 +19,9 @@ enum ServiceProtocolVersion {
   SERVICE_PROTOCOL_VERSION_UNSPECIFIED = 0;
   // initial service protocol version
   V1 = 1;
+  // Added
+  // * Entry retry mechanism: ErrorMessage.next_retry_delay, StartMessage.retry_count_since_last_stored_entry and StartMessage.duration_since_last_stored_entry
+  V2 = 2;
 }
 
 // --- Core frames ---
@@ -47,6 +50,18 @@ message StartMessage {
 
   // If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
   string key = 6;
+
+  // Retry count since the last stored entry.
+  //
+  // Please not this count might not be accurate, as it's not durably stored,
+  // thus it's susceptible to Restate's crashes/leader election changes.
+  uint32 retry_count_since_last_stored_entry = 7;
+
+  // Duration since the last stored entry, in milliseconds.
+  //
+  // Please note this duration might not be accurate,
+  // and might change depending on which Restate replica executes the request.
+  uint64 duration_since_last_stored_entry = 8;
 }
 
 // Type: 0x0000 + 1
@@ -90,6 +105,10 @@ message ErrorMessage {
   optional string related_entry_name = 5;
   // Entry type.
   optional uint32 related_entry_type = 6;
+
+  // Delay before executing the next retry, specified as duration in milliseconds.
+  // If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
+  optional uint64 next_retry_delay = 8;
 }
 
 // Type: 0x0000 + 4
