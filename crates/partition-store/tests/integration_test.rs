@@ -32,11 +32,16 @@ mod invocation_status_table_test;
 mod journal_table_test;
 mod outbox_table_test;
 mod promise_table_test;
+mod snapshots_test;
 mod state_table_test;
 mod timer_table_test;
 mod virtual_object_status_table_test;
 
 async fn storage_test_environment() -> PartitionStore {
+    storage_test_environment_with_manager().await.1
+}
+
+async fn storage_test_environment_with_manager() -> (PartitionStoreManager, PartitionStore) {
     //
     // create a rocksdb storage from options
     //
@@ -57,7 +62,7 @@ async fn storage_test_environment() -> PartitionStore {
     .await
     .expect("DB storage creation succeeds");
     // A single partition store that spans all keys.
-    manager
+    let store = manager
         .open_partition_store(
             PartitionId::MIN,
             RangeInclusive::new(0, PartitionKey::MAX - 1),
@@ -65,21 +70,24 @@ async fn storage_test_environment() -> PartitionStore {
             &worker_options.pinned().storage.rocksdb,
         )
         .await
-        .expect("DB storage creation succeeds")
+        .expect("DB storage creation succeeds");
+
+    (manager, store)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_read_write() {
-    let rocksdb = storage_test_environment().await;
+    let (manager, store) = storage_test_environment_with_manager().await;
 
     //
     // run the tests
     //
-    inbox_table_test::run_tests(rocksdb.clone()).await;
-    outbox_table_test::run_tests(rocksdb.clone()).await;
-    state_table_test::run_tests(rocksdb.clone()).await;
-    virtual_object_status_table_test::run_tests(rocksdb.clone()).await;
-    timer_table_test::run_tests(rocksdb).await;
+    inbox_table_test::run_tests(store.clone()).await;
+    outbox_table_test::run_tests(store.clone()).await;
+    state_table_test::run_tests(store.clone()).await;
+    virtual_object_status_table_test::run_tests(store.clone()).await;
+    timer_table_test::run_tests(store.clone()).await;
+    snapshots_test::run_tests(manager.clone(), store.clone()).await;
 }
 
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::path::Path;
 use std::slice;
 use std::sync::Arc;
 
@@ -18,7 +19,9 @@ use codederror::CodedError;
 use restate_rocksdb::CfName;
 use restate_rocksdb::IoMode;
 use restate_rocksdb::Priority;
+use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_types::config::Configuration;
+use rocksdb::checkpoint::Checkpoint;
 use rocksdb::DBCompressionType;
 use rocksdb::DBPinnableSlice;
 use rocksdb::DBRawIteratorWithThreadMode;
@@ -39,6 +42,7 @@ use crate::keys::KeyKind;
 use crate::keys::TableKey;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
+use crate::snapshots::LocalPartitionSnapshot;
 
 pub type DB = rocksdb::DB;
 
@@ -416,6 +420,42 @@ impl PartitionStore {
             .await
             .map_err(|err| StorageError::Generic(err.into()))?;
         Ok(())
+    }
+
+    /// Exports a snapshot of the partition to the given directory. The snapshot includes all the
+    /// data in the partition and the minimum LSN that has been applied to the partition prior to
+    /// creating the snapshot checkpoint. The snapshot is atomic and contains, at a minimum, the
+    /// applied log up to and including the minimum LSN, and possibly more.
+    ///
+    /// *NB:* Creating a snapshot causes an implicit flush of the column family!
+    pub async fn export_snapshot(&mut self, output_dir: &Path) -> Result<LocalPartitionSnapshot> {
+        let db = self.raw_db.clone();
+        let checkpoint =
+            Checkpoint::new(db.as_ref()).map_err(|err| StorageError::Generic(err.into()))?;
+
+        let data_cf_handle = db.cf_handle(&self.data_cf_name).unwrap_or_else(|| {
+            panic!(
+                "Access a column family that must exist: {}",
+                &self.data_cf_name
+            )
+        });
+
+        let applied_lsn = self
+            .get_applied_lsn()
+            .await?
+            .ok_or(StorageError::DataIntegrityError)?;
+
+        // TODO move to a task wrapped in RocksDb
+        let metadata = checkpoint
+            .export_column_family(&data_cf_handle, output_dir)
+            .map_err(|err| StorageError::Generic(err.into()))?;
+
+        Ok(LocalPartitionSnapshot {
+            base_dir: output_dir.to_path_buf(),
+            files: metadata.get_files(),
+            db_comparator_name: metadata.get_db_comparator_name(),
+            minimum_lsn: applied_lsn,
+        })
     }
 }
 

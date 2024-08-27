@@ -26,13 +26,13 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Instant;
-
+use rocksdb::metadata::ExportImportFilesMetaData;
 use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
 
 use self::background::ReadyStorageTask;
 // re-exports
@@ -347,6 +347,25 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::OpenColumnFamily)
             .op(move || db.open_cf(name, default_cf_options, cf_patterns))
+            .build()
+            .unwrap();
+
+        self.manager.async_spawn(task).await?
+    }
+
+    #[tracing::instrument(skip_all, fields(db = %self.name))]
+    pub async fn import_cf(
+        &self,
+        name: CfName,
+        opts: &RocksDbOptions,
+        metadata: ExportImportFilesMetaData,
+    ) -> Result<(), RocksError> {
+        let default_cf_options = self.manager.default_cf_options(opts);
+        let db = self.db.clone();
+        let cf_patterns = self.cf_patterns.clone();
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::OpenColumnFamily)
+            .op(move || db.import_cf(name, default_cf_options, cf_patterns, metadata))
             .build()
             .unwrap();
 
