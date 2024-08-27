@@ -18,7 +18,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
-use restate_errors::fmt::CodedErrorResultExt;
+use restate_errors::warn_it;
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN};
@@ -99,7 +99,7 @@ pub async fn create_deployment<V>(
         .schema_registry
         .register_deployment(discover_endpoint, force, apply_mode)
         .await
-        .warn_it()?;
+        .inspect_err(|e| warn_it!(e))?;
 
     let response_body = RegisterDeploymentResponse { id, services };
 
@@ -220,7 +220,7 @@ pub async fn delete_deployment<V>(
             .schema_registry
             .delete_deployment(deployment_id)
             .await
-            .warn_it()?;
+            .inspect_err(|e| warn_it!(e))?;
         Ok(StatusCode::ACCEPTED)
     } else {
         Ok(StatusCode::NOT_IMPLEMENTED)

@@ -19,7 +19,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{http, Json};
 use okapi_operation::*;
-use restate_errors::fmt::CodedErrorResultExt;
+use restate_errors::warn_it;
 use restate_types::identifiers::SubscriptionId;
 
 /// Create subscription.
@@ -46,7 +46,7 @@ pub async fn create_subscription<V: SubscriptionValidator>(
         .schema_registry
         .create_subscription(payload.source, payload.sink, payload.options)
         .await
-        .warn_it()?;
+        .inspect_err(|e| warn_it!(e))?;
 
     Ok((
         StatusCode::CREATED,
@@ -163,6 +163,6 @@ pub async fn delete_subscription<V>(
         .schema_registry
         .delete_subscription(subscription_id)
         .await
-        .warn_it()?;
+        .inspect_err(|e| warn_it!(e))?;
     Ok(StatusCode::ACCEPTED)
 }

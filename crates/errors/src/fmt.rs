@@ -27,28 +27,64 @@
 //! # }
 //! ```
 
-use codederror::{Code, CodedError};
+use codederror::Code;
 use std::fmt;
 
 /// Check module documentation for more details.
 #[macro_export]
 macro_rules! info_it {
     ($err:expr) => {
-        tracing::info!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err));
+        {
+            #[allow(unused_imports)]
+            use ::codederror::CodedError;
+
+            let err = &$err;
+            let decorated = err.decorate();
+            let code = $crate::fmt::RestateCode::from_code(err.code());
+
+            tracing::info!(error = tracing::field::display(decorated), restate.error.code = ?code);
+        }
     };
     ($err:expr, $($field:tt)*) => {
-        tracing::info!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err), $($field)*);
+        {
+            #[allow(unused_imports)]
+            use ::codederror::CodedError;
+
+            let err = &$err;
+            let decorated = err.decorate();
+            let code = $crate::fmt::RestateCode::from_code(err.code());
+
+            tracing::info!(error = tracing::field::display(decorated), restate.error.code = ?code, $($field)*);
+        }
     };
 }
 
 /// Check module documentation for more details.
 #[macro_export]
 macro_rules! warn_it {
-    ($err:expr) => {
-        tracing::warn!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err));
+     ($err:expr) => {
+        {
+            #[allow(unused_imports)]
+            use ::codederror::CodedError;
+
+            let err = &$err;
+            let decorated = err.decorate();
+            let code = $crate::fmt::RestateCode::from_code(err.code());
+
+            tracing::warn!(error = tracing::field::display(decorated), restate.error.code = ?code);
+        }
     };
     ($err:expr, $($field:tt)*) => {
-        tracing::warn!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err), $($field)*);
+        {
+            #[allow(unused_imports)]
+            use ::codederror::CodedError;
+
+            let err = &$err;
+            let decorated = err.decorate();
+            let code = $crate::fmt::RestateCode::from_code(err.code());
+
+            tracing::warn!(error = tracing::field::display(decorated), restate.error.code = ?code, $($field)*);
+        }
     };
 }
 
@@ -56,21 +92,36 @@ macro_rules! warn_it {
 #[macro_export]
 macro_rules! error_it {
     ($err:expr) => {
-        tracing::error!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err));
+        {
+            #[allow(unused_imports)]
+            use ::codederror::CodedError;
+
+            let err = &$err;
+            let decorated = err.decorate();
+            let code = $crate::fmt::RestateCode::from_code(err.code());
+
+            tracing::error!(error = tracing::field::display(decorated), restate.error.code = ?code);
+        }
     };
     ($err:expr, $($field:tt)*) => {
-        tracing::error!(error = tracing::field::display(codederror::CodedError::decorate(&$err)), restate.error.code = ?$crate::fmt::RestateCode::from(&$err), $($field)*);
+        {
+            #[allow(unused_imports)]
+            use ::codederror::CodedError;
+
+            let err = &$err;
+            let decorated = err.decorate();
+            let code = $crate::fmt::RestateCode::from_code(err.code());
+
+            tracing::error!(error = tracing::field::display(decorated), restate.error.code = ?code, $($field)*);
+        }
     };
 }
 
-pub struct RestateCode(Option<Code>);
+pub struct RestateCode(Option<&'static Code>);
 
-impl<T> From<&T> for RestateCode
-where
-    T: CodedError,
-{
-    fn from(value: &T) -> Self {
-        RestateCode(value.code().cloned())
+impl RestateCode {
+    pub fn from_code(code: Option<&'static Code>) -> Self {
+        RestateCode(code)
     }
 }
 
@@ -116,48 +167,9 @@ impl fmt::Debug for RestateCode {
     }
 }
 
-/// Extension trait which extends [`Result<T, impl CodedError>`] with some formatting functions.
-pub trait CodedErrorResultExt {
-    /// Log on info level if error and return self.
-    fn info_it(self) -> Self;
-
-    /// Log on warn level if error and return self.
-    fn warn_it(self) -> Self;
-
-    /// Log on error level if error and return self.
-    fn error_it(self) -> Self;
-}
-
-impl<T, E: CodedError> CodedErrorResultExt for Result<T, E> {
-    #[inline]
-    fn info_it(self) -> Self {
-        if let Err(err) = &self {
-            info_it!(*err);
-        }
-        self
-    }
-
-    #[inline]
-    fn warn_it(self) -> Self {
-        if let Err(err) = &self {
-            warn_it!(*err);
-        }
-        self
-    }
-
-    #[inline]
-    fn error_it(self) -> Self {
-        if let Err(err) = &self {
-            error_it!(*err);
-        }
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
+    use codederror::CodedError;
     use test_log::test;
 
     use crate::RT0001;
@@ -171,20 +183,20 @@ mod tests {
     fn test_printing_error() {
         let error = MyError {};
         error_it!(error);
-        error_it!(error, "My error message {}", 1);
+        error_it!(&error, "My error message {}", 1);
     }
 
     #[test]
     fn test_printing_warn() {
         let error = MyError {};
         warn_it!(error);
-        warn_it!(error, "My error message {}", 1);
+        warn_it!(&error, "My error message {}", 1);
     }
 
     #[test]
     fn test_printing_info() {
         let error = MyError {};
         info_it!(error);
-        info_it!(error, "My error message {}", 1);
+        info_it!(&error, "My error message {}", 1);
     }
 }

@@ -20,7 +20,7 @@ use http::StatusCode;
 use okapi_operation::*;
 use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
-use restate_errors::fmt::CodedErrorResultExt;
+use restate_errors::warn_it;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::state_mut::ExternalStateMutation;
@@ -110,7 +110,7 @@ pub async fn modify_service<V>(
         .schema_registry
         .modify_service(service_name, modify_request)
         .await
-        .warn_it()?;
+        .inspect_err(|e| warn_it!(e))?;
 
     Ok(response.into())
 }
