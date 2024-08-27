@@ -39,7 +39,7 @@ use restate_types::logs::metadata::{bootstrap_logs_metadata, Logs};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
 };
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
 use restate_types::retries::RetryPolicy;
 use restate_types::Version;
@@ -591,6 +591,7 @@ impl Node {
                         my_node_id,
                         common_opts.advertised_address.clone(),
                         common_opts.roles,
+                        LogServerConfig::default(),
                     )
                 };
 

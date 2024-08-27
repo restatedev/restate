@@ -339,8 +339,7 @@ pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletPa
         ProviderKind::InMemory => LogletParams::from(loglet_id),
         #[cfg(feature = "replicated-loglet")]
         ProviderKind::Replicated => panic!(
-            "replicated-loglet cannot be used as default-provider in a single-node setup.\
-            To use replicated loglet, the node must be running in cluster-mode"
+            "replicated-loglet is still in development and cannot be used as default-provider in this version. Pleae use 'local' instead."
         ),
     }
 }
