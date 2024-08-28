@@ -8,18 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use codederror::CodedError;
-use restate_core::ShutdownError;
+mod builder;
+mod error;
+mod keys;
+mod store;
+mod writer;
 
-#[derive(Debug, thiserror::Error, CodedError)]
-pub enum LogServerBuildError {
-    #[error("unknown")]
-    #[code(unknown)]
-    Unknown,
-}
+pub use self::builder::RocksDbLogStoreBuilder;
+pub use self::store::RocksDbLogStore;
+pub use error::*;
 
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("operation failed due to an ongoing shutdown")]
-    Shutdown(#[from] ShutdownError),
-}
+// matches the default directory name
+const DB_NAME: &str = "log-server";
+const DATA_CF: &str = "data";
+const METADATA_CF: &str = "metadata";

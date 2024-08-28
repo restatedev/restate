@@ -47,11 +47,29 @@ impl ReplicatedLogletParams {
 }
 
 #[derive(
-    serde::Serialize, serde::Deserialize, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Clone, Copy,
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    Clone,
+    Copy,
+    derive_more::From,
+    derive_more::Deref,
+    derive_more::Into,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
 pub struct ReplicatedLogletId(u64);
+
+impl ReplicatedLogletId {
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct Replication {
@@ -90,6 +108,10 @@ impl NodeSet {
             .len()
             .try_into()
             .expect("nodeset cannot exceed 255 nodes")
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &PlainNodeId> {
