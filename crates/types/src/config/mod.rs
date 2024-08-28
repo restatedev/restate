@@ -20,6 +20,7 @@ mod common;
 mod http;
 mod ingress;
 mod kafka;
+mod log_server;
 mod metadata_store;
 mod networking;
 mod query_engine;
@@ -35,6 +36,7 @@ pub use common::*;
 pub use http::*;
 pub use ingress::*;
 pub use kafka::*;
+pub use log_server::*;
 pub use metadata_store::*;
 pub use networking::*;
 pub use query_engine::*;
@@ -155,6 +157,7 @@ pub struct Configuration {
     pub bifrost: BifrostOptions,
     pub metadata_store: MetadataStoreOptions,
     pub networking: NetworkingOptions,
+    pub log_server: LogServerOptions,
 }
 
 impl Configuration {
@@ -210,6 +213,7 @@ impl Configuration {
         self.worker.storage.apply_common(&self.common);
         self.bifrost.local.apply_common(&self.common);
         self.metadata_store.apply_common(&self.common);
+        self.log_server.apply_common(&self.common);
         self
     }
 

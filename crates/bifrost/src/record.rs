@@ -133,7 +133,7 @@ impl Default for Header {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Record {
     header: Header,
     body: PolyBytes,
@@ -141,7 +141,7 @@ pub struct Record {
 }
 
 impl Record {
-    pub(crate) fn from_parts(header: Header, keys: Keys, body: PolyBytes) -> Self {
+    pub fn from_parts(header: Header, keys: Keys, body: PolyBytes) -> Self {
         Self { header, keys, body }
     }
 
@@ -151,6 +151,10 @@ impl Record {
 
     pub fn keys(&self) -> &Keys {
         &self.keys
+    }
+
+    pub fn dissolve(self) -> (Header, PolyBytes, Keys) {
+        (self.header, self.body, self.keys)
     }
 
     /// Decode the record body into an owned value T.
