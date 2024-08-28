@@ -37,8 +37,10 @@ use restate_types::schema::deployment::{
     Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
 };
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 use std::future::poll_fn;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, trace, warn, Span};
@@ -152,8 +154,14 @@ where
         );
 
         crate::shortcircuit!(
-            self.write_start(&mut http_stream_tx, journal_size, state_iter)
-                .await
+            self.write_start(
+                &mut http_stream_tx,
+                journal_size,
+                state_iter,
+                self.invocation_task.retry_count_since_last_stored_entry,
+                journal_metadata.last_modification_date
+            )
+            .await
         );
 
         // Initialize the response stream state
@@ -172,6 +180,7 @@ where
         // If we have the invoker_rx and the protocol type is bidi stream,
         // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
         if protocol_type == ProtocolType::BidiStream {
+            trace!("Protocol is in bidi stream mode, will now start the send/receive loop");
             crate::shortcircuit!(
                 self.bidi_stream_loop(
                     &service_invocation_span_context,
@@ -181,12 +190,14 @@ where
                 .await
             );
         } else {
+            trace!("Protocol is in bidi stream mode, will now drop the sender side of the request");
             // Drop the http_stream_tx.
             // This is required in HTTP/1.1 to let the deployment send the headers back
             drop(http_stream_tx)
         }
 
         // We don't have the invoker_rx, so we simply consume the response
+        trace!("Sender side of the request has been dropped, now processing the response");
         let result = self
             .response_stream_loop(&service_invocation_span_context, &mut http_stream_rx)
             .await;
@@ -261,7 +272,7 @@ where
                 address,
                 http_version,
                 ..
-            } => Endpoint::Http(address, http_version),
+            } => Endpoint::Http(address, Some(http_version)),
         };
 
         headers.extend(deployment_metadata.delivery_options.additional_headers);
@@ -346,10 +357,8 @@ where
                         ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
                         ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
-                            return TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
-                                None,
-                                InvocationError::default()
-                            ))
+                            return TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived{
+                            related_entry: None,next_retry_interval_override: None,error: InvocationError::default(),})
                         }
                     }
                 },
@@ -376,10 +385,11 @@ where
                         ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
                         ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
-                            return TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
-                                None,
-                                InvocationError::default()
-                            ))
+                            return TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived {
+                                related_entry: None,
+                                next_retry_interval_override: None,
+                                error: InvocationError::default(),
+                            })
                         }
                     }
                 },
@@ -398,6 +408,8 @@ where
         http_stream_tx: &mut InvokerRequestStreamSender,
         journal_size: u32,
         state_entries: EagerState<I>,
+        retry_count_since_last_stored_entry: u32,
+        duration_since_last_stored_entry: MillisSinceEpoch,
     ) -> Result<(), InvocationTaskError> {
         let is_partial = state_entries.is_partial();
 
@@ -414,6 +426,8 @@ where
                 journal_size,
                 is_partial,
                 state_entries,
+                retry_count_since_last_stored_entry,
+                duration_since_last_stored_entry,
             ),
         )
         .await
@@ -530,8 +544,8 @@ where
                 TerminalLoopState::Suspended(suspension_indexes)
             }
             ProtocolMessage::Error(e) => {
-                TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
-                    Some(InvocationErrorRelatedEntry {
+                TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived {
+                    related_entry: Some(InvocationErrorRelatedEntry {
                         related_entry_index: e.related_entry_index,
                         related_entry_name: e.related_entry_name.clone(),
                         related_entry_type: e
@@ -540,8 +554,9 @@ where
                             .and_then(|idx| MessageType::try_from(idx).ok())
                             .and_then(|mt| EntryType::try_from(mt).ok()),
                     }),
-                    InvocationError::from(e),
-                ))
+                    next_retry_interval_override: e.next_retry_delay.map(Duration::from_millis),
+                    error: InvocationError::from(e),
+                })
             }
             ProtocolMessage::End(_) => TerminalLoopState::Closed,
             ProtocolMessage::UnparsedEntry(entry) => {

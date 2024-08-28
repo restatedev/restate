@@ -374,6 +374,7 @@ fn error(err: FrameError) -> ProtocolMessage {
         related_entry_index: None,
         related_entry_name: None,
         related_entry_type: None,
+        next_retry_delay: None,
     })
 }
 

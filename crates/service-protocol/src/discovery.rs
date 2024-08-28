@@ -9,11 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use codederror::CodedError;
 use http::header::{ACCEPT, CONTENT_TYPE};
 use http::response::Parts as ResponseParts;
 use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Version};
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version};
 use http_body_util::BodyExt;
 use http_body_util::Empty;
 use itertools::Itertools;
@@ -22,6 +23,7 @@ use restate_errors::{META0003, META0012, META0013, META0014, META0015};
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
 use restate_types::errors::GenericError;
+use restate_types::identifiers::LambdaARN;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::schema::deployment::ProtocolType;
 use restate_types::service_discovery::{
@@ -37,7 +39,10 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::{Deref, RangeInclusive};
 use strum::IntoEnumIterator;
-use tracing::warn;
+use tracing::{debug, warn};
+
+#[allow(clippy::declare_interior_mutable_const)]
+const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
 const SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v1+json";
@@ -105,8 +110,16 @@ impl DiscoverEndpoint {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum DiscoveredEndpoint {
+    Http(Uri, Version),
+    Lambda(LambdaARN, Option<ByteString>),
+}
+
 #[derive(Debug)]
 pub struct DiscoveredMetadata {
+    pub endpoint: DiscoveredEndpoint,
+    pub headers: HashMap<HeaderName, HeaderValue>,
     pub protocol_type: ProtocolType,
     pub services: Vec<endpoint_manifest::Service>,
     // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
@@ -198,7 +211,7 @@ impl ServiceDiscovery {
 impl ServiceDiscovery {
     pub async fn discover(
         &self,
-        endpoint: &DiscoverEndpoint,
+        endpoint: DiscoverEndpoint,
     ) -> Result<DiscoveredMetadata, DiscoveryError> {
         let retry_policy = self.retry_policy.iter();
         let (mut parts, body) = Self::invoke_discovery_endpoint(
@@ -215,6 +228,8 @@ impl ServiceDiscovery {
         let service_discovery_protocol_version =
             Self::retrieve_service_discovery_protocol_version(content_type)?;
 
+        let x_restate_server = parts.headers.remove(X_RESTATE_SERVER);
+
         let response = match service_discovery_protocol_version {
             ServiceDiscoveryProtocolVersion::Unspecified => {
                 unreachable!("unspecified service discovery protocol should not be chosen")
@@ -224,7 +239,15 @@ impl ServiceDiscovery {
             }
         };
 
-        Self::create_discovered_metadata_from_endpoint_response(endpoint.address(), response)
+        let (address, headers) = endpoint.into_inner();
+
+        Self::create_discovered_metadata_from_endpoint_response(
+            address,
+            headers,
+            parts.version,
+            response,
+            x_restate_server,
+        )
     }
 
     fn retrieve_service_discovery_protocol_version(
@@ -268,8 +291,11 @@ impl ServiceDiscovery {
     }
 
     fn create_discovered_metadata_from_endpoint_response(
-        endpoint: &Endpoint,
+        endpoint: Endpoint,
+        headers: HashMap<HeaderName, HeaderValue>,
+        response_http_version: Version,
         endpoint_response: endpoint_manifest::Endpoint,
+        x_restate_server: Option<HeaderValue>,
     ) -> Result<DiscoveredMetadata, DiscoveryError> {
         let protocol_type = match endpoint_response.protocol_mode {
             Some(endpoint_manifest::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
@@ -279,16 +305,17 @@ impl ServiceDiscovery {
             }
         };
 
-        match (protocol_type, endpoint) {
+        match (protocol_type, &endpoint, response_http_version) {
             // all endpoints support request response
-            (ProtocolType::RequestResponse, _) => {}
+            (ProtocolType::RequestResponse, _, _) => {}
             // http2 upwards supports bidi
-            (ProtocolType::BidiStream, Endpoint::Http(_, Version::HTTP_2 | Version::HTTP_3)) => {}
+            (ProtocolType::BidiStream, Endpoint::Http(_, _), Version::HTTP_2 | Version::HTTP_3) => {
+            }
             // http1.1 *can* support bidi depending on server implementation (and load balancers)
             // trust the user if this is what they advertise
-            (ProtocolType::BidiStream, Endpoint::Http(_, Version::HTTP_11)) => {}
+            (ProtocolType::BidiStream, Endpoint::Http(_, _), Version::HTTP_11) => {}
             // lambda client and HTTP < 1.1 do not support bidi
-            (ProtocolType::BidiStream, _) => {
+            (ProtocolType::BidiStream, _, _) => {
                 return Err(DiscoveryError::BidirectionalNotSupported);
             }
         }
@@ -325,7 +352,21 @@ impl ServiceDiscovery {
         }
 
         let min_version = endpoint_response.min_protocol_version as i32;
-        let max_version = endpoint_response.max_protocol_version as i32;
+        let mut max_version = endpoint_response.max_protocol_version as i32;
+
+        // Fix for the SDK-Typescript bad protocol version,
+        //  see https://github.com/restatedev/sdk-typescript/pull/418
+        if let Some(x_restate_server) = x_restate_server {
+            if let Ok(x_restate_server) = x_restate_server.to_str() {
+                if x_restate_server.starts_with("restate-sdk-typescript/1.0.")
+                    || x_restate_server.starts_with("restate-sdk-typescript/1.1.")
+                    || x_restate_server.starts_with("restate-sdk-typescript/1.2.")
+                {
+                    debug!("Applying SDK-Typescript <= 1.2.1 workaround for endpoint.maxProtocolVersion");
+                    max_version = 1;
+                }
+            }
+        }
 
         if !ServiceProtocolVersion::is_compatible(min_version, max_version) {
             return Err(DiscoveryError::UnsupportedServiceProtocol {
@@ -335,6 +376,13 @@ impl ServiceDiscovery {
         }
 
         Ok(DiscoveredMetadata {
+            endpoint: match endpoint {
+                Endpoint::Http(uri, _) => DiscoveredEndpoint::Http(uri, response_http_version),
+                Endpoint::Lambda(arn, assume_role_arn) => {
+                    DiscoveredEndpoint::Lambda(arn, assume_role_arn)
+                }
+            },
+            headers,
             protocol_type,
             services: endpoint_response.services,
             // we need to store the raw representation since the runtime might not know the latest
@@ -409,6 +457,7 @@ mod tests {
     use restate_types::endpoint_manifest;
     use restate_types::service_discovery::ServiceDiscoveryProtocolVersion;
     use restate_types::service_protocol::MAX_SERVICE_PROTOCOL_VERSION;
+    use std::collections::HashMap;
 
     #[test]
     fn fail_on_invalid_min_protocol_version_with_bad_response() {
@@ -421,8 +470,11 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                &Endpoint::Http(Uri::default(), Version::HTTP_2),
-                response
+                Endpoint::Http(Uri::default(), None),
+                HashMap::default(),
+                Version::HTTP_2,
+                response,
+                None
             ),
             Err(DiscoveryError::BadResponse(_))
         ));
@@ -439,13 +491,16 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                &Endpoint::Lambda(
+                Endpoint::Lambda(
                     "arn:partition:lambda:region:account_id:function:name:version"
                         .parse()
                         .unwrap(),
                     None
                 ),
-                response
+                HashMap::default(),
+                Version::HTTP_11,
+                response,
+                None
             ),
             Err(DiscoveryError::BidirectionalNotSupported)
         ));
@@ -462,8 +517,11 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                &Endpoint::Http(Uri::default(), Version::HTTP_2),
-                response
+                Endpoint::Http(Uri::default(), None),
+                HashMap::default(),
+                Version::HTTP_2,
+                response,
+                None
             ),
             Err(DiscoveryError::BadResponse(_))
         ));
@@ -480,8 +538,11 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                &Endpoint::Http(Uri::default(), Version::HTTP_2),
-                response
+                Endpoint::Http(Uri::default(), None),
+                HashMap::default(),
+                Version::HTTP_2,
+                response,
+                None
             ),
             Err(DiscoveryError::BadResponse(_))
         ));
@@ -499,8 +560,11 @@ mod tests {
 
         assert!(
             matches!(ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                &Endpoint::Http(Uri::default(), Version::HTTP_2),
-                response
+      Endpoint::Http(Uri::default(), None),
+                        HashMap::default(),
+                Version::HTTP_2,
+                response,
+                    None
             ), Err(DiscoveryError::UnsupportedServiceProtocol { min_version, max_version }) if min_version == unsupported_version && max_version == unsupported_version )
         );
     }

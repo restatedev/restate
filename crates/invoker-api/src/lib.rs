@@ -33,6 +33,7 @@ pub mod test_util {
     use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
     use restate_types::journal::raw::PlainRawEntry;
     use restate_types::journal::Completion;
+    use restate_types::time::MillisSinceEpoch;
     use std::convert::Infallible;
     use std::iter::empty;
     use std::marker::PhantomData;
@@ -51,7 +52,12 @@ pub mod test_util {
             _sid: &'a InvocationId,
         ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
             Ok((
-                JournalMetadata::new(0, ServiceInvocationSpanContext::empty(), None),
+                JournalMetadata::new(
+                    0,
+                    ServiceInvocationSpanContext::empty(),
+                    None,
+                    MillisSinceEpoch::UNIX_EPOCH,
+                ),
                 futures::stream::empty(),
             ))
         }

@@ -23,6 +23,7 @@ mod header;
 pub use encoding::{Decoder, Encoder, EncodingError};
 pub use header::{MessageHeader, MessageKind, MessageType};
 use restate_types::service_protocol;
+use restate_types::time::MillisSinceEpoch;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolMessage {
@@ -39,6 +40,7 @@ pub enum ProtocolMessage {
 }
 
 impl ProtocolMessage {
+    #[allow(clippy::too_many_arguments)]
     pub fn new_start_message(
         id: Bytes,
         debug_id: String,
@@ -46,6 +48,8 @@ impl ProtocolMessage {
         known_entries: u32,
         partial_state: bool,
         state_map_entries: impl IntoIterator<Item = (Bytes, Bytes)>,
+        retry_count_since_last_stored_entry: u32,
+        duration_since_last_stored_entry: MillisSinceEpoch,
     ) -> Self {
         Self::Start(service_protocol::StartMessage {
             id,
@@ -59,6 +63,8 @@ impl ProtocolMessage {
             key: key
                 .and_then(|b| String::from_utf8(b.to_vec()).ok())
                 .unwrap_or_default(),
+            retry_count_since_last_stored_entry,
+            duration_since_last_stored_entry: duration_since_last_stored_entry.as_u64(),
         })
     }
 

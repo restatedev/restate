@@ -12,7 +12,7 @@ default = []
 
 awakeable-id = ["dep:base64", "dep:restate-base64-util", "dep:restate-types"]
 codec = ["dep:restate-types", "dep:paste"]
-discovery = ["dep:serde", "dep:serde_json", "dep:regress", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:http", "dep:http-body-util", "dep:restate-service-client", "dep:restate-types", "dep:tokio"]
+discovery = ["dep:serde", "dep:serde_json", "dep:bytestring", "dep:regress", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:http", "dep:http-body-util", "dep:restate-service-client", "dep:restate-types", "dep:tokio"]
 message = ["dep:restate-types", "dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:size", "dep:tracing"]
 test-util = ["awakeable-id"]
 
@@ -24,6 +24,7 @@ restate-types = { workspace = true, optional = true }
 
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true }
+bytestring = { workspace = true, optional = true }
 bytes-utils = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
 http = { workspace = true, optional = true}

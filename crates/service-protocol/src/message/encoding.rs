@@ -38,10 +38,10 @@ pub struct Encoder {}
 
 impl Encoder {
     pub fn new(service_protocol_version: ServiceProtocolVersion) -> Self {
-        assert_eq!(
+        assert_ne!(
             service_protocol_version,
-            ServiceProtocolVersion::V1,
-            "Encoder only supports service protocol version V1"
+            ServiceProtocolVersion::Unspecified,
+            "A protocol version should be specified"
         );
         Self {}
     }
@@ -132,10 +132,10 @@ impl Decoder {
         message_size_warning: usize,
         message_size_limit: Option<usize>,
     ) -> Self {
-        assert_eq!(
+        assert_ne!(
             service_protocol_version,
-            ServiceProtocolVersion::V1,
-            "Decoder only supports service protocol version V1"
+            ServiceProtocolVersion::Unspecified,
+            "A protocol version should be specified"
         );
         Self {
             buf: SegmentedBuf::new(),
@@ -356,13 +356,12 @@ fn raw_header_to_message_type(entry_header: &PlainEntryHeader) -> MessageType {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
-
-    use restate_types::journal::raw::RawEntryCodec;
 
     use crate::codec::ProtobufRawEntryCodec;
     use restate_test_util::{assert, assert_eq, let_assert};
+    use restate_types::journal::raw::RawEntryCodec;
+    use std::time::SystemTime;
 
     #[test]
     fn fill_decoder_with_several_messages() {
@@ -376,6 +375,8 @@ mod tests {
             1,
             true,
             vec![],
+            10,
+            SystemTime::now().into(),
         );
 
         let expected_msg_1: ProtocolMessage = ProtobufRawEntryCodec::serialize_as_input_entry(
