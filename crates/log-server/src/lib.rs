@@ -9,8 +9,12 @@
 // by the Apache License, Version 2.0.
 
 mod error;
+mod logstore;
+mod metadata;
 mod metric_definitions;
+mod network;
+mod rocksdb_logstore;
 mod service;
 
-pub use error::{LogServerBuildError, LogServerError, Result};
+pub use error::LogServerBuildError;
 pub use service::LogServerService;
