@@ -167,7 +167,7 @@ fn main() {
             // Apply tracing config globally
             // We need to apply this first to log correctly
             let tracing_guard =
-                init_tracing_and_logging(&Configuration::pinned().common, "Restate binary")
+                init_tracing_and_logging(&Configuration::pinned().common, "Runtime")
                     .expect("failed to configure logging and tracing!");
 
             // Log panics as tracing errors if possible

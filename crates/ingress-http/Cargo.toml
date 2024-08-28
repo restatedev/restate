@@ -17,8 +17,9 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
 restate-serde-util = { workspace = true }
+restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
-restate-service-protocol = { workspace = true, features = [ "awakeable-id" ] }
+restate-service-protocol = { workspace = true, features = ["awakeable-id"] }
 
 # Encoding/Decoding
 bytes = { workspace = true }
@@ -37,7 +38,13 @@ http = { workspace = true }
 url = "2.5.0"
 http-body = { workspace = true }
 http-body-util = { workspace = true }
-hyper-util = { workspace = true, features = ["http1", "http2", "server", "tokio", "service"] }
+hyper-util = { workspace = true, features = [
+    "http1",
+    "http2",
+    "server",
+    "tokio",
+    "service",
+] }
 tower = { workspace = true, features = ["util"] }
 tower-http = { workspace = true, features = ["cors", "normalize-path"] }
 

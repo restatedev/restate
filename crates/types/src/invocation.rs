@@ -647,18 +647,22 @@ pub enum SpanRelation {
     Linked(SpanContext),
 }
 
-impl SpanRelation {
-    /// Attach this [`SpanRelation`] to the given [`Span`]
-    pub fn attach_to_span(&self, span: &Span) {
-        match self {
+pub trait SpanExt: OpenTelemetrySpanExt {
+    fn set_relation(&self, relation: SpanRelation) -> &Self {
+        match relation {
             SpanRelation::Parent(span_context) => {
-                span.set_parent(Context::new().with_remote_span_context(span_context.clone()))
+                self.set_parent(Context::new().with_remote_span_context(span_context))
             }
-            SpanRelation::Linked(span_context) => span.add_link(span_context.clone()),
+            SpanRelation::Linked(span_context) => self.add_link(span_context),
             SpanRelation::None => (),
         };
+        self
     }
+}
 
+impl SpanExt for tracing::Span {}
+
+impl SpanRelation {
     fn is_sampled(&self) -> bool {
         match self {
             SpanRelation::None => false,

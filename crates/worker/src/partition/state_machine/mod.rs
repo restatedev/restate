@@ -45,6 +45,7 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, TimerTable};
 use restate_storage_api::Result as StorageResult;
+use restate_tracing_instrumentation as instrumentation;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
@@ -57,13 +58,13 @@ use restate_types::identifiers::{
 };
 use restate_types::ingress;
 use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
-use restate_types::invocation::InvocationInput;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
     InvocationTargetType, InvocationTermination, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SpanRelationCause,
     SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
+use restate_types::invocation::{InvocationInput, SpanExt};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
@@ -143,8 +144,7 @@ macro_rules! span_if_leader {
     ($level:expr, $i_am_leader:expr, $sampled:expr, $span_relation:expr, $($args:tt)*) => {{
         if $i_am_leader && $sampled {
             let span = ::tracing::span!($level, $($args)*);
-            $span_relation
-                .attach_to_span(&span);
+            span.set_relation($span_relation);
             let _ = span.enter();
         }
     }};
@@ -199,10 +199,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             Span::record_invocation_target(invocation_target);
         }
         if let Some(journal_metadata) = status.get_journal_metadata() {
-            journal_metadata
-                .span_context
-                .as_parent()
-                .attach_to_span(&Span::current());
+            Span::current().set_relation(journal_metadata.span_context.as_parent());
         }
         Ok(status)
     }
@@ -341,10 +338,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         Span::record_invocation_id(&invocation_id);
         Span::record_invocation_target(&service_invocation.invocation_target);
-        service_invocation
-            .span_context
-            .as_parent()
-            .attach_to_span(&Span::current());
+        Span::current().set_relation(service_invocation.span_context.as_parent());
 
         // Phases of an invocation
         // 1. Try deduplicate it first
@@ -2484,24 +2478,41 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             Err(_) => ("Failure", true),
         };
 
-        info_span_if_leader!(
-            ctx.is_leader,
-            span_context.is_sampled(),
-            span_context.causing_span_relation(),
-            "invoke",
-            otel.name = format!("invoke {invocation_target}"),
-            rpc.service = %invocation_target.service_name(),
-            rpc.method = %invocation_target.handler_name(),
-            restate.invocation.id = %invocation_id,
-            restate.invocation.target = %invocation_target,
-            restate.invocation.result = result,
-            error = error, // jaeger uses this tag to show an error icon
-            // without converting to i64 this field will encode as a string
-            // however, overflowing i64 seems unlikely
-            restate.internal.start_time = i64::try_from(creation_time.as_u64()).expect("creation time should fit into i64"),
-            restate.internal.span_id = %span_context.span_context().span_id(),
-            restate.internal.trace_id = %span_context.span_context().trace_id()
-        );
+        if ctx.is_leader && span_context.is_sampled() {
+            let span = instrumentation::info_invocation_span!(
+                name = "invoke",
+                id = invocation_id,
+                target = invocation_target,
+                restate.invocation.result = result,
+                error = error,
+                restate.internal.start_time = i64::try_from(creation_time.as_u64())
+                    .expect("creation time should fit into i64"),
+                restate.internal.span_id = span_context.span_context().span_id().to_string(),
+                restate.internal.trace_id = span_context.span_context().trace_id().to_string()
+            )
+            .set_relation(span_context.causing_span_relation());
+
+            // span_context.causing_span_relation().attach_to_span(&span);
+        }
+
+        // info_span_if_leader!(
+        //     ctx.is_leader,
+        //     span_context.is_sampled(),
+        //     span_context.causing_span_relation(),
+        //     "invoke",
+        //     otel.name = format!("invoke {invocation_target}"),
+        //     rpc.service = %invocation_target.service_name(),
+        //     rpc.method = %invocation_target.handler_name(),
+        //     restate.invocation.id = %invocation_id,
+        //     restate.invocation.target = %invocation_target,
+        //     restate.invocation.result = result,
+        //     error = error, // jaeger uses this tag to show an error icon
+        //     // without converting to i64 this field will encode as a string
+        //     // however, overflowing i64 seems unlikely
+        //     restate.internal.start_time = i64::try_from(creation_time.as_u64()).expect("creation time should fit into i64"),
+        //     restate.internal.span_id = %span_context.span_context().span_id(),
+        //     restate.internal.trace_id = %span_context.span_context().trace_id()
+        // );
     }
 
     async fn handle_outgoing_message<State: OutboxTable + FsmTable>(
