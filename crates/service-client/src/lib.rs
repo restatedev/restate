@@ -243,12 +243,12 @@ impl Parts {
 
 #[derive(Clone, Debug)]
 pub enum Endpoint {
-    Http(Uri, Version),
+    Http(Uri, Option<Version>),
     Lambda(LambdaARN, Option<ByteString>),
 }
 
 impl fmt::Display for Endpoint {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Http(uri, _) => uri.fmt(f),
             Self::Lambda(arn, _) => write!(f, "lambda://{}", arn),

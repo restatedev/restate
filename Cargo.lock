@@ -6205,6 +6205,7 @@ dependencies = [
  "base64 0.22.0",
  "bytes",
  "bytes-utils",
+ "bytestring",
  "codederror",
  "http 1.1.0",
  "http-body-util",

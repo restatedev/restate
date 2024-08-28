@@ -15,6 +15,7 @@ use crate::utils::ErrorExt;
 use bytes::Bytes;
 use futures::future::Either;
 use futures::FutureExt;
+use http::uri::Scheme;
 use http::Version;
 use http_body_util::BodyExt;
 use hyper::body::Body;
@@ -29,7 +30,8 @@ use std::fmt::Debug;
 use std::future;
 use std::future::Future;
 
-type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
+type ProxiedHttpsConnector = ProxyConnector<HttpsConnector<HttpConnector>>;
+type ProxiedHttpConnector = ProxyConnector<HttpConnector>;
 
 // TODO
 //  for the time being we use BoxBody here to simplify the migration to hyper 1.0.
@@ -39,23 +41,20 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 #[derive(Clone, Debug)]
 pub struct HttpClient {
-    // alpn client defaults to http1.1, but can upgrade to http2 using ALPN for TLS servers
-    alpn_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
-    // h2 client defaults to http2 and so supports unencrypted http2 servers
-    h2_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
+    /// Client used for HTTPs (all HTTP version) and HTTP/1.1 with h2c, for HTTP/2 we use `h2c_prior_knowledge_client`.
+    client: hyper_util::client::legacy::Client<ProxiedHttpsConnector, BoxBody>,
+
+    /// tl;dr we need this because `client` won't do h2c with prior knowledge.
+    ///
+    /// We need a separate client for h2c with prior knowledge because the hyper pooling code
+    /// won't respect the `Version` provided in the request for the connection,
+    /// but arbitrarily chooses to proceed with an HTTP/1.1 handshake when `http` is used (with h2c `Upgrade` support),
+    /// unless `http2_only` is provided (which effectively enables h2c prior knowledge always).
+    /// This is irrelevant with `https`, as ALPN will choose the protocol for us.
+    h2c_prior_knowledge_client: hyper_util::client::legacy::Client<ProxiedHttpConnector, BoxBody>,
 }
 
 impl HttpClient {
-    pub fn new(
-        alpn_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
-        h2_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
-    ) -> Self {
-        Self {
-            alpn_client,
-            h2_client,
-        }
-    }
-
     pub fn from_options(options: &HttpOptions) -> HttpClient {
         let mut builder =
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::default());
@@ -74,23 +73,28 @@ impl HttpClient {
             .with_native_roots()
             .expect("Can build native roots")
             .https_or_http()
+            .enable_http1()
             .enable_http2()
-            .wrap_connector(http_connector);
+            .wrap_connector(http_connector.clone());
 
-        let proxy_connector = ProxyConnector::new(options.http_proxy.clone(), https_connector);
-
-        HttpClient::new(
-            builder.clone().build::<_, BoxBody>(proxy_connector.clone()), // h1 client with alpn upgrade support
-            {
+        HttpClient {
+            client: builder.clone().build::<_, BoxBody>(ProxyConnector::new(
+                options.http_proxy.clone(),
+                https_connector,
+            )),
+            h2c_prior_knowledge_client: {
                 builder.http2_only(true);
-                builder.build::<_, BoxBody>(proxy_connector) // h2-prior knowledge client
+                builder.build::<_, BoxBody>(ProxyConnector::new(
+                    options.http_proxy.clone(),
+                    http_connector,
+                ))
             },
-        )
+        }
     }
 
     fn build_request<B>(
         uri: Uri,
-        version: Version,
+        version: Option<Version>,
         body: B,
         method: Method,
         path: PathAndQuery,
@@ -130,7 +134,9 @@ impl HttpClient {
             http_request_builder = http_request_builder.header(header, value)
         }
 
-        http_request_builder = http_request_builder.version(version);
+        if let Some(version) = version {
+            http_request_builder = http_request_builder.version(version);
+        }
 
         http_request_builder.body(BoxBody::new(body.map_err(|e| e.into())))
     }
@@ -138,7 +144,7 @@ impl HttpClient {
     pub fn request<B>(
         &self,
         uri: Uri,
-        version: Version,
+        version: Option<Version>,
         method: Method,
         body: B,
         path: PathAndQuery,
@@ -153,12 +159,15 @@ impl HttpClient {
             Err(err) => return future::ready(Err(err.into())).right_future(),
         };
 
-        let client = match request.version() {
-            Version::HTTP_2 => &self.h2_client,
-            _ => &self.alpn_client,
+        let fut = match (
+            request.version(),
+            request.uri().scheme().expect("URI should be absolute"),
+        ) {
+            (Version::HTTP_2, scheme) if scheme == &Scheme::HTTP => {
+                self.h2c_prior_knowledge_client.request(request)
+            }
+            (_, _) => self.client.request(request),
         };
-
-        let fut = client.request(request);
 
         Either::Left(async move {
             match fut.await {

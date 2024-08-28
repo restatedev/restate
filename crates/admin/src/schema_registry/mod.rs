@@ -16,8 +16,7 @@ use crate::schema_registry::updater::SchemaUpdater;
 use http::Uri;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{metadata, MetadataWriter};
-use restate_service_client::Endpoint;
-use restate_service_protocol::discovery::{DiscoverEndpoint, ServiceDiscovery};
+use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
 use restate_types::metadata_store::keys::SCHEMA_INFORMATION_KEY;
 use restate_types::schema::deployment::{
@@ -103,20 +102,20 @@ impl<V> SchemaRegistry<V> {
         // register_deployment calls. If it should become a problem that a user tries to register
         // the same endpoint too often, then we need to add a synchronization mechanism which
         // ensures that only a limited number of discover calls per endpoint are running.
-        let discovered_metadata = self.service_discovery.discover(&discover_endpoint).await?;
+        let discovered_metadata = self.service_discovery.discover(discover_endpoint).await?;
 
-        let deployment_metadata = match discover_endpoint.into_inner() {
-            (Endpoint::Http(uri, http_version), headers) => DeploymentMetadata::new_http(
+        let deployment_metadata = match discovered_metadata.endpoint {
+            DiscoveredEndpoint::Http(uri, http_version) => DeploymentMetadata::new_http(
                 uri.clone(),
                 discovered_metadata.protocol_type,
                 http_version,
-                DeliveryOptions::new(headers),
+                DeliveryOptions::new(discovered_metadata.headers),
                 discovered_metadata.supported_protocol_versions,
             ),
-            (Endpoint::Lambda(arn, assume_role_arn), headers) => DeploymentMetadata::new_lambda(
+            DiscoveredEndpoint::Lambda(arn, assume_role_arn) => DeploymentMetadata::new_lambda(
                 arn,
                 assume_role_arn,
-                DeliveryOptions::new(headers),
+                DeliveryOptions::new(discovered_metadata.headers),
                 discovered_metadata.supported_protocol_versions,
             ),
         };
