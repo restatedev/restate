@@ -126,8 +126,7 @@ where
         let journal_size = journal_metadata.length;
 
         // Attach parent and uri to the current span
-        let invocation_task_span =
-            Span::current().set_relation(journal_metadata.span_context.as_parent());
+        Span::current().set_relation(journal_metadata.span_context.as_parent());
 
         info!(
             invocation.id = %self.invocation_task.invocation_id,

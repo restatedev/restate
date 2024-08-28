@@ -15,7 +15,7 @@ use opentelemetry::trace::{SpanContext, TraceContextExt};
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{InvocationTarget, SpanExt, SpanRelation};
-use tracing::{info_span, instrument, Level, Span};
+use tracing::{Level, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 pub(crate) fn prepare_tracing_span<B>(
@@ -35,33 +35,21 @@ pub(crate) fn prepare_tracing_span<B>(
         .get()
         .expect("Should have been injected by the previous layer");
 
+    // Create the ingress span and attach it to the next async block.
+    // This span is committed once the async block terminates, recording the execution time of the invocation.
+    // Another span is created later by the ServiceInvocationFactory, for the ServiceInvocation itself,
+    // which is used by the Restate services to correctly link to a single parent span
+    // to commit intermediate results of the processing.
+
     let ingress_span = instrumentation::invocation_span!(
         level = Level::INFO,
-        name = "ingress",
+        prefix = "ingress",
         id = invocation_id,
         target = invocation_target,
         client.socket.port = client_port as i64,
         client.socket.address = client_addr.to_string()
     );
     ingress_span.set_relation(span_relation(tracing_context.span().span_context()));
-
-    // // Create the ingress span and attach it to the next async block.
-    // // This span is committed once the async block terminates, recording the execution time of the invocation.
-    // // Another span is created later by the ServiceInvocationFactory, for the ServiceInvocation itself,
-    // // which is used by the Restate services to correctly link to a single parent span
-    // // to commit intermediate results of the processing.
-    // let ingress_span = info_span!(
-    //     target: instrumentation::DEPLOYMENT_TARGET,
-    //     "ingress_invoke",
-    //     otel.name = format!("ingress_invoke {}", invocation_target),
-    //     rpc.system = "restate",
-    //     rpc.service = %invocation_target.service_name(),
-    //     rpc.method = %invocation_target.handler_name(),
-    //     restate.invocation.id = %invocation_id,
-    //     restate.invocation.target = %invocation_target,
-    //     client.socket.address = %client_addr,
-    //     client.socket.port = %client_port,
-    // );
 
     // We need the context to link it to the service invocation span
     let ingress_span_context = ingress_span.context().span().span_context().clone();

@@ -38,6 +38,7 @@ pub(super) fn state_machine_apply_command_span(is_leader: bool, cmd: &Command) -
     let span = if is_leader {
         debug_span!(
             "apply_command",
+            otel.name = format!("apply-command: {}", cmd.name()),
             restate.invocation.id = tracing::field::Empty,
             restate.invocation.target = tracing::field::Empty,
             rpc.service = tracing::field::Empty,
@@ -47,6 +48,7 @@ pub(super) fn state_machine_apply_command_span(is_leader: bool, cmd: &Command) -
     } else {
         trace_span!(
             "apply_command",
+            otel.name = format!("apply-command: {}", cmd.name()),
             restate.invocation.id = tracing::field::Empty,
             restate.invocation.target = tracing::field::Empty,
             rpc.service = tracing::field::Empty,

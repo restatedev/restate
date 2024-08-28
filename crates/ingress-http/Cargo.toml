@@ -38,13 +38,7 @@ http = { workspace = true }
 url = "2.5.0"
 http-body = { workspace = true }
 http-body-util = { workspace = true }
-hyper-util = { workspace = true, features = [
-    "http1",
-    "http2",
-    "server",
-    "tokio",
-    "service",
-] }
+hyper-util = { workspace = true, features = ["http1", "http2", "server", "tokio", "service"] }
 tower = { workspace = true, features = ["util"] }
 tower-http = { workspace = true, features = ["cors", "normalize-path"] }
 

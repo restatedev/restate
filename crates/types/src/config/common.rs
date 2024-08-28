@@ -10,7 +10,8 @@
 
 use enumset::EnumSet;
 use once_cell::sync::Lazy;
-use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
+use restate_serde_util::NonZeroByteCount;
+use restate_serde_util::SerdeableHeaderHashMap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
@@ -25,6 +26,61 @@ use crate::retries::RetryPolicy;
 use crate::PlainNodeId;
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(default))]
+#[serde(rename_all = "kebab-case")]
+pub struct TracingOptions {
+    /// # Tracing Endpoint
+    ///
+    /// Specify the tracing endpoint to send traces to.
+    /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
+    /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
+    ///
+    /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
+    pub endpoint: String,
+
+    /// # Distributed Tracing JSON Export Path
+    ///
+    /// If set, an exporter will be configured to write traces to files using the Jaeger JSON format.
+    /// Each trace file will start with the `trace` prefix.
+    ///
+    /// If unset, no traces will be written to file.
+    ///
+    /// It can be used to export traces in a structured format without configuring a Jaeger agent.
+    ///
+    /// To inspect the traces, open the Jaeger UI and use the Upload JSON feature to load and inspect them.
+    pub json_path: Option<String>,
+
+    /// # Tracing Filter
+    ///
+    /// Distributed tracing exporter filter.
+    /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
+    #[serde(default = "default_filter")]
+    pub filter: String,
+
+    /// # Additional tracing headers
+    ///
+    /// Specify additional headers you want the system to send to the tracing endpoint (e.g.
+    /// authentication headers).
+    pub headers: SerdeableHeaderHashMap,
+}
+
+fn default_filter() -> String {
+    "info".into()
+}
+
+impl Default for TracingOptions {
+    fn default() -> Self {
+        Self {
+            endpoint: "".into(),
+            json_path: None,
+            filter: "info".into(),
+            headers: SerdeableHeaderHashMap::default(),
+        }
+    }
+}
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -99,8 +155,15 @@ pub struct CommonOptions {
     #[builder(setter(strip_option))]
     default_thread_pool_size: Option<usize>,
 
-    #[serde(flatten)]
-    pub tracing: TracingOptions,
+    /// # Runtime Tracing
+    ///
+    /// Configure tracing for restate runtime
+    pub tracing_runtime: Option<TracingOptions>,
+
+    /// # Services Tracing
+    ///
+    /// Configure tracing for user deployments. Defaults to `tracing_runtime`
+    pub tracing_services: Option<TracingOptions>,
 
     /// # Logging Filter
     ///
@@ -304,13 +367,7 @@ impl CommonOptions {
 impl Default for CommonOptions {
     fn default() -> Self {
         Self {
-            // todo (asoli): Remove this when:
-            //   a. The safe rollback version supports log-server (at least supports parsing the
-            //   config with the log-server role)
-            //   b. When log-server becomes enabled by default.
-            //
-            //   see "roles_compat_test" test below.
-            roles: EnumSet::all() - Role::LogServer,
+            roles: EnumSet::all(),
             node_name: None,
             force_node_id: None,
             cluster_name: "localcluster".to_owned(),
@@ -327,7 +384,8 @@ impl Default for CommonOptions {
             disable_prometheus: false,
             service_client: Default::default(),
             shutdown_timeout: std::time::Duration::from_secs(60).into(),
-            tracing: TracingOptions::default(),
+            tracing_runtime: None,
+            tracing_services: None,
             log_filter: "warn,restate=info".to_string(),
             log_format: Default::default(),
             log_disable_ansi_codes: false,
@@ -466,59 +524,6 @@ impl Default for MetadataStoreClientOptions {
                 None,
                 Some(Duration::from_millis(100)),
             ),
-        }
-    }
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "schemars",
-    schemars(title = "Tracing", description = "Options for tracing")
-)]
-pub struct TracingOptions {
-    /// # Tracing Endpoint
-    ///
-    /// Specify the tracing endpoint to send traces to.
-    /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
-    /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
-    ///
-    /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
-    pub tracing_endpoint: Option<String>,
-
-    /// # Distributed Tracing JSON Export Path
-    ///
-    /// If set, an exporter will be configured to write traces to files using the Jaeger JSON format.
-    /// Each trace file will start with the `trace` prefix.
-    ///
-    /// If unset, no traces will be written to file.
-    ///
-    /// It can be used to export traces in a structured format without configuring a Jaeger agent.
-    ///
-    /// To inspect the traces, open the Jaeger UI and use the Upload JSON feature to load and inspect them.
-    pub tracing_json_path: Option<String>,
-
-    /// # Tracing Filter
-    ///
-    /// Distributed tracing exporter filter.
-    /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
-    pub tracing_filter: String,
-
-    /// # Additional tracing headers
-    ///
-    /// Specify additional headers you want the system to send to the tracing endpoint (e.g.
-    /// authentication headers).
-    pub tracing_headers: SerdeableHeaderHashMap,
-}
-
-impl Default for TracingOptions {
-    fn default() -> Self {
-        Self {
-            tracing_endpoint: None,
-            tracing_json_path: None,
-            tracing_filter: "info".to_owned(),
-            tracing_headers: SerdeableHeaderHashMap::default(),
         }
     }
 }

@@ -48,7 +48,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::instrument;
+use tracing::{instrument, Span};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -354,8 +354,18 @@ where
     }
 
     /// Loop opening the request to deployment and consuming the stream
-    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.invocation_target.service_name(), restate.invocation.id = %self.invocation_id, restate.invocation.target = %self.invocation_target), skip_all)]
+    #[instrument(
+        level = "debug",
+        name = "invoker_invocation_task",
+        fields(rpc.system = "restate",
+        rpc.service = %self.invocation_target.service_name(),
+        restate.invocation.id = %self.invocation_id,
+        restate.invocation.target = %self.invocation_target),
+        skip_all,
+    )]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
+        Span::current().record("otel.name", "invocation-task: run");
+
         let start = Instant::now();
         // Execute the task
         let terminal_state = self.select_protocol_version_and_run(input_journal).await;

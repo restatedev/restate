@@ -26,7 +26,6 @@ use std::fmt;
 use std::hash::Hash;
 use std::str::FromStr;
 use std::time::Duration;
-use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
