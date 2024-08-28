@@ -23,7 +23,7 @@ use restate_types::retries::RetryIter;
 use crate::bifrost::BifrostInner;
 use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
-use crate::record::ErasedInputRecord;
+use crate::record::Record;
 use crate::{Error, InputRecord, Result};
 
 #[derive(Clone, derive_more::Debug)]
@@ -60,7 +60,7 @@ impl Appender {
         &mut self,
         body: impl Into<InputRecord<T>>,
     ) -> Result<Lsn> {
-        let body = body.into().into_erased();
+        let body = body.into().into_record();
         self.append_batch_erased(Arc::new([body])).await
     }
 
@@ -80,14 +80,11 @@ impl Appender {
         &mut self,
         batch: Vec<impl Into<InputRecord<T>>>,
     ) -> Result<Lsn> {
-        let batch: Arc<[_]> = batch.into_iter().map(|r| r.into().into_erased()).collect();
+        let batch: Arc<[_]> = batch.into_iter().map(|r| r.into().into_record()).collect();
         self.append_batch_erased(batch).await
     }
 
-    pub(crate) async fn append_batch_erased(
-        &mut self,
-        batch: Arc<[ErasedInputRecord]>,
-    ) -> Result<Lsn> {
+    pub(crate) async fn append_batch_erased(&mut self, batch: Arc<[Record]>) -> Result<Lsn> {
         self.bifrost_inner.fail_if_shutting_down()?;
         let mut retry_iter = self
             .config

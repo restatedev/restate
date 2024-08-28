@@ -153,6 +153,10 @@ impl Record {
         &self.keys
     }
 
+    pub fn body(&self) -> &PolyBytes {
+        &self.body
+    }
+
     pub fn dissolve(self) -> (Header, PolyBytes, Keys) {
         (self.header, self.body, self.keys)
     }
@@ -219,6 +223,26 @@ impl MatchKeyQuery for Record {
     }
 }
 
+impl From<String> for Record {
+    fn from(value: String) -> Self {
+        Record {
+            header: Header::default(),
+            keys: Keys::None,
+            body: PolyBytes::Typed(Arc::new(value)),
+        }
+    }
+}
+
+impl From<&str> for Record {
+    fn from(value: &str) -> Self {
+        Record {
+            header: Header::default(),
+            keys: Keys::None,
+            body: PolyBytes::Typed(Arc::new(value.to_owned())),
+        }
+    }
+}
+
 #[derive(Debug, derive_more::IsVariant)]
 enum MaybeRecord<S = Lsn> {
     TrimGap(TrimGap<S>),
@@ -229,37 +253,6 @@ enum MaybeRecord<S = Lsn> {
 struct TrimGap<S> {
     /// to is inclusive
     pub to: S,
-}
-
-/// Type-erased input record for bifrost.
-///
-/// Used by loglet implementations.
-#[derive(Clone, derive_more::Debug)]
-pub struct ErasedInputRecord {
-    pub(crate) header: Header,
-    pub(crate) keys: Keys,
-    #[debug(skip)]
-    pub(crate) body: Arc<dyn StorageEncode>,
-}
-
-impl From<String> for ErasedInputRecord {
-    fn from(value: String) -> Self {
-        ErasedInputRecord {
-            header: Header::default(),
-            keys: Keys::None,
-            body: Arc::new(value),
-        }
-    }
-}
-
-impl From<&str> for ErasedInputRecord {
-    fn from(value: &str) -> Self {
-        ErasedInputRecord {
-            header: Header::default(),
-            keys: Keys::None,
-            body: Arc::new(value.to_owned()),
-        }
-    }
 }
 
 pub struct InputRecord<T> {
@@ -283,11 +276,11 @@ impl<T> Clone for InputRecord<T> {
 // This is a zero-cost transformation. The type is erased at runtime, but the underlying
 // layout is identical.
 impl<T: StorageEncode> InputRecord<T> {
-    pub(crate) fn into_erased(self) -> ErasedInputRecord {
-        ErasedInputRecord {
+    pub(crate) fn into_record(self) -> Record {
+        Record {
             header: self.header,
             keys: self.keys,
-            body: self.body,
+            body: PolyBytes::Typed(self.body),
         }
     }
 }

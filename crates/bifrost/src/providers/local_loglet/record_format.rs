@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::Deref;
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use restate_types::flexbuffers_storage_encode_decode;
@@ -15,7 +17,6 @@ use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery};
 use restate_types::storage::{PolyBytes, StorageCodec, StorageCodecKind, StorageDecodeError};
 use restate_types::time::NanosSinceEpoch;
 
-use crate::record::ErasedInputRecord;
 use crate::{Header, Record};
 
 // use legacy for new appends until enough minor/major versions are released after current (1.0.x)
@@ -81,7 +82,7 @@ enum KeyStyle {
 
 pub(super) fn encode_record_and_split(
     format_version: RecordFormat,
-    record: &ErasedInputRecord,
+    record: &Record,
     serde_buffer: &mut BytesMut,
 ) -> BytesMut {
     match format_version {
@@ -120,17 +121,22 @@ pub(super) fn decode_and_filter_record(
     }
 }
 
-fn write_legacy_payload(record: &ErasedInputRecord, serde_buffer: &mut BytesMut) -> BytesMut {
+fn write_legacy_payload(record: &Record, serde_buffer: &mut BytesMut) -> BytesMut {
     // encoding the user payload.
-    let body = StorageCodec::encode_and_split(&*record.body, serde_buffer)
-        .expect("record serde is infallible")
-        .freeze();
+    let body = match record.body() {
+        PolyBytes::Bytes(raw_bytes) => raw_bytes.clone(),
+        PolyBytes::Typed(encodeable) => {
+            StorageCodec::encode_and_split(encodeable.deref(), serde_buffer)
+                .expect("record serde is infallible")
+                .freeze()
+        }
+    };
 
     let final_payload = LegacyPayload {
         header: LegacyHeader {
-            created_at: record.header.created_at,
+            created_at: record.created_at(),
         },
-        keys: record.keys.clone(),
+        keys: record.keys().clone(),
         body,
     };
     // encoding the wrapper
@@ -149,11 +155,11 @@ fn write_legacy_payload(record: &ErasedInputRecord, serde_buffer: &mut BytesMut)
 ///    [2 bytes]       Flags (reserved for future use)
 ///    [8 bytes]       `created_at` timestamp
 ///    [remaining]     Serialized Payload
-fn write_record(record: &ErasedInputRecord, buf: &mut BytesMut) -> BytesMut {
+fn write_record(record: &Record, buf: &mut BytesMut) -> BytesMut {
     // Write the format version
     buf.put_u8(RecordFormat::CustomEncoding as u8);
     // key style and keys
-    match &record.keys {
+    match record.keys() {
         Keys::None => buf.put_u8(KeyStyle::None as u8),
         Keys::Single(key) => {
             buf.put_u8(KeyStyle::Single as u8);
@@ -173,10 +179,15 @@ fn write_record(record: &ErasedInputRecord, buf: &mut BytesMut) -> BytesMut {
     // flags (unused)
     buf.put_u16_le(0);
     // created_at
-    buf.put_u64_le(record.header.created_at.as_u64());
+    buf.put_u64_le(record.created_at().as_u64());
 
     // serialize payload
-    StorageCodec::encode(&*record.body, buf).expect("record serde is infallible");
+    match record.body() {
+        PolyBytes::Bytes(raw_bytes) => buf.put_slice(raw_bytes),
+        PolyBytes::Typed(encodeable) => {
+            StorageCodec::encode(encodeable.deref(), buf).expect("record serde is infallible")
+        }
+    }
     buf.split()
 }
 
@@ -254,7 +265,7 @@ mod tests {
 
     use restate_types::logs::Keys;
 
-    use crate::record::ErasedInputRecord;
+    use crate::record::Record;
 
     #[test]
     fn test_record_format() {
@@ -271,13 +282,13 @@ mod tests {
     #[test]
     fn test_codec_compatibility() -> googletest::Result<()> {
         // ensure that we can encode and decode both the old and new formats
-        let record = ErasedInputRecord {
-            header: crate::Header {
+        let record = Record::from_parts(
+            crate::Header {
                 created_at: NanosSinceEpoch::from(100),
             },
-            keys: Keys::Single(14),
-            body: Arc::new("hello".to_owned()),
-        };
+            Keys::Single(14),
+            PolyBytes::Typed(Arc::new("hello".to_owned())),
+        );
 
         let mut buffer = BytesMut::new();
 

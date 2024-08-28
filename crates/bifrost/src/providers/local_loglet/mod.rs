@@ -41,7 +41,7 @@ use crate::loglet::{Loglet, LogletCommit, LogletOffset, OperationError, Sendable
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
-use crate::record::ErasedInputRecord;
+use crate::record::Record;
 use crate::{Result, TailState};
 
 #[derive(derive_more::Debug)]
@@ -137,10 +137,7 @@ impl Loglet for LocalLoglet {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn enqueue_batch(
-        &self,
-        payloads: Arc<[ErasedInputRecord]>,
-    ) -> Result<LogletCommit, ShutdownError> {
+    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, ShutdownError> {
         // NOTE: This implementation doesn't perform pipelined writes yet. This will block the caller
         // while the underlying write is in progress and only return the Commit future as resolved.
         // This is temporary until pipelined writes are fully supported.
@@ -276,6 +273,7 @@ mod tests {
     use futures::TryStreamExt;
     use googletest::prelude::eq;
     use googletest::{assert_that, elements_are};
+    use restate_types::storage::PolyBytes;
     use test_log::test;
 
     use crate::loglet::Loglet;
@@ -394,7 +392,7 @@ mod tests {
     #[test(tokio::test)]
     async fn read_stream_with_filters() -> googletest::Result<()> {
         run_in_test_env(|loglet| async {
-            let batch: Arc<[ErasedInputRecord]> = vec![
+            let batch: Arc<[Record]> = vec![
                 ("record-1", Keys::Single(1)).into(),
                 ("record-2", Keys::Single(2)).into(),
                 ("record-3", Keys::Single(1)).into(),
@@ -432,13 +430,13 @@ mod tests {
         .await
     }
 
-    impl From<(&str, Keys)> for ErasedInputRecord {
+    impl From<(&str, Keys)> for Record {
         fn from((value, keys): (&str, Keys)) -> Self {
-            ErasedInputRecord {
-                header: Header::default(),
+            Record::from_parts(
+                Header::default(),
                 keys,
-                body: Arc::new(value.to_owned()),
-            }
+                PolyBytes::Typed(Arc::new(value.to_owned())),
+            )
         }
     }
 }

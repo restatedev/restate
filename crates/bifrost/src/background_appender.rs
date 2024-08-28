@@ -20,7 +20,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::storage::StorageEncode;
 
 use crate::error::EnqueueError;
-use crate::record::ErasedInputRecord;
+use crate::record::Record;
 use crate::{Appender, InputRecord, Result};
 
 /// Performs appends in the background concurrently while maintaining the order of records
@@ -234,7 +234,7 @@ impl<T: StorageEncode> LogSender<T> {
             Err(mpsc::error::TrySendError::Closed(_)) => return Err(EnqueueError::Closed(record)),
         };
 
-        let record = record.into().into_erased();
+        let record = record.into().into_record();
         permit.send(AppendOperation::Enqueue(record));
         Ok(())
     }
@@ -254,7 +254,7 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         let (tx, rx) = oneshot::channel();
-        let record = record.into().into_erased();
+        let record = record.into().into_record();
         permit.send(AppendOperation::EnqueueWithNotification(record, tx));
         Ok(CommitToken { rx })
     }
@@ -268,7 +268,7 @@ impl<T: StorageEncode> LogSender<T> {
         let Ok(permit) = self.tx.reserve().await else {
             return Err(EnqueueError::Closed(record));
         };
-        let record = record.into().into_erased();
+        let record = record.into().into_record();
         permit.send(AppendOperation::Enqueue(record));
 
         Ok(())
@@ -291,7 +291,7 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         for (permit, record) in std::iter::zip(permits, records) {
-            permit.send(AppendOperation::Enqueue(record.into().into_erased()));
+            permit.send(AppendOperation::Enqueue(record.into().into_record()));
         }
         Ok(())
     }
@@ -311,7 +311,7 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         for (permit, record) in std::iter::zip(permits, records) {
-            permit.send(AppendOperation::Enqueue(record.into().into_erased()));
+            permit.send(AppendOperation::Enqueue(record.into().into_record()));
         }
 
         Ok(())
@@ -332,7 +332,7 @@ impl<T: StorageEncode> LogSender<T> {
 
         let (tx, rx) = oneshot::channel();
         permit.send(AppendOperation::EnqueueWithNotification(
-            record.into().into_erased(),
+            record.into().into_record(),
             tx,
         ));
 
@@ -376,8 +376,8 @@ impl std::future::Future for CommitToken {
 }
 
 enum AppendOperation {
-    Enqueue(ErasedInputRecord),
-    EnqueueWithNotification(ErasedInputRecord, oneshot::Sender<()>),
+    Enqueue(Record),
+    EnqueueWithNotification(Record, oneshot::Sender<()>),
     // A message denoting a request to be notified when it's processed by the appender.
     // It's used to check if previously enqueued appends have been committed or not
     Canary(Arc<Notify>),
