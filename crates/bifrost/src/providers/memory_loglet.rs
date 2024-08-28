@@ -24,14 +24,12 @@ use tracing::{debug, info};
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
 use restate_types::logs::{KeyFilter, LogId, MatchKeyQuery, SequenceNumber};
-use restate_types::storage::PolyBytes;
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
     Loglet, LogletCommit, LogletOffset, LogletProvider, LogletProviderFactory, LogletReadStream,
     OperationError, SendableLogletReadStream,
 };
-use crate::record::ErasedInputRecord;
 use crate::Record;
 use crate::Result;
 use crate::{LogEntry, TailState};
@@ -112,7 +110,7 @@ pub struct MemoryLoglet {
     // We treat params as an opaque identifier for the underlying loglet.
     params: LogletParams,
     #[debug(skip)]
-    log: Mutex<Vec<ErasedInputRecord>>,
+    log: Mutex<Vec<Record>>,
     // internal offset _before_ the loglet head. Loglet head is trim_point_offset.next()
     trim_point_offset: AtomicU32,
     last_committed_offset: AtomicU32,
@@ -171,15 +169,8 @@ impl MemoryLoglet {
             Ok(None)
         } else {
             let index = self.saturating_offset_to_index(from_offset);
-            let erased_record = guard.get(index).expect("reading untrimmed data").clone();
-            Ok(Some(LogEntry::new_data(
-                from_offset,
-                Record::from_parts(
-                    erased_record.header,
-                    erased_record.keys,
-                    PolyBytes::Typed(erased_record.body),
-                ),
-            )))
+            let record = guard.get(index).expect("reading untrimmed data").clone();
+            Ok(Some(LogEntry::new_data(from_offset, record)))
         }
     }
 }
@@ -332,10 +323,7 @@ impl Loglet for MemoryLoglet {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn enqueue_batch(
-        &self,
-        payloads: Arc<[ErasedInputRecord]>,
-    ) -> Result<LogletCommit, ShutdownError> {
+    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, ShutdownError> {
         let mut log = self.log.lock().unwrap();
         if self.sealed.load(Ordering::Relaxed) {
             return Ok(LogletCommit::sealed());
