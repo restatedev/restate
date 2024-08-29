@@ -34,7 +34,7 @@ use super::metric_definitions::{
 };
 use super::record_format::{encode_record_and_split, FORMAT_FOR_NEW_APPENDS};
 use crate::loglet::{LogletOffset, OperationError};
-use crate::record::ErasedInputRecord;
+use crate::record::Record;
 
 type Ack = oneshot::Sender<Result<(), OperationError>>;
 type AckRecv = oneshot::Receiver<Result<(), OperationError>>;
@@ -52,7 +52,7 @@ pub struct LogStoreWriteCommand {
 enum DataUpdate {
     PutRecords {
         first_offset: LogletOffset,
-        payloads: Arc<[ErasedInputRecord]>,
+        payloads: Arc<[Record]>,
     },
     TrimLog {
         old_trim_point: LogletOffset,
@@ -221,7 +221,7 @@ impl LogStoreWriter {
         write_batch: &mut WriteBatch,
         id: u64,
         mut offset: LogletOffset,
-        payloads: Arc<[ErasedInputRecord]>,
+        payloads: Arc<[Record]>,
     ) {
         serde_buffer.reserve(payloads.len() * RECORD_SIZE_GUESS);
         for payload in payloads.iter() {
@@ -322,7 +322,7 @@ impl RocksDbLogWriterHandle {
         &self,
         loglet_id: u64,
         start_offset: LogletOffset,
-        payloads: Arc<[ErasedInputRecord]>,
+        payloads: Arc<[Record]>,
     ) -> Result<AckRecv, ShutdownError> {
         let (ack, receiver) = oneshot::channel();
         // Do not allow more than 65k records in a single batch!

@@ -21,7 +21,7 @@ use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
 use tracing::instrument;
 
 use crate::loglet::{AppendError, Loglet, LogletOffset, OperationError, SendableLogletReadStream};
-use crate::record::ErasedInputRecord;
+use crate::record::Record;
 use crate::{Commit, LogEntry, LsnExt};
 use crate::{Result, TailState};
 
@@ -139,7 +139,7 @@ impl LogletWrapper {
 
     #[allow(unused)]
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn append(&self, payload: ErasedInputRecord) -> Result<Lsn, AppendError> {
+    pub async fn append(&self, payload: Record) -> Result<Lsn, AppendError> {
         let commit = self
             .enqueue_batch(Arc::new([payload]))
             .await
@@ -165,20 +165,14 @@ impl LogletWrapper {
             count = payloads.len(),
         )
     )]
-    pub async fn append_batch(
-        &self,
-        payloads: Arc<[ErasedInputRecord]>,
-    ) -> Result<Lsn, AppendError> {
+    pub async fn append_batch(&self, payloads: Arc<[Record]>) -> Result<Lsn, AppendError> {
         self.enqueue_batch(payloads)
             .await
             .map_err(AppendError::Shutdown)?
             .await
     }
 
-    pub async fn enqueue_batch(
-        &self,
-        payloads: Arc<[ErasedInputRecord]>,
-    ) -> Result<Commit, ShutdownError> {
+    pub async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<Commit, ShutdownError> {
         if self.tail_lsn.is_some() {
             return Ok(Commit::sealed());
         }
