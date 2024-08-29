@@ -196,8 +196,9 @@ impl Node {
                     updateable_config.clone(),
                     tc.clone(),
                     metadata.clone(),
-                    &mut router_builder,
                     networking.clone(),
+                    metadata_store_client.clone(),
+                    &mut router_builder,
                 )
                 .await?,
             )
@@ -387,7 +388,7 @@ impl Node {
                 TaskKind::SystemBoot,
                 "log-server-init",
                 None,
-                log_server.start(),
+                log_server.start(metadata_writer),
             )?;
         }
 

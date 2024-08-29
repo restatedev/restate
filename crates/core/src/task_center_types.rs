@@ -99,6 +99,7 @@ pub enum TaskKind {
     LogletProvider,
     #[strum(props(OnCancel = "abort"))]
     Watchdog,
+    NetworkMessageHandler,
 }
 
 impl TaskKind {

@@ -233,7 +233,7 @@ impl Versioned for NodesConfiguration {
     serde::Deserialize,
 )]
 #[serde(rename_all = "kebab-case")]
-enum StorageState {
+pub enum StorageState {
     /// The node is not expected to be a member in any write set and the node will self-provision
     /// its log-store to `Disabled` once it's written its own storage marker on disk.
     ///
@@ -270,7 +270,7 @@ enum StorageState {
 
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LogServerConfig {
-    storage_state: StorageState,
+    pub storage_state: StorageState,
 }
 
 flexbuffers_storage_encode_decode!(NodesConfiguration);
