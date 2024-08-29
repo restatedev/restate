@@ -14,12 +14,28 @@ use restate_types::NodeId;
 
 use crate::{ShutdownError, SyncError};
 
+use super::Outgoing;
+
 #[derive(Debug, thiserror::Error)]
 pub enum RouterError {
     #[error("codec error: {0}")]
     CodecError(#[from] CodecError),
     #[error("target not registered: {0}")]
     NotRegisteredTarget(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("send error: {source}")]
+pub struct NetworkSendError<M> {
+    pub message: Outgoing<M>,
+    #[source]
+    pub source: NetworkError,
+}
+
+impl<M> NetworkSendError<M> {
+    pub fn new(message: Outgoing<M>, source: NetworkError) -> Self {
+        Self { message, source }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -17,13 +17,12 @@ use super::{
 use dashmap::DashMap;
 use restate_bifrost::Bifrost;
 use restate_core::metadata;
-use restate_core::network::MessageHandler;
+use restate_core::network::{Incoming, MessageHandler};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{IngressRequestId, PartitionKey, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_types::net::codec::Targeted;
 use restate_types::net::ingress::IngressMessage;
-use restate_types::net::MessageEnvelope;
 use restate_types::GenerationalNodeId;
 use restate_wal_protocol::{
     append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
@@ -146,7 +145,7 @@ impl DispatchIngressRequest for IngressDispatcher {
 impl MessageHandler for IngressDispatcher {
     type MessageType = IngressMessage;
 
-    async fn on_message(&self, msg: MessageEnvelope<Self::MessageType>) {
+    async fn on_message(&self, msg: Incoming<Self::MessageType>) {
         let (peer, msg) = msg.split();
         trace!("Processing message '{}' from '{}'", msg.kind(), peer);
 
@@ -252,7 +251,7 @@ mod tests {
     use bytes::Bytes;
     use bytestring::ByteString;
     use googletest::{assert_that, pat};
-    use restate_core::network::NetworkSender;
+    use restate_core::network::{NetworkSender, Outgoing};
     use restate_core::TestCoreEnvBuilder;
     use restate_test_util::{let_assert, matchers::*};
     use restate_types::identifiers::{InvocationId, WithPartitionKey};
@@ -355,9 +354,9 @@ mod tests {
                 let response = Bytes::from_static(b"vmoaifnuei");
                 node_env
                     .network_sender
-                    .send(
-                        metadata().my_node_id().into(),
-                        &IngressMessage::InvocationResponse(InvocationResponse {
+                    .send(Outgoing::new(
+                        metadata().my_node_id(),
+                        IngressMessage::InvocationResponse(InvocationResponse {
                             request_id,
                             response: IngressResponseResult::Success(
                                 invocation_target.clone(),
@@ -365,7 +364,7 @@ mod tests {
                             ),
                             invocation_id: Some(service_invocation.invocation_id),
                         }),
-                    )
+                    ))
                     .await?;
 
                 assert_that!(
@@ -445,9 +444,9 @@ mod tests {
                 let response = Bytes::from_static(b"vmoaifnuei");
                 node_env
                     .network_sender
-                    .send(
-                        metadata().my_node_id().into(),
-                        &IngressMessage::InvocationResponse(InvocationResponse {
+                    .send(Outgoing::new(
+                        metadata().my_node_id(),
+                        IngressMessage::InvocationResponse(InvocationResponse {
                             request_id,
                             response: IngressResponseResult::Success(
                                 InvocationTarget::mock_service(),
@@ -455,7 +454,7 @@ mod tests {
                             ),
                             invocation_id: Some(invocation_id),
                         }),
-                    )
+                    ))
                     .await?;
 
                 assert_that!(

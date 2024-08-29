@@ -40,6 +40,7 @@ use super::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use super::{Handler, MessageRouter};
 use crate::metadata::Urgency;
 use crate::network::net_util::create_tonic_channel_from_advertised_address;
+use crate::network::Incoming;
 use crate::Metadata;
 use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
 
@@ -190,7 +191,14 @@ impl ConnectionManager {
         let welcome = Welcome::new(my_node_id, selected_protocol_version);
 
         let welcome = Message::new(
-            Header::new(nodes_config.version(), None, None, None),
+            Header::new(
+                nodes_config.version(),
+                None,
+                None,
+                None,
+                crate::network::generate_msg_id(),
+                Some(header.msg_id),
+            ),
             welcome,
         );
 
@@ -330,7 +338,14 @@ impl ConnectionManager {
 
         // perform handshake.
         let hello = Message::new(
-            Header::new(self.metadata.nodes_config_version(), None, None, None),
+            Header::new(
+                self.metadata.nodes_config_version(),
+                None,
+                None,
+                None,
+                super::generate_msg_id(),
+                None,
+            ),
             hello,
         );
 
@@ -508,27 +523,33 @@ where
 
         MESSAGE_RECEIVED.increment(1);
         let processing_started = Instant::now();
-        // header is optional on non-hello messages.
-        if let Some(header) = msg.header {
-            seen_versions
-                .update(
-                    header.my_nodes_config_version.map(Into::into),
-                    header.my_partition_table_version.map(Into::into),
-                    header.my_schema_version.map(Into::into),
-                    header.my_logs_version.map(Into::into),
-                )
-                .into_iter()
-                .for_each(|(kind, version)| {
-                    if let Some(version) = version {
-                        metadata.notify_observed_version(
-                            kind,
-                            version,
-                            Some(NodeId::from(connection.peer)),
-                            Urgency::Normal,
-                        );
-                    }
-                })
+
+        //  header is required on all messages
+        let Some(header) = msg.header else {
+            connection.send_control_frame(ConnectionControl::codec_error(
+                "Header is missing on message",
+            ));
+            break;
         };
+
+        seen_versions
+            .update(
+                header.my_nodes_config_version.map(Into::into),
+                header.my_partition_table_version.map(Into::into),
+                header.my_schema_version.map(Into::into),
+                header.my_logs_version.map(Into::into),
+            )
+            .into_iter()
+            .for_each(|(kind, version)| {
+                if let Some(version) = version {
+                    metadata.notify_observed_version(
+                        kind,
+                        version,
+                        Some(NodeId::from(connection.peer)),
+                        Urgency::Normal,
+                    );
+                }
+            });
 
         // body are not allowed to be empty.
         let Some(body) = msg.body else {
@@ -560,10 +581,14 @@ where
             Ok(msg) => {
                 if let Err(e) = router
                     .call(
-                        connection.peer,
-                        connection.cid,
+                        Incoming::from_parts(
+                            connection.peer,
+                            msg,
+                            Arc::downgrade(&connection),
+                            header.msg_id,
+                            header.in_response_to,
+                        ),
                         connection.protocol_version,
-                        msg,
                     )
                     .await
                 {
@@ -584,7 +609,6 @@ where
     // remove from active set
     ONGOING_DRAIN.increment(1.0);
     on_connection_draining(&connection, &connection_manager);
-    let connection_id = connection.cid;
     let protocol_version = connection.protocol_version;
     let peer_node_id = connection.peer;
     let connection_created_at = connection.created;
@@ -596,12 +620,26 @@ where
     let mut drain_counter = 0;
     // Draining of incoming queue
     while let Some(Ok(msg)) = incoming.next().await {
+        // ignore malformed messages
+        let Some(header) = msg.header else {
+            continue;
+        };
         if let Some(body) = msg.body {
             // we ignore non-deserializable messages (serde errors, or control signals in drain)
             if let Ok(msg) = try_unwrap_binary_message(body, protocol_version) {
                 drain_counter += 1;
                 if let Err(e) = router
-                    .call(peer_node_id, connection_id, protocol_version, msg)
+                    .call(
+                        Incoming::from_parts(
+                            peer_node_id,
+                            msg,
+                            // This is a dying connection, don't pass it down.
+                            Weak::new(),
+                            header.msg_id,
+                            header.in_response_to,
+                        ),
+                        protocol_version,
+                    )
                     .await
                 {
                     debug!(
@@ -705,7 +743,7 @@ mod tests {
     use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage};
     use restate_types::net::partition_processor_manager::GetProcessorsState;
     use restate_types::net::{
-        ProtocolVersion, RequestId, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
+        ProtocolVersion, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
     };
     use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfigError, Role};
     use restate_types::protobuf::node::message;
@@ -776,7 +814,14 @@ mod tests {
                     cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
                 };
                 let hello = Message::new(
-                    Header::new(metadata.nodes_config_version(), None, None, None),
+                    Header::new(
+                        metadata.nodes_config_version(),
+                        None,
+                        None,
+                        None,
+                        crate::network::generate_msg_id(),
+                        None,
+                    ),
                     hello,
                 );
                 tx.send(Ok(hello))
@@ -805,7 +850,14 @@ mod tests {
                     cluster_name: "Random-cluster".to_owned(),
                 };
                 let hello = Message::new(
-                    Header::new(metadata.nodes_config_version(), None, None, None),
+                    Header::new(
+                        metadata.nodes_config_version(),
+                        None,
+                        None,
+                        None,
+                        crate::network::generate_msg_id(),
+                        None,
+                    ),
                     hello,
                 );
                 tx.send(Ok(hello)).await?;
@@ -846,7 +898,14 @@ mod tests {
                     metadata.nodes_config_ref().cluster_name().to_owned(),
                 );
                 let hello = Message::new(
-                    Header::new(metadata.nodes_config_version(), None, None, None),
+                    Header::new(
+                        metadata.nodes_config_version(),
+                        None,
+                        None,
+                        None,
+                        crate::network::generate_msg_id(),
+                        None,
+                    ),
                     hello,
                 );
                 tx.send(Ok(hello))
@@ -879,7 +938,14 @@ mod tests {
                     metadata.nodes_config_ref().cluster_name().to_owned(),
                 );
                 let hello = Message::new(
-                    Header::new(metadata.nodes_config_version(), None, None, None),
+                    Header::new(
+                        metadata.nodes_config_version(),
+                        None,
+                        None,
+                        None,
+                        crate::network::generate_msg_id(),
+                        None,
+                    ),
                     hello,
                 );
                 tx.send(Ok(hello))
@@ -938,15 +1004,15 @@ mod tests {
                 let (connection, _rx) =
                     establish_connection(node_id, &metadata, &connections).await;
 
-                let request = GetProcessorsState {
-                    request_id: RequestId::default(),
-                };
+                let request = GetProcessorsState {};
                 let partition_table_version = metadata.partition_table_version().next();
                 let header = Header::new(
                     metadata.nodes_config_version(),
                     None,
                     None,
                     Some(partition_table_version),
+                    crate::network::generate_msg_id(),
+                    None,
                 );
 
                 connection.send(request, header).await?;
@@ -1010,7 +1076,14 @@ mod tests {
             metadata.nodes_config_ref().cluster_name().to_owned(),
         );
         let hello = Message::new(
-            Header::new(metadata.nodes_config_version(), None, None, None),
+            Header::new(
+                metadata.nodes_config_version(),
+                None,
+                None,
+                None,
+                crate::network::generate_msg_id(),
+                None,
+            ),
             hello,
         );
         tx.send(Ok(hello))
@@ -1059,7 +1132,7 @@ mod tests {
         where
             M: WireEncode + Targeted,
         {
-            let body = serialize_message(message, self.protocol_version)?;
+            let body = serialize_message(&message, self.protocol_version)?;
             let message = Message::new(header, body);
 
             self.tx.send(Ok(message)).await?;

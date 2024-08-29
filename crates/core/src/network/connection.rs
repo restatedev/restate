@@ -8,20 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use enum_map::EnumMap;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Instant;
+
+use enum_map::{enum_map, EnumMap};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tracing::instrument;
 
-use super::metric_definitions::CONNECTION_SEND_DURATION;
-use super::metric_definitions::MESSAGE_SENT;
-use super::NetworkError;
-use super::ProtocolError;
-use crate::network::connection_manager::MetadataVersions;
-use crate::Metadata;
 use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
 use restate_types::net::codec::Targeted;
@@ -31,17 +26,25 @@ use restate_types::net::ProtocolVersion;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::node::message;
-use restate_types::protobuf::node::message::Body;
 use restate_types::protobuf::node::Header;
 use restate_types::protobuf::node::Message;
 use restate_types::schema::Schema;
 use restate_types::{GenerationalNodeId, Version, Versioned};
 
+use super::metric_definitions::CONNECTION_SEND_DURATION;
+use super::metric_definitions::MESSAGE_SENT;
+use super::NetworkError;
+use super::NetworkSendError;
+use super::Outgoing;
+use super::ProtocolError;
+use crate::network::connection_manager::MetadataVersions;
+use crate::Metadata;
+
 /// A single streaming connection with a channel to the peer. A connection can be
 /// opened by either ends of the connection and has no direction. Any connection
 /// can be used to send or receive from a peer.
 ///
-/// The primary owned of a connection is the running reactor, all other components
+/// The primary owner of a connection is the running reactor, all other components
 /// should hold a Weak<Connection> if caching access to a certain connection is
 /// needed.
 pub(crate) struct Connection {
@@ -109,36 +112,42 @@ impl Connection {
     ///
     /// This doesn't auto-retry connection resets or send errors, this is up to the user
     /// for retrying externally.
-    #[instrument(skip_all, fields(peer_node_id = %self.peer, target_service = ?message.target(), msg = ?message.kind()))]
+    #[instrument(level = "trace", skip_all, fields(peer_node_id = %self.peer, target_service = ?message.target(), msg = ?message.kind()))]
     pub async fn send<M>(
         &self,
-        message: M,
+        message: Outgoing<M>,
         metadata_versions: HeaderMetadataVersions,
-    ) -> Result<(), NetworkError>
+    ) -> Result<(), NetworkSendError<M>>
     where
         M: WireEncode + Targeted,
     {
         let send_start = Instant::now();
-        let (header, body) = self.create_message(message, metadata_versions)?;
-        let res = self
-            .sender
-            .send(Message::new(header, body))
-            .await
-            .map_err(|_| NetworkError::ConnectionClosed);
+        // do not serialize if we can't acquire capacity
+        let permit = match self.sender.reserve().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Err(NetworkSendError::new(
+                    message,
+                    NetworkError::ConnectionClosed,
+                ))
+            }
+        };
 
-        if res.is_ok() {
-            MESSAGE_SENT.increment(1);
-            CONNECTION_SEND_DURATION.record(send_start.elapsed());
-        }
-
-        res
+        let serialized_msg = match self.create_message(&message, metadata_versions) {
+            Ok(m) => m,
+            Err(e) => return Err(NetworkSendError::new(message, e)),
+        };
+        permit.send(serialized_msg);
+        MESSAGE_SENT.increment(1);
+        CONNECTION_SEND_DURATION.record(send_start.elapsed());
+        Ok(())
     }
 
     fn create_message<M>(
         &self,
-        message: M,
+        message: &Outgoing<M>,
         metadata_versions: HeaderMetadataVersions,
-    ) -> Result<(Header, Body), NetworkError>
+    ) -> Result<Message, NetworkError>
     where
         M: WireEncode + Targeted,
     {
@@ -148,10 +157,12 @@ impl Connection {
             metadata_versions[MetadataKind::Logs],
             metadata_versions[MetadataKind::Schema],
             metadata_versions[MetadataKind::PartitionTable],
+            message.msg_id(),
+            message.in_response_to(),
         );
-        let body =
-            serialize_message(message, self.protocol_version).map_err(ProtocolError::Codec)?;
-        Ok((header, body))
+        let body = serialize_message(message.body(), self.protocol_version)
+            .map_err(ProtocolError::Codec)?;
+        Ok(Message::new(header, body))
     }
 
     /// Tries sending a message on this connection. If there is no capacity, it will fail. Apart
@@ -159,35 +170,54 @@ impl Connection {
     #[instrument(skip_all, fields(peer_node_id = %self.peer, target_service = ?message.target(), msg = ?message.kind()))]
     pub fn try_send<M>(
         &self,
-        message: M,
+        message: Outgoing<M>,
         metadata_versions: HeaderMetadataVersions,
-    ) -> Result<(), NetworkError>
+    ) -> Result<(), NetworkSendError<M>>
     where
         M: WireEncode + Targeted,
     {
         let send_start = Instant::now();
-        let (header, body) = self.create_message(message, metadata_versions)?;
-        let res = self
-            .sender
-            .try_send(Message::new(header, body))
-            .map_err(|err| match err {
-                TrySendError::Full(_) => NetworkError::Full,
-                TrySendError::Closed(_) => NetworkError::ConnectionClosed,
-            });
+        // do not serialize if we can't acquire capacity
+        let permit = match self.sender.try_reserve() {
+            Ok(permit) => permit,
+            Err(TrySendError::Full(_)) => {
+                return Err(NetworkSendError::new(message, NetworkError::Full))
+            }
+            Err(TrySendError::Closed(_)) => {
+                return Err(NetworkSendError::new(
+                    message,
+                    NetworkError::ConnectionClosed,
+                ))
+            }
+        };
 
-        if res.is_ok() {
-            MESSAGE_SENT.increment(1);
-            CONNECTION_SEND_DURATION.record(send_start.elapsed());
-        }
-
-        res
+        let serialized_msg = match self.create_message(&message, metadata_versions) {
+            Ok(m) => m,
+            Err(e) => return Err(NetworkSendError::new(message, e)),
+        };
+        permit.send(serialized_msg);
+        MESSAGE_SENT.increment(1);
+        CONNECTION_SEND_DURATION.record(send_start.elapsed());
+        Ok(())
     }
 }
 
 #[derive(derive_more::Index)]
-struct HeaderMetadataVersions {
+pub(crate) struct HeaderMetadataVersions {
     #[index]
     versions: EnumMap<MetadataKind, Option<Version>>,
+}
+
+impl HeaderMetadataVersions {
+    pub fn from_metadata(metadata: &Metadata) -> Self {
+        let versions = enum_map! {
+            MetadataKind::NodesConfiguration => Some(metadata.nodes_config_version()),
+            MetadataKind::Schema => Some(metadata.schema_version()),
+            MetadataKind::Logs => Some(metadata.logs_version()),
+            MetadataKind::PartitionTable => Some(metadata.partition_table_version()),
+        };
+        Self { versions }
+    }
 }
 
 impl PartialEq for Connection {
@@ -211,26 +241,33 @@ pub struct ConnectionSender {
 
 impl ConnectionSender {
     /// See [`Connection::send`].
-    pub async fn send<M>(&mut self, message: M) -> Result<(), NetworkError>
+    pub async fn send<M>(&mut self, message: Outgoing<M>) -> Result<(), NetworkSendError<M>>
     where
         M: WireEncode + Targeted,
     {
-        self.connection
-            .upgrade()
-            .ok_or(NetworkError::ConnectionClosed)?
+        let Some(connection) = self.connection.upgrade() else {
+            return Err(NetworkSendError::new(
+                message,
+                NetworkError::ConnectionClosed,
+            ));
+        };
+        connection
             .send(message, self.header_metadata_versions())
             .await
     }
 
     /// See [`Connection::try_send`].
-    pub fn try_send<M>(&mut self, message: M) -> Result<(), NetworkError>
+    pub fn try_send<M>(&mut self, message: Outgoing<M>) -> Result<(), NetworkSendError<M>>
     where
         M: WireEncode + Targeted,
     {
-        self.connection
-            .upgrade()
-            .ok_or(NetworkError::ConnectionClosed)?
-            .try_send(message, self.header_metadata_versions())
+        let Some(connection) = self.connection.upgrade() else {
+            return Err(NetworkSendError::new(
+                message,
+                NetworkError::ConnectionClosed,
+            ));
+        };
+        connection.try_send(message, self.header_metadata_versions())
     }
 
     fn header_metadata_versions(&mut self) -> HeaderMetadataVersions {

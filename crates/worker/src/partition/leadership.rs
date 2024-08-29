@@ -24,7 +24,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::network::NetworkSender;
+use restate_core::network::{NetworkSender, Outgoing};
 use restate_core::{
     current_task_partition_id, metadata, task_center, ShutdownError, TaskId, TaskKind,
 };
@@ -659,7 +659,10 @@ where
             current_task_partition_id(),
             {
                 async move {
-                    if let Err(e) = network_tx.send(target_node.into(), &ingress_message).await {
+                    if let Err(e) = network_tx
+                        .send(Outgoing::new(target_node, ingress_message))
+                        .await
+                    {
                         let invocation_id_str = invocation_id
                             .as_ref()
                             .map(|i| i.to_string())

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::PartitionId;
-use crate::net::{RequestId, TargetName};
+use crate::net::TargetName;
 use crate::partition_table::KeyRange;
 
 use crate::net::define_rpc;
@@ -25,13 +25,10 @@ define_rpc! {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct AttachRequest {
-    pub request_id: RequestId,
-}
+pub struct AttachRequest {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachResponse {
-    pub request_id: RequestId,
     pub actions: Vec<Action>,
 }
 

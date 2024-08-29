@@ -8,35 +8,38 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use arc_swap::ArcSwap;
-use enum_map::EnumMap;
 use std::ops::Deref;
 use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use enum_map::EnumMap;
 use strum::IntoEnumIterator;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, trace, warn};
 
-use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
-use super::{MetadataBuilder, VersionInformation};
-use crate::cancellation_watcher;
-use crate::is_cancellation_requested;
-use crate::metadata_store::{MetadataStoreClient, ReadError};
-use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError, NetworkSender};
-use crate::task_center;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::Logs;
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
 };
 use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, MetadataUpdate};
-use restate_types::net::MessageEnvelope;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
 use restate_types::{GenerationalNodeId, NodeId};
 use restate_types::{Version, Versioned};
+
+use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
+use super::{MetadataBuilder, VersionInformation};
+use crate::cancellation_watcher;
+use crate::is_cancellation_requested;
+use crate::metadata_store::{MetadataStoreClient, ReadError};
+use crate::network::Incoming;
+use crate::network::Outgoing;
+use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError, NetworkSender};
+use crate::task_center;
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
@@ -171,12 +174,12 @@ where
                 let networking = self.networking.clone();
                 async move {
                     networking
-                        .send(
-                            to.into(),
-                            &MetadataMessage::MetadataUpdate(MetadataUpdate {
+                        .send(Outgoing::new(
+                            to,
+                            MetadataMessage::MetadataUpdate(MetadataUpdate {
                                 container: MetadataContainer::from(metadata),
                             }),
-                        )
+                        ))
                         .await?;
                     Ok(())
                 }
@@ -191,7 +194,7 @@ where
 {
     type MessageType = MetadataMessage;
 
-    async fn on_message(&self, envelope: MessageEnvelope<MetadataMessage>) {
+    async fn on_message(&self, envelope: Incoming<MetadataMessage>) {
         let (peer, msg) = envelope.split();
         match msg {
             MetadataMessage::MetadataUpdate(update) => {
@@ -508,14 +511,15 @@ where
                         );
                         // todo: Move to dedicated task if this is blocking the MetadataManager too much
                         self.networking
-                            .send(
+                            .send(Outgoing::new(
                                 node_id,
-                                &MetadataMessage::GetMetadataRequest(GetMetadataRequest {
+                                MetadataMessage::GetMetadataRequest(GetMetadataRequest {
                                     metadata_kind,
                                     min_version: Some(task.version),
                                 }),
-                            )
-                            .await?;
+                            ))
+                            .await
+                            .map_err(|e| e.source)?;
                         // on the next tick try to sync if no update was received
                         task.state = UpdateTaskState::Sync;
                         update_task = Some(task);

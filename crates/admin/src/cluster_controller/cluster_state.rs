@@ -16,7 +16,7 @@ use std::time::Instant;
 use tokio::sync::watch;
 
 use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{MessageRouterBuilder, NetworkSender};
+use restate_core::network::{MessageRouterBuilder, NetworkSender, Outgoing};
 use restate_types::net::partition_processor_manager::GetProcessorsState;
 use restate_types::nodes_config::Role;
 use restate_types::time::MillisSinceEpoch;
@@ -148,7 +148,10 @@ where
                                 tokio::time::timeout(
                                     // todo: make configurable
                                     std::time::Duration::from_secs(1),
-                                    rpc_router.call(node_id.into(), &GetProcessorsState::default()),
+                                    rpc_router.call(Outgoing::new(
+                                        node_id,
+                                        GetProcessorsState::default(),
+                                    )),
                                 )
                                 .await,
                             )

@@ -993,6 +993,20 @@ pub fn metadata() -> Metadata {
         .expect("metadata() called before global metadata was set")
 }
 
+#[track_caller]
+pub fn with_metadata<F, R>(f: F) -> R
+where
+    F: FnOnce(&Metadata) -> R,
+{
+    CONTEXT.with(|ctx| {
+        let metadata = ctx
+            .metadata
+            .as_ref()
+            .expect("metadata() called before global metadata was set");
+        f(metadata)
+    })
+}
+
 /// Access to this node id. This is available in task-center tasks only!
 #[track_caller]
 pub fn my_node_id() -> GenerationalNodeId {
