@@ -15,7 +15,7 @@ use rand::seq::IteratorRandom;
 use tracing::{debug, trace};
 
 use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadError, WriteError};
-use restate_core::network::NetworkSender;
+use restate_core::network::{NetworkSender, Outgoing};
 use restate_core::{ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
 use restate_types::cluster_controller::{
@@ -275,7 +275,9 @@ where
                 {
                     let networking = self.networking.clone();
                     async move {
-                        networking.send(node_id.into(), &control_processors).await?;
+                        networking
+                            .send(Outgoing::new(node_id, control_processors))
+                            .await?;
                         Ok(())
                     }
                 },

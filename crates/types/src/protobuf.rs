@@ -86,12 +86,16 @@ pub mod node {
             logs_version: Option<crate::Version>,
             schema_version: Option<crate::Version>,
             partition_table_version: Option<crate::Version>,
+            msg_id: u64,
+            in_response_to: Option<u64>,
         ) -> Self {
             Self {
                 my_nodes_config_version: Some(nodes_config_version.into()),
                 my_logs_version: logs_version.map(Into::into),
                 my_schema_version: schema_version.map(Into::into),
                 my_partition_table_version: partition_table_version.map(Into::into),
+                msg_id,
+                in_response_to,
             }
         }
     }

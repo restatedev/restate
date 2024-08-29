@@ -15,13 +15,14 @@ use dashmap::DashMap;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use tokio::sync::oneshot;
-use tracing::warn;
+use tracing::{error, warn};
 
 use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
-use restate_types::net::{MessageEnvelope, RpcMessage, RpcRequest};
-use restate_types::NodeId;
+use restate_types::net::RpcRequest;
 
-use super::{MessageHandler, MessageRouterBuilder, NetworkError, NetworkSender};
+use super::{
+    Incoming, MessageHandler, MessageRouterBuilder, NetworkSendError, NetworkSender, Outgoing,
+};
 use crate::{cancellation_watcher, ShutdownError};
 
 /// A router for sending and receiving RPC messages through Networking
@@ -36,27 +37,24 @@ where
     T: RpcRequest,
 {
     networking: N,
-    response_tracker: ResponseTracker<T::Response>,
+    response_tracker: ResponseTracker<T::ResponseMessage>,
 }
 
 #[derive(thiserror::Error, Debug)]
 #[error(transparent)]
-pub enum RpcError {
-    #[error("correlation id {0} is already in-flight")]
-    CorrelationIdExists(String),
-    SendError(#[from] NetworkError),
+pub enum RpcError<T> {
+    SendError(#[from] NetworkSendError<T>),
     Shutdown(#[from] ShutdownError),
 }
 
 impl<T, N> RpcRouter<T, N>
 where
     T: RpcRequest + WireEncode + Send + Sync + 'static,
-    T::Response: WireDecode + Send + Sync + 'static,
-    <T::Response as RpcMessage>::CorrelationId: Send + Sync + From<T::CorrelationId>,
+    T::ResponseMessage: WireDecode + Send + Sync + 'static,
     N: NetworkSender,
 {
     pub fn new(networking: N, router_builder: &mut MessageRouterBuilder) -> Self {
-        let response_tracker = ResponseTracker::<T::Response>::default();
+        let response_tracker = ResponseTracker::<T::ResponseMessage>::default();
         router_builder.add_message_handler(response_tracker.clone());
         Self {
             networking,
@@ -64,15 +62,19 @@ where
         }
     }
 
-    pub async fn call(&self, to: NodeId, msg: &T) -> Result<MessageEnvelope<T::Response>, RpcError>
-    where
-        <T::Response as RpcMessage>::CorrelationId: Default,
-    {
+    pub async fn call(
+        &self,
+        msg: Outgoing<T>,
+    ) -> Result<Incoming<T::ResponseMessage>, RpcError<T>> {
         let token = self
             .response_tracker
-            .new_token(msg.correlation_id().into())
-            .ok_or_else(|| RpcError::CorrelationIdExists(format!("{:?}", msg.correlation_id())))?;
-        self.networking.send(to, &msg).await?;
+            .new_token(msg.msg_id())
+            .expect("msg-id is unique");
+
+        self.networking
+            .send(msg)
+            .await
+            .map_err(RpcError::SendError)?;
         token
             .recv()
             .await
@@ -88,14 +90,14 @@ where
 /// via other mechanisms (e.g. ingress flow)
 pub struct ResponseTracker<T>
 where
-    T: RpcMessage,
+    T: Targeted,
 {
     inner: Arc<Inner<T>>,
 }
 
 impl<T> Clone for ResponseTracker<T>
 where
-    T: RpcMessage,
+    T: Targeted,
 {
     fn clone(&self) -> Self {
         Self {
@@ -106,14 +108,14 @@ where
 
 struct Inner<T>
 where
-    T: RpcMessage,
+    T: Targeted,
 {
-    in_flight: DashMap<T::CorrelationId, RpcTokenSender<T>>,
+    in_flight: DashMap<u64, RpcTokenSender<T>>,
 }
 
 impl<T> Default for ResponseTracker<T>
 where
-    T: RpcMessage,
+    T: Targeted,
 {
     fn default() -> Self {
         Self {
@@ -126,19 +128,19 @@ where
 
 impl<T> ResponseTracker<T>
 where
-    T: RpcMessage,
+    T: Targeted,
 {
     pub fn num_in_flight(&self) -> usize {
         self.inner.in_flight.len()
     }
 
-    /// Returns None if an in-flight request holds the same correlation_id.
-    pub fn new_token(&self, correlation_id: T::CorrelationId) -> Option<RpcToken<T>> {
-        match self.inner.in_flight.entry(correlation_id.clone()) {
+    /// Returns None if an in-flight request holds the same msg_id.
+    pub fn new_token(&self, msg_id: u64) -> Option<RpcToken<T>> {
+        match self.inner.in_flight.entry(msg_id) {
             Entry::Occupied(_) => {
-                warn!(
-                    "correlation id {:?} was already in-flight when this rpc was issued, this is an indicator that the correlation_id is not unique across RPC calls",
-                    correlation_id
+                error!(
+                    "msg_id {:?} was already in-flight when this rpc was issued, this is an indicator that the msg_id is not unique across RPC calls",
+                    msg_id
                 );
                 None
             }
@@ -147,7 +149,7 @@ where
                 entry.insert(RpcTokenSender { sender });
 
                 Some(RpcToken {
-                    correlation_id,
+                    msg_id,
                     router: Arc::downgrade(&self.inner),
                     receiver: Some(receiver),
                 })
@@ -155,20 +157,18 @@ where
         }
     }
 
-    /// Returns None if an in-flight request holds the same correlation_id.
-    pub fn generate_token(&self) -> Option<RpcToken<T>>
-    where
-        T::CorrelationId: Default,
-    {
-        let correlation_id = T::CorrelationId::default();
-        self.new_token(correlation_id)
-    }
-
     /// Handle a message through this response tracker.
-    pub fn handle_message(&self, msg: MessageEnvelope<T>) -> Option<MessageEnvelope<T>> {
+    pub fn handle_message(&self, msg: Incoming<T>) -> Option<Incoming<T>> {
+        let Some(original_msg_id) = msg.in_response_to() else {
+            warn!(
+                message_target = msg.kind(),
+                "received a message with a `in_response_to` field unset! The message will be dropped",
+            );
+            return None;
+        };
         // find the token and send, message is dropped on the floor if no valid match exist for the
-        // correlation id.
-        if let Some((_, token)) = self.inner.in_flight.remove(&msg.correlation_id()) {
+        // msg id.
+        if let Some((_, token)) = self.inner.in_flight.remove(&original_msg_id) {
             let _ = token.sender.send(msg);
             None
         } else {
@@ -179,17 +179,17 @@ where
 
 pub struct StreamingResponseTracker<T>
 where
-    T: RpcMessage,
+    T: Targeted,
 {
     flight_tracker: ResponseTracker<T>,
-    incoming_messages: BoxStream<'static, MessageEnvelope<T>>,
+    incoming_messages: BoxStream<'static, Incoming<T>>,
 }
 
 impl<T> StreamingResponseTracker<T>
 where
-    T: RpcMessage,
+    T: Targeted,
 {
-    pub fn new(incoming_messages: BoxStream<'static, MessageEnvelope<T>>) -> Self {
+    pub fn new(incoming_messages: BoxStream<'static, Incoming<T>>) -> Self {
         let flight_tracker = ResponseTracker::default();
         Self {
             flight_tracker,
@@ -197,23 +197,14 @@ where
         }
     }
 
-    /// Returns None if an in-flight request holds the same correlation_id.
-    pub fn new_token(&self, correlation_id: T::CorrelationId) -> Option<RpcToken<T>> {
-        self.flight_tracker.new_token(correlation_id)
-    }
-
-    /// Returns None if an in-flight request holds the same correlation_id.
-    pub fn generate_token(&self) -> Option<RpcToken<T>>
-    where
-        T::CorrelationId: Default,
-    {
-        let correlation_id = T::CorrelationId::default();
-        self.new_token(correlation_id)
+    /// Returns None if an in-flight request holds the same msg_id.
+    pub fn new_token(&self, msg_id: u64) -> Option<RpcToken<T>> {
+        self.flight_tracker.new_token(msg_id)
     }
 
     /// Handles the next message. This will **return** the message if no correlated request is
     /// in-flight. Otherwise, it's handled by the corresponding token receiver.
-    pub async fn handle_next_or_get(&mut self) -> Option<MessageEnvelope<T>> {
+    pub async fn handle_next_or_get(&mut self) -> Option<Incoming<T>> {
         tokio::select! {
             Some(message) = self.incoming_messages.next() => {
                 self.flight_tracker.handle_message(message)
@@ -225,30 +216,30 @@ where
 }
 
 struct RpcTokenSender<T> {
-    sender: oneshot::Sender<MessageEnvelope<T>>,
+    sender: oneshot::Sender<Incoming<T>>,
 }
 
 pub struct RpcToken<T>
 where
-    T: RpcMessage,
+    T: Targeted,
 {
-    correlation_id: T::CorrelationId,
+    msg_id: u64,
     router: Weak<Inner<T>>,
     // This is Option to get around Rust's borrow checker rules when a type implements the Drop
     // trait. Without this, we cannot move receiver out.
-    receiver: Option<oneshot::Receiver<MessageEnvelope<T>>>,
+    receiver: Option<oneshot::Receiver<Incoming<T>>>,
 }
 
 impl<T> RpcToken<T>
 where
-    T: RpcMessage,
+    T: Targeted,
 {
-    pub fn correlation_id(&self) -> T::CorrelationId {
-        self.correlation_id.clone()
+    pub fn msg_id(&self) -> u64 {
+        self.msg_id
     }
 
     /// Awaits the response to come for the associated request. Cancellation safe.
-    pub async fn recv(mut self) -> Result<MessageEnvelope<T>, ShutdownError> {
+    pub async fn recv(mut self) -> Result<Incoming<T>, ShutdownError> {
         let receiver = std::mem::take(&mut self.receiver);
         let res = match receiver {
             Some(receiver) => {
@@ -273,26 +264,26 @@ where
 
 impl<T> Drop for RpcToken<T>
 where
-    T: RpcMessage,
+    T: Targeted,
 {
     fn drop(&mut self) {
         // if the router is gone, we can't do anything.
         let Some(router) = self.router.upgrade() else {
             return;
         };
-        let _ = router.in_flight.remove(&self.correlation_id);
+        let _ = router.in_flight.remove(&self.msg_id);
     }
 }
 
 impl<T> MessageHandler for ResponseTracker<T>
 where
-    T: RpcMessage + WireDecode + Targeted,
+    T: WireDecode + Targeted,
 {
     type MessageType = T;
 
     fn on_message(
         &self,
-        msg: MessageEnvelope<Self::MessageType>,
+        msg: Incoming<Self::MessageType>,
     ) -> impl std::future::Future<Output = ()> + Send {
         self.handle_message(msg);
         std::future::ready(())
@@ -307,20 +298,9 @@ mod test {
     use restate_types::GenerationalNodeId;
     use tokio::sync::Barrier;
 
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-    struct TestCorrelationId(u64);
-
     #[derive(Debug, Clone)]
     struct TestResponse {
-        correlation_id: TestCorrelationId,
         text: String,
-    }
-
-    impl RpcMessage for TestResponse {
-        type CorrelationId = TestCorrelationId;
-        fn correlation_id(&self) -> Self::CorrelationId {
-            self.correlation_id.clone()
-        }
     }
 
     impl Targeted for TestResponse {
@@ -346,12 +326,12 @@ mod test {
     async fn test_rpc_flight_tracker_drop() {
         let tracker = ResponseTracker::<TestResponse>::default();
         assert_eq!(tracker.num_in_flight(), 0);
-        let token = tracker.new_token(TestCorrelationId(1)).unwrap();
+        let token = tracker.new_token(1).unwrap();
         assert_eq!(tracker.num_in_flight(), 1);
         drop(token);
         assert_eq!(tracker.num_in_flight(), 0);
 
-        let token = tracker.new_token(TestCorrelationId(1)).unwrap();
+        let token = tracker.new_token(1).unwrap();
         assert_eq!(tracker.num_in_flight(), 1);
         // receive with timeout, this should drop the token
         let start = tokio::time::Instant::now();
@@ -366,44 +346,47 @@ mod test {
     async fn test_rpc_flight_tracker_send_recv() {
         let tracker = ResponseTracker::<TestResponse>::default();
         assert_eq!(tracker.num_in_flight(), 0);
-        let token = tracker.new_token(TestCorrelationId(1)).unwrap();
+        let token = tracker.new_token(1).unwrap();
         assert_eq!(tracker.num_in_flight(), 1);
 
         // dropped on the floor
         tracker
-            .on_message(MessageEnvelope::new(
+            .on_message(Incoming::from_parts(
                 GenerationalNodeId::new(1, 1),
-                22,
                 TestResponse {
-                    correlation_id: TestCorrelationId(42),
                     text: "test".to_string(),
                 },
+                Weak::new(),
+                1,
+                Some(42),
             ))
             .await;
 
         assert_eq!(tracker.num_in_flight(), 1);
 
-        let maybe_msg = tracker.handle_message(MessageEnvelope::new(
+        let maybe_msg = tracker.handle_message(Incoming::from_parts(
             GenerationalNodeId::new(1, 1),
-            22,
             TestResponse {
-                correlation_id: TestCorrelationId(42),
                 text: "test".to_string(),
             },
+            Weak::new(),
+            1,
+            Some(42),
         ));
         assert!(maybe_msg.is_some());
 
         assert_eq!(tracker.num_in_flight(), 1);
 
-        // matches correlation id
+        // matches msg id
         tracker
-            .on_message(MessageEnvelope::new(
+            .on_message(Incoming::from_parts(
                 GenerationalNodeId::new(1, 1),
-                22,
                 TestResponse {
-                    correlation_id: TestCorrelationId(1),
                     text: "a very real message".to_string(),
                 },
+                Weak::new(),
+                1,
+                Some(1),
             ))
             .await;
 
@@ -411,7 +394,7 @@ mod test {
         assert_eq!(tracker.num_in_flight(), 0);
 
         let msg = token.recv().await.unwrap();
-        assert_eq!(TestCorrelationId(1), msg.correlation_id());
+        assert_eq!(Some(1), msg.in_response_to());
         let (from, msg) = msg.split();
         assert_eq!(GenerationalNodeId::new(1, 1), from);
         assert_eq!("a very real message", msg.text);
@@ -423,11 +406,7 @@ mod test {
         let response_tracker = ResponseTracker::default();
 
         let rpc_tokens: Vec<RpcToken<TestResponse>> = (0..num_responses)
-            .map(|idx| {
-                response_tracker
-                    .new_token(TestCorrelationId(idx))
-                    .expect("first time created")
-            })
+            .map(|idx| response_tracker.new_token(idx).expect("first time created"))
             .collect();
 
         let barrier = Arc::new(Barrier::new((2 * num_responses) as usize));
@@ -438,13 +417,14 @@ mod test {
 
             tokio::spawn(async move {
                 barrier_handle_message.wait().await;
-                response_tracker_handle_message.handle_message(MessageEnvelope::new(
+                response_tracker_handle_message.handle_message(Incoming::from_parts(
                     GenerationalNodeId::new(0, 0),
-                    0,
                     TestResponse {
                         text: format!("{}", idx),
-                        correlation_id: TestCorrelationId(idx),
                     },
+                    Weak::new(),
+                    1,
+                    Some(idx),
                 ));
             });
 
@@ -453,7 +433,7 @@ mod test {
 
             tokio::spawn(async move {
                 barrier_new_token.wait().await;
-                response_tracker_new_token.new_token(TestCorrelationId(idx));
+                response_tracker_new_token.new_token(idx);
             });
         }
 
@@ -466,11 +446,9 @@ mod test {
         .await;
 
         for result in results {
-            let (_, response) = result.split();
-
             assert_eq!(
-                response.text.parse::<u64>().expect("valid u64"),
-                response.correlation_id.0
+                Some(result.text.parse::<u64>().expect("valid u64")),
+                result.in_response_to()
             );
         }
     }

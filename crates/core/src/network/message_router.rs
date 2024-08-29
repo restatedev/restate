@@ -17,18 +17,16 @@ use futures::Stream;
 
 use restate_types::net::codec::{Targeted, WireDecode};
 use restate_types::net::CodecError;
-use restate_types::net::MessageEnvelope;
 use restate_types::net::ProtocolVersion;
 use restate_types::net::TargetName;
 use restate_types::protobuf::node::message::BinaryMessage;
-use restate_types::GenerationalNodeId;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::warn;
 
 use crate::is_cancellation_requested;
 
-use super::RouterError;
+use super::{Incoming, RouterError};
 
 /// Implement this trait to process network messages for a specific target
 /// (e.g. TargetName = METADATA_MANAGER).
@@ -37,7 +35,7 @@ pub trait MessageHandler {
     /// Process the request and return the response asynchronously.
     fn on_message(
         &self,
-        msg: MessageEnvelope<Self::MessageType>,
+        msg: Incoming<Self::MessageType>,
     ) -> impl std::future::Future<Output = ()> + Send;
 }
 
@@ -48,12 +46,8 @@ pub trait Handler: Send + Sync {
     /// Deserialize and process the message asynchronously.
     async fn call(
         &self,
-        from: GenerationalNodeId,
-        // A local identifier that in conjunction with the from value
-        // uniquely identify the stream.
-        connection_id: u64,
+        message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
-        message: BinaryMessage,
     ) -> Result<(), Self::Error>;
 }
 
@@ -71,18 +65,14 @@ impl Handler for MessageRouter {
     /// Process the request and return the response asynchronously.
     async fn call(
         &self,
-        from: GenerationalNodeId,
-        connection_id: u64,
+        message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
-        message: BinaryMessage,
     ) -> Result<(), Self::Error> {
         let target = message.target();
         let Some(handler) = self.0.handlers.get(&target) else {
             return Err(RouterError::NotRegisteredTarget(target.to_string()));
         };
-        handler
-            .call(from, connection_id, protocol_version, message)
-            .await?;
+        handler.call(message, protocol_version).await?;
         Ok(())
     }
 }
@@ -114,7 +104,7 @@ impl MessageRouterBuilder {
     pub fn subscribe_to_stream<M>(
         &mut self,
         buffer_size: usize,
-    ) -> Pin<Box<dyn Stream<Item = MessageEnvelope<M>> + Send + Sync + 'static>>
+    ) -> Pin<Box<dyn Stream<Item = Incoming<M>> + Send + Sync + 'static>>
     where
         M: WireDecode + Targeted + Send + Sync + 'static,
     {
@@ -150,15 +140,13 @@ where
     /// Process the request and return the response asynchronously.
     async fn call(
         &self,
-        from: GenerationalNodeId,
-        connection_id: u64,
+        message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
-        mut message: BinaryMessage,
     ) -> Result<(), Self::Error> {
-        let msg = <H::MessageType as WireDecode>::decode(&mut message.payload, protocol_version)?;
-        self.inner
-            .on_message(MessageEnvelope::new(from, connection_id, msg))
-            .await;
+        let message = message.try_map(|mut m| {
+            <H::MessageType as WireDecode>::decode(&mut m.payload, protocol_version)
+        })?;
+        self.inner.on_message(message).await;
         Ok(())
     }
 }
@@ -167,7 +155,7 @@ struct StreamHandlerWrapper<M>
 where
     M: WireDecode + Targeted + Send + Sync + 'static,
 {
-    sender: mpsc::Sender<MessageEnvelope<M>>,
+    sender: mpsc::Sender<Incoming<M>>,
 }
 
 #[async_trait]
@@ -179,17 +167,12 @@ where
     /// Process the request and return the response asynchronously.
     async fn call(
         &self,
-        from: GenerationalNodeId,
-        connection_id: u64,
+        message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
-        mut message: BinaryMessage,
     ) -> Result<(), Self::Error> {
-        let msg = <M as WireDecode>::decode(&mut message.payload, protocol_version)?;
-        if let Err(e) = self
-            .sender
-            .send(MessageEnvelope::new(from, connection_id, msg))
-            .await
-        {
+        let message =
+            message.try_map(|mut m| <M as WireDecode>::decode(&mut m.payload, protocol_version))?;
+        if let Err(e) = self.sender.send(message).await {
             // Can be benign if we are shutting down
             if !is_cancellation_requested() {
                 warn!(
