@@ -160,7 +160,7 @@ where
 }
 
 pub fn serialize_message<M: WireEncode + Targeted>(
-    msg: M,
+    msg: &M,
     protocol_version: ProtocolVersion,
 ) -> Result<message::Body, CodecError> {
     let mut payload = BytesMut::new();

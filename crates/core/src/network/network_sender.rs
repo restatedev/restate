@@ -9,9 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use restate_types::net::codec::{Targeted, WireEncode};
-use restate_types::NodeId;
 
-use super::NetworkError;
+use super::{NetworkSendError, Outgoing};
 
 /// Send NetworkMessage to nodes
 pub trait NetworkSender: Send + Sync + Clone {
@@ -36,9 +35,8 @@ pub trait NetworkSender: Send + Sync + Clone {
     /// over the network or that the peer have received it.
     fn send<M>(
         &self,
-        to: NodeId,
-        message: &M,
-    ) -> impl std::future::Future<Output = Result<(), NetworkError>> + Send
+        message: Outgoing<M>,
+    ) -> impl std::future::Future<Output = Result<(), NetworkSendError<M>>> + Send
     where
         M: WireEncode + Targeted + Send + Sync;
 }

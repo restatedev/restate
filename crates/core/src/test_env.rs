@@ -16,8 +16,8 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
-    Handler, MessageHandler, MessageRouter, MessageRouterBuilder, NetworkError, NetworkSender,
-    ProtocolError,
+    Handler, Incoming, MessageHandler, MessageRouter, MessageRouterBuilder, NetworkError,
+    NetworkSendError, NetworkSender, Outgoing,
 };
 use crate::{
     cancellation_watcher, metadata, spawn_metadata_manager, MetadataBuilder, ShutdownError, TaskId,
@@ -33,12 +33,12 @@ use restate_types::net::codec::{
     serialize_message, try_unwrap_binary_message, Targeted, WireDecode, WireEncode,
 };
 use restate_types::net::metadata::MetadataKind;
+use restate_types::net::AdvertisedAddress;
 use restate_types::net::CURRENT_PROTOCOL_VERSION;
-use restate_types::net::{AdvertisedAddress, MessageEnvelope};
 use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::node::{Header, Message};
-use restate_types::{GenerationalNodeId, NodeId, Version};
+use restate_types::{GenerationalNodeId, Version};
 use tracing::info;
 
 #[derive(Clone)]
@@ -57,7 +57,7 @@ impl MockNetworkSender {
 }
 
 impl NetworkSender for MockNetworkSender {
-    async fn send<M>(&self, to: NodeId, message: &M) -> Result<(), NetworkError>
+    async fn send<M>(&self, mut message: Outgoing<M>) -> Result<(), NetworkSendError<M>>
     where
         M: WireEncode + Targeted + Send + Sync,
     {
@@ -66,21 +66,42 @@ impl NetworkSender for MockNetworkSender {
             return Ok(());
         };
 
-        let to = match to.as_generational() {
-            Some(to) => to,
-            None => match self.metadata.nodes_config_ref().find_node_by_id(to) {
+        if !message.peer().is_generational() {
+            let current_generation = match self
+                .metadata
+                .nodes_config_ref()
+                .find_node_by_id(message.peer())
+            {
                 Ok(node) => node.current_generation,
-                Err(e) => return Err(NetworkError::UnknownNode(e)),
-            },
-        };
+                Err(e) => return Err(NetworkSendError::new(message, NetworkError::UnknownNode(e))),
+            };
+            message.set_peer(current_generation);
+        }
 
         let metadata = metadata();
-        let header = Header::new(metadata.nodes_config_version(), None, None, None);
-        let body =
-            serialize_message(message, CURRENT_PROTOCOL_VERSION).map_err(ProtocolError::Codec)?;
+        let header = Header::new(
+            metadata.nodes_config_version(),
+            None,
+            None,
+            None,
+            message.msg_id(),
+            message.in_response_to(),
+        );
+        let body = match serialize_message(message.body(), CURRENT_PROTOCOL_VERSION) {
+            Ok(body) => body,
+            Err(e) => {
+                return Err(NetworkSendError::new(
+                    message,
+                    NetworkError::ProtocolError(e.into()),
+                ))
+            }
+        };
         sender
-            .send((to, Message::new(header, body)))
-            .map_err(|_| NetworkError::Shutdown(ShutdownError))?;
+            .send((
+                message.peer().as_generational().unwrap(),
+                Message::new(header, body),
+            ))
+            .map_err(|_| NetworkSendError::new(message, NetworkError::Shutdown(ShutdownError)))?;
         Ok(())
     }
 }
@@ -121,10 +142,15 @@ impl NetworkReceiver {
         router: &MessageRouter,
     ) -> anyhow::Result<()> {
         let body = msg.body.expect("body must be set");
-        let msg = try_unwrap_binary_message(body, CURRENT_PROTOCOL_VERSION)?;
-        router
-            .call(peer, rand::random(), CURRENT_PROTOCOL_VERSION, msg)
-            .await?;
+        let header = msg.header.expect("header must be set");
+        let msg = Incoming::from_parts(
+            peer,
+            try_unwrap_binary_message(body, CURRENT_PROTOCOL_VERSION)?,
+            std::sync::Weak::new(),
+            header.msg_id,
+            header.in_response_to,
+        );
+        router.call(msg, CURRENT_PROTOCOL_VERSION).await?;
         Ok(())
     }
 }
@@ -426,7 +452,7 @@ where
 {
     type MessageType = M;
 
-    async fn on_message(&self, _msg: MessageEnvelope<Self::MessageType>) {
+    async fn on_message(&self, _msg: Incoming<Self::MessageType>) {
         // no-op
     }
 }

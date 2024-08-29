@@ -20,25 +20,24 @@ use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, warn};
 
-use restate_types::config::{AdminOptions, Configuration};
-use restate_types::live::Live;
-use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
-
-use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
-use crate::cluster_controller::scheduler::Scheduler;
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::network::{MessageRouterBuilder, NetworkSender};
+use restate_core::network::{Incoming, MessageRouterBuilder, NetworkSender};
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
     TaskKind,
 };
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, NodeState};
+use restate_types::config::{AdminOptions, Configuration};
 use restate_types::identifiers::PartitionId;
+use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
 use restate_types::net::metadata::MetadataKind;
-use restate_types::net::MessageEnvelope;
 use restate_types::{GenerationalNodeId, Version};
+
+use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
+use crate::cluster_controller::scheduler::Scheduler;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -51,8 +50,7 @@ pub struct Service<N> {
     task_center: TaskCenter,
     metadata: Metadata,
     networking: N,
-    incoming_messages:
-        Pin<Box<dyn Stream<Item = MessageEnvelope<AttachRequest>> + Send + Sync + 'static>>,
+    incoming_messages: Pin<Box<dyn Stream<Item = Incoming<AttachRequest>> + Send + Sync + 'static>>,
     cluster_state_refresher: ClusterStateRefresher<N>,
     command_tx: mpsc::Sender<ClusterControllerCommand>,
     command_rx: mpsc::Receiver<ClusterControllerCommand>,
@@ -247,8 +245,7 @@ where
                     self.on_cluster_cmd(cmd, bifrost_admin).await;
                 }
                 Some(message) = self.incoming_messages.next() => {
-                    let (from, message) = message.split();
-                    self.on_attach_request(&mut scheduler, from, message).await?;
+                    self.on_attach_request(&mut scheduler, message).await?;
                 }
                 _ = config_watcher.changed() => {
                     debug!("Updating the cluster controller settings.");
@@ -348,26 +345,14 @@ where
     async fn on_attach_request(
         &self,
         scheduler: &mut Scheduler<N>,
-        from: GenerationalNodeId,
-        request: AttachRequest,
+        request: Incoming<AttachRequest>,
     ) -> Result<(), ShutdownError> {
-        let actions = scheduler.on_attach_node(from).await?;
-        let networking = self.networking.clone();
+        let actions = scheduler.on_attach_node(request.peer()).await?;
         self.task_center.spawn(
             TaskKind::Disposable,
             "attachment-response",
             None,
-            async move {
-                Ok(networking
-                    .send(
-                        from.into(),
-                        &AttachResponse {
-                            request_id: request.request_id,
-                            actions,
-                        },
-                    )
-                    .await?)
-            },
+            async move { Ok(request.respond_rpc(AttachResponse { actions }).await?) },
         )?;
         Ok(())
     }
@@ -424,7 +409,7 @@ mod tests {
     use googletest::assert_that;
     use googletest::matchers::eq;
     use restate_bifrost::Bifrost;
-    use restate_core::network::{MessageHandler, NetworkSender};
+    use restate_core::network::{Incoming, MessageHandler, NetworkSender};
     use restate_core::{
         MockNetworkSender, NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder,
     };
@@ -436,7 +421,7 @@ mod tests {
     use restate_types::net::partition_processor_manager::{
         ControlProcessors, GetProcessorsState, ProcessorsStateResponse,
     };
-    use restate_types::net::{AdvertisedAddress, MessageEnvelope};
+    use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
     use restate_types::{GenerationalNodeId, Version};
     use std::collections::BTreeSet;
@@ -507,10 +492,8 @@ mod tests {
     impl MessageHandler for PartitionProcessorStatusHandler {
         type MessageType = GetProcessorsState;
 
-        async fn on_message(&self, msg: MessageEnvelope<Self::MessageType>) {
-            let (target, msg) = msg.split();
-
-            if self.block_list.contains(&target) {
+        async fn on_message(&self, msg: Incoming<Self::MessageType>) {
+            if self.block_list.contains(&msg.peer()) {
                 return;
             }
 
@@ -520,15 +503,12 @@ mod tests {
             };
 
             let state = [(PartitionId::MIN, partition_processor_status)].into();
-            let response = ProcessorsStateResponse {
-                request_id: msg.request_id,
-                state,
-            };
+            let response = msg.prepare_rpc_response(ProcessorsStateResponse { state });
 
             self.network_sender
                 // We are not really sending something back to target, we just need to provide a known
                 // node_id. The response will be sent to a handler running on the very same node.
-                .send(target.into(), &response)
+                .send(response)
                 .await
                 .expect("send should succeed");
         }

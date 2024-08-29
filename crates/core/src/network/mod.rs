@@ -19,6 +19,7 @@ mod network_sender;
 mod networking;
 pub mod protobuf;
 pub mod rpc_router;
+mod types;
 
 pub use connection::ConnectionSender;
 pub use connection_manager::ConnectionManager;
@@ -26,3 +27,4 @@ pub use error::*;
 pub use message_router::*;
 pub use network_sender::*;
 pub use networking::Networking;
+pub use types::*;
