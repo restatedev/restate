@@ -18,54 +18,18 @@ pub mod partition_processor_manager;
 // re-exports for convenience
 pub use error::*;
 
-use http::Uri;
 use std::net::{AddrParseError, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use super::GenerationalNodeId;
+use http::Uri;
+
+use self::codec::{Targeted, WireEncode};
 pub use crate::protobuf::common::ProtocolVersion;
 pub use crate::protobuf::common::TargetName;
 
-use self::codec::Targeted;
-use self::codec::WireDecode;
-
 pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
 pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
-
-/// Used to identify a request in a RPC-style call going through Networking.
-#[derive(
-    Debug,
-    derive_more::Display,
-    PartialEq,
-    Eq,
-    Clone,
-    Copy,
-    Hash,
-    PartialOrd,
-    Ord,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-pub struct RequestId(u64);
-impl RequestId {
-    pub fn new() -> Self {
-        Default::default()
-    }
-}
-
-impl Default for RequestId {
-    fn default() -> Self {
-        use std::sync::atomic::AtomicUsize;
-        static NEXT_REQUEST_ID: AtomicUsize = AtomicUsize::new(1);
-        RequestId(
-            NEXT_REQUEST_ID
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                .try_into()
-                .unwrap(),
-        )
-    }
-}
 
 #[derive(
     Debug,
@@ -135,51 +99,8 @@ impl FromStr for BindAddress {
     }
 }
 
-/// A wrapper for a message that includes the sender id
-pub struct MessageEnvelope<M> {
-    peer: GenerationalNodeId,
-    connection_id: u64,
-    body: M,
-}
-
-impl<M: WireDecode> MessageEnvelope<M> {
-    pub fn new(peer: GenerationalNodeId, connection_id: u64, body: M) -> Self {
-        Self {
-            peer,
-            connection_id,
-            body,
-        }
-    }
-}
-
-impl<M> MessageEnvelope<M> {
-    pub fn connection_id(&self) -> u64 {
-        self.connection_id
-    }
-
-    pub fn split(self) -> (GenerationalNodeId, M) {
-        (self.peer, self.body)
-    }
-
-    pub fn body(&self) -> &M {
-        &self.body
-    }
-}
-
-impl<M: RpcMessage> MessageEnvelope<M> {
-    /// A unique identifier used by RPC-style messages to correlated requests and responses
-    pub fn correlation_id(&self) -> M::CorrelationId {
-        self.body.correlation_id()
-    }
-}
-
-pub trait RpcMessage {
-    type CorrelationId: Clone + Send + Eq + PartialEq + std::fmt::Debug + std::hash::Hash;
-    fn correlation_id(&self) -> Self::CorrelationId;
-}
-
-pub trait RpcRequest: RpcMessage + Targeted {
-    type Response: RpcMessage + Targeted;
+pub trait RpcRequest: Targeted {
+    type ResponseMessage: Targeted + WireEncode;
 }
 
 // to define a message, we need
@@ -254,23 +175,7 @@ macro_rules! define_rpc {
         @response_target = $response_target:expr,
     ) => {
         impl $crate::net::RpcRequest for $request {
-            type Response = $response;
-        }
-
-        impl $crate::net::RpcMessage for $request {
-            type CorrelationId = $crate::net::RequestId;
-
-            fn correlation_id(&self) -> Self::CorrelationId {
-                self.request_id
-            }
-        }
-
-        impl $crate::net::RpcMessage for $response {
-            type CorrelationId = $crate::net::RequestId;
-
-            fn correlation_id(&self) -> Self::CorrelationId {
-                self.request_id
-            }
+            type ResponseMessage = $response;
         }
 
         $crate::net::define_message! {
@@ -316,13 +221,5 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn test_request_id() {
-        let request_id1 = RequestId::new();
-        let request_id2 = RequestId::new();
-        let request_id3 = RequestId::default();
-        assert!(request_id1.0 < request_id2.0 && request_id2.0 < request_id3.0);
     }
 }

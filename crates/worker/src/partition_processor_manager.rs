@@ -18,10 +18,6 @@ use futures::future::OptionFuture;
 use futures::stream::StreamExt;
 use futures::Stream;
 use metrics::gauge;
-use restate_invoker_api::StatusHandle;
-use restate_types::live::Live;
-use restate_types::logs::SequenceNumber;
-use restate_types::schema::Schema;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
 use tokio::time;
@@ -30,12 +26,13 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::MessageRouterBuilder;
-use restate_core::network::NetworkSender;
 use restate_core::network::Networking;
+use restate_core::network::Outgoing;
+use restate_core::network::{Incoming, MessageRouterBuilder};
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskId, TaskKind};
 use restate_core::{RuntimeError, TaskCenter};
+use restate_invoker_api::StatusHandle;
 use restate_invoker_impl::Service as InvokerService;
 use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
@@ -48,8 +45,10 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::{Configuration, StorageOptions};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::live::Live;
 use restate_types::live::LiveLoad;
 use restate_types::logs::Lsn;
+use restate_types::logs::SequenceNumber;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::cluster_controller::AttachRequest;
 use restate_types::net::cluster_controller::{Action, AttachResponse};
@@ -57,9 +56,8 @@ use restate_types::net::partition_processor_manager::ProcessorsStateResponse;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, GetProcessorsState, ProcessorCommand,
 };
-use restate_types::net::MessageEnvelope;
-use restate_types::net::RpcMessage;
 use restate_types::partition_table::PartitionTable;
+use restate_types::schema::Schema;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 
@@ -87,9 +85,9 @@ pub struct PartitionProcessorManager {
     partition_store_manager: PartitionStoreManager,
     attach_router: RpcRouter<AttachRequest, Networking>,
     incoming_get_state:
-        Pin<Box<dyn Stream<Item = MessageEnvelope<GetProcessorsState>> + Send + Sync + 'static>>,
+        Pin<Box<dyn Stream<Item = Incoming<GetProcessorsState>> + Send + Sync + 'static>>,
     incoming_update_processors:
-        Pin<Box<dyn Stream<Item = MessageEnvelope<ControlProcessors>> + Send + Sync + 'static>>,
+        Pin<Box<dyn Stream<Item = Incoming<ControlProcessors>> + Send + Sync + 'static>>,
     networking: Networking,
     bifrost: Bifrost,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
@@ -318,7 +316,7 @@ impl PartitionProcessorManager {
         ProcessorsManagerHandle::new(self.tx.clone())
     }
 
-    async fn attach(&mut self) -> Result<MessageEnvelope<AttachResponse>, AttachError> {
+    async fn attach(&mut self) -> Result<Incoming<AttachResponse>, AttachError> {
         loop {
             // We try to get the admin node on every retry since it might change between retries.
             let admin_node = self
@@ -343,7 +341,7 @@ impl PartitionProcessorManager {
 
             match self
                 .attach_router
-                .call(admin_node.into(), &AttachRequest::default())
+                .call(Outgoing::new(admin_node, AttachRequest::default()))
                 .await
             {
                 Ok(response) => return Ok(response),
@@ -410,8 +408,7 @@ impl PartitionProcessorManager {
         }
     }
 
-    fn on_get_state(&self, get_state_msg: MessageEnvelope<GetProcessorsState>) {
-        let (from, msg) = get_state_msg.split();
+    fn on_get_state(&self, get_state_msg: Incoming<GetProcessorsState>) {
         let persisted_lsns = self.persisted_lsns_rx.as_ref().map(|w| w.borrow());
 
         // For all running partitions, collect state, enrich it, and send it back.
@@ -468,17 +465,16 @@ impl PartitionProcessorManager {
             })
             .collect();
 
-        let response = ProcessorsStateResponse {
-            request_id: msg.correlation_id(),
-            state,
-        };
-        let networking = self.networking.clone();
         // ignore shutdown errors.
         let _ = self.task_center.spawn(
             restate_core::TaskKind::Disposable,
             "get-processors-state-response",
             None,
-            async move { Ok(networking.send(from.into(), &response).await?) },
+            async move {
+                Ok(get_state_msg
+                    .respond_rpc(ProcessorsStateResponse { state })
+                    .await?)
+            },
         );
     }
 
@@ -494,7 +490,7 @@ impl PartitionProcessorManager {
 
     async fn on_control_processors(
         &mut self,
-        control_processor: MessageEnvelope<ControlProcessors>,
+        control_processor: Incoming<ControlProcessors>,
     ) -> Result<(), Error> {
         let (_, control_processors) = control_processor.split();
 

@@ -16,9 +16,10 @@ use restate_types::config::NetworkingOptions;
 use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::NodeId;
 
+use super::{
+    ConnectionManager, ConnectionSender, NetworkError, NetworkSendError, NetworkSender, Outgoing,
+};
 use crate::Metadata;
-
-use super::{ConnectionManager, ConnectionSender, NetworkError, NetworkSender};
 
 /// Access to node-to-node networking infrastructure.
 #[derive(Clone)]
@@ -60,23 +61,28 @@ impl Networking {
 }
 
 impl NetworkSender for Networking {
-    #[instrument(level = "info", skip(self, to, message), fields(to = %to, msg = ?message.target()))]
-    async fn send<M>(&self, to: NodeId, message: &M) -> Result<(), NetworkError>
+    #[instrument(level = "trace", skip(self, msg), fields(to = %msg.peer(), msg = ?msg.target()))]
+    async fn send<M>(&self, mut msg: Outgoing<M>) -> Result<(), NetworkSendError<M>>
     where
         M: WireEncode + Targeted + Send + Sync,
     {
-        let target_is_generational = to.is_generational();
+        let target_is_generational = msg.peer().is_generational();
+        let original_peer = msg.peer();
         let mut attempts = 0;
         let mut retry_policy = self.options.connect_retry_policy.iter();
         loop {
             // find latest generation if this is not generational node id. We do this in the loop
             // to ensure we get the latest if it has been updated since last attempt.
-            let to = match to.as_generational() {
-                Some(to) => to,
-                None => match self.metadata.nodes_config_ref().find_node_by_id(to) {
+            if !original_peer.is_generational() {
+                let current_generation = match self
+                    .metadata
+                    .nodes_config_ref()
+                    .find_node_by_id(original_peer)
+                {
                     Ok(node) => node.current_generation,
-                    Err(e) => return Err(NetworkError::UnknownNode(e)),
-                },
+                    Err(e) => return Err(NetworkSendError::new(msg, NetworkError::UnknownNode(e))),
+                };
+                msg.set_peer(current_generation);
             };
 
             attempts += 1;
@@ -89,69 +95,99 @@ impl NetworkSender for Networking {
                     );
                     tokio::time::sleep(next_retry_interval).await;
                 } else {
-                    return Err(NetworkError::Unavailable(format!(
+                    let e = NetworkError::Unavailable(format!(
                         "failed to connect to node {} after {} attempts",
-                        to,
+                        msg.peer(),
                         attempts + 1
-                    )));
+                    ));
+                    return Err(NetworkSendError::new(msg, e));
                 }
             }
 
-            let mut sender = match self.connections.get_node_sender(to).await {
-                Ok(sender) => sender,
-                // retryable errors
-                Err(
-                    e @ NetworkError::Timeout(_)
-                    | e @ NetworkError::ConnectError(_)
-                    | e @ NetworkError::ConnectionClosed,
-                ) => {
-                    info!(
-                        "Connection to node {} failed with {}, next retry is attempt {}/{}",
-                        to,
-                        e,
-                        attempts + 1,
-                        self.options
-                            .connect_retry_policy
-                            .max_attempts()
-                            .unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
-                    );
-                    continue;
-                }
-                // terminal errors
-                Err(NetworkError::OldPeerGeneration(e)) => {
-                    if target_is_generational {
-                        // Caller asked for this specific node generation and we know it's old.
-                        return Err(NetworkError::OldPeerGeneration(e));
+            let mut sender = {
+                // if we already know a connection to use, let's try that unless it's dropped.
+                if let Some(connection) = msg.get_connection() {
+                    // let's try this connection
+                    connection.sender(&self.metadata)
+                } else {
+                    match self
+                        .connections
+                        .get_node_sender(msg.peer().as_generational().unwrap())
+                        .await
+                    {
+                        Ok(sender) => sender,
+                        // retryable errors
+                        Err(
+                            e @ NetworkError::Timeout(_)
+                            | e @ NetworkError::ConnectError(_)
+                            | e @ NetworkError::ConnectionClosed,
+                        ) => {
+                            info!(
+                                "Connection to node {} failed with {}, next retry is attempt {}/{}",
+                                msg.peer(),
+                                e,
+                                attempts + 1,
+                                self.options
+                                    .connect_retry_policy
+                                    .max_attempts()
+                                    .unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
+                            );
+                            continue;
+                        }
+                        // terminal errors
+                        Err(NetworkError::OldPeerGeneration(e)) => {
+                            if target_is_generational {
+                                // Caller asked for this specific node generation and we know it's old.
+                                return Err(NetworkSendError::new(
+                                    msg,
+                                    NetworkError::OldPeerGeneration(e),
+                                ));
+                            }
+                            info!(
+                                "Connection to node {} failed with {}, next retry is attempt {}/{}",
+                                msg.peer(),
+                                e,
+                                attempts + 1,
+                                self.options
+                                    .connect_retry_policy
+                                    .max_attempts()
+                                    .unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            return Err(NetworkSendError::new(
+                                msg,
+                                NetworkError::Unavailable(e.to_string()),
+                            ))
+                        }
                     }
-                    info!(
-                        "Connection to node {} failed with {}, next retry is attempt {}/{}",
-                        to,
-                        e,
-                        attempts + 1,
-                        self.options
-                            .connect_retry_policy
-                            .max_attempts()
-                            .unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
-                    );
-                    continue;
                 }
-                Err(e) => return Err(NetworkError::Unavailable(e.to_string())),
             };
 
             // can only fail due to codec errors or if connection is closed. Retry only if
             // connection closed.
-            match sender.send(message).await {
+            match sender.send(msg).await {
                 Ok(_) => return Ok(()),
-                Err(NetworkError::ConnectionClosed) => {
+                Err(NetworkSendError {
+                    message,
+                    source: NetworkError::ConnectionClosed,
+                }) => {
                     info!(
                         "Sending message to node {} failed due to connection reset, next retry is attempt {}/{}",
-                        to,
+                        message.peer(),
                         attempts + 1,
                         self.options.connect_retry_policy.max_attempts().unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
                     );
+                    msg = message;
                     continue;
                 }
-                Err(e) => return Err(NetworkError::Unavailable(e.to_string())),
+                Err(e) => {
+                    return Err(NetworkSendError::new(
+                        e.message,
+                        NetworkError::Unavailable(e.source.to_string()),
+                    ))
+                }
             }
         }
     }

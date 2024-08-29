@@ -22,6 +22,15 @@ message Header {
   optional restate.common.Version my_logs_version = 2;
   optional restate.common.Version my_schema_version = 3;
   optional restate.common.Version my_partition_table_version = 4;
+  /// A unique monotonically increasing identifier of this message/request per
+  /// producer. The uniqueness domain is the generational node id. This is
+  /// always set for all messages (whether it's a request or a response)
+  uint64 msg_id = 5;
+  /// The msg_id at which we are responding to. Unset if this not to be
+  /// considered a response. Note: If this is set, it's the responsibility of
+  /// the message producer to ensure that the response is sent to the original
+  /// producer (generational node id).
+  optional uint64 in_response_to = 6;
 }
 
 // First message sent to an ingress after starting the connection. The message
