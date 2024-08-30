@@ -86,7 +86,7 @@ impl LocalLoglet {
         let next_write_offset_raw = log_state.release_pointer + 1;
         let next_write_offset = Mutex::new(LogletOffset::from(next_write_offset_raw));
         let release_pointer = LogletOffset::from(log_state.release_pointer);
-        let sealed = AtomicBool::new(log_state.seal);
+        let sealed = AtomicBool::new(log_state.sealed);
         let append_latency = histogram!(BIFROST_LOCAL_APPEND_DURATION);
         let loglet = Self {
             loglet_id,
@@ -98,7 +98,7 @@ impl LocalLoglet {
             last_committed_offset,
             sealed,
             tail_watch: TailOffsetWatch::new(TailState::new(
-                log_state.seal,
+                log_state.sealed,
                 release_pointer.next(),
             )),
             append_latency,
