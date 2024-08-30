@@ -129,11 +129,21 @@ impl LogStateUpdates {
 
 flexbuffers_storage_encode_decode!(LogStateUpdates);
 
+/// DEPRECATED in v1.0
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+enum SealReason {
+    Resharding,
+    Other(String),
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct LogState {
     pub release_pointer: u32,
     pub trim_point: u32,
-    pub seal: bool,
+    // deprecated and unused. Kept for v1 compatibility.
+    #[serde(default)]
+    seal: Option<SealReason>,
+    pub sealed: bool,
 }
 
 impl LogState {
@@ -209,7 +219,7 @@ pub fn log_state_full_merge(
                     log_state.trim_point = log_state.trim_point.max(offset);
                 }
                 LogStateUpdate::Seal => {
-                    log_state.seal = true;
+                    log_state.sealed = true;
                 }
             }
         }
