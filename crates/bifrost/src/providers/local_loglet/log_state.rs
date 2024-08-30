@@ -133,7 +133,7 @@ flexbuffers_storage_encode_decode!(LogStateUpdates);
 pub struct LogState {
     pub release_pointer: u32,
     pub trim_point: u32,
-    pub seal: bool,
+    pub sealed: bool,
 }
 
 impl LogState {
@@ -209,7 +209,7 @@ pub fn log_state_full_merge(
                     log_state.trim_point = log_state.trim_point.max(offset);
                 }
                 LogStateUpdate::Seal => {
-                    log_state.seal = true;
+                    log_state.sealed = true;
                 }
             }
         }
