@@ -18,8 +18,6 @@ RUN \
   --mount=type=cache,target=/usr/src/app/target,sharing=locked \
   CARGO_HOME=/usr/src/app/cargo-home just libc=gnu build --bin restate-server && \
   mv target/debug/restate-server restate-server
-RUN echo $(pwd)
-RUN ls -a
 
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:bookworm-slim AS runtime
