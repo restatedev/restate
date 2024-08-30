@@ -69,6 +69,7 @@ jobs:
     with:
       uploadImageAsTarball: true
       platforms: linux/amd64
+      debugBuild: true
 
   sdk-java:
     name: Run SDK-Java integration tests
