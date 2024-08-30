@@ -33,7 +33,7 @@ RUN \
 
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:bookworm-slim AS runtime
-COPY --from=builder /usr/src/app/restate/target/restate-server /usr/local/bin
+COPY --from=builder /usr/src/app/target/restate-server /usr/local/bin
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
 WORKDIR /
