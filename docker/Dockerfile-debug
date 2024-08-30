@@ -9,22 +9,10 @@
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0.
 
-FROM ghcr.io/restatedev/dev-tools:latest AS planner
-COPY --exclude=.git . .
-RUN just chef-prepare
-
 FROM ghcr.io/restatedev/dev-tools:latest AS builder
 WORKDIR /usr/src/app
-
-COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
-# Caching layer if nothing has changed
-# Only build restate binary to avoid compiling unneeded crates
-RUN \
-  --mount=type=cache,target=/usr/src/app/cargo-home,sharing=locked \
-  --mount=type=cache,target=/usr/src/app/target,sharing=locked \
-  CARGO_HOME=/usr/src/app/cargo-home just libc=gnu chef-cook --bin restate-server
-COPY . .
+COPY --exclude=.git . .
 RUN \
   --mount=type=cache,target=/usr/src/app/cargo-home,sharing=locked \
   --mount=type=cache,target=/usr/src/app/target,sharing=locked \
