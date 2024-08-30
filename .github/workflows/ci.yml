@@ -106,7 +106,7 @@ jobs:
           path: |
             cargo-home
             target
-          key: ${{ runner.os }}-restate-server-${{ hashFiles('**/Cargo.lock') }}
+          key: restate-server-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Log into GitHub container registry
         uses: docker/login-action@v3
