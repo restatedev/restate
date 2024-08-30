@@ -11,13 +11,14 @@
 
 FROM ghcr.io/restatedev/dev-tools:latest AS builder
 WORKDIR /usr/src/app
-COPY justfile justfile
 COPY --exclude=.git . .
 RUN \
   --mount=type=cache,target=/usr/src/app/cargo-home,sharing=locked \
   --mount=type=cache,target=/usr/src/app/target,sharing=locked \
+  du -h target && du -h cargo-home && \
   CARGO_HOME=/usr/src/app/cargo-home just libc=gnu build --bin restate-server && \
-  mv target/debug/restate-server restate-server
+  cp target/debug/restate-server restate-server \
+  du -h target && du -h cargo-home
 
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:bookworm-slim AS runtime
