@@ -23,11 +23,6 @@ on:
         required: false
         default: false
         type: boolean
-      debugBuild:
-        description: 'debug build'
-        required: false
-        default: false
-        type: boolean
 
   workflow_dispatch:
     inputs:
@@ -62,7 +57,7 @@ jobs:
           dotnet: true
           haskell: true
           large-packages: false
-          docker-images: false
+          docker-images: true
           swap-storage: false
 
       - name: Checkout repository
@@ -114,10 +109,10 @@ jobs:
 
       - name: Build${{inputs.uploadImageAsTarball != true && ' and push ' || ' '}}Docker image
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v5
         with:
           context: .
-          file: ${{ inputs.dockerfile || 'docker/Dockerfile' }}
+          file: "docker/Dockerfile"
           push: ${{ inputs.uploadImageAsTarball != true }}
           tags: ${{ steps.meta.outputs.tags }}
           load: ${{ inputs.uploadImageAsTarball == true }}
@@ -128,7 +123,6 @@ jobs:
             ACTIONS_CACHE_URL
             ACTIONS_RUNTIME_TOKEN
             SCCACHE_GHA_ENABLED=true
-            ${{ (inputs.debugBuild == false) && 'RELEASE_MODE=1' || '' }}
           cache-from: type=gha,scope=${{ github.workflow }}
           cache-to: type=gha,mode=max,scope=${{ github.workflow }}
 

@@ -64,12 +64,92 @@ jobs:
         run: just verify
 
   docker:
-    name: Create docker image
-    uses: ./.github/workflows/docker.yml
-    with:
-      uploadImageAsTarball: true
-      platforms: linux/amd64
-      debugBuild: true
+    name: Create docker debug image
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      REPOSITORY_OWNER: ${{ github.repository_owner }}
+      GHCR_REGISTRY: 'ghcr.io'
+      GHCR_REGISTRY_USERNAME: ${{ github.actor }}
+      GHCR_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Clean up Github actions runner
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: false
+          swap-storage: false
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU dependency
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: Build
+
+      - name: Setup caching
+        uses: actions/cache@v4
+        id: cache
+        with:
+          path: |
+            cargo
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Log into GitHub container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ env.GHCR_REGISTRY_USERNAME }}
+          password: ${{ env.GHCR_REGISTRY_TOKEN }}
+
+      - name: Inject cache into docker
+        uses: reproducible-containers/buildkit-cache-dance@v3.1.2
+        with:
+          cache-map: |
+            {
+              "cargo": "~/.cargo",
+              "target": "/usr/src/app/target"
+            }
+          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+
+      - name: Build Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: 'dockerfile/Dockerfile-debug'
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          push: false
+          load: true
+          platforms: 'linux/amd64'
+          cache-from: type=gha,scope=${{ github.workflow }}
+          cache-to: type=gha,mode=max,scope=${{ github.workflow }}
+
+      - name: Save docker image as tar
+        run: |
+          docker save -o restate.tar ${{ steps.build.outputs.imageid }}
+
+      - name: Upload docker image tar as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: restate.tar
+          path: restate.tar
+          retention-days: 1
+          if-no-files-found: error
 
   sdk-java:
     name: Run SDK-Java integration tests

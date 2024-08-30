@@ -1,4 +1,3 @@
-# syntax=docker.io/docker/dockerfile:1.7-labs
 # Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
 # All rights reserved.
 #
@@ -10,7 +9,7 @@
 # by the Apache License, Version 2.0.
 
 FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS planner
-COPY --exclude=.git . .
+COPY . .
 RUN just chef-prepare
 
 FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS base
@@ -31,17 +30,16 @@ ARG TARGETARCH
 ARG ACTIONS_CACHE_URL=''
 ARG ACTIONS_RUNTIME_TOKEN=''
 ARG SCCACHE_GHA_ENABLED=''
-ARG RELEASE_MODE
 # Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
 # Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
 ARG CARGO_PROFILE_RELEASE_DEBUG=false
 # Caching layer if nothing has changed
 # Only build restate binary to avoid compiling unneeded crates
-RUN just arch=$TARGETARCH libc=gnu chef-cook ${RELEASE_MODE:+--release} --bin restate-server
+RUN just arch=$TARGETARCH libc=gnu chef-cook --release --bin restate-server
 COPY . .
-RUN just arch=$TARGETARCH libc=gnu build ${RELEASE_MODE:+--release} --bin restate-server && \
+RUN just arch=$TARGETARCH libc=gnu build --release --bin restate-server && \
     just notice-file && \
-    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/$(if [ ${RELEASE_MODE} ]; then echo "release"; else echo "debug"; fi)/restate-server target/restate-server
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server
 
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:bookworm-slim AS runtime

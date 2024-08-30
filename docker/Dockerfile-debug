@@ -1,0 +1,41 @@
+# syntax=docker.io/docker/dockerfile:1.7-labs
+# Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+# All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+FROM ghcr.io/restatedev/dev-tools:latest AS planner
+COPY --exclude=.git . .
+RUN just chef-prepare
+
+FROM ghcr.io/restatedev/dev-tools:latest AS base
+COPY --from=planner /restate/recipe.json recipe.json
+COPY justfile justfile
+
+FROM base AS builder
+WORKDIR /usr/src/app
+# Caching layer if nothing has changed
+# Only build restate binary to avoid compiling unneeded crates
+RUN \
+  --mount=type=cache,target=~/.cargo,sharing=locked \
+  --mount=type=cache,target=/usr/src/app/target,sharing=locked \
+  just libc=gnu chef-cook --bin restate-server
+COPY . .
+RUN \
+  --mount=type=cache,target=~/.cargo,sharing=locked \
+  --mount=type=cache,target=/usr/src/app/target,sharing=locked \
+  just libc=gnu build --bin restate-server && \
+  mv target/$(just libc=gnu print-target)/debug/restate-server target/restate-server
+
+# We do not need the Rust toolchain to run the server binary!
+FROM debian:bookworm-slim AS runtime
+COPY --from=builder /usr/src/app/restate/target/restate-server /usr/local/bin
+# copy OS roots
+COPY --from=builder /etc/ssl /etc/ssl
+WORKDIR /
+ENTRYPOINT ["/usr/local/bin/restate-server"]
