@@ -62,7 +62,7 @@ jobs:
           dotnet: true
           haskell: true
           large-packages: false
-          docker-images: true
+          docker-images: false
           swap-storage: false
 
       - name: Checkout repository
