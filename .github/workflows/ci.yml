@@ -120,7 +120,7 @@ jobs:
         with:
           cache-map: |
             {
-              "cargo": "~/.cargo",
+              "cargo-home": "/usr/src/app/cargo-home",
               "target": "/usr/src/app/target"
             }
           skip-extraction: ${{ steps.cache.outputs.cache-hit }}

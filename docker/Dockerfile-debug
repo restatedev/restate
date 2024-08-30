@@ -13,23 +13,22 @@ FROM ghcr.io/restatedev/dev-tools:latest AS planner
 COPY --exclude=.git . .
 RUN just chef-prepare
 
-FROM ghcr.io/restatedev/dev-tools:latest AS base
+FROM ghcr.io/restatedev/dev-tools:latest AS builder
+WORKDIR /usr/src/app
+
 COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
-
-FROM base AS builder
-WORKDIR /usr/src/app
 # Caching layer if nothing has changed
 # Only build restate binary to avoid compiling unneeded crates
 RUN \
-  --mount=type=cache,target=~/.cargo,sharing=locked \
+  --mount=type=cache,target=/usr/src/app/cargo-home,sharing=locked \
   --mount=type=cache,target=/usr/src/app/target,sharing=locked \
-  just libc=gnu chef-cook --bin restate-server
+  CARGO_HOME=/usr/src/app/cargo-home just libc=gnu chef-cook --bin restate-server
 COPY . .
 RUN \
-  --mount=type=cache,target=~/.cargo,sharing=locked \
+  --mount=type=cache,target=/usr/src/app/cargo-home,sharing=locked \
   --mount=type=cache,target=/usr/src/app/target,sharing=locked \
-  just libc=gnu build --bin restate-server && \
+  CARGO_HOME=/usr/src/app/cargo-home just libc=gnu build --bin restate-server && \
   mv target/$(just libc=gnu print-target)/debug/restate-server target/restate-server
 
 # We do not need the Rust toolchain to run the server binary!
