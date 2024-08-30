@@ -1,7 +1,6 @@
 **/.idea
 docker/Dockerfile
 **/target
-target
 restate.tar
+restate-data
 charts
-.git

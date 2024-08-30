@@ -1,3 +1,4 @@
+# syntax=docker.io/docker/dockerfile:1.7-labs
 # Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
 # All rights reserved.
 #
@@ -9,7 +10,7 @@
 # by the Apache License, Version 2.0.
 
 FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS planner
-COPY . .
+COPY --exclude=.git . .
 RUN just chef-prepare
 
 FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS base
