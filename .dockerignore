@@ -4,3 +4,4 @@ docker/Dockerfile
 target
 restate.tar
 charts
+.git
