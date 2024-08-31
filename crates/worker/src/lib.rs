@@ -26,7 +26,14 @@ use tokio::sync::oneshot;
 pub use crate::subscription_controller::SubscriptionController;
 pub use crate::subscription_integration::SubscriptionControllerHandle;
 
+pub use self::error::*;
+pub use self::handle::*;
+use crate::ingress_integration::InvocationStorageReaderImpl;
+use crate::partition::invoker_storage_reader::InvokerStorageReader;
+use crate::partition_processor_manager::PartitionProcessorManager;
 use restate_bifrost::Bifrost;
+use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
+use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
@@ -45,18 +52,12 @@ use restate_types::live::Live;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::Schema;
 
-pub use self::error::*;
-pub use self::handle::*;
-use crate::ingress_integration::InvocationStorageReaderImpl;
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition_processor_manager::PartitionProcessorManager;
-
 type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
 >;
 
-type ExternalClientIngress =
-    HyperServerIngress<Schema, IngressDispatcher, InvocationStorageReaderImpl>;
+type ExternalClientIngress<T> =
+    HyperServerIngress<Schema, IngressDispatcher, InvocationStorageReaderImpl<Networking<T>>>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -96,7 +97,7 @@ pub struct Worker<T> {
     updateable_config: Live<Configuration>,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
-    external_client_ingress: ExternalClientIngress,
+    external_client_ingress: ExternalClientIngress<T>,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
     partition_processor_manager: PartitionProcessorManager<T>,
@@ -139,12 +140,18 @@ impl<T: TransportConnect> Worker<T> {
         )
         .await?;
 
+        let rpc_router = RpcRouter::new(router_builder);
+        let partition_table = metadata.updateable_partition_table();
         // http ingress
         let ingress_http = HyperServerIngress::from_options(
             &config.ingress,
             ingress_dispatcher.clone(),
             schema.clone(),
-            InvocationStorageReaderImpl::new(partition_store_manager.clone()),
+            InvocationStorageReaderImpl::new(PartitionProcessorRpcClient::new(
+                networking.clone(),
+                rpc_router,
+                partition_table,
+            )),
         );
 
         let partition_processor_manager = PartitionProcessorManager::new(

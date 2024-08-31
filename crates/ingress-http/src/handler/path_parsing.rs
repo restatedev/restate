@@ -10,11 +10,10 @@
 
 use http::Uri;
 
-use restate_types::schema::service::ServiceMetadataResolver;
-
 use super::Handler;
 use super::HandlerError;
 use crate::InvocationStorageReader;
+use restate_types::schema::service::ServiceMetadataResolver;
 
 pub(crate) enum WorkflowRequestType {
     Attach(String, String),
