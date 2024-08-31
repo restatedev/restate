@@ -18,7 +18,8 @@ use restate_storage_api::invocation_status_table::{
     CompletedInvocation, SourceTable, StatusTimestamps,
 };
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
-use restate_types::identifiers::{IdempotencyId, IngressRequestId};
+use restate_types::errors::GONE_INVOCATION_ERROR;
+use restate_types::identifiers::{IdempotencyId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
     SubmitNotificationSink,
@@ -42,7 +43,7 @@ async fn start_and_complete_idempotent_invocation(#[case] disable_idempotency_ta
     let idempotency_id =
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id = IngressRequestId::default();
+    let request_id = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -114,19 +115,15 @@ async fn start_and_complete_idempotent_invocation(#[case] disable_idempotency_ta
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
             contains(pat!(Action::ScheduleInvocationStatusCleanup {
                 invocation_id: eq(invocation_id)
             }))
@@ -165,7 +162,7 @@ async fn start_and_complete_idempotent_invocation_neo_table(
     let idempotency_id =
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id = IngressRequestId::default();
+    let request_id = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -237,19 +234,15 @@ async fn start_and_complete_idempotent_invocation_neo_table(
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
             not(contains(pat!(Action::ScheduleInvocationStatusCleanup {
                 invocation_id: eq(invocation_id)
             })))
@@ -313,7 +306,7 @@ async fn complete_already_completed_invocation(#[case] disable_idempotency_table
     txn.commit().await.unwrap();
 
     // Send a request, should be completed immediately with result
-    let request_id = IngressRequestId::default();
+    let request_id = PartitionProcessorRpcRequestId::default();
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
@@ -328,19 +321,15 @@ async fn complete_already_completed_invocation(#[case] disable_idempotency_table
         .await;
     assert_that!(
         actions,
-        contains(pat!(Action::IngressResponse(pat!(
-            IngressResponseEnvelope {
-                target_node: eq(GenerationalNodeId::new(1, 1)),
-                inner: pat!(ingress::InvocationResponse {
-                    request_id: eq(request_id),
-                    invocation_id: some(eq(invocation_id)),
-                    response: eq(IngressResponseResult::Success(
-                        invocation_target.clone(),
-                        response_bytes.clone()
-                    ))
-                })
-            }
-        ))))
+        contains(pat!(Action::IngressResponse {
+            target_node: eq(GenerationalNodeId::new(1, 1)),
+            request_id: eq(request_id),
+            invocation_id: some(eq(invocation_id)),
+            response: eq(IngressResponseResult::Success(
+                invocation_target.clone(),
+                response_bytes.clone()
+            ))
+        }))
     );
     test_env.shutdown().await;
 }
@@ -361,8 +350,8 @@ async fn attach_with_service_invocation_command_while_executing(
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -399,7 +388,7 @@ async fn attach_with_service_invocation_command_while_executing(
             ..ServiceInvocation::mock()
         }))
         .await;
-    assert_that!(actions, not(contains(pat!(Action::IngressResponse(_)))));
+    assert_that!(actions, not(contains(pat!(Action::IngressResponse { .. }))));
 
     // Send output
     let response_bytes = Bytes::from_static(b"123");
@@ -425,32 +414,24 @@ async fn attach_with_service_invocation_command_while_executing(
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_1),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_1),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            ))))
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id_1),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id_1),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            }))
         )
     );
     test_env.shutdown().await;
@@ -470,8 +451,8 @@ async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: 
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -513,16 +494,12 @@ async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: 
     assert_that!(
         actions,
         all!(
-            not(contains(pat!(Action::IngressResponse(_)))),
-            contains(pat!(Action::IngressSubmitNotification(eq(
-                IngressResponseEnvelope {
-                    target_node: node_id,
-                    inner: ingress::SubmittedInvocationNotification {
-                        request_id: request_id_2,
-                        is_new_invocation: false,
-                    },
-                }
-            ))))
+            not(contains(pat!(Action::IngressResponse { .. }))),
+            contains(eq(Action::IngressSubmitNotification {
+                target_node: node_id,
+                request_id: request_id_2,
+                is_new_invocation: false,
+            }))
         )
     );
 
@@ -550,27 +527,19 @@ async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: 
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_1),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            not(contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_2)
-                    })
-                }
-            ))))),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id_1),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
+            not(contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id_2)
+            }))),
         )
     );
     test_env.shutdown().await;
@@ -586,8 +555,8 @@ async fn attach_inboxed_with_send_service_invocation(#[case] disable_idempotency
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Initialize locked virtual object state
     async {
@@ -623,15 +592,11 @@ async fn attach_inboxed_with_send_service_invocation(#[case] disable_idempotency
             not(contains(pat!(Action::Invoke {
                 invocation_id: eq(invocation_id),
             }))),
-            contains(pat!(Action::IngressSubmitNotification(eq(
-                IngressResponseEnvelope {
-                    target_node: node_id,
-                    inner: ingress::SubmittedInvocationNotification {
-                        request_id: request_id_1,
-                        is_new_invocation: true,
-                    },
-                }
-            ))))
+            contains(eq(Action::IngressSubmitNotification {
+                target_node: node_id,
+                request_id: request_id_1,
+                is_new_invocation: true,
+            }))
         )
     );
     // Invocation is inboxed
@@ -671,16 +636,12 @@ async fn attach_inboxed_with_send_service_invocation(#[case] disable_idempotency
             not(contains(pat!(Action::Invoke {
                 invocation_id: eq(invocation_id),
             }))),
-            not(contains(pat!(Action::IngressResponse(_)))),
-            contains(pat!(Action::IngressSubmitNotification(eq(
-                IngressResponseEnvelope {
-                    target_node: node_id,
-                    inner: ingress::SubmittedInvocationNotification {
-                        request_id: request_id_2,
-                        is_new_invocation: false,
-                    },
-                }
-            ))))
+            not(contains(pat!(Action::IngressResponse { .. }))),
+            contains(eq(Action::IngressSubmitNotification {
+                target_node: node_id,
+                request_id: request_id_2,
+                is_new_invocation: false,
+            }))
         )
     );
     test_env.shutdown().await;
@@ -700,8 +661,8 @@ async fn attach_command(#[case] disable_idempotency_table: bool) {
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -737,7 +698,7 @@ async fn attach_command(#[case] disable_idempotency_table: bool) {
         .await;
     assert_that!(
         actions,
-        all!(not(contains(pat!(Action::IngressResponse(_)))))
+        all!(not(contains(pat!(Action::IngressResponse { .. }))))
     );
 
     // Send output
@@ -764,32 +725,24 @@ async fn attach_command(#[case] disable_idempotency_table: bool) {
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        invocation_id: some(eq(invocation_id)),
-                        request_id: eq(request_id_1),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        invocation_id: some(eq(invocation_id)),
-                        request_id: eq(request_id_2),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            ))))
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                invocation_id: some(eq(invocation_id)),
+                request_id: eq(request_id_1),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                invocation_id: some(eq(invocation_id)),
+                request_id: eq(request_id_2),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            }))
         )
     );
     test_env.shutdown().await;

@@ -8,110 +8,131 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::{anyhow, Error};
-use restate_core::metadata;
-use restate_ingress_http::{GetOutputResult, InvocationStorageReader};
-use restate_partition_store::PartitionStoreManager;
-use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
-use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ReadOnlyInvocationStatusTable,
+use anyhow::Context;
+use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
+use restate_core::network::partition_processor_rpc_client::{
+    AttachInvocationResponse, GetInvocationOutputResponse,
 };
-use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
-};
-use restate_types::identifiers::WithPartitionKey;
-use restate_types::ingress::{IngressResponseResult, InvocationResponse};
+use restate_core::network::NetworkSender;
+use restate_ingress_http::{RequestDispatcher, RequestDispatcherError};
+use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::{
-    InvocationQuery, InvocationTarget, InvocationTargetType, ResponseResult, WorkflowHandlerType,
+    InvocationQuery, InvocationResponse, InvocationTargetType, ServiceInvocation,
+    WorkflowHandlerType,
 };
-use restate_types::partition_table::FindPartition;
+use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 
-#[derive(Debug, Clone)]
-pub struct InvocationStorageReaderImpl {
-    partition_store_manager: PartitionStoreManager,
+#[derive(Clone)]
+pub struct RpcRequestDispatcher<N> {
+    partition_processor_rpc_client: PartitionProcessorRpcClient<N>,
 }
 
-impl InvocationStorageReaderImpl {
-    pub fn new(partition_store_manager: PartitionStoreManager) -> Self {
+impl<N> RpcRequestDispatcher<N> {
+    pub fn new(partition_processor_rpc_client: PartitionProcessorRpcClient<N>) -> Self {
         Self {
-            partition_store_manager,
+            partition_processor_rpc_client,
         }
     }
 }
 
-impl InvocationStorageReader for InvocationStorageReaderImpl {
-    async fn get_output(&self, query: InvocationQuery) -> Result<GetOutputResult, Error> {
-        let partition_id = metadata()
-            .partition_table_ref()
-            .find_partition_id(query.partition_key())?;
-        let mut partition_storage = self
-            .partition_store_manager
-            .get_partition_store(partition_id)
+impl<N> RequestDispatcher for RpcRequestDispatcher<N>
+where
+    N: NetworkSender + 'static,
+{
+    async fn append_invocation(
+        &self,
+        service_invocation: ServiceInvocation,
+    ) -> Result<(), RequestDispatcherError> {
+        // TODO figure out retry strategy
+        self.partition_processor_rpc_client
+            .append_invocation(
+                PartitionProcessorRpcRequestId::default(),
+                service_invocation,
+            )
             .await
-            .ok_or_else(|| {
-                anyhow!(
-                    "Can't find partition store for partition id {}",
-                    partition_id
-                )
-            })?;
+            .context("error when trying to interact with partition processor")?;
+        Ok(())
+    }
 
-        let invocation_id = match query {
-            InvocationQuery::Invocation(invocation_id) => invocation_id,
-            ref q @ InvocationQuery::Workflow(ref service_id) => {
-                match partition_storage
-                    .get_virtual_object_status(service_id)
-                    .await?
-                {
-                    VirtualObjectStatus::Locked(iid) => iid,
-                    VirtualObjectStatus::Unlocked => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
-            ref q @ InvocationQuery::IdempotencyId(ref idempotency_id) => {
-                match partition_storage
-                    .get_idempotency_metadata(idempotency_id)
-                    .await?
-                {
-                    Some(idempotency_metadata) => idempotency_metadata.invocation_id,
-                    None => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
-        };
-
-        let invocation_status = partition_storage
-            .get_invocation_status(&invocation_id)
-            .await?;
-
-        match invocation_status {
-            InvocationStatus::Free => Ok(GetOutputResult::NotFound),
-            is if is.idempotency_key().is_none()
-                && is
-                    .invocation_target()
-                    .map(InvocationTarget::invocation_target_ty)
-                    != Some(InvocationTargetType::Workflow(
-                        WorkflowHandlerType::Workflow,
-                    )) =>
-            {
-                Ok(GetOutputResult::NotSupported)
-            }
-            InvocationStatus::Completed(completed) => {
-                Ok(GetOutputResult::Ready(InvocationResponse {
-                    request_id: Default::default(),
-                    response: match completed.response_result.clone() {
-                        ResponseResult::Success(res) => {
-                            IngressResponseResult::Success(completed.invocation_target, res)
-                        }
-                        ResponseResult::Failure(err) => IngressResponseResult::Failure(err),
-                    },
-                    invocation_id: Some(invocation_id),
-                }))
-            }
-            _ => Ok(GetOutputResult::NotReady),
+    async fn submit_invocation_and_wait_submit_notification_if_needed(
+        &self,
+        service_invocation: ServiceInvocation,
+    ) -> Result<SubmittedInvocationNotification, RequestDispatcherError> {
+        // TODO figure out retry strategy
+        let request_id = PartitionProcessorRpcRequestId::default();
+        if service_invocation.idempotency_key.is_some()
+            || service_invocation.invocation_target.invocation_target_ty()
+                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            // In this case we need to wait for the submit notification from the PP
+            Ok(self
+                .partition_processor_rpc_client
+                .submit_invocation_and_wait_submit_notification(request_id, service_invocation)
+                .await
+                .context("error when trying to interact with partition processor")?)
+        } else {
+            // In this case we just need to wait the invocation was appended
+            self.partition_processor_rpc_client
+                .append_invocation(request_id, service_invocation)
+                .await
+                .context("error when trying to interact with partition processor")?;
+            Ok(SubmittedInvocationNotification {
+                request_id,
+                is_new_invocation: true,
+            })
         }
+    }
+
+    async fn submit_invocation_and_wait_output(
+        &self,
+        service_invocation: ServiceInvocation,
+    ) -> Result<InvocationOutput, RequestDispatcherError> {
+        // TODO figure out retry strategy
+        Ok(self
+            .partition_processor_rpc_client
+            .submit_invocation_and_wait_output(
+                PartitionProcessorRpcRequestId::default(),
+                service_invocation,
+            )
+            .await
+            .context("error when trying to interact with partition processor")?)
+    }
+
+    async fn attach_invocation(
+        &self,
+        invocation_query: InvocationQuery,
+    ) -> Result<AttachInvocationResponse, RequestDispatcherError> {
+        // TODO figure out retry strategy
+        Ok(self
+            .partition_processor_rpc_client
+            .attach_invocation(PartitionProcessorRpcRequestId::default(), invocation_query)
+            .await
+            .context("error when trying to interact with partition processor")?)
+    }
+
+    async fn get_invocation_output(
+        &self,
+        invocation_query: InvocationQuery,
+    ) -> Result<GetInvocationOutputResponse, RequestDispatcherError> {
+        Ok(self
+            .partition_processor_rpc_client
+            .get_invocation_output(PartitionProcessorRpcRequestId::default(), invocation_query)
+            .await
+            .context("error when trying to interact with partition processor")?)
+    }
+
+    async fn submit_invocation_response(
+        &self,
+        invocation_response: InvocationResponse,
+    ) -> Result<(), RequestDispatcherError> {
+        // TODO figure out retry strategy
+        Ok(self
+            .partition_processor_rpc_client
+            .submit_invocation_response(
+                PartitionProcessorRpcRequestId::default(),
+                invocation_response,
+            )
+            .await
+            .context("error when trying to interact with partition processor")?)
     }
 }

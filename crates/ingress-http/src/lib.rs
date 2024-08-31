@@ -16,9 +16,14 @@ mod server;
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
-use restate_types::ingress::InvocationResponse;
-use restate_types::invocation::InvocationQuery;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+
+use restate_core::network::partition_processor_rpc_client::{
+    AttachInvocationResponse, GetInvocationOutputResponse,
+};
+use restate_types::invocation::{InvocationQuery, InvocationResponse, ServiceInvocation};
+use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 
 /// Client connection information for a given RPC request
 #[derive(Clone, Copy, Debug)]
@@ -38,33 +43,56 @@ impl ConnectInfo {
     }
 }
 
-pub enum GetOutputResult {
-    NotFound,
-    NotReady,
-    NotSupported,
-    Ready(InvocationResponse),
+#[derive(Debug, thiserror::Error)]
+pub enum RequestDispatcherError {
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error),
 }
 
-pub trait InvocationStorageReader {
-    fn get_output(
+#[cfg_attr(test, mockall::automock)]
+pub trait RequestDispatcher {
+    fn append_invocation(
         &self,
-        query: InvocationQuery,
-    ) -> impl std::future::Future<Output = Result<GetOutputResult, anyhow::Error>> + Send;
+        service_invocation: ServiceInvocation,
+    ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send;
+
+    fn submit_invocation_and_wait_submit_notification_if_needed(
+        &self,
+        service_invocation: ServiceInvocation,
+    ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send;
+
+    fn submit_invocation_and_wait_output(
+        &self,
+        service_invocation: ServiceInvocation,
+    ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send;
+
+    fn attach_invocation(
+        &self,
+        invocation_query: InvocationQuery,
+    ) -> impl Future<Output = Result<AttachInvocationResponse, RequestDispatcherError>> + Send;
+
+    fn get_invocation_output(
+        &self,
+        invocation_query: InvocationQuery,
+    ) -> impl Future<Output = Result<GetInvocationOutputResponse, RequestDispatcherError>> + Send;
+
+    fn submit_invocation_response(
+        &self,
+        invocation_response: InvocationResponse,
+    ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send;
 }
 
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
-    use std::collections::HashMap;
-
-    use anyhow::Error;
     use serde::{Deserialize, Serialize};
+    use std::sync::Arc;
 
     use restate_types::identifiers::DeploymentId;
-    use restate_types::ingress::InvocationResponse;
     use restate_types::invocation::{
         InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
     };
+    use restate_types::net::partition_processor::InvocationOutput;
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_types::schema::invocation_target::{
         InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
@@ -178,17 +206,53 @@ mod mocks {
         mock_schemas
     }
 
-    #[derive(Debug, Clone, Default)]
-    pub(crate) struct MockStorageReader(pub(crate) HashMap<InvocationQuery, InvocationResponse>);
+    impl RequestDispatcher for Arc<MockRequestDispatcher> {
+        fn append_invocation(
+            &self,
+            service_invocation: ServiceInvocation,
+        ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send {
+            MockRequestDispatcher::append_invocation(self, service_invocation)
+        }
 
-    impl InvocationStorageReader for MockStorageReader {
-        async fn get_output(&self, query: InvocationQuery) -> Result<GetOutputResult, Error> {
-            Ok(self
-                .0
-                .get(&query)
-                .cloned()
-                .map(GetOutputResult::Ready)
-                .unwrap_or(GetOutputResult::NotFound))
+        fn submit_invocation_and_wait_submit_notification_if_needed(
+            &self,
+            service_invocation: ServiceInvocation,
+        ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send
+        {
+            MockRequestDispatcher::submit_invocation_and_wait_submit_notification_if_needed(
+                self,
+                service_invocation,
+            )
+        }
+
+        fn submit_invocation_and_wait_output(
+            &self,
+            service_invocation: ServiceInvocation,
+        ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send {
+            MockRequestDispatcher::submit_invocation_and_wait_output(self, service_invocation)
+        }
+
+        fn attach_invocation(
+            &self,
+            invocation_query: InvocationQuery,
+        ) -> impl Future<Output = Result<AttachInvocationResponse, RequestDispatcherError>> + Send
+        {
+            MockRequestDispatcher::attach_invocation(self, invocation_query)
+        }
+
+        fn get_invocation_output(
+            &self,
+            invocation_query: InvocationQuery,
+        ) -> impl Future<Output = Result<GetInvocationOutputResponse, RequestDispatcherError>> + Send
+        {
+            MockRequestDispatcher::get_invocation_output(self, invocation_query)
+        }
+
+        fn submit_invocation_response(
+            &self,
+            invocation_response: InvocationResponse,
+        ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send {
+            MockRequestDispatcher::submit_invocation_response(self, invocation_response)
         }
     }
 }
