@@ -1515,21 +1515,14 @@ pub mod v1 {
                     .ok_or(ConversionError::missing_field("notification_sink"))?
                 {
                     submit_notification_sink::NotificationSink::Ingress(
-                        submit_notification_sink::Ingress {
-                            node_id,
-                            request_id,
-                        },
-                    ) => {
-                        let proto_id = node_id.ok_or(ConversionError::missing_field("node_id"))?;
-
-                        restate_types::invocation::SubmitNotificationSink::Ingress {
-                            node_id: GenerationalNodeId::new(proto_id.id, proto_id.generation),
-                            request_id: restate_types::identifiers::IngressRequestId::from_slice(
+                        submit_notification_sink::Ingress { request_id },
+                    ) => restate_types::invocation::SubmitNotificationSink::Ingress {
+                        request_id:
+                            restate_types::identifiers::PartitionProcessorRpcRequestId::from_slice(
                                 request_id.as_ref(),
                             )
                             .map_err(ConversionError::invalid_data)?,
-                        }
-                    }
+                    },
                 };
 
                 Ok(notification_sink)
@@ -1539,15 +1532,13 @@ pub mod v1 {
         impl From<restate_types::invocation::SubmitNotificationSink> for SubmitNotificationSink {
             fn from(value: restate_types::invocation::SubmitNotificationSink) -> Self {
                 let notification_sink = match value {
-                    restate_types::invocation::SubmitNotificationSink::Ingress {
-                        node_id,
-                        request_id,
-                    } => submit_notification_sink::NotificationSink::Ingress(
-                        submit_notification_sink::Ingress {
-                            node_id: Some(super::GenerationalNodeId::from(node_id)),
-                            request_id: Bytes::copy_from_slice(&request_id.to_bytes()),
-                        },
-                    ),
+                    restate_types::invocation::SubmitNotificationSink::Ingress { request_id } => {
+                        submit_notification_sink::NotificationSink::Ingress(
+                            submit_notification_sink::Ingress {
+                                request_id: Bytes::copy_from_slice(&request_id.to_bytes()),
+                            },
+                        )
+                    }
                 };
 
                 SubmitNotificationSink {
@@ -1873,14 +1864,9 @@ pub mod v1 {
                         )
                     }
                     ResponseSink::Ingress(ingress) => {
-                        let proto_id = ingress
-                            .node_id
-                            .ok_or(ConversionError::missing_field("node_id"))?;
-
                         Some(
                             restate_types::invocation::ServiceInvocationResponseSink::Ingress {
-                                node_id: GenerationalNodeId::new(proto_id.id, proto_id.generation),
-                                request_id: restate_types::identifiers::IngressRequestId::from_slice(ingress.request_id.as_ref())
+                                request_id: restate_types::identifiers::PartitionProcessorRpcRequestId::from_slice(ingress.request_id.as_ref())
                                     .map_err(ConversionError::invalid_data)?
 
                             },
@@ -1909,9 +1895,8 @@ pub mod v1 {
                         entry_index,
                         caller: caller.into(),
                     }),
-                    Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress { node_id: node_id, request_id }) => {
+                    Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress {  request_id }) => {
                         ResponseSink::Ingress(Ingress {
-                            node_id: Some(super::GenerationalNodeId::from(node_id)),
                             request_id: Bytes::copy_from_slice(&request_id.to_bytes())
                         })
                     },

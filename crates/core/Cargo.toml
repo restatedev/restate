@@ -18,6 +18,7 @@ restate-types = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true, default-features = false }
 arc-swap = { workspace = true }
+assert2 = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }

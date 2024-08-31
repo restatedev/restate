@@ -18,9 +18,8 @@ use metrics::{counter, histogram};
 use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use tracing::{info, trace, trace_span, warn, Instrument};
+use tracing::{info, trace, trace_span, Instrument};
 
-use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherRequest};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
@@ -36,6 +35,7 @@ use super::HandlerError;
 use super::{Handler, APPLICATION_JSON};
 use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
 use crate::metric_definitions::{INGRESS_REQUESTS, INGRESS_REQUEST_DURATION, REQUEST_COMPLETED};
+use crate::RequestDispatcher;
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const DELAY_QUERY_PARAM: &str = "delay";
@@ -61,10 +61,10 @@ pub(crate) struct SendResponse {
     status: SendStatus,
 }
 
-impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
-    Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
+    Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_service_request<B: http_body::Body>(
         self,
@@ -237,37 +237,12 @@ where
         invocation_target_metadata: InvocationTargetMetadata,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
-        let invocation_id = service_invocation.invocation_id;
-        let (invocation, ingress_correlation_id, response_rx) =
-            IngressDispatcherRequest::invocation(service_invocation);
-
-        if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
-            warn!(
-                restate.invocation.id = %invocation_id,
-                "Failed to dispatch ingress request: {}",
-                e,
-            );
-            return Err(HandlerError::Unavailable);
-        }
-
-        // Wait on response
-        let response = if let Ok(response) = response_rx
+        let response = dispatcher
+            .append_invocation_and_wait_output(service_invocation)
             .instrument(trace_span!("Waiting for response"))
-            .await
-        {
-            response
-        } else {
-            dispatcher.evict_pending_response(ingress_correlation_id);
-            warn!("Response channel was closed");
-            return Err(HandlerError::Unavailable);
-        };
+            .await?;
 
-        Self::reply_with_invocation_response(
-            response.result,
-            Some(invocation_id),
-            response.idempotency_expiry_time.as_deref(),
-            move |_| Ok(invocation_target_metadata),
-        )
+        Self::reply_with_invocation_response(response, move |_| Ok(invocation_target_metadata))
     }
 
     async fn handle_service_send(
@@ -277,27 +252,10 @@ where
         let invocation_id = service_invocation.invocation_id;
         let execution_time = service_invocation.execution_time;
 
-        // Send the service invocation
-        let (req, req_id, submit_notification_rx) =
-            IngressDispatcherRequest::one_way_invocation(service_invocation);
-
-        if let Err(e) = dispatcher.dispatch_ingress_request(req).await {
-            warn!(
-                restate.invocation.id = %invocation_id,
-                "Failed to dispatch ingress request: {}",
-                e,
-            );
-            return Err(HandlerError::Unavailable);
-        }
-
-        // Wait submit notification
-        let submit_notification = if let Ok(response) = submit_notification_rx.await {
-            response
-        } else {
-            dispatcher.evict_pending_submit_notification(req_id);
-            warn!("Response channel was closed");
-            return Err(HandlerError::Unavailable);
-        };
+        // Send the service invocation, wait for the submit notification
+        let response = dispatcher
+            .append_invocation_and_wait_submit_notification_if_needed(service_invocation)
+            .await?;
 
         trace!("Complete external HTTP send request successfully");
         Ok(Response::builder()
@@ -308,7 +266,7 @@ where
                 serde_json::to_vec(&SendResponse {
                     invocation_id,
                     execution_time: execution_time.map(SystemTime::from).map(Into::into),
-                    status: if submit_notification.is_new_invocation {
+                    status: if response.is_new_invocation {
                         SendStatus::Accepted
                     } else {
                         SendStatus::PreviouslyAccepted

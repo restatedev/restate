@@ -525,6 +525,17 @@ impl CompletedInvocation {
                 .completion_retention_duration,
         }
     }
+
+    /// Expiration time of the [`InvocationStatus::Completed`], if any.
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub unsafe fn completion_expiry_time(&self) -> Option<MillisSinceEpoch> {
+        self.timestamps
+            .completed_transition_time()
+            .map(|base| base + self.completion_retention_duration)
+    }
 }
 
 pub trait ReadOnlyInvocationStatusTable {

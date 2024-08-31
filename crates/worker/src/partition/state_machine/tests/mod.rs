@@ -51,9 +51,8 @@ use restate_test_util::matchers::*;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::errors::{codes, InvocationError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::{
-    IngressRequestId, InvocationId, PartitionId, PartitionKey, ServiceId,
+    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
-use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
 use restate_types::invocation::{
     Header, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
     ServiceInvocation, ServiceInvocationResponseSink, Source, VirtualObjectHandlerType,
@@ -65,7 +64,6 @@ use restate_types::journal::{
 use restate_types::journal::{Entry, EntryType};
 use restate_types::live::{Constant, Live};
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::{ingress, GenerationalNodeId};
 use std::collections::{HashMap, HashSet};
 use test_log::test;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -729,11 +727,9 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
-    let node_id_1 = GenerationalNodeId::new(1, 1);
-    let node_id_2 = GenerationalNodeId::new(2, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
-    let request_id_3 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
+    let request_id_3 = PartitionProcessorRpcRequestId::default();
 
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
@@ -742,7 +738,6 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
             argument: Default::default(),
             source: Source::Ingress,
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
-                node_id: node_id_1,
                 request_id: request_id_1,
             }),
             span_context: Default::default(),
@@ -766,13 +761,11 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let mut invocation_status = txn.get_invocation_status(&invocation_id).await.unwrap();
     invocation_status.get_response_sinks_mut().unwrap().insert(
         ServiceInvocationResponseSink::Ingress {
-            node_id: node_id_2,
             request_id: request_id_2,
         },
     );
     invocation_status.get_response_sinks_mut().unwrap().insert(
         ServiceInvocationResponseSink::Ingress {
-            node_id: node_id_2,
             request_id: request_id_3,
         },
     );
@@ -794,7 +787,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         }))
         .await;
     // No ingress response is expected at this point because the invocation did not end yet
-    assert_that!(actions, not(contains(pat!(Action::IngressResponse(_)))));
+    assert_that!(actions, not(contains(pat!(Action::IngressResponse { .. }))));
 
     // Send the End Effect
     let actions = test_env
@@ -807,42 +800,27 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id_1),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_1),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id_2),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_2),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id_2),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_3),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
+            contains(pat!(Action::IngressResponse {
+                request_id: eq(request_id_1),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
+            contains(pat!(Action::IngressResponse {
+                request_id: eq(request_id_2),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
+            contains(pat!(Action::IngressResponse {
+                request_id: eq(request_id_3),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
         )
     );
 
@@ -1012,6 +990,41 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
             .await,
         ok(eq(VirtualObjectStatus::Unlocked))
     );
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = InvocationId::mock_random();
+
+    let request_id = PartitionProcessorRpcRequestId::default();
+    let actions = test_env
+        .apply(Command::Invoke(ServiceInvocation {
+            invocation_id,
+            response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
+            ..ServiceInvocation::mock()
+        }))
+        .await;
+
+    assert_that!(
+        actions,
+        contains(pat!(Action::Invoke {
+            invocation_id: eq(invocation_id),
+        }))
+    );
+
+    // Invoking this again won't have any effect
+    let actions = test_env
+        .apply(Command::Invoke(ServiceInvocation {
+            invocation_id,
+            response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
+            ..ServiceInvocation::mock()
+        }))
+        .await;
+    assert_that!(actions, empty());
 
     test_env.shutdown().await;
     Ok(())

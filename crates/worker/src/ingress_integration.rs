@@ -8,110 +8,176 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::{anyhow, Error};
-use restate_core::metadata;
-use restate_ingress_http::{GetOutputResult, InvocationStorageReader};
-use restate_partition_store::PartitionStoreManager;
-use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
-use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ReadOnlyInvocationStatusTable,
+use anyhow::Context;
+use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
+use restate_core::network::partition_processor_rpc_client::{
+    AttachInvocationResponse, GetInvocationOutputResponse,
 };
-use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
-};
-use restate_types::identifiers::WithPartitionKey;
-use restate_types::ingress::{IngressResponseResult, InvocationResponse};
+use restate_core::network::NetworkSender;
+use restate_ingress_http::{RequestDispatcher, RequestDispatcherError};
+use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::{
-    InvocationQuery, InvocationTarget, InvocationTargetType, ResponseResult, WorkflowHandlerType,
+    InvocationQuery, InvocationResponse, InvocationTargetType, ServiceInvocation,
+    WorkflowHandlerType,
 };
-use restate_types::partition_table::FindPartition;
+use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
+use restate_types::retries::RetryPolicy;
+use std::time::Duration;
 
-#[derive(Debug, Clone)]
-pub struct InvocationStorageReaderImpl {
-    partition_store_manager: PartitionStoreManager,
+#[derive(Clone)]
+pub struct RpcRequestDispatcher<N> {
+    partition_processor_rpc_client: PartitionProcessorRpcClient<N>,
+    retry_policy: RetryPolicy,
+    rpc_timeout: Duration,
 }
 
-impl InvocationStorageReaderImpl {
-    pub fn new(partition_store_manager: PartitionStoreManager) -> Self {
+impl<N> RpcRequestDispatcher<N> {
+    pub fn new(partition_processor_rpc_client: PartitionProcessorRpcClient<N>) -> Self {
         Self {
-            partition_store_manager,
+            partition_processor_rpc_client,
+            // Totally random chosen!!!
+            retry_policy: RetryPolicy::fixed_delay(Duration::from_millis(50), None),
+            rpc_timeout: Duration::from_secs(60),
         }
     }
 }
 
-impl InvocationStorageReader for InvocationStorageReaderImpl {
-    async fn get_output(&self, query: InvocationQuery) -> Result<GetOutputResult, Error> {
-        let partition_id = metadata()
-            .partition_table_ref()
-            .find_partition_id(query.partition_key())?;
-        let mut partition_storage = self
-            .partition_store_manager
-            .get_partition_store(partition_id)
+impl<N> RequestDispatcher for RpcRequestDispatcher<N>
+where
+    N: NetworkSender + 'static,
+{
+    async fn append_invocation_and_wait_submit_notification_if_needed(
+        &self,
+        service_invocation: ServiceInvocation,
+    ) -> Result<SubmittedInvocationNotification, RequestDispatcherError> {
+        let request_id = PartitionProcessorRpcRequestId::default();
+        if service_invocation.idempotency_key.is_some()
+            || service_invocation.invocation_target.invocation_target_ty()
+                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            // In this case we need to wait for the submit notification from the PP, this is safe to retry
+            self.retry_policy
+                .clone()
+                .retry(|| async {
+                    Ok(tokio::time::timeout(
+                        self.rpc_timeout,
+                        self.partition_processor_rpc_client
+                            .append_invocation_and_wait_submit_notification(
+                                request_id,
+                                service_invocation.clone(),
+                            ),
+                    )
+                    .await
+                    .context("timeout while trying to reach partition processor")?
+                    .context("error when trying to interact with partition processor")?)
+                })
+                .await
+        } else {
+            // In this case we just need to wait the invocation was appended
+            tokio::time::timeout(
+                self.rpc_timeout,
+                self.partition_processor_rpc_client
+                    .append_invocation(request_id, service_invocation),
+            )
             .await
-            .ok_or_else(|| {
-                anyhow!(
-                    "Can't find partition store for partition id {}",
-                    partition_id
-                )
-            })?;
-
-        let invocation_id = match query {
-            InvocationQuery::Invocation(invocation_id) => invocation_id,
-            ref q @ InvocationQuery::Workflow(ref service_id) => {
-                match partition_storage
-                    .get_virtual_object_status(service_id)
-                    .await?
-                {
-                    VirtualObjectStatus::Locked(iid) => iid,
-                    VirtualObjectStatus::Unlocked => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
-            ref q @ InvocationQuery::IdempotencyId(ref idempotency_id) => {
-                match partition_storage
-                    .get_idempotency_metadata(idempotency_id)
-                    .await?
-                {
-                    Some(idempotency_metadata) => idempotency_metadata.invocation_id,
-                    None => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
-        };
-
-        let invocation_status = partition_storage
-            .get_invocation_status(&invocation_id)
-            .await?;
-
-        match invocation_status {
-            InvocationStatus::Free => Ok(GetOutputResult::NotFound),
-            is if is.idempotency_key().is_none()
-                && is
-                    .invocation_target()
-                    .map(InvocationTarget::invocation_target_ty)
-                    != Some(InvocationTargetType::Workflow(
-                        WorkflowHandlerType::Workflow,
-                    )) =>
-            {
-                Ok(GetOutputResult::NotSupported)
-            }
-            InvocationStatus::Completed(completed) => {
-                Ok(GetOutputResult::Ready(InvocationResponse {
-                    request_id: Default::default(),
-                    response: match completed.response_result.clone() {
-                        ResponseResult::Success(res) => {
-                            IngressResponseResult::Success(completed.invocation_target, res)
-                        }
-                        ResponseResult::Failure(err) => IngressResponseResult::Failure(err),
-                    },
-                    invocation_id: Some(invocation_id),
-                }))
-            }
-            _ => Ok(GetOutputResult::NotReady),
+            .context("timeout while trying to reach partition processor")?
+            .context("error when trying to interact with partition processor")?;
+            Ok(SubmittedInvocationNotification {
+                request_id,
+                is_new_invocation: true,
+            })
         }
+    }
+
+    async fn append_invocation_and_wait_output(
+        &self,
+        service_invocation: ServiceInvocation,
+    ) -> Result<InvocationOutput, RequestDispatcherError> {
+        let request_id = PartitionProcessorRpcRequestId::default();
+        if service_invocation.idempotency_key.is_some()
+            || service_invocation.invocation_target.invocation_target_ty()
+                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            // For workflow or idempotent calls, it is safe to retry always
+            self.retry_policy
+                .clone()
+                .retry(|| async {
+                    Ok(tokio::time::timeout(
+                        self.rpc_timeout,
+                        self.partition_processor_rpc_client
+                            .append_invocation_and_wait_output(
+                                request_id,
+                                service_invocation.clone(),
+                            ),
+                    )
+                    .await
+                    .context("timeout while trying to reach partition processor")?
+                    .context("error when trying to interact with partition processor")?)
+                })
+                .await
+        } else {
+            Ok(tokio::time::timeout(
+                self.rpc_timeout,
+                self.partition_processor_rpc_client
+                    .append_invocation_and_wait_output(request_id, service_invocation),
+            )
+            .await
+            .context("timeout while trying to reach partition processor")?
+            .context("error when trying to interact with partition processor")?)
+        }
+    }
+
+    async fn attach_invocation(
+        &self,
+        invocation_query: InvocationQuery,
+    ) -> Result<AttachInvocationResponse, RequestDispatcherError> {
+        let request_id = PartitionProcessorRpcRequestId::default();
+        // Attaching an invocation is idempotent and can be retried, with timeouts
+        self.retry_policy
+            .clone()
+            .retry(|| async {
+                Ok(tokio::time::timeout(
+                    self.rpc_timeout,
+                    self.partition_processor_rpc_client
+                        .attach_invocation(request_id, invocation_query.clone()),
+                )
+                .await
+                .context("timeout while trying to reach partition processor")?
+                .context("error when trying to interact with partition processor")?)
+            })
+            .await
+    }
+
+    async fn get_invocation_output(
+        &self,
+        invocation_query: InvocationQuery,
+    ) -> Result<GetInvocationOutputResponse, RequestDispatcherError> {
+        // No need to retry this
+        Ok(tokio::time::timeout(
+            self.rpc_timeout,
+            self.partition_processor_rpc_client
+                .get_invocation_output(PartitionProcessorRpcRequestId::default(), invocation_query),
+        )
+        .await
+        .context("timeout while trying to reach partition processor")?
+        .context("error when trying to interact with partition processor")?)
+    }
+
+    async fn append_invocation_response(
+        &self,
+        invocation_response: InvocationResponse,
+    ) -> Result<(), RequestDispatcherError> {
+        let request_id = PartitionProcessorRpcRequestId::default();
+        // Appending invocation response is an idempotent operation, it's always safe to try
+        self.retry_policy
+            .clone()
+            .retry(|| async {
+                Ok(self
+                    .partition_processor_rpc_client
+                    .append_invocation_response(request_id, invocation_response.clone())
+                    .await
+                    .context("error when trying to interact with partition processor")?)
+            })
+            .await
     }
 }
