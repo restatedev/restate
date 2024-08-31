@@ -17,6 +17,7 @@ pub(crate) mod metric_definitions;
 pub mod net_util;
 mod network_sender;
 mod networking;
+pub mod partition_processor_rpc_client;
 pub mod protobuf;
 pub mod rpc_router;
 mod types;

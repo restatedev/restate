@@ -26,7 +26,14 @@ use tokio::sync::oneshot;
 pub use crate::subscription_controller::SubscriptionController;
 pub use crate::subscription_integration::SubscriptionControllerHandle;
 
+pub use self::error::*;
+pub use self::handle::*;
+use crate::ingress_integration::InvocationStorageReaderImpl;
+use crate::partition::invoker_storage_reader::InvokerStorageReader;
+use crate::partition_processor_manager::PartitionProcessorManager;
 use restate_bifrost::Bifrost;
+use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
+use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
@@ -41,12 +48,6 @@ use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::schema::Schema;
-
-pub use self::error::*;
-pub use self::handle::*;
-use crate::ingress_integration::InvocationStorageReaderImpl;
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition_processor_manager::PartitionProcessorManager;
 
 type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
@@ -134,12 +135,17 @@ impl Worker {
         )
         .await?;
 
+        let rpc_router = RpcRouter::new(networking.clone(), router_builder);
+        let partition_table = metadata.updateable_partition_table();
         // http ingress
         let ingress_http = HyperServerIngress::from_options(
             &config.ingress,
             ingress_dispatcher.clone(),
             schema.clone(),
-            InvocationStorageReaderImpl::new(partition_store_manager.clone()),
+            InvocationStorageReaderImpl::new(PartitionProcessorRpcClient::new(
+                rpc_router,
+                partition_table,
+            )),
         );
 
         let partition_processor_manager = PartitionProcessorManager::new(

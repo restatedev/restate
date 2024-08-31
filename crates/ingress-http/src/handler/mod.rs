@@ -30,7 +30,6 @@ use http_body_util::Full;
 use hyper::http::HeaderValue;
 use hyper::{Request, Response};
 use path_parsing::RequestType;
-
 use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_types::live::Live;
 use restate_types::schema::invocation_target::InvocationTargetResolver;

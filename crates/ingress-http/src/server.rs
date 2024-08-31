@@ -120,8 +120,8 @@ where
             listening_addr,
             concurrency_limit,
             schemas,
-            dispatcher,
             storage_reader,
+            dispatcher,
             start_signal_tx,
         } = self;
 

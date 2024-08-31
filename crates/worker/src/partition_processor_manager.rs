@@ -52,9 +52,12 @@ use restate_types::logs::SequenceNumber;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::cluster_controller::AttachRequest;
 use restate_types::net::cluster_controller::{Action, AttachResponse};
-use restate_types::net::partition_processor_manager::ProcessorsStateResponse;
 use restate_types::net::partition_processor_manager::{
-    ControlProcessor, ControlProcessors, GetProcessorsState, ProcessorCommand,
+    ControlProcessor, ControlProcessors, GetProcessorsState, PartitionProcessorRpcError,
+    ProcessorCommand,
+};
+use restate_types::net::partition_processor_manager::{
+    PartitionProcessorRequestKind, PartitionProcessorRpcRequest, ProcessorsStateResponse,
 };
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
@@ -88,6 +91,8 @@ pub struct PartitionProcessorManager {
         Pin<Box<dyn Stream<Item = Incoming<GetProcessorsState>> + Send + Sync + 'static>>,
     incoming_update_processors:
         Pin<Box<dyn Stream<Item = Incoming<ControlProcessors>> + Send + Sync + 'static>>,
+    incoming_partition_processor_rpc:
+        Pin<Box<dyn Stream<Item = Incoming<PartitionProcessorRpcRequest>> + Send + Sync + 'static>>,
     networking: Networking,
     bifrost: Bifrost,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
@@ -125,6 +130,7 @@ struct ProcessorState {
     _key_range: RangeInclusive<PartitionKey>,
     planned_mode: RunMode,
     handle: PartitionProcessorHandle,
+    rpc_tx: mpsc::Sender<Incoming<PartitionProcessorRequestKind>>,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
 }
 
@@ -134,6 +140,7 @@ impl ProcessorState {
         task_id: TaskId,
         key_range: RangeInclusive<PartitionKey>,
         handle: PartitionProcessorHandle,
+        rpc_tx: mpsc::Sender<Incoming<PartitionProcessorRequestKind>>,
         watch_rx: watch::Receiver<PartitionProcessorStatus>,
     ) -> Self {
         Self {
@@ -143,6 +150,7 @@ impl ProcessorState {
             _key_range: key_range,
             planned_mode: RunMode::Follower,
             handle,
+            rpc_tx,
             watch_rx,
         }
     }
@@ -285,6 +293,7 @@ impl PartitionProcessorManager {
         let attach_router = RpcRouter::new(networking.clone(), router_builder);
         let incoming_get_state = router_builder.subscribe_to_stream(2);
         let incoming_update_processors = router_builder.subscribe_to_stream(2);
+        let incoming_partition_processor_rpc = router_builder.subscribe_to_stream(128);
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
         Self {
@@ -297,6 +306,7 @@ impl PartitionProcessorManager {
             partition_store_manager,
             incoming_get_state,
             incoming_update_processors,
+            incoming_partition_processor_rpc,
             networking,
             bifrost,
             attach_router,
@@ -401,10 +411,68 @@ impl PartitionProcessorManager {
                         warn!("failed processing control processors command: {err}");
                     }
                 }
+                Some(partition_processor_rpc) = self.incoming_partition_processor_rpc.next() => {
+                    self.on_partition_processor_rpc(partition_processor_rpc);
+                }
                 _ = &mut shutdown => {
                     return Ok(());
                 }
             }
+        }
+    }
+
+    fn on_partition_processor_rpc(
+        &self,
+        partition_processor_rpc: Incoming<PartitionProcessorRpcRequest>,
+    ) {
+        let partition_id = partition_processor_rpc.partition_id;
+        if let Some(partition_processor) = self.running_partition_processors.get(&partition_id) {
+            if let Err(err) = partition_processor
+                .rpc_tx
+                .try_send(partition_processor_rpc.map(|req| req.request))
+            {
+                match err {
+                    TrySendError::Full(req) => {
+                        let _ = self.task_center.spawn(
+                            TaskKind::Disposable,
+                            "partition-processor-rpc",
+                            None,
+                            async move {
+                                req.respond(Err(PartitionProcessorRpcError::Busy))
+                                    .await
+                                    .map_err(Into::into)
+                            },
+                        );
+                    }
+                    TrySendError::Closed(req) => {
+                        let _ = self.task_center.spawn(
+                            TaskKind::Disposable,
+                            "partition-processor-rpc",
+                            None,
+                            async move {
+                                req.respond(Err(PartitionProcessorRpcError::NotLeader(
+                                    partition_id,
+                                )))
+                                .await
+                                .map_err(Into::into)
+                            },
+                        );
+                    }
+                }
+            }
+        } else {
+            // ignore shutdown errors
+            let _ = self.task_center.spawn(
+                TaskKind::Disposable,
+                "partition-processor-rpc-response",
+                None,
+                async move {
+                    partition_processor_rpc
+                        .respond_rpc(Err(PartitionProcessorRpcError::NotLeader(partition_id)))
+                        .await
+                        .map_err(Into::into)
+                },
+            );
         }
     }
 
@@ -630,6 +698,7 @@ impl PartitionProcessorManager {
         key_range: RangeInclusive<PartitionKey>,
     ) -> Result<ProcessorState, Error> {
         let (control_tx, control_rx) = mpsc::channel(2);
+        let (rpc_tx, rpc_rx) = mpsc::channel(128);
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());
 
@@ -663,6 +732,7 @@ impl PartitionProcessorManager {
             status,
             options,
             control_rx,
+            rpc_rx,
             watch_tx,
             invoker.handle(),
         );
@@ -677,6 +747,7 @@ impl PartitionProcessorManager {
         let invoker_name = Box::leak(Box::new(format!("invoker-{}", partition_id)));
         let invoker_config = self.updateable_config.clone().map(|c| &c.worker.invoker);
 
+        let task_center = self.task_center.clone();
         let maybe_task_id: Result<TaskId, RuntimeError> = self.task_center.start_runtime(
             TaskKind::PartitionProcessor,
             task_name,
@@ -695,7 +766,7 @@ impl PartitionProcessorManager {
                         )
                         .await?;
 
-                    restate_core::task_center().spawn_child(
+                    task_center.spawn_child(
                         TaskKind::SystemService,
                         invoker_name,
                         Some(pp_builder.partition_id),
@@ -703,7 +774,12 @@ impl PartitionProcessorManager {
                     )?;
 
                     pp_builder
-                        .build::<ProtobufRawEntryCodec>(networking, bifrost, partition_store)
+                        .build::<ProtobufRawEntryCodec>(
+                            task_center,
+                            networking,
+                            bifrost,
+                            partition_store,
+                        )
                         .await?
                         .run()
                         .await
@@ -727,6 +803,7 @@ impl PartitionProcessorManager {
             task_id,
             key_range,
             PartitionProcessorHandle::new(control_tx),
+            rpc_tx,
             watch_rx,
         ))
     }

@@ -20,47 +20,38 @@ restate-serde-util = { workspace = true }
 restate-types = { workspace = true }
 restate-service-protocol = { workspace = true, features = [ "awakeable-id" ] }
 
-# Encoding/Decoding
+anyhow = { workspace = true }
+assert2 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-serde = { workspace = true }
-serde_with = { workspace = true }
-serde_json = { workspace = true }
-
-# Futures
+codederror = { workspace = true }
+derive_builder = { workspace = true }
 futures = { workspace = true }
-
-# Tokio + Hyper
-hyper = { workspace = true, features = ["server"] }
-tokio = { workspace = true }
 http = { workspace = true }
-url = "2.5.0"
 http-body = { workspace = true }
 http-body-util = { workspace = true }
-hyper-util = { workspace = true, features = ["http1", "http2", "server", "tokio", "service"] }
-tower = { workspace = true, features = ["util"] }
-tower-http = { workspace = true, features = ["cors", "normalize-path"] }
-
 # We need this until we convert everything else to http 1.0/hyper 1.0
 # https://github.com/restatedev/restate/issues/96
 http-old = { package = "http", version = "0.2.12" }
-
-# Tracing
+humantime = { workspace = true }
+hyper = { workspace = true, features = ["server"] }
+hyper-util = { workspace = true, features = ["http1", "http2", "server", "tokio", "service"] }
+metrics = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
+pin-project-lite = "0.2.13"
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_with = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
-
-# Other
-anyhow = { workspace = true }
-codederror = { workspace = true }
-derive_builder = { workspace = true }
-metrics = { workspace = true }
-schemars = { workspace = true, optional = true }
-thiserror = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+tower-http = { workspace = true, features = ["cors", "normalize-path"] }
+url = "2.5.0"
 urlencoding = "2.1"
-pin-project-lite = "0.2.13"
-humantime = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }

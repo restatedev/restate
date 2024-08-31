@@ -16,8 +16,8 @@ mod server;
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
-use restate_types::ingress::InvocationResponse;
 use restate_types::invocation::InvocationQuery;
+use restate_types::net::partition_processor_manager::GetOutputResult;
 use std::net::{IpAddr, SocketAddr};
 
 /// Client connection information for a given RPC request
@@ -36,13 +36,6 @@ impl ConnectInfo {
     fn port(&self) -> u16 {
         self.remote.port()
     }
-}
-
-pub enum GetOutputResult {
-    NotFound,
-    NotReady,
-    NotSupported,
-    Ready(InvocationResponse),
 }
 
 pub trait InvocationStorageReader {
