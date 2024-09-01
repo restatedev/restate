@@ -1,22 +1,22 @@
 [workspace]
 members = [
-    "cli",
-    "crates/*",
-    "crates/codederror/derive",
-    "server",
-    "benchmarks",
-    "tools/bifrost-benchpress",
-    "tools/mock-service-endpoint",
-    "tools/restatectl",
-    "tools/service-protocol-wireshark-dissector",
-    "tools/xtask",
+  "cli",
+  "crates/*",
+  "crates/codederror/derive",
+  "server",
+  "benchmarks",
+  "tools/bifrost-benchpress",
+  "tools/mock-service-endpoint",
+  "tools/restatectl",
+  "tools/service-protocol-wireshark-dissector",
+  "tools/xtask",
 ]
 default-members = [
-    "cli",
-    "crates/*",
-    "crates/codederror/derive",
-    "server",
-    "tools/restatectl",
+  "cli",
+  "crates/*",
+  "crates/codederror/derive",
+  "server",
+  "tools/restatectl",
 ]
 resolver = "2"
 
@@ -24,7 +24,7 @@ resolver = "2"
 version = "1.1.0"
 authors = ["restate.dev"]
 edition = "2021"
-rust-version = "1.79"
+rust-version = "1.80.1"
 license = "BUSL-1.1"
 repository = "https://github.com/restatedev/restate"
 description = "Restate makes distributed applications easy!"
@@ -91,10 +91,10 @@ criterion = "0.5"
 crossterm = { version = "0.27.0" }
 dashmap = { version = "6" }
 datafusion = { version = "40.0.0", default-features = false, features = [
-    "crypto_expressions",
-    "encoding_expressions",
-    "regex_expressions",
-    "unicode_expressions",
+  "crypto_expressions",
+  "encoding_expressions",
+  "regex_expressions",
+  "unicode_expressions",
 ] }
 datafusion-expr = { version = "40.0.0" }
 derive_builder = "0.20.0"
@@ -117,18 +117,18 @@ http-serde = { version = "2.1.1" }
 humantime = "2.1.0"
 hyper = { version = "1.4.1", default-features = false }
 hyper-rustls = { version = "0.27.2", default-features = false, features = [
-    "http1",
-    "http2",
-    "ring",
-    "native-tokio",
-    "tls12",
-    "logging",
+  "http1",
+  "http2",
+  "ring",
+  "native-tokio",
+  "tls12",
+  "logging",
 ] }
 hyper-util = { version = "0.1" }
 itertools = "0.13.0"
 metrics = { version = "0.23" }
 metrics-exporter-prometheus = { version = "0.15", default-features = false, features = [
-    "async-runtime",
+  "async-runtime",
 ] }
 once_cell = "1.18"
 opentelemetry = { version = "0.24.0" }
@@ -146,12 +146,14 @@ rand = "0.8.5"
 rayon = { version = "1.10" }
 regress = { version = "0.10" }
 reqwest = { version = "0.12.5", default-features = false, features = [
-    "json",
-    "rustls-tls",
-    "stream",
+  "json",
+  "rustls-tls",
+  "stream",
 ] }
 rlimit = { version = "0.10.1" }
-rocksdb = { version = "0.29.0", package = "rust-rocksdb", features = ["multi-threaded-cf"], git = "https://github.com/restatedev/rust-rocksdb", rev = "c6a279a40416cb47bbf576ffb190523d55818073" }
+rocksdb = { version = "0.29.0", package = "rust-rocksdb", features = [
+  "multi-threaded-cf",
+], git = "https://github.com/restatedev/rust-rocksdb", rev = "c6a279a40416cb47bbf576ffb190523d55818073" }
 rustls = { version = "0.23.11", default-features = false, features = ["ring"] }
 schemars = { version = "0.8", features = ["bytes", "enumset"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -166,16 +168,16 @@ sync_wrapper = "1.0.1"
 smallvec = { version = "1.13.2", features = ["serde"] }
 tempfile = "3.6.0"
 test-log = { version = "0.2.11", default-features = false, features = [
-    "trace",
+  "trace",
 ] }
 # tikv-jemallocator has not yet been released with musl target support, so we pin a main commit
 tikv-jemallocator = { git = "https://github.com/restatedev/jemallocator", rev = "7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0", default-features = false }
 thiserror = "1.0"
 tokio = { version = "1.39.1", default-features = false, features = [
-    "rt-multi-thread",
-    "signal",
-    "macros",
-    "parking_lot",
+  "rt-multi-thread",
+  "signal",
+  "macros",
+  "parking_lot",
 ] }
 tokio-stream = "0.1.15"
 tokio-util = { version = "0.7.11" }
