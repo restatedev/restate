@@ -243,11 +243,6 @@ impl<T: CodedError> std::error::Error for DecoratedError<'_, T> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.this.source()
     }
-
-    #[cfg(feature = "backtrace")]
-    fn backtrace(&self) -> Option<&std::backtrace::Backtrace> {
-        self.this.backtrace()
-    }
 }
 
 #[derive(Debug, Copy, Clone)]
