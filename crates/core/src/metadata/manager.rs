@@ -230,10 +230,10 @@ where
 /// Those include but not limited to:
 /// - Syncing schema metadata, logs, nodes configuration with admin servers.
 /// - Accepts adhoc requests from system components that might have observed higher
-/// metadata version through other means. Metadata manager takes note and schedules a
-/// sync so that we don't end up with thundering herd by direct metadata update
-/// requests from components
-///
+///   metadata version through other means. Metadata manager takes note and schedules a
+///   sync so that we don't end up with thundering herd by direct metadata update
+///   requests from components
+/// 
 /// Metadata to be managed by MetadataManager:
 /// - Bifrost's log metadata
 /// - Schema metadata
