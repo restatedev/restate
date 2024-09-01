@@ -101,7 +101,7 @@ fn delete_all_promises<S: StorageAccess>(storage: &mut S, service_id: &ServiceId
     );
 
     for k in keys {
-        storage.delete_cf(TableKind::Promise, &k.unwrap());
+        storage.delete_cf(TableKind::Promise, k.unwrap());
     }
 }
 
