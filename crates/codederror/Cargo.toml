@@ -12,3 +12,6 @@ codederror-derive = { version = "0.1.0", path = "derive" }
 
 [dev-dependencies]
 thiserror = { workspace = true }
+
+[features]
+backtrace = []
