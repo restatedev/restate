@@ -12,3 +12,4 @@ mod display_util;
 pub mod dump;
 pub mod log;
 pub mod node;
+pub mod jsonify_log;

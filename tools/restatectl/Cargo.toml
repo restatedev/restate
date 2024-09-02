@@ -10,7 +10,12 @@ publish = false
 [dependencies]
 restate-admin = { workspace = true, features = ["clients"] }
 restate-cli-util = { workspace = true }
-restate-types = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
+restate-core = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-bifrost = { workspace = true, features = ["test-util"] }
+restate-wal-protocol = { workspace = true }
+restate-log-server = { workspace = true }
 
 anyhow = { workspace = true }
 chrono = { workspace = true }
@@ -22,6 +27,8 @@ ctrlc = { version = "3.4" }
 hyper-util = { workspace = true }
 itertools = { workspace = true }
 prost-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

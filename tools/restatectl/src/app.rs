@@ -19,6 +19,7 @@ use restate_cli_util::CommonOpts;
 use crate::commands::dump::Dump;
 use crate::commands::log::Log;
 use crate::commands::node::Node;
+use crate::commands::jsonify_log::JsonifyLog;
 
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
@@ -50,6 +51,8 @@ pub enum Command {
     /// Cluster node status
     #[clap(subcommand)]
     Nodes(Node),
+    /// Jsonify a log directory
+    JsonifyLog(JsonifyLog)
 }
 
 fn init(common_opts: &CommonOpts) {
