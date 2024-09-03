@@ -75,7 +75,8 @@ fn create_header(
             partition_id: shuffle_metadata.partition_id,
             partition_key: None,
             leader_epoch: shuffle_metadata.leader_epoch,
-            node_id: shuffle_metadata.node_id,
+            node_id: shuffle_metadata.node_id.as_plain(),
+            generational_node_id: Some(shuffle_metadata.node_id),
         },
         dest: Destination::Processor {
             partition_key: dest_partition_key,

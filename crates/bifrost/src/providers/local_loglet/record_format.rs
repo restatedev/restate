@@ -65,6 +65,7 @@ pub(super) struct LegacyPayload {
     // default is Keys::None which means that records written prior to this field will not be
     // filtered out. Partition processors will continue to filter correctly using the extracted
     // keys from Envelope, but will not take advantage of push-down filtering.
+    #[serde(default)]
     pub keys: Keys,
 }
 

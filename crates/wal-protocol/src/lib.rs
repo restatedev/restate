@@ -21,7 +21,7 @@ use restate_types::invocation::{
 };
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::{flexbuffers_storage_encode_decode, logs, Version};
+use restate_types::{flexbuffers_storage_encode_decode, logs, PlainNodeId, Version};
 
 use crate::control::AnnounceLeader;
 use crate::timer::TimerKeyValue;
@@ -82,7 +82,11 @@ pub enum Source {
         /// epochs lower than the max observed for a given partition id.
         leader_epoch: LeaderEpoch,
         /// Which node is this message from?
-        node_id: GenerationalNodeId,
+        /// deprecated(v1.1): use generational_node_id instead.
+        node_id: PlainNodeId,
+        /// From v1.1 this is always set, but maintained to support rollback to v1.0.
+        #[serde(default)]
+        generational_node_id: Option<GenerationalNodeId>,
     },
     /// Message is sent from an ingress node
     Ingress {
@@ -98,6 +102,18 @@ pub enum Source {
     ControlPlane {
         // Reserved for future use.
     },
+}
+
+impl Source {
+    pub fn is_processor_generational(&self) -> bool {
+        match self {
+            Source::Processor {
+                generational_node_id,
+                ..
+            } => generational_node_id.is_some(),
+            _ => false,
+        }
+    }
 }
 
 /// Identifies the intended destination of the message

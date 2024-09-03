@@ -16,6 +16,7 @@ use downcast_rs::{impl_downcast, DowncastSync};
 use serde::de::{DeserializeOwned, Error as DeserializationError};
 use serde::ser::Error as SerializationError;
 use serde::Serialize;
+use tracing::error;
 
 use crate::errors::GenericError;
 
@@ -165,6 +166,7 @@ macro_rules! flexbuffers_storage_encode_decode {
                 match kind {
                     $crate::storage::StorageCodecKind::FlexbuffersSerde => {
                         $crate::storage::decode_from_flexbuffers(buf).map_err(|err| {
+                            ::tracing::error!(%err, "Flexbuffers decode failure (decoding {})", stringify!($name));
                             $crate::storage::StorageDecodeError::DecodeValue(err.into())
                         })
                     }
@@ -325,14 +327,24 @@ pub fn decode_from_flexbuffers<T: DeserializeOwned, B: Buf>(
     }
 
     if buf.chunk().len() >= length {
-        let result = flexbuffers::from_slice(buf.chunk())?;
+        let deserializer = flexbuffers::Reader::get_root(buf.chunk())?;
+        // todo: inject the path into the error message and propagate upwards
+        let result = serde_path_to_error::deserialize(deserializer).map_err(|err| {
+            error!(%err, "Flexbuffers error at field {}", err.path());
+            err.into_inner()
+        })?;
         buf.advance(length);
-
         Ok(result)
     } else {
         // need to allocate contiguous buffer of length for flexbuffers
         let bytes = buf.copy_to_bytes(length);
-        flexbuffers::from_slice(&bytes)
+        let deserializer = flexbuffers::Reader::get_root(bytes.chunk())?;
+        // todo: inject the path into the error message and propagate upwards
+        let result = serde_path_to_error::deserialize(deserializer).map_err(|err| {
+            error!(%err, "Flexbuffers error at field {}", err.path());
+            err.into_inner()
+        })?;
+        Ok(result)
     }
 }
 

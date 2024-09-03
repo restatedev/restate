@@ -218,7 +218,9 @@ where
                         .start(),
                 ),
                 leader_epoch,
-                node_id: self.partition_processor_metadata.node_id,
+                // Kept for backward compatibility.
+                node_id: self.partition_processor_metadata.node_id.as_plain(),
+                generational_node_id: Some(self.partition_processor_metadata.node_id),
             },
         };
 
