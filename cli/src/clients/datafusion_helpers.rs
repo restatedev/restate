@@ -202,6 +202,9 @@ pub enum JournalEntryType {
     SetState,
     ClearState,
     SideEffect,
+    /// GetPromise is the blocking promise API,
+    ///  PeekPromise is the non-blocking variant (we don't need to show it)
+    GetPromise(Option<String>),
     Other(String),
 }
 
@@ -213,6 +216,7 @@ impl JournalEntryType {
                 | JournalEntryType::Call(_)
                 | JournalEntryType::Awakeable(_)
                 | JournalEntryType::GetState
+                | JournalEntryType::GetPromise(_)
         )
     }
 
@@ -224,6 +228,7 @@ impl JournalEntryType {
                 | JournalEntryType::OneWayCall(_)
                 | JournalEntryType::Awakeable(_)
                 | JournalEntryType::SideEffect
+                | JournalEntryType::GetPromise(_)
         )
     }
 }
@@ -239,6 +244,7 @@ impl Display for JournalEntryType {
             JournalEntryType::SetState => write!(f, "SetState"),
             JournalEntryType::ClearState => write!(f, "ClearState"),
             JournalEntryType::SideEffect => write!(f, "SideEffect"),
+            JournalEntryType::GetPromise(_) => write!(f, "Promise"),
             JournalEntryType::Other(s) => write!(f, "{}", s),
         }
     }
@@ -957,12 +963,22 @@ struct JournalRowResult {
     invoked_target: Option<String>,
     sleep_wakeup_at: Option<RestateDateTime>,
     name: Option<String>,
+    promise_name: Option<String>,
 }
 
 pub async fn get_invocation_journal(
     client: &DataFusionHttpClient,
     invocation_id: &str,
 ) -> Result<Vec<JournalEntry>> {
+    let has_restate_1_1_promise_name_column = client
+        .check_columns_exists("sys_journal", &["promise_name"])
+        .await?;
+    let select_promise_column = if has_restate_1_1_promise_name_column {
+        "sj.promise_name"
+    } else {
+        "CAST(NULL as STRING) AS promise_name"
+    };
+
     // We are only looking for one...
     // Let's get journal details.
     let query = format!(
@@ -973,7 +989,8 @@ pub async fn get_invocation_journal(
             sj.invoked_id,
             sj.invoked_target,
             sj.sleep_wakeup_at,
-            sj.name
+            sj.name,
+            {select_promise_column}
         FROM sys_journal sj
         WHERE
             sj.id = '{}'
@@ -1008,6 +1025,7 @@ pub async fn get_invocation_journal(
                 "SetState" => JournalEntryType::SetState,
                 "ClearState" => JournalEntryType::ClearState,
                 "Run" => JournalEntryType::SideEffect,
+                "GetPromise" => JournalEntryType::GetPromise(row.promise_name),
                 t => JournalEntryType::Other(t.to_owned()),
             };
 

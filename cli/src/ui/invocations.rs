@@ -320,6 +320,9 @@ pub fn format_entry_type_details(entry_type: &JournalEntryType) -> String {
         JournalEntryType::Awakeable(awakeable_id) => {
             format!("{}", style(awakeable_id.to_string()).cyan())
         }
+        JournalEntryType::GetPromise(Some(promise_name)) => {
+            format!("{}", style(promise_name).cyan())
+        }
         _ => String::new(),
     }
 }
