@@ -34,7 +34,7 @@ pub const RESTATECTL_DEBUG: &str = env!("VERGEN_CARGO_DEBUG");
 pub const RESTATECTL_BUILD_FEATURES: &str = env!("VERGEN_CARGO_FEATURES");
 
 /// Returns build information, e.g: 0.0.1-dev (debug) (2ba1491 aarch64-apple-darwin 2023-11-21)
-fn build_info() -> String {
+pub(crate) fn build_info() -> String {
     format!(
         "{RESTATECTL_VERSION}{} ({RESTATECTL_COMMIT_SHA} {RESTATECTL_TARGET_TRIPLE} {RESTATECTL_BUILD_DATE})",
         if RESTATECTL_DEBUG == "true" {

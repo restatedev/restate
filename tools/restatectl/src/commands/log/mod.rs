@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod describe_log;
+mod dump_log;
 mod list_logs;
 
 use cling::prelude::*;
@@ -19,4 +20,6 @@ pub enum Log {
     List(list_logs::ListLogsOpts),
     /// Get the details of a specific log
     Describe(describe_log::DescribeLogIdOpts),
+    /// Dump the contents of a bifrost log
+    Dump(dump_log::DumpLogOpts),
 }
