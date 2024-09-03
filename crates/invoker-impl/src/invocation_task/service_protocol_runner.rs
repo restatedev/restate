@@ -30,7 +30,7 @@ use restate_service_protocol::message::{
 };
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::invocation::ServiceInvocationSpanContext;
+use restate_types::invocation::{ServiceInvocationSpanContext, SpanExt};
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryType;
 use restate_types::schema::deployment::{
@@ -126,11 +126,7 @@ where
         let journal_size = journal_metadata.length;
 
         // Attach parent and uri to the current span
-        let invocation_task_span = Span::current();
-        journal_metadata
-            .span_context
-            .as_parent()
-            .attach_to_span(&invocation_task_span);
+        Span::current().set_relation(journal_metadata.span_context.as_parent());
 
         info!(
             invocation.id = %self.invocation_task.invocation_id,

@@ -26,7 +26,6 @@ use std::fmt;
 use std::hash::Hash;
 use std::str::FromStr;
 use std::time::Duration;
-use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
@@ -133,6 +132,22 @@ impl From<InvocationTargetType> for ServiceType {
     }
 }
 
+#[derive(Debug, derive_more::Display)]
+/// Short is used to create a short [`Display`] implementation
+/// for InvocationTarget. it's mainly use for tracing purposes
+pub enum Short<'a> {
+    #[display("{name}/{{key}}/{handler}")]
+    Keyed {
+        name: &'a ByteString,
+        handler: &'a ByteString,
+    },
+    #[display("{name}/{handler}")]
+    UnKeyed {
+        name: &'a ByteString,
+        handler: &'a ByteString,
+    },
+}
+
 #[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum InvocationTarget {
     Service {
@@ -158,6 +173,15 @@ impl InvocationTarget {
         Self::Service {
             name: name.into(),
             handler: handler.into(),
+        }
+    }
+
+    pub fn short(&self) -> Short {
+        match self {
+            Self::Service { name, handler } => Short::UnKeyed { name, handler },
+            Self::VirtualObject { name, handler, .. } | Self::Workflow { name, handler, .. } => {
+                Short::Keyed { name, handler }
+            }
         }
     }
 
@@ -647,18 +671,22 @@ pub enum SpanRelation {
     Linked(SpanContext),
 }
 
-impl SpanRelation {
-    /// Attach this [`SpanRelation`] to the given [`Span`]
-    pub fn attach_to_span(&self, span: &Span) {
-        match self {
+pub trait SpanExt: OpenTelemetrySpanExt {
+    fn set_relation(&self, relation: SpanRelation) -> &Self {
+        match relation {
             SpanRelation::Parent(span_context) => {
-                span.set_parent(Context::new().with_remote_span_context(span_context.clone()))
+                self.set_parent(Context::new().with_remote_span_context(span_context))
             }
-            SpanRelation::Linked(span_context) => span.add_link(span_context.clone()),
+            SpanRelation::Linked(span_context) => self.add_link(span_context),
             SpanRelation::None => (),
         };
+        self
     }
+}
 
+impl SpanExt for tracing::Span {}
+
+impl SpanRelation {
     fn is_sampled(&self) -> bool {
         match self {
             SpanRelation::None => false,

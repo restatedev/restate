@@ -16,6 +16,7 @@ mod tracer;
 use crate::exporter::ResourceModifyingSpanExporter;
 use crate::pretty::PrettyFields;
 use crate::tracer::SpanModifyingTracer;
+use exporter::RuntimeServicesExporter;
 use opentelemetry::trace::{TraceError, TracerProvider};
 use opentelemetry::KeyValue;
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
@@ -29,13 +30,15 @@ use std::fmt::Display;
 use tonic::codegen::http::HeaderMap;
 use tonic::metadata::MetadataMap;
 use tracing::{info, warn, Level};
-use tracing_subscriber::filter::{Filtered, ParseError};
+use tracing_subscriber::filter::ParseError;
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::reload::Handle;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, Registry};
+
+pub const SERVICES_TRACING_TARGET: &str = "::services.target";
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
@@ -55,21 +58,18 @@ pub enum Error {
 fn build_tracing_layer<S>(
     common_opts: &CommonOptions,
     service_name: String,
-) -> Result<
-    Option<
-        Filtered<tracing_opentelemetry::OpenTelemetryLayer<S, SpanModifyingTracer>, EnvFilter, S>,
-    >,
-    Error,
->
+) -> Result<Option<Box<dyn tracing_subscriber::Layer<S> + Send + Sync + 'static>>, Error>
 where
-    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+    S: tracing::Subscriber
+        + for<'span> tracing_subscriber::registry::LookupSpan<'span>
+        + Send
+        + Sync,
 {
-    // only enable tracing if endpoint or json file is set.
-    if common_opts.tracing.tracing_endpoint.is_none()
-        && common_opts.tracing.tracing_json_path.is_none()
-    {
-        return Ok(None);
-    }
+    let opts = &common_opts.tracing;
+    let endpoint = match &opts.tracing_runtime_endpoint {
+        Some(endpoint) => endpoint,
+        None => return Ok(None),
+    };
 
     let resource = opentelemetry_sdk::Resource::new(vec![
         KeyValue::new(
@@ -90,37 +90,49 @@ where
         ),
     ]);
 
-    // the following logic is based on `opentelemetry_otlp::span::build_batch_with_exporter`
-    // but also injecting ResourceModifyingSpanExporter around the SpanExporter
-
     let mut tracer_provider_builder = opentelemetry_sdk::trace::TracerProvider::builder()
         .with_config(opentelemetry_sdk::trace::Config::default().with_resource(resource));
 
-    if let Some(endpoint) = &common_opts.tracing.tracing_endpoint {
-        let header_map =
-            HeaderMap::from_iter(HashMap::from(common_opts.tracing.tracing_headers.clone()));
+    let header_map = HeaderMap::from_iter(HashMap::from(opts.tracing_headers.clone()));
 
-        let exporter = SpanExporterBuilder::from(
+    let runtime_exporter = SpanExporterBuilder::from(
+        opentelemetry_otlp::new_exporter()
+            .tonic()
+            .with_endpoint(endpoint)
+            .with_metadata(MetadataMap::from_headers(header_map.clone())),
+    )
+    .build_span_exporter()?;
+
+    let exporter = if let Some(ref endpoint) = opts.tracing_services_endpoint {
+        // the following logic is based on `opentelemetry_otlp::span::build_batch_with_exporter`
+        // but also injecting ResourceModifyingSpanExporter around the SpanExporter
+        let services_exporter = SpanExporterBuilder::from(
             opentelemetry_otlp::new_exporter()
                 .tonic()
                 .with_endpoint(endpoint)
                 .with_metadata(MetadataMap::from_headers(header_map)),
         )
         .build_span_exporter()?;
-        let exporter = ResourceModifyingSpanExporter::new(exporter);
-        tracer_provider_builder = tracer_provider_builder.with_span_processor(
-            BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
-        );
-    }
 
-    if let Some(path) = &common_opts.tracing.tracing_json_path {
+        RuntimeServicesExporter::new(
+            runtime_exporter,
+            Some(ResourceModifyingSpanExporter::new(services_exporter)),
+        )
+    } else {
+        RuntimeServicesExporter::new(runtime_exporter, None)
+    };
+
+    tracer_provider_builder = tracer_provider_builder.with_span_processor(
+        BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
+    );
+
+    if let Some(path) = &opts.tracing_json_path {
         let exporter = JaegerJsonExporter::new(
             path.into(),
             "trace".to_string(),
             service_name,
             opentelemetry_sdk::runtime::Tokio,
         );
-        let exporter = ResourceModifyingSpanExporter::new(exporter);
 
         tracer_provider_builder = tracer_provider_builder.with_span_processor(
             BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
@@ -135,7 +147,6 @@ where
             .with_version(env!("CARGO_PKG_VERSION"))
             .build(),
     );
-    let _ = opentelemetry::global::set_tracer_provider(provider);
 
     Ok(Some(
         tracing_opentelemetry::layer()
@@ -143,7 +154,8 @@ where
             .with_threads(false)
             .with_tracked_inactivity(false)
             .with_tracer(tracer)
-            .with_filter(EnvFilter::try_new(&common_opts.tracing.tracing_filter)?),
+            .with_filter(EnvFilter::try_new(&opts.tracing_filter)?)
+            .boxed(),
     ))
 }
 
@@ -188,8 +200,6 @@ pub fn init_tracing_and_logging(
     common_opts: &CommonOptions,
     service_name: impl Display,
 ) -> Result<TracingGuard, Error> {
-    let restate_service_name = format!("Restate service: {service_name}");
-
     let layers = tracing_subscriber::registry();
 
     let filter = EnvFilter::try_new(&common_opts.log_filter)?;
@@ -208,10 +218,7 @@ pub fn init_tracing_and_logging(
     let layers = layers.with(console_subscriber::spawn());
 
     // Tracing layer
-    let layers = layers.with(build_tracing_layer(
-        common_opts,
-        restate_service_name.clone(),
-    )?);
+    let layers = layers.with(build_tracing_layer(common_opts, service_name.to_string())?);
 
     layers.init();
 
@@ -284,4 +291,75 @@ impl Drop for TracingGuard {
             opentelemetry::global::shutdown_tracer_provider();
         }
     }
+}
+
+/// invocation_span macro create a span given invocation_id and invocation_target. The created span will show up
+/// mainly in services tracing. It will also show up in runtime traces but in relation to other runtime spans
+/// that are created normally with tracing::span!
+///
+/// level: [`Level`]
+/// prefix: static span name
+/// id: ref to an instance of [`InvocationId`]
+/// target: ref to an instance of [`InvocationTarget`]
+///
+/// Any extra named arguments are added as extra tags to the span.
+#[macro_export]
+macro_rules! invocation_span {
+    (level= $lvl:expr, prefix= $prefix:expr, id= $id:expr, target= $target:expr $(,$($key:ident).+ =  $value:expr)*) => {
+        $crate::invocation_span!(
+            level = $lvl,
+            prefix = $prefix,
+            id = $id,
+            name = format!("{} {}", $prefix, $target.short()),
+            rpc.service = ::tracing::field::display($target.service_name()),
+            rpc.method = ::tracing::field::display($target.handler_name()),
+            restate.invocation.target = ::tracing::field::display($target)
+            $(,$($key).+ = $value)*
+        )
+    };
+    (level= $lvl:expr, prefix= $prefix:expr, id= $id:expr, name= $name:expr, $($($key:ident).+ =  $value:expr),*) => {
+        {
+
+            use tracing_opentelemetry::OpenTelemetrySpanExt;
+            let span = ::tracing::span!(
+                target: $crate::SERVICES_TRACING_TARGET,
+                $lvl,
+                $prefix,
+                otel.name = $name,
+                rpc.system = "restate",
+                restate.invocation.id = %$id,
+                restate.user.service = true
+                $(,$($key).+ = ::tracing::field::Empty)*
+            );
+
+            $(
+                span.record(stringify!($($key).+), $value);
+            )*
+
+            span
+        }
+    }
+}
+
+/// info_invocation_span is a shortcut for [`invocation_span!`] with `Info` level
+#[macro_export]
+macro_rules! info_invocation_span {
+    (prefix= $prefix:expr, id= $id:expr, target= $target:expr $(,$($key:ident).+ =  $value:expr)*) => {
+        $crate::invocation_span!(
+            level = ::tracing::Level::INFO,
+            prefix = $prefix,
+            id = $id,
+            target = $target
+            $(,$($key).+ = $value)*
+        )
+    };
+    (prefix= $prefix:expr, id= $id:expr, name= $name:expr $(,$($key:ident).+ =  $value:expr)*) => {
+        $crate::invocation_span!(
+            level = ::tracing::Level::INFO,
+            prefix = $prefix,
+            id = $id,
+            name = $name
+            $(,$($key).+ = $value)*
+        )
+    };
 }
