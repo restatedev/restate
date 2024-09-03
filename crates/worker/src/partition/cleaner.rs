@@ -78,7 +78,8 @@ where
             partition_id,
             partition_key: None,
             leader_epoch,
-            node_id,
+            node_id: node_id.as_plain(),
+            generational_node_id: Some(node_id),
         };
 
         let mut interval = tokio::time::interval(cleanup_interval);

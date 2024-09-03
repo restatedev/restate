@@ -380,9 +380,12 @@ where
                             action_collector.clear();
 
                             self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
-                            if let Source::Processor { node_id, .. } = header.source {
+                            if header.source.is_processor_generational() {
+                                let Source::Processor { generational_node_id, .. } = header.source else {
+                                    unreachable!("processor source must have generational_node_id");
+                                };
                                 // all new AnnounceLeader messages should come from a PartitionProcessor
-                                self.status.last_observed_leader_node = Some(node_id);
+                                self.status.last_observed_leader_node = generational_node_id;
                             } else if announce_leader.node_id.is_some() {
                                 // older AnnounceLeader messages have the announce_leader.node_id set
                                 self.status.last_observed_leader_node = announce_leader.node_id;

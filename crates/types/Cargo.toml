@@ -49,6 +49,7 @@ regress = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_path_to_error = { version = "0.1" }
 serde_with = { workspace = true }
 sha2 = { workspace = true }
 static_assertions = { workspace = true }
