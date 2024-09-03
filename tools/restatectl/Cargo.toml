@@ -9,8 +9,15 @@ publish = false
 
 [dependencies]
 restate-admin = { workspace = true, features = ["clients"] }
+restate-bifrost = { workspace = true }
 restate-cli-util = { workspace = true }
+restate-core = { workspace = true }
+restate-metadata-store = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-server = { workspace = true }
+restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
+restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
 chrono = { workspace = true }
@@ -19,13 +26,18 @@ clap-verbosity-flag = { version = "2.0.1" }
 cling = { version = "0.1.0", default-features = false, features = ["derive"] }
 crossterm = { version = "0.27.0" }
 ctrlc = { version = "3.4" }
+futures-util = { workspace = true }
 hyper-util = { workspace = true }
 itertools = { workspace = true }
 prost-types = { workspace = true }
+rlimit = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true, features = ["transport", "prost"] }
+tonic-health = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
 tracing-log = { version = "0.2" }
