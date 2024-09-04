@@ -221,7 +221,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     let background_call_invocation_id = InvocationId::mock_random();
     let finished_call_invocation_id = InvocationId::mock_random();
 
-    let invocation_target = InvocationTarget::mock_virtual_object();
+    let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::generate(&invocation_target);
 
     let _ = test_env
@@ -301,27 +301,9 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     );
 
     // Entries are completed
-    assert_that!(
-        test_env
-            .storage
-            .get_journal_entry(&invocation_id, 4)
-            .await?,
-        some(pat!(JournalEntry::Entry(entry_completed_matcher())))
-    );
-    assert_that!(
-        test_env
-            .storage
-            .get_journal_entry(&invocation_id, 5)
-            .await?,
-        some(pat!(JournalEntry::Entry(entry_completed_matcher())))
-    );
-    assert_that!(
-        test_env
-            .storage
-            .get_journal_entry(&invocation_id, 6)
-            .await?,
-        some(pat!(JournalEntry::Entry(entry_completed_matcher())))
-    );
+    for idx in 4..=9 {
+        assert_entry_completed(&mut test_env, invocation_id, idx).await?;
+    }
 
     assert_that!(
         actions,
@@ -333,6 +315,9 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
             contains(forward_canceled_completion_matcher(4)),
             contains(forward_canceled_completion_matcher(5)),
             contains(forward_canceled_completion_matcher(6)),
+            contains(forward_canceled_completion_matcher(7)),
+            contains(forward_canceled_completion_matcher(8)),
+            contains(forward_canceled_completion_matcher(9)),
             contains(delete_timer_matcher(5)),
         )
     );
@@ -348,7 +333,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     let background_call_invocation_id = InvocationId::mock_random();
     let finished_call_invocation_id = InvocationId::mock_random();
 
-    let invocation_target = InvocationTarget::mock_virtual_object();
+    let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::generate(&invocation_target);
 
     let _ = test_env
@@ -390,7 +375,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         &invocation_id,
         &InvocationStatus::Suspended {
             metadata: in_flight_meta,
-            waiting_for_completed_entries: HashSet::from([3, 4, 5, 6]),
+            waiting_for_completed_entries: HashSet::from([3, 4, 5, 6, 7, 8, 9]),
         },
     )
     .await;
@@ -434,27 +419,9 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     );
 
     // Entries are completed
-    assert_that!(
-        test_env
-            .storage
-            .get_journal_entry(&invocation_id, 4)
-            .await?,
-        some(pat!(JournalEntry::Entry(entry_completed_matcher())))
-    );
-    assert_that!(
-        test_env
-            .storage
-            .get_journal_entry(&invocation_id, 5)
-            .await?,
-        some(pat!(JournalEntry::Entry(entry_completed_matcher())))
-    );
-    assert_that!(
-        test_env
-            .storage
-            .get_journal_entry(&invocation_id, 6)
-            .await?,
-        some(pat!(JournalEntry::Entry(entry_completed_matcher())))
-    );
+    for idx in 4..=9 {
+        assert_entry_completed(&mut test_env, invocation_id, idx).await?;
+    }
 
     assert_that!(
         actions,
@@ -551,7 +518,55 @@ fn create_termination_journal(
             },
             Bytes::default(),
         )),
+        JournalEntry::Entry(EnrichedRawEntry::new(
+            EnrichedEntryHeader::GetPromise {
+                is_completed: false,
+            },
+            service_protocol::GetPromiseEntryMessage {
+                key: "my-promise".to_string(),
+                ..Default::default()
+            }
+            .encode_to_vec()
+            .into(),
+        )),
+        JournalEntry::Entry(EnrichedRawEntry::new(
+            EnrichedEntryHeader::PeekPromise {
+                is_completed: false,
+            },
+            service_protocol::PeekPromiseEntryMessage {
+                key: "my-promise".to_string(),
+                ..Default::default()
+            }
+            .encode_to_vec()
+            .into(),
+        )),
+        JournalEntry::Entry(EnrichedRawEntry::new(
+            EnrichedEntryHeader::CompletePromise {
+                is_completed: false,
+            },
+            service_protocol::CompletePromiseEntryMessage {
+                key: "my-promise".to_string(),
+                ..Default::default()
+            }
+            .encode_to_vec()
+            .into(),
+        )),
     ]
+}
+
+async fn assert_entry_completed(
+    test_env: &mut TestEnv,
+    invocation_id: InvocationId,
+    idx: EntryIndex,
+) -> Result<(), Error> {
+    assert_that!(
+        test_env
+            .storage
+            .get_journal_entry(&invocation_id, idx)
+            .await?,
+        some(pat!(JournalEntry::Entry(entry_completed_matcher())))
+    );
+    Ok(())
 }
 
 fn canceled_completion_matcher(entry_index: EntryIndex) -> impl Matcher<ActualT = Completion> {
