@@ -1172,24 +1172,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .get_journal(&invocation_id, journal_length)
             .try_filter_map(|(journal_index, journal_entry)| async move {
                 if let JournalEntry::Entry(journal_entry) = journal_entry {
-                    match journal_entry.header() {
-                        EnrichedEntryHeader::Call { is_completed, .. } if !is_completed => {
-                            return Ok(Some((journal_index, journal_entry)))
-                        }
-                        EnrichedEntryHeader::Awakeable { is_completed }
-                        | EnrichedEntryHeader::GetState { is_completed }
-                            if !is_completed =>
-                        {
-                            return Ok(Some((journal_index, journal_entry)))
-                        }
-                        EnrichedEntryHeader::Sleep { is_completed } if !is_completed => {
-                            return Ok(Some((journal_index, journal_entry)))
-                        }
-                        header => {
-                            assert!(
-                                header.is_completed().unwrap_or(true),
-                                "All non canceled journal entries must be completed."
-                            );
+                    if let Some(is_completed) = journal_entry.header().is_completed() {
+                        if !is_completed {
+                            // Every completable journal entry that hasn't been completed yet should be cancelled
+                            return Ok(Some((journal_index, journal_entry)));
                         }
                     }
                 }
@@ -1202,15 +1188,15 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         let canceled_result = CompletionResult::from(&CANCELED_INVOCATION_ERROR);
 
         let mut resume_invocation = false;
-
         for (journal_index, journal_entry) in journal_entries_to_cancel {
             let (header, entry) = journal_entry.into_inner();
             match header {
-                // cancel uncompleted invocations
                 EnrichedEntryHeader::Call {
                     enrichment_result: Some(enrichment_result),
                     ..
                 } => {
+                    // For calls, we don't immediately complete the call entry with cancelled,
+                    // but we let the cancellation result propagate from the callee.
                     self.handle_outgoing_message(
                         ctx,
                         OutboxMessage::InvocationTermination(InvocationTermination::cancel(
@@ -1256,6 +1242,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(resume_invocation)
     }
 
+    /// Cancels a generic completable journal entry
     async fn cancel_journal_entry_with<State: JournalTable>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
