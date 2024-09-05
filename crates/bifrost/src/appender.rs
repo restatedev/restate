@@ -17,13 +17,12 @@ use tracing::{debug, info, instrument};
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{LogId, Lsn};
+use restate_types::logs::{LogId, Lsn, Record};
 use restate_types::retries::RetryIter;
 
 use crate::bifrost::BifrostInner;
 use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
-use crate::record::Record;
 use crate::{Error, InputRecord, Result};
 
 #[derive(Clone, derive_more::Debug)]
