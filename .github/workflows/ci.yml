@@ -104,9 +104,9 @@ jobs:
         id: cache
         with:
           path: |
-            cargo-home
             target
-          key: restate-server-${{ hashFiles('**/Cargo.lock') }}
+            cargo-home
+          key: restate-server-build-${{ hashFiles('**/Cargo.lock') }}
 
       - name: How big is the loaded cache?
         run:
@@ -124,8 +124,8 @@ jobs:
         with:
           cache-map: |
             {
-              "cargo-home": "/usr/src/app/cargo-home",
-              "target": "/usr/src/app/target"
+              "target": "/usr/src/app/target",
+              "cargo-home": "/usr/src/app/cargo-home"
             }
           skip-extraction: ${{ steps.cache.outputs.cache-hit }}
 
