@@ -13,6 +13,20 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_expr::expressions::col;
 use datafusion::physical_expr::PhysicalSortExpr;
 use std::fmt::Write;
+use tracing::error;
+
+#[macro_export]
+macro_rules! log_data_corruption_error {
+    ($table_name:expr, $key:expr, $field_name:expr, $err:expr) => {
+        tracing::error!(
+            error = %$err,
+            "Cannot convert field '{}' for '{}' table with row key {:?}. This might indicate a data corruption problem.",
+            $field_name,
+            $table_name,
+            $key
+        )
+    };
+}
 
 pub(crate) fn compute_ordering(schema: SchemaRef) -> Option<Vec<PhysicalSortExpr>> {
     let ordering = vec![PhysicalSortExpr {
@@ -26,7 +40,9 @@ pub(crate) fn compute_ordering(schema: SchemaRef) -> Option<Vec<PhysicalSortExpr
 #[inline]
 pub(crate) fn format_using<'a>(output: &'a mut String, what: &impl std::fmt::Display) -> &'a str {
     output.clear();
-    write!(output, "{}", what).expect("Error occurred while trying to write in String");
+    if let Err(e) = write!(output, "{}", what) {
+        error!(error = %e, "Cannot format the string")
+    }
     output
 }
 
