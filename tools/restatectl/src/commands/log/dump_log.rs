@@ -50,7 +50,7 @@ pub struct DumpLogOpts {
     )]
     config_file: Option<PathBuf>,
     /// Specifies the log_id to dump.
-    #[arg(short, long = "log")]
+    #[arg(short, long)]
     log_id: u32,
 
     /// Start LSN, if unset it'll read from oldest record in the log.
