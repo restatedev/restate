@@ -12,9 +12,9 @@ use std::task::{ready, Poll};
 
 use futures::FutureExt;
 
-use restate_types::logs::{Lsn, SequenceNumber};
+use restate_types::logs::{LogletOffset, Lsn, SequenceNumber};
 
-use crate::loglet::{AppendError, LogletOffset};
+use crate::loglet::AppendError;
 
 // Only implemented for LSNs
 pub(crate) trait LsnExt
@@ -204,9 +204,8 @@ impl std::future::Future for Commit {
 
 #[cfg(test)]
 mod tests {
-    use crate::loglet::LogletOffset;
     use crate::types::LsnExt;
-    use restate_types::logs::{Lsn, SequenceNumber};
+    use restate_types::logs::{LogletOffset, Lsn, SequenceNumber};
 
     #[test]
     fn lsn_to_offset() {

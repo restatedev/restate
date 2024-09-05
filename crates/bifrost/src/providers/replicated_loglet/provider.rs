@@ -25,7 +25,7 @@ use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
 use restate_types::logs::LogId;
 
 use super::metric_definitions;
-use crate::loglet::{Loglet, LogletOffset, LogletProvider, LogletProviderFactory, OperationError};
+use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::Error;
 
 pub struct Factory {

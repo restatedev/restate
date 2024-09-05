@@ -15,10 +15,10 @@ use smallvec::SmallVec;
 use tracing::{error, trace, warn};
 
 use restate_types::flexbuffers_storage_encode_decode;
+use restate_types::logs::LogletOffset;
 use restate_types::storage::StorageCodec;
 
 use super::keys::{MetadataKey, MetadataKind};
-use crate::loglet::LogletOffset;
 
 use super::LogStoreError;
 

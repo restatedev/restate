@@ -63,7 +63,7 @@ toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
+xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }

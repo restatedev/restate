@@ -23,12 +23,12 @@ use tracing::{debug, info};
 
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::{KeyFilter, LogId, MatchKeyQuery, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogId, LogletOffset, MatchKeyQuery, SequenceNumber};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
-    Loglet, LogletCommit, LogletOffset, LogletProvider, LogletProviderFactory, LogletReadStream,
-    OperationError, SendableLogletReadStream,
+    Loglet, LogletCommit, LogletProvider, LogletProviderFactory, LogletReadStream, OperationError,
+    SendableLogletReadStream,
 };
 use crate::Record;
 use crate::Result;
@@ -135,7 +135,7 @@ impl MemoryLoglet {
 
     fn saturating_offset_to_index(&self, offset: LogletOffset) -> usize {
         let trim_point = self.trim_point_offset.load(Ordering::Relaxed);
-        (offset.0.saturating_sub(trim_point) - 1) as usize
+        (offset.saturating_sub(trim_point) - 1) as usize
     }
 
     fn advance_commit_offset(&self, offset: LogletOffset) {
@@ -145,7 +145,7 @@ impl MemoryLoglet {
     }
 
     fn notify_readers(&self) {
-        let release_pointer = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
+        let release_pointer = LogletOffset::new(self.last_committed_offset.load(Ordering::Relaxed));
         // Note: We always notify with false here and the watcher will ignore it if it has observed
         // a previous seal.
         self.tail_watch.notify(false, release_pointer.next());
@@ -156,7 +156,7 @@ impl MemoryLoglet {
         from_offset: LogletOffset,
     ) -> Result<Option<LogEntry<LogletOffset>>, OperationError> {
         let guard = self.log.lock().unwrap();
-        let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
+        let trim_point = LogletOffset::new(self.trim_point_offset.load(Ordering::Relaxed));
         let head_offset = trim_point.next();
         // Are we reading behind the loglet head?
         if from_offset < head_offset {
@@ -164,7 +164,7 @@ impl MemoryLoglet {
         }
 
         // are we reading after commit offset?
-        let commit_offset = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
+        let commit_offset = LogletOffset::new(self.last_committed_offset.load(Ordering::Relaxed));
         if from_offset > commit_offset {
             Ok(None)
         } else {
@@ -270,7 +270,8 @@ impl Stream for MemoryReadStream {
 
             // Trim point is the the slot **before** the first readable record (if it exists)
             // trim point might have been updated since last time.
-            let trim_point = LogletOffset(self.loglet.trim_point_offset.load(Ordering::Relaxed));
+            let trim_point =
+                LogletOffset::new(self.loglet.trim_point_offset.load(Ordering::Relaxed));
             let head_offset = trim_point.next();
 
             // Are we reading behind the loglet head? -> TrimGap
@@ -329,7 +330,7 @@ impl Loglet for MemoryLoglet {
             return Ok(LogletCommit::sealed());
         }
         let mut last_committed_offset =
-            LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
+            LogletOffset::new(self.last_committed_offset.load(Ordering::Relaxed));
         log.reserve(payloads.len());
         for payload in payloads.iter() {
             last_committed_offset = last_committed_offset.next();
@@ -346,7 +347,8 @@ impl Loglet for MemoryLoglet {
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
         let _guard = self.log.lock().unwrap();
-        let committed = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed)).next();
+        let committed =
+            LogletOffset::new(self.last_committed_offset.load(Ordering::Relaxed)).next();
         let sealed = self.sealed.load(Ordering::Relaxed);
         Ok(if sealed {
             TailState::Sealed(committed)
@@ -358,7 +360,7 @@ impl Loglet for MemoryLoglet {
     /// Find the head (oldest) record in the loglet.
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
         let _guard = self.log.lock().unwrap();
-        let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
+        let current_trim_point = LogletOffset::new(self.trim_point_offset.load(Ordering::Relaxed));
 
         if current_trim_point == LogletOffset::INVALID {
             Ok(None)
@@ -369,11 +371,11 @@ impl Loglet for MemoryLoglet {
 
     async fn trim(&self, new_trim_point: LogletOffset) -> Result<(), OperationError> {
         let mut log = self.log.lock().unwrap();
-        let actual_trim_point = new_trim_point.min(LogletOffset(
+        let actual_trim_point = new_trim_point.min(LogletOffset::new(
             self.last_committed_offset.load(Ordering::Relaxed),
         ));
 
-        let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
+        let current_trim_point = LogletOffset::new(self.trim_point_offset.load(Ordering::Relaxed));
 
         if current_trim_point >= actual_trim_point {
             return Ok(());
@@ -381,7 +383,7 @@ impl Loglet for MemoryLoglet {
 
         let trim_point_index = self.saturating_offset_to_index(actual_trim_point);
         self.trim_point_offset
-            .store(actual_trim_point.0, Ordering::Relaxed);
+            .store(*actual_trim_point, Ordering::Relaxed);
         log.drain(0..=trim_point_index);
 
         Ok(())

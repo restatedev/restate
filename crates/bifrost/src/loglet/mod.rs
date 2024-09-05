@@ -12,7 +12,7 @@ mod error;
 #[cfg(test)]
 pub mod loglet_tests;
 mod provider;
-pub(crate) mod util;
+pub mod util;
 
 // exports
 pub use error::*;
@@ -21,7 +21,6 @@ pub use provider::{LogletProvider, LogletProviderFactory};
 use restate_core::ShutdownError;
 use tokio::sync::oneshot;
 
-use std::ops::Add;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Poll};
@@ -29,65 +28,11 @@ use std::task::{ready, Poll};
 use async_trait::async_trait;
 use futures::{FutureExt, Stream};
 
-use restate_types::logs::{KeyFilter, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogletOffset};
 
 use crate::record::Record;
 use crate::LogEntry;
 use crate::{Result, TailState};
-
-// Inner loglet offset
-#[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    Eq,
-    Ord,
-    PartialOrd,
-    derive_more::From,
-    derive_more::Into,
-    derive_more::Display,
-)]
-pub struct LogletOffset(pub(crate) u32);
-
-impl LogletOffset {
-    pub const fn new(offset: u32) -> Self {
-        Self(offset)
-    }
-}
-
-impl From<LogletOffset> for u64 {
-    fn from(value: LogletOffset) -> Self {
-        u64::from(value.0)
-    }
-}
-
-impl Add<u32> for LogletOffset {
-    type Output = Self;
-    fn add(self, rhs: u32) -> Self {
-        Self(
-            self.0
-                .checked_add(rhs)
-                .expect("loglet offset must not overflow over u32"),
-        )
-    }
-}
-
-impl SequenceNumber for LogletOffset {
-    const MAX: Self = LogletOffset(u32::MAX);
-    const INVALID: Self = LogletOffset(0);
-    const OLDEST: Self = LogletOffset(1);
-
-    /// Saturates to Self::MAX
-    fn next(self) -> Self {
-        Self(self.0.saturating_add(1))
-    }
-
-    /// Saturates to Self::OLDEST.
-    fn prev(self) -> Self {
-        Self(std::cmp::max(Self::OLDEST.0, self.0.saturating_sub(1)))
-    }
-}
 
 /// A loglet represents a logical log stream provided by a provider implementation.
 ///

@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
+use std::ops::{Add, RangeInclusive};
 
+use bytes::{Buf, BufMut, BytesMut};
 use serde::{Deserialize, Serialize};
 
 use crate::identifiers::PartitionId;
@@ -279,6 +280,83 @@ where
 {
     fn record_keys(&self) -> Keys {
         self.keys.clone()
+    }
+}
+
+// Inner loglet offset
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    derive_more::From,
+    derive_more::Deref,
+    derive_more::Into,
+    derive_more::Display,
+    Serialize,
+    Deserialize,
+)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct LogletOffset(u32);
+
+impl LogletOffset {
+    pub const fn new(offset: u32) -> Self {
+        Self(offset)
+    }
+
+    pub fn decode<B: Buf>(mut data: B) -> Self {
+        Self(data.get_u32())
+    }
+
+    pub const fn estimated_encode_size() -> usize {
+        size_of::<Self>()
+    }
+
+    pub fn encode(&self, buf: &mut BytesMut) {
+        buf.reserve(Self::estimated_encode_size());
+        buf.put_u32(self.0);
+    }
+
+    pub fn encode_and_split(&self, buf: &mut BytesMut) -> BytesMut {
+        self.encode(buf);
+        buf.split()
+    }
+}
+
+impl From<LogletOffset> for u64 {
+    fn from(value: LogletOffset) -> Self {
+        u64::from(value.0)
+    }
+}
+
+impl Add<u32> for LogletOffset {
+    type Output = Self;
+    fn add(self, rhs: u32) -> Self {
+        Self(
+            self.0
+                .checked_add(rhs)
+                .expect("loglet offset must not overflow over u32"),
+        )
+    }
+}
+
+impl SequenceNumber for LogletOffset {
+    const MAX: Self = LogletOffset(u32::MAX);
+    const INVALID: Self = LogletOffset(0);
+    const OLDEST: Self = LogletOffset(1);
+
+    /// Saturates to Self::MAX
+    fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+
+    /// Saturates to Self::OLDEST.
+    fn prev(self) -> Self {
+        Self(std::cmp::max(Self::OLDEST.0, self.0.saturating_sub(1)))
     }
 }
 

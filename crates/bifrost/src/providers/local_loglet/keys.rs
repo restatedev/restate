@@ -12,9 +12,7 @@ use std::mem::size_of;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use restate_types::logs::SequenceNumber;
-
-use crate::loglet::LogletOffset;
+use restate_types::logs::{LogletOffset, SequenceNumber};
 
 pub(crate) const DATA_KEY_PREFIX_LENGTH: usize = size_of::<u8>() + size_of::<u64>();
 
@@ -124,11 +122,10 @@ impl MetadataKey {
 mod tests {
     // test RecordKey
     use super::*;
-    use crate::loglet::LogletOffset;
 
     #[test]
     fn test_record_key() {
-        let key = RecordKey::new(1, LogletOffset(2));
+        let key = RecordKey::new(1, LogletOffset::new(2));
         let mut buf = BytesMut::new();
         let bytes = key.encode_and_split(&mut buf);
         let key2 = RecordKey::from_slice(&bytes);

@@ -29,7 +29,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use restate_core::ShutdownError;
-use restate_types::logs::{KeyFilter, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogletOffset, SequenceNumber};
 
 use self::log_store::LogStoreError;
 use self::log_store::RocksDbLogStore;
@@ -37,7 +37,7 @@ use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
 use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::{Loglet, LogletCommit, LogletOffset, OperationError, SendableLogletReadStream};
+use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
@@ -208,7 +208,7 @@ impl Loglet for LocalLoglet {
     }
 
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
-        let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
+        let current_trim_point = LogletOffset::new(self.trim_point_offset.load(Ordering::Relaxed));
 
         if current_trim_point == LogletOffset::INVALID {
             Ok(None)
@@ -220,7 +220,7 @@ impl Loglet for LocalLoglet {
     /// Trim the log to the minimum of new_trim_point and last_committed_offset
     /// new_trim_point is inclusive (will be trimmed)
     async fn trim(&self, new_trim_point: LogletOffset) -> Result<(), OperationError> {
-        let effective_trim_point = new_trim_point.min(LogletOffset(
+        let effective_trim_point = new_trim_point.min(LogletOffset::new(
             self.last_committed_offset.load(Ordering::Relaxed),
         ));
 
@@ -230,7 +230,7 @@ impl Loglet for LocalLoglet {
         // parts in case two trim operations get reordered and we crash before applying the second.
         let _trim_point_lock_guard = self.trim_point_lock.lock().await;
 
-        let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
+        let current_trim_point = LogletOffset::new(self.trim_point_offset.load(Ordering::Relaxed));
 
         if current_trim_point >= effective_trim_point {
             // nothing to do since we have already trimmed beyond new_trim_point
@@ -241,13 +241,13 @@ impl Loglet for LocalLoglet {
 
         // no compare & swap operation is needed because we are operating under the trim point lock
         self.trim_point_offset
-            .store(effective_trim_point.0, Ordering::Relaxed);
+            .store(*effective_trim_point, Ordering::Relaxed);
 
         self.log_writer
             .enqueue_trim(self.loglet_id, current_trim_point, effective_trim_point)
             .await?;
 
-        histogram!(BIFROST_LOCAL_TRIM_LENGTH).record(effective_trim_point.0 - current_trim_point.0);
+        histogram!(BIFROST_LOCAL_TRIM_LENGTH).record(*effective_trim_point - *current_trim_point);
 
         Ok(())
     }

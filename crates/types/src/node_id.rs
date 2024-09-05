@@ -10,6 +10,8 @@
 
 use std::str::FromStr;
 
+use bytes::{Buf, BufMut, BytesMut};
+
 /// A generational node identifier. Nodes with the same ID but different generations
 /// represent the same node across different instances (restarts) of its lifetime.
 ///
@@ -79,6 +81,26 @@ impl FromStr for GenerationalNodeId {
             .map_err(|_| MalformedGenerationalNodeId(s.to_string()))?;
 
         Ok(GenerationalNodeId::new(id, generation))
+    }
+}
+
+impl GenerationalNodeId {
+    pub fn decode<B: Buf>(mut data: B) -> Self {
+        // generational node id is stored as two u32s next to each other, each in big-endian.
+        let plain_id = data.get_u32();
+        let generation = data.get_u32();
+        Self(PlainNodeId(plain_id), generation)
+    }
+
+    pub fn encode(&self, buf: &mut BytesMut) {
+        buf.reserve(2 * size_of::<u32>());
+        buf.put_u32(self.0 .0);
+        buf.put_u32(self.1);
+    }
+
+    pub fn encode_and_split(&self, buf: &mut BytesMut) -> BytesMut {
+        self.encode(buf);
+        buf.split()
     }
 }
 
