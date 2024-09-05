@@ -108,10 +108,6 @@ jobs:
             cargo-home
           key: restate-server-build-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: How big is the loaded cache?
-        run:
-          du -sh target && du -sh cargo-home
-
       - name: Log into GitHub container registry
         uses: docker/login-action@v3
         with:
