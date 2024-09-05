@@ -106,7 +106,11 @@ jobs:
           path: |
             cargo-home
             target
-          key: restate-server-build-${{ hashFiles('**/Cargo.lock') }}
+          key: restate-server-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: How big is the loaded cache?
+        run:
+          du -sh target && du -sh cargo-home
 
       - name: Log into GitHub container registry
         uses: docker/login-action@v3
@@ -138,6 +142,10 @@ jobs:
           platforms: 'linux/amd64'
           cache-from: type=gha,scope=${{ github.workflow }}
           cache-to: type=gha,mode=max,scope=${{ github.workflow }}
+
+      - name: How big is the created cache?
+        run:
+          du -sh target && du -sh cargo-home
 
       - name: Save docker image as tar
         run: |

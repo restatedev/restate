@@ -15,10 +15,10 @@ COPY --exclude=.git . .
 RUN \
   --mount=type=cache,target=/usr/src/app/cargo-home,sharing=locked \
   --mount=type=cache,target=/usr/src/app/target,sharing=locked \
-  du -h target && du -h cargo-home && \
+  du -sh target && du -sh cargo-home && \
   CARGO_HOME=/usr/src/app/cargo-home just libc=gnu build --bin restate-server && \
   cp target/debug/restate-server restate-server && \
-  du -h target && du -h cargo-home
+  du -sh target && du -sh cargo-home
 
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:bookworm-slim AS runtime
