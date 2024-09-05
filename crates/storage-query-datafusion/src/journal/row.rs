@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::journal::schema::SysJournalBuilder;
+use bytestring::ByteString;
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
@@ -74,6 +75,15 @@ pub(crate) fn append_journal_row(
                         ));
                     }
                 }
+                EnrichedEntryHeader::GetPromise { .. }
+                | EnrichedEntryHeader::PeekPromise { .. }
+                | EnrichedEntryHeader::CompletePromise { .. } => {
+                    if row.is_promise_name_defined() {
+                        if let Some(promise_name) = get_promise_name(&entry) {
+                            row.promise_name(promise_name);
+                        }
+                    }
+                }
                 EnrichedEntryHeader::Sleep { .. } => {
                     if row.is_sleep_wakeup_at_defined() {
                         if let Some(sleep_entry) = deserialize_sleep_entry(&entry) {
@@ -99,6 +109,19 @@ fn deserialize_sleep_entry(entry: &EnrichedRawEntry) -> Option<SleepEntry> {
     debug_assert!(matches!(decoded_entry, Entry::Sleep(_)));
     match decoded_entry {
         Entry::Sleep(entry) => Some(entry),
+        _ => None,
+    }
+}
+
+fn get_promise_name(entry: &EnrichedRawEntry) -> Option<ByteString> {
+    let decoded_entry = entry
+        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
+        .expect("journal entry must deserialize");
+
+    match decoded_entry {
+        Entry::GetPromise(entry) => Some(entry.key),
+        Entry::PeekPromise(entry) => Some(entry.key),
+        Entry::CompletePromise(entry) => Some(entry.key),
         _ => None,
     }
 }
