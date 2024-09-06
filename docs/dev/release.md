@@ -30,6 +30,8 @@ https://github.com/issues?q=is%3Aopen+org%3Arestatedev+label%3Arelease-blocker
 
 Make sure that all [supported service protocol versions](../../crates/types/src/service_protocol.rs) are released.
 
+Confirm if any SDK releases are needed to keep up with the runtime and/or service protocol releases.
+
 ## Releasing the Restate runtime
 
 1. Make sure that the version field in the [Cargo.toml](/Cargo.toml) and [Chart.yaml](/charts/restate-helm/Chart.yaml) is set to the new release version `X.Y.Z`.
