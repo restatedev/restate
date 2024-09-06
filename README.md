@@ -108,10 +108,10 @@ Restate follows [Semantic Versioning](https://semver.org/).
 
 You can safely upgrade from a Restate `x.y` to `x.(y+1)` release without performing any manual data migration, as Restate performs an automatic data migration for you.
 
-To check the compatibility with the SDKs, check the respective READMEs:
+For SDK compatibility, refer to the supported version matrix in the respective READMEs:
 
 * [SDK-Java](https://github.com/restatedev/sdk-java/?tab=readme-ov-file#versions)
-* [SDK-Typescript](https://github.com/restatedev/sdk-typescript/?tab=readme-ov-file#versions)
+* [SDK-TypeScript](https://github.com/restatedev/sdk-typescript/?tab=readme-ov-file#versions)
 
 ### Building Restate locally
 

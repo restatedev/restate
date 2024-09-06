@@ -3,13 +3,11 @@
 Restate artifacts to release:
 
 * Runtime (this repo)
-* [SDK-Typescript](https://github.com/restatedev/sdk-typescript/?tab=readme-ov-file#releasing-the-package) and [Node template](https://github.com/restatedev/node-template-generator)
-* [Java SDK](https://github.com/restatedev/sdk-java/blob/main/development/release.md)
+* [Service protocol](https://github.com/restatedev/service-protocol)
 * [Documentation](https://github.com/restatedev/documentation/)
 * [Examples](https://github.com/restatedev/examples)
-* [Service protocol](https://github.com/restatedev/service-protocol)
-* [CDK](https://github.com/restatedev/cdk)
 * [Operator](https://github.com/restatedev/restate-operator)
+* [CDK Constructs](https://github.com/restatedev/cdk)
 
 Check the respective documentation of the single artifacts to perform a release.
 
@@ -23,12 +21,14 @@ We follow [SemVer](https://semver.org/):
 > * MINOR version when you add functionality in a backward compatible manner
 > * PATCH version when you make backward compatible bug fixes
 
-Runtime and SDKs follow independent versioning. SDKs should declare their compatibility matrix with respective runtime versions.
+Runtime and SDKs follow independent artifact versioning. Restate server and SDK compatibility is defined by the intersection of supported service protocol versions.
 
 ## Pre-release
 
 Before releasing, make sure all the issues tagged with release-blocker have either been solved, or PRs are ready to solve them:
 https://github.com/issues?q=is%3Aopen+org%3Arestatedev+label%3Arelease-blocker
+
+Make sure that all [supported service protocol versions](../../crates/types/src/service_protocol.rs) are released.
 
 ## Releasing the Restate runtime
 
@@ -41,7 +41,6 @@ https://github.com/issues?q=is%3Aopen+org%3Arestatedev+label%3Arelease-blocker
 **Note:** 
 Don't immediately create a release branch after a MAJOR/MINOR release.
 A release branch `release-MAJOR.MINOR` should only be created once a change to the storage formats, APIs or a new feature gets merged that should be shipped with the next MAJOR/MINOR release.
-
 
 ## Post-release
 
