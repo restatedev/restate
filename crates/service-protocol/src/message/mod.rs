@@ -16,14 +16,14 @@ use prost::Message;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::journal::{Completion, EntryIndex};
+use restate_types::service_protocol;
+use std::time::Duration;
 
 mod encoding;
 mod header;
 
 pub use encoding::{Decoder, Encoder, EncodingError};
 pub use header::{MessageHeader, MessageKind, MessageType};
-use restate_types::service_protocol;
-use restate_types::time::MillisSinceEpoch;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolMessage {
@@ -49,7 +49,7 @@ impl ProtocolMessage {
         partial_state: bool,
         state_map_entries: impl IntoIterator<Item = (Bytes, Bytes)>,
         retry_count_since_last_stored_entry: u32,
-        duration_since_last_stored_entry: MillisSinceEpoch,
+        duration_since_last_stored_entry: Duration,
     ) -> Self {
         Self::Start(service_protocol::StartMessage {
             id,
@@ -64,7 +64,7 @@ impl ProtocolMessage {
                 .and_then(|b| String::from_utf8(b.to_vec()).ok())
                 .unwrap_or_default(),
             retry_count_since_last_stored_entry,
-            duration_since_last_stored_entry: duration_since_last_stored_entry.as_u64(),
+            duration_since_last_stored_entry: duration_since_last_stored_entry.as_millis() as u64,
         })
     }
 
