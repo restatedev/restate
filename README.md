@@ -110,11 +110,11 @@ You can safely upgrade from a Restate `x.y` to `x.(y+1)` release without perform
 
 For SDK compatibility, refer to the supported version matrix in the respective READMEs:
 
-* [Restate Java SDK](https://github.com/restatedev/sdk-java/?tab=readme-ov-file#versions)
-* [Restate TypeScript SDK](https://github.com/restatedev/sdk-typescript/?tab=readme-ov-file#versions)
-* [Restate Go SDK](https://github.com/restatedev/sdk-go?tab=readme-ov-file#versions)
+* [Restate Java SDK](https://github.com/restatedev/sdk-java#versions)
+* [Restate TypeScript SDK](https://github.com/restatedev/sdk-typescript#versions)
+* [Restate Go SDK](https://github.com/restatedev/sdk-go#versions)
 * [Restate Python SDK](https://github.com/restatedev/sdk-python#versions)
-* [Restate Rust SDK](https://github.com/restatedev/sdk-rust?tab=readme-ov-file#versions)
+* [Restate Rust SDK](https://github.com/restatedev/sdk-rust#versions)
 
 ### Building Restate locally
 
