@@ -37,7 +37,6 @@ use restate_types::schema::deployment::{
     Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
 };
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 use std::future::poll_fn;
 use std::time::Duration;
@@ -159,7 +158,7 @@ where
                 journal_size,
                 state_iter,
                 self.invocation_task.retry_count_since_last_stored_entry,
-                journal_metadata.last_modification_date
+                journal_metadata.last_modification_date.elapsed()
             )
             .await
         );
@@ -409,7 +408,7 @@ where
         journal_size: u32,
         state_entries: EagerState<I>,
         retry_count_since_last_stored_entry: u32,
-        duration_since_last_stored_entry: MillisSinceEpoch,
+        duration_since_last_stored_entry: Duration,
     ) -> Result<(), InvocationTaskError> {
         let is_partial = state_entries.is_partial();
 

@@ -361,7 +361,6 @@ mod tests {
     use crate::codec::ProtobufRawEntryCodec;
     use restate_test_util::{assert, assert_eq, let_assert};
     use restate_types::journal::raw::RawEntryCodec;
-    use std::time::SystemTime;
 
     #[test]
     fn fill_decoder_with_several_messages() {
@@ -376,7 +375,7 @@ mod tests {
             true,
             vec![],
             10,
-            SystemTime::now().into(),
+            Duration::ZERO,
         );
 
         let expected_msg_1: ProtocolMessage = ProtobufRawEntryCodec::serialize_as_input_entry(
