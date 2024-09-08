@@ -19,9 +19,7 @@ use tokio::sync::oneshot;
 
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
-use restate_core::metadata_store::{
-    MetadataStoreClientError, Precondition, ReadWriteError, WriteError,
-};
+use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::{
