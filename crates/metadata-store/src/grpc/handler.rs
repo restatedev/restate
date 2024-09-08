@@ -8,28 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvc;
 use crate::grpc_svc::{DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest};
-use crate::local::grpc::pb_conversions::ConversionError;
-use crate::local::store::{Error, MetadataStoreRequest, RequestSender};
+use crate::{MetadataStoreRequest, RequestError, RequestSender};
 use async_trait::async_trait;
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status};
 
-/// Grpc svc handler for the [`LocalMetadataStore`].
+/// Grpc svc handler for the metadata store.
 #[derive(Debug)]
-pub struct LocalMetadataStoreHandler {
+pub struct MetadataStoreHandler {
     request_tx: RequestSender,
 }
 
-impl LocalMetadataStoreHandler {
+impl MetadataStoreHandler {
     pub fn new(request_tx: RequestSender) -> Self {
         Self { request_tx }
     }
 }
 
 #[async_trait]
-impl MetadataStoreSvc for LocalMetadataStoreHandler {
+impl MetadataStoreSvc for MetadataStoreHandler {
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let (result_tx, result_rx) = oneshot::channel();
 
@@ -129,10 +129,11 @@ impl MetadataStoreSvc for LocalMetadataStoreHandler {
     }
 }
 
-impl From<Error> for Status {
-    fn from(err: Error) -> Self {
+impl From<RequestError> for Status {
+    fn from(err: RequestError) -> Self {
         match err {
-            Error::FailedPrecondition(msg) => Status::failed_precondition(msg),
+            RequestError::FailedPrecondition(err) => Status::failed_precondition(err.to_string()),
+            RequestError::Unavailable(err) => Status::unavailable(err.to_string()),
             err => Status::internal(err.to_string()),
         }
     }
