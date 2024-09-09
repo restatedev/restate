@@ -104,11 +104,14 @@ jobs:
 
       - name: Compile Linux binaries
         if: ${{ matrix.build.os == 'ubuntu-latest' }}
-        uses: addnab/docker-run-action@v3
-        with:
-          image: ghcr.io/restatedev/dev-tools:latest
-          options: -v ${{ github.workspace }}:/restate -w /restate -e ACTIONS_CACHE_URL -e ACTIONS_RUNTIME_TOKEN -e SCCACHE_GHA_ENABLED
-          run: |
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/restate \
+            -w /restate \
+            -e ACTIONS_CACHE_URL \
+            -e ACTIONS_RUNTIME_TOKEN \
+            -e SCCACHE_GHA_ENABLED \
+            ghcr.io/restatedev/dev-tools:latest \
             cargo build --release --bins --target ${{ matrix.build.target }}
 
       - name: Sign binaries
