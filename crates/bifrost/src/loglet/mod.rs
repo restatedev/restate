@@ -18,7 +18,6 @@ pub mod util;
 pub use error::*;
 use futures::stream::BoxStream;
 pub use provider::{LogletProvider, LogletProviderFactory};
-use restate_core::ShutdownError;
 use tokio::sync::oneshot;
 
 use std::pin::Pin;
@@ -28,10 +27,11 @@ use std::task::{ready, Poll};
 use async_trait::async_trait;
 use futures::{FutureExt, Stream};
 
-use restate_types::logs::{KeyFilter, LogletOffset, Record};
+use restate_core::ShutdownError;
+use restate_types::logs::{KeyFilter, LogletOffset, Record, TailState};
 
 use crate::LogEntry;
-use crate::{Result, TailState};
+use crate::Result;
 
 /// A loglet represents a logical log stream provided by a provider implementation.
 ///

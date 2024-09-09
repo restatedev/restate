@@ -19,7 +19,9 @@ use crate::storage::StorageEncode;
 pub mod builder;
 pub mod metadata;
 mod record;
+mod tail;
 pub use record::Record;
+pub use tail::*;
 
 #[derive(
     Debug,
