@@ -29,7 +29,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use restate_core::ShutdownError;
-use restate_types::logs::{KeyFilter, LogletOffset, Record, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogletOffset, Record, SequenceNumber, TailState};
 
 use self::log_store::LogStoreError;
 use self::log_store::RocksDbLogStore;
@@ -41,7 +41,7 @@ use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStre
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
-use crate::{Result, TailState};
+use crate::Result;
 
 #[derive(derive_more::Debug)]
 struct LocalLoglet {

@@ -20,12 +20,12 @@ use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_types::logs::{KeyFilter, LogletOffset, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogletOffset, SequenceNumber, TailState};
 
 use crate::loglet::{Loglet, LogletReadStream, OperationError};
 use crate::providers::local_loglet::record_format::decode_and_filter_record;
 use crate::providers::local_loglet::LogStoreError;
-use crate::{LogEntry, Result, TailState};
+use crate::{LogEntry, Result};
 
 use super::keys::RecordKey;
 use super::LocalLoglet;

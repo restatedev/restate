@@ -11,8 +11,9 @@
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
+use restate_types::logs::TailState;
+
 use super::LogletOffset;
-use crate::TailState;
 
 #[derive(Debug, Clone)]
 pub struct TailOffsetWatch {
@@ -41,6 +42,10 @@ impl TailOffsetWatch {
 
     pub fn latest_offset(&self) -> LogletOffset {
         self.sender.borrow().offset()
+    }
+
+    pub fn get(&self) -> watch::Ref<'_, TailState<LogletOffset>> {
+        self.sender.borrow()
     }
 
     pub fn is_sealed(&self) -> bool {

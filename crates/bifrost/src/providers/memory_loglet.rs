@@ -23,15 +23,17 @@ use tracing::{debug, info};
 
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::{KeyFilter, LogId, LogletOffset, MatchKeyQuery, Record, SequenceNumber};
+use restate_types::logs::{
+    KeyFilter, LogId, LogletOffset, MatchKeyQuery, Record, SequenceNumber, TailState,
+};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
     Loglet, LogletCommit, LogletProvider, LogletProviderFactory, LogletReadStream, OperationError,
     SendableLogletReadStream,
 };
+use crate::LogEntry;
 use crate::Result;
-use crate::{LogEntry, TailState};
 
 #[derive(Default)]
 pub struct Factory {

@@ -18,12 +18,12 @@ use tracing::instrument;
 
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::Record;
 use restate_types::logs::{KeyFilter, LogletOffset, Lsn, SequenceNumber};
+use restate_types::logs::{Record, TailState};
 
 use crate::loglet::{AppendError, Loglet, OperationError, SendableLogletReadStream};
+use crate::Result;
 use crate::{Commit, LogEntry, LsnExt};
-use crate::{Result, TailState};
 
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug, Clone, thiserror::Error)]
