@@ -15,8 +15,7 @@ use std::mem::size_of;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use restate_bifrost::loglet::LogletOffset;
-use restate_types::logs::SequenceNumber;
+use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::replicated_loglet::ReplicatedLogletId;
 
 const DATA_KEY_PREFIX: u8 = b'd';

@@ -11,8 +11,7 @@
 // todo: remove after scaffolding is complete
 #![allow(unused)]
 
-use restate_bifrost::loglet::LogletOffset;
-use restate_types::logs::SequenceNumber;
+use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::PlainNodeId;
 

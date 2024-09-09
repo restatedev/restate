@@ -14,16 +14,15 @@ use tokio_stream::wrappers::WatchStream;
 use super::LogletOffset;
 use crate::TailState;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TailOffsetWatch {
     sender: watch::Sender<TailState<LogletOffset>>,
-    receiver: watch::Receiver<TailState<LogletOffset>>,
 }
 
 impl TailOffsetWatch {
     pub fn new(tail: TailState<LogletOffset>) -> Self {
-        let (sender, receiver) = watch::channel(tail);
-        Self { sender, receiver }
+        let sender = watch::Sender::new(tail);
+        Self { sender }
     }
 
     /// Inform the watch that the tail might have changed.
@@ -31,11 +30,27 @@ impl TailOffsetWatch {
         self.sender.send_if_modified(|v| v.combine(sealed, offset));
     }
 
+    /// Update that the offset might have changed without updating the seal
+    pub fn notify_offset_update(&self, offset: LogletOffset) {
+        self.sender.send_if_modified(|v| v.combine(false, offset));
+    }
+
     pub fn notify_seal(&self) {
         self.sender.send_if_modified(|v| v.seal());
     }
 
+    pub fn latest_offset(&self) -> LogletOffset {
+        self.sender.borrow().offset()
+    }
+
+    pub fn is_sealed(&self) -> bool {
+        self.sender.borrow().is_sealed()
+    }
+
+    /// The first yielded value is the latest known tail
     pub fn to_stream(&self) -> WatchStream<TailState<LogletOffset>> {
-        WatchStream::new(self.receiver.clone())
+        let mut receiver = self.sender.subscribe();
+        receiver.mark_changed();
+        WatchStream::new(receiver)
     }
 }
