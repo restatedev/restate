@@ -136,10 +136,16 @@ where
         };
 
         // Prepare the tracing span
-        let (ingress_span, ingress_span_context) =
-            prepare_tracing_span(&invocation_id, &invocation_target, &req);
+        let runtime_span = tracing::info_span!(
+            "ingress",
+            restate.invocation.id = %invocation_id,
+            restate.invocation.target = %invocation_target.short()
+        );
 
         let result = async move {
+            let ingress_span_context =
+                prepare_tracing_span(&invocation_id, &invocation_target, &req);
+
             info!("Processing ingress request");
 
             let (parts, body) = req.into_parts();
@@ -208,7 +214,7 @@ where
                 }
             }
         }
-        .instrument(ingress_span)
+        .instrument(runtime_span)
         .await;
 
         // Note that we only record (mostly) successful requests here. We might want to

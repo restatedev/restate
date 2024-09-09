@@ -87,13 +87,37 @@ pub struct CommonOptionCliOverride {
     #[clap(long, global = true)]
     pub shutdown_timeout: Option<Duration>,
 
-    /// # Tracing Endpoint
+    /// Tracing Endpoint
     ///
     /// Specify the tracing endpoint to send traces to.
     /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
     /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
     #[clap(long, env = "RESTATE_TRACING_ENDPOINT", global = true)]
     pub tracing_endpoint: Option<String>,
+
+    /// Runtime Tracing Endpoint
+    ///
+    /// Overrides [`Self::tracing_endpoint`] for runtime traces
+    ///
+    /// Specify the tracing endpoint to send runtime traces to.
+    /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
+    /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
+    ///
+    /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
+    #[clap(long, env = "RESTATE_TRACING_RUNTIME_ENDPOINT", global = true)]
+    pub tracing_runtime_endpoint: Option<String>,
+
+    /// Services Tracing Endpoint
+    ///
+    /// Overrides [`Self::tracing_endpoint`] for services traces
+    ///
+    /// Specify the tracing endpoint to send services traces to.
+    /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
+    /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
+    ///
+    /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
+    #[clap(long, env = "RESTATE_SERVICES_RUNTIME_ENDPOINT", global = true)]
+    pub tracing_services_endpoint: Option<String>,
 
     /// # Distributed Tracing JSON Export Path
     ///

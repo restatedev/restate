@@ -11,59 +11,48 @@
 use super::ConnectInfo;
 
 use http::Request;
+use opentelemetry::global::ObjectSafeSpan;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
+use restate_tracing_instrumentation as instrumentation;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{InvocationTarget, SpanRelation};
-use tracing::{info_span, Span};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 pub(crate) fn prepare_tracing_span<B>(
     invocation_id: &InvocationId,
     invocation_target: &InvocationTarget,
     req: &Request<B>,
-) -> (Span, SpanContext) {
+) -> SpanContext {
     let connect_info: &ConnectInfo = req
         .extensions()
         .get()
         .expect("Should have been injected by the previous layer");
     let (client_addr, client_port) = (connect_info.address(), connect_info.port());
 
-    // Create the ingress span and attach it to the next async block.
-    // This span is committed once the async block terminates, recording the execution time of the invocation.
-    // Another span is created later by the ServiceInvocationFactory, for the ServiceInvocation itself,
-    // which is used by the Restate services to correctly link to a single parent span
-    // to commit intermediate results of the processing.
-    let ingress_span = info_span!(
-        "ingress_invoke",
-        otel.name = format!("ingress_invoke {}", invocation_target),
-        rpc.system = "restate",
-        rpc.service = %invocation_target.service_name(),
-        rpc.method = %invocation_target.handler_name(),
-        restate.invocation.id = %invocation_id,
-        restate.invocation.target = %invocation_target,
-        client.socket.address = %client_addr,
-        client.socket.port = %client_port,
-    );
-
-    // Extract tracing context if any
     let tracing_context: &opentelemetry::Context = req
         .extensions()
         .get()
         .expect("Should have been injected by the previous layer");
 
-    // Attach this ingress_span to the parent parsed from the headers, if any.
-    span_relation(tracing_context.span().span_context()).attach_to_span(&ingress_span);
+    let inbound_span = tracing_context.span();
 
-    // We need the context to link it to the service invocation span
-    let ingress_span_context = ingress_span.context().span().span_context().clone();
-
-    (ingress_span, ingress_span_context)
-}
-
-fn span_relation(request_span: &SpanContext) -> SpanRelation {
-    if request_span.is_valid() {
-        SpanRelation::Parent(request_span.clone())
+    // if the inbound span is set (`traceparent`) we use that as
+    // parent to the ingress span.
+    let relation = if inbound_span.span_context().is_valid() {
+        SpanRelation::Parent(inbound_span.span_context().clone())
     } else {
         SpanRelation::None
-    }
+    };
+
+    let span = instrumentation::info_invocation_span!(
+        relation = relation,
+        prefix = "ingress",
+        id = invocation_id,
+        target = invocation_target,
+        tags = (
+            client.socket.address = client_addr.to_string(),
+            client.socket.port = client_port as i64
+        )
+    );
+
+    span.span_context().clone()
 }

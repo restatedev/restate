@@ -42,7 +42,7 @@ use std::future::poll_fn;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info, trace, warn, Span};
+use tracing::{debug, info, trace, warn};
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
@@ -123,13 +123,6 @@ where
         .expect("must be able to build a valid invocation path");
 
         let journal_size = journal_metadata.length;
-
-        // Attach parent and uri to the current span
-        let invocation_task_span = Span::current();
-        journal_metadata
-            .span_context
-            .as_parent()
-            .attach_to_span(&invocation_task_span);
 
         info!(
             invocation.id = %self.invocation_task.invocation_id,
