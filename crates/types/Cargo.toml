@@ -24,13 +24,14 @@ anyhow = { workspace = true }
 arc-swap = { workspace = true }
 base62 = { version = "2.0.2" }
 base64 = { workspace = true }
+bitflags = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
-dyn-clone = { version = "1.0" }
 downcast-rs = { workspace = true }
+dyn-clone = { version = "1.0" }
 enum-map = { workspace = true }
 enumset = { workspace = true, features = ["serde"] }
 flexbuffers = { workspace = true }

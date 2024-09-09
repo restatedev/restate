@@ -26,7 +26,6 @@ use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
 };
 use restate_core::{task_center, TaskKind};
-#[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
@@ -80,7 +79,6 @@ pub enum BuildError {
         #[code]
         roles::AdminRoleBuildError,
     ),
-    #[cfg(feature = "replicated-loglet")]
     #[error("building log-server failed: {0}")]
     LogServer(
         #[from]
@@ -110,7 +108,6 @@ pub struct Node {
     metadata_store_role: Option<LocalMetadataStoreService>,
     admin_role: Option<AdminRole>,
     worker_role: Option<WorkerRole>,
-    #[cfg(feature = "replicated-loglet")]
     log_server: Option<LogServerService>,
     server: NetworkServer,
 }
@@ -167,7 +164,6 @@ impl Node {
 
         // Setup bifrost
         // replicated-loglet
-        #[cfg(feature = "replicated-loglet")]
         let replicated_loglet_factory = restate_bifrost::providers::replicated_loglet::Factory::new(
             updateable_config
                 .clone()
@@ -179,15 +175,12 @@ impl Node {
             &mut router_builder,
         );
         let bifrost_svc = BifrostService::new(tc.clone(), metadata.clone())
-            .enable_local_loglet(&updateable_config);
+            .enable_local_loglet(&updateable_config)
+            .with_factory(replicated_loglet_factory);
 
         #[cfg(feature = "memory-loglet")]
         let bifrost_svc = bifrost_svc.enable_in_memory_loglet();
 
-        #[cfg(feature = "replicated-loglet")]
-        let bifrost_svc = bifrost_svc.with_factory(replicated_loglet_factory);
-
-        #[cfg(feature = "replicated-loglet")]
         let log_server = if config.has_role(Role::LogServer) {
             Some(
                 LogServerService::create(
@@ -267,7 +260,6 @@ impl Node {
             metadata_store_client,
             admin_role,
             worker_role,
-            #[cfg(feature = "replicated-loglet")]
             log_server,
             server,
         })
@@ -383,7 +375,6 @@ impl Node {
         tc.run_in_scope("bifrost-init", None, self.bifrost.start())
             .await?;
 
-        #[cfg(feature = "replicated-loglet")]
         if let Some(log_server) = self.log_server {
             tc.spawn(
                 TaskKind::SystemBoot,

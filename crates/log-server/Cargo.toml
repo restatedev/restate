@@ -19,8 +19,11 @@ restate-rocksdb = { workspace = true }
 restate-types = { workspace = true, features = ["replicated-loglet"] }
 
 anyhow = { workspace = true }
+bitflags = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
 codederror = { workspace = true }
+dashmap = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
 metrics = { workspace = true }
@@ -36,6 +39,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 
 [dev-dependencies]

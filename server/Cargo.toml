@@ -26,7 +26,6 @@ options_schema = [
     "restate-tracing-instrumentation/options_schema",
     "restate-types/schemars",
 ]
-replicated-loglet =  ["restate-node/replicated-loglet"]
 memory-loglet = ["restate-node/memory-loglet"]
 
 [dependencies]

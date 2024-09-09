@@ -11,6 +11,8 @@
 mod builder;
 mod error;
 mod keys;
+mod metadata_merge;
+mod record_format;
 mod store;
 mod writer;
 

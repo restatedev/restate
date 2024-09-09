@@ -304,13 +304,7 @@ impl CommonOptions {
 impl Default for CommonOptions {
     fn default() -> Self {
         Self {
-            // todo (asoli): Remove this when:
-            //   a. The safe rollback version supports log-server (at least supports parsing the
-            //   config with the log-server role)
-            //   b. When log-server becomes enabled by default.
-            //
-            //   see "roles_compat_test" test below.
-            roles: EnumSet::all() - Role::LogServer,
+            roles: EnumSet::all(),
             node_name: None,
             force_node_id: None,
             cluster_name: "localcluster".to_owned(),
@@ -546,20 +540,5 @@ impl Default for TracingOptions {
             tracing_filter: "info".to_owned(),
             tracing_headers: SerdeableHeaderHashMap::default(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::nodes_config::Role;
-
-    use super::CommonOptions;
-
-    #[test]
-    fn roles_compat_test() {
-        let opts = CommonOptions::default();
-        // make sure we don't add log-server by default until previous version can parse nodes
-        // configuration with this role.
-        assert!(!opts.roles.contains(Role::LogServer));
     }
 }
