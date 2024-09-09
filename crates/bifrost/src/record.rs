@@ -12,13 +12,9 @@ use core::str;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
-use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn};
-use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery};
-use restate_types::storage::{
-    PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode,
-};
+use restate_types::logs::LogletOffset;
+use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn, Record};
+use restate_types::storage::{PolyBytes, StorageDecode, StorageDecodeError, StorageEncode};
 use restate_types::time::NanosSinceEpoch;
 
 use crate::LsnExt;
@@ -118,129 +114,6 @@ impl<S: Copy> LogEntry<S> {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Header {
-    pub created_at: NanosSinceEpoch,
-}
-
-impl Default for Header {
-    fn default() -> Self {
-        Self {
-            created_at: NanosSinceEpoch::now(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Record {
-    header: Header,
-    body: PolyBytes,
-    keys: Keys,
-}
-
-impl Record {
-    pub fn from_parts(header: Header, keys: Keys, body: PolyBytes) -> Self {
-        Self { header, keys, body }
-    }
-
-    pub fn created_at(&self) -> NanosSinceEpoch {
-        self.header.created_at
-    }
-
-    pub fn keys(&self) -> &Keys {
-        &self.keys
-    }
-
-    pub fn body(&self) -> &PolyBytes {
-        &self.body
-    }
-
-    pub fn dissolve(self) -> (Header, PolyBytes, Keys) {
-        (self.header, self.body, self.keys)
-    }
-
-    /// Decode the record body into an owned value T.
-    ///
-    /// Internally, this will clone the inner value if it's already in record cache, or will move
-    /// the value from the underlying Arc delivered from the loglet. Use this approach if you need
-    /// to mutate the value in-place and the cost of cloning sections is high. It's generally
-    /// recommended to use `decode_arc` whenever possible for large payloads.
-    pub fn decode<T: StorageDecode + StorageEncode + Clone>(self) -> Result<T, StorageDecodeError> {
-        let decoded = match self.body {
-            PolyBytes::Bytes(slice) => {
-                let mut buf = std::io::Cursor::new(slice);
-                StorageCodec::decode(&mut buf)?
-            }
-            PolyBytes::Typed(value) => {
-                let target_arc: Arc<T> = value.downcast_arc().map_err(|_| {
-                StorageDecodeError::DecodeValue(
-                    anyhow::anyhow!(
-                        "Type mismatch. Original value in PolyBytes::Typed does not match requested type"
-                    )
-                    .into(),
-                )})?;
-                // Attempts to move the inner value (T) if this Arc has exactly one strong
-                // reference. Otherwise, it clones the inner value.
-                match Arc::try_unwrap(target_arc) {
-                    Ok(value) => value,
-                    Err(value) => value.as_ref().clone(),
-                }
-            }
-        };
-        Ok(decoded)
-    }
-
-    /// Decode the record body into an Arc<T>. This is the most efficient way to access the entry
-    /// if you need read-only access or if it's acceptable to selectively clone inner sections. If
-    /// the record is in record cache, this will avoid cloning or deserialization of the value.
-    pub fn decode_arc<T: StorageDecode + StorageEncode>(
-        self,
-    ) -> Result<Arc<T>, StorageDecodeError> {
-        let decoded = match self.body {
-            PolyBytes::Bytes(slice) => {
-                let mut buf = std::io::Cursor::new(slice);
-                Arc::new(StorageCodec::decode(&mut buf)?)
-            }
-            PolyBytes::Typed(value) => {
-                value.downcast_arc().map_err(|_| {
-                StorageDecodeError::DecodeValue(
-                    anyhow::anyhow!(
-                        "Type mismatch. Original value in PolyBytes::Typed does not match requested type"
-                    )
-                    .into(),
-                )})?
-            },
-        };
-        Ok(decoded)
-    }
-}
-
-impl MatchKeyQuery for Record {
-    fn matches_key_query(&self, query: &KeyFilter) -> bool {
-        self.keys.matches_key_query(query)
-    }
-}
-
-impl From<String> for Record {
-    fn from(value: String) -> Self {
-        Record {
-            header: Header::default(),
-            keys: Keys::None,
-            body: PolyBytes::Typed(Arc::new(value)),
-        }
-    }
-}
-
-impl From<&str> for Record {
-    fn from(value: &str) -> Self {
-        Record {
-            header: Header::default(),
-            keys: Keys::None,
-            body: PolyBytes::Typed(Arc::new(value.to_owned())),
-        }
-    }
-}
-
 #[derive(Debug, derive_more::IsVariant)]
 enum MaybeRecord<S = Lsn> {
     TrimGap(TrimGap<S>),
@@ -254,7 +127,7 @@ struct TrimGap<S> {
 }
 
 pub struct InputRecord<T> {
-    header: Header,
+    created_at: NanosSinceEpoch,
     keys: Keys,
     body: Arc<dyn StorageEncode>,
     _phantom: PhantomData<T>,
@@ -263,7 +136,7 @@ pub struct InputRecord<T> {
 impl<T> Clone for InputRecord<T> {
     fn clone(&self) -> Self {
         Self {
-            header: self.header.clone(),
+            created_at: self.created_at,
             keys: self.keys.clone(),
             body: Arc::clone(&self.body),
             _phantom: self._phantom,
@@ -275,18 +148,14 @@ impl<T> Clone for InputRecord<T> {
 // layout is identical.
 impl<T: StorageEncode> InputRecord<T> {
     pub(crate) fn into_record(self) -> Record {
-        Record {
-            header: self.header,
-            keys: self.keys,
-            body: PolyBytes::Typed(self.body),
-        }
+        Record::from_parts(self.created_at, self.keys, PolyBytes::Typed(self.body))
     }
 }
 
 impl<T: StorageEncode> InputRecord<T> {
-    pub fn from_parts(header: Header, keys: Keys, body: Arc<T>) -> Self {
+    pub fn from_parts(created_at: NanosSinceEpoch, keys: Keys, body: Arc<T>) -> Self {
         Self {
-            header,
+            created_at,
             keys,
             body,
             _phantom: PhantomData,
@@ -294,14 +163,14 @@ impl<T: StorageEncode> InputRecord<T> {
     }
 
     pub fn created_at(&self) -> NanosSinceEpoch {
-        self.header.created_at
+        self.created_at
     }
 }
 
 impl<T: StorageEncode + HasRecordKeys> From<Arc<T>> for InputRecord<T> {
     fn from(val: Arc<T>) -> Self {
         InputRecord {
-            header: Header::default(),
+            created_at: NanosSinceEpoch::now(),
             keys: val.record_keys(),
             body: val,
             _phantom: PhantomData,
@@ -312,7 +181,7 @@ impl<T: StorageEncode + HasRecordKeys> From<Arc<T>> for InputRecord<T> {
 impl From<String> for InputRecord<String> {
     fn from(val: String) -> Self {
         InputRecord {
-            header: Header::default(),
+            created_at: NanosSinceEpoch::now(),
             keys: Keys::None,
             body: Arc::new(val),
             _phantom: PhantomData,
@@ -323,7 +192,7 @@ impl From<String> for InputRecord<String> {
 impl From<&str> for InputRecord<String> {
     fn from(val: &str) -> Self {
         InputRecord {
-            header: Header::default(),
+            created_at: NanosSinceEpoch::now(),
             keys: Keys::None,
             body: Arc::new(String::from(val)),
             _phantom: PhantomData,
@@ -334,7 +203,7 @@ impl From<&str> for InputRecord<String> {
 impl<T: StorageEncode> From<BodyWithKeys<T>> for InputRecord<T> {
     fn from(val: BodyWithKeys<T>) -> Self {
         InputRecord {
-            header: Header::default(),
+            created_at: NanosSinceEpoch::now(),
             keys: val.record_keys(),
             body: Arc::new(val.into_inner()),
             _phantom: PhantomData,

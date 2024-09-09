@@ -29,7 +29,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use restate_core::ShutdownError;
-use restate_types::logs::{KeyFilter, LogletOffset, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogletOffset, Record, SequenceNumber};
 
 use self::log_store::LogStoreError;
 use self::log_store::RocksDbLogStore;
@@ -41,7 +41,6 @@ use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStre
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
-use crate::record::Record;
 use crate::{Result, TailState};
 
 #[derive(derive_more::Debug)]
@@ -273,11 +272,9 @@ mod tests {
     use futures::TryStreamExt;
     use googletest::prelude::eq;
     use googletest::{assert_that, elements_are};
-    use restate_types::storage::PolyBytes;
     use test_log::test;
 
     use crate::loglet::Loglet;
-    use crate::Header;
     use restate_core::TestCoreEnvBuilder;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
@@ -428,15 +425,5 @@ mod tests {
             Ok(())
         })
         .await
-    }
-
-    impl From<(&str, Keys)> for Record {
-        fn from((value, keys): (&str, Keys)) -> Self {
-            Record::from_parts(
-                Header::default(),
-                keys,
-                PolyBytes::Typed(Arc::new(value.to_owned())),
-            )
-        }
     }
 }
