@@ -23,6 +23,7 @@ use restate_types::live::BoxedLiveLoad;
 use tonic::body::boxed;
 use tonic::server::NamedService;
 use tower::ServiceExt;
+use tower_http::classify::{GrpcCode, GrpcErrorsAsFailures, SharedClassifier};
 
 pub struct LocalMetadataStoreService {
     opts: BoxedLiveLoad<MetadataStoreOptions>,
@@ -64,10 +65,15 @@ impl LocalMetadataStoreService {
         let options = opts.live_load();
         let bind_address = options.bind_address.clone();
         let store = LocalMetadataStore::create(options, rocksdb_options).await?;
-        // Trace layer
-        let span_factory = tower_http::trace::DefaultMakeSpan::new()
-            .include_headers(true)
-            .level(tracing::Level::ERROR);
+
+        let trace_layer = tower_http::trace::TraceLayer::new(SharedClassifier::new(
+            GrpcErrorsAsFailures::new().with_success(GrpcCode::FailedPrecondition),
+        ))
+        .make_span_with(
+            tower_http::trace::DefaultMakeSpan::new()
+                .include_headers(true)
+                .level(tracing::Level::ERROR),
+        );
 
         let reflection_service_builder = tonic_reflection::server::Builder::configure()
             .register_encoded_file_descriptor_set(grpc_svc::FILE_DESCRIPTOR_SET);
@@ -78,7 +84,7 @@ impl LocalMetadataStoreService {
             .await;
 
         let server_builder = tonic::transport::Server::builder()
-            .layer(tower_http::trace::TraceLayer::new_for_grpc().make_span_with(span_factory))
+            .layer(trace_layer)
             .add_service(health_service)
             .add_service(MetadataStoreSvcServer::new(LocalMetadataStoreHandler::new(
                 store.request_sender(),

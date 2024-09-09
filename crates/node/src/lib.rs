@@ -19,9 +19,7 @@ use tokio::sync::oneshot;
 
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
-use restate_core::metadata_store::{
-    MetadataStoreClientError, Precondition, ReadWriteError, WriteError,
-};
+use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::{
@@ -480,30 +478,14 @@ impl Node {
         config: &Configuration,
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
-        let scheduling_plan =
-            SchedulingPlan::from(partition_table, config.admin.default_replication_strategy);
-
-        Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || async {
-            let result = metadata_store_client
-                .put(
-                    SCHEDULING_PLAN_KEY.clone(),
-                    &scheduling_plan,
-                    Precondition::DoesNotExist,
-                )
-                .await;
-
-            if let Err(err) = result {
-                match err {
-                    // This means a scheduling plan already exists
-                    WriteError::FailedPrecondition(_) => Ok(()),
-                    err => Err(ReadWriteError::from(err)),
-                }
-            } else {
-                Ok(())
-            }
+        Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
+            metadata_store_client.get_or_insert(SCHEDULING_PLAN_KEY.clone(), || {
+                SchedulingPlan::from(partition_table, config.admin.default_replication_strategy)
+            })
         })
         .await
         .map_err(Into::into)
+        .map(|_| ())
     }
 
     async fn fetch_or_insert_logs_configuration(
