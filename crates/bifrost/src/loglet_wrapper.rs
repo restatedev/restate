@@ -14,13 +14,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::{Stream, StreamExt};
+use tracing::instrument;
 
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
-use tracing::instrument;
+use restate_types::logs::{KeyFilter, LogletOffset, Lsn, SequenceNumber};
 
-use crate::loglet::{AppendError, Loglet, LogletOffset, OperationError, SendableLogletReadStream};
+use crate::loglet::{AppendError, Loglet, OperationError, SendableLogletReadStream};
 use crate::record::Record;
 use crate::{Commit, LogEntry, LsnExt};
 use crate::{Result, TailState};

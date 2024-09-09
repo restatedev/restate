@@ -14,15 +14,13 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use restate_types::logs::{KeyFilter, MatchKeyQuery};
-
 use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn};
+use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery};
 use restate_types::storage::{
     PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode,
 };
 use restate_types::time::NanosSinceEpoch;
 
-use crate::loglet::LogletOffset;
 use crate::LsnExt;
 
 /// An entry in the log.

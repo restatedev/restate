@@ -20,9 +20,9 @@ use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_types::logs::{KeyFilter, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogletOffset, SequenceNumber};
 
-use crate::loglet::{Loglet, LogletOffset, LogletReadStream, OperationError};
+use crate::loglet::{Loglet, LogletReadStream, OperationError};
 use crate::providers::local_loglet::record_format::decode_and_filter_record;
 use crate::providers::local_loglet::LogStoreError;
 use crate::{LogEntry, Result, TailState};
@@ -191,7 +191,8 @@ impl Stream for LocalLogletReadStream {
 
             // Trim point is the slot **before** the first readable record (if it exists)
             // trim point might have been updated since last time.
-            let trim_point = LogletOffset(self.loglet.trim_point_offset.load(Ordering::Relaxed));
+            let trim_point =
+                LogletOffset::new(self.loglet.trim_point_offset.load(Ordering::Relaxed));
             let head_offset = trim_point.next();
             // Are we reading behind the loglet head? -> TrimGap
             assert!(self.read_pointer > LogletOffset::from(0));
@@ -224,7 +225,7 @@ impl Stream for LocalLogletReadStream {
             if !self.iterator.valid() || self.iterator.key().is_none() {
                 // trim point might have been updated.
                 let potentially_different_trim_point =
-                    LogletOffset(self.loglet.trim_point_offset.load(Ordering::Relaxed));
+                    LogletOffset::new(self.loglet.trim_point_offset.load(Ordering::Relaxed));
                 if potentially_different_trim_point != trim_point {
                     debug!("Trim point has been updated, fast-forwarding the stream");
                     continue;
