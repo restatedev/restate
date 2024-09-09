@@ -14,19 +14,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use googletest::prelude::*;
-use restate_types::logs::metadata::SegmentIndex;
 use tokio::sync::Barrier;
 use tokio::task::{JoinHandle, JoinSet};
-
-use restate_test_util::let_assert;
-use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
 use tokio_stream::StreamExt;
 use tracing::info;
+
+use restate_test_util::let_assert;
+use restate_types::logs::metadata::SegmentIndex;
+use restate_types::logs::{KeyFilter, Lsn, SequenceNumber, TailState};
 
 use super::{Loglet, LogletOffset};
 use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
-use crate::{setup_panic_handler, TailState};
+use crate::setup_panic_handler;
 
 async fn wait_for_trim(loglet: &LogletWrapper, required_trim_point: Lsn) -> anyhow::Result<()> {
     for _ in 0..3 {

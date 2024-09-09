@@ -114,8 +114,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         Ok(Response::new(DescribeLogResponse {
             chain: serialize_value(chain),
             tail_state: match tail_state {
-                restate_bifrost::TailState::Open(_) => 1,
-                restate_bifrost::TailState::Sealed(_) => 2,
+                restate_types::logs::TailState::Open(_) => 1,
+                restate_types::logs::TailState::Sealed(_) => 2,
             },
             tail_offset: tail_state.offset().as_u64(),
         }))

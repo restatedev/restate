@@ -17,12 +17,12 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::Configuration;
 use restate_types::logs::builder::BuilderError;
 use restate_types::logs::metadata::{LogletParams, Logs, ProviderKind, SegmentIndex};
-use restate_types::logs::{LogId, Lsn};
+use restate_types::logs::{LogId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::Version;
 
 use crate::error::AdminError;
-use crate::{Bifrost, Error, Result, TailState};
+use crate::{Bifrost, Error, Result};
 
 /// Bifrost's Admin API
 #[derive(Clone, Copy)]
