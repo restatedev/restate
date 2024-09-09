@@ -13,6 +13,23 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, RwLock};
+use tracing::info;
+
+use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
+use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
+};
+use restate_types::net::codec::{
+    serialize_message, MessageBodyExt, Targeted, WireDecode, WireEncode,
+};
+use restate_types::net::metadata::MetadataKind;
+use restate_types::net::AdvertisedAddress;
+use restate_types::net::CURRENT_PROTOCOL_VERSION;
+use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
+use restate_types::partition_table::PartitionTable;
+use restate_types::protobuf::node::{Header, Message};
+use restate_types::{GenerationalNodeId, Version};
 
 use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
@@ -24,22 +41,6 @@ use crate::{
 };
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{TaskCenter, TaskCenterBuilder};
-use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
-use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
-};
-use restate_types::net::codec::{
-    serialize_message, try_unwrap_binary_message, Targeted, WireDecode, WireEncode,
-};
-use restate_types::net::metadata::MetadataKind;
-use restate_types::net::AdvertisedAddress;
-use restate_types::net::CURRENT_PROTOCOL_VERSION;
-use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
-use restate_types::partition_table::PartitionTable;
-use restate_types::protobuf::node::{Header, Message};
-use restate_types::{GenerationalNodeId, Version};
-use tracing::info;
 
 #[derive(Clone)]
 pub struct MockNetworkSender {
@@ -145,7 +146,7 @@ impl NetworkReceiver {
         let header = msg.header.expect("header must be set");
         let msg = Incoming::from_parts(
             peer,
-            try_unwrap_binary_message(body, CURRENT_PROTOCOL_VERSION)?,
+            body.try_as_binary_body(CURRENT_PROTOCOL_VERSION)?,
             std::sync::Weak::new(),
             header.msg_id,
             header.in_response_to,
