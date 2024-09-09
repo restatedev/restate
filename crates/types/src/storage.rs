@@ -11,11 +11,11 @@
 use std::mem;
 use std::sync::Arc;
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use downcast_rs::{impl_downcast, DowncastSync};
 use serde::de::{DeserializeOwned, Error as DeserializationError};
 use serde::ser::Error as SerializationError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::errors::GenericError;
@@ -188,6 +188,53 @@ pub enum PolyBytes {
     /// A cached deserialized value that can be downcasted to the original type
     #[debug("Typed")]
     Typed(Arc<dyn StorageEncode>),
+}
+
+impl StorageEncode for PolyBytes {
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
+        match self {
+            PolyBytes::Bytes(bytes) => buf.put_slice(bytes.as_ref()),
+            PolyBytes::Typed(typed) => {
+                StorageCodec::encode(&**typed, buf)?;
+            }
+        };
+        Ok(())
+    }
+
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageCodecKind::FlexbuffersSerde
+    }
+}
+
+/// SerializeAs/DeserializeAs to implement ser/de trait for [`PolyBytes`]
+/// Use it with `#[serde(with = "serde_with::As::<EncodedPolyBytes>")]`.
+pub struct EncodedPolyBytes {}
+
+impl serde_with::SerializeAs<PolyBytes> for EncodedPolyBytes {
+    fn serialize_as<S>(source: &PolyBytes, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match source {
+            PolyBytes::Bytes(bytes) => serializer.serialize_bytes(bytes.as_ref()),
+            PolyBytes::Typed(typed) => {
+                // todo: estimate size to avoid re allocations
+                let mut buf = BytesMut::new();
+                StorageCodec::encode(&**typed, &mut buf).expect("record serde is infallible");
+                serializer.serialize_bytes(buf.as_ref())
+            }
+        }
+    }
+}
+
+impl<'de> serde_with::DeserializeAs<'de, PolyBytes> for EncodedPolyBytes {
+    fn deserialize_as<D>(deserializer: D) -> Result<PolyBytes, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = Bytes::deserialize(deserializer)?;
+        Ok(PolyBytes::Bytes(buf))
+    }
 }
 
 static_assertions::assert_impl_all!(PolyBytes: Send, Sync);
