@@ -10,14 +10,19 @@
 
 use std::sync::Arc;
 
-use crate::storage::{PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode};
+use serde::{Deserialize, Serialize};
+
+use crate::storage::{
+    EncodedPolyBytes, PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode,
+};
 use crate::time::NanosSinceEpoch;
 
 use super::{KeyFilter, Keys, MatchKeyQuery};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
     created_at: NanosSinceEpoch,
+    #[serde(with = "serde_with::As::<EncodedPolyBytes>")]
     body: PolyBytes,
     keys: Keys,
 }
@@ -37,6 +42,17 @@ impl Record {
 
     pub fn keys(&self) -> &Keys {
         &self.keys
+    }
+
+    pub fn estimated_encode_size(&self) -> usize {
+        let body_size = match &self.body {
+            PolyBytes::Bytes(slice) => slice.len(),
+            PolyBytes::Typed(_) => {
+                // constant, assumption based on base envelope size of ~600 bytes.
+                2_000 // 2KB
+            }
+        };
+        size_of::<Keys>() + size_of::<NanosSinceEpoch>() + body_size
     }
 
     pub fn body(&self) -> &PolyBytes {
