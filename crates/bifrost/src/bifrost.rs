@@ -16,7 +16,7 @@ use enum_map::EnumMap;
 
 use restate_core::{Metadata, MetadataKind, TargetVersion};
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
-use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
 use restate_types::storage::StorageEncode;
 use restate_types::Version;
 
@@ -25,7 +25,7 @@ use crate::background_appender::BackgroundAppender;
 use crate::loglet::LogletProvider;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
-use crate::{Error, FindTailAttributes, InputRecord, LogReadStream, Result, TailState};
+use crate::{Error, FindTailAttributes, InputRecord, LogReadStream, Result};
 
 /// Bifrost is Restate's durable interconnect system
 ///
