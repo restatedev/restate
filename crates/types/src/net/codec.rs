@@ -172,18 +172,6 @@ pub fn serialize_message<M: WireEncode + Targeted>(
     }))
 }
 
-pub fn try_unwrap_binary_message(
-    msg: message::Body,
-    _protocol_version: ProtocolVersion,
-) -> Result<BinaryMessage, CodecError> {
-    let message::Body::Encoded(binary) = msg else {
-        return Err(CodecError::Decode(
-            "Cannot deserialize message, message is not of type BinaryMessage".into(),
-        ));
-    };
-    Ok(binary)
-}
-
 /// Helper function for default encoding of values.
 pub fn encode_default<T: Serialize, B: BufMut>(
     value: T,
@@ -211,5 +199,33 @@ pub fn decode_default<T: DeserializeOwned, B: Buf>(
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
         }
+    }
+}
+
+pub trait MessageBodyExt {
+    fn try_as_binary_body(
+        self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<BinaryMessage, CodecError>;
+
+    fn try_decode<T: WireDecode>(self, protocol_version: ProtocolVersion) -> Result<T, CodecError>;
+}
+
+impl MessageBodyExt for crate::protobuf::node::message::Body {
+    fn try_as_binary_body(
+        self,
+        _protocol_version: ProtocolVersion,
+    ) -> Result<BinaryMessage, CodecError> {
+        let message::Body::Encoded(binary) = self else {
+            return Err(CodecError::Decode(
+                "Cannot deserialize message, message is not of type BinaryMessage".into(),
+            ));
+        };
+        Ok(binary)
+    }
+
+    fn try_decode<T: WireDecode>(self, protocol_version: ProtocolVersion) -> Result<T, CodecError> {
+        let mut binary_message = self.try_as_binary_body(protocol_version)?;
+        <T as WireDecode>::decode(&mut binary_message.payload, protocol_version)
     }
 }
