@@ -18,7 +18,7 @@ use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::config::LogServerOptions;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::net::log_server::Store;
+use restate_types::net::log_server::{Seal, Store};
 use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::GenerationalNodeId;
 
@@ -179,6 +179,10 @@ impl LogStore for RocksDbLogStore {
         self.writer_handle
             .enqueue_put_records(store_message, set_sequencer_in_metadata)
             .await
+    }
+
+    async fn enqueue_seal(&mut self, seal_message: Seal) -> Result<AsyncToken, OperationError> {
+        self.writer_handle.enqueue_seal(seal_message).await
     }
 
     // todo: remove when trim is fully implemented

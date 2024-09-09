@@ -25,7 +25,7 @@ use restate_core::network::{Incoming, MessageRouterBuilder, NetworkSender};
 use restate_core::{cancellation_watcher, Metadata, TaskCenter};
 use restate_types::config::Configuration;
 use restate_types::live::Live;
-use restate_types::net::log_server::{Release, Released, Store, Stored};
+use restate_types::net::log_server::{Release, Released, Seal, Sealed, Store, Stored};
 use restate_types::nodes_config::StorageState;
 use tracing::{debug, trace};
 use xxhash_rust::xxh3::Xxh3Builder;
@@ -46,6 +46,7 @@ pub struct RequestPump {
     _configuration: Live<Configuration>,
     store_stream: MessageStream<Store>,
     release_stream: MessageStream<Release>,
+    seal_stream: MessageStream<Seal>,
 }
 
 impl RequestPump {
@@ -63,12 +64,14 @@ impl RequestPump {
         // We divide requests into two priority categories.
         let store_stream = router_builder.subscribe_to_stream(queue_length);
         let release_stream = router_builder.subscribe_to_stream(queue_length);
+        let seal_stream = router_builder.subscribe_to_stream(queue_length);
         Self {
             task_center,
             _metadata: metadata,
             _configuration: configuration,
             store_stream,
             release_stream,
+            seal_stream,
         }
     }
 
@@ -86,6 +89,7 @@ impl RequestPump {
             task_center,
             mut store_stream,
             mut release_stream,
+            mut seal_stream,
             ..
         } = self;
 
@@ -113,6 +117,7 @@ impl RequestPump {
                     // stop accepting messages
                     drop(store_stream);
                     drop(release_stream);
+                    drop(seal_stream);
                     // shutdown all workers.
                     Self::shutdown(loglet_workers).await;
                     return Ok(());
@@ -129,6 +134,19 @@ impl RequestPump {
                         &mut loglet_workers,
                     ).await?;
                     Self::on_release(worker, release);
+                }
+                Some(seal) = seal_stream.next() => {
+                    // find the worker or create one.
+                    // enqueue.
+                    let worker = Self::find_or_create_worker(
+                        seal.loglet_id,
+                        &log_store,
+                        &task_center,
+                        &global_tail_tracker,
+                        &mut state_map,
+                        &mut loglet_workers,
+                    ).await?;
+                    Self::on_seal(worker, seal);
                 }
                 Some(store) = store_stream.next() => {
                     // find the worker or create one.
@@ -171,6 +189,15 @@ impl RequestPump {
         if let Err(msg) = worker.enqueue_release(msg) {
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
             if let Err(e) = msg.try_respond_rpc(Released::empty()) {
+                debug!(?e.source, peer = %msg.peer(), "Failed to respond to release message with status Disabled due to peer channel capacity being full");
+            }
+        }
+    }
+
+    fn on_seal(worker: &LogletWorkerHandle, msg: Incoming<Seal>) {
+        if let Err(msg) = worker.enqueue_seal(msg) {
+            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
+            if let Err(e) = msg.try_respond_rpc(Sealed::empty()) {
                 debug!(?e.source, peer = %msg.peer(), "Failed to respond to release message with status Disabled due to peer channel capacity being full");
             }
         }

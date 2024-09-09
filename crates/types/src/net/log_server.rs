@@ -30,8 +30,10 @@ pub enum Status {
     /// If the operation expired or not completed due to load shedding. The operation can be
     /// retried by the client. It's guaranteed that this store has not been persisted by the node.
     Dropped,
-    /// Operation rejected due to an ongoing or completed seal
+    /// Operation rejected on a sealed loglet
     Sealed,
+    /// Loglet is being sealed and operation cannot be accepted
+    Sealing,
     /// Operation has been rejected. Operation requires that the sender is the authoritative
     /// sequencer.
     SequencerMismatch,
@@ -43,6 +45,7 @@ pub enum Status {
     Malformed,
 }
 
+// ----- LogServer API -----
 // Store
 define_rpc! {
     @request = Store,
@@ -57,6 +60,14 @@ define_rpc! {
     @response = Released,
     @request_target = TargetName::LogServerRelease,
     @response_target = TargetName::LogServerReleased,
+}
+
+// Seal
+define_rpc! {
+    @request = Seal,
+    @response = Sealed,
+    @request_target = TargetName::LogServerSeal,
+    @response_target = TargetName::LogServerSealed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +125,7 @@ impl LogServerResponseHeader {
     }
 }
 
+// ** STORE
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreFlags(u32);
 bitflags! {
@@ -203,6 +215,7 @@ impl Stored {
     }
 }
 
+// ** RELEASE
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Release {
     pub loglet_id: ReplicatedLogletId,
@@ -229,6 +242,56 @@ impl Released {
     }
 
     pub fn status(mut self, status: Status) -> Self {
+        self.header.status = status;
+        self
+    }
+}
+
+// ** SEAL
+/// Store one or more records on a log-server
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Seal {
+    pub known_global_tail: LogletOffset,
+    pub loglet_id: ReplicatedLogletId,
+    /// This is the sequencer identifier for this log. This should be set even for repair store messages.
+    pub sequencer: GenerationalNodeId,
+}
+
+/// Response to a `Seal` request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Sealed {
+    #[serde(flatten)]
+    pub header: LogServerResponseHeader,
+}
+
+impl Deref for Sealed {
+    type Target = LogServerResponseHeader;
+
+    fn deref(&self) -> &Self::Target {
+        &self.header
+    }
+}
+
+impl DerefMut for Sealed {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.header
+    }
+}
+
+impl Sealed {
+    pub fn empty() -> Self {
+        Self {
+            header: LogServerResponseHeader::empty(),
+        }
+    }
+
+    pub fn new(tail_state: &TailState<LogletOffset>) -> Self {
+        Self {
+            header: LogServerResponseHeader::new(tail_state),
+        }
+    }
+
+    pub fn with_status(mut self, status: Status) -> Self {
         self.header.status = status;
         self
     }
