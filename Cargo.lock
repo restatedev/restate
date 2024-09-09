@@ -5853,8 +5853,11 @@ name = "restate-log-server"
 version = "1.1.0"
 dependencies = [
  "anyhow",
+ "bitflags 2.6.0",
  "bytes",
+ "chrono",
  "codederror",
+ "dashmap 6.0.1",
  "derive_more",
  "futures",
  "googletest",
@@ -5881,6 +5884,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -6360,6 +6364,7 @@ dependencies = [
  "arc-swap",
  "base62",
  "base64 0.22.0",
+ "bitflags 2.6.0",
  "bytes",
  "bytestring",
  "clap",

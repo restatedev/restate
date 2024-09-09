@@ -8,18 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::{Deref, DerefMut};
+
 use bitflags::bitflags;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use super::TargetName;
-use crate::logs::{Keys, LogletOffset};
+use crate::logs::{LogletOffset, Record, SequenceNumber, TailState};
 use crate::net::define_rpc;
 use crate::replicated_loglet::ReplicatedLogletId;
-use crate::time::{MillisSinceEpoch, NanosSinceEpoch};
+use crate::time::MillisSinceEpoch;
 use crate::GenerationalNodeId;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Status {
     /// Operation was successful
@@ -59,19 +60,6 @@ define_rpc! {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecordHeader {
-    pub created_at: NanosSinceEpoch,
-}
-
-#[derive(derive_more::Debug, Clone, Serialize, Deserialize)]
-pub struct RecordPayload {
-    pub created_at: NanosSinceEpoch,
-    #[debug("Bytes({} bytes)", body.len())]
-    pub body: Bytes,
-    pub keys: Keys,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppendFlags(u32);
 
 // ------- Node to Bifrost ------ //
@@ -82,7 +70,7 @@ pub struct Append {
     /// The receiver should skip handling this message if it hasn't started to act on it
     /// before timeout expires. 0 means no timeout
     pub timeout_at: MillisSinceEpoch,
-    pub payloads: Vec<RecordPayload>,
+    pub payloads: Vec<Record>,
 }
 
 impl Append {
@@ -102,6 +90,31 @@ pub struct Appended {
 
 // ------- Bifrost to LogServer ------ //
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogServerResponseHeader {
+    pub local_tail: LogletOffset,
+    pub sealed: bool,
+    pub status: Status,
+}
+
+impl LogServerResponseHeader {
+    pub fn new(tail_state: &TailState<LogletOffset>) -> Self {
+        Self {
+            local_tail: tail_state.offset(),
+            sealed: tail_state.is_sealed(),
+            status: Status::Ok,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            local_tail: LogletOffset::INVALID,
+            sealed: false,
+            status: Status::Disabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreFlags(u32);
 bitflags! {
     impl StoreFlags: u32 {
@@ -113,8 +126,8 @@ bitflags! {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Store {
     // The receiver should skip handling this message if it hasn't started to act on it
-    // before timeout expires. 0 means no timeout
-    pub timeout_at: MillisSinceEpoch,
+    // before timeout expires.
+    pub timeout_at: Option<MillisSinceEpoch>,
     pub known_global_tail: LogletOffset,
     pub flags: StoreFlags,
     pub loglet_id: ReplicatedLogletId,
@@ -125,13 +138,15 @@ pub struct Store {
     pub sequencer: GenerationalNodeId,
     /// Denotes the last record that has been safely uploaded to an archiving data store.
     pub known_archived: LogletOffset,
-    pub payloads: Vec<RecordPayload>,
+    // todo (asoli) serialize efficiently
+    pub payloads: Vec<Record>,
 }
 
 impl Store {
     /// The message's timeout has passed, we should discard if possible.
     pub fn expired(&self) -> bool {
-        MillisSinceEpoch::now() >= self.timeout_at
+        self.timeout_at
+            .is_some_and(|timeout_at| MillisSinceEpoch::now() >= timeout_at)
     }
 
     // returns None on overflow
@@ -139,25 +154,51 @@ impl Store {
         let len: u32 = self.payloads.len().try_into().ok()?;
         self.first_offset.checked_add(len - 1).map(Into::into)
     }
+
+    pub fn estimated_encode_size(&self) -> usize {
+        self.payloads
+            .iter()
+            .map(|p| p.estimated_encode_size())
+            .sum()
+    }
 }
 
 /// Response to a `Store` request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stored {
-    pub local_tail: LogletOffset,
-    pub status: Status,
+    #[serde(flatten)]
+    pub header: LogServerResponseHeader,
+}
+
+impl Deref for Stored {
+    type Target = LogServerResponseHeader;
+
+    fn deref(&self) -> &Self::Target {
+        &self.header
+    }
+}
+
+impl DerefMut for Stored {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.header
+    }
 }
 
 impl Stored {
-    pub fn new(local_tail: LogletOffset) -> Self {
+    pub fn empty() -> Self {
         Self {
-            local_tail,
-            status: Status::Ok,
+            header: LogServerResponseHeader::empty(),
         }
     }
 
-    pub fn status(mut self, status: Status) -> Self {
-        self.status = status;
+    pub fn new(tail_state: &TailState<LogletOffset>) -> Self {
+        Self {
+            header: LogServerResponseHeader::new(tail_state),
+        }
+    }
+
+    pub fn with_status(mut self, status: Status) -> Self {
+        self.header.status = status;
         self
     }
 }
@@ -170,5 +211,25 @@ pub struct Release {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Released {
-    pub known_global_tail: LogletOffset,
+    #[serde(flatten)]
+    pub header: LogServerResponseHeader,
+}
+
+impl Released {
+    pub fn empty() -> Self {
+        Self {
+            header: LogServerResponseHeader::empty(),
+        }
+    }
+
+    pub fn new(tail_state: &TailState<LogletOffset>) -> Self {
+        Self {
+            header: LogServerResponseHeader::new(tail_state),
+        }
+    }
+
+    pub fn status(mut self, status: Status) -> Self {
+        self.header.status = status;
+        self
+    }
 }
