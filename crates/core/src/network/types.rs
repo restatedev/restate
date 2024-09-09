@@ -62,6 +62,14 @@ impl<M> Incoming<M> {
             in_response_to,
         }
     }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn for_testing(connection: &Arc<Connection>, body: M, in_response_to: Option<u64>) -> Self {
+        let peer = connection.peer;
+        let connection = Arc::downgrade(connection);
+        let msg_id = generate_msg_id();
+        Self::from_parts(peer, body, connection, msg_id, in_response_to)
+    }
 }
 
 impl<M> Incoming<M> {
@@ -300,7 +308,7 @@ impl<M: Targeted + WireEncode> Outgoing<M> {
                 return Err(NetworkSendError::new(self, NetworkError::ConnectionClosed));
             }
         };
-        let versions = with_metadata(HeaderMetadataVersions::from_metadata);
+        let versions = with_metadata(HeaderMetadataVersions::from_metadata).unwrap_or_default();
         Ok((connection, versions, self))
     }
 }

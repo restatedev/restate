@@ -47,7 +47,7 @@ use crate::Metadata;
 /// The primary owner of a connection is the running reactor, all other components
 /// should hold a Weak<Connection> if caching access to a certain connection is
 /// needed.
-pub(crate) struct Connection {
+pub struct Connection {
     /// Connection identifier, randomly generated on this end of the connection.
     pub(crate) cid: u64,
     pub(crate) peer: GenerationalNodeId,
@@ -57,7 +57,7 @@ pub(crate) struct Connection {
 }
 
 impl Connection {
-    pub fn new(
+    pub(crate) fn new(
         peer: GenerationalNodeId,
         protocol_version: ProtocolVersion,
         sender: mpsc::Sender<Message>,
@@ -69,6 +69,15 @@ impl Connection {
             sender,
             created: Instant::now(),
         }
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new_fake(
+        peer: GenerationalNodeId,
+        protocol_version: ProtocolVersion,
+        sender: mpsc::Sender<Message>,
+    ) -> Arc<Self> {
+        Arc::new(Self::new(peer, protocol_version, sender))
     }
 
     /// The current negotiated protocol version of the connection
@@ -206,6 +215,19 @@ impl Connection {
 pub(crate) struct HeaderMetadataVersions {
     #[index]
     versions: EnumMap<MetadataKind, Option<Version>>,
+}
+
+impl Default for HeaderMetadataVersions {
+    // Used primarily in tests
+    fn default() -> Self {
+        let versions = enum_map! {
+            MetadataKind::NodesConfiguration => Some(Version::MIN),
+            MetadataKind::Schema => None,
+            MetadataKind::Logs => None,
+            MetadataKind::PartitionTable => None,
+        };
+        Self { versions }
+    }
 }
 
 impl HeaderMetadataVersions {
