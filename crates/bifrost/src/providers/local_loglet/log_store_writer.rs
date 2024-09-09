@@ -24,7 +24,7 @@ use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::config::LocalLogletOptions;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::{LogletOffset, SequenceNumber};
+use restate_types::logs::{LogletOffset, Record, SequenceNumber};
 
 use super::keys::{MetadataKey, MetadataKind, RecordKey};
 use super::log_state::LogStateUpdates;
@@ -34,7 +34,6 @@ use super::metric_definitions::{
 };
 use super::record_format::{encode_record_and_split, FORMAT_FOR_NEW_APPENDS};
 use crate::loglet::OperationError;
-use crate::record::Record;
 
 type Ack = oneshot::Sender<Result<(), OperationError>>;
 type AckRecv = oneshot::Receiver<Result<(), OperationError>>;

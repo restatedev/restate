@@ -13,11 +13,9 @@ use std::ops::Deref;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use restate_types::flexbuffers_storage_encode_decode;
-use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery};
+use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery, Record};
 use restate_types::storage::{PolyBytes, StorageCodec, StorageCodecKind, StorageDecodeError};
 use restate_types::time::NanosSinceEpoch;
-
-use crate::{Header, Record};
 
 // use legacy for new appends until enough minor/major versions are released after current (1.0.x)
 // to allow for backwards compatibility.
@@ -106,9 +104,7 @@ pub(super) fn decode_and_filter_record(
             let internal_payload: LegacyPayload = StorageCodec::decode(&mut buffer)?;
             let record = if internal_payload.keys.matches_key_query(filter) {
                 Some(Record::from_parts(
-                    Header {
-                        created_at: internal_payload.header.created_at,
-                    },
+                    internal_payload.header.created_at,
                     internal_payload.keys,
                     PolyBytes::Bytes(internal_payload.body),
                 ))
@@ -210,7 +206,7 @@ fn decode_custom_encoded_record(
     let created_at = NanosSinceEpoch::from(read_created_at(&mut buffer));
     let body = PolyBytes::Bytes(Bytes::copy_from_slice(buffer.chunk()));
 
-    Ok(Some(Record::from_parts(Header { created_at }, keys, body)))
+    Ok(Some(Record::from_parts(created_at, keys, body)))
 }
 
 // Reads KeyStyle and extract the keys from the buffer
@@ -266,8 +262,6 @@ mod tests {
 
     use restate_types::logs::Keys;
 
-    use crate::record::Record;
-
     #[test]
     fn test_record_format() {
         use super::RecordFormat;
@@ -284,9 +278,7 @@ mod tests {
     fn test_codec_compatibility() -> googletest::Result<()> {
         // ensure that we can encode and decode both the old and new formats
         let record = Record::from_parts(
-            crate::Header {
-                created_at: NanosSinceEpoch::from(100),
-            },
+            NanosSinceEpoch::from(100),
             Keys::Single(14),
             PolyBytes::Typed(Arc::new("hello".to_owned())),
         );

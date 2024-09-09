@@ -18,10 +18,10 @@ use tracing::instrument;
 
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::SegmentIndex;
+use restate_types::logs::Record;
 use restate_types::logs::{KeyFilter, LogletOffset, Lsn, SequenceNumber};
 
 use crate::loglet::{AppendError, Loglet, OperationError, SendableLogletReadStream};
-use crate::record::Record;
 use crate::{Commit, LogEntry, LsnExt};
 use crate::{Result, TailState};
 
