@@ -47,7 +47,12 @@ impl LogServerService {
     ) -> Result<Self, LogServerBuildError> {
         describe_metrics();
 
-        let request_processor = RequestPump::new(updateable_config.clone(), router_builder);
+        let request_processor = RequestPump::new(
+            task_center.clone(),
+            metadata.clone(),
+            updateable_config.clone(),
+            router_builder,
+        );
 
         Ok(Self {
             updateable_config,
@@ -141,8 +146,8 @@ impl LogServerService {
                 ));
             } else {
                 debug!(
-                    "Found matching LogStoreMarker in log-store, created '{:?}' ago",
-                    marker.created_at().elapsed()
+                    "Found matching LogStoreMarker in log-store, written at '{:?}'",
+                    marker.created_at()
                 );
             }
         }

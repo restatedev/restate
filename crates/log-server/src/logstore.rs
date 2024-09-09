@@ -9,24 +9,68 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
-use std::sync::Arc;
 
+use futures::FutureExt;
+use tokio::sync::oneshot;
+
+use restate_bifrost::loglet::OperationError;
 use restate_core::ShutdownError;
-use restate_types::errors::MaybeRetryableError;
+use restate_types::logs::LogletOffset;
+use restate_types::net::log_server::Store;
+use restate_types::replicated_loglet::ReplicatedLogletId;
 
-use crate::metadata::LogStoreMarker;
+use crate::metadata::{LogStoreMarker, LogletState};
 
-pub type Result<T, E = LogStoreError> = std::result::Result<T, E>;
+pub type Result<T, E = OperationError> = std::result::Result<T, E>;
 
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum LogStoreError {
-    #[error(transparent)]
-    Shutdown(#[from] ShutdownError),
-    #[error(transparent)]
-    Other(Arc<dyn MaybeRetryableError + Send + Sync + 'static>),
+pub trait LogStore: Clone + Send + 'static {
+    /// Loads the [`LogStoreMarker`] for this node
+    fn load_marker(&self) -> impl Future<Output = Result<Option<LogStoreMarker>>> + Send + '_;
+    /// Unconditionally stores this marker value on this node
+    fn store_marker(&self, marker: LogStoreMarker) -> impl Future<Output = Result<()>> + Send;
+    /// Reads the loglet state from storage and returns a new [`LogletState`] value.
+    /// Note that this value will only be connected to its own clones, any previously loaded
+    /// [`LogletState`] will not observe the values in this one.
+    fn load_loglet_state(
+        &self,
+        loglet_id: ReplicatedLogletId,
+    ) -> impl Future<Output = Result<LogletState, OperationError>> + Send;
+
+    fn enqueue_store(
+        &mut self,
+        store_message: Store,
+        set_sequencer_in_metadata: bool,
+    ) -> impl Future<Output = Result<AsyncToken, OperationError>> + Send;
+
+    // todo: remove when trim is fully tested
+    #[allow(dead_code)]
+    fn enqueue_trim(
+        &mut self,
+        loglet_id: ReplicatedLogletId,
+        trim_point: LogletOffset,
+    ) -> impl Future<Output = Result<AsyncToken, OperationError>> + Send;
 }
 
-pub trait LogStore {
-    fn load_marker(&self) -> impl Future<Output = Result<Option<LogStoreMarker>>> + Send + '_;
-    fn store_marker(&self, marker: LogStoreMarker) -> impl Future<Output = Result<()>> + Send;
+/// A future that resolves when a log-store operation is completed
+pub struct AsyncToken {
+    rx: oneshot::Receiver<Result<()>>,
+}
+
+impl AsyncToken {
+    pub(crate) fn new(rx: oneshot::Receiver<Result<()>>) -> Self {
+        Self { rx }
+    }
+}
+
+impl std::future::Future for AsyncToken {
+    type Output = Result<()>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.rx
+            .poll_unpin(cx)
+            .map_err(|_| OperationError::Shutdown(ShutdownError))?
+    }
 }
