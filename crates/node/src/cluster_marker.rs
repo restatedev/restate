@@ -31,13 +31,13 @@ static COMPATIBILITY_INFORMATION: CompatibilityInformation =
     CompatibilityInformation::new(Version::new(1, 0, 0), Version::new(1, 0, 0));
 
 /// Compatibility information defining the minimum Restate version that can read data written by
-/// this version. Moreover, it specifies the minimum backward compatible version from which this
-/// version can read the data.
+/// this version. Additionally, it specifies the minimum with which this version is backwards
+/// compatible.
 #[derive(Debug, Clone)]
 struct CompatibilityInformation {
-    // minimum forward compatible version which can still read data written by this version
+    /// Minimum version required to read data written by this version.
     min_forward_compatible_version: Version,
-    // All versions >= backward_compatible_version which this version can read data from
+    /// Minimum version from which this version can read data.
     min_backward_compatible_version: Version,
 }
 
@@ -82,15 +82,17 @@ pub enum ClusterValidationError {
     },
 }
 
-/// Marker which is stored in the Node's working directory telling about the
-/// previous processes that worked on it before. It can be used for sanity checks.
+/// Marker stored in the Node's working directory with metadata about the cluster it belongs to and
+/// compatible software versions.
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ClusterMarker {
     cluster_name: String,
+    /// The highest version that has operated on the data directory.
     max_version: Version,
+    /// The most recent version to operate on the data directory.
     current_version: Version,
-    // minimum required version to read data; needs to be optional since it was introduced after 0.9
-    // this field should only be updated when updating the max_version field
+    /// Minimum required version to read data. Optional since it was introduced after 0.9.
+    /// This field should only be updated when updating the `max_version` field.
     min_forward_compatible_version: Option<Version>,
 }
 
@@ -166,7 +168,8 @@ fn validate_and_update_cluster_marker_inner(
         .clone()
         .unwrap_or(cluster_marker.current_version.clone());
 
-    // check forward compatibility by comparing this version with minimal compatible version
+    // The data directory required minimum version must be compatible with the running version.
+    // Asserts that: this_version >= cluster_marker.min_forward_compatible_version
     if this_version.cmp_precedence(&min_forward_compatible_version) == Ordering::Less {
         return Err(ClusterValidationError::ForwardIncompatibility {
             this_version,
@@ -174,8 +177,8 @@ fn validate_and_update_cluster_marker_inner(
         });
     }
 
-    // check backward compatibility by checking whether the current version can be read by this
-    // version.
+    // The running version must be backwards-compatible with the version of the data directory.
+    // Asserts that: cluster_marker.current_version >= min_backward_compatible_version
     if cluster_marker
         .current_version
         .cmp_precedence(&compatibility_information.min_backward_compatible_version)
