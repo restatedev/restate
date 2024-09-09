@@ -28,7 +28,7 @@ pub use bifrost::Bifrost;
 pub use bifrost_admin::BifrostAdmin;
 pub use error::{Error, Result};
 pub use read_stream::LogReadStream;
-pub use record::{Header, InputRecord, LogEntry, Record};
+pub use record::{InputRecord, LogEntry};
 pub use service::BifrostService;
 pub use types::*;
 

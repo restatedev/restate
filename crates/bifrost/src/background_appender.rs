@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 use pin_project::pin_project;
+use restate_types::logs::Record;
 use tokio::sync::{mpsc, oneshot, Notify};
 use tracing::{trace, warn};
 
@@ -20,7 +21,6 @@ use restate_types::identifiers::PartitionId;
 use restate_types::storage::StorageEncode;
 
 use crate::error::EnqueueError;
-use crate::record::Record;
 use crate::{Appender, InputRecord, Result};
 
 /// Performs appends in the background concurrently while maintaining the order of records
