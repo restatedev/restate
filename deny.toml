@@ -4,6 +4,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # https://github.com/EmbarkStudios/cargo-deny/pull/611
 version = 2
 yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2024-0370", reason = "crate is unmaintained. This needs `arrow_convert` to use an alternative to `err-derive`" }
+]
 
 
 [licenses]
@@ -69,7 +72,6 @@ registries = []
 multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
-allow = []
 skip = [
     # It's ok to ignore these dependencies, as they're resolved but we never use them,
     # since we don't target Windows, nor HermitCore. We have a couple of transitive dependencies
@@ -153,7 +155,7 @@ skip = [
     # clash between aws-config and pgwire
     {name = "untrusted"},
     {name = "spin"},
-    {name = "ring"}
+    {name = "ring"},
 ]
 
 deny = [

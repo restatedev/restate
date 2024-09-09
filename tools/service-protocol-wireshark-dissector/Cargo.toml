@@ -28,4 +28,4 @@ bytes = { workspace = true }
 thiserror = { workspace = true }
 
 # Lua
-mlua = { version = "0.8", features = ["module", "macros", "vendored"] }
+mlua = { version = "0.9.9", features = ["module", "macros"] }
