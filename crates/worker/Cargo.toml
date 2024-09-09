@@ -37,6 +37,7 @@ restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["codec", "awakeable-id", "message"] }
 restate-storage-api = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }
+restate-tracing-instrumentation = { workspace = true }
 restate-storage-query-postgres = { workspace = true }
 restate-timer = { workspace = true }
 restate-types = { workspace = true }

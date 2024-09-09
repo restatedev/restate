@@ -17,8 +17,9 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
 restate-serde-util = { workspace = true }
+restate-service-protocol = { workspace = true, features = ["awakeable-id"] }
+restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
-restate-service-protocol = { workspace = true, features = [ "awakeable-id" ] }
 
 # Encoding/Decoding
 bytes = { workspace = true }

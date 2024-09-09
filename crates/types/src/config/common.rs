@@ -480,12 +480,36 @@ impl Default for MetadataStoreClientOptions {
 pub struct TracingOptions {
     /// # Tracing Endpoint
     ///
-    /// Specify the tracing endpoint to send traces to.
+    /// This is a shortcut to set both [`Self::tracing_runtime_endpoint`], and [`Self::tracing_services_endpoint`].
+    ///
+    /// Specify the tracing endpoint to send runtime traces to.
     /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
     /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
     ///
     /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
     pub tracing_endpoint: Option<String>,
+
+    /// # Runtime Tracing Endpoint
+    ///
+    /// Overrides [`Self::tracing_endpoint`] for runtime traces
+    ///
+    /// Specify the tracing endpoint to send runtime traces to.
+    /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
+    /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
+    ///
+    /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
+    pub tracing_runtime_endpoint: Option<String>,
+
+    /// # Services Tracing Endpoint
+    ///
+    /// Overrides [`Self::tracing_endpoint`] for services traces
+    ///
+    /// Specify the tracing endpoint to send services traces to.
+    /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
+    /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
+    ///
+    /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
+    pub tracing_services_endpoint: Option<String>,
 
     /// # Distributed Tracing JSON Export Path
     ///
@@ -516,6 +540,8 @@ impl Default for TracingOptions {
     fn default() -> Self {
         Self {
             tracing_endpoint: None,
+            tracing_runtime_endpoint: None,
+            tracing_services_endpoint: None,
             tracing_json_path: None,
             tracing_filter: "info".to_owned(),
             tracing_headers: SerdeableHeaderHashMap::default(),

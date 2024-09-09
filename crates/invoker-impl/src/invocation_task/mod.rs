@@ -354,7 +354,18 @@ where
     }
 
     /// Loop opening the request to deployment and consuming the stream
-    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.invocation_target.service_name(), restate.invocation.id = %self.invocation_id, restate.invocation.target = %self.invocation_target), skip_all)]
+    #[instrument(
+        level = "debug",
+        name = "invoker_invocation_task",
+        fields(
+            rpc.system = "restate",
+            rpc.service = %self.invocation_target.service_name(),
+            restate.invocation.id = %self.invocation_id,
+            restate.invocation.target = %self.invocation_target,
+            otel.name = "invocation-task: run",
+        ),
+        skip_all,
+    )]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
         let start = Instant::now();
         // Execute the task

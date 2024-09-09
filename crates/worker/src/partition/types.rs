@@ -10,16 +10,11 @@
 
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::invocation::{InvocationResponse, InvocationTarget, ResponseResult};
+use restate_types::invocation::{InvocationResponse, ResponseResult};
 use restate_wal_protocol::Command;
 
 pub(crate) type InvokerEffect = restate_invoker_api::Effect;
 pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
-
-/// This type carries together invocation id and target.
-/// Use this type only when you need to group together id and target,
-/// and generally use only InvocationId for identifying an invocation.
-pub(crate) type InvocationIdAndTarget = (InvocationId, InvocationTarget);
 
 // Extension methods to the OutboxMessage type
 pub(crate) trait OutboxMessageExt {

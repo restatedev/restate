@@ -19,15 +19,12 @@ use crate::time::MillisSinceEpoch;
 use crate::GenerationalNodeId;
 use bytes::Bytes;
 use bytestring::ByteString;
-use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceState};
-use opentelemetry::Context;
+use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
 use serde_with::{serde_as, FromInto};
 use std::fmt;
 use std::hash::Hash;
 use std::str::FromStr;
 use std::time::Duration;
-use tracing::Span;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry::trace::TraceId;
@@ -133,6 +130,16 @@ impl From<InvocationTargetType> for ServiceType {
     }
 }
 
+#[derive(Debug, derive_more::Display)]
+/// Short is used to create a short [`Display`] implementation
+/// for InvocationTarget. it's mainly use for tracing purposes
+pub enum Short<'a> {
+    #[display("{name}/{{key}}/{handler}")]
+    Keyed { name: &'a str, handler: &'a str },
+    #[display("{name}/{handler}")]
+    UnKeyed { name: &'a str, handler: &'a str },
+}
+
 #[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum InvocationTarget {
     Service {
@@ -158,6 +165,15 @@ impl InvocationTarget {
         Self::Service {
             name: name.into(),
             handler: handler.into(),
+        }
+    }
+
+    pub fn short(&self) -> Short {
+        match self {
+            Self::Service { name, handler } => Short::UnKeyed { name, handler },
+            Self::VirtualObject { name, handler, .. } | Self::Workflow { name, handler, .. } => {
+                Short::Keyed { name, handler }
+            }
         }
     }
 
@@ -464,14 +480,6 @@ impl ServiceInvocationSpanContext {
 
         let (cause, new_span_context) = match &related_span {
             SpanRelation::Linked(linked_span_context) => {
-                // use part of the invocation id as the span id of the new trace root
-                let span_id: SpanId = invocation_id.invocation_uuid().into();
-
-                // use its reverse as the span id of the background_invoke 'pointer' span in the previous trace
-                // as we cannot use the same span id for both spans
-                let mut pointer_span_id = span_id.to_bytes();
-                pointer_span_id.reverse();
-
                 // create a span context with a new trace that will be used for any actions as part of the background invocation
                 // a span will be emitted using these details when its finished (so we know how long the invocation took)
                 let new_span_context = SpanContext::new(
@@ -479,7 +487,7 @@ impl ServiceInvocationSpanContext {
                     // trace ids are 128 bits and 'worldwide unique'
                     invocation_id.invocation_uuid().into(),
                     // use part of the invocation id as the new span id; this is 64 bits and best-effort 'globally unique'
-                    span_id,
+                    invocation_id.invocation_uuid().into(),
                     // use sampling decision of the causing trace; this is NOT default otel behaviour but
                     // is useful for users
                     linked_span_context.trace_flags(),
@@ -487,10 +495,12 @@ impl ServiceInvocationSpanContext {
                     false,
                     TraceState::default(),
                 );
+
                 let cause = SpanRelationCause::Linked(
                     linked_span_context.trace_id(),
-                    SpanId::from_bytes(pointer_span_id),
+                    linked_span_context.span_id(),
                 );
+
                 (Some(cause), new_span_context)
             }
             SpanRelation::Parent(parent_span_context) => {
@@ -648,17 +658,6 @@ pub enum SpanRelation {
 }
 
 impl SpanRelation {
-    /// Attach this [`SpanRelation`] to the given [`Span`]
-    pub fn attach_to_span(&self, span: &Span) {
-        match self {
-            SpanRelation::Parent(span_context) => {
-                span.set_parent(Context::new().with_remote_span_context(span_context.clone()))
-            }
-            SpanRelation::Linked(span_context) => span.add_link(span_context.clone()),
-            SpanRelation::None => (),
-        };
-    }
-
     fn is_sampled(&self) -> bool {
         match self {
             SpanRelation::None => false,

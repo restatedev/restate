@@ -12,7 +12,7 @@ use arc_swap::ArcSwap;
 use futures::future::BoxFuture;
 use opentelemetry::trace::TraceError;
 use opentelemetry::{Key, KeyValue, StringValue, Value};
-use opentelemetry_sdk::export::trace::SpanData;
+use opentelemetry_sdk::export::trace::{SpanData, SpanExporter};
 use opentelemetry_sdk::Resource;
 use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
 use std::collections::HashMap;
@@ -39,9 +39,7 @@ impl<T> ResourceModifyingSpanExporter<T> {
     }
 }
 
-impl<T: opentelemetry_sdk::export::trace::SpanExporter + 'static>
-    opentelemetry_sdk::export::trace::SpanExporter for ResourceModifyingSpanExporter<T>
-{
+impl<T: SpanExporter + 'static> SpanExporter for ResourceModifyingSpanExporter<T> {
     fn export(
         &mut self,
         batch: Vec<SpanData>,
