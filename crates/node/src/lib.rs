@@ -371,7 +371,10 @@ impl Node {
 
         // My Node ID is set
         metadata_writer.set_my_node_id(my_node_id);
-        info!("My Node ID is {}", my_node_config.current_generation);
+        info!(
+            roles = %my_node_config.roles,
+            address = %my_node_config.address,
+            "My Node ID is {}", my_node_config.current_generation);
 
         let bifrost = self.bifrost.handle();
 
