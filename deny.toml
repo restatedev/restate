@@ -4,6 +4,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # https://github.com/EmbarkStudios/cargo-deny/pull/611
 version = 2
 yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2024-0370", reason = "crate is unmaintained. This needs `arrow_convert` to use an alternative to `err-derive`" }
+]
 
 
 [licenses]

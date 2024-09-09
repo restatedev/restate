@@ -1288,7 +1288,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "shlex",
  "syn 2.0.65",
 ]
@@ -1347,11 +1347,12 @@ dependencies = [
 
 [[package]]
 name = "bstr"
-version = "0.2.17"
+version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba3569f383e8f1598449f1a423e72e99569137b47740b1da11ef19af3d5c3223"
+checksum = "40723b8fb387abc38f4f4a37c09073622e41dd12327033091ef8950659e6dc0c"
 dependencies = [
  "memchr",
+ "serde",
 ]
 
 [[package]]
@@ -3130,15 +3131,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "home"
-version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3d1354bf6b7235cb4a0576c2619fd4ed18183f689b12b006a0ee7329eeff9a5"
-dependencies = [
- "windows-sys 0.52.0",
-]
-
-[[package]]
 name = "hostname"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3821,25 +3813,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90ed8c1e510134f979dbc4f070f87d4313098b704861a105fe34231c70a3901c"
 
 [[package]]
-name = "lua-src"
-version = "546.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2da0daa7eee611a4c30c8f5ee31af55266e26e573971ba9336d2993e2da129b2"
-dependencies = [
- "cc",
-]
-
-[[package]]
-name = "luajit-src"
-version = "210.4.8+resty107baaf"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e05167e8b2a2185758d83ed23541e5bd8bce37072e4204e0ef2c9b322bc87c4e"
-dependencies = [
- "cc",
- "which",
-]
-
-[[package]]
 name = "lz4-sys"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4022,34 +3995,42 @@ dependencies = [
 
 [[package]]
 name = "mlua"
-version = "0.8.10"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bb37b0ba91f017aa7ca2b98ef99496827770cd635b4a932a6047c5b4bbe678e"
+checksum = "d111deb18a9c9bd33e1541309f4742523bfab01d276bfa9a27519f6de9c11dc7"
 dependencies = [
  "bstr",
- "cc",
- "lua-src",
- "luajit-src",
+ "mlua-sys",
  "mlua_derive",
  "num-traits",
  "once_cell",
+ "rustc-hash 2.0.0",
+]
+
+[[package]]
+name = "mlua-sys"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebe026d6bd1583a9cf9080e189030ddaea7e6f5f0deb366a8e26f8a26c4135b8"
+dependencies = [
+ "cc",
+ "cfg-if",
  "pkg-config",
- "rustc-hash",
 ]
 
 [[package]]
 name = "mlua_derive"
-version = "0.8.0"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9214e60d3cf1643013b107330fcd374ccec1e4ba1eef76e7e5da5e8202e71c0"
+checksum = "09697a6cec88e7f58a02c7ab5c18c611c6907c8654613df9cc0192658a4fb859"
 dependencies = [
- "itertools 0.10.5",
+ "itertools 0.12.1",
  "once_cell",
  "proc-macro-error",
  "proc-macro2",
  "quote",
  "regex",
- "syn 1.0.109",
+ "syn 2.0.65",
 ]
 
 [[package]]
@@ -5118,7 +5099,7 @@ dependencies = [
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "rustls 0.23.11",
  "thiserror",
  "tokio",
@@ -5134,7 +5115,7 @@ dependencies = [
  "bytes",
  "rand",
  "ring",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "rustls 0.23.11",
  "slab",
  "thiserror",
@@ -6634,6 +6615,12 @@ name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "rustc-hash"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "583034fd73374156e66797ed8e5b0d5690409c9226b22d87cb7f19821c05d152"
 
 [[package]]
 name = "rustc_version"
@@ -8306,18 +8293,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd7c23921eeb1713a4e851530e9b9756e4fb0e89978582942612524cf09f01cd"
 dependencies = [
  "rustls-pki-types",
-]
-
-[[package]]
-name = "which"
-version = "4.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87ba24419a2078cd2b0f2ede2691b6c66d8e47836da3b6db8265ebad47afbfc7"
-dependencies = [
- "either",
- "home",
- "once_cell",
- "rustix",
 ]
 
 [[package]]
