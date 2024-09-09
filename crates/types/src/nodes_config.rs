@@ -231,8 +231,10 @@ impl Versioned for NodesConfiguration {
     PartialOrd,
     serde::Serialize,
     serde::Deserialize,
+    strum::Display,
 )]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum StorageState {
     /// The node is not expected to be a member in any write set and the node will self-provision
     /// its log-store to `Disabled` once it's written its own storage marker on disk.
