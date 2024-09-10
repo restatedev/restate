@@ -14,18 +14,17 @@ use restate_bifrost::loglet::OperationError;
 use restate_core::ShutdownError;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::logs::LogletOffset;
-use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 
 use restate_rocksdb::RocksError;
 
+use super::record_format::RecordDecodeError;
+
 #[derive(Debug, thiserror::Error)]
-pub enum RocksDbLogStoreError {
+pub(crate) enum RocksDbLogStoreError {
     #[error("cannot accept offset {0}")]
     InvalidOffset(LogletOffset),
     #[error(transparent)]
-    Encode(#[from] StorageEncodeError),
-    #[error(transparent)]
-    Decode(#[from] StorageDecodeError),
+    Decode(#[from] RecordDecodeError),
     #[error(transparent)]
     Rocksdb(#[from] rocksdb::Error),
     #[error(transparent)]
@@ -40,7 +39,6 @@ impl MaybeRetryableError for RocksDbLogStoreError {
     fn retryable(&self) -> bool {
         match self {
             Self::InvalidOffset(_) => false,
-            Self::Encode(_) => false,
             Self::Decode(_) => false,
             Self::Rocksdb(_) => true,
             Self::RocksDbManager(_) => false,

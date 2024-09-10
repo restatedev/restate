@@ -18,7 +18,7 @@ mod writer;
 
 pub use self::builder::RocksDbLogStoreBuilder;
 pub use self::store::RocksDbLogStore;
-pub use error::*;
+pub(crate) use error::*;
 
 // matches the default directory name
 const DB_NAME: &str = "log-server";
