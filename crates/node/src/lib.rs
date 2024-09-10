@@ -18,6 +18,12 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use codederror::CodedError;
+
+use crate::cluster_marker::ClusterValidationError;
+use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
+use crate::roles::{AdminRole, WorkerRole};
+#[cfg(feature = "kafka-loglet")]
+use restate_bifrost::providers::kafka_loglet::KafkaLogletProviderFactory;
 use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
 use restate_core::network::MessageRouterBuilder;
@@ -43,10 +49,6 @@ use restate_types::retries::RetryPolicy;
 use restate_types::Version;
 use tokio::time::Instant;
 use tracing::{debug, error, info, trace};
-
-use crate::cluster_marker::ClusterValidationError;
-use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
-use crate::roles::{AdminRole, WorkerRole};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -186,6 +188,13 @@ impl Node {
 
         #[cfg(feature = "replicated-loglet")]
         let bifrost_svc = bifrost_svc.with_factory(replicated_loglet_factory);
+
+        #[cfg(feature = "kafka-loglet")]
+        let bifrost_svc = {
+            let kafka_loglet_factory =
+                KafkaLogletProviderFactory::new(&config.bifrost.kafka_loglet);
+            bifrost_svc.with_factory(kafka_loglet_factory)
+        };
 
         #[cfg(feature = "replicated-loglet")]
         let log_server = if config.has_role(Role::LogServer) {
