@@ -16,7 +16,7 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use futures::StreamExt as FutureStreamExt;
 use metrics::histogram;
-use restate_types::net::log_server::Store;
+use restate_types::net::log_server::{Seal, Store};
 use restate_types::time::NanosSinceEpoch;
 use restate_types::GenerationalNodeId;
 use rocksdb::{BoundColumnFamily, WriteBatch};
@@ -296,19 +296,16 @@ pub struct RocksDbLogWriterHandle {
 }
 
 impl RocksDbLogWriterHandle {
-    pub async fn enqueue_seal(
-        &self,
-        loglet_id: ReplicatedLogletId,
-    ) -> Result<AckRecv, ShutdownError> {
+    pub async fn enqueue_seal(&self, seal_message: Seal) -> Result<AsyncToken, OperationError> {
         let (ack, receiver) = oneshot::channel();
         self.send_command(LogStoreWriteCommand {
-            loglet_id,
+            loglet_id: seal_message.loglet_id,
             data_update: None,
             metadata_update: Some(MetadataUpdate::Seal),
             ack: Some(ack),
         })
         .await?;
-        Ok(receiver)
+        Ok(AsyncToken::new(receiver))
     }
 
     pub async fn enqueue_put_records(

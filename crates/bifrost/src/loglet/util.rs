@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_core::ShutdownError;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
@@ -50,6 +51,16 @@ impl TailOffsetWatch {
 
     pub fn is_sealed(&self) -> bool {
         self.sender.borrow().is_sealed()
+    }
+
+    pub async fn wait_for_seal(&self) -> Result<(), ShutdownError> {
+        let mut receiver = self.sender.subscribe();
+        receiver.mark_changed();
+        receiver
+            .wait_for(|tail| tail.is_sealed())
+            .await
+            .map_err(|_| ShutdownError)?;
+        Ok(())
     }
 
     /// The first yielded value is the latest known tail
