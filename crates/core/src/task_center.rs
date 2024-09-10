@@ -114,6 +114,14 @@ impl TaskCenterBuilder {
         self
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn default_for_tests() -> Self {
+        Self::default()
+            .ingress_runtime_handle(tokio::runtime::Handle::current())
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .pause_time(true)
+    }
+
     pub fn build(mut self) -> Result<TaskCenter, TaskCenterBuildError> {
         let options = self.options.unwrap_or_default();
         if self.default_runtime_handle.is_none() {
@@ -994,17 +1002,11 @@ pub fn metadata() -> Metadata {
 }
 
 #[track_caller]
-pub fn with_metadata<F, R>(f: F) -> R
+pub fn with_metadata<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&Metadata) -> R,
 {
-    CONTEXT.with(|ctx| {
-        let metadata = ctx
-            .metadata
-            .as_ref()
-            .expect("metadata() called before global metadata was set");
-        f(metadata)
-    })
+    CONTEXT.with(|ctx| ctx.metadata.as_ref().map(f))
 }
 
 /// Access to this node id. This is available in task-center tasks only!

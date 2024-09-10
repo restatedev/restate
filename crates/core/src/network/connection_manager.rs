@@ -8,20 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{hash_map, HashMap};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Instant;
+
 use enum_map::EnumMap;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use rand::seq::SliceRandom;
-use restate_types::config::NetworkingOptions;
-use restate_types::net::codec::try_unwrap_binary_message;
-use std::collections::{hash_map, HashMap};
-use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tracing::{debug, info, trace, warn, Instrument, Span};
 
+use restate_types::config::NetworkingOptions;
+use restate_types::net::codec::MessageBodyExt;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::NodesConfiguration;
@@ -577,7 +578,7 @@ where
             break;
         }
 
-        match try_unwrap_binary_message(body, connection.protocol_version) {
+        match body.try_as_binary_body(connection.protocol_version) {
             Ok(msg) => {
                 if let Err(e) = router
                     .call(
@@ -626,7 +627,7 @@ where
         };
         if let Some(body) = msg.body {
             // we ignore non-deserializable messages (serde errors, or control signals in drain)
-            if let Ok(msg) = try_unwrap_binary_message(body, protocol_version) {
+            if let Ok(msg) = body.try_as_binary_body(protocol_version) {
                 drain_counter += 1;
                 if let Err(e) = router
                     .call(
