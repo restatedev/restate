@@ -87,6 +87,7 @@ async fn send_with_delay() {
         test_env.storage.get_invocation_status(&invocation_id).await,
         ok(pat!(InvocationStatus::Invoked { .. }))
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -180,6 +181,7 @@ async fn send_with_delay_to_locked_virtual_object() {
             &invocation_target
         )))
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -280,4 +282,5 @@ async fn send_with_delay_and_idempotency_key() {
             ))))
         )
     );
+    test_env.shutdown().await;
 }

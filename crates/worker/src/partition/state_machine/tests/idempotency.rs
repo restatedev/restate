@@ -134,6 +134,7 @@ async fn start_and_complete_idempotent_invocation() {
             response_result: eq(ResponseResult::Success(response_bytes))
         })))
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -246,6 +247,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
         completed_invocation.completion_retention_duration,
         retention
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -326,6 +328,7 @@ async fn complete_already_completed_invocation() {
             .unwrap(),
         pat!(InvocationStatus::Free)
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -391,6 +394,7 @@ async fn known_invocation_id_but_missing_completion() {
             .unwrap(),
         pat!(InvocationStatus::Free)
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -502,6 +506,7 @@ async fn attach_with_service_invocation_command_while_executing() {
             ))))
         )
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -625,6 +630,7 @@ async fn attach_with_send_service_invocation() {
             ))))),
         )
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -737,6 +743,7 @@ async fn attach_inboxed_with_send_service_invocation() {
             ))))
         )
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -844,6 +851,7 @@ async fn attach_command() {
             ))))
         )
     );
+    test_env.shutdown().await;
 }
 
 // TODO remove this once we remove the old invocation status table
@@ -910,6 +918,7 @@ async fn timer_cleanup() {
             .unwrap(),
         none()
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -962,4 +971,5 @@ async fn purge_completed_idempotent_invocation() {
             .unwrap(),
         none()
     );
+    test_env.shutdown().await;
 }
