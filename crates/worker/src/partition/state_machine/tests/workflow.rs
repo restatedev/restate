@@ -197,6 +197,7 @@ async fn start_workflow_method() {
             }
         ))))
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -348,6 +349,7 @@ async fn attach_by_workflow_key() {
             }
         ))))
     );
+    test_env.shutdown().await;
 }
 
 // TODO remove this once we remove the old invocation status table
@@ -411,6 +413,7 @@ async fn timer_cleanup() {
             .unwrap(),
         pat!(VirtualObjectStatus::Unlocked)
     );
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -460,4 +463,5 @@ async fn purge_completed_workflow() {
             .unwrap(),
         pat!(VirtualObjectStatus::Unlocked)
     );
+    test_env.shutdown().await;
 }

@@ -101,6 +101,7 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
         some((ge(0), outbox_message_matcher(caller_id)))
     );
 
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -210,6 +211,7 @@ async fn kill_call_tree() -> anyhow::Result<()> {
         )
     );
 
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -322,6 +324,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
         )
     );
 
+    test_env.shutdown().await;
     Ok(())
 }
 
@@ -437,6 +440,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
             }))
         )
     );
+    test_env.shutdown().await;
 
     Ok(())
 }
