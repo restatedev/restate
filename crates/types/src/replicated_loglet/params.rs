@@ -29,7 +29,9 @@ pub struct ReplicatedLogletParams {
     /// Replication properties of this loglet
     replication: Replication,
     nodeset: NodeSet,
-    /// The set of nodes the sequencer has been considering for writes after the last LGC advance
+    /// The set of nodes the sequencer has been considering for writes after the last
+    /// known_global_tail advance.
+    ///
     /// If unset, the entire nodeset is considered as part of the write set
     /// If set, tail repair will attempt reading only from this set.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +62,7 @@ impl ReplicatedLogletParams {
     derive_more::From,
     derive_more::Deref,
     derive_more::Into,
+    derive_more::Display,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
@@ -81,8 +84,6 @@ pub struct Replication {
     /// default is 0
     #[serde(default)]
     extra_copies: u8,
-    #[serde(default)]
-    durability: DurabilityLevel,
 }
 
 impl Replication {
@@ -117,29 +118,4 @@ impl NodeSet {
     pub fn iter(&self) -> impl Iterator<Item = &PlainNodeId> {
         self.0.iter()
     }
-}
-
-/// Durability level from lowest to highest
-#[derive(
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    Ord,
-    PartialOrd,
-    Eq,
-    PartialEq,
-    Default,
-)]
-#[serde(rename_all = "kebab-case")]
-#[repr(u8)]
-pub enum DurabilityLevel {
-    /// WAL is disabled, Commit to memory only and acknowledge
-    Memory = 1,
-    /// Commit to WAL but do not wait for fllesystem buffer cache to be flushed
-    #[default]
-    WalAsync = 2,
-    /// Commit to WAL and only acknowledge after filesystem buffer cache flush is complete
-    WalSync = 3,
 }

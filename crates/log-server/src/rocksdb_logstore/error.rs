@@ -10,16 +10,18 @@
 
 use std::sync::Arc;
 
+use restate_bifrost::loglet::OperationError;
 use restate_core::ShutdownError;
 use restate_types::errors::MaybeRetryableError;
+use restate_types::logs::LogletOffset;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 
 use restate_rocksdb::RocksError;
 
-use crate::logstore::LogStoreError;
-
 #[derive(Debug, thiserror::Error)]
 pub enum RocksDbLogStoreError {
+    #[error("cannot accept offset {0}")]
+    InvalidOffset(LogletOffset),
     #[error(transparent)]
     Encode(#[from] StorageEncodeError),
     #[error(transparent)]
@@ -37,6 +39,7 @@ pub enum RocksDbLogStoreError {
 impl MaybeRetryableError for RocksDbLogStoreError {
     fn retryable(&self) -> bool {
         match self {
+            Self::InvalidOffset(_) => false,
             Self::Encode(_) => false,
             Self::Decode(_) => false,
             Self::Rocksdb(_) => true,
@@ -47,11 +50,11 @@ impl MaybeRetryableError for RocksDbLogStoreError {
     }
 }
 
-impl From<RocksDbLogStoreError> for LogStoreError {
+impl From<RocksDbLogStoreError> for OperationError {
     fn from(value: RocksDbLogStoreError) -> Self {
         match value {
-            RocksDbLogStoreError::Shutdown(e) => LogStoreError::Shutdown(e),
-            e => LogStoreError::Other(Arc::new(e)),
+            RocksDbLogStoreError::Shutdown(e) => OperationError::Shutdown(e),
+            e => OperationError::Other(Arc::new(e)),
         }
     }
 }

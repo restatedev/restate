@@ -18,10 +18,11 @@ use restate_rocksdb::{CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, Ro
 use restate_types::config::{LogServerOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
 
-use super::keys::DATA_KEY_PREFIX_LENGTH;
 use super::writer::LogStoreWriter;
 use super::{RocksDbLogStore, RocksDbLogStoreError};
 use super::{DATA_CF, DB_NAME, METADATA_CF};
+use crate::rocksdb_logstore::keys::KeyPrefix;
+use crate::rocksdb_logstore::metadata_merge::{metadata_full_merge, metadata_partial_merge};
 
 const DATA_CF_BUDGET_RATIO: f64 = 0.85;
 const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
@@ -81,7 +82,7 @@ impl RocksDbLogStoreBuilder {
             LogStoreWriter::new(rocksdb.clone(), updateable_options.clone()).start(task_center)?;
 
         Ok(RocksDbLogStore {
-            updateable_options,
+            _updateable_options: updateable_options,
             rocksdb,
             writer_handle,
         })
@@ -134,7 +135,7 @@ fn cf_data_options(
             DBCompressionType::Zstd,
         ]);
 
-        opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(DATA_KEY_PREFIX_LENGTH));
+        opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(KeyPrefix::size()));
         opts.set_memtable_prefix_bloom_ratio(0.2);
         // most reads are sequential
         opts.set_advise_random_on_open(false);
@@ -182,12 +183,8 @@ fn cf_metadata_options(
         opts.set_memtable_whole_key_filtering(true);
         opts.set_max_write_buffer_number(4);
         opts.set_max_successive_merges(10);
-        // Merge operator for log state updates
-        // opts.set_merge_operator(
-        //     "LogStateMerge",
-        //     log_state_full_merge,
-        //     log_state_partial_merge,
-        // );
+        // Merge operator for some metadata updates
+        opts.set_merge_operator("MetadataMerge", metadata_full_merge, metadata_partial_merge);
         opts
     }
 }

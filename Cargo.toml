@@ -78,6 +78,7 @@ async-channel = "2.1.1"
 async-trait = "0.1.73"
 axum = { version = "0.7.5", default-features = false }
 base64 = "0.22"
+bitflags = { version = "2.6.0" }
 bytes = { version = "1.7", features = ["serde"] }
 bytes-utils = "0.1.3"
 bytestring = { version = "1.2", features = ["serde"] }

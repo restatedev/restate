@@ -12,6 +12,8 @@ pub mod cluster_controller;
 pub mod codec;
 mod error;
 pub mod ingress;
+#[cfg(feature = "replicated-loglet")]
+pub mod log_server;
 pub mod metadata;
 pub mod partition_processor_manager;
 
