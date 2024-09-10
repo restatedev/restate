@@ -51,7 +51,7 @@ define_rpc! {
     @request = Store,
     @response = Stored,
     @request_target = TargetName::LogServerStore,
-    @response_target = TargetName::LogServerStored,
+    @response_target = TargetName::ReplicatedLoglet,
 }
 
 // Release
@@ -59,7 +59,7 @@ define_rpc! {
     @request = Release,
     @response = Released,
     @request_target = TargetName::LogServerRelease,
-    @response_target = TargetName::LogServerReleased,
+    @response_target = TargetName::ReplicatedLoglet,
 }
 
 // Seal
@@ -67,7 +67,7 @@ define_rpc! {
     @request = Seal,
     @response = Sealed,
     @request_target = TargetName::LogServerSeal,
-    @response_target = TargetName::LogServerSealed,
+    @response_target = TargetName::ReplicatedLoglet,
 }
 
 // GetTailInfo
@@ -75,7 +75,7 @@ define_rpc! {
     @request = GetTailInfo,
     @response = TailInfo,
     @request_target = TargetName::LogServerGetTailInfo,
-    @response_target = TargetName::LogServerGetTailInfo,
+    @response_target = TargetName::ReplicatedLoglet,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
