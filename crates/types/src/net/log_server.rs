@@ -70,6 +70,14 @@ define_rpc! {
     @response_target = TargetName::LogServerSealed,
 }
 
+// GetTailInfo
+define_rpc! {
+    @request = GetTailInfo,
+    @response = TailInfo,
+    @request_target = TargetName::LogServerGetTailInfo,
+    @response_target = TargetName::LogServerGetTailInfo,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppendFlags(u32);
 
@@ -279,6 +287,53 @@ impl DerefMut for Sealed {
 }
 
 impl Sealed {
+    pub fn empty() -> Self {
+        Self {
+            header: LogServerResponseHeader::empty(),
+        }
+    }
+
+    pub fn new(tail_state: &TailState<LogletOffset>) -> Self {
+        Self {
+            header: LogServerResponseHeader::new(tail_state),
+        }
+    }
+
+    pub fn with_status(mut self, status: Status) -> Self {
+        self.header.status = status;
+        self
+    }
+}
+
+// ** GET_TAIL_INFO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetTailInfo {
+    pub known_global_tail: LogletOffset,
+    pub loglet_id: ReplicatedLogletId,
+}
+
+/// Response to a `GetTailInfo` request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TailInfo {
+    #[serde(flatten)]
+    pub header: LogServerResponseHeader,
+}
+
+impl Deref for TailInfo {
+    type Target = LogServerResponseHeader;
+
+    fn deref(&self) -> &Self::Target {
+        &self.header
+    }
+}
+
+impl DerefMut for TailInfo {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.header
+    }
+}
+
+impl TailInfo {
     pub fn empty() -> Self {
         Self {
             header: LogServerResponseHeader::empty(),

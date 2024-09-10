@@ -50,6 +50,8 @@ enum TargetName {
   LOG_SERVER_RELEASED = 13;
   LOG_SERVER_SEAL = 14;
   LOG_SERVER_SEALED = 15;
+  LOG_SERVER_GET_TAIL_INFO = 16;
+  LOG_SERVER_TAIL_INFO = 17;
 }
 
 enum NodeStatus {

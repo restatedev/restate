@@ -17,7 +17,9 @@ use tracing::{debug, warn};
 use restate_core::network::Incoming;
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::net::log_server::{Release, Seal, Sealed, Status, Store, StoreFlags, Stored};
+use restate_types::net::log_server::{
+    GetTailInfo, Release, Seal, Sealed, Status, Store, StoreFlags, Stored, TailInfo,
+};
 use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::GenerationalNodeId;
 
@@ -36,6 +38,7 @@ pub struct LogletWorkerHandle {
     store_tx: mpsc::UnboundedSender<Incoming<Store>>,
     release_tx: mpsc::UnboundedSender<Incoming<Release>>,
     seal_tx: mpsc::UnboundedSender<Incoming<Seal>>,
+    get_tail_info_tx: mpsc::UnboundedSender<Incoming<GetTailInfo>>,
     tc_handle: TaskHandle<()>,
 }
 
@@ -57,6 +60,14 @@ impl LogletWorkerHandle {
 
     pub fn enqueue_seal(&self, msg: Incoming<Seal>) -> Result<(), Incoming<Seal>> {
         self.seal_tx.send(msg).map_err(|e| e.0)?;
+        Ok(())
+    }
+
+    pub fn enqueue_get_tail_info(
+        &self,
+        msg: Incoming<GetTailInfo>,
+    ) -> Result<(), Incoming<GetTailInfo>> {
+        self.get_tail_info_tx.send(msg).map_err(|e| e.0)?;
         Ok(())
     }
 }
@@ -86,16 +97,18 @@ impl<S: LogStore> LogletWorker<S> {
         let (store_tx, store_rx) = mpsc::unbounded_channel();
         let (release_tx, release_rx) = mpsc::unbounded_channel();
         let (seal_tx, seal_rx) = mpsc::unbounded_channel();
+        let (get_tail_info_tx, get_tail_info_rx) = mpsc::unbounded_channel();
         let tc_handle = task_center.spawn_unmanaged(
             TaskKind::LogletWriter,
             "loglet-worker",
             None,
-            writer.run(store_rx, release_rx, seal_rx),
+            writer.run(store_rx, release_rx, seal_rx, get_tail_info_rx),
         )?;
         Ok(LogletWorkerHandle {
             store_tx,
             release_tx,
             seal_tx,
+            get_tail_info_tx,
             tc_handle,
         })
     }
@@ -105,6 +118,7 @@ impl<S: LogStore> LogletWorker<S> {
         mut store_rx: mpsc::UnboundedReceiver<Incoming<Store>>,
         mut release_rx: mpsc::UnboundedReceiver<Incoming<Release>>,
         mut seal_rx: mpsc::UnboundedReceiver<Incoming<Seal>>,
+        mut get_tail_info_rx: mpsc::UnboundedReceiver<Incoming<GetTailInfo>>,
     ) {
         // The worker is the sole writer to this loglet's local-tail so it's safe to maintain a moving
         // local tail view and serialize changes to logstore as long as we send them in the correct
@@ -173,6 +187,15 @@ impl<S: LogStore> LogletWorker<S> {
                         in_flight_seal.set(Some(seal_token).into());
                     }
 
+                }
+                // GET_TAIL_INFO
+                Some(msg) = get_tail_info_rx.recv() => {
+                    self.global_tail_tracker.maybe_update(msg.known_global_tail);
+                    known_global_tail = known_global_tail.max(msg.known_global_tail);
+                    // drop response if connection is lost/congested
+                    if let Err(e) = msg.try_respond_rpc(TailInfo::new(&self.loglet_state.local_tail())) {
+                        debug!(?e.source, peer = %msg.peer(), "Failed to respond to GetTailInfo message due to peer channel capacity being full");
+                    }
                 }
                 // STORE
                 Some(msg) = store_rx.recv() => {
@@ -607,6 +630,27 @@ mod tests {
             .try_decode(connection.protocol_version())?;
         assert_that!(stored.status, eq(Status::Sealed));
         assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
+
+        // Get Tail Info
+        // offsets 3, 4
+        let msg = GetTailInfo {
+            loglet_id: LOGLET,
+            known_global_tail: LogletOffset::INVALID,
+        };
+        let msg = Incoming::for_testing(&connection, msg, None);
+        let msg_id = msg.msg_id();
+        worker.enqueue_get_tail_info(msg).unwrap();
+
+        let response = net_rx.recv().await.unwrap();
+        let header = response.header.unwrap();
+        assert_that!(header.in_response_to(), eq(msg_id));
+        let tail_info: TailInfo = response
+            .body
+            .unwrap()
+            .try_decode(connection.protocol_version())?;
+        assert_that!(tail_info.status, eq(Status::Ok));
+        assert_that!(tail_info.local_tail, eq(LogletOffset::new(3)));
+        assert_that!(tail_info.sealed, eq(true));
 
         tc.shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
