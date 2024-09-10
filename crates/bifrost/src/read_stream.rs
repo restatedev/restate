@@ -27,6 +27,7 @@ use restate_types::logs::metadata::MaybeSegment;
 use restate_types::logs::KeyFilter;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::SequenceNumber;
+use restate_types::logs::TailState;
 use restate_types::logs::{LogId, Lsn};
 use restate_types::Version;
 use restate_types::Versioned;
@@ -38,7 +39,6 @@ use crate::loglet_wrapper::LogletReadStreamWrapper;
 use crate::Error;
 use crate::LogEntry;
 use crate::Result;
-use crate::TailState;
 
 /// A read stream reads from the virtual log. The stream provides a unified view over
 /// the virtual log addressing space in the face of seals, reconfiguration, and trims.
