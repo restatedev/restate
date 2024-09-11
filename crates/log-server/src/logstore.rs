@@ -15,8 +15,7 @@ use tokio::sync::oneshot;
 
 use restate_bifrost::loglet::OperationError;
 use restate_core::ShutdownError;
-use restate_types::logs::LogletOffset;
-use restate_types::net::log_server::{GetRecords, Records, Seal, Store};
+use restate_types::net::log_server::{GetRecords, Records, Seal, Store, Trim};
 use restate_types::replicated_loglet::ReplicatedLogletId;
 
 use crate::metadata::{LogStoreMarker, LogletState};
@@ -47,12 +46,9 @@ pub trait LogStore: Clone + Send + 'static {
         seal_message: Seal,
     ) -> impl Future<Output = Result<AsyncToken, OperationError>> + Send;
 
-    // todo: remove when trim is fully tested
-    #[allow(dead_code)]
     fn enqueue_trim(
         &mut self,
-        loglet_id: ReplicatedLogletId,
-        trim_point: LogletOffset,
+        trim_message: Trim,
     ) -> impl Future<Output = Result<AsyncToken, OperationError>> + Send;
 
     fn read_records(

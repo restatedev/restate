@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Weak};
 
@@ -43,6 +43,12 @@ impl<M> Deref for Incoming<M> {
     type Target = M;
     fn deref(&self) -> &Self::Target {
         &self.body
+    }
+}
+
+impl<M> DerefMut for Incoming<M> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.body
     }
 }
 

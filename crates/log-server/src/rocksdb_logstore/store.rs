@@ -19,7 +19,7 @@ use restate_types::config::LogServerOptions;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
-    Gap, GetRecords, LogServerResponseHeader, MaybeRecord, Records, Seal, Store,
+    Gap, GetRecords, LogServerResponseHeader, MaybeRecord, Records, Seal, Store, Trim,
 };
 use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::GenerationalNodeId;
@@ -139,7 +139,6 @@ impl LogStore for RocksDbLogStore {
         let max_legal_record = DataRecordKey::new(loglet_id, LogletOffset::MAX);
         let upper_bound = DataRecordKey::exclusive_upper_bound(loglet_id);
         readopts.fill_cache(true);
-        readopts.set_ignore_range_deletions(true);
         readopts.set_total_order_seek(false);
         readopts.set_prefix_same_as_start(true);
         readopts.set_iterate_lower_bound(oldest_key.to_bytes());
@@ -152,7 +151,7 @@ impl LogStore for RocksDbLogStore {
             .raw_iterator_cf_opt(&data_cf, readopts);
         // see to the max key that exists
         iterator.seek_for_prev(max_legal_record.to_bytes());
-        let local_tail = if iterator.valid() {
+        let mut local_tail = if iterator.valid() {
             let decoded_key = DataRecordKey::from_slice(iterator.key().unwrap());
             trace!(
                 "Found last record of loglet {} is {}",
@@ -164,6 +163,14 @@ impl LogStore for RocksDbLogStore {
             trace!("No data records for loglet {}", loglet_id);
             LogletOffset::OLDEST
         };
+        // If the loglet is trimmed (all records were removed) and we know the trim_point, then we
+        // use the trim_point.next() as the local_tail.
+        //
+        // Another way to describe this is `if trim_point => local_tail` but at this stage, I
+        // prefer to be conservative and explicit to catch unintended corner cases.
+        if local_tail == LogletOffset::OLDEST && trim_point > LogletOffset::INVALID {
+            local_tail = trim_point.next();
+        }
 
         Ok(LogletState::new(
             sequencer, local_tail, is_sealed, trim_point,
@@ -188,14 +195,8 @@ impl LogStore for RocksDbLogStore {
         self.writer_handle.enqueue_seal(seal_message).await
     }
 
-    // todo: remove when trim is fully implemented
-    #[allow(dead_code)]
-    async fn enqueue_trim(
-        &mut self,
-        loglet_id: ReplicatedLogletId,
-        trim_point: LogletOffset,
-    ) -> Result<AsyncToken, OperationError> {
-        self.writer_handle.enqueue_trim(loglet_id, trim_point).await
+    async fn enqueue_trim(&mut self, trim_message: Trim) -> Result<AsyncToken, OperationError> {
+        self.writer_handle.enqueue_trim(trim_message).await
     }
 
     async fn read_records(
@@ -331,7 +332,7 @@ impl LogStore for RocksDbLogStore {
         }
 
         Ok(Records {
-            header: LogServerResponseHeader::new(&local_tail),
+            header: LogServerResponseHeader::new(local_tail),
             next_offset: read_pointer,
             records,
         })
