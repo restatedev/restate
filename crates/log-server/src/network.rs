@@ -47,7 +47,7 @@ pub struct RequestPump {
     store_stream: MessageStream<Store>,
     release_stream: MessageStream<Release>,
     seal_stream: MessageStream<Seal>,
-    get_tail_info_stream: MessageStream<GetTailInfo>,
+    get_loglet_info_stream: MessageStream<GetLogletInfo>,
     get_records_stream: MessageStream<GetRecords>,
     trim_stream: MessageStream<Trim>,
 }
@@ -68,7 +68,7 @@ impl RequestPump {
         let store_stream = router_builder.subscribe_to_stream(queue_length);
         let release_stream = router_builder.subscribe_to_stream(queue_length);
         let seal_stream = router_builder.subscribe_to_stream(queue_length);
-        let get_tail_info_stream = router_builder.subscribe_to_stream(queue_length);
+        let get_loglet_info_stream = router_builder.subscribe_to_stream(queue_length);
         let get_records_stream = router_builder.subscribe_to_stream(queue_length);
         let trim_stream = router_builder.subscribe_to_stream(queue_length);
         Self {
@@ -78,7 +78,7 @@ impl RequestPump {
             store_stream,
             release_stream,
             seal_stream,
-            get_tail_info_stream,
+            get_loglet_info_stream,
             get_records_stream,
             trim_stream,
         }
@@ -99,7 +99,7 @@ impl RequestPump {
             mut store_stream,
             mut release_stream,
             mut seal_stream,
-            mut get_tail_info_stream,
+            mut get_loglet_info_stream,
             mut get_records_stream,
             mut trim_stream,
             ..
@@ -130,7 +130,7 @@ impl RequestPump {
                     drop(store_stream);
                     drop(release_stream);
                     drop(seal_stream);
-                    drop(get_tail_info_stream);
+                    drop(get_loglet_info_stream);
                     drop(get_records_stream);
                     // shutdown all workers.
                     Self::shutdown(loglet_workers).await;
@@ -162,18 +162,18 @@ impl RequestPump {
                     ).await?;
                     Self::on_seal(worker, seal);
                 }
-                Some(get_tail_info) = get_tail_info_stream.next() => {
+                Some(get_loglet_info) = get_loglet_info_stream.next() => {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        get_tail_info.loglet_id,
+                        get_loglet_info.loglet_id,
                         &log_store,
                         &task_center,
                         &global_tail_tracker,
                         &mut state_map,
                         &mut loglet_workers,
                     ).await?;
-                    Self::on_get_tail_info(worker, get_tail_info);
+                    Self::on_get_loglet_info(worker, get_loglet_info);
                 }
                 Some(get_records) = get_records_stream.next() => {
                     // find the worker or create one.
@@ -256,11 +256,11 @@ impl RequestPump {
         }
     }
 
-    fn on_get_tail_info(worker: &LogletWorkerHandle, msg: Incoming<GetTailInfo>) {
-        if let Err(msg) = worker.enqueue_get_tail_info(msg) {
+    fn on_get_loglet_info(worker: &LogletWorkerHandle, msg: Incoming<GetLogletInfo>) {
+        if let Err(msg) = worker.enqueue_get_loglet_info(msg) {
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.try_respond_rpc(TailInfo::empty()) {
-                debug!(?e.source, peer = %msg.peer(), "Failed to respond to GetTailInfo message with status Disabled due to peer channel capacity being full");
+            if let Err(e) = msg.try_respond_rpc(LogletInfo::empty()) {
+                debug!(?e.source, peer = %msg.peer(), "Failed to respond to GetLogletInfo message with status Disabled due to peer channel capacity being full");
             }
         }
     }
