@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// todo: remove when the read path is implemented
-#![allow(dead_code)]
-
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery, Record};
@@ -26,7 +23,7 @@ pub(super) enum RecordFormat {
 
 #[derive(Debug, thiserror::Error)]
 #[error("Record decode error: {0}")]
-pub(super) enum RecordDecodeError {
+pub(crate) enum RecordDecodeError {
     UnsupportedFormatVersion(u8),
     UnsupportedKeyStyle(u8),
 }
@@ -62,6 +59,10 @@ impl<'a> DataRecordDecoder<'a> {
         self.keys.matches_key_query(filter)
     }
 
+    pub fn size(&self) -> usize {
+        self.buffer.len()
+    }
+
     pub fn decode(mut self) -> Result<Record, RecordDecodeError> {
         // unused flags
         let _flags = read_flags(&mut self.buffer);
@@ -70,18 +71,6 @@ impl<'a> DataRecordDecoder<'a> {
         let body = PolyBytes::Bytes(Bytes::copy_from_slice(self.buffer.chunk()));
 
         Ok(Record::from_parts(created_at, self.keys, body))
-    }
-
-    /// Returns Ok(None) if the record doesn't match the filter
-    pub fn decode_if_matches(
-        self,
-        filter: &KeyFilter,
-    ) -> Result<Option<Record>, RecordDecodeError> {
-        if self.matches_key_query(filter) {
-            Ok(Some(self.decode()?))
-        } else {
-            Ok(None)
-        }
     }
 }
 

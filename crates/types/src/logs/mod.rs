@@ -200,7 +200,7 @@ impl IntoIterator for Keys {
 }
 
 /// A type that describes which records a reader should pick
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum KeyFilter {
     #[default]
     // Matches any record

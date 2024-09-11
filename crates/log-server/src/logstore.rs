@@ -16,7 +16,7 @@ use tokio::sync::oneshot;
 use restate_bifrost::loglet::OperationError;
 use restate_core::ShutdownError;
 use restate_types::logs::LogletOffset;
-use restate_types::net::log_server::{Seal, Store};
+use restate_types::net::log_server::{GetRecords, Records, Seal, Store};
 use restate_types::replicated_loglet::ReplicatedLogletId;
 
 use crate::metadata::{LogStoreMarker, LogletState};
@@ -54,6 +54,12 @@ pub trait LogStore: Clone + Send + 'static {
         loglet_id: ReplicatedLogletId,
         trim_point: LogletOffset,
     ) -> impl Future<Output = Result<AsyncToken, OperationError>> + Send;
+
+    fn read_records(
+        &mut self,
+        get_records_message: GetRecords,
+        loglet_state: LogletState,
+    ) -> impl Future<Output = Result<Records, OperationError>> + Send;
 }
 
 /// A future that resolves when a log-store operation is completed

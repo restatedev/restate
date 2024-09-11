@@ -18,11 +18,14 @@ use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::config::LogServerOptions;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::net::log_server::{Seal, Store};
+use restate_types::net::log_server::{
+    Gap, GetRecords, LogServerResponseHeader, MaybeRecord, Records, Seal, Store,
+};
 use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::GenerationalNodeId;
 
 use super::keys::{KeyPrefixKind, MetadataKey, MARKER_KEY};
+use super::record_format::DataRecordDecoder;
 use super::writer::RocksDbLogWriterHandle;
 use super::{RocksDbLogStoreError, DATA_CF, METADATA_CF};
 use crate::logstore::{AsyncToken, LogStore};
@@ -193,6 +196,145 @@ impl LogStore for RocksDbLogStore {
         trim_point: LogletOffset,
     ) -> Result<AsyncToken, OperationError> {
         self.writer_handle.enqueue_trim(loglet_id, trim_point).await
+    }
+
+    async fn read_records(
+        &mut self,
+        msg: GetRecords,
+        loglet_state: LogletState,
+    ) -> Result<Records, OperationError> {
+        let data_cf = self.data_cf();
+        let loglet_id = msg.loglet_id;
+        // The order of operations is important to remain correct.
+        // The scenario that we want to avoid is the silent data loss. Although the
+        // replicated-loglet reader can ensure contiguous offset range and detect trim-point
+        // detection errors or data loss, we try to structure this to reduce the possibilities for
+        // errors as much as possible.
+        //
+        // If we are reading beyond the tail, the first thing we do is to clip to the
+        // local_tail.
+        let local_tail = loglet_state.local_tail().clone();
+        let trim_point = loglet_state.trim_point();
+
+        let read_from = msg.from_offset.max(trim_point.next());
+        let read_to = msg.to_offset.min(local_tail.offset().prev());
+
+        let mut size_budget = msg.total_limit_in_bytes.unwrap_or(usize::MAX);
+
+        // why +1? to have enough room for the initial trim_gap if we have one.
+        let mut records = Vec::with_capacity(
+            usize::try_from(read_to.saturating_sub(*read_from)).expect("no overflow") + 1,
+        );
+
+        // Issue a trim gap until the known head
+        if read_from > msg.from_offset {
+            records.push((
+                msg.from_offset,
+                MaybeRecord::TrimGap(Gap {
+                    to: read_from.prev(),
+                }),
+            ));
+        }
+
+        // setup the iterator
+        let mut readopts = rocksdb::ReadOptions::default();
+        let oldest_key = DataRecordKey::new(loglet_id, read_from);
+        let upper_bound = DataRecordKey::exclusive_upper_bound(loglet_id);
+        readopts.set_tailing(false);
+        // In some cases, the underlying ForwardIterator will fail if it hits a `RangeDelete` tombstone.
+        // For our purposes, we can ignore these tombstones, meaning that we will return those records
+        // instead of a gap.
+        // In summary, if loglet reader started before a trim point and data is readable, we should
+        // continue reading them. It's the responsibility of the upper layer to decide on a sane
+        // value of _from_offset_.
+        readopts.set_ignore_range_deletions(true);
+        readopts.set_prefix_same_as_start(true);
+        readopts.set_total_order_seek(false);
+        readopts.set_async_io(true);
+        let oldest_key_bytes = oldest_key.to_bytes();
+        readopts.set_iterate_lower_bound(oldest_key_bytes.clone());
+        readopts.set_iterate_upper_bound(upper_bound);
+        let mut iterator = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(&data_cf, readopts);
+
+        // read_pointer points to the next offset we should attempt to read (or expect to read)
+        let mut read_pointer = read_from;
+        iterator.seek(oldest_key_bytes);
+        let mut first_record_inserted = false;
+
+        while iterator.valid() && iterator.key().is_some() && read_pointer <= read_to {
+            let loaded_key = DataRecordKey::from_slice(iterator.key().expect("log record exists"));
+            let offset = loaded_key.offset();
+            // We found a record but it's beyond what we want to read
+            if offset > read_to {
+                // reset the pointer
+                read_pointer = read_to.next();
+                break;
+            }
+
+            if offset > read_pointer {
+                // we skipped records. Either because they got trimmed or we don't have copies for
+                // those offsets
+                let potentially_different_trim_point = loglet_state.trim_point();
+                if potentially_different_trim_point >= offset {
+                    // drop the set of accumulated records and start over with a a fresh trim-gap
+                    records.clear();
+                    records.push((
+                        msg.from_offset,
+                        MaybeRecord::TrimGap(Gap {
+                            to: potentially_different_trim_point,
+                        }),
+                    ));
+                    read_pointer = potentially_different_trim_point.next();
+                    iterator.seek(DataRecordKey::new(loglet_id, read_pointer).to_bytes());
+                    continue;
+                }
+                // Another possibility is that we don't have a copy of that offset. In this case,
+                // it's safe to resume.
+            }
+
+            // Is this a filtered record?
+            let decoder = DataRecordDecoder::new(iterator.value().expect("log record exists"))
+                .map_err(RocksDbLogStoreError::from)?;
+
+            if !decoder.matches_key_query(&msg.filter) {
+                records.push((offset, MaybeRecord::FilteredGap(Gap { to: offset })));
+            } else {
+                if first_record_inserted && size_budget < decoder.size() {
+                    // we have reached the limit
+                    read_pointer = offset;
+                    break;
+                }
+                first_record_inserted = true;
+                size_budget = size_budget.saturating_sub(decoder.size());
+                let data_record = decoder.decode().map_err(RocksDbLogStoreError::from)?;
+                records.push((offset, MaybeRecord::Data(data_record)));
+            }
+
+            read_pointer = offset.next();
+            if read_pointer > read_to {
+                break;
+            }
+            iterator.next();
+            // Allow other tasks on this thread to run, but only if we have exhausted the coop
+            // budget.
+            tokio::task::consume_budget().await;
+        }
+
+        // we reached the end (or an error)
+        if let Err(e) = iterator.status() {
+            // whoa, we have I/O errors, we should switch into failsafe mode (todo)
+            return Err(RocksDbLogStoreError::Rocksdb(e).into());
+        }
+
+        Ok(Records {
+            header: LogServerResponseHeader::new(&local_tail),
+            next_offset: read_pointer,
+            records,
+        })
     }
 }
 

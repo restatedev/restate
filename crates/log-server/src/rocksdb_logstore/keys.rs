@@ -139,7 +139,7 @@ impl DataRecordKey {
         Self { prefix, offset }
     }
 
-    const fn size() -> usize {
+    pub const fn size() -> usize {
         // We store the offset as u64 rather than the actual u32
         KeyPrefix::size() + size_of::<u64>()
     }

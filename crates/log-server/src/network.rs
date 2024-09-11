@@ -27,7 +27,7 @@ use restate_core::{cancellation_watcher, Metadata, TaskCenter};
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::net::log_server::{
-    GetTailInfo, Release, Released, Seal, Sealed, Store, Stored, TailInfo,
+    GetRecords, GetTailInfo, Records, Release, Released, Seal, Sealed, Store, Stored, TailInfo,
 };
 use restate_types::nodes_config::StorageState;
 use restate_types::replicated_loglet::ReplicatedLogletId;
@@ -50,6 +50,7 @@ pub struct RequestPump {
     release_stream: MessageStream<Release>,
     seal_stream: MessageStream<Seal>,
     get_tail_info_stream: MessageStream<GetTailInfo>,
+    get_records_stream: MessageStream<GetRecords>,
 }
 
 impl RequestPump {
@@ -69,6 +70,7 @@ impl RequestPump {
         let release_stream = router_builder.subscribe_to_stream(queue_length);
         let seal_stream = router_builder.subscribe_to_stream(queue_length);
         let get_tail_info_stream = router_builder.subscribe_to_stream(queue_length);
+        let get_records_stream = router_builder.subscribe_to_stream(queue_length);
         Self {
             task_center,
             _metadata: metadata,
@@ -77,6 +79,7 @@ impl RequestPump {
             release_stream,
             seal_stream,
             get_tail_info_stream,
+            get_records_stream,
         }
     }
 
@@ -96,6 +99,7 @@ impl RequestPump {
             mut release_stream,
             mut seal_stream,
             mut get_tail_info_stream,
+            mut get_records_stream,
             ..
         } = self;
 
@@ -125,6 +129,7 @@ impl RequestPump {
                     drop(release_stream);
                     drop(seal_stream);
                     drop(get_tail_info_stream);
+                    drop(get_records_stream);
                     // shutdown all workers.
                     Self::shutdown(loglet_workers).await;
                     return Ok(());
@@ -167,6 +172,19 @@ impl RequestPump {
                         &mut loglet_workers,
                     ).await?;
                     Self::on_get_tail_info(worker, get_tail_info);
+                }
+                Some(get_records) = get_records_stream.next() => {
+                    // find the worker or create one.
+                    // enqueue.
+                    let worker = Self::find_or_create_worker(
+                        get_records.loglet_id,
+                        &log_store,
+                        &task_center,
+                        &global_tail_tracker,
+                        &mut state_map,
+                        &mut loglet_workers,
+                    ).await?;
+                    Self::on_get_records(worker, get_records);
                 }
                 Some(store) = store_stream.next() => {
                     // find the worker or create one.
@@ -232,6 +250,16 @@ impl RequestPump {
         }
     }
 
+    fn on_get_records(worker: &LogletWorkerHandle, msg: Incoming<GetRecords>) {
+        if let Err(msg) = worker.enqueue_get_records(msg) {
+            let next_offset = msg.from_offset;
+            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
+            if let Err(e) = msg.try_respond_rpc(Records::empty(next_offset)) {
+                debug!(?e.source, peer = %msg.peer(), "Failed to respond to GetRecords message with status Disabled due to peer channel capacity being full");
+            }
+        }
+    }
+
     async fn find_or_create_worker<'a, S: LogStore>(
         loglet_id: ReplicatedLogletId,
         log_store: &S,
@@ -246,7 +274,7 @@ impl RequestPump {
                 .await
                 .context("cannot load loglet state map from logstore")?;
             let handle = LogletWorker::start(
-                task_center,
+                task_center.clone(),
                 loglet_id,
                 log_store.clone(),
                 state.clone(),
