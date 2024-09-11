@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::path::PathBuf;
 use std::slice;
 use std::sync::Arc;
 
@@ -18,6 +19,7 @@ use codederror::CodedError;
 use restate_rocksdb::CfName;
 use restate_rocksdb::IoMode;
 use restate_rocksdb::Priority;
+use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_types::config::Configuration;
 use rocksdb::DBCompressionType;
 use rocksdb::DBPinnableSlice;
@@ -39,6 +41,7 @@ use crate::keys::KeyKind;
 use crate::keys::TableKey;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
+use crate::snapshots::LocalPartitionSnapshot;
 
 pub type DB = rocksdb::DB;
 
@@ -416,6 +419,38 @@ impl PartitionStore {
             .await
             .map_err(|err| StorageError::Generic(err.into()))?;
         Ok(())
+    }
+
+    /// Creates a snapshot of the partition in the given directory, which must not exist and will be
+    /// created as part of the export.The snapshot is atomic and contains, at a minimum, the
+    /// reported applied minimum LSN. Additional log records may have been applied between when the
+    /// applied LSN marker was read, and when the snapshot was actually created. The real snapshot
+    /// applied LSN will always be equal to, or greater than, the reported applied LSN.
+    ///
+    /// *NB:* Creating a snapshot causes an implicit flush of the column family!
+    ///
+    /// See [rocksdb::checkpoint::Checkpoint::export_column_family] for additional implementation details.
+    pub async fn create_snapshot(
+        &mut self,
+        snapshot_dir: PathBuf,
+    ) -> Result<LocalPartitionSnapshot> {
+        let applied_lsn = self
+            .get_applied_lsn()
+            .await?
+            .ok_or(StorageError::DataIntegrityError)?;
+
+        let metadata = self
+            .rocksdb
+            .export_cf(self.data_cf_name.clone(), snapshot_dir.clone())
+            .await
+            .map_err(|err| StorageError::Generic(err.into()))?;
+
+        Ok(LocalPartitionSnapshot {
+            base_dir: snapshot_dir,
+            files: metadata.get_files(),
+            db_comparator_name: metadata.get_db_comparator_name(),
+            min_applied_lsn: applied_lsn,
+        })
     }
 }
 

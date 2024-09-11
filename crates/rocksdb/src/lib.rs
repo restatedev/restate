@@ -26,15 +26,15 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Instant;
-
+use self::background::ReadyStorageTask;
+use rocksdb::checkpoint::Checkpoint;
 use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
-
-use self::background::ReadyStorageTask;
+use rocksdb::ExportImportFilesMetaData;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
 // re-exports
 pub use self::db_manager::RocksDbManager;
 pub use self::db_spec::*;
@@ -347,6 +347,55 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::OpenColumnFamily)
             .op(move || db.open_cf(name, default_cf_options, cf_patterns))
+            .build()
+            .unwrap();
+
+        self.manager.async_spawn(task).await?
+    }
+
+    #[tracing::instrument(skip_all, fields(db = %self.name))]
+    pub async fn import_cf(
+        &self,
+        name: CfName,
+        opts: &RocksDbOptions,
+        metadata: ExportImportFilesMetaData,
+    ) -> Result<(), RocksError> {
+        // todo(pavel): perf guard
+        let default_cf_options = self.manager.default_cf_options(opts);
+        let cf_patterns = self.cf_patterns.clone();
+        let db = self.db.clone();
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::ImportColumnFamily)
+            .op(move || db.import_cf(name, default_cf_options, cf_patterns, metadata))
+            .build()
+            .unwrap();
+
+        self.manager.async_spawn(task).await?
+    }
+
+    #[tracing::instrument(skip_all, fields(db = %self.name))]
+    pub async fn export_cf(
+        &self,
+        name: CfName,
+        export_dir: PathBuf,
+    ) -> Result<ExportImportFilesMetaData, RocksError> {
+        // todo(pavel): perf guard
+        let db = self.db.clone();
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::ExportColumnFamily)
+            .op(move || {
+                let checkpoint = Checkpoint::new(db.as_raw_db()).unwrap();
+
+                let data_cf_handle = db
+                    .cf_handle(name.as_str())
+                    .ok_or_else(|| RocksError::UnknownColumnFamily(name.clone()))?;
+
+                let metadata = checkpoint
+                    .export_column_family(&data_cf_handle, export_dir.as_path())
+                    .map_err(|err| RocksError::ExportColumnFamily(err))?;
+
+                Ok(metadata)
+            })
             .build()
             .unwrap();
 

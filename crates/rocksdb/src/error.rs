@@ -29,6 +29,9 @@ pub enum RocksError {
     AlreadyOpen,
     #[error(transparent)]
     #[code(unknown)]
+    ExportColumnFamily(rocksdb::Error),
+    #[error(transparent)]
+    #[code(unknown)]
     Other(#[from] rocksdb::Error),
 }
 
