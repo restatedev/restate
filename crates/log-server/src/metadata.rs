@@ -137,13 +137,23 @@ impl LogletState {
         self.local_tail.is_sealed()
     }
 
-    pub fn local_tail(&self) -> watch::Ref<'_, TailState<LogletOffset>> {
-        self.local_tail.get()
+    pub fn local_tail(&self) -> TailState<LogletOffset> {
+        *self.local_tail.get()
     }
 
-    #[allow(unused)]
     pub fn trim_point(&self) -> LogletOffset {
         *self.trim_point.borrow()
+    }
+
+    pub fn update_trim_point(&mut self, new_trim_point: LogletOffset) -> bool {
+        self.trim_point.send_if_modified(|t| {
+            if new_trim_point > *t {
+                *t = new_trim_point;
+                true
+            } else {
+                false
+            }
+        })
     }
 }
 

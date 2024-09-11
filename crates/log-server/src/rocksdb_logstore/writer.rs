@@ -16,7 +16,7 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use futures::StreamExt as FutureStreamExt;
 use metrics::histogram;
-use restate_types::net::log_server::{Seal, Store};
+use restate_types::net::log_server::{Seal, Store, Trim};
 use restate_types::time::NanosSinceEpoch;
 use restate_types::GenerationalNodeId;
 use rocksdb::{BoundColumnFamily, WriteBatch};
@@ -336,20 +336,18 @@ impl RocksDbLogWriterHandle {
         Ok(AsyncToken::new(receiver))
     }
 
-    pub async fn enqueue_trim(
-        &self,
-        loglet_id: ReplicatedLogletId,
-        trim_point: LogletOffset,
-    ) -> Result<AsyncToken, OperationError> {
+    pub async fn enqueue_trim(&self, trim_message: Trim) -> Result<AsyncToken, OperationError> {
         let (ack, receiver) = oneshot::channel();
 
-        let data_update = DataUpdate::TrimLogRecords { trim_point };
+        let data_update = DataUpdate::TrimLogRecords {
+            trim_point: trim_message.trim_point,
+        };
         let metadata_update = Some(MetadataUpdate::UpdateTrimPoint {
-            new_trim_point: trim_point,
+            new_trim_point: trim_message.trim_point,
         });
 
         self.send_command(LogStoreWriteCommand {
-            loglet_id,
+            loglet_id: trim_message.loglet_id,
             data_update: Some(data_update),
             metadata_update,
             ack: Some(ack),

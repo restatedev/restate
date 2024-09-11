@@ -86,6 +86,14 @@ define_rpc! {
     @response_target = TargetName::LogServerRecords,
 }
 
+// Trim
+define_rpc! {
+    @request = Trim,
+    @response = Trimmed,
+    @request_target = TargetName::LogServerTrim,
+    @response_target = TargetName::LogServerTrimmed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppendFlags(u32);
 
@@ -124,7 +132,7 @@ pub struct LogServerResponseHeader {
 }
 
 impl LogServerResponseHeader {
-    pub fn new(tail_state: &TailState<LogletOffset>) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
         Self {
             local_tail: tail_state.offset(),
             sealed: tail_state.is_sealed(),
@@ -219,7 +227,7 @@ impl Stored {
         }
     }
 
-    pub fn new(tail_state: &TailState<LogletOffset>) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
         Self {
             header: LogServerResponseHeader::new(tail_state),
         }
@@ -251,7 +259,7 @@ impl Released {
         }
     }
 
-    pub fn new(tail_state: &TailState<LogletOffset>) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
         Self {
             header: LogServerResponseHeader::new(tail_state),
         }
@@ -301,7 +309,7 @@ impl Sealed {
         }
     }
 
-    pub fn new(tail_state: &TailState<LogletOffset>) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
         Self {
             header: LogServerResponseHeader::new(tail_state),
         }
@@ -348,7 +356,7 @@ impl TailInfo {
         }
     }
 
-    pub fn new(tail_state: &TailState<LogletOffset>) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
         Self {
             header: LogServerResponseHeader::new(tail_state),
         }
@@ -448,11 +456,60 @@ impl Records {
         }
     }
 
-    pub fn new(tail_state: &TailState<LogletOffset>, next_offset: LogletOffset) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>, next_offset: LogletOffset) -> Self {
         Self {
             header: LogServerResponseHeader::new(tail_state),
             records: Vec::default(),
             next_offset,
+        }
+    }
+
+    pub fn with_status(mut self, status: Status) -> Self {
+        self.header.status = status;
+        self
+    }
+}
+
+// ** TRIM
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Trim {
+    pub known_global_tail: LogletOffset,
+    pub loglet_id: ReplicatedLogletId,
+    /// The trim_point is inclusive (will be trimmed)
+    pub trim_point: LogletOffset,
+}
+
+/// Response to a `GetTailInfo` request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Trimmed {
+    #[serde(flatten)]
+    pub header: LogServerResponseHeader,
+}
+
+impl Deref for Trimmed {
+    type Target = LogServerResponseHeader;
+
+    fn deref(&self) -> &Self::Target {
+        &self.header
+    }
+}
+
+impl DerefMut for Trimmed {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.header
+    }
+}
+
+impl Trimmed {
+    pub fn empty() -> Self {
+        Self {
+            header: LogServerResponseHeader::empty(),
+        }
+    }
+
+    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
+        Self {
+            header: LogServerResponseHeader::new(tail_state),
         }
     }
 

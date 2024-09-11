@@ -26,9 +26,7 @@ use restate_core::network::{Incoming, MessageRouterBuilder, NetworkSender};
 use restate_core::{cancellation_watcher, Metadata, TaskCenter};
 use restate_types::config::Configuration;
 use restate_types::live::Live;
-use restate_types::net::log_server::{
-    GetRecords, GetTailInfo, Records, Release, Released, Seal, Sealed, Store, Stored, TailInfo,
-};
+use restate_types::net::log_server::*;
 use restate_types::nodes_config::StorageState;
 use restate_types::replicated_loglet::ReplicatedLogletId;
 
@@ -51,6 +49,7 @@ pub struct RequestPump {
     seal_stream: MessageStream<Seal>,
     get_tail_info_stream: MessageStream<GetTailInfo>,
     get_records_stream: MessageStream<GetRecords>,
+    trim_stream: MessageStream<Trim>,
 }
 
 impl RequestPump {
@@ -71,6 +70,7 @@ impl RequestPump {
         let seal_stream = router_builder.subscribe_to_stream(queue_length);
         let get_tail_info_stream = router_builder.subscribe_to_stream(queue_length);
         let get_records_stream = router_builder.subscribe_to_stream(queue_length);
+        let trim_stream = router_builder.subscribe_to_stream(queue_length);
         Self {
             task_center,
             _metadata: metadata,
@@ -80,6 +80,7 @@ impl RequestPump {
             seal_stream,
             get_tail_info_stream,
             get_records_stream,
+            trim_stream,
         }
     }
 
@@ -100,6 +101,7 @@ impl RequestPump {
             mut seal_stream,
             mut get_tail_info_stream,
             mut get_records_stream,
+            mut trim_stream,
             ..
         } = self;
 
@@ -186,6 +188,19 @@ impl RequestPump {
                     ).await?;
                     Self::on_get_records(worker, get_records);
                 }
+                Some(trim) = trim_stream.next() => {
+                    // find the worker or create one.
+                    // enqueue.
+                    let worker = Self::find_or_create_worker(
+                        trim.loglet_id,
+                        &log_store,
+                        &task_center,
+                        &global_tail_tracker,
+                        &mut state_map,
+                        &mut loglet_workers,
+                    ).await?;
+                    Self::on_trim(worker, trim);
+                }
                 Some(store) = store_stream.next() => {
                     // find the worker or create one.
                     // enqueue.
@@ -256,6 +271,15 @@ impl RequestPump {
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
             if let Err(e) = msg.try_respond_rpc(Records::empty(next_offset)) {
                 debug!(?e.source, peer = %msg.peer(), "Failed to respond to GetRecords message with status Disabled due to peer channel capacity being full");
+            }
+        }
+    }
+
+    fn on_trim(worker: &LogletWorkerHandle, msg: Incoming<Trim>) {
+        if let Err(msg) = worker.enqueue_trim(msg) {
+            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
+            if let Err(e) = msg.try_respond_rpc(Trimmed::empty()) {
+                debug!(?e.source, peer = %msg.peer(), "Failed to respond to Trim message with status Disabled due to peer channel capacity being full");
             }
         }
     }
