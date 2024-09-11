@@ -298,6 +298,12 @@ impl<S: LogStore> LogletWorker<S> {
         if body.expired() {
             return (Status::Dropped, None);
         }
+
+        if body.payloads.is_empty() {
+            // Can't store zero records
+            return (Status::Malformed, None);
+        }
+
         let Some(last_offset) = body.last_offset() else {
             // too many records
             return (Status::Malformed, None);
