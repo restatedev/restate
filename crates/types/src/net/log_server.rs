@@ -70,12 +70,12 @@ define_rpc! {
     @response_target = TargetName::LogServerSealed,
 }
 
-// GetTailInfo
+// GetLogletInfo
 define_rpc! {
-    @request = GetTailInfo,
-    @response = TailInfo,
-    @request_target = TargetName::LogServerGetTailInfo,
-    @response_target = TargetName::LogServerGetTailInfo,
+    @request = GetLogletInfo,
+    @response = LogletInfo,
+    @request_target = TargetName::LogServerGetLogletInfo,
+    @response_target = TargetName::LogServerLogletInfo,
 }
 
 // GetRecords
@@ -321,21 +321,21 @@ impl Sealed {
     }
 }
 
-// ** GET_TAIL_INFO
+// ** GET_LOGLET_INFO
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetTailInfo {
+pub struct GetLogletInfo {
     pub known_global_tail: LogletOffset,
     pub loglet_id: ReplicatedLogletId,
 }
 
-/// Response to a `GetTailInfo` request
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TailInfo {
+pub struct LogletInfo {
     #[serde(flatten)]
     pub header: LogServerResponseHeader,
+    pub trim_point: LogletOffset,
 }
 
-impl Deref for TailInfo {
+impl Deref for LogletInfo {
     type Target = LogServerResponseHeader;
 
     fn deref(&self) -> &Self::Target {
@@ -343,22 +343,24 @@ impl Deref for TailInfo {
     }
 }
 
-impl DerefMut for TailInfo {
+impl DerefMut for LogletInfo {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.header
     }
 }
 
-impl TailInfo {
+impl LogletInfo {
     pub fn empty() -> Self {
         Self {
             header: LogServerResponseHeader::empty(),
+            trim_point: LogletOffset::INVALID,
         }
     }
 
-    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>, trim_point: LogletOffset) -> Self {
         Self {
             header: LogServerResponseHeader::new(tail_state),
+            trim_point,
         }
     }
 
@@ -417,7 +419,6 @@ pub struct GetRecords {
     pub to_offset: LogletOffset,
 }
 
-/// Response to a `GetTailInfo` request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Records {
     #[serde(flatten)]
