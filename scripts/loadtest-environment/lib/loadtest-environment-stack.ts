@@ -43,10 +43,14 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
       ],
     }).attachToRole(instanceRole);
 
-    // Cloud init script runs on every boot. Either make sure it's idempotent or change `always` to `once` below.
+    // Cloud init script. To run on every boot, make sure it's idempotent and change `once` to `always` below.
     const initScript = ec2.UserData.forLinux();
-    initScript.addCommands("set -euf -o pipefail", "yum install -y npm docker");
-    const cloudConfig = ec2.UserData.custom([`cloud_final_modules:`, `- [scripts-user, always]`].join("\n"));
+    initScript.addCommands(
+      "set -euf -o pipefail",
+      "apt update && apt upgrade",
+      "apt install -y make cmake clang protobuf-compiler npm wrk tmux htop",
+    );
+    const cloudConfig = ec2.UserData.custom([`cloud_final_modules:`, `- [scripts-user, once]`].join("\n"));
 
     const userData = new ec2.MultipartUserData();
     userData.addUserDataPart(cloudConfig, "text/cloud-config");
