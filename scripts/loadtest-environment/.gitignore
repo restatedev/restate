@@ -1,0 +1,8 @@
+.idea
+*.js
+!jest.config.js
+*.d.ts
+cdk.context.json
+cdk.out
+node_modules
+package-lock.json
