@@ -56,6 +56,11 @@ enum TargetName {
   LOG_SERVER_RECORDS = 19;
   LOG_SERVER_TRIM = 20;
   LOG_SERVER_TRIMMED = 21;
+
+  // ReplicatedLoglet
+  REPLICATED_LOGLET_APPEND = 22;
+  REPLICATED_LOGLET_APPENDED = 23;
+
 }
 
 enum NodeStatus {

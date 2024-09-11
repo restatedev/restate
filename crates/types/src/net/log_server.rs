@@ -94,35 +94,6 @@ define_rpc! {
     @response_target = TargetName::LogServerTrimmed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppendFlags(u32);
-
-// ------- Node to Bifrost ------ //
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Append {
-    pub loglet_id: ReplicatedLogletId,
-    pub flags: AppendFlags,
-    /// The receiver should skip handling this message if it hasn't started to act on it
-    /// before timeout expires. 0 means no timeout
-    pub timeout_at: MillisSinceEpoch,
-    pub payloads: Vec<Record>,
-}
-
-impl Append {
-    /// The message's timeout has passed, we should discard if possible.
-    pub fn expired(&self) -> bool {
-        MillisSinceEpoch::now() >= self.timeout_at
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Appended {
-    known_global_tail: LogletOffset,
-    status: Status,
-    // INVALID if Status indicates that the append failed
-    first_offset: LogletOffset,
-}
-
 // ------- Bifrost to LogServer ------ //
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogServerResponseHeader {

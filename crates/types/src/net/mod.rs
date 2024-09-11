@@ -16,6 +16,8 @@ pub mod ingress;
 pub mod log_server;
 pub mod metadata;
 pub mod partition_processor_manager;
+#[cfg(feature = "replicated-loglet")]
+pub mod replicated_loglet;
 
 // re-exports for convenience
 pub use error::*;
