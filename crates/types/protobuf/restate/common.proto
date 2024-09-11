@@ -54,6 +54,8 @@ enum TargetName {
   LOG_SERVER_TAIL_INFO = 17;
   LOG_SERVER_GET_RECORDS = 18;
   LOG_SERVER_RECORDS = 19;
+  LOG_SERVER_TRIM = 20;
+  LOG_SERVER_TRIMMED = 21;
 }
 
 enum NodeStatus {

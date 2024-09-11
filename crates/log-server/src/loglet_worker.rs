@@ -17,10 +17,7 @@ use tracing::{debug, warn};
 use restate_core::network::Incoming;
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::net::log_server::{
-    GetRecords, GetTailInfo, Records, Release, Seal, Sealed, Status, Store, StoreFlags, Stored,
-    TailInfo,
-};
+use restate_types::net::log_server::*;
 use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::GenerationalNodeId;
 
@@ -41,6 +38,7 @@ pub struct LogletWorkerHandle {
     seal_tx: mpsc::UnboundedSender<Incoming<Seal>>,
     get_tail_info_tx: mpsc::UnboundedSender<Incoming<GetTailInfo>>,
     get_records_tx: mpsc::UnboundedSender<Incoming<GetRecords>>,
+    trim_tx: mpsc::UnboundedSender<Incoming<Trim>>,
     tc_handle: TaskHandle<()>,
 }
 
@@ -80,6 +78,11 @@ impl LogletWorkerHandle {
         self.get_records_tx.send(msg).map_err(|e| e.0)?;
         Ok(())
     }
+
+    pub fn enqueue_trim(&self, msg: Incoming<Trim>) -> Result<(), Incoming<Trim>> {
+        self.trim_tx.send(msg).map_err(|e| e.0)?;
+        Ok(())
+    }
 }
 
 pub struct LogletWorker<S> {
@@ -111,6 +114,7 @@ impl<S: LogStore> LogletWorker<S> {
         let (seal_tx, seal_rx) = mpsc::unbounded_channel();
         let (get_tail_info_tx, get_tail_info_rx) = mpsc::unbounded_channel();
         let (get_records_tx, get_records_rx) = mpsc::unbounded_channel();
+        let (trim_tx, trim_rx) = mpsc::unbounded_channel();
         let tc_handle = task_center.spawn_unmanaged(
             TaskKind::LogletWriter,
             "loglet-worker",
@@ -121,6 +125,7 @@ impl<S: LogStore> LogletWorker<S> {
                 seal_rx,
                 get_tail_info_rx,
                 get_records_rx,
+                trim_rx,
             ),
         )?;
         Ok(LogletWorkerHandle {
@@ -129,6 +134,7 @@ impl<S: LogStore> LogletWorker<S> {
             seal_tx,
             get_tail_info_tx,
             get_records_tx,
+            trim_tx,
             tc_handle,
         })
     }
@@ -140,6 +146,7 @@ impl<S: LogStore> LogletWorker<S> {
         mut seal_rx: mpsc::UnboundedReceiver<Incoming<Seal>>,
         mut get_tail_info_rx: mpsc::UnboundedReceiver<Incoming<GetTailInfo>>,
         mut get_records_rx: mpsc::UnboundedReceiver<Incoming<GetRecords>>,
+        mut trim_rx: mpsc::UnboundedReceiver<Incoming<Trim>>,
     ) {
         // The worker is the sole writer to this loglet's local-tail so it's safe to maintain a moving
         // local tail view and serialize changes to logstore as long as we send them in the correct
@@ -197,7 +204,7 @@ impl<S: LogStore> LogletWorker<S> {
                     waiting_for_seal.push(async move {
                         let seal_watcher = tail_watcher.wait_for_seal();
                         if seal_watcher.await.is_ok() {
-                            let msg = Sealed::new(&tail_watcher.get()).with_status(Status::Ok);
+                            let msg = Sealed::new(*tail_watcher.get()).with_status(Status::Ok);
                             let response = response.map(|_| msg);
                             // send the response over the network
                             let _ = response.send().await;
@@ -214,7 +221,7 @@ impl<S: LogStore> LogletWorker<S> {
                     self.global_tail_tracker.maybe_update(msg.known_global_tail);
                     known_global_tail = known_global_tail.max(msg.known_global_tail);
                     // drop response if connection is lost/congested
-                    if let Err(e) = msg.try_respond_rpc(TailInfo::new(&self.loglet_state.local_tail())) {
+                    if let Err(e) = msg.try_respond_rpc(TailInfo::new(self.loglet_state.local_tail())) {
                         debug!(?e.source, peer = %msg.peer(), "Failed to respond to GetTailInfo message due to peer channel capacity being full");
                     }
                 }
@@ -224,6 +231,12 @@ impl<S: LogStore> LogletWorker<S> {
                     known_global_tail = known_global_tail.max(msg.known_global_tail);
                     // read responses are spawned as disposable tasks
                     self.process_get_records(msg).await;
+                }
+                // TRIM
+                Some(msg) = trim_rx.recv() => {
+                    self.global_tail_tracker.maybe_update(msg.known_global_tail);
+                    known_global_tail = known_global_tail.max(msg.known_global_tail);
+                    self.process_trim(msg, known_global_tail).await;
                 }
                 // STORE
                 Some(msg) = store_rx.recv() => {
@@ -248,7 +261,7 @@ impl<S: LogStore> LogletWorker<S> {
                                     // advance local-tail
                                     local_tail_watch.notify_offset_update(future_last_committed);
                                     // ignoring the error if we couldn't send the response
-                                    let msg = Stored::new(&local_tail_watch.get()).with_status(status);
+                                    let msg = Stored::new(local_tail_watch.get().clone()).with_status(status);
                                     let response = response.map(|_| msg);
                                     // send the response over the network
                                     let _ = response.send().await;
@@ -263,7 +276,7 @@ impl<S: LogStore> LogletWorker<S> {
                         });
                     } else {
                         // we didn't store, let's respond immediately with status
-                        let msg = Stored::new(&self.loglet_state.local_tail()).with_status(status);
+                        let msg = Stored::new(self.loglet_state.local_tail()).with_status(status);
                         in_flight_network_sends.push(async move {
                             let response = response.map(|_| msg);
                             // ignore send errors.
@@ -331,7 +344,7 @@ impl<S: LogStore> LogletWorker<S> {
             todo!("repair stores are not implemented yet")
         }
 
-        if body.first_offset != next_ok_offset {
+        if body.first_offset > next_ok_offset {
             // We can only accept writes coming in order. We don't support buffering out-of-order
             // writes.
             debug!(
@@ -383,12 +396,63 @@ impl<S: LogStore> LogletWorker<S> {
                 }
                 // initial response
                 let response =
-                    msg.prepare_response(Records::new(&loglet_state.local_tail(), msg.from_offset));
+                    msg.prepare_response(Records::new(loglet_state.local_tail(), msg.from_offset));
                 let response = match log_store.read_records(msg.into_body(), loglet_state).await {
                     Ok(records) => response.map(|_| records),
                     Err(_) => response.map(|m| m.with_status(Status::Disabled)),
                 };
                 // ship the response to the original connection
+                let _ = response.send().await;
+                Ok(())
+            });
+    }
+
+    async fn process_trim(&mut self, mut msg: Incoming<Trim>, known_global_tail: LogletOffset) {
+        // When trimming, we eagerly update the in-memory view of the trim-point _before_ we
+        // perform the trim on the log-store since it's safer to over report the trim-point than
+        // under report.
+        //
+        // fails on shutdown, in this case, we ignore the request
+        let mut loglet_state = self.loglet_state.clone();
+        let mut log_store = self.log_store.clone();
+        let _ = self
+            .task_center
+            .spawn(TaskKind::Disposable, "loglet-trim", None, async move {
+                let loglet_id = msg.loglet_id;
+                let new_trim_point = msg.trim_point;
+                let response = msg.prepare_response(Trimmed::empty());
+                // cannot trim beyond the global known tail (if known) or the local_tail whichever is higher.
+                let local_tail = loglet_state.local_tail();
+                let high_watermark = known_global_tail.max(local_tail.offset());
+                if new_trim_point < LogletOffset::OLDEST || new_trim_point >= high_watermark {
+                    let _ = msg.respond(Trimmed::new(loglet_state.local_tail()).with_status(Status::Malformed)).await;
+                    return Ok(());
+                }
+
+                // The trim point cannot be at or exceed the local_tail, we clip to the
+                // local_tail-1 if that's the case.
+                msg.trim_point = msg.trim_point.min(local_tail.offset().prev());
+
+
+                let body = if loglet_state.update_trim_point(msg.trim_point) {
+                    match log_store.enqueue_trim(msg.into_body()).await?.await {
+                        Ok(_) => Trimmed::new(loglet_state.local_tail()).with_status(Status::Ok),
+                        Err(_) => {
+                            warn!(
+                                %loglet_id,
+                                "Log-store is disabled, and its trim-point will falsely be reported as {} since we couldn't commit that to the log-store. Trim-point will be correct after restart.",
+                                new_trim_point
+                            );
+                            Trimmed::new(loglet_state.local_tail()).with_status(Status::Disabled)
+                        }
+                    }
+                } else {
+                    // it's already trimmed
+                    Trimmed::new(loglet_state.local_tail())
+                };
+
+                // ship the response to the original connection
+                let response = response.map(|_| body);
                 let _ = response.send().await;
                 Ok(())
             });
@@ -944,6 +1008,248 @@ mod tests {
                 assert_that!(original, eq(format!("record{}", i)));
             }
         }
+
+        tc.shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+
+        Ok(())
+    }
+
+    #[test(tokio::test(start_paused = true))]
+    async fn test_trim_basics() -> Result<()> {
+        const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
+        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new(1);
+
+        let (tc, log_store) = setup().await?;
+        let mut loglet_state_map = LogletStateMap::default();
+        let global_tail_tracker = GlobalTailTrackerMap::default();
+        let (net_tx, mut net_rx) = mpsc::channel(10);
+        let connection = Connection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+
+        let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
+        let worker = LogletWorker::start(
+            tc.clone(),
+            LOGLET,
+            log_store.clone(),
+            loglet_state.clone(),
+            global_tail_tracker.get_tracker(LOGLET),
+        )?;
+
+        assert_that!(loglet_state.trim_point(), eq(LogletOffset::INVALID));
+        assert_that!(loglet_state.local_tail().offset(), eq(LogletOffset::OLDEST));
+        // The loglet has no knowledge of global commits, it shouldn't accept trims.
+        worker
+            .enqueue_trim(Incoming::for_testing(
+                &connection,
+                Trim {
+                    loglet_id: LOGLET,
+                    known_global_tail: LogletOffset::OLDEST,
+                    trim_point: LogletOffset::OLDEST,
+                },
+                None,
+            ))
+            .unwrap();
+
+        let trimmed: Trimmed = net_rx
+            .recv()
+            .await
+            .unwrap()
+            .body
+            .unwrap()
+            .try_decode(connection.protocol_version())?;
+        assert_that!(trimmed.status, eq(Status::Malformed));
+        assert_that!(trimmed.local_tail, eq(LogletOffset::OLDEST));
+        assert_that!(trimmed.sealed, eq(false));
+
+        // The loglet has knowledge of global tail of 10, it should accept trims up to 9 but it
+        // won't move trim point beyond its local tail.
+        worker
+            .enqueue_trim(Incoming::for_testing(
+                &connection,
+                Trim {
+                    loglet_id: LOGLET,
+                    known_global_tail: LogletOffset::new(10),
+                    trim_point: LogletOffset::new(9),
+                },
+                None,
+            ))
+            .unwrap();
+
+        let trimmed: Trimmed = net_rx
+            .recv()
+            .await
+            .unwrap()
+            .body
+            .unwrap()
+            .try_decode(connection.protocol_version())?;
+        assert_that!(trimmed.status, eq(Status::Ok));
+        assert_that!(trimmed.local_tail, eq(LogletOffset::OLDEST));
+        assert_that!(trimmed.sealed, eq(false));
+
+        // let's store some records at offsets (5, 6)
+        worker
+            .enqueue_store(Incoming::for_testing(
+                &connection,
+                Store {
+                    loglet_id: LOGLET,
+                    timeout_at: None,
+                    sequencer: SEQUENCER,
+                    known_archived: LogletOffset::INVALID,
+                    // faking that offset=1 is released
+                    known_global_tail: LogletOffset::new(10),
+                    first_offset: LogletOffset::new(5),
+                    flags: StoreFlags::empty(),
+                    payloads: vec![Record::from("record5"), Record::from("record6")],
+                },
+                None,
+            ))
+            .unwrap();
+        let stored: Stored = net_rx
+            .recv()
+            .await
+            .unwrap()
+            .body
+            .unwrap()
+            .try_decode(connection.protocol_version())?;
+        assert_that!(stored.status, eq(Status::Ok));
+        assert_that!(stored.local_tail, eq(LogletOffset::new(7)));
+
+        // trim to 5
+        worker
+            .enqueue_trim(Incoming::for_testing(
+                &connection,
+                Trim {
+                    loglet_id: LOGLET,
+                    known_global_tail: LogletOffset::new(10),
+                    trim_point: LogletOffset::new(5),
+                },
+                None,
+            ))
+            .unwrap();
+
+        let trimmed: Trimmed = net_rx
+            .recv()
+            .await
+            .unwrap()
+            .body
+            .unwrap()
+            .try_decode(connection.protocol_version())?;
+        assert_that!(trimmed.status, eq(Status::Ok));
+        assert_that!(trimmed.local_tail, eq(LogletOffset::new(7)));
+        assert_that!(trimmed.sealed, eq(false));
+
+        // Attempt to read. We expect to see a trim gap (1->5, 6 (data-record))
+        worker
+            .enqueue_get_records(Incoming::for_testing(
+                &connection,
+                GetRecords {
+                    loglet_id: LOGLET,
+                    total_limit_in_bytes: None,
+                    filter: KeyFilter::Any,
+                    // INVALID can be used when we don't have a reasonable value to pass in.
+                    known_global_tail: LogletOffset::INVALID,
+                    from_offset: LogletOffset::OLDEST,
+                    // to a point beyond local tail
+                    to_offset: LogletOffset::new(100),
+                },
+                None,
+            ))
+            .unwrap();
+
+        let mut records: Records = net_rx
+            .recv()
+            .await
+            .unwrap()
+            .body
+            .unwrap()
+            .try_decode(connection.protocol_version())?;
+        assert_that!(records.status, eq(Status::Ok));
+        assert_that!(records.local_tail, eq(LogletOffset::new(7)));
+        assert_that!(records.next_offset, eq(LogletOffset::new(7)));
+        assert_that!(records.sealed, eq(false));
+        assert_that!(records.records.len(), eq(2));
+        // pop() returns records in reverse order
+        for i in [6, 1] {
+            let (offset, record) = records.records.pop().unwrap();
+            assert_that!(offset, eq(LogletOffset::from(i)));
+            if i == 1 {
+                // this one is a trim gap
+                assert_that!(record.is_trim_gap(), eq(true));
+                let gap = record.try_unwrap_trim_gap().unwrap();
+                assert_that!(gap.to, eq(LogletOffset::new(5)));
+            } else {
+                assert_that!(record.is_data(), eq(true));
+                let data = record.try_unwrap_data().unwrap();
+                let original: String = data.decode().unwrap();
+                assert_that!(original, eq(format!("record{}", i)));
+            }
+        }
+
+        // trim everything
+        worker
+            .enqueue_trim(Incoming::for_testing(
+                &connection,
+                Trim {
+                    loglet_id: LOGLET,
+                    known_global_tail: LogletOffset::new(10),
+                    trim_point: LogletOffset::new(9),
+                },
+                None,
+            ))
+            .unwrap();
+
+        let trimmed: Trimmed = net_rx
+            .recv()
+            .await
+            .unwrap()
+            .body
+            .unwrap()
+            .try_decode(connection.protocol_version())?;
+        assert_that!(trimmed.status, eq(Status::Ok));
+        assert_that!(trimmed.local_tail, eq(LogletOffset::new(7)));
+        assert_that!(trimmed.sealed, eq(false));
+
+        // Attempt to read again. We expect to see a trim gap (1->6)
+        worker
+            .enqueue_get_records(Incoming::for_testing(
+                &connection,
+                GetRecords {
+                    loglet_id: LOGLET,
+                    total_limit_in_bytes: None,
+                    filter: KeyFilter::Any,
+                    // INVALID can be used when we don't have a reasonable value to pass in.
+                    known_global_tail: LogletOffset::INVALID,
+                    from_offset: LogletOffset::OLDEST,
+                    // to a point beyond local tail
+                    to_offset: LogletOffset::new(100),
+                },
+                None,
+            ))
+            .unwrap();
+
+        let mut records: Records = net_rx
+            .recv()
+            .await
+            .unwrap()
+            .body
+            .unwrap()
+            .try_decode(connection.protocol_version())?;
+        assert_that!(records.status, eq(Status::Ok));
+        assert_that!(records.local_tail, eq(LogletOffset::new(7)));
+        assert_that!(records.next_offset, eq(LogletOffset::new(7)));
+        assert_that!(records.sealed, eq(false));
+        assert_that!(records.records.len(), eq(1));
+        let (offset, record) = records.records.pop().unwrap();
+        assert_that!(offset, eq(LogletOffset::from(1)));
+        assert_that!(record.is_trim_gap(), eq(true));
+        let gap = record.try_unwrap_trim_gap().unwrap();
+        assert_that!(gap.to, eq(LogletOffset::new(6)));
+
+        // Make sure that we can load the local-tail correctly when loading the loglet_state
+        let mut loglet_state_map = LogletStateMap::default();
+        let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
+        assert_that!(loglet_state.trim_point(), eq(LogletOffset::new(6)));
+        assert_that!(loglet_state.local_tail().offset(), eq(LogletOffset::new(7)));
 
         tc.shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
