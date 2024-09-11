@@ -10,7 +10,7 @@
 
 use std::marker::PhantomData;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use tokio::sync::{mpsc, RwLock};
 use tracing::info;
@@ -33,8 +33,8 @@ use restate_types::{GenerationalNodeId, Version};
 
 use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
-    Handler, Incoming, MessageHandler, MessageRouter, MessageRouterBuilder, NetworkError,
-    NetworkSendError, NetworkSender, Outgoing,
+    Connection, Handler, Incoming, MessageHandler, MessageRouter, MessageRouterBuilder,
+    NetworkError, NetworkSendError, NetworkSender, Outgoing,
 };
 use crate::{
     cancellation_watcher, metadata, spawn_metadata_manager, MetadataBuilder, ShutdownError, TaskId,
@@ -114,13 +114,29 @@ struct NetworkReceiver {
 
 impl NetworkReceiver {
     async fn run(
-        &self,
+        self,
+        my_node_id: GenerationalNodeId,
         mut receiver: mpsc::UnboundedReceiver<(GenerationalNodeId, Message)>,
     ) -> anyhow::Result<()> {
+        let (reply_sender, mut reply_receiver) = mpsc::channel::<Message>(50);
+        // NOTE: rpc replies will only work if and only if the RpcRouter is using the same router_builder as the service you
+        // are trying to call.
+        // In other words, response will not be routed back if the Target component is registered with a different router_builder
+        // than the client you using to make the call.
+        let connection = Connection::new_fake(my_node_id, CURRENT_PROTOCOL_VERSION, reply_sender);
+
         loop {
             tokio::select! {
                 _ = cancellation_watcher() => {
                     break;
+                }
+                maybe_msg = reply_receiver.recv() => {
+                    let Some(msg) = maybe_msg else {
+                        break;
+                    };
+
+                    let guard = self.router.read().await;
+                    self.route_message(my_node_id, msg, &guard, Weak::new()).await?;
                 }
                 maybe_msg = receiver.recv() => {
                     let Some((from, msg)) = maybe_msg else {
@@ -128,7 +144,7 @@ impl NetworkReceiver {
                     };
                     {
                     let guard = self.router.read().await;
-                    self.route_message(from, msg, &guard).await?;
+                    self.route_message(from, msg, &guard, Arc::downgrade(&connection)).await?;
                     }
                 }
             }
@@ -141,13 +157,15 @@ impl NetworkReceiver {
         peer: GenerationalNodeId,
         msg: Message,
         router: &MessageRouter,
+        connection: Weak<Connection>,
     ) -> anyhow::Result<()> {
         let body = msg.body.expect("body must be set");
         let header = msg.header.expect("header must be set");
+
         let msg = Incoming::from_parts(
             peer,
             body.try_as_binary_body(CURRENT_PROTOCOL_VERSION)?,
-            std::sync::Weak::new(),
+            connection,
             header.msg_id,
             header.in_response_to,
         );
@@ -313,7 +331,7 @@ where
                         crate::TaskKind::ConnectionReactor,
                         "test-network-receiver",
                         None,
-                        async move { network_receiver.run(network_rx).await },
+                        async move { network_receiver.run(self.my_node_id, network_rx).await },
                     )
                     .unwrap();
                 Some(network_task)
