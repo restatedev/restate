@@ -85,6 +85,16 @@ impl Connection {
         self.protocol_version
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.sender.is_closed()
+    }
+
+    /// Resolves when the connection is closed
+    pub fn closed(&self) -> impl std::future::Future<Output = ()> + Send + Sync + 'static {
+        let sender = self.sender.clone();
+        async move { sender.closed().await }
+    }
+
     /// Best-effort delivery of signals on the connection.
     pub fn send_control_frame(&self, control: message::ConnectionControl) {
         let msg = Message {
@@ -276,6 +286,24 @@ impl ConnectionSender {
         connection
             .send(message, self.header_metadata_versions())
             .await
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.connection
+            .upgrade()
+            .map(|c| c.is_closed())
+            .unwrap_or(true)
+    }
+
+    /// Resolves when the connection is closed
+    pub fn closed(&self) -> impl std::future::Future<Output = ()> + Send + Sync + 'static {
+        let weak_connection = self.connection.clone();
+        async move {
+            let Some(connection) = weak_connection.upgrade() else {
+                return;
+            };
+            connection.closed().await
+        }
     }
 
     /// See [`Connection::try_send`].
