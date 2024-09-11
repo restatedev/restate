@@ -71,7 +71,7 @@ impl LogletProvider for ReplicatedLogletProvider {
     async fn get_loglet(
         &self,
         // todo: we need richer params
-        _log_id: LogId,
+        log_id: LogId,
         _segment_index: SegmentIndex,
         _params: &LogletParams,
     ) -> Result<Arc<dyn Loglet>, Error> {
