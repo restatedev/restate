@@ -1,0 +1,159 @@
+roles = ["worker", "admin", "metadata-store"]
+cluster-name = "perftest"
+allow-bootstrap = true
+bind-address = "0.0.0.0:5122"
+advertised-address = "http://127.0.0.1:5122/"
+bootstrap-num-partitions = 24
+shutdown-timeout = "1m"
+tracing-filter = "info"
+log-filter = "warn,restate=warn"
+log-format = "pretty"
+log-disable-ansi-codes = false
+connect-timeout = "10s"
+disable-prometheus = false
+rocksdb-total-memory-size = "32.0 GB"
+rocksdb-total-memtables-ratio = 0.5
+rocksdb-high-priority-bg-threads = 2
+rocksdb-write-stall-threshold = "3s"
+rocksdb-enable-stall-on-memory-limit = false
+rocksdb-perf-level = "enable-count"
+metadata-update-interval = "3s"
+
+[metadata-store-client]
+type = "embedded"
+address = "http://127.0.0.1:5123/"
+
+[metadata-store-client-backoff-policy]
+type = "exponential"
+initial-interval = "10ms"
+factor = 2.0
+max-interval = "100ms"
+
+[tracing-headers]
+
+[http-keep-alive-options]
+interval = "40s"
+timeout = "20s"
+
+[network-error-retry-policy]
+type = "exponential"
+initial-interval = "10ms"
+factor = 2.0
+max-attempts = 15
+max-interval = "5s"
+
+[worker]
+internal-queue-length = 1000
+cleanup-interval = "1h"
+experimental-feature-new-invocation-status-table = false
+max-command-batch-size = 4
+
+[worker.storage]
+rocksdb-disable-direct-io-for-reads = false
+rocksdb-disable-direct-io-for-flush-and-compactions = false
+rocksdb-disable-wal = true
+rocksdb-disable-statistics = false
+rocksdb-max-background-jobs = 10
+rocksdb-compaction-readahead-size = "2.0 MB"
+rocksdb-statistics-level = "except-timers"
+num-partitions-to-share-memory-budget = 24
+rocksdb-memory-budget = "1.4 GB"
+rocksdb-memory-ratio = 0.49000000953674316
+persist-lsn-interval = "1h"
+persist-lsn-threshold = 1000
+
+[worker.invoker]
+inactivity-timeout = "1m"
+abort-timeout = "1m"
+message-size-warning = "10.0 MB"
+in-memory-queue-length-limit = 1056784
+concurrent-invocations-limit = 100
+
+[worker.invoker.retry-policy]
+type = "exponential"
+initial-interval = "50ms"
+factor = 2.0
+max-interval = "10s"
+
+[admin]
+bind-address = "0.0.0.0:9070"
+heartbeat-interval = "1s 500ms"
+log-trim-interval = "1h"
+log-trim-threshold = 1000
+default-replication-strategy = "on-all-nodes"
+
+[admin.query-engine]
+memory-size = "4.0 GB"
+pgsql-bind-address = "0.0.0.0:9071"
+
+[ingress]
+bind-address = "0.0.0.0:8080"
+kafka-clusters = []
+
+[bifrost]
+default-provider = "local"
+seal-retry-interval = "2s"
+append-retry-min-interval = "10ms"
+append-retry-max-interval = "1s"
+
+[bifrost.local]
+rocksdb-disable-direct-io-for-reads = false
+rocksdb-disable-direct-io-for-flush-and-compactions = false
+rocksdb-disable-wal = false
+rocksdb-disable-statistics = false
+rocksdb-max-background-jobs = 10
+rocksdb-compaction-readahead-size = "2.0 MB"
+rocksdb-statistics-level = "except-timers"
+rocksdb-memory-budget = "1.4 GB"
+rocksdb-memory-ratio = 0.5
+rocksdb-disable-wal-fsync = false
+writer-batch-commit-count = 5000
+writer-batch-commit-duration = "0s"
+
+[bifrost.replicated-loglet]
+
+[bifrost.read-retry-policy]
+type = "exponential"
+initial-interval = "50ms"
+factor = 2.0
+max-attempts = 50
+max-interval = "1s"
+
+[metadata-store]
+bind-address = "0.0.0.0:5123"
+request-queue-length = 32
+rocksdb-memory-budget = "28.5 MB"
+rocksdb-memory-ratio = 0.009999999776482582
+
+[metadata-store.rocksdb]
+rocksdb-disable-direct-io-for-reads = false
+rocksdb-disable-direct-io-for-flush-and-compactions = false
+rocksdb-disable-wal = false
+rocksdb-disable-statistics = false
+rocksdb-max-background-jobs = 10
+rocksdb-compaction-readahead-size = "2.0 MB"
+rocksdb-statistics-level = "except-timers"
+
+[networking]
+handshake-timeout = "3s"
+
+[networking.connect-retry-policy]
+type = "exponential"
+initial-interval = "10ms"
+factor = 2.0
+max-attempts = 10
+max-interval = "500ms"
+
+[log-server]
+rocksdb-disable-direct-io-for-reads = false
+rocksdb-disable-direct-io-for-flush-and-compactions = false
+rocksdb-disable-wal = false
+rocksdb-disable-statistics = false
+rocksdb-max-background-jobs = 10
+rocksdb-compaction-readahead-size = "2.0 MB"
+rocksdb-statistics-level = "except-timers"
+rocksdb-memory-budget = "1.4 GB"
+rocksdb-memory-ratio = 0.5
+rocksdb-disable-wal-fsync = false
+writer-batch-commit-count = 5000
+incoming-network-queue-length = 1000
