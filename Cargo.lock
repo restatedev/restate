@@ -6469,6 +6469,7 @@ dependencies = [
  "itertools 0.13.0",
  "metrics",
  "opentelemetry",
+ "parking_lot",
  "pin-project",
  "prost 0.13.1",
  "rand",
