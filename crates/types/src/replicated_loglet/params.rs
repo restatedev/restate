@@ -8,15 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// todo: remove when fleshed out
-#![allow(unused)]
-
 use std::collections::HashSet;
-use std::num::NonZeroU8;
 
-use serde_with::{DisplayFromStr, VecSkipError};
+use serde_with::DisplayFromStr;
 
 use crate::{GenerationalNodeId, PlainNodeId};
+
+use super::ReplicationProperty;
 
 /// Configuration parameters of a replicated loglet segment
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -27,7 +25,7 @@ pub struct ReplicatedLogletParams {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     sequencer: GenerationalNodeId,
     /// Replication properties of this loglet
-    replication: Replication,
+    replication: ReplicationProperty,
     nodeset: NodeSet,
     /// The set of nodes the sequencer has been considering for writes after the last
     /// known_global_tail advance.
@@ -71,25 +69,6 @@ pub struct ReplicatedLogletId(u64);
 impl ReplicatedLogletId {
     pub const fn new(id: u64) -> Self {
         Self(id)
-    }
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
-pub struct Replication {
-    /// The write-quorum for appends
-    replication_factor: NonZeroU8,
-    /// The number of extra copies (best effort) to be replicated in addition to the
-    /// replication_factor.
-    ///
-    /// default is 0
-    #[serde(default)]
-    extra_copies: u8,
-}
-
-impl Replication {
-    pub fn read_quorum_size(&self, nodeset: &NodeSet) -> u8 {
-        // N - replication_factor + 1
-        nodeset.len() - self.replication_factor.get() + 1
     }
 }
 

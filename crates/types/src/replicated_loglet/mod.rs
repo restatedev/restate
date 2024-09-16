@@ -9,5 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod params;
+mod replication_property;
 
 pub use params::*;
+pub use replication_property::*;

@@ -97,6 +97,20 @@ impl MessageRouterBuilder {
         }
     }
 
+    /// Attach a handler that receives all messages targeting a certain [`TargetName`].
+    #[track_caller]
+    pub fn add_raw_handler<H>(
+        &mut self,
+        target: TargetName,
+        handler: Box<dyn Handler<Error = CodecError> + Send + Sync>,
+    ) where
+        H: Handler + Send + Sync + 'static,
+    {
+        if self.handlers.insert(target, handler).is_some() {
+            panic!("Handler for target {} has been registered already!", target);
+        }
+    }
+
     /// Subscribe to a stream of messages for a specific target. This enables consumers of messages
     /// to use async stream API to process messages of a given target as an alternative to the
     /// message callback-style API as in `add_message_handler`.
