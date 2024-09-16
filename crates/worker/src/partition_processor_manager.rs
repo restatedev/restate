@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -242,14 +243,16 @@ impl PartitionProcessorHandle {
     }
 }
 
+type ChannelStatusReaderList = Vec<(RangeInclusive<PartitionKey>, ChannelStatusReader)>;
+
 #[derive(Debug, Clone, Default)]
 pub struct MultiplexedInvokerStatusReader {
-    readers: Vec<(RangeInclusive<PartitionKey>, ChannelStatusReader)>,
+    readers: Arc<parking_lot::RwLock<ChannelStatusReaderList>>,
 }
 
 impl MultiplexedInvokerStatusReader {
     fn push(&mut self, key_range: RangeInclusive<PartitionKey>, reader: ChannelStatusReader) {
-        self.readers.push((key_range, reader));
+        self.readers.write().push((key_range, reader));
     }
 }
 
@@ -258,15 +261,24 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
         std::iter::Flatten<std::vec::IntoIter<<ChannelStatusReader as StatusHandle>::Iterator>>;
 
     async fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
-        let mut iterators = vec![];
+        let mut overlapping_partitions = Vec::new();
 
-        for (range, reader) in self.readers.iter() {
+        // first clone the readers while holding the lock, then release the lock before reading the
+        // status to avoid holding the lock across await points
+        for (range, reader) in self.readers.read().iter() {
             if keys.start() <= range.end() && keys.end() >= range.start() {
                 // if this partition is actually overlapping with the search range
-                iterators.push(reader.read_status(keys.clone()).await)
+                overlapping_partitions.push(reader.clone())
             }
         }
-        iterators.into_iter().flatten()
+
+        let mut result = Vec::with_capacity(overlapping_partitions.len());
+
+        for reader in overlapping_partitions {
+            result.push(reader.read_status(keys.clone()).await);
+        }
+
+        result.into_iter().flatten()
     }
 }
 
