@@ -48,6 +48,7 @@ pub struct Service {
 
 impl Service {
     pub fn new(dispatcher: IngressDispatcher) -> Service {
+        metric_definitions::describe_metrics();
         let (commands_tx, commands_rx) = mpsc::channel(10);
 
         Service {

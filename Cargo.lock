@@ -5775,6 +5775,7 @@ dependencies = [
  "base64 0.22.0",
  "bytes",
  "derive_builder",
+ "metrics",
  "opentelemetry",
  "rdkafka",
  "restate-core",

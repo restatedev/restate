@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 use base64::Engine;
 use bytes::Bytes;
+use metrics::counter;
 use opentelemetry::trace::TraceContextExt;
 use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
@@ -20,7 +22,6 @@ use restate_core::{cancellation_watcher, task_center, TaskId, TaskKind};
 use restate_ingress_dispatcher::{
     DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
 };
-use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::{Header, SpanRelation};
 use restate_types::message::MessageIndex;
 use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
@@ -85,6 +86,7 @@ impl DeduplicationId for KafkaDeduplicationId {
 
 #[derive(Clone)]
 pub struct MessageSender {
+    subscription_id: String,
     subscription: Subscription,
     dispatcher: IngressDispatcher,
 }
@@ -92,6 +94,7 @@ pub struct MessageSender {
 impl MessageSender {
     pub fn new(subscription: Subscription, dispatcher: IngressDispatcher) -> Self {
         Self {
+            subscription_id: subscription.id().to_string(),
             subscription,
             dispatcher,
         }
@@ -120,7 +123,7 @@ impl MessageSender {
         } else {
             Bytes::default()
         };
-        let headers = Self::generate_events_attributes(&msg, self.subscription.id());
+        let headers = Self::generate_events_attributes(&msg, &self.subscription_id);
 
         let req = IngressDispatcherRequest::event(
             &self.subscription,
@@ -137,6 +140,12 @@ impl MessageSender {
             cause,
         })?;
 
+        counter!(
+            KAFKA_INGRESS_REQUESTS,
+            "subscription" => self.subscription_id.clone()
+        )
+        .increment(1);
+
         self.dispatcher
             .dispatch_ingress_request(req)
             .instrument(ingress_span)
@@ -145,10 +154,7 @@ impl MessageSender {
         Ok(())
     }
 
-    fn generate_events_attributes(
-        msg: &impl Message,
-        subscription_id: SubscriptionId,
-    ) -> Vec<Header> {
+    fn generate_events_attributes(msg: &impl Message, subscription_id: &str) -> Vec<Header> {
         let mut headers = Vec::with_capacity(6);
         headers.push(Header::new("kafka.offset", msg.offset().to_string()));
         headers.push(Header::new("kafka.topic", msg.topic()));
@@ -158,7 +164,7 @@ impl MessageSender {
         }
         headers.push(Header::new(
             "restate.subscription.id".to_string(),
-            subscription_id.to_string(),
+            subscription_id,
         ));
 
         if let Some(key) = msg.key() {
