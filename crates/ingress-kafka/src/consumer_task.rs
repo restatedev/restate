@@ -8,19 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt;
-
 use base64::Engine;
 use bytes::Bytes;
 use opentelemetry::trace::TraceContextExt;
+use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::{ClientConfig, Message};
-use tokio::sync::oneshot;
-use tracing::{debug, info, info_span, Instrument};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
-
+use restate_core::{cancellation_watcher, task_center, TaskId, TaskKind};
 use restate_ingress_dispatcher::{
     DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
 };
@@ -28,6 +24,13 @@ use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::{Header, SpanRelation};
 use restate_types::message::MessageIndex;
 use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
+use tokio::sync::oneshot;
+use tracing::{debug, info, info_span, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -45,6 +48,8 @@ pub enum Error {
     },
     #[error("ingress dispatcher channel is closed")]
     IngressDispatcherClosed,
+    #[error("topic {0} partition {1} queue split didn't succeed")]
+    TopicPartitionSplit(String, i32),
 }
 
 type MessageConsumer = StreamConsumer<DefaultConsumerContext>;
@@ -92,11 +97,7 @@ impl MessageSender {
         }
     }
 
-    async fn send(
-        &mut self,
-        consumer_group_id: &str,
-        msg: &BorrowedMessage<'_>,
-    ) -> Result<(), Error> {
+    async fn send(&self, consumer_group_id: &str, msg: BorrowedMessage<'_>) -> Result<(), Error> {
         // Prepare ingress span
         let ingress_span = info_span!(
             "kafka_ingress_consume",
@@ -119,14 +120,14 @@ impl MessageSender {
         } else {
             Bytes::default()
         };
-        let headers = Self::generate_events_attributes(msg, self.subscription.id());
+        let headers = Self::generate_events_attributes(&msg, self.subscription.id());
 
         let req = IngressDispatcherRequest::event(
             &self.subscription,
             key,
             payload,
             SpanRelation::Parent(ingress_span_context),
-            Some(Self::generate_deduplication_id(consumer_group_id, msg)),
+            Some(Self::generate_deduplication_id(consumer_group_id, &msg)),
             headers,
         )
         .map_err(|cause| Error::Event {
@@ -201,7 +202,7 @@ impl ConsumerTask {
         }
     }
 
-    pub async fn run(mut self, mut rx: oneshot::Receiver<()>) -> Result<(), Error> {
+    pub async fn run(self, mut rx: oneshot::Receiver<()>) -> Result<(), Error> {
         // Create the consumer and subscribe to the topic
         let consumer_group_id = self
             .client_config
@@ -213,24 +214,83 @@ impl ConsumerTask {
             self.topics, self.client_config
         );
 
-        let consumer: MessageConsumer = self.client_config.create()?;
+        let consumer: Arc<MessageConsumer> = Arc::new(self.client_config.create()?);
         let topics: Vec<&str> = self.topics.iter().map(|x| &**x).collect();
         consumer.subscribe(&topics)?;
+
+        let mut topic_partition_tasks: HashMap<(String, i32), TaskId> = Default::default();
+        let tc = task_center();
 
         loop {
             tokio::select! {
                 res = consumer.recv() => {
                     let msg = res?;
-                    self.sender.send(&consumer_group_id, &msg).await?;
+                    let topic = msg.topic().to_owned();
+                    let partition = msg.partition();
+                    let offset = msg.offset();
+
+                    // If we didn't split the queue, let's do it and start the topic partition consumer
+                     if let Entry::Vacant(e) = topic_partition_tasks.entry((topic.clone(), partition)) {
+                        let topic_partition_consumer = consumer
+                            .split_partition_queue(&topic, partition)
+                            .ok_or_else(|| Error::TopicPartitionSplit(topic.clone(), partition))?;
+
+                        let task = topic_partition_queue_consumption_loop(
+                            self.sender.clone(),
+                            topic.clone(), partition,
+                            topic_partition_consumer,
+                            Arc::clone(&consumer),
+                            consumer_group_id.clone()
+                        );
+
+                        if let Ok(task_id) = tc.spawn_child(TaskKind::Ingress, "partition-queue", None, task) {
+                            e.insert(task_id);
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // We got this message, let's send it through
+                    self.sender.send(&consumer_group_id, msg).await?;
+
                     // This method tells rdkafka that we have processed this message,
                     // so its offset can be safely committed.
                     // rdkafka periodically commits these offsets asynchronously, with a period configurable
                     // with auto.commit.interval.ms
-                    consumer.store_offset_from_message(&msg)?;
+                    consumer.store_offset(&topic, partition, offset)?;
                 }
                 _ = &mut rx => {
-                    return Ok(());
+                    break;
                 }
+            }
+        }
+        for task_id in topic_partition_tasks.into_values() {
+            tc.cancel_task(task_id);
+        }
+        Ok(())
+    }
+}
+
+async fn topic_partition_queue_consumption_loop(
+    sender: MessageSender,
+    topic: String,
+    partition: i32,
+    topic_partition_consumer: StreamPartitionQueue<DefaultConsumerContext>,
+    consumer: Arc<MessageConsumer>,
+    consumer_group_id: String,
+) -> Result<(), anyhow::Error> {
+    let mut shutdown = std::pin::pin!(cancellation_watcher());
+
+    loop {
+        tokio::select! {
+            res = topic_partition_consumer.recv() => {
+                let msg = res?;
+                let offset = msg.offset();
+                sender.send(&consumer_group_id, msg).await?;
+                consumer.store_offset(&topic, partition, offset)?;
+            }
+            _ = &mut shutdown => {
+                return Ok(())
             }
         }
     }
