@@ -11,6 +11,7 @@
 mod describe_log;
 mod dump_log;
 mod list_logs;
+mod trim_log;
 
 use cling::prelude::*;
 
@@ -22,4 +23,6 @@ pub enum Log {
     Describe(describe_log::DescribeLogIdOpts),
     /// Dump the contents of a bifrost log
     Dump(dump_log::DumpLogOpts),
+    /// Trim a log to a particular Log Sequence Number (LSN)
+    Trim(trim_log::TrimLogOpts),
 }
