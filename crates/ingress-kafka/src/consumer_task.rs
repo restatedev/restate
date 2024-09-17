@@ -26,7 +26,7 @@ use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use restate_core::{cancellation_watcher, task_center, TaskId, TaskKind};
+use restate_core::{cancellation_watcher, TaskCenter, TaskId, TaskKind};
 use restate_ingress_dispatcher::{
     DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
 };
@@ -199,14 +199,21 @@ impl MessageSender {
 
 #[derive(Clone)]
 pub struct ConsumerTask {
+    task_center: TaskCenter,
     client_config: ClientConfig,
     topics: Vec<String>,
     sender: MessageSender,
 }
 
 impl ConsumerTask {
-    pub fn new(client_config: ClientConfig, topics: Vec<String>, sender: MessageSender) -> Self {
+    pub fn new(
+        task_center: TaskCenter,
+        client_config: ClientConfig,
+        topics: Vec<String>,
+        sender: MessageSender,
+    ) -> Self {
         Self {
+            task_center,
             client_config,
             topics,
             sender,
@@ -230,7 +237,6 @@ impl ConsumerTask {
         consumer.subscribe(&topics)?;
 
         let mut topic_partition_tasks: HashMap<(String, i32), TaskId> = Default::default();
-        let tc = task_center();
 
         loop {
             tokio::select! {
@@ -254,7 +260,7 @@ impl ConsumerTask {
                             consumer_group_id.clone()
                         );
 
-                        if let Ok(task_id) = tc.spawn_child(TaskKind::Ingress, "partition-queue", None, task) {
+                        if let Ok(task_id) = self.task_center.spawn_child(TaskKind::Ingress, "partition-queue", None, task) {
                             e.insert(task_id);
                         } else {
                             break;
@@ -276,7 +282,7 @@ impl ConsumerTask {
             }
         }
         for task_id in topic_partition_tasks.into_values() {
-            tc.cancel_task(task_id);
+            self.task_center.cancel_task(task_id);
         }
         Ok(())
     }
