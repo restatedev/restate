@@ -10,5 +10,6 @@
 
 pub(crate) mod metric_definitions;
 mod provider;
+mod sequencer;
 
 pub use provider::Factory;

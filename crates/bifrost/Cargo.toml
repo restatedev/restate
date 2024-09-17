@@ -28,6 +28,7 @@ futures = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }
+rand = { workspace = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }
@@ -40,6 +41,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
+restate-log-server = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
