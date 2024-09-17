@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use super::{fixtures, matchers, *};
 
 use assert2::assert;
 use assert2::let_assert;
@@ -17,8 +17,8 @@ use prost::Message;
 use restate_storage_api::journal_table::JournalTable;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
 use restate_types::identifiers::EntryIndex;
-use restate_types::invocation::{ServiceInvocationSpanContext, TerminationFlavor};
-use restate_types::journal::enriched::{CallEnrichmentResult, EnrichedEntryHeader};
+use restate_types::invocation::TerminationFlavor;
+use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::service_protocol;
 use test_log::test;
 
@@ -142,19 +142,19 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     tx.put_journal_entry(
         &invocation_id,
         1,
-        &uncompleted_invoke_entry(call_invocation_id),
+        &fixtures::incomplete_invoke_entry(call_invocation_id),
     )
     .await;
     tx.put_journal_entry(
         &invocation_id,
         2,
-        &background_invoke_entry(background_call_invocation_id),
+        &fixtures::background_invoke_entry(background_call_invocation_id),
     )
     .await;
     tx.put_journal_entry(
         &invocation_id,
         3,
-        &completed_invoke_entry(finished_call_invocation_id),
+        &fixtures::completed_invoke_entry(finished_call_invocation_id),
     )
     .await;
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await?;
@@ -195,7 +195,7 @@ async fn kill_call_tree() -> anyhow::Result<()> {
                 invocation_id: eq(enqueued_invocation_id_on_same_target),
                 invocation_target: eq(invocation_target)
             })),
-            contains(terminate_invocation_outbox_message_matcher(
+            contains(matchers::actions::terminate_invocation(
                 call_invocation_id,
                 TerminationFlavor::Kill
             )),
@@ -307,23 +307,23 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
 
     // Entries are completed
     for idx in 4..=9 {
-        assert_entry_completed(&mut test_env, invocation_id, idx).await?;
+        assert_entry_completed(&mut test_env, invocation_id, idx).await;
     }
 
     assert_that!(
         actions,
         all!(
-            contains(terminate_invocation_outbox_message_matcher(
+            contains(matchers::actions::terminate_invocation(
                 call_invocation_id,
                 TerminationFlavor::Cancel
             )),
-            contains(forward_canceled_completion_matcher(4)),
-            contains(forward_canceled_completion_matcher(5)),
-            contains(forward_canceled_completion_matcher(6)),
-            contains(forward_canceled_completion_matcher(7)),
-            contains(forward_canceled_completion_matcher(8)),
-            contains(forward_canceled_completion_matcher(9)),
-            contains(delete_timer_matcher(5)),
+            contains(matchers::actions::forward_canceled_completion(4)),
+            contains(matchers::actions::forward_canceled_completion(5)),
+            contains(matchers::actions::forward_canceled_completion(6)),
+            contains(matchers::actions::forward_canceled_completion(7)),
+            contains(matchers::actions::forward_canceled_completion(8)),
+            contains(matchers::actions::forward_canceled_completion(9)),
+            contains(matchers::actions::delete_sleep_timer(5)),
         )
     );
 
@@ -426,17 +426,17 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 
     // Entries are completed
     for idx in 4..=9 {
-        assert_entry_completed(&mut test_env, invocation_id, idx).await?;
+        assert_entry_completed(&mut test_env, invocation_id, idx).await;
     }
 
     assert_that!(
         actions,
         all!(
-            contains(terminate_invocation_outbox_message_matcher(
+            contains(matchers::actions::terminate_invocation(
                 call_invocation_id,
                 TerminationFlavor::Cancel
             )),
-            contains(delete_timer_matcher(5)),
+            contains(matchers::actions::delete_sleep_timer(5)),
             contains(pat!(Action::Invoke {
                 invocation_id: eq(invocation_id),
                 invocation_target: eq(invocation_target)
@@ -448,48 +448,101 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     Ok(())
 }
 
-fn completed_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
-    JournalEntry::Entry(EnrichedRawEntry::new(
-        EnrichedEntryHeader::Call {
-            is_completed: true,
-            enrichment_result: Some(CallEnrichmentResult {
+#[test(tokio::test)]
+async fn cancel_invocation_entry_referring_to_previous_entry() {
+    let mut test_env = TestEnv::create().await;
+
+    let invocation_target = InvocationTarget::mock_service();
+    let invocation_id = InvocationId::mock_random();
+
+    let callee_1 = InvocationId::mock_random();
+    let callee_2 = InvocationId::mock_random();
+
+    let _ = test_env
+        .apply(Command::Invoke(ServiceInvocation {
+            invocation_id,
+            invocation_target: invocation_target.clone(),
+            ..ServiceInvocation::mock()
+        }))
+        .await;
+
+    // Add call and one way call journal entry
+    let mut tx = test_env.storage.transaction();
+    tx.put_journal_entry(
+        &invocation_id,
+        1,
+        &fixtures::background_invoke_entry(callee_1),
+    )
+    .await;
+    tx.put_journal_entry(
+        &invocation_id,
+        2,
+        &fixtures::incomplete_invoke_entry(callee_2),
+    )
+    .await;
+    let mut invocation_status = tx.get_invocation_status(&invocation_id).await.unwrap();
+    invocation_status.get_journal_metadata_mut().unwrap().length = 3;
+    tx.put_invocation_status(&invocation_id, &invocation_status)
+        .await;
+    tx.commit().await.unwrap();
+
+    // Now create cancel invocation entry
+    let actions = test_env
+        .apply_multiple(vec![
+            Command::InvokerEffect(InvokerEffect {
                 invocation_id,
-                invocation_target: InvocationTarget::mock_service(),
-                completion_retention_time: None,
-                span_context: ServiceInvocationSpanContext::empty(),
+                kind: InvokerEffectKind::JournalEntry {
+                    entry_index: 3,
+                    entry: ProtobufRawEntryCodec::serialize_enriched(Entry::cancel_invocation(
+                        CancelInvocationTarget::InvocationId(callee_1.to_string().into()),
+                    )),
+                },
             }),
-        },
-        Bytes::default(),
-    ))
+            Command::InvokerEffect(InvokerEffect {
+                invocation_id,
+                kind: InvokerEffectKind::JournalEntry {
+                    entry_index: 4,
+                    entry: ProtobufRawEntryCodec::serialize_enriched(Entry::cancel_invocation(
+                        CancelInvocationTarget::CallEntryIndex(2),
+                    )),
+                },
+            }),
+        ])
+        .await;
+
+    assert_that!(
+        actions,
+        all!(
+            contains(matchers::actions::terminate_invocation(
+                callee_1,
+                TerminationFlavor::Cancel
+            )),
+            contains(matchers::actions::terminate_invocation(
+                callee_2,
+                TerminationFlavor::Cancel
+            )),
+        )
+    );
+    assert_that!(
+        test_env.storage.get_invocation_status(&invocation_id).await,
+        ok(pat!(InvocationStatus::Invoked { .. }))
+    );
+    test_env.shutdown().await;
 }
 
-fn background_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
-    JournalEntry::Entry(EnrichedRawEntry::new(
-        EnrichedEntryHeader::OneWayCall {
-            enrichment_result: CallEnrichmentResult {
-                invocation_id,
-                invocation_target: InvocationTarget::mock_service(),
-                completion_retention_time: None,
-                span_context: ServiceInvocationSpanContext::empty(),
-            },
-        },
-        Bytes::default(),
-    ))
-}
-
-fn uncompleted_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
-    JournalEntry::Entry(EnrichedRawEntry::new(
-        EnrichedEntryHeader::Call {
-            is_completed: false,
-            enrichment_result: Some(CallEnrichmentResult {
-                invocation_id,
-                invocation_target: InvocationTarget::mock_service(),
-                completion_retention_time: None,
-                span_context: ServiceInvocationSpanContext::empty(),
-            }),
-        },
-        Bytes::default(),
-    ))
+async fn assert_entry_completed(
+    test_env: &mut TestEnv,
+    invocation_id: InvocationId,
+    idx: EntryIndex,
+) {
+    assert_that!(
+        test_env
+            .storage
+            .get_journal_entry(&invocation_id, idx)
+            .await
+            .unwrap(),
+        some(pat!(JournalEntry::Entry(matchers::completed_entry())))
+    );
 }
 
 fn create_termination_journal(
@@ -498,9 +551,9 @@ fn create_termination_journal(
     finished_call_invocation_id: InvocationId,
 ) -> Vec<JournalEntry> {
     vec![
-        uncompleted_invoke_entry(call_invocation_id),
-        completed_invoke_entry(finished_call_invocation_id),
-        background_invoke_entry(background_invocation_id),
+        fixtures::incomplete_invoke_entry(call_invocation_id),
+        fixtures::completed_invoke_entry(finished_call_invocation_id),
+        fixtures::background_invoke_entry(background_invocation_id),
         JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::GetState {
                 is_completed: false,
@@ -559,67 +612,4 @@ fn create_termination_journal(
             .into(),
         )),
     ]
-}
-
-async fn assert_entry_completed(
-    test_env: &mut TestEnv,
-    invocation_id: InvocationId,
-    idx: EntryIndex,
-) -> Result<(), Error> {
-    assert_that!(
-        test_env
-            .storage
-            .get_journal_entry(&invocation_id, idx)
-            .await?,
-        some(pat!(JournalEntry::Entry(entry_completed_matcher())))
-    );
-    Ok(())
-}
-
-fn canceled_completion_matcher(entry_index: EntryIndex) -> impl Matcher<ActualT = Completion> {
-    pat!(Completion {
-        entry_index: eq(entry_index),
-        result: pat!(CompletionResult::Failure(
-            eq(codes::ABORTED),
-            eq(ByteString::from_static("canceled"))
-        ))
-    })
-}
-
-fn entry_completed_matcher() -> impl Matcher<ActualT = EnrichedRawEntry> {
-    predicate(|e: &EnrichedRawEntry| e.header().is_completed().unwrap_or(false))
-        .with_description("completed entry", "uncompleted entry")
-}
-
-fn forward_canceled_completion_matcher(entry_index: EntryIndex) -> impl Matcher<ActualT = Action> {
-    pat!(Action::ForwardCompletion {
-        completion: canceled_completion_matcher(entry_index),
-    })
-}
-
-fn delete_timer_matcher(entry_index: EntryIndex) -> impl Matcher<ActualT = Action> {
-    pat!(Action::DeleteTimer {
-        timer_key: pat!(TimerKey {
-            kind: pat!(TimerKeyKind::CompleteJournalEntry {
-                journal_index: eq(entry_index),
-            }),
-            timestamp: eq(1337),
-        })
-    })
-}
-
-fn terminate_invocation_outbox_message_matcher(
-    target_invocation_id: InvocationId,
-    termination_flavor: TerminationFlavor,
-) -> impl Matcher<ActualT = Action> {
-    pat!(Action::NewOutboxMessage {
-        message: pat!(
-            restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(pat!(
-                InvocationTermination {
-                    invocation_id: eq(target_invocation_id),
-                    flavor: eq(termination_flavor)
-                }
-            ))
-        )
-    })
 }

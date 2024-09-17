@@ -26,7 +26,10 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec};
-use restate_types::journal::{CompleteAwakeableEntry, Entry, InvokeEntry, OneWayCallEntry};
+use restate_types::journal::{
+    CancelInvocationEntry, CancelInvocationTarget, CompleteAwakeableEntry, Entry, InvokeEntry,
+    OneWayCallEntry,
+};
 use restate_types::journal::{EntryType, InvokeRequest};
 use restate_types::live::Live;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
@@ -250,6 +253,29 @@ where
                 }
             }
             PlainEntryHeader::Run { .. } => EnrichedEntryHeader::Run {},
+            PlainEntryHeader::CancelInvocation { .. } => {
+                // Validate the invocation id is valid
+                let entry =
+                    Codec::deserialize(EntryType::CancelInvocation, serialized_entry.clone())
+                        .map_err(InvocationError::internal)?;
+                let_assert!(Entry::CancelInvocation(CancelInvocationEntry { target }) = entry);
+                if let CancelInvocationTarget::InvocationId(id) = target {
+                    if let Err(e) = id.parse::<InvocationId>() {
+                        return Err(InvocationError::new(
+                            codes::BAD_REQUEST,
+                            format!(
+                                "The given invocation id '{}' to cancel is invalid: {}",
+                                id, e
+                            ),
+                        ));
+                    }
+                }
+
+                EnrichedEntryHeader::CancelInvocation {}
+            }
+            PlainEntryHeader::GetCallInvocationId { is_completed } => {
+                EnrichedEntryHeader::GetCallInvocationId { is_completed }
+            }
             PlainEntryHeader::Custom { code } => EnrichedEntryHeader::Custom { code },
         };
 

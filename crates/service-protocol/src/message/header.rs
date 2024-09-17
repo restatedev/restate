@@ -49,6 +49,8 @@ pub enum MessageType {
     GetPromiseEntry,
     PeekPromiseEntry,
     CompletePromiseEntry,
+    CancelInvocationEntry,
+    GetCallInvocationIdEntry,
     CustomEntry(u16),
 }
 
@@ -77,6 +79,8 @@ impl MessageType {
             MessageType::GetPromiseEntry => MessageKind::State,
             MessageType::PeekPromiseEntry => MessageKind::State,
             MessageType::CompletePromiseEntry => MessageKind::State,
+            MessageType::CancelInvocationEntry => MessageKind::Syscall,
+            MessageType::GetCallInvocationIdEntry => MessageKind::Syscall,
             MessageType::CustomEntry(_) => MessageKind::CustomEntry,
         }
     }
@@ -92,6 +96,7 @@ impl MessageType {
                 | MessageType::GetPromiseEntry
                 | MessageType::PeekPromiseEntry
                 | MessageType::CompletePromiseEntry
+                | MessageType::GetCallInvocationIdEntry
         )
     }
 
@@ -125,6 +130,8 @@ const BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C02;
 const AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C03;
 const COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C04;
 const SIDE_EFFECT_ENTRY_MESSAGE_TYPE: u16 = 0x0C05;
+const CANCEL_INVOCATION_ENTRY_MESSAGE_TYPE: u16 = 0x0C06;
+const GET_CALL_INVOCATION_ID_ENTRY_MESSAGE_TYPE: u16 = 0x0C07;
 
 impl From<MessageType> for MessageTypeId {
     fn from(mt: MessageType) -> Self {
@@ -151,6 +158,8 @@ impl From<MessageType> for MessageTypeId {
             MessageType::GetPromiseEntry => GET_PROMISE_ENTRY_MESSAGE_TYPE,
             MessageType::PeekPromiseEntry => PEEK_PROMISE_ENTRY_MESSAGE_TYPE,
             MessageType::CompletePromiseEntry => COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE,
+            MessageType::CancelInvocationEntry => CANCEL_INVOCATION_ENTRY_MESSAGE_TYPE,
+            MessageType::GetCallInvocationIdEntry => GET_CALL_INVOCATION_ID_ENTRY_MESSAGE_TYPE,
             MessageType::CustomEntry(id) => id,
         }
     }
@@ -187,6 +196,8 @@ impl TryFrom<MessageTypeId> for MessageType {
             PEEK_PROMISE_ENTRY_MESSAGE_TYPE => Ok(MessageType::PeekPromiseEntry),
             COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CompletePromiseEntry),
             SIDE_EFFECT_ENTRY_MESSAGE_TYPE => Ok(MessageType::SideEffectEntry),
+            CANCEL_INVOCATION_ENTRY_MESSAGE_TYPE => Ok(MessageType::CancelInvocationEntry),
+            GET_CALL_INVOCATION_ID_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetCallInvocationIdEntry),
             v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::CustomEntry(v)),
             v => Err(UnknownMessageType(v)),
         }
@@ -214,6 +225,8 @@ impl TryFrom<MessageType> for EntryType {
             MessageType::GetPromiseEntry => Ok(EntryType::GetPromise),
             MessageType::PeekPromiseEntry => Ok(EntryType::PeekPromise),
             MessageType::CompletePromiseEntry => Ok(EntryType::CompletePromise),
+            MessageType::CancelInvocationEntry => Ok(EntryType::CancelInvocation),
+            MessageType::GetCallInvocationIdEntry => Ok(EntryType::GetCallInvocationId),
             MessageType::CustomEntry(_) => Ok(EntryType::Custom),
             MessageType::Start
             | MessageType::Completion

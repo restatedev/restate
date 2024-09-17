@@ -13,7 +13,7 @@ use std::ops::RangeInclusive;
 
 // Range of supported service protocol versions by this server
 pub const MIN_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V1;
-pub const MAX_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V2;
+pub const MAX_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V3;
 
 pub const MAX_SERVICE_PROTOCOL_VERSION_VALUE: i32 = i32::MAX;
 
@@ -79,11 +79,12 @@ mod pb_into {
     use super::*;
 
     use crate::journal::{
-        AwakeableEntry, ClearStateEntry, CompleteAwakeableEntry, CompletePromiseEntry,
-        CompleteResult, CompletionResult, Entry, EntryResult, GetPromiseEntry, GetStateEntry,
-        GetStateKeysEntry, GetStateKeysResult, InputEntry, InvokeEntry, InvokeRequest,
-        OneWayCallEntry, OutputEntry, PeekPromiseEntry, RunEntry, SetStateEntry, SleepEntry,
-        SleepResult,
+        AwakeableEntry, CancelInvocationEntry, CancelInvocationTarget, ClearStateEntry,
+        CompleteAwakeableEntry, CompletePromiseEntry, CompleteResult, CompletionResult, Entry,
+        EntryResult, GetCallInvocationIdEntry, GetCallInvocationIdResult, GetPromiseEntry,
+        GetStateEntry, GetStateKeysEntry, GetStateKeysResult, InputEntry, InvokeEntry,
+        InvokeRequest, OneWayCallEntry, OutputEntry, PeekPromiseEntry, RunEntry, SetStateEntry,
+        SleepEntry, SleepResult,
     };
 
     impl TryFrom<InputEntryMessage> for Entry {
@@ -325,6 +326,42 @@ mod pb_into {
                         EntryResult::Failure(code.into(), message.into())
                     }
                 },
+            }))
+        }
+    }
+
+    impl TryFrom<CancelInvocationEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(msg: CancelInvocationEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::CancelInvocation(CancelInvocationEntry {
+                target: match msg.target.ok_or("target")? {
+                    cancel_invocation_entry_message::Target::InvocationId(s) => {
+                        CancelInvocationTarget::InvocationId(s.into())
+                    }
+                    cancel_invocation_entry_message::Target::CallEntryIndex(i) => {
+                        CancelInvocationTarget::CallEntryIndex(i)
+                    }
+                },
+            }))
+        }
+    }
+
+    impl TryFrom<GetCallInvocationIdEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(msg: GetCallInvocationIdEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::GetCallInvocationId(GetCallInvocationIdEntry {
+                call_entry_index: msg.call_entry_index,
+                result: msg.result.map(|v| match v {
+                    get_call_invocation_id_entry_message::Result::Value(r) => {
+                        GetCallInvocationIdResult::InvocationId(r)
+                    }
+                    get_call_invocation_id_entry_message::Result::Failure(Failure {
+                        code,
+                        message,
+                    }) => GetCallInvocationIdResult::Failure(code.into(), message.into()),
+                }),
             }))
         }
     }

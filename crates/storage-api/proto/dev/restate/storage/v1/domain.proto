@@ -389,6 +389,13 @@ message EnrichedEntryHeader {
   message SideEffect {
   }
 
+  message CancelInvocation {
+  }
+
+  message GetCallInvocationId {
+    bool is_completed = 1;
+  }
+
   message Custom {
     uint32 code = 1;
   }
@@ -411,6 +418,8 @@ message EnrichedEntryHeader {
     CompleteAwakeable complete_awakeable = 10;
     Custom custom = 11;
     SideEffect side_effect = 14;
+    CancelInvocation cancel_invocation = 18;
+    GetCallInvocationId get_call_invocation_id = 19;
   }
 }
 

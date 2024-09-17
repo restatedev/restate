@@ -95,7 +95,9 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
             OneWayCall,
             Awakeable,
             CompleteAwakeable,
-            Run
+            Run,
+            CancelInvocation,
+            GetCallInvocationId
         })
     }
 
@@ -174,14 +176,17 @@ mod test_util {
         AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
     };
     use restate_types::journal::{
-        AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateKeysEntry,
-        GetStateKeysResult, InputEntry, OutputEntry,
+        AwakeableEntry, CancelInvocationEntry, CancelInvocationTarget, CompletableEntry,
+        CompleteAwakeableEntry, EntryResult, GetCallInvocationIdEntry, GetCallInvocationIdResult,
+        GetStateKeysEntry, GetStateKeysResult, InputEntry, OutputEntry,
     };
     use restate_types::service_protocol::{
-        awakeable_entry_message, call_entry_message, complete_awakeable_entry_message,
+        awakeable_entry_message, call_entry_message, cancel_invocation_entry_message,
+        complete_awakeable_entry_message, get_call_invocation_id_entry_message,
         get_state_entry_message, get_state_keys_entry_message, output_entry_message,
-        AwakeableEntryMessage, CallEntryMessage, ClearAllStateEntryMessage, ClearStateEntryMessage,
-        CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage, GetStateKeysEntryMessage,
+        AwakeableEntryMessage, CallEntryMessage, CancelInvocationEntryMessage,
+        ClearAllStateEntryMessage, ClearStateEntryMessage, CompleteAwakeableEntryMessage, Failure,
+        GetCallInvocationIdEntryMessage, GetStateEntryMessage, GetStateKeysEntryMessage,
         InputEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, SetStateEntryMessage,
     };
 
@@ -345,6 +350,16 @@ mod test_util {
                     },
                     Self::serialize_awakeable_entry(entry),
                 ),
+                Entry::CancelInvocation(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::CancelInvocation {},
+                    Self::serialize_cancel_invocation_entry(entry),
+                ),
+                Entry::GetCallInvocationId(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::GetCallInvocationId {
+                        is_completed: entry.is_completed(),
+                    },
+                    Self::serialize_get_call_invocation_id_entry(entry),
+                ),
                 _ => unimplemented!(),
             }
         }
@@ -427,6 +442,49 @@ mod test_util {
                     }
                     EntryResult::Failure(code, reason) => {
                         complete_awakeable_entry_message::Result::Failure(Failure {
+                            code: code.into(),
+                            message: reason.to_string(),
+                        })
+                    }
+                }),
+                ..Default::default()
+            }
+            .encode_to_vec()
+            .into()
+        }
+
+        fn serialize_cancel_invocation_entry(
+            CancelInvocationEntry { target }: CancelInvocationEntry,
+        ) -> Bytes {
+            CancelInvocationEntryMessage {
+                target: Some(match target {
+                    CancelInvocationTarget::InvocationId(id) => {
+                        cancel_invocation_entry_message::Target::InvocationId(id.to_string())
+                    }
+                    CancelInvocationTarget::CallEntryIndex(idx) => {
+                        cancel_invocation_entry_message::Target::CallEntryIndex(idx)
+                    }
+                }),
+                ..Default::default()
+            }
+            .encode_to_vec()
+            .into()
+        }
+
+        fn serialize_get_call_invocation_id_entry(
+            GetCallInvocationIdEntry {
+                call_entry_index,
+                result,
+            }: GetCallInvocationIdEntry,
+        ) -> Bytes {
+            GetCallInvocationIdEntryMessage {
+                call_entry_index,
+                result: result.map(|res| match res {
+                    GetCallInvocationIdResult::InvocationId(success) => {
+                        get_call_invocation_id_entry_message::Result::Value(success)
+                    }
+                    GetCallInvocationIdResult::Failure(code, reason) => {
+                        get_call_invocation_id_entry_message::Result::Failure(Failure {
                             code: code.into(),
                             message: reason.to_string(),
                         })

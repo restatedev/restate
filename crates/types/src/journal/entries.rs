@@ -41,6 +41,8 @@ pub enum Entry {
     Awakeable(AwakeableEntry),
     CompleteAwakeable(CompleteAwakeableEntry),
     Run(RunEntry),
+    CancelInvocation(CancelInvocationEntry),
+    GetCallInvocationId(GetCallInvocationIdEntry),
     Custom(Bytes),
 }
 
@@ -104,6 +106,20 @@ impl Entry {
 
     pub fn awakeable(result: Option<EntryResult>) -> Self {
         Entry::Awakeable(AwakeableEntry { result })
+    }
+
+    pub fn cancel_invocation(target: CancelInvocationTarget) -> Entry {
+        Entry::CancelInvocation(CancelInvocationEntry { target })
+    }
+
+    pub fn get_call_invocation_id(
+        call_entry_index: EntryIndex,
+        result: Option<GetCallInvocationIdResult>,
+    ) -> Entry {
+        Entry::GetCallInvocationId(GetCallInvocationIdEntry {
+            call_entry_index,
+            result,
+        })
     }
 }
 
@@ -171,6 +187,8 @@ pub enum EntryType {
     Awakeable,
     CompleteAwakeable,
     Run,
+    CancelInvocation,
+    GetCallInvocationId,
     Custom,
 }
 
@@ -214,6 +232,7 @@ mod private {
     impl Sealed for SleepEntry {}
     impl Sealed for InvokeEntry {}
     impl Sealed for AwakeableEntry {}
+    impl Sealed for GetCallInvocationIdEntry {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,4 +414,33 @@ pub struct CompleteAwakeableEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunEntry {
     pub result: EntryResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelInvocationTarget {
+    InvocationId(ByteString),
+    CallEntryIndex(EntryIndex),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelInvocationEntry {
+    pub target: CancelInvocationTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetCallInvocationIdResult {
+    InvocationId(String),
+    Failure(InvocationErrorCode, ByteString),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetCallInvocationIdEntry {
+    pub call_entry_index: EntryIndex,
+    pub result: Option<GetCallInvocationIdResult>,
+}
+
+impl CompletableEntry for GetCallInvocationIdEntry {
+    fn is_completed(&self) -> bool {
+        self.result.is_some()
+    }
 }

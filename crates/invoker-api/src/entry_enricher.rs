@@ -111,6 +111,10 @@ pub mod test_util {
                 }
                 PlainEntryHeader::Run {} => EnrichedEntryHeader::Run {},
                 PlainEntryHeader::Custom { code } => EnrichedEntryHeader::Custom { code },
+                PlainEntryHeader::CancelInvocation => EnrichedEntryHeader::CancelInvocation,
+                PlainEntryHeader::GetCallInvocationId { is_completed } => {
+                    EnrichedEntryHeader::GetCallInvocationId { is_completed }
+                }
             };
 
             Ok(RawEntry::new(enriched_header, entry))
