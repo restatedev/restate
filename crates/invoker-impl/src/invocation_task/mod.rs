@@ -61,6 +61,10 @@ const SERVICE_PROTOCOL_VERSION_V2: HeaderValue =
     HeaderValue::from_static("application/vnd.restate.invocation.v2");
 
 #[allow(clippy::declare_interior_mutable_const)]
+const SERVICE_PROTOCOL_VERSION_V3: HeaderValue =
+    HeaderValue::from_static("application/vnd.restate.invocation.v3");
+
+#[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -511,6 +515,7 @@ fn service_protocol_version_to_header_value(
         }
         ServiceProtocolVersion::V1 => SERVICE_PROTOCOL_VERSION_V1,
         ServiceProtocolVersion::V2 => SERVICE_PROTOCOL_VERSION_V2,
+        ServiceProtocolVersion::V3 => SERVICE_PROTOCOL_VERSION_V3,
     }
 }
 

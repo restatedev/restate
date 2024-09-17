@@ -69,7 +69,7 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
-use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
+use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
 use restate_types::journal::Completion;
 use restate_types::journal::CompletionResult;
 use restate_types::journal::EntryType;
@@ -2372,6 +2372,48 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             EnrichedEntryHeader::Run { .. } | EnrichedEntryHeader::Custom { .. } => {
                 // We just store it
             }
+            EntryHeader::CancelInvocation => {
+                let_assert!(
+                    Entry::CancelInvocation(entry) =
+                        journal_entry.deserialize_entry_ref::<Codec>()?
+                );
+                self.apply_cancel_invocation_journal_entry_action(ctx, &invocation_id, entry)
+                    .await?;
+            }
+            EntryHeader::GetCallInvocationId { is_completed } => {
+                if !is_completed {
+                    let_assert!(
+                        Entry::GetCallInvocationId(entry) =
+                            journal_entry.deserialize_entry_ref::<Codec>()?
+                    );
+                    let callee_invocation_id = Self::get_journal_entry_callee_invocation_id(
+                        ctx,
+                        &invocation_id,
+                        entry.call_entry_index,
+                    )
+                    .await?;
+
+                    if let Some(callee_invocation_id) = callee_invocation_id {
+                        let completion_result = CompletionResult::Success(Bytes::from(
+                            callee_invocation_id.to_string(),
+                        ));
+
+                        Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+                        Self::forward_completion(
+                            ctx,
+                            invocation_id,
+                            Completion::new(entry_index, completion_result),
+                        );
+                    } else {
+                        // Nothing we can do here, just forward an empty completion (which is invalid for this entry).
+                        Self::forward_completion(
+                            ctx,
+                            invocation_id,
+                            Completion::new(entry_index, CompletionResult::Empty),
+                        );
+                    }
+                }
+            }
         }
 
         Self::append_journal_entry(
@@ -2388,6 +2430,94 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         });
 
         Ok(())
+    }
+
+    async fn apply_cancel_invocation_journal_entry_action<
+        State: OutboxTable + FsmTable + ReadOnlyJournalTable,
+    >(
+        &mut self,
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: &InvocationId,
+        entry: CancelInvocationEntry,
+    ) -> Result<(), Error> {
+        let target_invocation_id = match entry.target {
+            CancelInvocationTarget::InvocationId(id) => {
+                if let Ok(id) = id.parse::<InvocationId>() {
+                    Some(id)
+                } else {
+                    warn!(
+                        "Error when trying to parse the invocation id '{}' of CancelInvocation. \
+                                This should have been previously checked by the invoker.",
+                        id
+                    );
+                    None
+                }
+            }
+            CancelInvocationTarget::CallEntryIndex(call_entry_index) => {
+                // Look for the given entry index, then resolve the invocation id.
+                Self::get_journal_entry_callee_invocation_id(ctx, invocation_id, call_entry_index)
+                    .await?
+            }
+        };
+
+        if let Some(target_invocation_id) = target_invocation_id {
+            self.handle_outgoing_message(
+                ctx,
+                OutboxMessage::InvocationTermination(InvocationTermination {
+                    invocation_id: target_invocation_id,
+                    flavor: TerminationFlavor::Cancel,
+                }),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn get_journal_entry_callee_invocation_id<State: ReadOnlyJournalTable>(
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: &InvocationId,
+        call_entry_index: EntryIndex,
+    ) -> Result<Option<InvocationId>, Error> {
+        Ok(
+            match ctx
+                .storage
+                .get_journal_entry(invocation_id, call_entry_index)
+                .await?
+            {
+                Some(JournalEntry::Entry(e)) => {
+                    match e.header() {
+                        EnrichedEntryHeader::Call {
+                            enrichment_result: Some(CallEnrichmentResult { invocation_id, .. }),
+                            ..
+                        }
+                        | EnrichedEntryHeader::OneWayCall {
+                            enrichment_result: CallEnrichmentResult { invocation_id, .. },
+                            ..
+                        } => Some(*invocation_id),
+                        // This is the corner case when there is no enrichment result due to
+                        // the invocation being already completed from the SDK. Nothing to do here.
+                        EnrichedEntryHeader::Call {
+                            enrichment_result: None,
+                            ..
+                        } => None,
+                        _ => {
+                            warn!(
+                            "The given journal entry index '{}' is not a Call/OneWayCall entry.",
+                            call_entry_index
+                        );
+                            None
+                        }
+                    }
+                }
+                _ => {
+                    warn!(
+                        "The given journal entry index '{}' does not exist.",
+                        call_entry_index
+                    );
+                    None
+                }
+            },
+        )
     }
 
     async fn handle_completion<State: JournalTable + InvocationStatusTable>(

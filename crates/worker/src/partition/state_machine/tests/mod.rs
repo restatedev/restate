@@ -11,11 +11,17 @@
 use super::*;
 
 mod delayed_send;
+mod fixtures;
 mod idempotency;
 mod kill_cancel;
 mod matchers;
 mod workflow;
 
+use crate::partition::state_machine::tests::fixtures::{
+    background_invoke_entry, incomplete_invoke_entry,
+};
+use crate::partition::state_machine::tests::matchers::storage::is_entry;
+use crate::partition::state_machine::tests::matchers::success_completion;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind};
 use ::tracing::info;
 use bytes::Bytes;
@@ -176,7 +182,7 @@ type TestResult = Result<(), anyhow::Error>;
 #[test(tokio::test)]
 async fn start_invocation() -> TestResult {
     let mut test_env = TestEnv::create().await;
-    let id = mock_start_invocation(&mut test_env).await;
+    let id = fixtures::mock_start_invocation(&mut test_env).await;
 
     let invocation_status = test_env.storage().get_invocation_status(&id).await.unwrap();
     assert_that!(invocation_status, pat!(InvocationStatus::Invoked(_)));
@@ -205,9 +211,11 @@ async fn shared_invocation_skips_inbox() -> TestResult {
     tx.commit().await.unwrap();
 
     // Start the invocation
-    let invocation_id =
-        mock_start_invocation_with_invocation_target(&mut test_env, invocation_target.clone())
-            .await;
+    let invocation_id = fixtures::mock_start_invocation_with_invocation_target(
+        &mut test_env,
+        invocation_target.clone(),
+    )
+    .await;
 
     // Should be in invoked status
     let invocation_status = test_env
@@ -230,7 +238,7 @@ async fn shared_invocation_skips_inbox() -> TestResult {
 #[test(tokio::test)]
 async fn awakeable_completion_received_before_entry() -> TestResult {
     let mut test_env = TestEnv::create().await;
-    let invocation_id = mock_start_invocation(&mut test_env).await;
+    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
     // Send completion first
     let _ = test_env
@@ -334,7 +342,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
 #[test(tokio::test)]
 async fn complete_awakeable_with_success() {
     let mut test_env = TestEnv::create().await;
-    let invocation_id = mock_start_invocation(&mut test_env).await;
+    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
     let callee_invocation_id = InvocationId::mock_random();
     let callee_entry_index = 10;
@@ -377,7 +385,7 @@ async fn complete_awakeable_with_success() {
 #[test(tokio::test)]
 async fn complete_awakeable_with_failure() {
     let mut test_env = TestEnv::create().await;
-    let invocation_id = mock_start_invocation(&mut test_env).await;
+    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
     let callee_invocation_id = InvocationId::mock_random();
     let callee_entry_index = 10;
@@ -425,7 +433,7 @@ async fn invoke_with_headers() -> TestResult {
     let mut test_env = TestEnv::create().await;
     let service_id = ServiceId::mock_random();
     let invocation_id =
-        mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
+        fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
 
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
@@ -467,9 +475,11 @@ async fn mutate_state() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
     let invocation_target = InvocationTarget::mock_virtual_object();
     let keyed_service_id = invocation_target.as_keyed_service_id().unwrap();
-    let invocation_id =
-        mock_start_invocation_with_invocation_target(&mut test_env, invocation_target.clone())
-            .await;
+    let invocation_id = fixtures::mock_start_invocation_with_invocation_target(
+        &mut test_env,
+        invocation_target.clone(),
+    )
+    .await;
 
     let first_state_mutation: HashMap<Bytes, Bytes> = [
         (Bytes::from_static(b"foobar"), Bytes::from_static(b"foobar")),
@@ -543,7 +553,7 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
     txn.commit().await.unwrap();
 
     let invocation_id =
-        mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
+        fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
 
     test_env
         .apply(Command::InvokerEffect(InvokerEffect {
@@ -571,7 +581,7 @@ async fn get_state_keys() -> TestResult {
     let mut test_env = TestEnv::create().await;
     let service_id = ServiceId::mock_random();
     let invocation_id =
-        mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
+        fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
 
     // Mock some state
     let mut txn = test_env.storage.transaction();
@@ -592,19 +602,108 @@ async fn get_state_keys() -> TestResult {
     // At this point we expect the completion to be forwarded to the invoker
     assert_that!(
         actions,
-        contains(pat!(Action::ForwardCompletion {
-            invocation_id: eq(invocation_id),
-            completion: eq(Completion::new(
+        contains(matchers::actions::forward_completion(
+            invocation_id,
+            matchers::completion(
                 1,
                 ProtobufRawEntryCodec::serialize_get_state_keys_completion(vec![
                     Bytes::copy_from_slice(b"key1"),
                     Bytes::copy_from_slice(b"key2"),
                 ])
-            ))
-        }))
+            )
+        ))
     );
     test_env.shutdown().await;
     Ok(())
+}
+
+#[test(tokio::test)]
+async fn get_invocation_id_entry() {
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+
+    let callee_1 = InvocationId::mock_random();
+    let callee_2 = InvocationId::mock_random();
+
+    // Mock some state
+    // Add call and one way call journal entry
+    let mut tx = test_env.storage.transaction();
+    tx.put_journal_entry(&invocation_id, 1, &background_invoke_entry(callee_1))
+        .await;
+    tx.put_journal_entry(&invocation_id, 2, &incomplete_invoke_entry(callee_2))
+        .await;
+    let mut invocation_status = tx.get_invocation_status(&invocation_id).await.unwrap();
+    invocation_status.get_journal_metadata_mut().unwrap().length = 3;
+    tx.put_invocation_status(&invocation_id, &invocation_status)
+        .await;
+    tx.commit().await.unwrap();
+
+    let actions = test_env
+        .apply_multiple(vec![
+            Command::InvokerEffect(InvokerEffect {
+                invocation_id,
+                kind: InvokerEffectKind::JournalEntry {
+                    entry_index: 3,
+                    entry: ProtobufRawEntryCodec::serialize_enriched(
+                        Entry::get_call_invocation_id(1, None),
+                    ),
+                },
+            }),
+            Command::InvokerEffect(InvokerEffect {
+                invocation_id,
+                kind: InvokerEffectKind::JournalEntry {
+                    entry_index: 4,
+                    entry: ProtobufRawEntryCodec::serialize_enriched(
+                        Entry::get_call_invocation_id(2, None),
+                    ),
+                },
+            }),
+        ])
+        .await;
+
+    // Assert completion is forwarded and stored
+    assert_that!(
+        actions,
+        all!(
+            contains(matchers::actions::forward_completion(
+                invocation_id,
+                success_completion(3, callee_1.to_string())
+            )),
+            contains(matchers::actions::forward_completion(
+                invocation_id,
+                success_completion(4, callee_2.to_string())
+            ))
+        )
+    );
+
+    assert_that!(
+        test_env
+            .storage
+            .get_journal_entry(&invocation_id, 3)
+            .await
+            .unwrap(),
+        some(is_entry(Entry::get_call_invocation_id(
+            1,
+            Some(GetCallInvocationIdResult::InvocationId(
+                callee_1.to_string()
+            ))
+        )))
+    );
+    assert_that!(
+        test_env
+            .storage
+            .get_journal_entry(&invocation_id, 4)
+            .await
+            .unwrap(),
+        some(is_entry(Entry::get_call_invocation_id(
+            2,
+            Some(GetCallInvocationIdResult::InvocationId(
+                callee_2.to_string()
+            ))
+        )))
+    );
+
+    test_env.shutdown().await;
 }
 
 #[test(tokio::test)]
@@ -899,57 +998,4 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     test_env.shutdown().await;
     Ok(())
-}
-
-async fn mock_start_invocation_with_service_id(
-    state_machine: &mut TestEnv,
-    service_id: ServiceId,
-) -> InvocationId {
-    mock_start_invocation_with_invocation_target(
-        state_machine,
-        InvocationTarget::mock_from_service_id(service_id),
-    )
-    .await
-}
-
-async fn mock_start_invocation_with_invocation_target(
-    state_machine: &mut TestEnv,
-    invocation_target: InvocationTarget,
-) -> InvocationId {
-    let invocation_id = InvocationId::mock_generate(&invocation_target);
-
-    let actions = state_machine
-        .apply(Command::Invoke(ServiceInvocation {
-            invocation_id,
-            invocation_target: invocation_target.clone(),
-            argument: Default::default(),
-            source: Source::Ingress,
-            response_sink: None,
-            span_context: Default::default(),
-            headers: vec![],
-            execution_time: None,
-            completion_retention_duration: None,
-            idempotency_key: None,
-            submit_notification_sink: None,
-        }))
-        .await;
-
-    assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-            invocation_target: eq(invocation_target),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
-        }))
-    );
-
-    invocation_id
-}
-
-async fn mock_start_invocation(state_machine: &mut TestEnv) -> InvocationId {
-    mock_start_invocation_with_invocation_target(
-        state_machine,
-        InvocationTarget::mock_virtual_object(),
-    )
-    .await
 }

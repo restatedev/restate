@@ -328,6 +328,10 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
             enrichment_result: (),
         },
         MessageType::SideEffectEntry => PlainEntryHeader::Run {},
+        MessageType::CancelInvocationEntry => PlainEntryHeader::CancelInvocation {},
+        MessageType::GetCallInvocationIdEntry => PlainEntryHeader::GetCallInvocationId {
+            is_completed: expect_flag!(message_header, completed),
+        },
         MessageType::CustomEntry(code) => PlainEntryHeader::Custom { code },
     }
 }
@@ -350,6 +354,8 @@ fn raw_header_to_message_type(entry_header: &PlainEntryHeader) -> MessageType {
         PlainEntryHeader::Awakeable { .. } => MessageType::AwakeableEntry,
         PlainEntryHeader::CompleteAwakeable { .. } => MessageType::CompleteAwakeableEntry,
         PlainEntryHeader::Run { .. } => MessageType::SideEffectEntry,
+        PlainEntryHeader::CancelInvocation => MessageType::CancelInvocationEntry,
+        PlainEntryHeader::GetCallInvocationId { .. } => MessageType::GetCallInvocationIdEntry,
         PlainEntryHeader::Custom { code, .. } => MessageType::CustomEntry(*code),
     }
 }
