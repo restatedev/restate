@@ -33,6 +33,9 @@ Restate supports the following SDKs:
 
 * [Typescript](https://github.com/restatedev/sdk-typescript)
 * [Java and Kotlin](https://github.com/restatedev/sdk-java)
+* [Python](https://github.com/restatedev/sdk-python)
+* [Go](https://github.com/restatedev/sdk-go)
+* [Rust](https://github.com/restatedev/sdk-rust)
 
 ## Install
 
