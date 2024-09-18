@@ -27,6 +27,7 @@ options_schema = [
     "restate-types/schemars",
 ]
 memory-loglet = ["restate-node/memory-loglet"]
+replicated-loglet = ["restate-node/replicated-loglet"]
 
 [dependencies]
 restate-admin = { workspace = true }

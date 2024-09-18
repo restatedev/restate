@@ -10,6 +10,7 @@ publish = false
 [features]
 default = []
 memory-loglet = ["restate-bifrost/memory-loglet"]
+replicated-loglet = ["restate-bifrost/replicated-loglet"]
 options_schema = [
     "dep:schemars",
     "restate-admin/options_schema",
@@ -18,7 +19,7 @@ options_schema = [
 
 [dependencies]
 restate-admin = { workspace = true, features = ["servers"] }
-restate-bifrost = { workspace = true, features = ["replicated-loglet"] }
+restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-log-server = { workspace = true }
