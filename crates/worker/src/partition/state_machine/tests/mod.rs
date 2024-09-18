@@ -292,6 +292,26 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
         )))
     );
 
+    // If we try to send the completion again, it should not be forwarded!
+
+    let actions = test_env
+        .apply(Command::InvocationResponse(InvocationResponse {
+            id: invocation_id,
+            entry_index: 1,
+            result: ResponseResult::Success(Bytes::default()),
+        }))
+        .await;
+    assert_that!(
+        actions,
+        not(contains(pat!(Action::ForwardCompletion {
+            invocation_id: eq(invocation_id),
+            completion: eq(Completion::new(
+                1,
+                CompletionResult::Success(Bytes::default())
+            ))
+        })))
+    );
+
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
