@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod consumer_task;
-mod metric_definitions;
-mod subscription_controller;
+use metrics::{describe_counter, Unit};
 
-use tokio::sync::mpsc;
+pub const KAFKA_INGRESS_REQUESTS: &str = "restate.kafka_ingress.requests.total";
 
-pub use subscription_controller::{Command, Error, Service};
-
-pub type SubscriptionCommandSender = mpsc::Sender<Command>;
-pub type SubscriptionCommandReceiver = mpsc::Receiver<Command>;
+pub(crate) fn describe_metrics() {
+    describe_counter!(
+        KAFKA_INGRESS_REQUESTS,
+        Unit::Count,
+        "Number of Kafka ingress requests"
+    );
+}

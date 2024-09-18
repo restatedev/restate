@@ -8,11 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 use base64::Engine;
 use bytes::Bytes;
+use metrics::counter;
 use opentelemetry::trace::TraceContextExt;
+use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
@@ -21,13 +26,15 @@ use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use restate_core::{cancellation_watcher, TaskCenter, TaskId, TaskKind};
 use restate_ingress_dispatcher::{
     DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
 };
-use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::{Header, SpanRelation};
 use restate_types::message::MessageIndex;
 use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
+
+use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -45,6 +52,8 @@ pub enum Error {
     },
     #[error("ingress dispatcher channel is closed")]
     IngressDispatcherClosed,
+    #[error("topic {0} partition {1} queue split didn't succeed")]
+    TopicPartitionSplit(String, i32),
 }
 
 type MessageConsumer = StreamConsumer<DefaultConsumerContext>;
@@ -82,21 +91,25 @@ impl DeduplicationId for KafkaDeduplicationId {
 pub struct MessageSender {
     subscription: Subscription,
     dispatcher: IngressDispatcher,
+
+    subscription_id: String,
+    ingress_request_counter: metrics::Counter,
 }
 
 impl MessageSender {
     pub fn new(subscription: Subscription, dispatcher: IngressDispatcher) -> Self {
         Self {
+            subscription_id: subscription.id().to_string(),
+            ingress_request_counter: counter!(
+                KAFKA_INGRESS_REQUESTS,
+                "subscription" => subscription.id().to_string()
+            ),
             subscription,
             dispatcher,
         }
     }
 
-    async fn send(
-        &mut self,
-        consumer_group_id: &str,
-        msg: &BorrowedMessage<'_>,
-    ) -> Result<(), Error> {
+    async fn send(&self, consumer_group_id: &str, msg: BorrowedMessage<'_>) -> Result<(), Error> {
         // Prepare ingress span
         let ingress_span = info_span!(
             "kafka_ingress_consume",
@@ -119,14 +132,14 @@ impl MessageSender {
         } else {
             Bytes::default()
         };
-        let headers = Self::generate_events_attributes(msg, self.subscription.id());
+        let headers = Self::generate_events_attributes(&msg, &self.subscription_id);
 
         let req = IngressDispatcherRequest::event(
             &self.subscription,
             key,
             payload,
             SpanRelation::Parent(ingress_span_context),
-            Some(Self::generate_deduplication_id(consumer_group_id, msg)),
+            Some(Self::generate_deduplication_id(consumer_group_id, &msg)),
             headers,
         )
         .map_err(|cause| Error::Event {
@@ -136,6 +149,8 @@ impl MessageSender {
             cause,
         })?;
 
+        self.ingress_request_counter.increment(1);
+
         self.dispatcher
             .dispatch_ingress_request(req)
             .instrument(ingress_span)
@@ -144,10 +159,7 @@ impl MessageSender {
         Ok(())
     }
 
-    fn generate_events_attributes(
-        msg: &impl Message,
-        subscription_id: SubscriptionId,
-    ) -> Vec<Header> {
+    fn generate_events_attributes(msg: &impl Message, subscription_id: &str) -> Vec<Header> {
         let mut headers = Vec::with_capacity(6);
         headers.push(Header::new("kafka.offset", msg.offset().to_string()));
         headers.push(Header::new("kafka.topic", msg.topic()));
@@ -157,7 +169,7 @@ impl MessageSender {
         }
         headers.push(Header::new(
             "restate.subscription.id".to_string(),
-            subscription_id.to_string(),
+            subscription_id,
         ));
 
         if let Some(key) = msg.key() {
@@ -187,21 +199,28 @@ impl MessageSender {
 
 #[derive(Clone)]
 pub struct ConsumerTask {
+    task_center: TaskCenter,
     client_config: ClientConfig,
     topics: Vec<String>,
     sender: MessageSender,
 }
 
 impl ConsumerTask {
-    pub fn new(client_config: ClientConfig, topics: Vec<String>, sender: MessageSender) -> Self {
+    pub fn new(
+        task_center: TaskCenter,
+        client_config: ClientConfig,
+        topics: Vec<String>,
+        sender: MessageSender,
+    ) -> Self {
         Self {
+            task_center,
             client_config,
             topics,
             sender,
         }
     }
 
-    pub async fn run(mut self, mut rx: oneshot::Receiver<()>) -> Result<(), Error> {
+    pub async fn run(self, mut rx: oneshot::Receiver<()>) -> Result<(), Error> {
         // Create the consumer and subscribe to the topic
         let consumer_group_id = self
             .client_config
@@ -213,24 +232,91 @@ impl ConsumerTask {
             self.topics, self.client_config
         );
 
-        let consumer: MessageConsumer = self.client_config.create()?;
+        let consumer: Arc<MessageConsumer> = Arc::new(self.client_config.create()?);
         let topics: Vec<&str> = self.topics.iter().map(|x| &**x).collect();
         consumer.subscribe(&topics)?;
 
-        loop {
+        let mut topic_partition_tasks: HashMap<(String, i32), TaskId> = Default::default();
+
+        let result = loop {
             tokio::select! {
                 res = consumer.recv() => {
-                    let msg = res?;
-                    self.sender.send(&consumer_group_id, &msg).await?;
+                    let msg = match res {
+                       Ok(msg) => msg,
+                        Err(e) => break Err(e.into())
+                    };
+                    let topic = msg.topic().to_owned();
+                    let partition = msg.partition();
+                    let offset = msg.offset();
+
+                    // If we didn't split the queue, let's do it and start the topic partition consumer
+                     if let Entry::Vacant(e) = topic_partition_tasks.entry((topic.clone(), partition)) {
+                        let topic_partition_consumer = match consumer
+                            .split_partition_queue(&topic, partition) {
+                            Some(q) => q,
+                            None => break Err(Error::TopicPartitionSplit(topic.clone(), partition))
+                        };
+
+                        let task = topic_partition_queue_consumption_loop(
+                            self.sender.clone(),
+                            topic.clone(), partition,
+                            topic_partition_consumer,
+                            Arc::clone(&consumer),
+                            consumer_group_id.clone()
+                        );
+
+                        if let Ok(task_id) = self.task_center.spawn_child(TaskKind::Ingress, "partition-queue", None, task) {
+                            e.insert(task_id);
+                        } else {
+                            break Ok(());
+                        }
+                    }
+
+                    // We got this message, let's send it through
+                    if let Err(e) = self.sender.send(&consumer_group_id, msg).await {
+                        break Err(e)
+                    }
+
                     // This method tells rdkafka that we have processed this message,
                     // so its offset can be safely committed.
                     // rdkafka periodically commits these offsets asynchronously, with a period configurable
                     // with auto.commit.interval.ms
-                    consumer.store_offset_from_message(&msg)?;
+                    if let Err(e) = consumer.store_offset(&topic, partition, offset) {
+                        break Err(e.into())
+                    }
                 }
                 _ = &mut rx => {
-                    return Ok(());
+                    break Ok(());
                 }
+            }
+        };
+        for task_id in topic_partition_tasks.into_values() {
+            self.task_center.cancel_task(task_id);
+        }
+        result
+    }
+}
+
+async fn topic_partition_queue_consumption_loop(
+    sender: MessageSender,
+    topic: String,
+    partition: i32,
+    topic_partition_consumer: StreamPartitionQueue<DefaultConsumerContext>,
+    consumer: Arc<MessageConsumer>,
+    consumer_group_id: String,
+) -> Result<(), anyhow::Error> {
+    let mut shutdown = std::pin::pin!(cancellation_watcher());
+
+    loop {
+        tokio::select! {
+            res = topic_partition_consumer.recv() => {
+                let msg = res?;
+                let offset = msg.offset();
+                sender.send(&consumer_group_id, msg).await?;
+                consumer.store_offset(&topic, partition, offset)?;
+            }
+            _ = &mut shutdown => {
+                return Ok(())
             }
         }
     }
