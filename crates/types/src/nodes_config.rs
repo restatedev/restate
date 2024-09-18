@@ -229,6 +229,7 @@ impl Versioned for NodesConfiguration {
     PartialEq,
     Ord,
     PartialOrd,
+    derive_more::IsVariant,
     serde::Serialize,
     serde::Deserialize,
     strum::Display,
@@ -268,6 +269,24 @@ pub enum StorageState {
     /// should read from: yes (non-quorum reads)
     /// can write to: no
     DataLoss,
+}
+
+impl StorageState {
+    pub fn can_write_to(&self) -> bool {
+        use StorageState::*;
+        match self {
+            Provisioning | Disabled | ReadOnly | DataLoss => false,
+            ReadWrite => true,
+        }
+    }
+
+    pub fn should_read_from(&self) -> bool {
+        use StorageState::*;
+        match self {
+            ReadOnly | ReadWrite | DataLoss => true,
+            Provisioning | Disabled => false,
+        }
+    }
 }
 
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
