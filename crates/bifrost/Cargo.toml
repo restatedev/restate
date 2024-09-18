@@ -45,6 +45,7 @@ restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
 criterion = { workspace = true, features = ["async_tokio"] }
+enumset = { workspace = true }
 googletest = { workspace = true, features = ["anyhow"] }
 paste = { workspace = true }
 rlimit = { workspace = true }

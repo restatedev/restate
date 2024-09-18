@@ -5495,6 +5495,7 @@ dependencies = [
  "criterion",
  "derive_more",
  "enum-map",
+ "enumset",
  "futures",
  "googletest",
  "metrics",
