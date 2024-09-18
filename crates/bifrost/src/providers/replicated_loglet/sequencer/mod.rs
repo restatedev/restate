@@ -13,6 +13,7 @@ use restate_types::{
     time::MillisSinceEpoch, GenerationalNodeId, PlainNodeId,
 };
 
+mod node;
 mod worker;
 
 #[derive(Debug, Default)]
