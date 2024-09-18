@@ -10,5 +10,7 @@
 
 pub(crate) mod metric_definitions;
 mod provider;
+#[allow(dead_code)]
+mod sequencer;
 
 pub use provider::Factory;
