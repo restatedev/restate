@@ -10,6 +10,8 @@
 
 mod params;
 mod replication_property;
+mod spread;
 
 pub use params::*;
 pub use replication_property::*;
+pub use spread::*;
