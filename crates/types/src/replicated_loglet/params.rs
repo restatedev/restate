@@ -12,6 +12,7 @@ use std::collections::HashSet;
 
 use serde_with::DisplayFromStr;
 
+use crate::nodes_config::NodesConfiguration;
 use crate::{GenerationalNodeId, PlainNodeId};
 
 use super::ReplicationProperty;
@@ -73,21 +74,43 @@ impl ReplicatedLogletId {
 }
 
 #[serde_with::serde_as]
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq)]
+#[derive(
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    derive_more::IntoIterator,
+    derive_more::From,
+)]
 pub struct NodeSet(#[serde_as(as = "HashSet<DisplayFromStr>")] HashSet<PlainNodeId>);
 
 impl NodeSet {
+    pub fn empty() -> Self {
+        Self(HashSet::new())
+    }
+
     pub fn from_single(node: PlainNodeId) -> Self {
         let mut set = HashSet::new();
         set.insert(node);
         Self(set)
     }
 
-    pub fn len(&self) -> u8 {
-        self.0
-            .len()
-            .try_into()
-            .expect("nodeset cannot exceed 255 nodes")
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn contains(&self, node: &PlainNodeId) -> bool {
+        self.0.contains(node)
+    }
+
+    pub fn insert(&mut self, node: PlainNodeId) {
+        self.0.insert(node);
+    }
+
+    pub fn remove(&mut self, node: &PlainNodeId) {
+        self.0.remove(node);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -96,5 +119,68 @@ impl NodeSet {
 
     pub fn iter(&self) -> impl Iterator<Item = &PlainNodeId> {
         self.0.iter()
+    }
+
+    /// Filters out nodes that are not part of the effective nodeset (empty nodes)
+    pub fn to_effective(&self, nodes_config: &NodesConfiguration) -> EffectiveNodeSet {
+        EffectiveNodeSet::new(self, nodes_config)
+    }
+}
+
+impl<const N: usize> From<[PlainNodeId; N]> for NodeSet {
+    fn from(value: [PlainNodeId; N]) -> Self {
+        Self(From::from(value))
+    }
+}
+
+impl<const N: usize> From<[u32; N]> for NodeSet {
+    fn from(value: [u32; N]) -> Self {
+        Self(value.into_iter().map(PlainNodeId::from).collect())
+    }
+}
+
+impl From<NodeSet> for Vec<PlainNodeId> {
+    fn from(value: NodeSet) -> Self {
+        value.0.into_iter().collect()
+    }
+}
+
+impl From<NodeSet> for Box<[PlainNodeId]> {
+    fn from(value: NodeSet) -> Self {
+        value.0.into_iter().collect()
+    }
+}
+
+impl<A: Into<PlainNodeId>> FromIterator<A> for NodeSet {
+    fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
+        Self(HashSet::from_iter(iter.into_iter().map(Into::into)))
+    }
+}
+
+#[serde_with::serde_as]
+#[derive(
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    derive_more::Deref,
+    derive_more::AsRef,
+    derive_more::DerefMut,
+    derive_more::IntoIterator,
+    derive_more::Into,
+)]
+pub struct EffectiveNodeSet(NodeSet);
+
+impl EffectiveNodeSet {
+    pub fn new(nodeset: &NodeSet, nodes_config: &NodesConfiguration) -> Self {
+        Self(
+            nodeset
+                .iter()
+                .copied()
+                .filter(|node_id| !nodes_config.get_log_server_storage_state(node_id).empty())
+                .collect(),
+        )
     }
 }
