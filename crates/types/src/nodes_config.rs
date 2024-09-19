@@ -190,6 +190,18 @@ impl NodesConfiguration {
         self.find_node_by_id(*id).ok()
     }
 
+    /// Returns [`StorageState::Disabled`] if a node is deleted or unrecognized
+    pub fn get_log_server_storage_state(&self, node_id: &PlainNodeId) -> StorageState {
+        let maybe = self.nodes.get(node_id);
+        let Some(maybe) = maybe else {
+            return StorageState::Disabled;
+        };
+        match maybe {
+            MaybeNode::Tombstone => StorageState::Disabled,
+            MaybeNode::Node(found) => found.log_server_config.storage_state,
+        }
+    }
+
     /// Returns _an_ admin node.
     pub fn get_admin_node(&self) -> Option<&NodeConfig> {
         self.nodes.values().find_map(|maybe| match maybe {
@@ -229,6 +241,7 @@ impl Versioned for NodesConfiguration {
     PartialEq,
     Ord,
     PartialOrd,
+    derive_more::IsVariant,
     serde::Serialize,
     serde::Deserialize,
     strum::Display,
@@ -268,6 +281,29 @@ pub enum StorageState {
     /// should read from: yes (non-quorum reads)
     /// can write to: no
     DataLoss,
+}
+
+impl StorageState {
+    pub fn can_write_to(&self) -> bool {
+        use StorageState::*;
+        match self {
+            Provisioning | Disabled | ReadOnly | DataLoss => false,
+            ReadWrite => true,
+        }
+    }
+
+    pub fn should_read_from(&self) -> bool {
+        use StorageState::*;
+        match self {
+            ReadOnly | ReadWrite | DataLoss => true,
+            Provisioning | Disabled => false,
+        }
+    }
+
+    /// Empty nodes are automatically excluded from node sets.
+    pub fn empty(&self) -> bool {
+        matches!(self, StorageState::Provisioning | StorageState::Disabled)
+    }
 }
 
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
