@@ -5502,6 +5502,7 @@ dependencies = [
  "parking_lot",
  "paste",
  "pin-project",
+ "rand",
  "restate-core",
  "restate-metadata-store",
  "restate-rocksdb",
