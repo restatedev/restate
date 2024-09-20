@@ -91,7 +91,6 @@ impl LogletProvider for LocalLogletProvider {
                 // NOTE: local-loglet expects params to be a `u64` string-encoded unique identifier under the hood.
                 let loglet = LocalLoglet::create(
                     params
-                        .as_str()
                         .parse()
                         .expect("loglet params can be converted into u64"),
                     self.log_store.clone(),

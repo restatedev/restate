@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod error;
+mod loglet;
 pub(crate) mod metric_definitions;
 mod provider;
 pub mod replication;

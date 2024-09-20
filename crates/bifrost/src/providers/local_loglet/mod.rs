@@ -324,7 +324,6 @@ mod tests {
 
                 let loglet = Arc::new(LocalLoglet::create(
                     params
-                        .as_str()
                         .parse()
                         .expect("loglet params can be converted into u64"),
                     log_store,
