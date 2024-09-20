@@ -22,6 +22,7 @@ restate-metadata-store = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+dashmap = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
@@ -31,6 +32,7 @@ pin-project = { workspace = true }
 rand = { workspace = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 smallvec = { workspace = true }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }
