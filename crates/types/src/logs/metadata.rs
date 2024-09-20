@@ -10,7 +10,6 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use bytes::Bytes;
 use bytestring::ByteString;
 use enum_map::Enum;
 use rand::RngCore;
@@ -108,7 +107,9 @@ pub struct LogletConfig {
 /// for a loglet kind to construct a configured loglet instance modulo the log-id
 /// and start-lsn. It's provided by bifrost on loglet creation. This allows the
 /// parameters to be shared between segments and logs if needed.
-#[derive(Debug, Clone, Hash, Eq, PartialEq, derive_more::From, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Hash, Eq, PartialEq, derive_more::From, derive_more::Deref, Serialize, Deserialize,
+)]
 pub struct LogletParams(ByteString);
 
 impl From<String> for LogletParams {
@@ -164,16 +165,6 @@ impl LogletConfig {
 
     pub fn index(&self) -> SegmentIndex {
         self.index
-    }
-}
-
-impl LogletParams {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn as_bytes(&self) -> &Bytes {
-        self.0.as_bytes()
     }
 }
 
