@@ -27,6 +27,9 @@ pub enum RocksError {
     #[error("already open")]
     #[code(unknown)]
     AlreadyOpen,
+    #[error("already exists")]
+    #[code(unknown)]
+    ColumnFamilyExists,
     #[error(transparent)]
     #[code(unknown)]
     Other(#[from] rocksdb::Error),
