@@ -163,7 +163,7 @@ impl RocksAccess for rocksdb::DB {
         let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
 
         let mut import_opts = ImportColumnFamilyOptions::default();
-        import_opts.set_move_files(true);
+        import_opts.set_move_files(false); // keep the snapshot files intact
 
         Ok(Self::create_column_family_with_import(
             self,

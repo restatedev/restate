@@ -18,6 +18,7 @@ use tracing::warn;
 use restate_serde_util::NonZeroByteCount;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use crate::identifiers::PartitionId;
 use crate::retries::RetryPolicy;
 
 /// # Worker options
@@ -59,6 +60,9 @@ pub struct WorkerOptions {
     /// The maximum number of commands a partition processor will apply in a batch. The larger this
     /// value is, the higher the throughput and latency are.
     max_command_batch_size: NonZeroUsize,
+
+    #[serde(flatten)]
+    pub snapshots: SnapshotsOptions,
 }
 
 impl WorkerOptions {
@@ -93,6 +97,7 @@ impl Default for WorkerOptions {
             storage: StorageOptions::default(),
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(4).expect("Non zero number"),
+            snapshots: SnapshotsOptions::default(),
         }
     }
 }
@@ -339,5 +344,25 @@ impl Default for StorageOptions {
             persist_lsn_threshold: 1000,
             always_commit_in_background: false,
         }
+    }
+}
+
+/// # Snapshot options.
+/// Configures the worker store partition snapshot mechanism.
+#[serde_as]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "SnapshotsOptions", default))]
+#[serde(rename_all = "kebab-case")]
+#[builder(default)]
+pub struct SnapshotsOptions {}
+
+impl SnapshotsOptions {
+    pub fn snapshots_base_dir(&self) -> PathBuf {
+        super::data_dir("db-snapshots")
+    }
+
+    pub fn snapshots_dir(&self, partition_id: PartitionId) -> PathBuf {
+        super::data_dir("db-snapshots").join(partition_id.to_string())
     }
 }

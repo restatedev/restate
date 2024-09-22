@@ -17,7 +17,7 @@ pub enum SnapshotFormatVersion {
 
 /// A partition store snapshot.
 #[serde_as]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartitionSnapshotMetadata {
     pub version: SnapshotFormatVersion,
 

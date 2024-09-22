@@ -63,7 +63,7 @@ pub enum TaskKind {
     /// Do not use. This is a special task kind that indicate that work is running within
     /// task_center but its lifecycle is not managed by it.
     InPlace,
-    /// Tasks used during system initialization. Short lived but will shutdown the node if they
+    /// Tasks used during system initialization. Short-lived but will shut down the node if they
     /// failed.
     #[strum(props(OnCancel = "abort"))]
     SystemBoot,
@@ -73,7 +73,7 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     RpcConnection,
     /// A type for ingress until we start enforcing timeouts for inflight requests. This enables us
-    /// to shutdown cleanly without waiting indefinitely.
+    /// to shut down cleanly without waiting indefinitely.
     #[strum(props(OnCancel = "abort", runtime = "ingress"))]
     IngressServer,
     RoleRunner,
@@ -81,6 +81,10 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort", runtime = "ingress"))]
     Ingress,
     PartitionProcessor,
+    /// Longer-running, low-priority tasks that is responsible for the export, and potentially
+    /// upload to remote storage, of partition store snapshots.
+    #[strum(props(OnCancel = "abort", OnError = "log"))]
+    PartitionSnapshotProducer,
     #[strum(props(OnError = "log"))]
     ConnectionReactor,
     Shuffle,
