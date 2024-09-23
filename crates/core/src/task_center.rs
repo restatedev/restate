@@ -1002,11 +1002,16 @@ pub fn metadata() -> Metadata {
 }
 
 #[track_caller]
-pub fn with_metadata<F, R>(f: F) -> Option<R>
+pub fn with_metadata<F, R>(f: F) -> R
 where
     F: FnOnce(&Metadata) -> R,
 {
-    CONTEXT.with(|ctx| ctx.metadata.as_ref().map(f))
+    CONTEXT.with(|ctx| {
+        f(ctx
+            .metadata
+            .as_ref()
+            .expect("metadata() is set in this task. Is global metadata set?"))
+    })
 }
 
 /// Access to this node id. This is available in task-center tasks only!

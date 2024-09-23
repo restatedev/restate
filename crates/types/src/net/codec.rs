@@ -71,7 +71,7 @@ where
 
 pub trait WireEncode {
     fn encode<B: BufMut>(
-        &self,
+        self,
         buf: &mut B,
         protocol_version: ProtocolVersion,
     ) -> Result<(), CodecError>;
@@ -83,42 +83,16 @@ pub trait WireDecode {
         Self: Sized;
 }
 
-impl<T> WireEncode for &T
-where
-    T: WireEncode,
-{
-    fn encode<B: BufMut>(
-        &self,
-        buf: &mut B,
-        protocol_version: ProtocolVersion,
-    ) -> Result<(), CodecError> {
-        (*self).encode(buf, protocol_version)
-    }
-}
-
-impl<T> WireEncode for &mut T
-where
-    T: WireEncode,
-{
-    fn encode<B: BufMut>(
-        &self,
-        buf: &mut B,
-        protocol_version: ProtocolVersion,
-    ) -> Result<(), CodecError> {
-        (**self).encode(buf, protocol_version)
-    }
-}
-
 impl<T> WireEncode for Box<T>
 where
     T: WireEncode,
 {
     fn encode<B: BufMut>(
-        &self,
+        self,
         buf: &mut B,
         protocol_version: ProtocolVersion,
     ) -> Result<(), CodecError> {
-        (**self).encode(buf, protocol_version)
+        (*self).encode(buf, protocol_version)
     }
 }
 
@@ -131,19 +105,6 @@ where
         Self: Sized,
     {
         Ok(Box::new(T::decode(buf, protocol_version)?))
-    }
-}
-
-impl<T> WireEncode for Arc<T>
-where
-    T: WireEncode,
-{
-    fn encode<B: BufMut>(
-        &self,
-        buf: &mut B,
-        protocol_version: ProtocolVersion,
-    ) -> Result<(), CodecError> {
-        (**self).encode(buf, protocol_version)
     }
 }
 
@@ -160,7 +121,7 @@ where
 }
 
 pub fn serialize_message<M: WireEncode + Targeted>(
-    msg: &M,
+    msg: M,
     protocol_version: ProtocolVersion,
 ) -> Result<message::Body, CodecError> {
     let mut payload = BytesMut::new();

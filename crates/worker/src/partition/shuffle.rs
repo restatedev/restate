@@ -438,6 +438,7 @@ mod tests {
     use anyhow::anyhow;
     use assert2::let_assert;
     use futures::{Stream, StreamExt};
+    use restate_core::network::FailingConnector;
     use std::iter;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -445,7 +446,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use restate_bifrost::{Bifrost, LogEntry};
-    use restate_core::{MockNetworkSender, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+    use restate_core::{TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_storage_api::StorageError;
     use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
@@ -612,7 +613,7 @@ mod tests {
     }
 
     struct ShuffleEnv<OR> {
-        env: TestCoreEnv<MockNetworkSender>,
+        env: TestCoreEnv<FailingConnector>,
         bifrost: Bifrost,
         shuffle: Shuffle<OR>,
     }
@@ -621,8 +622,8 @@ mod tests {
         outbox_reader: OR,
     ) -> ShuffleEnv<OR> {
         // set numbers of partitions to 1 to easily find all sent messages by the shuffle
-        let env = TestCoreEnvBuilder::new_with_mock_network()
-            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+        let env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
             ))

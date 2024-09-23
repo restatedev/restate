@@ -13,13 +13,14 @@ use std::time::Duration;
 use bytestring::ByteString;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use restate_core::network::FailingConnector;
 use serde::{Deserialize, Serialize};
 use test_log::test;
 use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::HealthCheckRequest;
 
 use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
-use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
     self, reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
@@ -313,7 +314,7 @@ async fn durable_storage() -> anyhow::Result<()> {
 /// connected to it.
 async fn create_test_environment(
     opts: &MetadataStoreOptions,
-) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv<MockNetworkSender>)> {
+) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv<FailingConnector>)> {
     // Setup metadata store on unix domain socket.
     let mut config = Configuration::default();
     let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
@@ -328,7 +329,9 @@ async fn create_test_environment(
 
     restate_types::config::set_current_config(config.clone());
     let config = Live::from_value(config);
-    let env = TestCoreEnvBuilder::new_with_mock_network().build().await;
+    let env = TestCoreEnvBuilder::with_incoming_only_connector()
+        .build()
+        .await;
 
     let task_center = &env.tc;
 

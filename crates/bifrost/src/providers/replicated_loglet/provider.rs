@@ -13,7 +13,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dashmap::DashMap;
 
-use restate_core::network::{MessageRouterBuilder, Networking};
+use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenter};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::ReplicatedLogletOptions;
@@ -28,21 +28,21 @@ use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationErro
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
 use crate::Error;
 
-pub struct Factory {
+pub struct Factory<T> {
     task_center: TaskCenter,
     opts: BoxedLiveLoad<ReplicatedLogletOptions>,
     metadata: Metadata,
     metadata_store_client: MetadataStoreClient,
-    networking: Networking,
+    networking: Networking<T>,
 }
 
-impl Factory {
+impl<T: TransportConnect> Factory<T> {
     pub fn new(
         task_center: TaskCenter,
         opts: BoxedLiveLoad<ReplicatedLogletOptions>,
         metadata_store_client: MetadataStoreClient,
         metadata: Metadata,
-        networking: Networking,
+        networking: Networking<T>,
         _router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         // todo(asoli):
@@ -59,7 +59,7 @@ impl Factory {
 }
 
 #[async_trait]
-impl LogletProviderFactory for Factory {
+impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Replicated
     }
@@ -76,22 +76,22 @@ impl LogletProviderFactory for Factory {
     }
 }
 
-struct ReplicatedLogletProvider {
+struct ReplicatedLogletProvider<T> {
     active_loglets: DashMap<(LogId, SegmentIndex), Arc<ReplicatedLoglet>>,
     _task_center: TaskCenter,
     _opts: BoxedLiveLoad<ReplicatedLogletOptions>,
     _metadata: Metadata,
     _metadata_store_client: MetadataStoreClient,
-    _networking: Networking,
+    _networking: Networking<T>,
 }
 
-impl ReplicatedLogletProvider {
+impl<T: TransportConnect> ReplicatedLogletProvider<T> {
     fn new(
         task_center: TaskCenter,
         opts: BoxedLiveLoad<ReplicatedLogletOptions>,
         metadata: Metadata,
         metadata_store_client: MetadataStoreClient,
-        networking: Networking,
+        networking: Networking<T>,
     ) -> Self {
         // todo(asoli): create all global state here that'll be shared across loglet instances
         // - RecordCache.
@@ -108,7 +108,7 @@ impl ReplicatedLogletProvider {
 }
 
 #[async_trait]
-impl LogletProvider for ReplicatedLogletProvider {
+impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
     async fn get_loglet(
         &self,
         log_id: LogId,

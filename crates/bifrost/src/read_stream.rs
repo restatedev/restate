@@ -463,7 +463,7 @@ mod tests {
         setup_panic_handler();
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -551,7 +551,7 @@ mod tests {
         setup_panic_handler();
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -660,7 +660,7 @@ mod tests {
         setup_panic_handler();
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -832,7 +832,7 @@ mod tests {
         setup_panic_handler();
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -961,7 +961,7 @@ mod tests {
         setup_panic_handler();
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;

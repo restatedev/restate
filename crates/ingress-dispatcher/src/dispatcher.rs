@@ -146,8 +146,12 @@ impl MessageHandler for IngressDispatcher {
     type MessageType = IngressMessage;
 
     async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-        let (peer, msg) = msg.split();
-        trace!("Processing message '{}' from '{}'", msg.kind(), peer);
+        let (reciprocal, msg) = msg.split();
+        trace!(
+            "Processing message '{}' from '{}'",
+            msg.kind(),
+            reciprocal.peer()
+        );
 
         match msg {
             IngressMessage::InvocationResponse(invocation_response) => {
@@ -170,7 +174,7 @@ impl MessageHandler for IngressDispatcher {
                         );
                     } else {
                         trace!(
-                            partition_processor_peer = %peer,
+                            partition_processor_peer = %reciprocal.peer(),
                             "Sent response of invocation {:?} out",
                             invocation_response.invocation_id
                         );
@@ -199,7 +203,7 @@ impl MessageHandler for IngressDispatcher {
                     } else {
                         trace!(
                             restate.invocation.id = %attach_idempotent_invocation.original_invocation_id,
-                            partition_processor_peer = %peer,
+                            partition_processor_peer = %reciprocal.peer(),
                             "Sent response of invocation out"
                         );
                     }
@@ -271,9 +275,9 @@ mod tests {
     #[test(tokio::test)]
     async fn idempotent_invoke() -> anyhow::Result<()> {
         // set it to 1 partition so that we know where the invocation for the IdempotentInvoker goes to
-        let mut env_builder = TestCoreEnvBuilder::new_with_mock_network()
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
             .add_mock_nodes_config()
-            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+            .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
             ));
@@ -353,7 +357,7 @@ mod tests {
                 // Now check we get the response is routed back to the handler correctly
                 let response = Bytes::from_static(b"vmoaifnuei");
                 node_env
-                    .network_sender
+                    .networking
                     .send(Outgoing::new(
                         metadata().my_node_id(),
                         IngressMessage::InvocationResponse(InvocationResponse {
@@ -385,9 +389,9 @@ mod tests {
     #[test(tokio::test)]
     async fn attach_invocation() {
         // set it to 1 partition so that we know where the invocation for the IdempotentInvoker goes to
-        let mut env_builder = TestCoreEnvBuilder::new_with_mock_network()
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
             .add_mock_nodes_config()
-            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+            .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
             ));
@@ -443,7 +447,7 @@ mod tests {
                 // Now send the attach response
                 let response = Bytes::from_static(b"vmoaifnuei");
                 node_env
-                    .network_sender
+                    .networking
                     .send(Outgoing::new(
                         metadata().my_node_id(),
                         IngressMessage::InvocationResponse(InvocationResponse {

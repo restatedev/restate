@@ -27,9 +27,8 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::Networking;
-use restate_core::network::Outgoing;
 use restate_core::network::{Incoming, MessageRouterBuilder};
+use restate_core::network::{Networking, TransportConnect};
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskId, TaskKind};
 use restate_core::{RuntimeError, TaskCenter};
@@ -75,7 +74,7 @@ use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::PartitionProcessorControlCommand;
 use crate::PartitionProcessorBuilder;
 
-pub struct PartitionProcessorManager {
+pub struct PartitionProcessorManager<T> {
     task_center: TaskCenter,
     updateable_config: Live<Configuration>,
     running_partition_processors: BTreeMap<PartitionId, ProcessorState>,
@@ -84,12 +83,12 @@ pub struct PartitionProcessorManager {
     metadata: Metadata,
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
-    attach_router: RpcRouter<AttachRequest, Networking>,
+    attach_router: RpcRouter<AttachRequest>,
     incoming_get_state:
         Pin<Box<dyn Stream<Item = Incoming<GetProcessorsState>> + Send + Sync + 'static>>,
     incoming_update_processors:
         Pin<Box<dyn Stream<Item = Incoming<ControlProcessors>> + Send + Sync + 'static>>,
-    networking: Networking,
+    networking: Networking<T>,
     bifrost: Bifrost,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
@@ -282,7 +281,7 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
     }
 }
 
-impl PartitionProcessorManager {
+impl<T: TransportConnect> PartitionProcessorManager<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_center: TaskCenter,
@@ -291,10 +290,10 @@ impl PartitionProcessorManager {
         metadata_store_client: MetadataStoreClient,
         partition_store_manager: PartitionStoreManager,
         router_builder: &mut MessageRouterBuilder,
-        networking: Networking,
+        networking: Networking<T>,
         bifrost: Bifrost,
     ) -> Self {
-        let attach_router = RpcRouter::new(networking.clone(), router_builder);
+        let attach_router = RpcRouter::new(router_builder);
         let incoming_get_state = router_builder.subscribe_to_stream(2);
         let incoming_update_processors = router_builder.subscribe_to_stream(2);
 
@@ -353,7 +352,7 @@ impl PartitionProcessorManager {
 
             match self
                 .attach_router
-                .call(Outgoing::new(admin_node, AttachRequest::default()))
+                .call(&self.networking, admin_node, AttachRequest::default())
                 .await
             {
                 Ok(response) => return Ok(response),
@@ -380,8 +379,8 @@ impl PartitionProcessorManager {
 
         let (from, msg) = response.split();
         self.apply_plan(&msg.actions).await?;
-        self.latest_attach_response = Some((from, msg));
-        info!("Plan applied from attaching to controller {}", from);
+        self.latest_attach_response = Some((*from.peer(), msg));
+        info!("Plan applied from attaching to controller {}", from.peer());
 
         let (persisted_lsns_tx, persisted_lsns_rx) = watch::channel(BTreeMap::default());
         self.persisted_lsns_rx = Some(persisted_lsns_rx);
@@ -484,7 +483,8 @@ impl PartitionProcessorManager {
             None,
             async move {
                 Ok(get_state_msg
-                    .respond_rpc(ProcessorsStateResponse { state })
+                    .to_rpc_response(ProcessorsStateResponse { state })
+                    .send()
                     .await?)
             },
         );
@@ -715,7 +715,7 @@ impl PartitionProcessorManager {
                     )?;
 
                     pp_builder
-                        .build::<ProtobufRawEntryCodec>(networking, bifrost, partition_store)
+                        .build::<ProtobufRawEntryCodec, T>(networking, bifrost, partition_store)
                         .await?
                         .run()
                         .await
@@ -895,7 +895,7 @@ mod tests {
 
     #[test(tokio::test(start_paused = true))]
     async fn persisted_log_lsn_watchdog_detects_applied_lsns() -> anyhow::Result<()> {
-        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
         let storage_options = StorageOptions::default();
         let rocksdb_options = RocksDbOptions::default();
 

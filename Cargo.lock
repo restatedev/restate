@@ -5426,6 +5426,7 @@ dependencies = [
  "test-log",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tonic 0.11.0",
  "tonic 0.12.1",
  "tonic-build",

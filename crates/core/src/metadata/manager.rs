@@ -28,7 +28,7 @@ use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, Metadata
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
-use restate_types::{GenerationalNodeId, NodeId};
+use restate_types::NodeId;
 use restate_types::{Version, Versioned};
 
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
@@ -37,7 +37,10 @@ use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
 use crate::network::Incoming;
+use crate::network::Networking;
 use crate::network::Outgoing;
+use crate::network::Reciprocal;
+use crate::network::TransportConnect;
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError, NetworkSender};
 use crate::task_center;
 
@@ -87,51 +90,44 @@ pub(super) enum Command {
 
 /// A handler for processing network messages targeting metadata manager
 /// (dev.restate.common.TargetName = METADATA_MANAGER)
-struct MetadataMessageHandler<N>
-where
-    N: NetworkSender + 'static + Clone,
-{
+struct MetadataMessageHandler {
     sender: CommandSender,
-    networking: N,
     metadata: Metadata,
 }
 
-impl<N> MetadataMessageHandler<N>
-where
-    N: NetworkSender + 'static + Clone,
-{
+impl MetadataMessageHandler {
     fn send_metadata(
         &self,
-        peer: GenerationalNodeId,
+        to: Reciprocal,
         metadata_kind: MetadataKind,
         min_version: Option<Version>,
     ) {
         match metadata_kind {
-            MetadataKind::NodesConfiguration => self.send_nodes_config(peer, min_version),
-            MetadataKind::PartitionTable => self.send_partition_table(peer, min_version),
-            MetadataKind::Logs => self.send_logs(peer, min_version),
-            MetadataKind::Schema => self.send_schema(peer, min_version),
+            MetadataKind::NodesConfiguration => self.send_nodes_config(to, min_version),
+            MetadataKind::PartitionTable => self.send_partition_table(to, min_version),
+            MetadataKind::Logs => self.send_logs(to, min_version),
+            MetadataKind::Schema => self.send_schema(to, min_version),
         };
     }
 
-    fn send_nodes_config(&self, to: GenerationalNodeId, version: Option<Version>) {
+    fn send_nodes_config(&self, to: Reciprocal, version: Option<Version>) {
         let config = self.metadata.nodes_config_snapshot();
         self.send_metadata_internal(to, version, config.deref(), "nodes_config");
     }
 
-    fn send_partition_table(&self, to: GenerationalNodeId, version: Option<Version>) {
+    fn send_partition_table(&self, to: Reciprocal, version: Option<Version>) {
         let partition_table = self.metadata.partition_table_snapshot();
         self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
     }
 
-    fn send_logs(&self, to: GenerationalNodeId, version: Option<Version>) {
+    fn send_logs(&self, to: Reciprocal, version: Option<Version>) {
         let logs = self.metadata.logs();
         if logs.version() != Version::INVALID {
             self.send_metadata_internal(to, version, logs.deref(), "logs");
         }
     }
 
-    fn send_schema(&self, to: GenerationalNodeId, version: Option<Version>) {
+    fn send_schema(&self, to: Reciprocal, version: Option<Version>) {
         let schema = self.metadata.schema();
         if schema.version != Version::INVALID {
             self.send_metadata_internal(to, version, schema.deref(), "schema");
@@ -140,7 +136,7 @@ where
 
     fn send_metadata_internal<T>(
         &self,
-        to: GenerationalNodeId,
+        to: Reciprocal,
         version: Option<Version>,
         metadata: &T,
         metadata_name: &str,
@@ -165,22 +161,17 @@ where
             version,
         );
         let metadata = metadata.clone();
+        let outgoing = to.prepare(MetadataMessage::MetadataUpdate(MetadataUpdate {
+            container: MetadataContainer::from(metadata),
+        }));
 
         let _ = task_center().spawn_child(
             crate::TaskKind::Disposable,
             "send-metadata-to-peer",
             None,
             {
-                let networking = self.networking.clone();
                 async move {
-                    networking
-                        .send(Outgoing::new(
-                            to,
-                            MetadataMessage::MetadataUpdate(MetadataUpdate {
-                                container: MetadataContainer::from(metadata),
-                            }),
-                        ))
-                        .await?;
+                    outgoing.send().await?;
                     Ok(())
                 }
             },
@@ -188,20 +179,17 @@ where
     }
 }
 
-impl<N> MessageHandler for MetadataMessageHandler<N>
-where
-    N: NetworkSender + 'static + Clone,
-{
+impl MessageHandler for MetadataMessageHandler {
     type MessageType = MetadataMessage;
 
     async fn on_message(&self, envelope: Incoming<MetadataMessage>) {
-        let (peer, msg) = envelope.split();
+        let (reciprocal, msg) = envelope.split();
         match msg {
             MetadataMessage::MetadataUpdate(update) => {
                 info!(
                     "Received '{}' metadata update from peer {}",
                     update.container.kind(),
-                    peer
+                    reciprocal.peer(),
                 );
                 if let Err(e) = self
                     .sender
@@ -213,8 +201,11 @@ where
                 }
             }
             MetadataMessage::GetMetadataRequest(request) => {
-                debug!("Received GetMetadataRequest from peer {}", peer);
-                self.send_metadata(peer, request.metadata_kind, request.min_version);
+                debug!(
+                    "Received GetMetadataRequest from peer {}",
+                    reciprocal.peer()
+                );
+                self.send_metadata(reciprocal, request.metadata_kind, request.min_version);
             }
         };
     }
@@ -239,21 +230,18 @@ where
 /// - Schema metadata
 /// - NodesConfiguration
 /// - Partition table
-pub struct MetadataManager<N> {
+pub struct MetadataManager<T> {
     metadata: Metadata,
     inbound: CommandReceiver,
-    networking: N,
+    networking: Networking<T>,
     metadata_store_client: MetadataStoreClient,
     update_tasks: EnumMap<MetadataKind, Option<UpdateTask>>,
 }
 
-impl<N> MetadataManager<N>
-where
-    N: NetworkSender + 'static + Clone,
-{
+impl<T: TransportConnect> MetadataManager<T> {
     pub fn new(
         metadata_builder: MetadataBuilder,
-        networking: N,
+        networking: Networking<T>,
         metadata_store_client: MetadataStoreClient,
     ) -> Self {
         Self {
@@ -268,7 +256,6 @@ where
     pub fn register_in_message_router(&self, sr_builder: &mut MessageRouterBuilder) {
         sr_builder.add_message_handler(MetadataMessageHandler {
             sender: self.metadata.sender.clone(),
-            networking: self.networking.clone(),
             metadata: self.metadata.clone(),
         });
     }
@@ -443,7 +430,7 @@ where
         self.update_task_and_notify_watches(maybe_new_version, MetadataKind::Schema);
     }
 
-    fn update_internal<T: Versioned>(container: &ArcSwap<T>, new_value: T) -> Version {
+    fn update_internal<M: Versioned>(container: &ArcSwap<M>, new_value: M) -> Version {
         let current_value = container.load();
         let mut maybe_new_version = new_value.version();
 
@@ -573,6 +560,7 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
+    use restate_types::config::NetworkingOptions;
     use test_log::test;
 
     use restate_test_util::assert_eq;
@@ -581,7 +569,6 @@ mod tests {
     use restate_types::{GenerationalNodeId, Version};
 
     use crate::metadata::spawn_metadata_manager;
-    use crate::test_env::MockNetworkSender;
     use crate::TaskCenterBuilder;
 
     #[test]
@@ -618,11 +605,12 @@ mod tests {
         let tc = TaskCenterBuilder::default().build()?;
         tc.block_on("test", None, async move {
             let metadata_builder = MetadataBuilder::default();
-            let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
+            let networking =
+                Networking::new(metadata_builder.to_metadata(), NetworkingOptions::default());
             let metadata_store_client = MetadataStoreClient::new_in_memory();
             let metadata = metadata_builder.to_metadata();
             let metadata_manager =
-                MetadataManager::new(metadata_builder, network_sender, metadata_store_client);
+                MetadataManager::new(metadata_builder, networking, metadata_store_client);
             let metadata_writer = metadata_manager.writer();
 
             assert_eq!(Version::INVALID, config_version(&metadata));
@@ -691,12 +679,13 @@ mod tests {
         let tc = TaskCenterBuilder::default().build()?;
         tc.block_on("test", None, async move {
             let metadata_builder = MetadataBuilder::default();
-            let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
+            let networking =
+                Networking::new(metadata_builder.to_metadata(), NetworkingOptions::default());
             let metadata_store_client = MetadataStoreClient::new_in_memory();
 
             let metadata = metadata_builder.to_metadata();
             let metadata_manager =
-                MetadataManager::new(metadata_builder, network_sender, metadata_store_client);
+                MetadataManager::new(metadata_builder, networking, metadata_store_client);
             let metadata_writer = metadata_manager.writer();
 
             assert_eq!(Version::INVALID, config_version(&metadata));

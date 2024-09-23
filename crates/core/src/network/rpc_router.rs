@@ -14,6 +14,7 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use restate_types::NodeId;
 use tokio::sync::oneshot;
 use tracing::{error, warn};
 
@@ -21,7 +22,8 @@ use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
 use restate_types::net::RpcRequest;
 
 use super::{
-    Incoming, MessageHandler, MessageRouterBuilder, NetworkSendError, NetworkSender, Outgoing,
+    HasConnection, Incoming, MessageHandler, MessageRouterBuilder, NetworkSendError, NetworkSender,
+    Outgoing,
 };
 use crate::{cancellation_watcher, ShutdownError};
 
@@ -32,11 +34,10 @@ use crate::{cancellation_watcher, ShutdownError};
 ///
 /// This type is designed to be used by senders of RpcRequest(s).
 #[derive(Clone)]
-pub struct RpcRouter<T, N>
+pub struct RpcRouter<T>
 where
     T: RpcRequest,
 {
-    networking: N,
     response_tracker: ResponseTracker<T::ResponseMessage>,
 }
 
@@ -47,34 +48,52 @@ pub enum RpcError<T> {
     Shutdown(#[from] ShutdownError),
 }
 
-impl<T, N> RpcRouter<T, N>
+impl<T> RpcRouter<T>
 where
     T: RpcRequest + WireEncode + Send + Sync + 'static,
     T::ResponseMessage: WireDecode + Send + Sync + 'static,
-    N: NetworkSender,
 {
-    pub fn new(networking: N, router_builder: &mut MessageRouterBuilder) -> Self {
+    pub fn new(router_builder: &mut MessageRouterBuilder) -> Self {
         let response_tracker = ResponseTracker::<T::ResponseMessage>::default();
         router_builder.add_message_handler(response_tracker.clone());
-        Self {
-            networking,
-            response_tracker,
-        }
+        Self { response_tracker }
     }
 
     pub async fn call(
         &self,
-        msg: Outgoing<T>,
+        network_sender: &impl NetworkSender,
+        peer: impl Into<NodeId>,
+        msg: T,
     ) -> Result<Incoming<T::ResponseMessage>, RpcError<T>> {
+        let outgoing = Outgoing::new(peer, msg);
         let token = self
             .response_tracker
-            .new_token(msg.msg_id())
-            .expect("msg-id is unique");
+            .register(&outgoing)
+            .expect("msg-id is registered once");
 
-        self.networking
-            .send(msg)
+        network_sender.send(outgoing).await.map_err(|e| {
+            RpcError::SendError(NetworkSendError::new(
+                Outgoing::into_body(e.original),
+                e.source,
+            ))
+        })?;
+        token
+            .recv()
             .await
-            .map_err(RpcError::SendError)?;
+            .map_err(|_| RpcError::Shutdown(ShutdownError))
+    }
+
+    /// Use this method when you have a connection associated with the outgoing request
+    pub async fn call_on_connection(
+        &self,
+        outgoing: Outgoing<T, HasConnection>,
+    ) -> Result<Incoming<T::ResponseMessage>, RpcError<Outgoing<T, HasConnection>>> {
+        let token = self
+            .response_tracker
+            .register(&outgoing)
+            .expect("msg-id is registered once");
+
+        outgoing.send().await.map_err(RpcError::SendError)?;
         token
             .recv()
             .await
@@ -92,7 +111,7 @@ pub struct ResponseTracker<T>
 where
     T: Targeted,
 {
-    inner: Arc<Inner<T>>,
+    in_flight: Arc<DashMap<u64, RpcTokenSender<T>>>,
 }
 
 impl<T> Clone for ResponseTracker<T>
@@ -101,16 +120,9 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            in_flight: Arc::clone(&self.in_flight),
         }
     }
-}
-
-struct Inner<T>
-where
-    T: Targeted,
-{
-    in_flight: DashMap<u64, RpcTokenSender<T>>,
 }
 
 impl<T> Default for ResponseTracker<T>
@@ -119,9 +131,7 @@ where
 {
     fn default() -> Self {
         Self {
-            inner: Arc::new(Inner {
-                in_flight: Default::default(),
-            }),
+            in_flight: Default::default(),
         }
     }
 }
@@ -131,16 +141,40 @@ where
     T: Targeted,
 {
     pub fn num_in_flight(&self) -> usize {
-        self.inner.in_flight.len()
+        self.in_flight.len()
     }
 
     /// Returns None if an in-flight request holds the same msg_id.
-    pub fn new_token(&self, msg_id: u64) -> Option<RpcToken<T>> {
-        match self.inner.in_flight.entry(msg_id) {
-            Entry::Occupied(_) => {
+    pub fn register<M, S>(&self, outgoing: &Outgoing<M, S>) -> Option<RpcToken<T>> {
+        self.register_raw(outgoing.msg_id())
+    }
+
+    /// Handle a message through this response tracker. Returns None on success or Some(incoming)
+    /// if the message doesn't correspond to an in-flight request.
+    pub fn handle_message(&self, msg: Incoming<T>) -> Option<Incoming<T>> {
+        let Some(original_msg_id) = msg.in_response_to() else {
+            warn!(
+                message_target = msg.body().kind(),
+                "received a message with a `in_response_to` field unset! The message will be dropped",
+            );
+            return None;
+        };
+        // find the token and send, message is dropped on the floor if no valid match exist for the
+        // msg id.
+        if let Some((_, token)) = self.in_flight.remove(&original_msg_id) {
+            let _ = token.sender.send(msg);
+            None
+        } else {
+            Some(msg)
+        }
+    }
+
+    fn register_raw(&self, msg_id: u64) -> Option<RpcToken<T>> {
+        match self.in_flight.entry(msg_id) {
+            Entry::Occupied(entry) => {
                 error!(
                     "msg_id {:?} was already in-flight when this rpc was issued, this is an indicator that the msg_id is not unique across RPC calls",
-                    msg_id
+                    entry.key()
                 );
                 None
             }
@@ -150,29 +184,10 @@ where
 
                 Some(RpcToken {
                     msg_id,
-                    router: Arc::downgrade(&self.inner),
+                    router: Arc::downgrade(&self.in_flight),
                     receiver: Some(receiver),
                 })
             }
-        }
-    }
-
-    /// Handle a message through this response tracker.
-    pub fn handle_message(&self, msg: Incoming<T>) -> Option<Incoming<T>> {
-        let Some(original_msg_id) = msg.in_response_to() else {
-            warn!(
-                message_target = msg.kind(),
-                "received a message with a `in_response_to` field unset! The message will be dropped",
-            );
-            return None;
-        };
-        // find the token and send, message is dropped on the floor if no valid match exist for the
-        // msg id.
-        if let Some((_, token)) = self.inner.in_flight.remove(&original_msg_id) {
-            let _ = token.sender.send(msg);
-            None
-        } else {
-            Some(msg)
         }
     }
 }
@@ -198,8 +213,12 @@ where
     }
 
     /// Returns None if an in-flight request holds the same msg_id.
-    pub fn new_token(&self, msg_id: u64) -> Option<RpcToken<T>> {
-        self.flight_tracker.new_token(msg_id)
+    pub fn register<M, S>(&self, outgoing: &Outgoing<M, S>) -> Option<RpcToken<T>> {
+        self.flight_tracker.register(outgoing)
+    }
+
+    pub fn register_raw(&self, msg_id: u64) -> Option<RpcToken<T>> {
+        self.flight_tracker.register_raw(msg_id)
     }
 
     /// Handles the next message. This will **return** the message if no correlated request is
@@ -224,7 +243,7 @@ where
     T: Targeted,
 {
     msg_id: u64,
-    router: Weak<Inner<T>>,
+    router: Weak<DashMap<u64, RpcTokenSender<T>>>,
     // This is Option to get around Rust's borrow checker rules when a type implements the Drop
     // trait. Without this, we cannot move receiver out.
     receiver: Option<oneshot::Receiver<Incoming<T>>>,
@@ -271,7 +290,7 @@ where
         let Some(router) = self.router.upgrade() else {
             return;
         };
-        let _ = router.in_flight.remove(&self.msg_id);
+        let _ = router.remove(&self.msg_id);
     }
 }
 
@@ -292,6 +311,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use crate::network::WeakConnection;
+
     use super::*;
     use futures::future::join_all;
     use restate_types::net::{CodecError, TargetName};
@@ -326,12 +347,12 @@ mod test {
     async fn test_rpc_flight_tracker_drop() {
         let tracker = ResponseTracker::<TestResponse>::default();
         assert_eq!(tracker.num_in_flight(), 0);
-        let token = tracker.new_token(1).unwrap();
+        let token = tracker.register_raw(1).unwrap();
         assert_eq!(tracker.num_in_flight(), 1);
         drop(token);
         assert_eq!(tracker.num_in_flight(), 0);
 
-        let token = tracker.new_token(1).unwrap();
+        let token = tracker.register_raw(1).unwrap();
         assert_eq!(tracker.num_in_flight(), 1);
         // receive with timeout, this should drop the token
         let start = tokio::time::Instant::now();
@@ -346,17 +367,16 @@ mod test {
     async fn test_rpc_flight_tracker_send_recv() {
         let tracker = ResponseTracker::<TestResponse>::default();
         assert_eq!(tracker.num_in_flight(), 0);
-        let token = tracker.new_token(1).unwrap();
+        let token = tracker.register_raw(1).unwrap();
         assert_eq!(tracker.num_in_flight(), 1);
 
         // dropped on the floor
         tracker
             .on_message(Incoming::from_parts(
-                GenerationalNodeId::new(1, 1),
                 TestResponse {
                     text: "test".to_string(),
                 },
-                Weak::new(),
+                WeakConnection::new_closed(GenerationalNodeId::new(1, 1)),
                 1,
                 Some(42),
             ))
@@ -365,11 +385,10 @@ mod test {
         assert_eq!(tracker.num_in_flight(), 1);
 
         let maybe_msg = tracker.handle_message(Incoming::from_parts(
-            GenerationalNodeId::new(1, 1),
             TestResponse {
                 text: "test".to_string(),
             },
-            Weak::new(),
+            WeakConnection::new_closed(GenerationalNodeId::new(1, 1)),
             1,
             Some(42),
         ));
@@ -380,11 +399,10 @@ mod test {
         // matches msg id
         tracker
             .on_message(Incoming::from_parts(
-                GenerationalNodeId::new(1, 1),
                 TestResponse {
                     text: "a very real message".to_string(),
                 },
-                Weak::new(),
+                WeakConnection::new_closed(GenerationalNodeId::new(1, 1)),
                 1,
                 Some(1),
             ))
@@ -395,8 +413,8 @@ mod test {
 
         let msg = token.recv().await.unwrap();
         assert_eq!(Some(1), msg.in_response_to());
-        let (from, msg) = msg.split();
-        assert_eq!(GenerationalNodeId::new(1, 1), from);
+        let (reciprocal, msg) = msg.split();
+        assert_eq!(GenerationalNodeId::new(1, 1), *reciprocal.peer());
         assert_eq!("a very real message", msg.text);
     }
 
@@ -406,7 +424,11 @@ mod test {
         let response_tracker = ResponseTracker::default();
 
         let rpc_tokens: Vec<RpcToken<TestResponse>> = (0..num_responses)
-            .map(|idx| response_tracker.new_token(idx).expect("first time created"))
+            .map(|idx| {
+                response_tracker
+                    .register_raw(idx)
+                    .expect("first time created")
+            })
             .collect();
 
         let barrier = Arc::new(Barrier::new((2 * num_responses) as usize));
@@ -418,11 +440,10 @@ mod test {
             tokio::spawn(async move {
                 barrier_handle_message.wait().await;
                 response_tracker_handle_message.handle_message(Incoming::from_parts(
-                    GenerationalNodeId::new(0, 0),
                     TestResponse {
                         text: format!("{}", idx),
                     },
-                    Weak::new(),
+                    WeakConnection::new_closed(GenerationalNodeId::new(0, 0)),
                     1,
                     Some(idx),
                 ));
@@ -433,7 +454,7 @@ mod test {
 
             tokio::spawn(async move {
                 barrier_new_token.wait().await;
-                response_tracker_new_token.new_token(idx);
+                response_tracker_new_token.register_raw(idx);
             });
         }
 
@@ -447,7 +468,7 @@ mod test {
 
         for result in results {
             assert_eq!(
-                Some(result.text.parse::<u64>().expect("valid u64")),
+                Some(result.body().text.parse::<u64>().expect("valid u64")),
                 result.in_response_to()
             );
         }

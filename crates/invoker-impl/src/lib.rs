@@ -1145,7 +1145,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn input_order_is_maintained() {
-        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
         let tc = node_env.tc;
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure

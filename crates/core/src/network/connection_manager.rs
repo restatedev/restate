@@ -8,56 +8,49 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{hash_map, HashMap};
-use std::sync::{Arc, Mutex, Weak};
+use std::collections::HashMap;
+use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use enum_map::EnumMap;
-use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
+use parking_lot::Mutex;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Channel;
 use tracing::{debug, info, trace, warn, Instrument, Span};
 
 use restate_types::config::NetworkingOptions;
 use restate_types::net::codec::MessageBodyExt;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::node::message::{self, ConnectionControl};
 use restate_types::protobuf::node::{Header, Hello, Message, Welcome};
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version};
 
-use super::connection::{Connection, ConnectionSender};
+use super::connection::{OwnedConnection, WeakConnection};
 use super::error::{NetworkError, ProtocolError};
-use super::handshake::{negotiate_protocol_version, wait_for_hello, wait_for_welcome};
+use super::handshake::wait_for_welcome;
 use super::metric_definitions::{
     self, CONNECTION_DROPPED, INCOMING_CONNECTION, MESSAGE_PROCESSING_DURATION, MESSAGE_RECEIVED,
     ONGOING_DRAIN, OUTGOING_CONNECTION,
 };
-use super::protobuf::node_svc::node_svc_client::NodeSvcClient;
+use super::transport_connector::TransportConnect;
 use super::{Handler, MessageRouter};
 use crate::metadata::Urgency;
-use crate::network::net_util::create_tonic_channel_from_advertised_address;
+use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
 use crate::network::Incoming;
 use crate::Metadata;
 use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
 
-// todo: make this configurable
-const SEND_QUEUE_SIZE: usize = 1000;
-static_assertions::const_assert!(SEND_QUEUE_SIZE >= 1);
-
 struct ConnectionManagerInner {
     router: MessageRouter,
-    connections: HashMap<TaskId, Weak<Connection>>,
-    connection_by_gen_id: HashMap<GenerationalNodeId, Vec<Weak<Connection>>>,
+    connections: HashMap<TaskId, Weak<OwnedConnection>>,
+    connection_by_gen_id: HashMap<GenerationalNodeId, Vec<Weak<OwnedConnection>>>,
     /// This tracks the max generation we observed from connection attempts regardless of our nodes
     /// configuration. We cannot accept connections from nodes older than ones we have observed
     /// already.
     observed_generations: HashMap<PlainNodeId, u32>,
-    channel_cache: HashMap<AdvertisedAddress, Channel>,
 }
 
 impl ConnectionManagerInner {
@@ -67,11 +60,14 @@ impl ConnectionManagerInner {
 
     fn cleanup_stale_connections(&mut self, peer_node_id: &GenerationalNodeId) {
         if let Some(connections) = self.connection_by_gen_id.get_mut(peer_node_id) {
-            connections.retain(|c| c.upgrade().is_some());
+            connections.retain(|c| c.upgrade().is_some_and(|c| !c.is_closed()));
         }
     }
 
-    fn get_random_connection(&self, peer_node_id: &GenerationalNodeId) -> Option<Arc<Connection>> {
+    fn get_random_connection(
+        &self,
+        peer_node_id: &GenerationalNodeId,
+    ) -> Option<Arc<OwnedConnection>> {
         self.connection_by_gen_id
             .get(peer_node_id)
             .and_then(|connections| connections.choose(&mut rand::thread_rng())?.upgrade())
@@ -86,41 +82,71 @@ impl Default for ConnectionManagerInner {
             connections: HashMap::default(),
             connection_by_gen_id: HashMap::default(),
             observed_generations: HashMap::default(),
-            channel_cache: HashMap::default(),
         }
     }
 }
 
-#[derive(Clone)]
-pub struct ConnectionManager {
+pub struct ConnectionManager<T> {
     inner: Arc<Mutex<ConnectionManagerInner>>,
+    networking_options: NetworkingOptions,
+    transport_connector: Arc<T>,
     metadata: Metadata,
-    options: NetworkingOptions,
 }
 
-impl ConnectionManager {
-    /// Creates the connection manager.
-    pub(super) fn new(metadata: Metadata, options: NetworkingOptions) -> Self {
+impl<T> Clone for ConnectionManager<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            networking_options: self.networking_options.clone(),
+            transport_connector: self.transport_connector.clone(),
+            metadata: self.metadata.clone(),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+/// used for testing. Accepts connections but can't establish new connections
+impl ConnectionManager<super::FailingConnector> {
+    pub fn new_incoming_only(metadata: Metadata) -> Self {
         let inner = Arc::new(Mutex::new(ConnectionManagerInner::default()));
 
         Self {
             metadata,
             inner,
-            options,
+            transport_connector: Arc::new(super::FailingConnector::default()),
+            networking_options: NetworkingOptions::default(),
+        }
+    }
+}
+
+impl<T: TransportConnect> ConnectionManager<T> {
+    /// Creates the connection manager.
+    pub fn new(
+        metadata: Metadata,
+        transport_connector: Arc<T>,
+        networking_options: NetworkingOptions,
+    ) -> Self {
+        let inner = Arc::new(Mutex::new(ConnectionManagerInner::default()));
+
+        Self {
+            metadata,
+            inner,
+            transport_connector,
+            networking_options,
         }
     }
     /// Updates the message router. Note that this only impacts new connections.
     /// In general, this should be called once on application start after
     /// initializing all message handlers.
     pub fn set_message_router(&self, router: MessageRouter) {
-        self.inner.lock().unwrap().router = router;
+        self.inner.lock().router = router;
     }
 
     /// Accept a new incoming connection stream and register a network reactor task for it.
     pub async fn accept_incoming_connection<S>(
         &self,
         mut incoming: S,
-    ) -> Result<BoxStream<'static, Result<Message, tonic::Status>>, NetworkError>
+    ) -> Result<impl Stream<Item = Message> + Unpin + Send + 'static, NetworkError>
     where
         S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
     {
@@ -146,8 +172,11 @@ impl ConnectionManager {
         // window) to avoid dangling resources by misbehaving peers or under sever load conditions.
         // The client can retry with an exponential backoff on handshake timeout.
         debug!("Accepting incoming connection");
-        let (header, hello) =
-            wait_for_hello(&mut incoming, self.options.handshake_timeout.into()).await?;
+        let (header, hello) = wait_for_hello(
+            &mut incoming,
+            self.networking_options.handshake_timeout.into(),
+        )
+        .await?;
         let nodes_config = self.metadata.nodes_config_ref();
         let my_node_id = self.metadata.my_node_id();
         // NodeId **must** be generational at this layer
@@ -187,7 +216,9 @@ impl ConnectionManager {
 
         self.verify_node_id(peer_node_id, header, &nodes_config)?;
 
-        let (tx, rx) = mpsc::channel(SEND_QUEUE_SIZE);
+        let (tx, output_stream) =
+            mpsc::channel(self.networking_options.outbound_queue_length.into());
+        let output_stream = ReceiverStream::new(output_stream);
         // Enqueue the welcome message
         let welcome = Welcome::new(my_node_id, selected_protocol_version);
 
@@ -205,17 +236,135 @@ impl ConnectionManager {
 
         tx.try_send(welcome)
             .expect("channel accept Welcome message");
+        let connection = OwnedConnection::new(peer_node_id, selected_protocol_version, tx);
 
         INCOMING_CONNECTION.increment(1);
-        let connection = Connection::new(peer_node_id, selected_protocol_version, tx);
         // Register the connection.
         let _ = self.start_connection_reactor(connection, incoming)?;
-        // For uniformity with outbound connections, we map all responses to Ok, we never rely on
-        // sending tonic::Status errors explicitly. We use ConnectionControl frames to communicate
-        // errors and/or drop the stream when necessary.
-        let transformed = ReceiverStream::new(rx).map(Ok);
 
-        Ok(Box::pin(transformed))
+        // Our output stream, i.e. responses.
+        Ok(output_stream)
+    }
+
+    /// Always attempts to create a new connection with peer
+    pub async fn enforce_new_connection(
+        &self,
+        node_id: GenerationalNodeId,
+    ) -> Result<WeakConnection, NetworkError> {
+        let connection = self.connect(node_id).await?;
+        Ok(connection.downgrade())
+    }
+
+    /// Gets an existing connection or creates a new one if no active connection exists. If
+    /// multiple connections already exist, it returns a random one.
+    pub async fn get_or_connect(
+        &self,
+        node_id: GenerationalNodeId,
+    ) -> Result<Arc<OwnedConnection>, NetworkError> {
+        // find a connection by node_id
+        let maybe_connection: Option<Arc<OwnedConnection>> = {
+            let guard = self.inner.lock();
+            guard.get_random_connection(&node_id)
+            // lock is dropped.
+        };
+
+        if let Some(connection) = maybe_connection {
+            return Ok(connection);
+        }
+        // We have no connection. We attempt to create a new connection.
+        self.connect(node_id).await
+    }
+
+    async fn connect(
+        &self,
+        node_id: GenerationalNodeId,
+    ) -> Result<Arc<OwnedConnection>, NetworkError> {
+        if node_id == self.metadata.my_node_id() {
+            return self.connect_loopback();
+        }
+
+        let my_node_id = self.metadata.my_node_id();
+        let nodes_config = self.metadata.nodes_config_snapshot();
+        let cluster_name = nodes_config.cluster_name().to_owned();
+
+        let (tx, output_stream) =
+            mpsc::channel(self.networking_options.outbound_queue_length.into());
+        let output_stream = ReceiverStream::new(output_stream);
+        let hello = Hello::new(my_node_id, cluster_name);
+
+        // perform handshake.
+        let hello = Message::new(
+            Header::new(
+                self.metadata.nodes_config_version(),
+                None,
+                None,
+                None,
+                super::generate_msg_id(),
+                None,
+            ),
+            hello,
+        );
+
+        // Prime the channel with the hello message before connecting.
+        tx.send(hello).await.expect("Channel accept hello message");
+
+        // Establish the connection
+        let mut incoming = self
+            .transport_connector
+            .connect(node_id, &nodes_config, output_stream)
+            .await?;
+        // finish the handshake
+        let (_header, welcome) = wait_for_welcome(
+            &mut incoming,
+            self.networking_options.handshake_timeout.into(),
+        )
+        .await?;
+        let protocol_version = welcome.protocol_version();
+
+        if !protocol_version.is_supported() {
+            return Err(ProtocolError::UnsupportedVersion(protocol_version.into()).into());
+        }
+
+        // sanity checks
+        let peer_node_id: NodeId = welcome
+            .my_node_id
+            .ok_or(ProtocolError::HandshakeFailed(
+                "Peer must set my_node_id in Welcome message",
+            ))?
+            .into();
+
+        // we expect the node to identify itself as the same NodeId
+        // we think we are connecting to
+        if peer_node_id != node_id {
+            // Node claims that it's someone else!
+            return Err(ProtocolError::HandshakeFailed(
+                "Node returned an unexpected NodeId in Welcome message.",
+            )
+            .into());
+        }
+
+        let connection = OwnedConnection::new(
+            peer_node_id
+                .as_generational()
+                .expect("must be generational id"),
+            protocol_version,
+            tx,
+        );
+
+        OUTGOING_CONNECTION.increment(1);
+        self.start_connection_reactor(connection, incoming)
+    }
+
+    fn connect_loopback(&self) -> Result<Arc<OwnedConnection>, NetworkError> {
+        let (tx, rx) = mpsc::channel(self.networking_options.outbound_queue_length.into());
+        let connection = OwnedConnection::new(
+            self.metadata.my_node_id(),
+            restate_types::net::CURRENT_PROTOCOL_VERSION,
+            tx,
+        );
+
+        let incoming = ReceiverStream::new(rx).map(Ok);
+        self.start_connection_reactor(connection, incoming)
     }
 
     fn verify_node_id(
@@ -252,158 +401,11 @@ impl ConnectionManager {
         Ok(())
     }
 
-    /// Always attempts to create a new connection with peer
-    pub async fn enforced_new_node_sender(
-        &self,
-        node_id: GenerationalNodeId,
-    ) -> Result<ConnectionSender, NetworkError> {
-        let connection = self.connect(node_id).await?;
-        Ok(connection.sender(&self.metadata))
-    }
-
-    /// Gets an existing connection or creates a new one if no active connection exists. If
-    /// multiple connections already exist, it returns a random one.
-    pub async fn get_node_sender(
-        &self,
-        node_id: GenerationalNodeId,
-    ) -> Result<ConnectionSender, NetworkError> {
-        // find a connection by node_id
-        let maybe_connection: Option<Arc<Connection>> = {
-            let guard = self.inner.lock().unwrap();
-            guard.get_random_connection(&node_id)
-            // lock is dropped.
-        };
-
-        if let Some(connection) = maybe_connection {
-            return Ok(connection.sender(&self.metadata));
-        }
-        // We have no connection, or the connection we picked is stale. We attempt to create a
-        // new connection anyway.
-        let connection = self.connect(node_id).await?;
-        Ok(connection.sender(&self.metadata))
-    }
-
-    async fn connect(&self, node_id: GenerationalNodeId) -> Result<Arc<Connection>, NetworkError> {
-        let address = self
-            .metadata
-            .nodes_config_ref()
-            .find_node_by_id(node_id)?
-            .address
-            .clone();
-
-        trace!("Attempting to connect to node {} at {}", node_id, address);
-        // Do we have a channel in cache for this address?
-        let channel = {
-            let mut guard = self.inner.lock().unwrap();
-            if let hash_map::Entry::Vacant(entry) = guard.channel_cache.entry(address.clone()) {
-                let channel = create_tonic_channel_from_advertised_address(address)
-                    .map_err(|e| NetworkError::BadNodeAddress(node_id.into(), e))?;
-                entry.insert(channel.clone());
-                channel
-            } else {
-                guard.channel_cache.get(&address).unwrap().clone()
-            }
-        };
-
-        self.connect_with_channel(node_id, channel).await
-    }
-
-    // Left here for future use. This allows the node to connect to itself and bypass the
-    // networking stack.
-    #[cfg(test)]
-    fn _connect_loopback(
-        &self,
-        node_id: GenerationalNodeId,
-    ) -> Result<Arc<Connection>, NetworkError> {
-        let (tx, rx) = mpsc::channel(SEND_QUEUE_SIZE);
-        let connection = Connection::new(node_id, restate_types::net::CURRENT_PROTOCOL_VERSION, tx);
-
-        let transformed = ReceiverStream::new(rx).map(Ok);
-        let incoming = Box::pin(transformed);
-        OUTGOING_CONNECTION.increment(1);
-        INCOMING_CONNECTION.increment(1);
-        self.start_connection_reactor(connection, incoming)
-    }
-
-    async fn connect_with_channel(
-        &self,
-        node_id: GenerationalNodeId,
-        channel: Channel,
-    ) -> Result<Arc<Connection>, NetworkError> {
-        let mut client = NodeSvcClient::new(channel);
-        let cluster_name = self.metadata.nodes_config_ref().cluster_name().to_owned();
-        let my_node_id = self.metadata.my_node_id();
-
-        let (tx, rx) = mpsc::channel(SEND_QUEUE_SIZE);
-        let hello = Hello::new(my_node_id, cluster_name);
-
-        // perform handshake.
-        let hello = Message::new(
-            Header::new(
-                self.metadata.nodes_config_version(),
-                None,
-                None,
-                None,
-                super::generate_msg_id(),
-                None,
-            ),
-            hello,
-        );
-
-        // Prime the channel with the hello message before connecting.
-        tx.send(hello).await.expect("Channel accept hello message");
-
-        // Establish the connection
-        let incoming = client
-            .create_connection(ReceiverStream::new(rx))
-            .await?
-            .into_inner();
-
-        let mut transformed = incoming.map(|x| x.map_err(ProtocolError::from));
-        // finish the handshake
-        let (_header, welcome) =
-            wait_for_welcome(&mut transformed, self.options.handshake_timeout.into()).await?;
-        let protocol_version = welcome.protocol_version();
-
-        if !protocol_version.is_supported() {
-            return Err(ProtocolError::UnsupportedVersion(protocol_version.into()).into());
-        }
-
-        // sanity checks
-        let peer_node_id: NodeId = welcome
-            .my_node_id
-            .ok_or(ProtocolError::HandshakeFailed(
-                "Peer must set my_node_id in Welcome message",
-            ))?
-            .into();
-
-        // we expect the node to identify itself as the same NodeId
-        // we think we are connecting to
-        if peer_node_id != node_id {
-            // Node claims that it's someone else!
-            return Err(ProtocolError::HandshakeFailed(
-                "Node returned an unexpected NodeId in Welcome message.",
-            )
-            .into());
-        }
-
-        OUTGOING_CONNECTION.increment(1);
-        let connection = Connection::new(
-            peer_node_id
-                .as_generational()
-                .expect("must be generational id"),
-            protocol_version,
-            tx,
-        );
-
-        self.start_connection_reactor(connection, transformed)
-    }
-
     fn start_connection_reactor<S>(
         &self,
-        connection: Connection,
+        connection: OwnedConnection,
         incoming: S,
-    ) -> Result<Arc<Connection>, NetworkError>
+    ) -> Result<Arc<OwnedConnection>, NetworkError>
     where
         S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
     {
@@ -412,7 +414,7 @@ impl ConnectionManager {
         // If we have a connection with an older generation, we request to drop it.
         // However, more than one connection with the same generation is allowed.
         let mut _cleanup = false;
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         let known_generation = guard
             .observed_generations
             .get(&connection.peer.as_plain())
@@ -461,10 +463,13 @@ impl ConnectionManager {
             )
             .instrument(span),
         )?;
-        debug!(
-            peer_node_id = %peer_node_id,
-            task_id = %task_id,
-            "Incoming connection accepted from node {}", peer_node_id);
+        if peer_node_id != self.metadata.my_node_id() {
+            debug!(
+                peer_node_id = %peer_node_id,
+                task_id = %task_id,
+                "Incoming connection accepted from node {}", peer_node_id
+            );
+        }
         // Reactor has already started by now.
 
         guard.connections.insert(task_id, connection_weak.clone());
@@ -482,7 +487,7 @@ impl ConnectionManager {
 
 async fn run_reactor<S>(
     connection_manager: Arc<Mutex<ConnectionManagerInner>>,
-    connection: Arc<Connection>,
+    connection: Arc<OwnedConnection>,
     router: MessageRouter,
     mut incoming: S,
     metadata: Metadata,
@@ -583,9 +588,8 @@ where
                 if let Err(e) = router
                     .call(
                         Incoming::from_parts(
-                            connection.peer,
                             msg,
-                            Arc::downgrade(&connection),
+                            connection.downgrade(),
                             header.msg_id,
                             header.in_response_to,
                         ),
@@ -632,10 +636,9 @@ where
                 if let Err(e) = router
                     .call(
                         Incoming::from_parts(
-                            peer_node_id,
                             msg,
                             // This is a dying connection, don't pass it down.
-                            Weak::new(),
+                            WeakConnection::new_closed(peer_node_id),
                             header.msg_id,
                             header.in_response_to,
                         ),
@@ -666,8 +669,11 @@ where
     Ok(())
 }
 
-fn on_connection_draining(connection: &Connection, inner_manager: &Mutex<ConnectionManagerInner>) {
-    let mut guard = inner_manager.lock().unwrap();
+fn on_connection_draining(
+    connection: &OwnedConnection,
+    inner_manager: &Mutex<ConnectionManagerInner>,
+) {
+    let mut guard = inner_manager.lock();
     if let Some(connections) = guard.connection_by_gen_id.get_mut(&connection.peer) {
         // Remove this connection from connections map to reduce the chance
         // of picking it up as connection.
@@ -681,7 +687,7 @@ fn on_connection_draining(connection: &Connection, inner_manager: &Mutex<Connect
 
 fn on_connection_terminated(inner_manager: &Mutex<ConnectionManagerInner>) {
     let task_id = current_task_id().expect("TaskId is set");
-    let mut guard = inner_manager.lock().unwrap();
+    let mut guard = inner_manager.lock();
     guard.drop_connection(task_id);
 }
 
@@ -737,34 +743,47 @@ impl MetadataVersions {
 mod tests {
     use super::*;
 
-    use crate::{MetadataBuilder, MockNetworkSender, TestCoreEnv, TestCoreEnvBuilder};
     use googletest::prelude::*;
+    use test_log::test;
+    use tokio::sync::mpsc;
+
     use restate_test_util::{assert_eq, let_assert};
-    use restate_types::net::codec::{serialize_message, Targeted, WireDecode, WireEncode};
+    use restate_types::net::codec::WireDecode;
     use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage};
     use restate_types::net::partition_processor_manager::GetProcessorsState;
     use restate_types::net::{
-        ProtocolVersion, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
+        AdvertisedAddress, ProtocolVersion, CURRENT_PROTOCOL_VERSION,
+        MIN_SUPPORTED_PROTOCOL_VERSION,
     };
-    use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfigError, Role};
-    use restate_types::protobuf::node::message;
+    use restate_types::nodes_config::{
+        LogServerConfig, NodeConfig, NodesConfigError, NodesConfiguration, Role,
+    };
     use restate_types::protobuf::node::message::Body;
+    use restate_types::protobuf::node::{Header, Hello};
     use restate_types::Version;
-    use test_log::test;
-    use tonic::Status;
+
+    use crate::network::MockPeerConnection;
+    use crate::{TestCoreEnv, TestCoreEnvBuilder};
 
     // Test handshake with a client
     #[tokio::test]
     async fn test_hello_welcome_handshake() -> Result<()> {
-        let test_setup = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let test_setup = TestCoreEnv::create_with_single_node(1, 1).await;
         test_setup
             .tc
             .run_in_scope("test", None, async {
                 let metadata = crate::metadata();
-                let connections =
-                    ConnectionManager::new(metadata.clone(), NetworkingOptions::default());
+                let connections = ConnectionManager::new_incoming_only(metadata.clone());
 
-                let _ = establish_connection(metadata.my_node_id(), &metadata, &connections).await;
+                let _mock_connection = MockPeerConnection::connect(
+                    GenerationalNodeId::new(1, 1),
+                    metadata.nodes_config_version(),
+                    metadata.nodes_config_ref().cluster_name().to_owned(),
+                    &connections,
+                    10,
+                )
+                .await
+                .unwrap();
 
                 Ok(())
             })
@@ -773,13 +792,14 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_hello_welcome_timeout() -> Result<()> {
-        let test_setup = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let test_setup = TestCoreEnv::create_with_single_node(1, 1).await;
         let metadata = test_setup.metadata;
+        let net_opts = NetworkingOptions::default();
         test_setup
             .tc
             .run_in_scope("test", None, async {
                 let (_tx, rx) = mpsc::channel(1);
-                let connections = ConnectionManager::new(metadata, NetworkingOptions::default());
+                let connections = ConnectionManager::new_incoming_only(metadata);
 
                 let start = tokio::time::Instant::now();
                 let incoming = ReceiverStream::new(rx);
@@ -791,7 +811,7 @@ mod tests {
                         ProtocolError::HandshakeTimeout(_)
                     ))
                 ));
-                assert!(start.elapsed() >= connections.options.handshake_timeout.into());
+                assert!(start.elapsed() >= net_opts.handshake_timeout.into());
                 Ok(())
             })
             .await
@@ -799,7 +819,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bad_handshake() -> Result<()> {
-        let test_setup = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let test_setup = TestCoreEnv::create_with_single_node(1, 1).await;
         let metadata = test_setup.metadata;
         test_setup
             .tc
@@ -829,8 +849,7 @@ mod tests {
                     .await
                     .expect("Channel accept hello message");
 
-                let connections =
-                    ConnectionManager::new(metadata.clone(), NetworkingOptions::default());
+                let connections = ConnectionManager::new_incoming_only(metadata.clone());
                 let incoming = ReceiverStream::new(rx);
                 let resp = connections.accept_incoming_connection(incoming).await;
                 assert!(resp.is_err());
@@ -863,7 +882,7 @@ mod tests {
                 );
                 tx.send(Ok(hello)).await?;
 
-                let connections = ConnectionManager::new(metadata, NetworkingOptions::default());
+                let connections = ConnectionManager::new_incoming_only(metadata.clone());
                 let incoming = ReceiverStream::new(rx);
                 let err = connections
                     .accept_incoming_connection(incoming)
@@ -883,7 +902,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_node_generation() -> Result<()> {
-        let test_setup = TestCoreEnv::create_with_mock_nodes_config(1, 2).await;
+        let test_setup = TestCoreEnv::create_with_single_node(1, 2).await;
         let metadata = test_setup.metadata;
         test_setup
             .tc
@@ -913,8 +932,7 @@ mod tests {
                     .await
                     .expect("Channel accept hello message");
 
-                let connections =
-                    ConnectionManager::new(metadata.clone(), NetworkingOptions::default());
+                let connections = ConnectionManager::new_incoming_only(metadata.clone());
 
                 let incoming = ReceiverStream::new(rx);
                 let err = connections
@@ -953,7 +971,7 @@ mod tests {
                     .await
                     .expect("Channel accept hello message");
 
-                let connections = ConnectionManager::new(metadata, NetworkingOptions::default());
+                let connections = ConnectionManager::new_incoming_only(metadata);
 
                 let incoming = ReceiverStream::new(rx);
                 let err = connections
@@ -984,26 +1002,25 @@ mod tests {
         );
         nodes_config.upsert_node(node_config);
 
-        let (network_tx, mut network_rx) = mpsc::unbounded_channel();
-        let metadata_builder = MetadataBuilder::default();
-
-        let test_env = TestCoreEnvBuilder::new(
-            MockNetworkSender::from_sender(network_tx, metadata_builder.to_metadata()),
-            metadata_builder,
-        )
-        .with_nodes_config(nodes_config)
-        .build()
-        .await;
+        let test_env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_nodes_config(nodes_config)
+            .build()
+            .await;
 
         test_env
             .tc
             .run_in_scope("test", None, async {
                 let metadata = crate::metadata();
-                let connections =
-                    ConnectionManager::new(metadata.clone(), NetworkingOptions::default());
 
-                let (connection, _rx) =
-                    establish_connection(node_id, &metadata, &connections).await;
+                let mut connection = MockPeerConnection::connect(
+                    node_id,
+                    metadata.nodes_config_version(),
+                    metadata.nodes_config_ref().cluster_name().to_string(),
+                    test_env.networking.connection_manager(),
+                    10,
+                )
+                .await
+                .into_test_result()?;
 
                 let request = GetProcessorsState {};
                 let partition_table_version = metadata.partition_table_version().next();
@@ -1016,10 +1033,13 @@ mod tests {
                     None,
                 );
 
-                connection.send(request, header).await?;
+                connection
+                    .send_raw(request, header)
+                    .await
+                    .into_test_result()?;
 
-                let (target, message) = network_rx.recv().await.expect("some message");
-                assert_eq!(NodeId::from(target), node_id);
+                // we expect the request to go throught he existing open connection to my node
+                let message = connection.recv_stream.next().await.expect("some message");
                 assert_get_metadata_request(
                     message,
                     connection.protocol_version,
@@ -1060,85 +1080,5 @@ mod tests {
         let metadata_message =
             MetadataMessage::decode(&mut binary_message.payload, protocol_version)?;
         Ok(metadata_message)
-    }
-
-    async fn establish_connection(
-        node_id: GenerationalNodeId,
-        metadata: &Metadata,
-        connections: &ConnectionManager,
-    ) -> (
-        TestConnection,
-        BoxStream<'static, std::result::Result<Message, Status>>,
-    ) {
-        let (tx, rx) = mpsc::channel(1);
-
-        let hello = Hello::new(
-            node_id,
-            metadata.nodes_config_ref().cluster_name().to_owned(),
-        );
-        let hello = Message::new(
-            Header::new(
-                metadata.nodes_config_version(),
-                None,
-                None,
-                None,
-                crate::network::generate_msg_id(),
-                None,
-            ),
-            hello,
-        );
-        tx.send(Ok(hello))
-            .await
-            .expect("Channel accept hello message");
-
-        let incoming = ReceiverStream::new(rx);
-        let mut output_stream = connections
-            .accept_incoming_connection(incoming)
-            .await
-            .expect("handshake");
-        let msg = output_stream
-            .next()
-            .await
-            .expect("welcome message")
-            .expect("ok");
-        let welcome = match msg.body {
-            Some(message::Body::Welcome(welcome)) => welcome,
-            _ => panic!("unexpected message"),
-        };
-        assert_eq!(welcome.my_node_id, Some(metadata.my_node_id().into()));
-
-        (
-            TestConnection::new(welcome.protocol_version(), tx),
-            output_stream,
-        )
-    }
-
-    struct TestConnection {
-        protocol_version: ProtocolVersion,
-        tx: mpsc::Sender<std::result::Result<Message, ProtocolError>>,
-    }
-
-    impl TestConnection {
-        fn new(
-            protocol_version: ProtocolVersion,
-            tx: mpsc::Sender<std::result::Result<Message, ProtocolError>>,
-        ) -> Self {
-            Self {
-                protocol_version,
-                tx,
-            }
-        }
-
-        async fn send<M>(&self, message: M, header: Header) -> Result<()>
-        where
-            M: WireEncode + Targeted,
-        {
-            let body = serialize_message(&message, self.protocol_version)?;
-            let message = Message::new(header, body);
-
-            self.tx.send(Ok(message)).await?;
-
-            Ok(())
-        }
     }
 }

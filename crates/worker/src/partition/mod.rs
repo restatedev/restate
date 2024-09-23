@@ -24,7 +24,7 @@ use tracing::{debug, error, info, instrument, trace, warn, Span};
 use restate_bifrost::{Bifrost, FindTailAttributes};
 use restate_core::cancellation_watcher;
 use restate_core::metadata;
-use restate_core::network::Networking;
+use restate_core::network::{Networking, TransportConnect};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -118,12 +118,12 @@ where
         }
     }
 
-    pub async fn build<Codec: RawEntryCodec + Default + Debug>(
+    pub async fn build<Codec: RawEntryCodec + Default + Debug, T: TransportConnect>(
         self,
-        networking: Networking,
+        networking: Networking<T>,
         bifrost: Bifrost,
         mut partition_store: PartitionStore,
-    ) -> Result<PartitionProcessor<Codec, InvokerInputSender>, StorageError> {
+    ) -> Result<PartitionProcessor<Codec, InvokerInputSender, T>, StorageError> {
         let PartitionProcessorBuilder {
             partition_id,
             partition_key_range,
@@ -214,10 +214,10 @@ where
     }
 }
 
-pub struct PartitionProcessor<Codec, InvokerSender> {
+pub struct PartitionProcessor<Codec, InvokerSender, T> {
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
-    leadership_state: LeadershipState<InvokerSender, Networking>,
+    leadership_state: LeadershipState<InvokerSender, T>,
     state_machine: StateMachine<Codec>,
     bifrost: Bifrost,
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
@@ -230,10 +230,11 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
     partition_store: Option<PartitionStore>,
 }
 
-impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
+impl<Codec, InvokerSender, T> PartitionProcessor<Codec, InvokerSender, T>
 where
     Codec: RawEntryCodec + Default + Debug,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
+    T: TransportConnect,
 {
     #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<()> {

@@ -22,7 +22,7 @@ use tracing::{debug, warn};
 
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::network::{Incoming, MessageRouterBuilder, NetworkSender};
+use restate_core::network::{Incoming, MessageRouterBuilder, Networking, TransportConnect};
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
     TaskKind,
@@ -46,12 +46,12 @@ pub enum Error {
     Error,
 }
 
-pub struct Service<N> {
+pub struct Service<T> {
     task_center: TaskCenter,
     metadata: Metadata,
-    networking: N,
+    networking: Networking<T>,
     incoming_messages: Pin<Box<dyn Stream<Item = Incoming<AttachRequest>> + Send + Sync + 'static>>,
-    cluster_state_refresher: ClusterStateRefresher<N>,
+    cluster_state_refresher: ClusterStateRefresher<T>,
     command_tx: mpsc::Sender<ClusterControllerCommand>,
     command_rx: mpsc::Receiver<ClusterControllerCommand>,
 
@@ -63,15 +63,15 @@ pub struct Service<N> {
     log_trim_threshold: Lsn,
 }
 
-impl<N> Service<N>
+impl<T> Service<T>
 where
-    N: NetworkSender + 'static,
+    T: TransportConnect,
 {
     pub fn new(
         mut configuration: Live<Configuration>,
         task_center: TaskCenter,
         metadata: Metadata,
-        networking: N,
+        networking: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
         metadata_writer: MetadataWriter,
         metadata_store_client: MetadataStoreClient,
@@ -176,10 +176,7 @@ impl ClusterControllerHandle {
     }
 }
 
-impl<N> Service<N>
-where
-    N: NetworkSender + 'static,
-{
+impl<T: TransportConnect> Service<T> {
     pub fn handle(&self) -> ClusterControllerHandle {
         ClusterControllerHandle {
             tx: self.command_tx.clone(),
@@ -344,7 +341,7 @@ where
 
     async fn on_attach_request(
         &self,
-        scheduler: &mut Scheduler<N>,
+        scheduler: &mut Scheduler<T>,
         request: Incoming<AttachRequest>,
     ) -> Result<(), ShutdownError> {
         let actions = scheduler.on_attach_node(request.peer()).await?;
@@ -352,7 +349,12 @@ where
             TaskKind::Disposable,
             "attachment-response",
             None,
-            async move { Ok(request.respond_rpc(AttachResponse { actions }).await?) },
+            async move {
+                Ok(request
+                    .to_rpc_response(AttachResponse { actions })
+                    .send()
+                    .await?)
+            },
         )?;
         Ok(())
     }
@@ -406,13 +408,19 @@ async fn signal_all_partitions_started(
 #[cfg(test)]
 mod tests {
     use super::Service;
+
+    use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use googletest::assert_that;
     use googletest::matchers::eq;
+    use test_log::test;
+
     use restate_bifrost::Bifrost;
-    use restate_core::network::{Incoming, MessageHandler, NetworkSender};
-    use restate_core::{
-        MockNetworkSender, NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder,
-    };
+    use restate_core::network::{FailingConnector, Incoming, MessageHandler, MockPeerConnection};
+    use restate_core::{NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::{AdminOptions, Configuration};
     use restate_types::identifiers::PartitionId;
@@ -424,22 +432,17 @@ mod tests {
     use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
     use restate_types::{GenerationalNodeId, Version};
-    use std::collections::BTreeSet;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
-    use test_log::test;
 
     #[test(tokio::test)]
     async fn manual_log_trim() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
-        let mut builder = TestCoreEnvBuilder::new_with_mock_network();
+        let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
 
         let svc = Service::new(
             Live::from_value(Configuration::default()),
             builder.tc.clone(),
             builder.metadata.clone(),
-            builder.network_sender.clone(),
+            builder.networking.clone(),
             &mut builder.router_builder,
             builder.metadata_writer.clone(),
             builder.metadata_store_client.clone(),
@@ -482,7 +485,6 @@ mod tests {
     }
 
     struct PartitionProcessorStatusHandler {
-        network_sender: MockNetworkSender,
         persisted_lsn: Arc<AtomicU64>,
         // set of node ids for which the handler won't send a response to the caller, this allows to simulate
         // dead nodes
@@ -493,7 +495,7 @@ mod tests {
         type MessageType = GetProcessorsState;
 
         async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-            if self.block_list.contains(&msg.peer()) {
+            if self.block_list.contains(msg.peer()) {
                 return;
             }
 
@@ -503,14 +505,11 @@ mod tests {
             };
 
             let state = [(PartitionId::MIN, partition_processor_status)].into();
-            let response = msg.prepare_rpc_response(ProcessorsStateResponse { state });
+            let response = msg.to_rpc_response(ProcessorsStateResponse { state });
 
-            self.network_sender
-                // We are not really sending something back to target, we just need to provide a known
-                // node_id. The response will be sent to a handler running on the very same node.
-                .send(response)
-                .await
-                .expect("send should succeed");
+            // We are not really sending something back to target, we just need to provide a known
+            // node_id. The response will be sent to a handler running on the very same node.
+            response.send().await.expect("send should succeed");
         }
     }
 
@@ -528,22 +527,40 @@ mod tests {
         };
 
         let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let (node_env, bifrost) = create_test_env(config, |builder| {
-            let get_processor_state_handler = PartitionProcessorStatusHandler {
-                network_sender: builder.network_sender.clone(),
-                persisted_lsn: Arc::clone(&persisted_lsn),
-                block_list: BTreeSet::new(),
-            };
+        let get_processor_state_handler = Arc::new(PartitionProcessorStatusHandler {
+            persisted_lsn: Arc::clone(&persisted_lsn),
+            block_list: BTreeSet::new(),
+        });
 
+        let (node_env, bifrost) = create_test_env(config, |builder| {
             builder
-                .add_message_handler(get_processor_state_handler)
+                .add_message_handler(get_processor_state_handler.clone())
                 .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
 
         node_env
             .tc
+            .clone()
             .run_in_scope("test", None, async move {
+                // simulate a connection from node 2 so we can have a connection between the two
+                // nodes
+                let node_2 = MockPeerConnection::connect(
+                    GenerationalNodeId::new(2, 2),
+                    node_env.metadata.nodes_config_version(),
+                    node_env
+                        .metadata
+                        .nodes_config_ref()
+                        .cluster_name()
+                        .to_owned(),
+                    node_env.networking.connection_manager(),
+                    10,
+                )
+                .await?;
+                // let node2 receive messages and use the same message handler as node1
+                let (_node_2, _node2_reactor) = node_2
+                    .process_with_message_handler(&node_env.tc, get_processor_state_handler)?;
+
                 let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=20 {
                     let lsn = appender.append("").await?;
@@ -593,22 +610,39 @@ mod tests {
         };
 
         let persisted_lsn = Arc::new(AtomicU64::new(0));
+        let get_processor_state_handler = Arc::new(PartitionProcessorStatusHandler {
+            persisted_lsn: Arc::clone(&persisted_lsn),
+            block_list: BTreeSet::new(),
+        });
         let (node_env, bifrost) = create_test_env(config, |builder| {
-            let get_processor_state_handler = PartitionProcessorStatusHandler {
-                network_sender: builder.network_sender.clone(),
-                persisted_lsn: Arc::clone(&persisted_lsn),
-                block_list: BTreeSet::new(),
-            };
-
             builder
-                .add_message_handler(get_processor_state_handler)
+                .add_message_handler(get_processor_state_handler.clone())
                 .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
 
         node_env
             .tc
+            .clone()
             .run_in_scope("test", None, async move {
+                // simulate a connection from node 2 so we can have a connection between the two
+                // nodes
+                let node_2 = MockPeerConnection::connect(
+                    GenerationalNodeId::new(2, 2),
+                    node_env.metadata.nodes_config_version(),
+                    node_env
+                        .metadata
+                        .nodes_config_ref()
+                        .cluster_name()
+                        .to_owned(),
+                    node_env.networking.connection_manager(),
+                    10,
+                )
+                .await?;
+                // let node2 receive messages and use the same message handler as node1
+                let (_node_2, _node2_reactor) = node_2
+                    .process_with_message_handler(&node_env.tc, get_processor_state_handler)?;
+
                 let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=20 {
                     let lsn = appender.append(format!("record{}", i)).await?;
@@ -666,7 +700,6 @@ mod tests {
                 .collect();
 
             let get_processor_state_handler = PartitionProcessorStatusHandler {
-                network_sender: builder.network_sender.clone(),
                 persisted_lsn: Arc::clone(&persisted_lsn),
                 block_list: black_list,
             };
@@ -701,18 +734,18 @@ mod tests {
     async fn create_test_env<F>(
         config: Configuration,
         mut modify_builder: F,
-    ) -> anyhow::Result<(TestCoreEnv<MockNetworkSender>, Bifrost)>
+    ) -> anyhow::Result<(TestCoreEnv<FailingConnector>, Bifrost)>
     where
-        F: FnMut(TestCoreEnvBuilder<MockNetworkSender>) -> TestCoreEnvBuilder<MockNetworkSender>,
+        F: FnMut(TestCoreEnvBuilder<FailingConnector>) -> TestCoreEnvBuilder<FailingConnector>,
     {
-        let mut builder = TestCoreEnvBuilder::new_with_mock_network();
+        let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let metadata = builder.metadata.clone();
 
         let svc = Service::new(
             Live::from_value(config),
             builder.tc.clone(),
             builder.metadata.clone(),
-            builder.network_sender.clone(),
+            builder.networking.clone(),
             &mut builder.router_builder,
             builder.metadata_writer.clone(),
             builder.metadata_store_client.clone(),
@@ -733,7 +766,7 @@ mod tests {
             Role::Worker.into(),
             LogServerConfig::default(),
         ));
-        let builder = modify_builder(builder.with_nodes_config(nodes_config));
+        let builder = modify_builder(builder.set_nodes_config(nodes_config));
 
         let node_env = builder.build().await;
 

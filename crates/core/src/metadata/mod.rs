@@ -11,8 +11,7 @@
 mod manager;
 
 pub use manager::{MetadataManager, TargetVersion};
-use restate_types::live::{Live, Pinned};
-use restate_types::schema::Schema;
+pub use restate_types::net::metadata::MetadataKind;
 
 use std::sync::{Arc, OnceLock};
 
@@ -20,16 +19,17 @@ use arc_swap::{ArcSwap, AsRaw};
 use enum_map::EnumMap;
 use tokio::sync::{mpsc, oneshot, watch};
 
+use restate_types::live::{Live, Pinned};
 use restate_types::logs::metadata::Logs;
 use restate_types::net::metadata::MetadataContainer;
-pub use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
+use restate_types::schema::Schema;
 use restate_types::{GenerationalNodeId, NodeId, Version, Versioned};
 
 use crate::metadata::manager::Command;
 use crate::metadata_store::ReadError;
-use crate::network::NetworkSender;
+use crate::network::TransportConnect;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 
 #[derive(Debug, thiserror::Error)]
@@ -352,13 +352,10 @@ impl Default for VersionWatch {
     }
 }
 
-pub fn spawn_metadata_manager<N>(
+pub fn spawn_metadata_manager<T: TransportConnect>(
     tc: &TaskCenter,
-    metadata_manager: MetadataManager<N>,
-) -> Result<TaskId, ShutdownError>
-where
-    N: NetworkSender + 'static,
-{
+    metadata_manager: MetadataManager<T>,
+) -> Result<TaskId, ShutdownError> {
     tc.spawn(
         TaskKind::MetadataBackgroundSync,
         "metadata-manager",

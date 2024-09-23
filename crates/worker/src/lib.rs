@@ -29,6 +29,7 @@ pub use crate::subscription_integration::SubscriptionControllerHandle;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
+use restate_core::network::TransportConnect;
 use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
@@ -89,21 +90,21 @@ pub enum Error {
     },
 }
 
-pub struct Worker {
+pub struct Worker<T> {
     updateable_config: Live<Configuration>,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
-    partition_processor_manager: PartitionProcessorManager,
+    partition_processor_manager: PartitionProcessorManager<T>,
 }
 
-impl Worker {
+impl<T: TransportConnect> Worker<T> {
     pub async fn create(
         updateable_config: Live<Configuration>,
         metadata: Metadata,
-        networking: Networking,
+        networking: Networking<T>,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
         schema: Live<Schema>,

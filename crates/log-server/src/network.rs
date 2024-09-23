@@ -22,7 +22,7 @@ use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, trace};
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_core::network::{Incoming, MessageRouterBuilder, NetworkSender};
+use restate_core::network::{Incoming, MessageRouterBuilder};
 use restate_core::{cancellation_watcher, Metadata, TaskCenter};
 use restate_types::config::Configuration;
 use restate_types::live::Live;
@@ -85,12 +85,7 @@ impl RequestPump {
     }
 
     /// Starts the main processing loop, exits on error or shutdown.
-    pub async fn run<N: NetworkSender + 'static, S>(
-        self,
-        _networking: N,
-        log_store: S,
-        _storage_state: StorageState,
-    ) -> anyhow::Result<()>
+    pub async fn run<S>(self, log_store: S, _storage_state: StorageState) -> anyhow::Result<()>
     where
         S: LogStore + Clone + Sync + Send + 'static,
     {
@@ -140,7 +135,7 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        release.loglet_id,
+                        release.body().loglet_id,
                         &log_store,
                         &task_center,
                         &global_tail_tracker,
@@ -153,7 +148,7 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        seal.loglet_id,
+                        seal.body().loglet_id,
                         &log_store,
                         &task_center,
                         &global_tail_tracker,
@@ -166,7 +161,7 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        get_loglet_info.loglet_id,
+                        get_loglet_info.body().loglet_id,
                         &log_store,
                         &task_center,
                         &global_tail_tracker,
@@ -179,7 +174,7 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        get_records.loglet_id,
+                        get_records.body().loglet_id,
                         &log_store,
                         &task_center,
                         &global_tail_tracker,
@@ -192,7 +187,7 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        trim.loglet_id,
+                        trim.body().loglet_id,
                         &log_store,
                         &task_center,
                         &global_tail_tracker,
@@ -205,7 +200,7 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        store.loglet_id,
+                        store.body().loglet_id,
                         &log_store,
                         &task_center,
                         &global_tail_tracker,
@@ -232,8 +227,8 @@ impl RequestPump {
     fn on_store(worker: &LogletWorkerHandle, msg: Incoming<Store>) {
         if let Err(msg) = worker.enqueue_store(msg) {
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.try_respond_rpc(Stored::empty()) {
-                debug!(?e.source, peer = %msg.peer(), "Failed to respond to Store message with status Disabled due to peer channel capacity being full");
+            if let Err(e) = msg.to_rpc_response(Stored::empty()).try_send() {
+                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to Store message with status Disabled due to peer channel capacity being full");
             }
         }
     }
@@ -241,8 +236,8 @@ impl RequestPump {
     fn on_release(worker: &LogletWorkerHandle, msg: Incoming<Release>) {
         if let Err(msg) = worker.enqueue_release(msg) {
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.try_respond_rpc(Released::empty()) {
-                debug!(?e.source, peer = %msg.peer(), "Failed to respond to Release message with status Disabled due to peer channel capacity being full");
+            if let Err(e) = msg.to_rpc_response(Released::empty()).try_send() {
+                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to Release message with status Disabled due to peer channel capacity being full");
             }
         }
     }
@@ -250,8 +245,8 @@ impl RequestPump {
     fn on_seal(worker: &LogletWorkerHandle, msg: Incoming<Seal>) {
         if let Err(msg) = worker.enqueue_seal(msg) {
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.try_respond_rpc(Sealed::empty()) {
-                debug!(?e.source, peer = %msg.peer(), "Failed to respond to Seal message with status Disabled due to peer channel capacity being full");
+            if let Err(e) = msg.to_rpc_response(Sealed::empty()).try_send() {
+                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to Seal message with status Disabled due to peer channel capacity being full");
             }
         }
     }
@@ -259,18 +254,18 @@ impl RequestPump {
     fn on_get_loglet_info(worker: &LogletWorkerHandle, msg: Incoming<GetLogletInfo>) {
         if let Err(msg) = worker.enqueue_get_loglet_info(msg) {
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.try_respond_rpc(LogletInfo::empty()) {
-                debug!(?e.source, peer = %msg.peer(), "Failed to respond to GetLogletInfo message with status Disabled due to peer channel capacity being full");
+            if let Err(e) = msg.to_rpc_response(LogletInfo::empty()).try_send() {
+                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to GetLogletInfo message with status Disabled due to peer channel capacity being full");
             }
         }
     }
 
     fn on_get_records(worker: &LogletWorkerHandle, msg: Incoming<GetRecords>) {
         if let Err(msg) = worker.enqueue_get_records(msg) {
-            let next_offset = msg.from_offset;
+            let next_offset = msg.body().from_offset;
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.try_respond_rpc(Records::empty(next_offset)) {
-                debug!(?e.source, peer = %msg.peer(), "Failed to respond to GetRecords message with status Disabled due to peer channel capacity being full");
+            if let Err(e) = msg.to_rpc_response(Records::empty(next_offset)).try_send() {
+                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to GetRecords message with status Disabled due to peer channel capacity being full");
             }
         }
     }
@@ -278,8 +273,8 @@ impl RequestPump {
     fn on_trim(worker: &LogletWorkerHandle, msg: Incoming<Trim>) {
         if let Err(msg) = worker.enqueue_trim(msg) {
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.try_respond_rpc(Trimmed::empty()) {
-                debug!(?e.source, peer = %msg.peer(), "Failed to respond to Trim message with status Disabled due to peer channel capacity being full");
+            if let Err(e) = msg.to_rpc_response(Trimmed::empty()).try_send() {
+                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to Trim message with status Disabled due to peer channel capacity being full");
             }
         }
     }

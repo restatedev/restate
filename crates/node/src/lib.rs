@@ -20,8 +20,8 @@ use tokio::sync::oneshot;
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
-use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
+use restate_core::network::{GrpcConnector, MessageRouterBuilder};
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
 };
@@ -103,12 +103,12 @@ pub enum BuildError {
 
 pub struct Node {
     updateable_config: Live<Configuration>,
-    metadata_manager: MetadataManager<Networking>,
+    metadata_manager: MetadataManager<GrpcConnector>,
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
     metadata_store_role: Option<LocalMetadataStoreService>,
-    admin_role: Option<AdminRole>,
-    worker_role: Option<WorkerRole>,
+    admin_role: Option<AdminRole<GrpcConnector>>,
+    worker_role: Option<WorkerRole<GrpcConnector>>,
     #[cfg(feature = "replicated-loglet")]
     log_server: Option<LogServerService>,
     server: NetworkServer,
@@ -197,7 +197,6 @@ impl Node {
                     updateable_config.clone(),
                     tc.clone(),
                     metadata.clone(),
-                    networking.clone(),
                     metadata_store_client.clone(),
                     &mut router_builder,
                 )
@@ -242,7 +241,7 @@ impl Node {
         };
 
         let server = NetworkServer::new(
-            networking.connection_manager(),
+            networking.connection_manager().clone(),
             worker_role
                 .as_ref()
                 .map(|worker| WorkerDependencies::new(worker.storage_query_context().clone())),

@@ -214,8 +214,8 @@ mod tests {
     // Start paused makes sure the timer is immediately fired
     #[test(tokio::test(start_paused = true))]
     pub async fn cleanup_works() {
-        let env = TestCoreEnvBuilder::new_with_mock_network()
-            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+        let env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
             ))

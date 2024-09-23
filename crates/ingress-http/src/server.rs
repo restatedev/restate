@@ -339,7 +339,7 @@ mod tests {
         JoinHandle<Option<IngressDispatcherRequest>>,
         TestHandle,
     ) {
-        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
         let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
 
         // Create the ingress and start it

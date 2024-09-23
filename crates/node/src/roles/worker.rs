@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use codederror::CodedError;
+use restate_core::network::TransportConnect;
 use tokio::sync::oneshot;
 
 use restate_bifrost::Bifrost;
@@ -59,17 +60,17 @@ pub enum WorkerRoleBuildError {
     ),
 }
 
-pub struct WorkerRole {
+pub struct WorkerRole<T> {
     metadata: Metadata,
-    worker: Worker,
+    worker: Worker<T>,
 }
 
-impl WorkerRole {
+impl<T: TransportConnect> WorkerRole<T> {
     pub async fn create(
         metadata: Metadata,
         updateable_config: Live<Configuration>,
         router_builder: &mut MessageRouterBuilder,
-        networking: Networking,
+        networking: Networking<T>,
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
         updating_schema_information: Live<Schema>,
