@@ -11,7 +11,7 @@
 use anyhow::Context;
 use tracing::{debug, info, instrument};
 
-use restate_core::network::{MessageRouterBuilder, Networking};
+use restate_core::network::MessageRouterBuilder;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::Configuration;
@@ -31,7 +31,6 @@ pub struct LogServerService {
     updateable_config: Live<Configuration>,
     task_center: TaskCenter,
     metadata: Metadata,
-    networking: Networking,
     request_processor: RequestPump,
     metadata_store_client: MetadataStoreClient,
 }
@@ -41,7 +40,6 @@ impl LogServerService {
         updateable_config: Live<Configuration>,
         task_center: TaskCenter,
         metadata: Metadata,
-        networking: Networking,
         metadata_store_client: MetadataStoreClient,
         router_builder: &mut MessageRouterBuilder,
     ) -> Result<Self, LogServerBuildError> {
@@ -58,7 +56,6 @@ impl LogServerService {
             updateable_config,
             task_center,
             metadata,
-            networking,
             request_processor,
             metadata_store_client,
         })
@@ -79,7 +76,6 @@ impl LogServerService {
             task_center,
             metadata,
             request_processor: request_pump,
-            networking,
             mut metadata_store_client,
         } = self;
         // What do we need to start the log-server?
@@ -110,7 +106,7 @@ impl LogServerService {
             TaskKind::NetworkMessageHandler,
             "log-server-req-pump",
             None,
-            request_pump.run(networking, log_store, storage_state),
+            request_pump.run(log_store, storage_state),
         )?;
         Ok(())
     }

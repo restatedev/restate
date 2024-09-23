@@ -15,7 +15,7 @@ use rand::seq::IteratorRandom;
 use tracing::{debug, trace};
 
 use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadError, WriteError};
-use restate_core::network::{NetworkSender, Outgoing};
+use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
 use restate_types::cluster_controller::{
@@ -45,27 +45,24 @@ pub enum Error {
     Shutdown(#[from] ShutdownError),
 }
 
-pub struct Scheduler<N> {
+pub struct Scheduler<T> {
     scheduling_plan: SchedulingPlan,
     observed_cluster_state: ObservedClusterState,
 
     task_center: TaskCenter,
     metadata_store_client: MetadataStoreClient,
-    networking: N,
+    networking: Networking<T>,
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
 /// leaders. It achieves it by deciding on a scheduling plan which is persisted to the metadata
 /// store and then driving the observed cluster state to the target state (represented by the
 /// scheduling plan).
-impl<N> Scheduler<N>
-where
-    N: NetworkSender + 'static,
-{
+impl<T: TransportConnect> Scheduler<T> {
     pub async fn init(
         task_center: TaskCenter,
         metadata_store_client: MetadataStoreClient,
-        networking: N,
+        networking: Networking<T>,
     ) -> Result<Self, BuildError> {
         let scheduling_plan = metadata_store_client
             .get(SCHEDULING_PLAN_KEY.clone())
@@ -83,7 +80,7 @@ where
 
     pub async fn on_attach_node(
         &mut self,
-        node: GenerationalNodeId,
+        node: &GenerationalNodeId,
     ) -> Result<Vec<Action>, ShutdownError> {
         trace!(node = %node, "Node is attaching to cluster");
         // the convergence loop will make sure that the node receives its instructions
@@ -418,9 +415,11 @@ impl ObservedPartitionState {
 
 #[cfg(test)]
 mod tests {
-    use crate::cluster_controller::scheduler::{
-        ObservedClusterState, ObservedPartitionState, Scheduler,
-    };
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::num::NonZero;
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use futures::StreamExt;
     use googletest::matcher::{Matcher, MatcherResult};
     use googletest::matchers::{empty, eq};
@@ -428,24 +427,29 @@ mod tests {
     use http::Uri;
     use rand::prelude::ThreadRng;
     use rand::Rng;
-    use restate_core::TestCoreEnvBuilder;
+    use test_log::test;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
+    use restate_core::{TaskCenterBuilder, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
     use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
     use restate_types::identifiers::PartitionId;
     use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
+    use restate_types::net::codec::WireDecode;
     use restate_types::net::partition_processor_manager::{ControlProcessors, ProcessorCommand};
-    use restate_types::net::AdvertisedAddress;
+    use restate_types::net::{AdvertisedAddress, TargetName};
     use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
     use restate_types::partition_table::PartitionTable;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::num::NonZero;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use test_log::test;
+
+    use crate::cluster_controller::scheduler::{
+        ObservedClusterState, ObservedPartitionState, Scheduler,
+    };
 
     impl ObservedClusterState {
         fn remove_node_from_partition(
@@ -725,29 +729,57 @@ mod tests {
             nodes_config.upsert_node(node_config);
         }
 
-        let mut builder = TestCoreEnvBuilder::new_with_mock_network();
-        let mut control_processors = builder
-            .router_builder
-            .subscribe_to_stream::<ControlProcessors>(32);
+        let tc = TaskCenterBuilder::default_for_tests()
+            .build()
+            .expect("task_center builds");
+
+        // network messages going to other nodes are written to `tx`
+        let (tx, control_recv) = mpsc::channel(100);
+        let connector = MessageCollectorMockConnector::new(tc.clone(), 10, tx.clone());
+
+        let mut builder = TestCoreEnvBuilder::with_transport_connector(tc, connector);
+        builder.router_builder.add_raw_handler(
+            TargetName::ControlProcessors,
+            // network messages going to my node is also written to `tx`
+            Box::new(ForwardingHandler::new(GenerationalNodeId::new(1, 1), tx)),
+        );
+
+        let mut control_recv = ReceiverStream::new(control_recv)
+            .filter_map(|(node_id, message)| async move {
+                if message.body().target() == TargetName::ControlProcessors {
+                    let message = message
+                        .try_map(|mut m| {
+                            ControlProcessors::decode(
+                                &mut m.payload,
+                                restate_types::net::CURRENT_PROTOCOL_VERSION,
+                            )
+                        })
+                        .unwrap();
+                    Some((node_id, message))
+                } else {
+                    None
+                }
+            })
+            .boxed();
 
         let partition_table =
             PartitionTable::with_equally_sized_partitions(Version::MIN, num_partitions);
         let initial_scheduling_plan = SchedulingPlan::from(&partition_table, replication_strategy);
         let metadata_store_client = builder.metadata_store_client.clone();
 
-        let network_sender = builder.network_sender.clone();
+        let networking = builder.networking.clone();
 
         let env = builder
-            .with_nodes_config(nodes_config)
-            .with_partition_table(partition_table.clone())
-            .with_scheduling_plan(initial_scheduling_plan)
+            .set_nodes_config(nodes_config.clone())
+            .set_partition_table(partition_table.clone())
+            .set_scheduling_plan(initial_scheduling_plan)
             .build()
             .await;
         let tc = env.tc.clone();
         env.tc
             .run_in_scope("test", None, async move {
                 let mut scheduler =
-                    Scheduler::init(tc, metadata_store_client.clone(), network_sender).await?;
+                    Scheduler::init(tc, metadata_store_client.clone(), networking).await?;
 
                 for _ in 0..num_scheduling_rounds {
                     let cluster_state = random_cluster_state(&node_ids, num_partitions);
@@ -757,10 +789,9 @@ mod tests {
                         .on_cluster_state_update(Arc::clone(&cluster_state))
                         .await?;
                     // collect all control messages from the network to build up the effective scheduling plan
-                    let control_messages = control_processors
+                    let control_messages = control_recv
                         .as_mut()
                         .take_until(tokio::time::sleep(Duration::from_secs(10)))
-                        .map(|message| message.split())
                         .collect::<Vec<_>>()
                         .await;
 
@@ -865,32 +896,33 @@ mod tests {
 
     fn derive_observed_cluster_state(
         cluster_state: &ClusterState,
-        control_messages: Vec<(GenerationalNodeId, ControlProcessors)>,
+        control_messages: Vec<(GenerationalNodeId, Incoming<ControlProcessors>)>,
     ) -> ObservedClusterState {
         let mut observed_cluster_state = ObservedClusterState::default();
         observed_cluster_state.update(cluster_state);
 
         // apply commands
-        for (node_id, control_processors) in control_messages {
-            for control_processor in control_processors.commands {
+        for (target_node, control_processors) in control_messages {
+            let plain_node_id = target_node.as_plain();
+            for control_processor in control_processors.into_body().commands {
                 match control_processor.command {
                     ProcessorCommand::Stop => {
                         observed_cluster_state.remove_node_from_partition(
                             &control_processor.partition_id,
-                            &node_id.as_plain(),
+                            &plain_node_id,
                         );
                     }
                     ProcessorCommand::Follower => {
                         observed_cluster_state.add_node_to_partition(
                             control_processor.partition_id,
-                            node_id.as_plain(),
+                            plain_node_id,
                             RunMode::Follower,
                         );
                     }
                     ProcessorCommand::Leader => {
                         observed_cluster_state.add_node_to_partition(
                             control_processor.partition_id,
-                            node_id.as_plain(),
+                            plain_node_id,
                             RunMode::Leader,
                         );
                     }

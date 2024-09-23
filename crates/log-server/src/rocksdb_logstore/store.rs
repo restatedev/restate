@@ -202,7 +202,7 @@ impl LogStore for RocksDbLogStore {
     async fn read_records(
         &mut self,
         msg: GetRecords,
-        loglet_state: LogletState,
+        loglet_state: &LogletState,
     ) -> Result<Records, OperationError> {
         let data_cf = self.data_cf();
         let loglet_id = msg.loglet_id;

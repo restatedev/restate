@@ -54,7 +54,7 @@ pub trait LogStore: Clone + Send + 'static {
     fn read_records(
         &mut self,
         get_records_message: GetRecords,
-        loglet_state: LogletState,
+        loglet_state: &LogletState,
     ) -> impl Future<Output = Result<Records, OperationError>> + Send;
 }
 

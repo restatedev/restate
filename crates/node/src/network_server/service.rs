@@ -22,7 +22,7 @@ use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_bifrost::Bifrost;
 use restate_core::network::net_util::run_hyper_server;
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
-use restate_core::network::ConnectionManager;
+use restate_core::network::{ConnectionManager, GrpcConnector};
 use restate_core::task_center;
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
@@ -36,14 +36,14 @@ use crate::network_server::multiplex::MultiplexService;
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 
 pub struct NetworkServer {
-    connection_manager: ConnectionManager,
+    connection_manager: ConnectionManager<GrpcConnector>,
     worker_deps: Option<WorkerDependencies>,
     admin_deps: Option<AdminDependencies>,
 }
 
 impl NetworkServer {
     pub fn new(
-        connection_manager: ConnectionManager,
+        connection_manager: ConnectionManager<GrpcConnector>,
         worker_deps: Option<WorkerDependencies>,
         admin_deps: Option<AdminDependencies>,
     ) -> Self {

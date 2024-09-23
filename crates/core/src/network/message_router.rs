@@ -39,16 +39,76 @@ pub trait MessageHandler {
     ) -> impl std::future::Future<Output = ()> + Send;
 }
 
+impl<T> MessageHandler for Arc<T>
+where
+    T: MessageHandler,
+{
+    type MessageType = T::MessageType;
+
+    fn on_message(
+        &self,
+        msg: Incoming<Self::MessageType>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        (**self).on_message(msg)
+    }
+}
+
+impl<T> MessageHandler for Box<T>
+where
+    T: MessageHandler,
+{
+    type MessageType = T::MessageType;
+
+    fn on_message(
+        &self,
+        msg: Incoming<Self::MessageType>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        (**self).on_message(msg)
+    }
+}
+
 /// A low-level handler trait.
 #[async_trait]
-pub trait Handler: Send + Sync {
-    type Error;
+pub trait Handler: Send {
+    type Error: std::fmt::Debug;
     /// Deserialize and process the message asynchronously.
     async fn call(
         &self,
         message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
     ) -> Result<(), Self::Error>;
+}
+
+#[async_trait]
+impl<T> Handler for Arc<T>
+where
+    T: Handler + Send + Sync + 'static,
+{
+    type Error = T::Error;
+
+    async fn call(
+        &self,
+        message: Incoming<BinaryMessage>,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), Self::Error> {
+        (**self).call(message, protocol_version).await
+    }
+}
+
+#[async_trait]
+impl<T> Handler for Box<T>
+where
+    T: Handler + Send + Sync + 'static,
+{
+    type Error = T::Error;
+
+    async fn call(
+        &self,
+        message: Incoming<BinaryMessage>,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), Self::Error> {
+        (**self).call(message, protocol_version).await
+    }
 }
 
 #[derive(Clone, Default)]
@@ -68,7 +128,7 @@ impl Handler for MessageRouter {
         message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
     ) -> Result<(), Self::Error> {
-        let target = message.target();
+        let target = message.body().target();
         let Some(handler) = self.0.handlers.get(&target) else {
             return Err(RouterError::NotRegisteredTarget(target.to_string()));
         };
@@ -86,7 +146,7 @@ impl MessageRouterBuilder {
     /// Attach a handler that implements [`MessageHandler`] to receive messages
     /// for the associated target.
     #[track_caller]
-    pub fn add_message_handler<H>(&mut self, handler: H)
+    pub fn add_message_handler<H>(&mut self, handler: H) -> &mut Self
     where
         H: MessageHandler + Send + Sync + 'static,
     {
@@ -95,20 +155,20 @@ impl MessageRouterBuilder {
         if self.handlers.insert(target, Box::new(wrapped)).is_some() {
             panic!("Handler for target {} has been registered already!", target);
         }
+        self
     }
 
     /// Attach a handler that receives all messages targeting a certain [`TargetName`].
     #[track_caller]
-    pub fn add_raw_handler<H>(
+    pub fn add_raw_handler(
         &mut self,
         target: TargetName,
         handler: Box<dyn Handler<Error = CodecError> + Send + Sync>,
-    ) where
-        H: Handler + Send + Sync + 'static,
-    {
+    ) -> &mut Self {
         if self.handlers.insert(target, handler).is_some() {
             panic!("Handler for target {} has been registered already!", target);
         }
+        self
     }
 
     /// Subscribe to a stream of messages for a specific target. This enables consumers of messages

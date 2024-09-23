@@ -104,7 +104,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     );
 
     // We start the Meta service, then download the openapi schema generated
-    let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+    let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
     let bifrost = node_env
         .tc
         .run_in_scope(

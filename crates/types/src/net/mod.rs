@@ -132,7 +132,7 @@ macro_rules! define_message {
 
         impl $crate::net::codec::WireEncode for $message {
             fn encode<B: bytes::BufMut>(
-                &self,
+                self,
                 buf: &mut B,
                 protocol_version: $crate::net::ProtocolVersion,
             ) -> Result<(), $crate::net::CodecError> {

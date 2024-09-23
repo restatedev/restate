@@ -10,236 +10,94 @@
 
 use std::marker::PhantomData;
 use std::str::FromStr;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
-use tokio::sync::{mpsc, RwLock};
-use tracing::info;
+use futures::Stream;
 
 use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
+use restate_types::config::NetworkingOptions;
 use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
 };
-use restate_types::net::codec::{
-    serialize_message, MessageBodyExt, Targeted, WireDecode, WireEncode,
-};
+use restate_types::net::codec::{Targeted, WireDecode};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
-use restate_types::net::CURRENT_PROTOCOL_VERSION;
 use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
-use restate_types::protobuf::node::{Header, Message};
+use restate_types::protobuf::node::Message;
 use restate_types::{GenerationalNodeId, Version};
 
 use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
-    Connection, Handler, Incoming, MessageHandler, MessageRouter, MessageRouterBuilder,
-    NetworkError, NetworkSendError, NetworkSender, Outgoing,
+    ConnectionManager, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder,
+    NetworkError, Networking, ProtocolError, TransportConnect,
 };
-use crate::{
-    cancellation_watcher, metadata, spawn_metadata_manager, MetadataBuilder, ShutdownError, TaskId,
-};
+use crate::{spawn_metadata_manager, MetadataBuilder, TaskId};
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{TaskCenter, TaskCenterBuilder};
 
-#[derive(Clone)]
-pub struct MockNetworkSender {
-    sender: Option<mpsc::UnboundedSender<(GenerationalNodeId, Message)>>,
-    metadata: Metadata,
-}
-
-impl MockNetworkSender {
-    pub fn new(metadata: Metadata) -> Self {
-        Self {
-            sender: None,
-            metadata,
-        }
-    }
-}
-
-impl NetworkSender for MockNetworkSender {
-    async fn send<M>(&self, mut message: Outgoing<M>) -> Result<(), NetworkSendError<M>>
-    where
-        M: WireEncode + Targeted + Send + Sync,
-    {
-        let Some(sender) = &self.sender else {
-            info!("Not sending message, mock sender is not configured");
-            return Ok(());
-        };
-
-        if !message.peer().is_generational() {
-            let current_generation = match self
-                .metadata
-                .nodes_config_ref()
-                .find_node_by_id(message.peer())
-            {
-                Ok(node) => node.current_generation,
-                Err(e) => return Err(NetworkSendError::new(message, NetworkError::UnknownNode(e))),
-            };
-            message.set_peer(current_generation);
-        }
-
-        let metadata = metadata();
-        let header = Header::new(
-            metadata.nodes_config_version(),
-            None,
-            None,
-            None,
-            message.msg_id(),
-            message.in_response_to(),
-        );
-        let body = match serialize_message(message.body(), CURRENT_PROTOCOL_VERSION) {
-            Ok(body) => body,
-            Err(e) => {
-                return Err(NetworkSendError::new(
-                    message,
-                    NetworkError::ProtocolError(e.into()),
-                ))
-            }
-        };
-        sender
-            .send((
-                message.peer().as_generational().unwrap(),
-                Message::new(header, body),
-            ))
-            .map_err(|_| NetworkSendError::new(message, NetworkError::Shutdown(ShutdownError)))?;
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-struct NetworkReceiver {
-    router: Arc<RwLock<MessageRouter>>,
-}
-
-impl NetworkReceiver {
-    async fn run(
-        self,
-        my_node_id: GenerationalNodeId,
-        mut receiver: mpsc::UnboundedReceiver<(GenerationalNodeId, Message)>,
-    ) -> anyhow::Result<()> {
-        let (reply_sender, mut reply_receiver) = mpsc::channel::<Message>(50);
-        // NOTE: rpc replies will only work if and only if the RpcRouter is using the same router_builder as the service you
-        // are trying to call.
-        // In other words, response will not be routed back if the Target component is registered with a different router_builder
-        // than the client you using to make the call.
-        let connection = Connection::new_fake(my_node_id, CURRENT_PROTOCOL_VERSION, reply_sender);
-
-        loop {
-            tokio::select! {
-                _ = cancellation_watcher() => {
-                    break;
-                }
-                maybe_msg = reply_receiver.recv() => {
-                    let Some(msg) = maybe_msg else {
-                        break;
-                    };
-
-                    let guard = self.router.read().await;
-                    self.route_message(my_node_id, msg, &guard, Weak::new()).await?;
-                }
-                maybe_msg = receiver.recv() => {
-                    let Some((from, msg)) = maybe_msg else {
-                        break;
-                    };
-                    {
-                    let guard = self.router.read().await;
-                    self.route_message(from, msg, &guard, Arc::downgrade(&connection)).await?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn route_message(
-        &self,
-        peer: GenerationalNodeId,
-        msg: Message,
-        router: &MessageRouter,
-        connection: Weak<Connection>,
-    ) -> anyhow::Result<()> {
-        let body = msg.body.expect("body must be set");
-        let header = msg.header.expect("header must be set");
-
-        let msg = Incoming::from_parts(
-            peer,
-            body.try_as_binary_body(CURRENT_PROTOCOL_VERSION)?,
-            connection,
-            header.msg_id,
-            header.in_response_to,
-        );
-        router.call(msg, CURRENT_PROTOCOL_VERSION).await?;
-        Ok(())
-    }
-}
-
-impl MockNetworkSender {
-    pub fn from_sender(
-        sender: mpsc::UnboundedSender<(GenerationalNodeId, Message)>,
-        metadata: Metadata,
-    ) -> Self {
-        Self {
-            sender: Some(sender),
-            metadata,
-        }
-    }
-    pub fn inner_sender(&self) -> Option<mpsc::UnboundedSender<(GenerationalNodeId, Message)>> {
-        self.sender.clone()
-    }
-}
-
-pub struct TestCoreEnvBuilder<N> {
+pub struct TestCoreEnvBuilder<T> {
     pub tc: TaskCenter,
     pub my_node_id: GenerationalNodeId,
-    pub network_rx: Option<mpsc::UnboundedReceiver<(GenerationalNodeId, Message)>>,
-    pub metadata_manager: MetadataManager<N>,
+    pub metadata_manager: MetadataManager<T>,
     pub metadata_writer: MetadataWriter,
     pub metadata: Metadata,
+    pub networking: Networking<T>,
     pub nodes_config: NodesConfiguration,
     pub provider_kind: ProviderKind,
     pub router_builder: MessageRouterBuilder,
-    pub network_sender: N,
     pub partition_table: PartitionTable,
     pub scheduling_plan: SchedulingPlan,
     pub metadata_store_client: MetadataStoreClient,
 }
 
-impl TestCoreEnvBuilder<MockNetworkSender> {
-    pub fn new_with_mock_network() -> TestCoreEnvBuilder<MockNetworkSender> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let metadata_builder = MetadataBuilder::default();
-        let network_sender = MockNetworkSender::from_sender(tx, metadata_builder.to_metadata());
-
-        TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, Some(rx), metadata_builder)
-    }
-}
-
-impl<N> TestCoreEnvBuilder<N>
-where
-    N: NetworkSender + 'static,
-{
-    pub fn new(network_sender: N, metadata_builder: MetadataBuilder) -> Self {
-        TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, None, metadata_builder)
-    }
-
-    fn new_with_network_tx_rx(
-        network_sender: N,
-        network_rx: Option<mpsc::UnboundedReceiver<(GenerationalNodeId, Message)>>,
-        metadata_builder: MetadataBuilder,
-    ) -> Self {
+impl TestCoreEnvBuilder<FailingConnector> {
+    pub fn with_incoming_only_connector() -> Self {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
             .ingress_runtime_handle(tokio::runtime::Handle::current())
             .build()
             .expect("task_center builds");
+        let metadata_builder = MetadataBuilder::default();
+        let net_opts = NetworkingOptions::default();
+        let connection_manager =
+            ConnectionManager::new_incoming_only(metadata_builder.to_metadata());
+        let networking = Networking::with_connection_manager(
+            metadata_builder.to_metadata(),
+            net_opts,
+            connection_manager,
+        );
 
+        TestCoreEnvBuilder::with_networking(tc, networking, metadata_builder)
+    }
+}
+impl<T: TransportConnect> TestCoreEnvBuilder<T> {
+    pub fn with_transport_connector(tc: TaskCenter, connector: Arc<T>) -> TestCoreEnvBuilder<T> {
+        let metadata_builder = MetadataBuilder::default();
+        let net_opts = NetworkingOptions::default();
+        let connection_manager =
+            ConnectionManager::new(metadata_builder.to_metadata(), connector, net_opts.clone());
+        let networking = Networking::with_connection_manager(
+            metadata_builder.to_metadata(),
+            net_opts,
+            connection_manager,
+        );
+
+        TestCoreEnvBuilder::with_networking(tc, networking, metadata_builder)
+    }
+
+    pub fn with_networking(
+        tc: TaskCenter,
+        networking: Networking<T>,
+        metadata_builder: MetadataBuilder,
+    ) -> Self {
         let my_node_id = GenerationalNodeId::new(1, 1);
         let metadata_store_client = MetadataStoreClient::new_in_memory();
         let metadata = metadata_builder.to_metadata();
         let metadata_manager = MetadataManager::new(
             metadata_builder,
-            network_sender.clone(),
+            networking.clone(),
             metadata_store_client.clone(),
         );
         let metadata_writer = metadata_manager.writer();
@@ -259,11 +117,10 @@ where
         TestCoreEnvBuilder {
             tc,
             my_node_id,
-            network_rx,
             metadata_manager,
             metadata_writer,
             metadata,
-            network_sender,
+            networking,
             nodes_config,
             router_builder,
             partition_table,
@@ -273,17 +130,17 @@ where
         }
     }
 
-    pub fn with_nodes_config(mut self, nodes_config: NodesConfiguration) -> Self {
+    pub fn set_nodes_config(mut self, nodes_config: NodesConfiguration) -> Self {
         self.nodes_config = nodes_config;
         self
     }
 
-    pub fn with_partition_table(mut self, partition_table: PartitionTable) -> Self {
+    pub fn set_partition_table(mut self, partition_table: PartitionTable) -> Self {
         self.partition_table = partition_table;
         self
     }
 
-    pub fn with_scheduling_plan(mut self, scheduling_plan: SchedulingPlan) -> Self {
+    pub fn set_scheduling_plan(mut self, scheduling_plan: SchedulingPlan) -> Self {
         self.scheduling_plan = scheduling_plan;
         self
     }
@@ -312,32 +169,15 @@ where
         self
     }
 
-    pub async fn build(mut self) -> TestCoreEnv<N> {
+    pub async fn build(mut self) -> TestCoreEnv<T> {
         self.metadata_manager
             .register_in_message_router(&mut self.router_builder);
+        self.networking
+            .connection_manager()
+            .set_message_router(self.router_builder.build());
 
-        let router = Arc::new(RwLock::new(self.router_builder.build()));
         let metadata_manager_task = spawn_metadata_manager(&self.tc, self.metadata_manager)
             .expect("metadata manager should start");
-
-        let network_task = match self.network_rx {
-            Some(network_rx) => {
-                let network_receiver = NetworkReceiver {
-                    router: router.clone(),
-                };
-                let network_task = self
-                    .tc
-                    .spawn(
-                        crate::TaskKind::ConnectionReactor,
-                        "test-network-receiver",
-                        None,
-                        async move { network_receiver.run(self.my_node_id, network_rx).await },
-                    )
-                    .unwrap();
-                Some(network_task)
-            }
-            None => None,
-        };
 
         self.metadata_store_client
             .put(
@@ -392,32 +232,28 @@ where
 
         TestCoreEnv {
             tc: self.tc,
-            network_task,
             metadata: self.metadata,
             metadata_manager_task,
             metadata_writer: self.metadata_writer,
-            network_sender: self.network_sender,
-            router,
+            networking: self.networking,
             metadata_store_client: self.metadata_store_client,
         }
     }
 }
 
 // This might need to be moved to a better place in the future.
-pub struct TestCoreEnv<N> {
+pub struct TestCoreEnv<T> {
     pub tc: TaskCenter,
     pub metadata: Metadata,
     pub metadata_writer: MetadataWriter,
-    pub network_sender: N,
-    pub network_task: Option<TaskId>,
+    pub networking: Networking<T>,
     pub metadata_manager_task: TaskId,
-    pub router: Arc<RwLock<MessageRouter>>,
     pub metadata_store_client: MetadataStoreClient,
 }
 
-impl TestCoreEnv<MockNetworkSender> {
-    pub async fn create_with_mock_nodes_config(node_id: u32, generation: u32) -> Self {
-        TestCoreEnvBuilder::new_with_mock_network()
+impl TestCoreEnv<FailingConnector> {
+    pub async fn create_with_single_node(node_id: u32, generation: u32) -> Self {
+        TestCoreEnvBuilder::with_incoming_only_connector()
             .set_my_node_id(GenerationalNodeId::new(node_id, generation))
             .add_mock_nodes_config()
             .build()
@@ -425,13 +261,18 @@ impl TestCoreEnv<MockNetworkSender> {
     }
 }
 
-impl<N> TestCoreEnv<N>
-where
-    N: NetworkSender,
-{
-    pub async fn set_message_router<H>(&mut self, router: MessageRouter) {
-        let mut guard = self.router.write().await;
-        *guard = router;
+impl<T: TransportConnect> TestCoreEnv<T> {
+    pub async fn accept_incoming_connection<S>(
+        &self,
+        incoming: S,
+    ) -> Result<impl Stream<Item = Message> + Unpin + Send + 'static, NetworkError>
+    where
+        S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
+    {
+        self.networking
+            .connection_manager()
+            .accept_incoming_connection(incoming)
+            .await
     }
 }
 

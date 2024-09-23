@@ -16,8 +16,8 @@ use futures::TryStreamExt;
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvc;
 use restate_core::network::protobuf::node_svc::IdentResponse;
 use restate_core::network::protobuf::node_svc::{StorageQueryRequest, StorageQueryResponse};
-use restate_core::network::ConnectionManager;
 use restate_core::network::ProtocolError;
+use restate_core::network::{ConnectionManager, GrpcConnector};
 use restate_core::{metadata, TaskCenter};
 use restate_types::protobuf::common::NodeStatus;
 use restate_types::protobuf::node::Message;
@@ -31,14 +31,14 @@ use crate::network_server::WorkerDependencies;
 pub struct NodeSvcHandler {
     task_center: TaskCenter,
     worker: Option<WorkerDependencies>,
-    connections: ConnectionManager,
+    connections: ConnectionManager<GrpcConnector>,
 }
 
 impl NodeSvcHandler {
     pub fn new(
         task_center: TaskCenter,
         worker: Option<WorkerDependencies>,
-        connections: ConnectionManager,
+        connections: ConnectionManager<GrpcConnector>,
     ) -> Self {
         Self {
             task_center,
@@ -121,7 +121,10 @@ impl NodeSvc for NodeSvcHandler {
             )
             .await?;
 
-        Ok(Response::new(output_stream))
+        // For uniformity with outbound connections, we map all responses to Ok, we never rely on
+        // sending tonic::Status errors explicitly. We use ConnectionControl frames to communicate
+        // errors and/or drop the stream when necessary.
+        Ok(Response::new(Box::pin(output_stream.map(Ok))))
     }
 }
 

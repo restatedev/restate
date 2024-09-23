@@ -10,10 +10,13 @@
 
 use restate_types::net::codec::{Targeted, WireEncode};
 
-use super::{NetworkSendError, Outgoing};
+use super::{NetworkSendError, NoConnection, Outgoing};
 
 /// Send NetworkMessage to nodes
-pub trait NetworkSender: Send + Sync + Clone {
+pub trait NetworkSender<S = NoConnection>: Send + Sync + Clone
+where
+    S: super::private::Sealed,
+{
     /// Send a message to a peer node. Order of messages is not guaranteed since underlying
     /// implementations might load balance message writes across multiple connections or re-order
     /// messages in-flight based on priority. If ordered delivery is required, then use
@@ -35,8 +38,8 @@ pub trait NetworkSender: Send + Sync + Clone {
     /// over the network or that the peer have received it.
     fn send<M>(
         &self,
-        message: Outgoing<M>,
-    ) -> impl std::future::Future<Output = Result<(), NetworkSendError<M>>> + Send
+        message: Outgoing<M, S>,
+    ) -> impl std::future::Future<Output = Result<(), NetworkSendError<Outgoing<M, S>>>> + Send
     where
         M: WireEncode + Targeted + Send + Sync;
 }

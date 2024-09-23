@@ -24,7 +24,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::network::{NetworkSender, Outgoing};
+use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{
     current_task_partition_id, metadata, task_center, ShutdownError, TaskId, TaskKind,
 };
@@ -130,7 +130,7 @@ impl PartitionProcessorMetadata {
     }
 }
 
-pub(crate) struct LeadershipState<I, N> {
+pub(crate) struct LeadershipState<I, T> {
     state: State,
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
@@ -139,14 +139,14 @@ pub(crate) struct LeadershipState<I, N> {
     cleanup_interval: Duration,
     channel_size: usize,
     invoker_tx: I,
-    network_tx: N,
+    network_tx: Networking<T>,
     bifrost: Bifrost,
 }
 
-impl<I, N> LeadershipState<I, N>
+impl<I, T> LeadershipState<I, T>
 where
     I: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
-    N: NetworkSender + 'static,
+    T: TransportConnect,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -156,7 +156,7 @@ where
         channel_size: usize,
         invoker_tx: I,
         bifrost: Bifrost,
-        network_tx: N,
+        network_tx: Networking<T>,
         last_seen_leader_epoch: Option<LeaderEpoch>,
     ) -> Self {
         Self {
@@ -541,7 +541,7 @@ where
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
         actions_effects: &mut VecDeque<ActionEffect>,
-        network_tx: &N,
+        network_tx: &Networking<T>,
     ) -> Result<(), Error> {
         match action {
             Action::Invoke {
@@ -635,7 +635,7 @@ where
     }
 
     async fn send_ingress_message(
-        network_tx: N,
+        network_tx: Networking<T>,
         invocation_id: Option<InvocationId>,
         target_node: GenerationalNodeId,
         ingress_message: ingress::IngressMessage,
@@ -771,7 +771,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
-        let env = TestCoreEnv::create_with_mock_nodes_config(0, 0).await;
+        let env = TestCoreEnv::create_with_single_node(0, 0).await;
         let tc = env.tc.clone();
         let storage_options = StorageOptions::default();
         let rocksdb_options = RocksDbOptions::default();
@@ -804,7 +804,7 @@ mod tests {
                 42,
                 invoker_tx,
                 bifrost.clone(),
-                env.network_sender.clone(),
+                env.networking.clone(),
                 None,
             );
 

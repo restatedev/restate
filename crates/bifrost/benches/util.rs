@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use tracing::warn;
+
+use restate_core::network::Networking;
 use restate_core::{
-    spawn_metadata_manager, MetadataBuilder, MetadataManager, MockNetworkSender, TaskCenter,
-    TaskCenterBuilder,
+    spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter, TaskCenterBuilder,
 };
 use restate_metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
@@ -18,7 +20,6 @@ use restate_types::config::Configuration;
 use restate_types::live::Constant;
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-use tracing::warn;
 
 pub async fn spawn_environment(
     config: Configuration,
@@ -35,13 +36,13 @@ pub async fn spawn_environment(
 
     restate_types::config::set_current_config(config.clone());
     let metadata_builder = MetadataBuilder::default();
-    let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
+    let networking = Networking::new(metadata_builder.to_metadata(), config.networking.clone());
 
     let metadata_store_client = MetadataStoreClient::new_in_memory();
     let metadata = metadata_builder.to_metadata();
     let metadata_manager = MetadataManager::new(
         metadata_builder,
-        network_sender.clone(),
+        networking.clone(),
         metadata_store_client.clone(),
     );
 

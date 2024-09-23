@@ -190,27 +190,27 @@ impl<S: LogStore> LogletWorker<S> {
                 }
                 // RELEASE
                 Some(msg) = release_rx.recv() => {
-                    self.global_tail_tracker.maybe_update(msg.known_global_tail);
-                    known_global_tail = known_global_tail.max(msg.known_global_tail);
+                    self.global_tail_tracker.maybe_update(msg.body().known_global_tail);
+                    known_global_tail = known_global_tail.max(msg.body().known_global_tail);
                 }
                 Some(msg) = seal_rx.recv() => {
+                    let (reciprocal, msg) = msg.split();
                     // this message might be telling us about a higher `known_global_tail`
                     self.global_tail_tracker.maybe_update(msg.known_global_tail);
                     known_global_tail = known_global_tail.max(msg.known_global_tail);
                     // If we have a seal operation in-flight, we'd want this request to wait for
                     // seal to happen
-                    let response = msg.prepare_response(Sealed::empty());
                     let tail_watcher = self.loglet_state.get_tail_watch();
                     waiting_for_seal.push(async move {
                         let seal_watcher = tail_watcher.wait_for_seal();
                         if seal_watcher.await.is_ok() {
-                            let msg = Sealed::new(*tail_watcher.get()).with_status(Status::Ok);
-                            let response = response.map(|_| msg);
+                            let body = Sealed::new(*tail_watcher.get()).with_status(Status::Ok);
+                            let response = reciprocal.prepare(body);
                             // send the response over the network
                             let _ = response.send().await;
                         }
                     });
-                    let seal_token = self.process_seal(msg.into_body(), &mut sealing_in_progress).await;
+                    let seal_token = self.process_seal(msg, &mut sealing_in_progress).await;
                     if let Some(seal_token) = seal_token {
                         in_flight_seal.set(Some(seal_token).into());
                     }
@@ -218,36 +218,36 @@ impl<S: LogStore> LogletWorker<S> {
                 }
                 // GET_LOGLET_INFO
                 Some(msg) = get_loglet_info_rx.recv() => {
-                    self.global_tail_tracker.maybe_update(msg.known_global_tail);
-                    known_global_tail = known_global_tail.max(msg.known_global_tail);
+                    self.global_tail_tracker.maybe_update(msg.body().known_global_tail);
+                    known_global_tail = known_global_tail.max(msg.body().known_global_tail);
                     // drop response if connection is lost/congested
-                    if let Err(e) = msg.try_respond_rpc(LogletInfo::new(self.loglet_state.local_tail(), self.loglet_state.trim_point())) {
-                        debug!(?e.source, peer = %msg.peer(), "Failed to respond to GetLogletInfo message due to peer channel capacity being full");
+                    let peer = *msg.peer();
+                    if let Err(e) = msg.to_rpc_response(LogletInfo::new(self.loglet_state.local_tail(), self.loglet_state.trim_point())).try_send() {
+                        debug!(?e.source, peer = %peer, "Failed to respond to GetLogletInfo message due to peer channel capacity being full");
                     }
                 }
                 // GET_RECORDS
                 Some(msg) = get_records_rx.recv() => {
-                    self.global_tail_tracker.maybe_update(msg.known_global_tail);
-                    known_global_tail = known_global_tail.max(msg.known_global_tail);
+                    self.global_tail_tracker.maybe_update(msg.body().known_global_tail);
+                    known_global_tail = known_global_tail.max(msg.body().known_global_tail);
                     // read responses are spawned as disposable tasks
                     self.process_get_records(msg).await;
                 }
                 // TRIM
                 Some(msg) = trim_rx.recv() => {
-                    self.global_tail_tracker.maybe_update(msg.known_global_tail);
-                    known_global_tail = known_global_tail.max(msg.known_global_tail);
-                    self.process_trim(msg, known_global_tail).await;
+                    self.global_tail_tracker.maybe_update(msg.body().known_global_tail);
+                    known_global_tail = known_global_tail.max(msg.body().known_global_tail);
+                    self.process_trim(msg, known_global_tail);
                 }
                 // STORE
                 Some(msg) = store_rx.recv() => {
+                    let (reciprocal, msg) = msg.split();
                     // this message might be telling us about a higher `known_global_tail`
                     self.global_tail_tracker.maybe_update(msg.known_global_tail);
                     known_global_tail = known_global_tail.max(msg.known_global_tail);
                     let next_ok_offset = std::cmp::max(staging_local_tail, known_global_tail );
-                    let response =
-                    msg.prepare_response(Stored::empty());
-                    let peer = msg.peer();
-                    let (status, maybe_store_token) = self.process_store(peer, msg.into_body(), &mut staging_local_tail, next_ok_offset, &sealing_in_progress).await;
+                    let peer = *reciprocal.peer();
+                    let (status, maybe_store_token) = self.process_store(peer, msg, &mut staging_local_tail, next_ok_offset, &sealing_in_progress).await;
                     // if this store is complete, the last committed is updated to this value.
                     let future_last_committed = staging_local_tail;
                     if let Some(store_token) = maybe_store_token {
@@ -262,23 +262,22 @@ impl<S: LogStore> LogletWorker<S> {
                                     local_tail_watch.notify_offset_update(future_last_committed);
                                     // ignoring the error if we couldn't send the response
                                     let msg = Stored::new(*local_tail_watch.get()).with_status(status);
-                                    let response = response.map(|_| msg);
+                                    let response = reciprocal.prepare(msg);
                                     // send the response over the network
                                     let _ = response.send().await;
                                 }
                                 Err(e) => {
                                     // log-store in failsafe mode and cannot process stores anymore.
                                     warn!(?e, "Log-store is in failsafe mode, dropping store");
-                                    let response = response.map(|msg| msg.with_status(Status::Disabled));
-                                    let _ = response.send().await;
+                                    let _ = reciprocal.prepare(Stored::empty()).send().await;
                                 }
                             }
                         });
                     } else {
                         // we didn't store, let's respond immediately with status
                         let msg = Stored::new(self.loglet_state.local_tail()).with_status(status);
+                        let response = reciprocal.prepare(msg);
                         in_flight_network_sends.push(async move {
-                            let response = response.map(|_| msg);
                             // ignore send errors.
                             let _ = response.send().await;
                         });
@@ -386,28 +385,28 @@ impl<S: LogStore> LogletWorker<S> {
         let _ = self
             .task_center
             .spawn(TaskKind::Disposable, "loglet-read", None, async move {
+                let (reciprocal, msg) = msg.split();
+                let from_offset = msg.from_offset;
                 // validate that from_offset <= to_offset
                 if msg.from_offset > msg.to_offset {
-                    let response = msg.prepare_response(Records::empty(msg.from_offset));
-                    let response = response.map(|m| m.with_status(Status::Malformed));
+                    let response = reciprocal
+                        .prepare(Records::empty(from_offset).with_status(Status::Malformed));
                     // ship the response to the original connection
                     let _ = response.send().await;
                     return Ok(());
                 }
-                // initial response
-                let response =
-                    msg.prepare_response(Records::new(loglet_state.local_tail(), msg.from_offset));
-                let response = match log_store.read_records(msg.into_body(), loglet_state).await {
-                    Ok(records) => response.map(|_| records),
-                    Err(_) => response.map(|m| m.with_status(Status::Disabled)),
+                let records = match log_store.read_records(msg, &loglet_state).await {
+                    Ok(records) => records,
+                    Err(_) => Records::new(loglet_state.local_tail(), from_offset)
+                        .with_status(Status::Disabled),
                 };
                 // ship the response to the original connection
-                let _ = response.send().await;
+                let _ = reciprocal.prepare(records).send().await;
                 Ok(())
             });
     }
 
-    async fn process_trim(&mut self, mut msg: Incoming<Trim>, known_global_tail: LogletOffset) {
+    fn process_trim(&mut self, msg: Incoming<Trim>, known_global_tail: LogletOffset) {
         // When trimming, we eagerly update the in-memory view of the trim-point _before_ we
         // perform the trim on the log-store since it's safer to over report the trim-point than
         // under report.
@@ -418,24 +417,24 @@ impl<S: LogStore> LogletWorker<S> {
         let _ = self
             .task_center
             .spawn(TaskKind::Disposable, "loglet-trim", None, async move {
-                let loglet_id = msg.loglet_id;
-                let new_trim_point = msg.trim_point;
-                let response = msg.prepare_response(Trimmed::empty());
+                let loglet_id = msg.body().loglet_id;
+                let new_trim_point = msg.body().trim_point;
                 // cannot trim beyond the global known tail (if known) or the local_tail whichever is higher.
                 let local_tail = loglet_state.local_tail();
                 let high_watermark = known_global_tail.max(local_tail.offset());
                 if new_trim_point < LogletOffset::OLDEST || new_trim_point >= high_watermark {
-                    let _ = msg.respond(Trimmed::new(loglet_state.local_tail()).with_status(Status::Malformed)).await;
+                    let _ = msg.to_rpc_response(Trimmed::new(loglet_state.local_tail()).with_status(Status::Malformed)).send().await;
                     return Ok(());
                 }
 
+                let (reciprocal, mut msg) = msg.split();
                 // The trim point cannot be at or exceed the local_tail, we clip to the
                 // local_tail-1 if that's the case.
                 msg.trim_point = msg.trim_point.min(local_tail.offset().prev());
 
 
                 let body = if loglet_state.update_trim_point(msg.trim_point) {
-                    match log_store.enqueue_trim(msg.into_body()).await?.await {
+                    match log_store.enqueue_trim(msg).await?.await {
                         Ok(_) => Trimmed::new(loglet_state.local_tail()).with_status(Status::Ok),
                         Err(_) => {
                             warn!(
@@ -452,8 +451,7 @@ impl<S: LogStore> LogletWorker<S> {
                 };
 
                 // ship the response to the original connection
-                let response = response.map(|_| body);
-                let _ = response.send().await;
+                let _ = reciprocal.prepare(body).send().await;
                 Ok(())
             });
     }
@@ -490,8 +488,8 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
-    use restate_core::network::Connection;
-    use restate_core::{TaskCenter, TaskCenterBuilder};
+    use restate_core::network::OwnedConnection;
+    use restate_core::{MetadataBuilder, TaskCenter, TaskCenterBuilder};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
@@ -514,6 +512,8 @@ mod tests {
         let log_store = tc
             .run_in_scope("test-setup", None, async {
                 RocksDbManager::init(common_rocks_opts);
+                let metadata_builder = MetadataBuilder::default();
+                assert!(tc.try_set_global_metadata(metadata_builder.to_metadata()));
                 // create logstore.
                 let builder = RocksDbLogStoreBuilder::create(
                     config.clone().map(|c| &c.log_server).boxed(),
@@ -536,7 +536,7 @@ mod tests {
         let mut loglet_state_map = LogletStateMap::default();
         let global_tail_tracker = GlobalTailTrackerMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = Connection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(
@@ -576,8 +576,8 @@ mod tests {
             payloads: payloads.clone(),
         };
 
-        let msg1 = Incoming::for_testing(&connection, msg1, None);
-        let msg2 = Incoming::for_testing(&connection, msg2, None);
+        let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
+        let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
         let msg1_id = msg1.msg_id();
         let msg2_id = msg2.msg_id();
 
@@ -621,7 +621,7 @@ mod tests {
         let mut loglet_state_map = LogletStateMap::default();
         let global_tail_tracker = GlobalTailTrackerMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = Connection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(
@@ -673,10 +673,10 @@ mod tests {
             payloads: payloads.clone(),
         };
 
-        let msg1 = Incoming::for_testing(&connection, msg1, None);
-        let seal1 = Incoming::for_testing(&connection, seal1, None);
-        let seal2 = Incoming::for_testing(&connection, seal2, None);
-        let msg2 = Incoming::for_testing(&connection, msg2, None);
+        let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
+        let seal1 = Incoming::for_testing(connection.downgrade(), seal1, None);
+        let seal2 = Incoming::for_testing(connection.downgrade(), seal2, None);
+        let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
         let msg1_id = msg1.msg_id();
         let seal1_id = seal1.msg_id();
         let seal2_id = seal2.msg_id();
@@ -744,7 +744,7 @@ mod tests {
             flags: StoreFlags::empty(),
             payloads: payloads.clone(),
         };
-        let msg3 = Incoming::for_testing(&connection, msg3, None);
+        let msg3 = Incoming::for_testing(connection.downgrade(), msg3, None);
         let msg3_id = msg3.msg_id();
         worker.enqueue_store(msg3).unwrap();
         let response = net_rx.recv().await.unwrap();
@@ -763,7 +763,7 @@ mod tests {
             loglet_id: LOGLET,
             known_global_tail: LogletOffset::INVALID,
         };
-        let msg = Incoming::for_testing(&connection, msg, None);
+        let msg = Incoming::for_testing(connection.downgrade(), msg, None);
         let msg_id = msg.msg_id();
         worker.enqueue_get_loglet_info(msg).unwrap();
 
@@ -794,7 +794,7 @@ mod tests {
         let mut loglet_state_map = LogletStateMap::default();
         let global_tail_tracker = GlobalTailTrackerMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = Connection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(
@@ -809,7 +809,7 @@ mod tests {
         // Note: dots mean we don't have records at those globally committed offsets.
         worker
             .enqueue_store(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 Store {
                     loglet_id: LOGLET,
                     timeout_at: None,
@@ -827,7 +827,7 @@ mod tests {
 
         worker
             .enqueue_store(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 Store {
                     loglet_id: LOGLET,
                     timeout_at: None,
@@ -845,7 +845,7 @@ mod tests {
 
         worker
             .enqueue_store(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 Store {
                     loglet_id: LOGLET,
                     timeout_at: None,
@@ -876,7 +876,7 @@ mod tests {
         // We expect to see [2, 5]. No trim gaps, no filtered gaps.
         worker
             .enqueue_get_records(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 GetRecords {
                     loglet_id: LOGLET,
                     filter: KeyFilter::Any,
@@ -916,7 +916,7 @@ mod tests {
         // We expect to see [2, FILTERED(5), 10, 11]. No trim gaps.
         worker
             .enqueue_get_records(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 GetRecords {
                     loglet_id: LOGLET,
                     // no memory limits
@@ -965,7 +965,7 @@ mod tests {
         // We expect to see [FILTERED(5), 10]. (11 is not returend due to budget)
         worker
             .enqueue_get_records(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 GetRecords {
                     loglet_id: LOGLET,
                     // no memory limits
@@ -1025,7 +1025,7 @@ mod tests {
         let mut loglet_state_map = LogletStateMap::default();
         let global_tail_tracker = GlobalTailTrackerMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = Connection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(
@@ -1041,7 +1041,7 @@ mod tests {
         // The loglet has no knowledge of global commits, it shouldn't accept trims.
         worker
             .enqueue_trim(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 Trim {
                     loglet_id: LOGLET,
                     known_global_tail: LogletOffset::OLDEST,
@@ -1066,7 +1066,7 @@ mod tests {
         // won't move trim point beyond its local tail.
         worker
             .enqueue_trim(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 Trim {
                     loglet_id: LOGLET,
                     known_global_tail: LogletOffset::new(10),
@@ -1090,7 +1090,7 @@ mod tests {
         // let's store some records at offsets (5, 6)
         worker
             .enqueue_store(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 Store {
                     loglet_id: LOGLET,
                     timeout_at: None,
@@ -1118,7 +1118,7 @@ mod tests {
         // trim to 5
         worker
             .enqueue_trim(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 Trim {
                     loglet_id: LOGLET,
                     known_global_tail: LogletOffset::new(10),
@@ -1142,7 +1142,7 @@ mod tests {
         // Attempt to read. We expect to see a trim gap (1->5, 6 (data-record))
         worker
             .enqueue_get_records(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 GetRecords {
                     loglet_id: LOGLET,
                     total_limit_in_bytes: None,
@@ -1189,7 +1189,7 @@ mod tests {
         // trim everything
         worker
             .enqueue_trim(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 Trim {
                     loglet_id: LOGLET,
                     known_global_tail: LogletOffset::new(10),
@@ -1213,7 +1213,7 @@ mod tests {
         // Attempt to read again. We expect to see a trim gap (1->6)
         worker
             .enqueue_get_records(Incoming::for_testing(
-                &connection,
+                connection.downgrade(),
                 GetRecords {
                     loglet_id: LOGLET,
                     total_limit_in_bytes: None,
