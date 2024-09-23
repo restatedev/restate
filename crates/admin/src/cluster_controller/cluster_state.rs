@@ -16,7 +16,7 @@ use std::time::Instant;
 use tokio::sync::watch;
 
 use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{MessageRouterBuilder, NetworkSender, Outgoing};
+use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
 use restate_types::net::partition_processor_manager::GetProcessorsState;
 use restate_types::nodes_config::Role;
 use restate_types::time::MillisSinceEpoch;
@@ -24,26 +24,24 @@ use restate_types::time::MillisSinceEpoch;
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle};
 use restate_types::Version;
 
-pub struct ClusterStateRefresher<N> {
+pub struct ClusterStateRefresher<T> {
     task_center: TaskCenter,
     metadata: Metadata,
-    get_state_router: RpcRouter<GetProcessorsState, N>,
+    network_sender: Networking<T>,
+    get_state_router: RpcRouter<GetProcessorsState>,
     in_flight_refresh: Option<TaskHandle<anyhow::Result<()>>>,
     cluster_state_update_rx: watch::Receiver<Arc<ClusterState>>,
     cluster_state_update_tx: Arc<watch::Sender<Arc<ClusterState>>>,
 }
 
-impl<N> ClusterStateRefresher<N>
-where
-    N: NetworkSender + 'static,
-{
+impl<T: TransportConnect> ClusterStateRefresher<T> {
     pub fn new(
         task_center: TaskCenter,
         metadata: Metadata,
-        networking: N,
+        network_sender: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
-        let get_state_router = RpcRouter::new(networking.clone(), router_builder);
+        let get_state_router = RpcRouter::new(router_builder);
 
         let initial_state = ClusterState {
             last_refreshed: None,
@@ -58,6 +56,7 @@ where
         Self {
             task_center,
             metadata,
+            network_sender,
             get_state_router,
             in_flight_refresh: None,
             cluster_state_update_rx,
@@ -97,6 +96,7 @@ where
         self.in_flight_refresh = Self::start_refresh_task(
             self.task_center.clone(),
             self.get_state_router.clone(),
+            self.network_sender.clone(),
             Arc::clone(&self.cluster_state_update_tx),
             self.metadata.clone(),
         )?;
@@ -106,7 +106,8 @@ where
 
     fn start_refresh_task(
         tc: TaskCenter,
-        get_state_router: RpcRouter<GetProcessorsState, N>,
+        get_state_router: RpcRouter<GetProcessorsState>,
+        network_sender: Networking<T>,
         cluster_state_tx: Arc<watch::Sender<Arc<ClusterState>>>,
         metadata: Metadata,
     ) -> Result<Option<TaskHandle<anyhow::Result<()>>>, ShutdownError> {
@@ -138,6 +139,7 @@ where
 
                 let rpc_router = get_state_router.clone();
                 let tc = tc.clone();
+                let network_sender = network_sender.clone();
                 join_set
                     .build_task()
                     .name("get-processors-state")
@@ -148,10 +150,11 @@ where
                                 tokio::time::timeout(
                                     // todo: make configurable
                                     std::time::Duration::from_secs(1),
-                                    rpc_router.call(Outgoing::new(
+                                    rpc_router.call(
+                                        &network_sender,
                                         node_id,
                                         GetProcessorsState::default(),
-                                    )),
+                                    ),
                                 )
                                 .await,
                             )
@@ -191,7 +194,7 @@ where
                     node_id,
                     NodeState::Alive(AliveNode {
                         last_heartbeat_at: MillisSinceEpoch::now(),
-                        generational_node_id: from,
+                        generational_node_id: *from.peer(),
                         partitions: msg.state,
                     }),
                 );

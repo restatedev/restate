@@ -300,7 +300,7 @@ mod tests {
         F: FnMut(Arc<dyn Loglet>) -> O,
         O: std::future::Future<Output = googletest::Result<()>>,
     {
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -346,7 +346,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn local_loglet_append_after_seal_concurrent() -> googletest::Result<()> {
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;

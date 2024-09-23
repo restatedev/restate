@@ -109,7 +109,7 @@ flexbuffers = { version = "2.0.0" }
 futures = "0.3.25"
 futures-sink = "0.3.25"
 futures-util = "0.3.25"
-googletest = "0.10"
+googletest = { version = "0.10", features = ["anyhow"] }
 hostname = { version = "0.4.0" }
 http = "1.1.0"
 http-body = "1.0.1"

@@ -21,20 +21,20 @@ use super::ReplicationProperty;
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct ReplicatedLogletParams {
     /// Unique identifier for this loglet
-    loglet_id: ReplicatedLogletId,
+    pub loglet_id: ReplicatedLogletId,
     /// The sequencer node
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    sequencer: GenerationalNodeId,
+    pub sequencer: GenerationalNodeId,
     /// Replication properties of this loglet
-    replication: ReplicationProperty,
-    nodeset: NodeSet,
+    pub replication: ReplicationProperty,
+    pub nodeset: NodeSet,
     /// The set of nodes the sequencer has been considering for writes after the last
     /// known_global_tail advance.
     ///
     /// If unset, the entire nodeset is considered as part of the write set
     /// If set, tail repair will attempt reading only from this set.
     #[serde(skip_serializing_if = "Option::is_none")]
-    write_set: Option<NodeSet>,
+    pub write_set: Option<NodeSet>,
 }
 
 impl ReplicatedLogletParams {

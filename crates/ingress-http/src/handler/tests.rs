@@ -1083,7 +1083,7 @@ where
     <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     <B as http_body::Body>::Data: Send + Sync + 'static,
 {
-    let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+    let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
     let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
     let dispatcher = MockDispatcher::new(ingress_request_tx);
 

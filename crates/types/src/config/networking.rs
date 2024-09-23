@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,12 @@ pub struct NetworkingOptions {
     /// Retry policy to use for internal node-to-node networking.
     pub connect_retry_policy: RetryPolicy,
 
+    /// # Connection Send Buffer
+    ///
+    /// The number of messages that can be queued on the outbound stream of a single
+    /// connection
+    pub outbound_queue_length: NonZeroUsize,
+
     /// # Handshake timeout
     ///
     /// Timeout for handshake message for internal node-to-node networking.
@@ -35,8 +42,6 @@ pub struct NetworkingOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub handshake_timeout: humantime::Duration,
 }
-
-impl NetworkingOptions {}
 
 impl Default for NetworkingOptions {
     fn default() -> Self {
@@ -47,6 +52,8 @@ impl Default for NetworkingOptions {
                 Some(10),
                 Some(Duration::from_millis(500)),
             ),
+
+            outbound_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
             handshake_timeout: Duration::from_secs(3).into(),
         }
     }

@@ -515,8 +515,8 @@ mod tests {
     #[traced_test]
     async fn test_append_smoke() -> googletest::Result<()> {
         let num_partitions = 5;
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
-            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 num_partitions,
             ))
@@ -592,7 +592,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_lazy_initialization() -> googletest::Result<()> {
-        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
             let delay = Duration::from_secs(5);
@@ -614,7 +614,7 @@ mod tests {
     #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn trim_log_smoke_test() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -705,8 +705,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_read_across_segments() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
-            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
             ))
@@ -907,8 +907,8 @@ mod tests {
     #[traced_test]
     async fn test_appends_correctly_handle_reconfiguration() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
-            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
             ))

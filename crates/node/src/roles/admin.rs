@@ -20,6 +20,7 @@ use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
+use restate_core::network::TransportConnect;
 use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
@@ -43,18 +44,18 @@ pub enum AdminRoleBuildError {
     ServiceClient(#[from] restate_service_client::BuildError),
 }
 
-pub struct AdminRole {
+pub struct AdminRole<T> {
     updateable_config: Live<Configuration>,
-    controller: cluster_controller::Service<Networking>,
+    controller: cluster_controller::Service<T>,
     admin: AdminService<IngressOptions>,
 }
 
-impl AdminRole {
+impl<T: TransportConnect> AdminRole<T> {
     pub async fn create(
         task_center: TaskCenter,
         updateable_config: Live<Configuration>,
         metadata: Metadata,
-        networking: Networking,
+        networking: Networking<T>,
         metadata_writer: MetadataWriter,
         router_builder: &mut MessageRouterBuilder,
         metadata_store_client: MetadataStoreClient,
