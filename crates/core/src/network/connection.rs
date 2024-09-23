@@ -336,4 +336,10 @@ impl ConnectionSender {
     }
 }
 
+impl PartialEq for ConnectionSender {
+    fn eq(&self, other: &Self) -> bool {
+        self.connection.ptr_eq(&other.connection)
+    }
+}
+
 static_assertions::assert_impl_all!(ConnectionSender: Send, Sync);
