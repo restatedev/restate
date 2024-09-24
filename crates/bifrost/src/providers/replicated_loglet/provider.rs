@@ -24,6 +24,7 @@ use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use super::loglet::ReplicatedLoglet;
 use super::metric_definitions;
+use super::rpc_routers::LogServersRpc;
 use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
 use crate::Error;
@@ -34,6 +35,7 @@ pub struct Factory<T> {
     metadata: Metadata,
     metadata_store_client: MetadataStoreClient,
     networking: Networking<T>,
+    logserver_rpc_routers: LogServersRpc,
 }
 
 impl<T: TransportConnect> Factory<T> {
@@ -43,17 +45,17 @@ impl<T: TransportConnect> Factory<T> {
         metadata_store_client: MetadataStoreClient,
         metadata: Metadata,
         networking: Networking<T>,
-        _router_builder: &mut MessageRouterBuilder,
+        router_builder: &mut MessageRouterBuilder,
     ) -> Self {
-        // todo(asoli):
-        // - Create the shared RpcRouter(s)
-        // - A Handler to answer to control plane monitoring questions
+        let logserver_rpc_routers = LogServersRpc::new(router_builder);
+        // todo(asoli): Create a handler to answer to control plane monitoring questions
         Self {
             task_center,
             opts,
             metadata,
             metadata_store_client,
             networking,
+            logserver_rpc_routers,
         }
     }
 }
@@ -72,17 +74,19 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
             self.metadata,
             self.metadata_store_client,
             self.networking,
+            self.logserver_rpc_routers,
         )))
     }
 }
 
 struct ReplicatedLogletProvider<T> {
-    active_loglets: DashMap<(LogId, SegmentIndex), Arc<ReplicatedLoglet>>,
-    _task_center: TaskCenter,
+    active_loglets: DashMap<(LogId, SegmentIndex), Arc<ReplicatedLoglet<T>>>,
+    task_center: TaskCenter,
     _opts: BoxedLiveLoad<ReplicatedLogletOptions>,
-    _metadata: Metadata,
+    metadata: Metadata,
     _metadata_store_client: MetadataStoreClient,
-    _networking: Networking<T>,
+    networking: Networking<T>,
+    logserver_rpc_routers: LogServersRpc,
 }
 
 impl<T: TransportConnect> ReplicatedLogletProvider<T> {
@@ -92,17 +96,19 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
         metadata: Metadata,
         metadata_store_client: MetadataStoreClient,
         networking: Networking<T>,
+        logserver_rpc_routers: LogServersRpc,
     ) -> Self {
         // todo(asoli): create all global state here that'll be shared across loglet instances
         // - RecordCache.
         // - NodeState map.
         Self {
             active_loglets: Default::default(),
-            _task_center: task_center,
+            task_center,
             _opts: opts,
-            _metadata: metadata,
+            metadata,
             _metadata_store_client: metadata_store_client,
-            _networking: networking,
+            networking,
+            logserver_rpc_routers,
         }
     }
 }
@@ -124,7 +130,13 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
                     })?;
 
                 // Create loglet
-                let loglet = ReplicatedLoglet::new(params);
+                let loglet = ReplicatedLoglet::new(
+                    params,
+                    self.task_center.clone(),
+                    self.metadata.clone(),
+                    self.networking.clone(),
+                    self.logserver_rpc_routers.clone(),
+                );
                 let key_value = entry.insert(Arc::new(loglet));
                 Arc::clone(key_value.value())
             }

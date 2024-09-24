@@ -13,6 +13,7 @@ mod loglet;
 pub(crate) mod metric_definitions;
 mod provider;
 pub mod replication;
+mod rpc_routers;
 #[allow(dead_code)]
 pub mod sequencer;
 #[cfg(any(test, feature = "test-util"))]

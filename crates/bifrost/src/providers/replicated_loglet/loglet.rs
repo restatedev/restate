@@ -8,32 +8,56 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// todo(asoli): remove once this is fleshed out
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use restate_core::ShutdownError;
+use restate_core::network::{Networking, TransportConnect};
+use restate_core::{Metadata, ShutdownError, TaskCenter};
 use restate_types::logs::{KeyFilter, LogletOffset, Record, TailState};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
 
+use super::rpc_routers::LogServersRpc;
+
 #[derive(derive_more::Debug)]
-pub(super) struct ReplicatedLoglet {
-    _my_params: ReplicatedLogletParams,
+pub(super) struct ReplicatedLoglet<T> {
+    my_params: ReplicatedLogletParams,
+    #[debug(skip)]
+    task_center: TaskCenter,
+    #[debug(skip)]
+    metadata: Metadata,
+    #[debug(skip)]
+    logservers_rpc: LogServersRpc,
+    #[debug(skip)]
+    networking: Networking<T>,
 }
 
-impl ReplicatedLoglet {
-    pub fn new(my_params: ReplicatedLogletParams) -> Self {
+impl<T: TransportConnect> ReplicatedLoglet<T> {
+    pub fn new(
+        my_params: ReplicatedLogletParams,
+        task_center: TaskCenter,
+        metadata: Metadata,
+        networking: Networking<T>,
+        logservers_rpc: LogServersRpc,
+    ) -> Self {
         Self {
-            _my_params: my_params,
+            my_params,
+            task_center,
+            metadata,
+            networking,
+            logservers_rpc,
         }
     }
 }
 
 #[async_trait]
-impl Loglet for ReplicatedLoglet {
+impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     async fn create_read_stream(
         self: Arc<Self>,
         _filter: KeyFilter,
