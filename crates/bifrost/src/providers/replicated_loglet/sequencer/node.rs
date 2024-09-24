@@ -12,10 +12,7 @@ use std::{collections::BTreeMap, ops::Deref, sync::Arc};
 
 use tokio::sync::Mutex;
 
-use restate_core::{
-    network::{ConnectionSender, NetworkError, Networking},
-    Metadata,
-};
+use restate_core::network::{NetworkError, Networking, TransportConnect, WeakConnection};
 use restate_types::{
     logs::{LogletOffset, SequenceNumber, TailState},
     replicated_loglet::{NodeSet, ReplicatedLogletId},
@@ -30,15 +27,15 @@ type LogServerLock = Mutex<Option<RemoteLogServer>>;
 #[derive(Clone)]
 pub struct RemoteLogServer {
     loglet_id: ReplicatedLogletId,
-    node: PlainNodeId,
+    node_id: PlainNodeId,
     tail: TailOffsetWatch,
     //todo(azmy): maybe use ArcSwap here to update
-    sender: ConnectionSender,
+    connection: WeakConnection,
 }
 
 impl RemoteLogServer {
     pub fn node_id(&self) -> PlainNodeId {
-        self.node
+        self.node_id
     }
 
     pub fn loglet_id(&self) -> ReplicatedLogletId {
@@ -49,17 +46,16 @@ impl RemoteLogServer {
         &self.tail
     }
 
-    pub fn sender(&mut self) -> &mut ConnectionSender {
-        &mut self.sender
+    pub fn connection(&self) -> &WeakConnection {
+        &self.connection
     }
 }
 
-struct RemoteLogServerManagerInner {
+struct RemoteLogServerManagerInner<T> {
     loglet_id: ReplicatedLogletId,
     servers: BTreeMap<PlainNodeId, LogServerLock>,
     node_set: NodeSet,
-    metadata: Metadata,
-    networking: Networking,
+    networking: Networking<T>,
 }
 
 /// LogServerManager maintains a set of [`RemoteLogServer`]s that provided via the
@@ -67,11 +63,11 @@ struct RemoteLogServerManagerInner {
 ///
 /// The manager makes sure there is only one active connection per server.
 /// It's up to the user of the client to do [`LogServerManager::renew`] if needed
-pub(crate) struct RemoteLogServerManager {
-    inner: Arc<RemoteLogServerManagerInner>,
+pub(crate) struct RemoteLogServerManager<T> {
+    inner: Arc<RemoteLogServerManagerInner<T>>,
 }
 
-impl Clone for RemoteLogServerManager {
+impl<T> Clone for RemoteLogServerManager<T> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -79,12 +75,11 @@ impl Clone for RemoteLogServerManager {
     }
 }
 
-impl RemoteLogServerManager {
+impl<T: TransportConnect> RemoteLogServerManager<T> {
     /// creates the node set and start the appenders
     pub fn new(
         loglet_id: ReplicatedLogletId,
-        metadata: Metadata,
-        networking: Networking,
+        networking: Networking<T>,
         node_set: NodeSet,
     ) -> Self {
         let mut servers = BTreeMap::default();
@@ -96,7 +91,6 @@ impl RemoteLogServerManager {
             loglet_id,
             servers,
             node_set,
-            metadata,
             networking,
         };
 
@@ -105,25 +99,12 @@ impl RemoteLogServerManager {
         }
     }
 
-    async fn connect(&self, id: PlainNodeId) -> Result<ConnectionSender, NetworkError> {
-        let conf = self.inner.metadata.nodes_config_ref();
-        let node = conf.find_node_by_id(id)?;
-        let connection = self
-            .inner
-            .networking
-            .connection_manager()
-            .get_node_sender(node.current_generation)
-            .await?;
-
-        Ok(connection)
-    }
-
-    /// gets a log-server instance. On first time it will initialize a new connection
-    /// to log server. It will make sure all following get call will hold the same
+    /// Gets a log-server instance. On first time it will initialize a new connection
+    /// to log server. It will make sure all following get call holds the same
     /// connection.
     ///
-    /// it's up to the client to call [`Self::renew`] if the connection it holds
-    /// is closed
+    /// It's up to the client to call [`Self::renew`] if the connection it holds
+    /// is closed.
     pub async fn get(&self, id: PlainNodeId) -> Result<RemoteLogServer, NetworkError> {
         let server = self.inner.servers.get(&id).expect("node is in nodeset");
 
@@ -133,21 +114,20 @@ impl RemoteLogServerManager {
             return Ok(current.clone());
         }
 
-        // initialize a new instance
+        let connection = self.inner.networking.node_connection(id.into()).await?;
         let server = RemoteLogServer {
             loglet_id: self.inner.loglet_id,
-            node: id,
+            node_id: id,
             tail: TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST)),
-            sender: self.connect(id).await?,
+            connection,
         };
 
-        // we need to update initialize it
         *guard = Some(server.clone());
 
         Ok(server)
     }
 
-    /// renew makes sure server connection is renewed if and only if
+    /// Renew makes sure server connection is renewed if and only if
     /// the provided server holds an outdated connection. Otherwise
     /// the latest connection associated with this server is used.
     ///
@@ -166,7 +146,7 @@ impl RemoteLogServerManager {
         let current = self
             .inner
             .servers
-            .get(&server.node)
+            .get(&server.node_id)
             .expect("node is in nodeset");
 
         let mut guard = current.lock().await;
@@ -174,15 +154,19 @@ impl RemoteLogServerManager {
         // if you calling renew then the LogServer has already been initialized
         let inner = guard.as_mut().expect("initialized log server instance");
 
-        if inner.sender != server.sender {
+        if inner.connection != server.connection {
             // someone else has already renewed the connection
-            server.sender = inner.sender.clone();
+            server.connection = inner.connection.clone();
             return Ok(());
         }
 
-        let sender = self.connect(server.node).await?;
-        inner.sender = sender.clone();
-        server.sender = sender.clone();
+        let connection = self
+            .inner
+            .networking
+            .node_connection(server.node_id.into())
+            .await?;
+        inner.connection = connection.clone();
+        server.connection = connection.clone();
 
         Ok(())
     }
