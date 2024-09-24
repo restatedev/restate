@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use tracing::trace;
 
 use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenter};
@@ -24,6 +25,7 @@ use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use super::loglet::ReplicatedLoglet;
 use super::metric_definitions;
+use super::record_cache::RecordCache;
 use super::rpc_routers::LogServersRpc;
 use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
@@ -86,13 +88,14 @@ struct ReplicatedLogletProvider<T> {
     metadata: Metadata,
     _metadata_store_client: MetadataStoreClient,
     networking: Networking<T>,
+    record_cache: RecordCache,
     logserver_rpc_routers: LogServersRpc,
 }
 
 impl<T: TransportConnect> ReplicatedLogletProvider<T> {
     fn new(
         task_center: TaskCenter,
-        opts: BoxedLiveLoad<ReplicatedLogletOptions>,
+        _opts: BoxedLiveLoad<ReplicatedLogletOptions>,
         metadata: Metadata,
         metadata_store_client: MetadataStoreClient,
         networking: Networking<T>,
@@ -104,10 +107,12 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
         Self {
             active_loglets: Default::default(),
             task_center,
-            _opts: opts,
+            _opts,
             metadata,
             _metadata_store_client: metadata_store_client,
             networking,
+            // todo(asoli): read memory budget from ReplicatedLogletOptions
+            record_cache: RecordCache::new(20_000_000), // 20MB
             logserver_rpc_routers,
         }
     }
@@ -129,6 +134,15 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
                         ReplicatedLogletError::LogletParamsParsingError(log_id, segment_index, e)
                     })?;
 
+                trace!(
+                    log_id = %log_id,
+                    segment_index = %segment_index,
+                    loglet_id = %params.loglet_id,
+                    nodeset = ?params.nodeset,
+                    sequencer = %params.sequencer,
+                    replication = ?params.replication,
+                    "Creating a replicated loglet client"
+                );
                 // Create loglet
                 let loglet = ReplicatedLoglet::new(
                     params,
@@ -136,6 +150,7 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
                     self.metadata.clone(),
                     self.networking.clone(),
                     self.logserver_rpc_routers.clone(),
+                    self.record_cache.clone(),
                 );
                 let key_value = entry.insert(Arc::new(loglet));
                 Arc::clone(key_value.value())

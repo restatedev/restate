@@ -15,14 +15,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use tracing::debug;
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter};
-use restate_types::logs::{KeyFilter, LogletOffset, Record, TailState};
+use restate_types::logs::{KeyFilter, LogletOffset, Record, SequenceNumber, TailState};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
+use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
 
+use super::record_cache::RecordCache;
 use super::rpc_routers::LogServersRpc;
 
 #[derive(derive_more::Debug)]
@@ -33,9 +36,18 @@ pub(super) struct ReplicatedLoglet<T> {
     #[debug(skip)]
     metadata: Metadata,
     #[debug(skip)]
+    networking: Networking<T>,
+    #[debug(skip)]
     logservers_rpc: LogServersRpc,
     #[debug(skip)]
-    networking: Networking<T>,
+    record_cache: RecordCache,
+    /// A shared watch for the last known global tail of the loglet.
+    /// Note that this comes with a few caveats:
+    /// - On startup, this defaults to `Open(OLDEST)`
+    /// - find_tail() should use this value iff we have a local sequencerm for all other cases, we
+    /// should run a proper tail search.
+    known_global_tail: TailOffsetWatch,
+    sequencer_state: SequencerState,
 }
 
 impl<T: TransportConnect> ReplicatedLoglet<T> {
@@ -45,15 +57,38 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         metadata: Metadata,
         networking: Networking<T>,
         logservers_rpc: LogServersRpc,
+        record_cache: RecordCache,
     ) -> Self {
+        let sequencer_state = if metadata.my_node_id() == my_params.sequencer {
+            debug!(
+                loglet_id = %my_params.loglet_id,
+                "We are the sequencer node for this loglet"
+            );
+            SequencerState::Local
+        } else {
+            SequencerState::Remote
+        };
         Self {
             my_params,
             task_center,
             metadata,
             networking,
             logservers_rpc,
+            record_cache,
+            known_global_tail: TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST)),
+            sequencer_state,
         }
     }
+}
+
+// todo(asoli): This will hold a handle to access the local sequencer, or a swappable handle if
+// it's a remote sequencer.
+#[derive(Debug)]
+enum SequencerState {
+    /// The sequencer is remote (or retired/preempted)
+    Remote,
+    /// We are the loglet leaders
+    Local,
 }
 
 #[async_trait]
@@ -68,7 +103,10 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
-        todo!()
+        // It's acceptable for watch_tail to return an outdated value in the beginning,
+        // but if the loglet is unsealed, we need to ensure that we have a mechanism to update
+        // this value if we don't have a local sequencer.
+        Box::pin(self.known_global_tail.to_stream())
     }
 
     async fn enqueue_batch(&self, _payloads: Arc<[Record]>) -> Result<LogletCommit, ShutdownError> {

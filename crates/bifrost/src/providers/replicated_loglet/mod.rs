@@ -12,6 +12,7 @@ mod error;
 mod loglet;
 pub(crate) mod metric_definitions;
 mod provider;
+mod record_cache;
 pub mod replication;
 mod rpc_routers;
 #[allow(dead_code)]
