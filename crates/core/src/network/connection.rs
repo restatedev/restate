@@ -271,6 +271,12 @@ impl WeakConnection {
     }
 }
 
+impl PartialEq for WeakConnection {
+    fn eq(&self, other: &Self) -> bool {
+        self.connection.ptr_eq(&other.connection)
+    }
+}
+
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
     use super::*;
