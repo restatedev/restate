@@ -19,6 +19,7 @@ use restate_cli_util::CommonOpts;
 use crate::commands::dump::Dump;
 use crate::commands::log::Log;
 use crate::commands::node::Node;
+use crate::commands::snapshot::Snapshot;
 
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
@@ -50,6 +51,9 @@ pub enum Command {
     /// Cluster node status
     #[clap(subcommand)]
     Nodes(Node),
+    /// Partition snapshots
+    #[clap(subcommand)]
+    Snapshots(Snapshot),
 }
 
 fn init(common_opts: &CommonOpts) {

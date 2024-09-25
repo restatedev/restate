@@ -41,6 +41,13 @@ pub struct NetworkingOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub handshake_timeout: humantime::Duration,
+
+    /// # Request timeout
+    ///
+    /// Default timeout for internal cluster RPC calls.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub rpc_call_timeout: humantime::Duration,
 }
 
 impl Default for NetworkingOptions {
@@ -55,6 +62,7 @@ impl Default for NetworkingOptions {
 
             outbound_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
             handshake_timeout: Duration::from_secs(3).into(),
+            rpc_call_timeout: Duration::from_secs(5).into(),
         }
     }
 }
