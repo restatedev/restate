@@ -14,12 +14,14 @@ use tracing::{debug, info};
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, ClusterStateResponse, DescribeLogRequest, DescribeLogResponse,
-    ListLogsRequest, ListLogsResponse, ListNodesRequest, ListNodesResponse, TrimLogRequest,
+    ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
+    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, ListLogsRequest,
+    ListLogsResponse, ListNodesRequest, ListNodesResponse, TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_bifrost::{Bifrost, FindTailAttributes};
 use restate_metadata_store::MetadataStoreClient;
+use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::Logs;
 use restate_types::logs::{LogId, Lsn};
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY};
@@ -157,6 +159,34 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             return Err(Status::internal(err.to_string()));
         }
         Ok(Response::new(()))
+    }
+
+    /// Handles ad-hoc snapshot requests, as sent by `restatectl snapshots create`. This is
+    /// implemented as an RPC call within the cluster to a worker node hosting the partition.
+    async fn create_partition_snapshot(
+        &self,
+        request: Request<CreatePartitionSnapshotRequest>,
+    ) -> Result<Response<CreatePartitionSnapshotResponse>, Status> {
+        let request = request.into_inner();
+        let partition_id = PartitionId::from(
+            u16::try_from(request.partition_id)
+                .map_err(|id| Status::invalid_argument(format!("Invalid partition id: {id}")))?,
+        );
+
+        match self
+            .controller_handle
+            .create_partition_snapshot(partition_id)
+            .await
+            .map_err(|_| Status::aborted("Node is shutting down"))?
+        {
+            Err(err) => {
+                info!("Failed creating partition snapshot: {err}");
+                Err(Status::internal(err.to_string()))
+            }
+            Ok(snapshot_id) => Ok(Response::new(CreatePartitionSnapshotResponse {
+                snapshot_id: snapshot_id.to_string(),
+            })),
+        }
     }
 }
 

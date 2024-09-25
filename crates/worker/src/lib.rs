@@ -119,11 +119,10 @@ impl<T: TransportConnect> Worker<T> {
 
         // ingress_kafka
         let ingress_kafka = IngressKafkaService::new(ingress_dispatcher.clone());
-        let subscription_controller_handle =
-            subscription_integration::SubscriptionControllerHandle::new(
-                config.ingress.clone(),
-                ingress_kafka.create_command_sender(),
-            );
+        let subscription_controller_handle = SubscriptionControllerHandle::new(
+            config.ingress.clone(),
+            ingress_kafka.create_command_sender(),
+        );
 
         let partition_store_manager = PartitionStoreManager::create(
             updateable_config.clone().map(|c| &c.worker.storage),
@@ -153,6 +152,9 @@ impl<T: TransportConnect> Worker<T> {
             networking,
             bifrost,
         );
+
+        // handle RPCs
+        router_builder.add_message_handler(partition_processor_manager.message_handler());
 
         let storage_query_context = QueryContext::create(
             &config.admin.query_engine,

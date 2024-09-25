@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use crate::identifiers::PartitionId;
+use crate::identifiers::{PartitionId, SnapshotId};
 use crate::net::{define_message, TargetName};
 
 use crate::net::define_rpc;
@@ -68,4 +68,26 @@ impl From<RunMode> for ProcessorCommand {
             RunMode::Follower => ProcessorCommand::Follower,
         }
     }
+}
+
+define_rpc! {
+    @request = CreateSnapshotRequest,
+    @response = CreateSnapshotResponse,
+    @request_target = TargetName::PartitionCreateSnapshotRequest,
+    @response_target = TargetName::PartitionCreateSnapshotResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSnapshotRequest {
+    pub partition_id: PartitionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSnapshotResponse {
+    pub result: Result<SnapshotId, SnapshotError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SnapshotError {
+    SnapshotCreationFailed(String),
 }
