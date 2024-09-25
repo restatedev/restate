@@ -781,11 +781,12 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 let key_range = key_range.clone();
                 move || async move {
                     let partition_store = storage_manager
-                        .open_partition_store(
+                        .open_or_restore_partition_store(
                             partition_id,
                             key_range,
                             OpenMode::CreateIfMissing,
                             &options.storage.rocksdb,
+                            &options.snapshots,
                         )
                         .await?;
 

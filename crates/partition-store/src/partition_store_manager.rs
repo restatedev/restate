@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
+use std::path::Path;
 use std::sync::Arc;
 
 use rocksdb::ExportImportFilesMetaData;
@@ -19,12 +20,12 @@ use tracing::{debug, error, info, warn};
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
-use restate_types::config::{RocksDbOptions, StorageOptions};
+use restate_types::config::{RocksDbOptions, SnapshotsOptions, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::{BoxedLiveLoad, LiveLoad};
 
 use crate::cf_options;
-use crate::snapshots::LocalPartitionSnapshot;
+use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata};
 use crate::PartitionStore;
 use crate::DB;
 
@@ -95,6 +96,47 @@ impl PartitionStoreManager {
         self.lookup.lock().await.live.values().cloned().collect()
     }
 
+    pub async fn open_or_restore_partition_store(
+        &self,
+        partition_id: PartitionId,
+        partition_key_range: RangeInclusive<PartitionKey>,
+        open_mode: OpenMode,
+        rocksdb_opts: &RocksDbOptions,
+        snapshots_opts: &SnapshotsOptions,
+    ) -> Result<PartitionStore, RocksError> {
+        let cf_name = cf_for_partition(partition_id);
+        let already_exists = self.rocksdb.inner().cf_handle(&cf_name).is_some();
+
+        if !already_exists
+            && snapshots_opts
+                .restore_policy
+                .unwrap_or_default()
+                .allows_restore_on_init()
+        {
+            if let Some((metadata, snapshot)) =
+                Self::find_latest_snapshot(&snapshots_opts.snapshots_dir(partition_id))
+            {
+                info!(
+                    ?partition_id,
+                    snapshot_id = %metadata.snapshot_id,
+                    lsn = ?metadata.min_applied_lsn,
+                    "Restoring partition from snapshot"
+                );
+                return self
+                    .restore_partition_store_snapshot(
+                        partition_id,
+                        partition_key_range,
+                        snapshot,
+                        rocksdb_opts,
+                    )
+                    .await;
+            }
+        }
+
+        self.open_partition_store(partition_id, partition_key_range, open_mode, rocksdb_opts)
+            .await
+    }
+
     pub async fn open_partition_store(
         &self,
         partition_id: PartitionId,
@@ -128,6 +170,46 @@ impl PartitionStoreManager {
         guard.live.insert(partition_id, partition_store.clone());
 
         Ok(partition_store)
+    }
+
+    pub fn find_latest_snapshot(
+        dir: &Path,
+    ) -> Option<(PartitionSnapshotMetadata, LocalPartitionSnapshot)> {
+        if !dir.exists() || !dir.is_dir() {
+            return None;
+        }
+
+        let mut snapshots: Vec<_> = std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().into_string().ok())
+            .collect::<Option<Vec<_>>>()?;
+
+        snapshots.sort_by(|a, b| b.cmp(a));
+        let latest_snapshot = snapshots.first();
+
+        if let Some(latest_snapshot) = latest_snapshot {
+            let metadata_path = dir.join(latest_snapshot).join("metadata.json");
+            if metadata_path.exists() {
+                let metadata = std::fs::read_to_string(metadata_path).ok()?;
+                let metadata: PartitionSnapshotMetadata = serde_json::from_str(&metadata).ok()?;
+
+                debug!(
+                    location = ?latest_snapshot,
+                    "Found partition snapshot, going to bootstrap store from it",
+                );
+                let snapshot = LocalPartitionSnapshot {
+                    base_dir: latest_snapshot.into(),
+                    min_applied_lsn: metadata.min_applied_lsn,
+                    db_comparator_name: metadata.db_comparator_name.clone(),
+                    files: metadata.files.clone(),
+                };
+
+                return Some((metadata, snapshot));
+            }
+        }
+
+        None
     }
 
     /// Imports a partition snapshot and opens it as a partition store.
