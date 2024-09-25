@@ -14,6 +14,7 @@
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::MessageRouterBuilder;
 use restate_types::net::log_server::{GetLogletInfo, GetRecords, Release, Seal, Store, Trim};
+use restate_types::net::replicated_loglet::Append;
 
 /// Used by replicated loglets to send requests and receive responses from log-servers
 /// Cloning this is cheap and all clones will share the same internal trackers.
@@ -46,5 +47,23 @@ impl LogServersRpc {
             get_loglet_info,
             get_records,
         }
+    }
+}
+
+/// Used by replicated loglets to send requests and receive responses from sequencers (other nodes
+/// running replicated loglets)
+/// Cloning this is cheap and all clones will share the same internal trackers.
+#[derive(Clone)]
+pub struct SequencersRpc {
+    pub append: RpcRouter<Append>,
+}
+
+impl SequencersRpc {
+    /// Registers all routers into the supplied message router. This ensures that
+    /// responses are routed correctly.
+    pub fn new(router_builder: &mut MessageRouterBuilder) -> Self {
+        let append = RpcRouter::new(router_builder);
+
+        Self { append }
     }
 }

@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use super::log_server::Status;
 use super::TargetName;
-use crate::logs::{LogletOffset, Record, SequenceNumber, TailState};
+use crate::logs::metadata::SegmentIndex;
+use crate::logs::{LogId, LogletOffset, Record, SequenceNumber, TailState};
 use crate::net::define_rpc;
 use crate::replicated_loglet::ReplicatedLogletId;
 
@@ -26,6 +27,16 @@ define_rpc! {
     @response = Appended,
     @request_target = TargetName::ReplicatedLogletAppend,
     @response_target = TargetName::ReplicatedLogletAppended,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommonRequestHeader {
+    /// This is used only to locate the loglet params if this operation activates
+    /// the remote loglet
+    pub log_id: LogId,
+    pub segment_index: SegmentIndex,
+    /// The loglet_id id globally unique
+    pub loglet_id: ReplicatedLogletId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,7 +67,8 @@ impl CommonResponseHeader {
 // ** APPEND
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Append {
-    pub loglet_id: ReplicatedLogletId,
+    #[serde(flatten)]
+    pub header: CommonRequestHeader,
     pub payloads: Vec<Record>,
 }
 
