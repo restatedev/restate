@@ -181,8 +181,7 @@ impl<T: TransportConnect> Appender<T> {
     }
 
     async fn send_wave(&mut self, spread_servers: Vec<RemoteLogServer>) -> AppenderState {
-        let next_global_committed_tail =
-            self.records.last_offset(self.first_offset).unwrap().next();
+        let last_offset = self.records.last_offset(self.first_offset).unwrap();
 
         let mut checker = NodeSetChecker::new(
             self.sequencer_shared_state.selector.nodeset(),
@@ -199,7 +198,7 @@ impl<T: TransportConnect> Appender<T> {
             // it is possible that we have visited this server
             // in a previous wave. So we can short circuit here
             // and just skip
-            if server.local_tail().latest_offset() >= next_global_committed_tail {
+            if server.local_tail().latest_offset() > last_offset {
                 checker.set_attribute(server.node_id(), true);
                 continue;
             }
@@ -278,13 +277,13 @@ impl<T: TransportConnect> Appender<T> {
                 }
             }
 
-            if checker.check_write_quorum(|attr| *attr) {
+            if self.commit_resolver.is_some() && checker.check_write_quorum(|attr| *attr) {
                 // resolve the commit if not resolved yet
                 if let Some(resolver) = self.commit_resolver.take() {
                     self.sequencer_shared_state
                         .global_committed_tail()
-                        .notify_offset_update(next_global_committed_tail);
-                    resolver.offset(next_global_committed_tail);
+                        .notify_offset_update(last_offset.next());
+                    resolver.offset(last_offset);
                 }
 
                 // drop the permit

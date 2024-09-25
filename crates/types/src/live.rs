@@ -152,6 +152,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct Pinned<T> {
     guard: arc_swap::Guard<Arc<T>, arc_swap::DefaultStrategy>,
 }
