@@ -15,10 +15,9 @@ use dashmap::DashMap;
 use tracing::trace;
 
 use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
-use restate_core::{task_center, Metadata, TaskCenter, TaskKind};
+use restate_core::{TaskCenter, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::config::ReplicatedLogletOptions;
-use restate_types::live::BoxedLiveLoad;
+use restate_types::config::Configuration;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
 use restate_types::logs::LogId;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
@@ -34,8 +33,6 @@ use crate::Error;
 
 pub struct Factory<T> {
     task_center: TaskCenter,
-    opts: BoxedLiveLoad<ReplicatedLogletOptions>,
-    metadata: Metadata,
     metadata_store_client: MetadataStoreClient,
     networking: Networking<T>,
     logserver_rpc_routers: LogServersRpc,
@@ -46,22 +43,22 @@ pub struct Factory<T> {
 impl<T: TransportConnect> Factory<T> {
     pub fn new(
         task_center: TaskCenter,
-        mut opts: BoxedLiveLoad<ReplicatedLogletOptions>,
         metadata_store_client: MetadataStoreClient,
-        metadata: Metadata,
         networking: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         // Handling Sequencer(s) incoming requests
-        let request_pump = RequestPump::new(opts.live_load(), metadata.clone(), router_builder);
+        let request_pump = RequestPump::new(
+            &Configuration::pinned().bifrost.replicated_loglet,
+            networking.metadata().clone(),
+            router_builder,
+        );
 
         let logserver_rpc_routers = LogServersRpc::new(router_builder);
         let sequencer_rpc_routers = SequencersRpc::new(router_builder);
         // todo(asoli): Create a handler to answer to control plane monitoring questions
         Self {
             task_center,
-            opts,
-            metadata,
             metadata_store_client,
             networking,
             logserver_rpc_routers,
@@ -80,9 +77,6 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
     async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
         metric_definitions::describe_metrics();
         let provider = Arc::new(ReplicatedLogletProvider::new(
-            self.task_center,
-            self.opts,
-            self.metadata,
             self.metadata_store_client,
             self.networking,
             self.logserver_rpc_routers,
@@ -90,7 +84,7 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
         ));
         // run the request pump. The request pump handles/routes incoming messages to our
         // locally hosted sequencers.
-        task_center().spawn(
+        self.task_center.spawn(
             TaskKind::NetworkMessageHandler,
             "sequencers-ingress",
             None,
@@ -107,9 +101,6 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
 
 pub(super) struct ReplicatedLogletProvider<T> {
     active_loglets: DashMap<(LogId, SegmentIndex), Arc<ReplicatedLoglet<T>>>,
-    task_center: TaskCenter,
-    _opts: BoxedLiveLoad<ReplicatedLogletOptions>,
-    metadata: Metadata,
     _metadata_store_client: MetadataStoreClient,
     networking: Networking<T>,
     record_cache: RecordCache,
@@ -119,9 +110,6 @@ pub(super) struct ReplicatedLogletProvider<T> {
 
 impl<T: TransportConnect> ReplicatedLogletProvider<T> {
     fn new(
-        task_center: TaskCenter,
-        _opts: BoxedLiveLoad<ReplicatedLogletOptions>,
-        metadata: Metadata,
         metadata_store_client: MetadataStoreClient,
         networking: Networking<T>,
         logserver_rpc_routers: LogServersRpc,
@@ -131,9 +119,6 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
         // - NodeState map.
         Self {
             active_loglets: Default::default(),
-            task_center,
-            _opts,
-            metadata,
             _metadata_store_client: metadata_store_client,
             networking,
             // todo(asoli): read memory budget from ReplicatedLogletOptions
@@ -175,13 +160,11 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
                     log_id,
                     segment_index,
                     params,
-                    self.task_center.clone(),
-                    self.metadata.clone(),
                     self.networking.clone(),
                     self.logserver_rpc_routers.clone(),
                     &self.sequencer_rpc_routers,
                     self.record_cache.clone(),
-                );
+                )?;
                 let key_value = entry.insert(Arc::new(loglet));
                 Arc::clone(key_value.value())
             }

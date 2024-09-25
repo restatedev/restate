@@ -11,25 +11,24 @@
 mod append;
 mod node;
 
-use std::sync::Arc;
+use std::sync::{atomic::AtomicU32, Arc};
 
-use futures::channel::oneshot;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Semaphore;
+use tracing::debug;
 
 use restate_core::{
-    cancellation_watcher,
-    network::{rpc_router::RpcRouter, MessageRouterBuilder, Networking, TransportConnect},
+    network::{rpc_router::RpcRouter, Networking, TransportConnect},
     task_center, Metadata, ShutdownError, TaskKind,
 };
 use restate_types::{
     config::Configuration,
-    logs::{LogletOffset, Record, SequenceNumber, TailState},
+    logs::{LogletOffset, Record, SequenceNumber},
     net::log_server::Store,
-    replicated_loglet::{NodeSet, ReplicatedLogletId},
+    replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty},
     GenerationalNodeId,
 };
 
-use super::replication::spread_selector::SpreadSelector;
+use super::replication::spread_selector::{SelectorStrategy, SpreadSelector};
 use crate::loglet::{util::TailOffsetWatch, LogletCommit};
 use append::Appender;
 use node::RemoteLogServerManager;
@@ -46,19 +45,32 @@ pub enum SequencerError {
 
 /// Sequencer shared state
 pub struct SequencerSharedState {
-    node_id: GenerationalNodeId,
-    loglet_id: ReplicatedLogletId,
+    next_write_offset: AtomicU32,
+    my_node_id: GenerationalNodeId,
+    my_params: ReplicatedLogletParams,
     committed_tail: TailOffsetWatch,
     selector: SpreadSelector,
 }
 
 impl SequencerSharedState {
-    pub fn node_id(&self) -> &GenerationalNodeId {
-        &self.node_id
+    pub fn my_node_id(&self) -> &GenerationalNodeId {
+        &self.my_node_id
+    }
+
+    pub fn replication(&self) -> &ReplicationProperty {
+        &self.my_params.replication
+    }
+
+    pub fn nodeset(&self) -> &NodeSet {
+        &self.my_params.nodeset
+    }
+
+    pub fn my_params(&self) -> &ReplicatedLogletParams {
+        &self.my_params
     }
 
     pub fn loglet_id(&self) -> &ReplicatedLogletId {
-        &self.loglet_id
+        &self.my_params.loglet_id
     }
 
     pub fn global_committed_tail(&self) -> &TailOffsetWatch {
@@ -66,229 +78,88 @@ impl SequencerSharedState {
     }
 }
 
-/// internal commands sent over the [`SequencerHandler`] to sequencer main loop
-struct SequencerCommand<Input, Output> {
-    input: Input,
-    sender: oneshot::Sender<Output>,
-}
-
-impl<Input, Output> SequencerCommand<Input, Output> {
-    fn new(input: Input) -> (oneshot::Receiver<Output>, Self) {
-        let (sender, receiver) = oneshot::channel();
-        (receiver, Self { input, sender })
-    }
-}
-
-/// Available sequencer commands
-enum SequencerCommands {
-    /// executed commands
-    EnqueueBatch(SequencerCommand<Arc<[Record]>, Result<LogletCommit, SequencerError>>),
-}
-
-struct SequencerCommandsWithPermit {
-    permit: OwnedSemaphorePermit,
-    command: SequencerCommands,
-}
-
-/// Available sequencer control and introspection commands
-enum SequencerCtrlCommands {
-    GetClusterState(SequencerCommand<(), ClusterState>),
-}
-
-/// Main interaction interface with the sequencer state machine
-#[derive(Clone)]
-pub struct SequencerHandle {
-    /// internal commands channel.
-    commands: mpsc::UnboundedSender<SequencerCommandsWithPermit>,
-    ctrl: mpsc::Sender<SequencerCtrlCommands>,
+/// This represents the leader sequencer for a loglet. The leader sequencer is the sole writer
+/// and we guarantee that only one leader sequencer is alive per loglet-id by tying its lifetime
+/// to the generation of this node-id.
+pub struct Sequencer<T> {
     sequencer_shared_state: Arc<SequencerSharedState>,
-    permits: Arc<Semaphore>,
+    log_server_manager: RemoteLogServerManager<T>,
+    metadata: Metadata,
+    rpc_router: RpcRouter<Store>,
+    /// The value we read from configuration, we keep it around because we can't get the original
+    /// capacity directly from `record_permits` Semaphore.
+    max_in_flight_records_in_config: usize,
+    /// Semaphore for the number of records in-flight.
+    /// This is an Arc<> to allow sending owned permits
+    record_permits: Arc<Semaphore>,
 }
 
-pub(crate) struct SequencerHandleSink {
-    commands: mpsc::UnboundedReceiver<SequencerCommandsWithPermit>,
-    ctrl: mpsc::Receiver<SequencerCtrlCommands>,
-}
+impl<T: TransportConnect> Sequencer<T> {
+    /// Create a new sequencer instance
+    pub fn new(
+        my_params: ReplicatedLogletParams,
+        selector_strategy: SelectorStrategy,
+        networking: Networking<T>,
+        rpc_router: RpcRouter<Store>,
+        global_tail: TailOffsetWatch,
+    ) -> Self {
+        let my_node_id = networking.my_node_id();
+        let loglet_id = my_params.loglet_id;
+        let nodeset = my_params.nodeset.clone();
+        let initial_tail = global_tail.latest_offset();
+        // Leader sequencers start on an empty loglet offset range
+        debug_assert_eq!(LogletOffset::OLDEST, initial_tail);
+        let next_write_offset = AtomicU32::new(*initial_tail);
 
-impl SequencerHandle {
-    pub(crate) fn new(
-        sequencer_shared_state: Arc<SequencerSharedState>,
-    ) -> (SequencerHandle, SequencerHandleSink) {
-        let permits = Arc::new(Semaphore::new(
-            Configuration::pinned()
-                .bifrost
-                .replicated_loglet
-                .maximum_inflight_batches
-                .into(),
-        ));
+        let selector = SpreadSelector::new(
+            nodeset.clone(),
+            selector_strategy,
+            my_params.replication.clone(),
+        );
 
-        let (commands_sender, commands_receiver) = mpsc::unbounded_channel();
-        let (ctrl_sender, ctrl_received) = mpsc::channel(64);
-        (
-            SequencerHandle {
-                commands: commands_sender,
-                ctrl: ctrl_sender,
-                sequencer_shared_state,
-                permits,
-            },
-            SequencerHandleSink {
-                commands: commands_receiver,
-                ctrl: ctrl_received,
-            },
-        )
+        let max_in_flight_records_in_config: usize = Configuration::pinned()
+            .bifrost
+            .replicated_loglet
+            .maximum_inflight_records
+            .into();
+
+        let record_permits = Arc::new(Semaphore::new(max_in_flight_records_in_config));
+        // shared state with appenders
+        let sequencer_shared_state = Arc::new(SequencerSharedState {
+            my_node_id,
+            my_params,
+            selector,
+            next_write_offset,
+            committed_tail: global_tail,
+        });
+
+        let metadata = networking.metadata().clone();
+        let log_server_manager = RemoteLogServerManager::new(loglet_id, networking, nodeset);
+
+        Self {
+            sequencer_shared_state,
+            log_server_manager,
+            rpc_router,
+            metadata,
+            record_permits,
+            max_in_flight_records_in_config,
+        }
     }
 
     pub fn sequencer_state(&self) -> &SequencerSharedState {
         &self.sequencer_shared_state
     }
 
-    pub async fn get_cluster_state(&self) -> Result<ClusterState, ShutdownError> {
-        let (receiver, command) = SequencerCommand::new(());
-        self.ctrl
-            .send(SequencerCtrlCommands::GetClusterState(command))
-            .await
-            .map_err(|_| ShutdownError)?;
-
-        receiver.await.map_err(|_| ShutdownError)
+    /// Number of records that can be added to the sequencer before exhausting it in-flight
+    /// capacity
+    pub fn available_capacity(&self) -> usize {
+        self.record_permits.available_permits()
     }
 
     pub async fn enqueue_batch(
         &self,
         payloads: Arc<[Record]>,
-    ) -> Result<LogletCommit, SequencerError> {
-        let permit = self.permits.clone().acquire_owned().await.unwrap();
-
-        let (receiver, command) = SequencerCommand::new(payloads);
-        self.commands
-            .send(SequencerCommandsWithPermit {
-                permit,
-                command: SequencerCommands::EnqueueBatch(command),
-            })
-            .map_err(|_| ShutdownError)?;
-
-        receiver.await.map_err(|_| ShutdownError)?
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ClusterState {
-    pub sequencer_id: GenerationalNodeId,
-    pub global_committed_tail: TailState<LogletOffset>,
-}
-
-/// Sequencer
-pub struct Sequencer<T> {
-    sequencer_shared_state: Arc<SequencerSharedState>,
-    log_server_manager: RemoteLogServerManager<T>,
-    metadata: Metadata,
-    next_write_offset: LogletOffset,
-    rpc_router: RpcRouter<Store>,
-    handle_sink: SequencerHandleSink,
-}
-
-impl<T: TransportConnect> Sequencer<T> {
-    /// Create a new sequencer instance
-    pub fn new(
-        node_id: GenerationalNodeId,
-        loglet_id: ReplicatedLogletId,
-        node_set: NodeSet,
-        selector: SpreadSelector,
-        metadata: Metadata,
-        networking: Networking<T>,
-        router_builder: &mut MessageRouterBuilder,
-    ) -> (SequencerHandle, Self) {
-        // - register for all potential response streams from the log-server(s).
-
-        // shared state with appenders
-        let sequencer_shared_state = Arc::new(SequencerSharedState {
-            node_id,
-            loglet_id,
-            selector,
-            committed_tail: TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST)),
-        });
-
-        // create a command channel to be used by the sequencer handler. The handler then can be used
-        // to call and execute commands on the sequencer directly
-        let (handle, handle_sink) = SequencerHandle::new(Arc::clone(&sequencer_shared_state));
-
-        let rpc_router = RpcRouter::new(router_builder);
-
-        let log_server_manager = RemoteLogServerManager::new(loglet_id, networking, node_set);
-
-        let sequencer = Sequencer {
-            sequencer_shared_state,
-            log_server_manager,
-            metadata,
-            next_write_offset: LogletOffset::OLDEST,
-            rpc_router,
-            handle_sink,
-        };
-
-        (handle, sequencer)
-    }
-
-    /// Start the sequencer main loop
-    pub async fn start(mut self) {
-        let shutdown = cancellation_watcher();
-        tokio::pin!(shutdown);
-
-        // enter main state machine loop
-        loop {
-            tokio::select! {
-                biased;
-                _ = &mut shutdown => {
-                    break;
-                },
-                Some(command) = self.handle_sink.commands.recv() => {
-                    self.process_command(command).await;
-                }
-                Some(ctrl) = self.handle_sink.ctrl.recv() => {
-                    self.process_ctrl(ctrl);
-                }
-            }
-        }
-    }
-
-    fn process_ctrl(&mut self, ctrl: SequencerCtrlCommands) {
-        match ctrl {
-            SequencerCtrlCommands::GetClusterState(command) => {
-                let SequencerCommand { sender, .. } = command;
-                let _ = sender.send(self.get_cluster_state());
-            }
-        }
-    }
-    /// process calls from the SequencerHandler.
-    async fn process_command(&mut self, command: SequencerCommandsWithPermit) {
-        let SequencerCommandsWithPermit { permit, command } = command;
-
-        match command {
-            SequencerCommands::EnqueueBatch(command) => {
-                let SequencerCommand {
-                    input: request,
-                    sender,
-                } = command;
-
-                let _ = sender.send(self.enqueue_batch(permit, request).await);
-            }
-        }
-    }
-
-    fn get_cluster_state(&self) -> ClusterState {
-        ClusterState {
-            global_committed_tail: self
-                .sequencer_shared_state
-                .global_committed_tail()
-                .get()
-                .to_owned(),
-            sequencer_id: self.sequencer_shared_state.node_id,
-        }
-    }
-
-    async fn enqueue_batch(
-        &mut self,
-        permit: OwnedSemaphorePermit,
-        records: Arc<[Record]>,
-    ) -> Result<LogletCommit, SequencerError> {
+    ) -> Result<LogletCommit, ShutdownError> {
         if self
             .sequencer_shared_state
             .global_committed_tail()
@@ -297,7 +168,36 @@ impl<T: TransportConnect> Sequencer<T> {
             return Ok(LogletCommit::sealed());
         }
 
-        let next_write_offset = records.last_offset(self.next_write_offset)?.next();
+        if payloads.len() > self.max_in_flight_records_in_config {
+            let delta = payloads.len() - self.max_in_flight_records_in_config;
+            debug!(
+                "Resizing sequencer in-flight records capacity to allow admission for this batch. \
+                Capacity in configuration is {} and we are adding capacity of {} to it",
+                self.max_in_flight_records_in_config, delta
+            );
+            self.record_permits.add_permits(delta);
+        }
+
+        let len = u32::try_from(payloads.len()).expect("batch sizes fit in u32");
+        let permit = self
+            .record_permits
+            .clone()
+            .acquire_many_owned(len)
+            .await
+            .unwrap();
+
+        // Why is this AclRel?
+        // We are updating the next write offset and we want to make sure that after this call that
+        // we observe if task_center()'s shutdown signal was set or not consistently across
+        // threads.
+        //
+        // The situation we want to avoid is that we fail to spawn an appender due to shutdown but
+        // the subsequent fetch_add don't observe task-center's internal shutdown atomic.
+        let offset = LogletOffset::new(
+            self.sequencer_shared_state
+                .next_write_offset
+                .fetch_add(len, std::sync::atomic::Ordering::AcqRel),
+        );
 
         let (loglet_commit, commit_resolver) = LogletCommit::deferred();
 
@@ -306,14 +206,15 @@ impl<T: TransportConnect> Sequencer<T> {
             self.log_server_manager.clone(),
             self.rpc_router.clone(),
             self.metadata.clone(),
-            self.next_write_offset,
-            records,
+            offset,
+            payloads,
             permit,
             commit_resolver,
         );
 
+        // We are sure that if task-center is shutting down that all future appends will fail so we
+        // are not so worried about the offset that was updated already above.
         task_center().spawn(TaskKind::BifrostAppender, "appender", None, appender.run())?;
-        self.next_write_offset = next_write_offset;
 
         Ok(loglet_commit)
     }

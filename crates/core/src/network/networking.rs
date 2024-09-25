@@ -15,7 +15,7 @@ use tracing::{info, instrument, trace};
 
 use restate_types::config::NetworkingOptions;
 use restate_types::net::codec::{Targeted, WireEncode};
-use restate_types::NodeId;
+use restate_types::{GenerationalNodeId, NodeId};
 
 use super::{
     ConnectionManager, HasConnection, NetworkError, NetworkSendError, NetworkSender, NoConnection,
@@ -70,6 +70,14 @@ impl<T: TransportConnect> Networking<T> {
 
     pub fn connection_manager(&self) -> &ConnectionManager<T> {
         &self.connections
+    }
+
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    pub fn my_node_id(&self) -> GenerationalNodeId {
+        self.metadata.my_node_id()
     }
 
     /// A connection sender is pinned to a single stream, thus guaranteeing ordered delivery of
