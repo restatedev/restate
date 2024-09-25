@@ -93,7 +93,11 @@ where
 {
     match bind_address {
         BindAddress::Uds(uds_path) => {
-            let unix_listener = UnixListener::bind(uds_path).map_err(|err| Error::UdsBinding {
+            if uds_path.exists() {
+                // if this fails, the following bind will fail, so its safe to ignore this error
+                _ = std::fs::remove_file(&uds_path);
+            }
+            let unix_listener = UnixListener::bind(&uds_path).map_err(|err| Error::UdsBinding {
                 uds_path: uds_path.clone(),
                 source: err,
             })?;

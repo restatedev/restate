@@ -127,9 +127,9 @@ impl Node {
                 )));
             }
 
-            if !config.has_role(Role::MetadataStore) {
-                return Err(BuildError::Bootstrap(format!("Node must include the 'metadata-store' role when starting in bootstrap mode. Currently it has roles {}", config.roles())));
-            }
+            // if !config.has_role(Role::MetadataStore) {
+            //     return Err(BuildError::Bootstrap(format!("Node must include the 'metadata-store' role when starting in bootstrap mode. Currently it has roles {}", config.roles())));
+            // }
         }
 
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;

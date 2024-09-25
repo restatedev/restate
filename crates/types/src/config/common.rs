@@ -233,9 +233,19 @@ impl CommonOptions {
         self.node_name.as_ref().unwrap_or(&HOSTNAME)
     }
 
+    #[cfg(feature = "test-util")]
+    pub fn set_node_name(&mut self, node_name: String) {
+        self.node_name = Some(node_name)
+    }
+
     // same as node_name
     pub fn cluster_name(&self) -> &str {
         &self.cluster_name
+    }
+
+    #[cfg(feature = "test-util")]
+    pub fn set_cluster_name(&mut self, cluster_name: String) {
+        self.cluster_name = cluster_name
     }
 
     pub fn bootstrap_num_partitions(&self) -> u16 {

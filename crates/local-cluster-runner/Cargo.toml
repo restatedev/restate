@@ -1,0 +1,37 @@
+[package]
+name = "restate-local-cluster-runner"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+restate-metadata-store = { workspace = true }
+restate-core = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"]}
+
+arc-swap = { workspace = true }
+clap = { workspace = true }
+clap-verbosity-flag = { workspace = true }
+futures = { workspace = true }
+enumset = { workspace = true }
+http = { workspace = true }
+libc = "0.2"
+pin-project = { workspace = true }
+regex = "1.1"
+rlimit = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace =  true }
+thiserror = { workspace =  true }
+tokio = { workspace = true, features = ["process", "fs"] }
+toml = "0.8"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+typed-builder = "0.20.0"
+test_bin = "0.4.0"
