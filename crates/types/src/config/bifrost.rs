@@ -214,11 +214,13 @@ impl Default for LocalLogletOptions {
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct ReplicatedLogletOptions {
-    /// Maximum number of inflight batches before sequencer
+    /// Maximum number of inflight records sequencer can accept
     ///
     /// Once this maximum is hit, sequencer will induce back pressure
-    /// on clients
-    pub maximum_inflight_batches: NonZeroUsize,
+    /// on clients. This controls the total number of records regardless of how many batches.
+    ///
+    /// Note that this will be increased to fit the biggest batch of records being enqueued.
+    pub maximum_inflight_records: NonZeroUsize,
 
     /// Sequencer backoff strategy
     ///
@@ -235,7 +237,7 @@ pub struct ReplicatedLogletOptions {
 impl Default for ReplicatedLogletOptions {
     fn default() -> Self {
         Self {
-            maximum_inflight_batches: NonZeroUsize::new(128).unwrap(),
+            maximum_inflight_records: NonZeroUsize::new(1000).unwrap(),
 
             sequencer_backoff_strategy: RetryPolicy::exponential(
                 Duration::from_millis(100),

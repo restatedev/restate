@@ -14,7 +14,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::Stream;
+use futures::{Stream, StreamExt};
 
 use restate_core::network::{Incoming, MessageRouterBuilder, TransportConnect};
 use restate_core::{cancellation_watcher, Metadata};
@@ -48,7 +48,7 @@ impl RequestPump {
 
     /// Must run in task-center context
     pub async fn run<T: TransportConnect>(
-        self,
+        mut self,
         _provider: Arc<ReplicatedLogletProvider<T>>,
     ) -> anyhow::Result<()> {
         trace!("Starting replicated loglet request pump");
@@ -57,6 +57,8 @@ impl RequestPump {
             tokio::select! {
                 _ = &mut cancel => {
                     break;
+                }
+                Some(_append) = self.append_stream.next() => {
                 }
             }
         }

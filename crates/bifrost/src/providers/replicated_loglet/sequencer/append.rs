@@ -400,7 +400,7 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
             known_global_tail: self.sequencer_shared_state.committed_tail.latest_offset(),
             loglet_id: self.server.loglet_id(),
             payloads: Vec::from_iter(self.records.iter().cloned()),
-            sequencer: self.sequencer_shared_state.node_id,
+            sequencer: self.sequencer_shared_state.my_node_id,
             timeout_at: None,
         };
 
