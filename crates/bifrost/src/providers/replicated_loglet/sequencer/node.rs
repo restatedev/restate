@@ -54,7 +54,7 @@ impl RemoteLogServer {
 struct RemoteLogServerManagerInner<T> {
     loglet_id: ReplicatedLogletId,
     servers: BTreeMap<PlainNodeId, LogServerLock>,
-    node_set: NodeSet,
+    nodeset: NodeSet,
     networking: Networking<T>,
 }
 
@@ -77,20 +77,16 @@ impl<T> Clone for RemoteLogServerManager<T> {
 
 impl<T: TransportConnect> RemoteLogServerManager<T> {
     /// creates the node set and start the appenders
-    pub fn new(
-        loglet_id: ReplicatedLogletId,
-        networking: Networking<T>,
-        node_set: NodeSet,
-    ) -> Self {
+    pub fn new(loglet_id: ReplicatedLogletId, networking: Networking<T>, nodeset: NodeSet) -> Self {
         let mut servers = BTreeMap::default();
-        for node_id in node_set.iter() {
+        for node_id in nodeset.iter() {
             servers.insert(*node_id, LogServerLock::default());
         }
 
         let inner = RemoteLogServerManagerInner {
             loglet_id,
             servers,
-            node_set,
+            nodeset,
             networking,
         };
 

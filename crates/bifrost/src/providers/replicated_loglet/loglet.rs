@@ -15,16 +15,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use restate_types::logs::metadata::SegmentIndex;
 use tracing::debug;
 
 use restate_core::network::{Networking, TransportConnect};
-use restate_core::{Metadata, ShutdownError, TaskCenter};
+use restate_core::ShutdownError;
+use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{KeyFilter, LogId, LogletOffset, Record, SequenceNumber, TailState};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
+use crate::providers::replicated_loglet::replication::spread_selector::SelectorStrategy;
+use crate::providers::replicated_loglet::sequencer::Sequencer;
 
 use super::record_cache::RecordCache;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
@@ -39,10 +41,6 @@ pub(super) struct ReplicatedLoglet<T> {
     segment_index: SegmentIndex,
     my_params: ReplicatedLogletParams,
     #[debug(skip)]
-    task_center: TaskCenter,
-    #[debug(skip)]
-    metadata: Metadata,
-    #[debug(skip)]
     networking: Networking<T>,
     #[debug(skip)]
     logservers_rpc: LogServersRpc,
@@ -52,9 +50,9 @@ pub(super) struct ReplicatedLoglet<T> {
     /// Note that this comes with a few caveats:
     /// - On startup, this defaults to `Open(OLDEST)`
     /// - find_tail() should use this value iff we have a local sequencer for all other cases, we
-    /// should run a proper tail search.
+    ///   should run a proper tail search.
     known_global_tail: TailOffsetWatch,
-    sequencer: SequencerAccess,
+    sequencer: SequencerAccess<T>,
 }
 
 impl<T: TransportConnect> ReplicatedLoglet<T> {
@@ -62,52 +60,57 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         log_id: LogId,
         segment_index: SegmentIndex,
         my_params: ReplicatedLogletParams,
-        task_center: TaskCenter,
-        metadata: Metadata,
         networking: Networking<T>,
         logservers_rpc: LogServersRpc,
         sequencers_rpc: &SequencersRpc,
         record_cache: RecordCache,
-    ) -> Self {
-        let sequencer = if metadata.my_node_id() == my_params.sequencer {
+    ) -> Result<Self, ShutdownError> {
+        let known_global_tail = TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST));
+
+        let sequencer = if networking.my_node_id() == my_params.sequencer {
             debug!(
                 loglet_id = %my_params.loglet_id,
                 "We are the sequencer node for this loglet"
             );
+            // todo(asoli): Potentially configurable or controllable in tests either in
+            // ReplicatedLogletParams or in the config file.
+            let selector_strategy = SelectorStrategy::Flood;
+
             SequencerAccess::Local {
-                // create the sequencer and store the handle
+                handle: Sequencer::new(
+                    my_params.clone(),
+                    selector_strategy,
+                    networking.clone(),
+                    logservers_rpc.store.clone(),
+                    known_global_tail.clone(),
+                ),
             }
         } else {
             SequencerAccess::Remote {
                 sequencers_rpc: sequencers_rpc.clone(),
             }
         };
-        Self {
+        Ok(Self {
             log_id,
             segment_index,
             my_params,
-            task_center,
-            metadata,
             networking,
             logservers_rpc,
             record_cache,
-            known_global_tail: TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST)),
+            known_global_tail,
             sequencer,
-        }
+        })
     }
 }
 
-// todo(asoli): This will hold a handle to access the local sequencer, or a swappable handle if
-// it's a remote sequencer.
 #[derive(derive_more::Debug, derive_more::IsVariant)]
-pub enum SequencerAccess {
+pub enum SequencerAccess<T> {
     /// The sequencer is remote (or retired/preempted)
     #[debug("Remote")]
     Remote { sequencers_rpc: SequencersRpc },
     /// We are the loglet leaders
     #[debug("Local")]
-    // todo (add handle)
-    Local {},
+    Local { handle: Sequencer<T> },
 }
 
 #[async_trait]
@@ -128,12 +131,22 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         Box::pin(self.known_global_tail.to_stream())
     }
 
-    async fn enqueue_batch(&self, _payloads: Arc<[Record]>) -> Result<LogletCommit, ShutdownError> {
-        todo!()
+    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, ShutdownError> {
+        match self.sequencer {
+            SequencerAccess::Local { ref handle } => handle.enqueue_batch(payloads).await,
+            SequencerAccess::Remote { .. } => {
+                todo!("Access to remote sequencers is not implemented yet")
+            }
+        }
     }
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
-        todo!()
+        match self.sequencer {
+            SequencerAccess::Local { .. } => Ok(*self.known_global_tail.get()),
+            SequencerAccess::Remote { .. } => {
+                todo!("find_tail() is not implemented yet")
+            }
+        }
     }
 
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
