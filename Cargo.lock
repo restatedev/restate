@@ -5506,6 +5506,7 @@ dependencies = [
  "pin-project",
  "rand",
  "restate-core",
+ "restate-log-server",
  "restate-metadata-store",
  "restate-rocksdb",
  "restate-test-util",

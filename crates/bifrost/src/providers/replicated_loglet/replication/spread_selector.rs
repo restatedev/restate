@@ -57,6 +57,14 @@ impl SpreadSelector {
         }
     }
 
+    pub fn nodeset(&self) -> &NodeSet {
+        &self.nodeset
+    }
+
+    pub fn replication_property(&self) -> &ReplicationProperty {
+        &self.replication_property
+    }
+
     /// Generates a spread or fails if it's not possible to generate a spread out of
     /// the nodeset modulo the non-writeable nodes in the nodes configuration and after excluding
     /// the set of nodes passed in `exclude_nodes`.

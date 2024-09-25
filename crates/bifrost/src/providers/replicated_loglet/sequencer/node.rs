@@ -42,7 +42,7 @@ impl RemoteLogServer {
         self.loglet_id
     }
 
-    pub fn tail(&self) -> &TailOffsetWatch {
+    pub fn local_tail(&self) -> &TailOffsetWatch {
         &self.tail
     }
 
