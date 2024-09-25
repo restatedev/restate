@@ -141,7 +141,12 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
-        todo!()
+        match self.sequencer {
+            SequencerAccess::Local { .. } => Ok(*self.known_global_tail.get()),
+            SequencerAccess::Remote { .. } => {
+                todo!("find_tail() is not implemented yet")
+            }
+        }
     }
 
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
