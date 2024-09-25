@@ -63,6 +63,23 @@ impl TailOffsetWatch {
         Ok(())
     }
 
+    pub async fn wait_for_offset_or_seal(
+        &self,
+        offset: LogletOffset,
+    ) -> Result<TailState<LogletOffset>, ShutdownError> {
+        let mut receiver = self.sender.subscribe();
+        receiver.mark_changed();
+        receiver
+            .wait_for(|tail_state| match tail_state {
+                TailState::Sealed(_) => true,
+                TailState::Open(tail) if *tail >= offset => true,
+                _ => false,
+            })
+            .await
+            .map(|m| *m)
+            .map_err(|_| ShutdownError)
+    }
+
     /// The first yielded value is the latest known tail
     pub fn to_stream(&self) -> WatchStream<TailState<LogletOffset>> {
         let mut receiver = self.sender.subscribe();

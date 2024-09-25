@@ -208,9 +208,42 @@ impl Default for LocalLogletOptions {
 
 #[cfg(feature = "replicated-loglet")]
 #[serde_as]
-#[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "ReplicatedLoglet", default))]
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
-pub struct ReplicatedLogletOptions {}
+pub struct ReplicatedLogletOptions {
+    /// Maximum number of inflight batches before sequencer
+    ///
+    /// Once this maximum is hit, sequencer will induce back pressure
+    /// on clients
+    pub maximum_inflight_batches: NonZeroUsize,
+
+    /// Sequencer backoff strategy
+    ///
+    /// Backoff introduced when sequencer fail to find a suitable spread
+    /// of log servers
+    pub sequencer_backoff_strategy: RetryPolicy,
+
+    /// Log Server timeout
+    ///
+    /// Timeout waiting on log server response
+    pub log_server_timeout: Duration,
+}
+
+impl Default for ReplicatedLogletOptions {
+    fn default() -> Self {
+        Self {
+            maximum_inflight_batches: NonZeroUsize::new(128).unwrap(),
+
+            sequencer_backoff_strategy: RetryPolicy::exponential(
+                Duration::from_millis(100),
+                0.1,
+                None,
+                Some(Duration::from_millis(2000)),
+            ),
+            log_server_timeout: Duration::from_millis(500),
+        }
+    }
+}

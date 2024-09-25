@@ -43,6 +43,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
+restate-log-server = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }

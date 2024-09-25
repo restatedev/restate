@@ -26,7 +26,7 @@ pub enum SpreadSelectorError {
     InsufficientWriteableNodes,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SelectorStrategy {
     /// Selects all writeable nodes in the nodeset, this might lead to over-replication,
     /// and it's up to the appender state machine to continue replicating beyond the
@@ -38,6 +38,7 @@ pub enum SelectorStrategy {
 }
 
 /// Spread selector is thread-safe and can be used concurrently.
+#[derive(Clone)]
 pub struct SpreadSelector {
     nodeset: NodeSet,
     strategy: SelectorStrategy,
@@ -55,6 +56,14 @@ impl SpreadSelector {
             strategy,
             replication_property,
         }
+    }
+
+    pub fn nodeset(&self) -> &NodeSet {
+        &self.nodeset
+    }
+
+    pub fn replication_property(&self) -> &ReplicationProperty {
+        &self.replication_property
     }
 
     /// Generates a spread or fails if it's not possible to generate a spread out of
