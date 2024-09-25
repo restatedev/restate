@@ -248,6 +248,13 @@ impl Loglet for LocalLoglet {
 
         histogram!(BIFROST_LOCAL_TRIM_LENGTH).record(*effective_trim_point - *current_trim_point);
 
+        debug!(
+            loglet_id = self.loglet_id,
+            ?current_trim_point,
+            ?effective_trim_point,
+            "Loglet trim operation enqueued"
+        );
+
         Ok(())
     }
 

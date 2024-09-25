@@ -18,7 +18,7 @@ use futures::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::MetadataStoreClient;
@@ -332,7 +332,10 @@ impl<T: TransportConnect> Service<T> {
                 trim_point,
                 response_tx,
             } => {
-                debug!("Manual trim log '{log_id}' until (inclusive) lsn='{trim_point}'");
+                info!(
+                    ?log_id,
+                    trim_point_inclusive = ?trim_point,
+                    "Manual trim log command received");
                 let result = bifrost_admin.trim(log_id, trim_point).await;
                 let _ = response_tx.send(result.map_err(Into::into));
             }
