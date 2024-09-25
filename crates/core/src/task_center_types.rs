@@ -100,6 +100,7 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort"))]
     Watchdog,
     NetworkMessageHandler,
+    /// Log-server tasks
     LogletWriter,
 }
 
