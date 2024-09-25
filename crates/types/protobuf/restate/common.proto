@@ -21,7 +21,7 @@ message NodeId {
   optional uint32 generation = 2;
 }
 
-// Partition Processor leadershop epoch number
+// Partition Processor leadership epoch number
 message LeaderEpoch { uint64 value = 1; }
 
 // Log sequence number
@@ -66,6 +66,9 @@ enum TargetName {
   REPLICATED_LOGLET_APPENDED = 41;
   REPLICATED_LOGLET_GET_SEQUENCER_STATE = 42;
   REPLICATED_LOGLET_SEQUENCER_STATE = 43;
+  // Partition Processor
+  PARTITION_CREATE_SNAPSHOT_REQUEST = 50;
+  PARTITION_CREATE_SNAPSHOT_RESPONSE = 51;
 }
 
 enum NodeStatus {
