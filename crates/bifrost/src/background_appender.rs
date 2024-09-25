@@ -56,8 +56,8 @@ where
     }
 
     /// Start the background appender as a TaskCenter background task. Note that the task will not
-    /// autmatically react to TaskCenter's shutdown signal, it gives control over the shutdown
-    /// behaviour to the the owner of [`AppenderHandle`] to drain or drop when appropriate.
+    /// automatically react to TaskCenter's shutdown signal, it gives control over the shutdown
+    /// behaviour to the owner of [`AppenderHandle`] to drain or drop when appropriate.
     pub fn start(
         self,
         task_center: TaskCenter,

@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use std::num::{NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use tracing::warn;
 
 use restate_serde_util::NonZeroByteCount;
@@ -351,10 +352,16 @@ impl Default for StorageOptions {
 #[serde_as]
 #[derive(Default, Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schemars", schemars(rename = "SnapshotsOptions", default))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(rename = "PartitionStoreOptions", default)
+)]
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
-pub struct SnapshotsOptions {}
+pub struct SnapshotsOptions {
+    /// ## Snapshot restore policy
+    pub restore_policy: SnapshotRestorePolicy,
+}
 
 impl SnapshotsOptions {
     pub fn snapshots_base_dir(&self) -> PathBuf {
@@ -363,5 +370,25 @@ impl SnapshotsOptions {
 
     pub fn snapshots_dir(&self, partition_id: PartitionId) -> PathBuf {
         super::data_dir("db-snapshots").join(partition_id.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotRestorePolicy {
+    /// ## Never
+    /// Do not attempt to restore from a snapshot, always preferring to rebuild worker state from the log.
+    #[default]
+    Never,
+
+    /// ## Initialize from snapshot if available.
+    /// Attempt to restore the most recent available snapshot only when the store is first created.
+    InitializeFromSnapshot,
+}
+
+impl SnapshotRestorePolicy {
+    pub fn allows_restore_on_init(&self) -> bool {
+        matches!(self, SnapshotRestorePolicy::InitializeFromSnapshot)
     }
 }
