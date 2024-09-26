@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 mod append;
-mod node;
 
 use std::sync::{atomic::AtomicU32, Arc};
 
@@ -18,7 +17,7 @@ use tracing::debug;
 
 use restate_core::{
     network::{rpc_router::RpcRouter, Networking, TransportConnect},
-    task_center, Metadata, ShutdownError, TaskKind,
+    task_center, ShutdownError, TaskKind,
 };
 use restate_types::{
     config::Configuration,
@@ -28,10 +27,12 @@ use restate_types::{
     GenerationalNodeId,
 };
 
-use super::replication::spread_selector::{SelectorStrategy, SpreadSelector};
+use super::{
+    log_server_manager::RemoteLogServerManager,
+    replication::spread_selector::{SelectorStrategy, SpreadSelector},
+};
 use crate::loglet::{util::TailOffsetWatch, LogletCommit};
 use append::Appender;
-use node::RemoteLogServerManager;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SequencerError {
@@ -83,8 +84,8 @@ impl SequencerSharedState {
 /// to the generation of this node-id.
 pub struct Sequencer<T> {
     sequencer_shared_state: Arc<SequencerSharedState>,
-    log_server_manager: RemoteLogServerManager<T>,
-    metadata: Metadata,
+    log_server_manager: RemoteLogServerManager,
+    networking: Networking<T>,
     rpc_router: RpcRouter<Store>,
     /// The value we read from configuration, we keep it around because we can't get the original
     /// capacity directly from `record_permits` Semaphore.
@@ -101,18 +102,17 @@ impl<T: TransportConnect> Sequencer<T> {
         selector_strategy: SelectorStrategy,
         networking: Networking<T>,
         rpc_router: RpcRouter<Store>,
+        log_server_manager: RemoteLogServerManager,
         global_tail: TailOffsetWatch,
     ) -> Self {
         let my_node_id = networking.my_node_id();
-        let loglet_id = my_params.loglet_id;
-        let nodeset = my_params.nodeset.clone();
         let initial_tail = global_tail.latest_offset();
         // Leader sequencers start on an empty loglet offset range
         debug_assert_eq!(LogletOffset::OLDEST, initial_tail);
         let next_write_offset = AtomicU32::new(*initial_tail);
 
         let selector = SpreadSelector::new(
-            nodeset.clone(),
+            my_params.nodeset.clone(),
             selector_strategy,
             my_params.replication.clone(),
         );
@@ -133,14 +133,11 @@ impl<T: TransportConnect> Sequencer<T> {
             committed_tail: global_tail,
         });
 
-        let metadata = networking.metadata().clone();
-        let log_server_manager = RemoteLogServerManager::new(loglet_id, networking, nodeset);
-
         Self {
             sequencer_shared_state,
             log_server_manager,
             rpc_router,
-            metadata,
+            networking,
             record_permits,
             max_in_flight_records_in_config,
         }
@@ -205,7 +202,7 @@ impl<T: TransportConnect> Sequencer<T> {
             Arc::clone(&self.sequencer_shared_state),
             self.log_server_manager.clone(),
             self.rpc_router.clone(),
-            self.metadata.clone(),
+            self.networking.clone(),
             offset,
             payloads,
             permit,
@@ -214,7 +211,15 @@ impl<T: TransportConnect> Sequencer<T> {
 
         // We are sure that if task-center is shutting down that all future appends will fail so we
         // are not so worried about the offset that was updated already above.
-        task_center().spawn(TaskKind::BifrostAppender, "appender", None, appender.run())?;
+        task_center().spawn(
+            TaskKind::ReplicatedLogletAppender,
+            "sequencer-appender",
+            None,
+            async move {
+                appender.run().await;
+                Ok(())
+            },
+        )?;
 
         Ok(loglet_commit)
     }

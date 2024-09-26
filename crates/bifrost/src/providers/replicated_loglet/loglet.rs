@@ -28,6 +28,7 @@ use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStre
 use crate::providers::replicated_loglet::replication::spread_selector::SelectorStrategy;
 use crate::providers::replicated_loglet::sequencer::Sequencer;
 
+use super::log_server_manager::RemoteLogServerManager;
 use super::record_cache::RecordCache;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
 
@@ -53,6 +54,8 @@ pub(super) struct ReplicatedLoglet<T> {
     ///   should run a proper tail search.
     known_global_tail: TailOffsetWatch,
     sequencer: SequencerAccess<T>,
+    #[debug(skip)]
+    log_server_manager: RemoteLogServerManager,
 }
 
 impl<T: TransportConnect> ReplicatedLoglet<T> {
@@ -66,6 +69,8 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         record_cache: RecordCache,
     ) -> Result<Self, ShutdownError> {
         let known_global_tail = TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST));
+        let log_server_manager =
+            RemoteLogServerManager::new(my_params.loglet_id, &my_params.nodeset);
 
         let sequencer = if networking.my_node_id() == my_params.sequencer {
             debug!(
@@ -82,6 +87,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
                     selector_strategy,
                     networking.clone(),
                     logservers_rpc.store.clone(),
+                    log_server_manager.clone(),
                     known_global_tail.clone(),
                 ),
             }
@@ -99,6 +105,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
             record_cache,
             known_global_tail,
             sequencer,
+            log_server_manager,
         })
     }
 }
