@@ -13,6 +13,7 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use rand::RngCore;
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::hash::Hash;
 use std::mem::size_of;
@@ -25,7 +26,7 @@ use crate::errors::IdDecodeError;
 use crate::id_util::IdDecoder;
 use crate::id_util::IdEncoder;
 use crate::id_util::IdResourceType;
-use crate::invocation::InvocationTarget;
+use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
 use crate::time::MillisSinceEpoch;
 
 /// Identifying the leader epoch of a partition processor
@@ -238,45 +239,96 @@ pub trait ResourceId {
     serde_with::SerializeDisplay,
     serde_with::DeserializeFromStr,
 )]
-pub struct InvocationUuid(Ulid);
+pub struct InvocationUuid(u128);
 
 impl InvocationUuid {
     pub const SIZE_IN_BYTES: usize = size_of::<u128>();
 
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
+    const HASH_SEPARATOR: u8 = 0x2c;
 
     pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
-        let ulid = Ulid::from_bytes(b.try_into().map_err(|_| IdDecodeError::Length)?);
-        debug_assert!(!ulid.is_nil());
-        Ok(Self(ulid))
+        Ok(Self(u128::from_be_bytes(
+            b.try_into().map_err(|_| IdDecodeError::Length)?,
+        )))
     }
 
-    pub fn from_bytes(b: [u8; Self::SIZE_IN_BYTES]) -> Self {
-        Self(Ulid::from_bytes(b))
+    pub const fn from_u128(id: u128) -> Self {
+        Self(id)
+    }
+
+    pub const fn from_bytes(b: [u8; Self::SIZE_IN_BYTES]) -> Self {
+        Self(u128::from_be_bytes(b))
     }
 
     pub fn to_bytes(&self) -> [u8; Self::SIZE_IN_BYTES] {
-        self.0.to_bytes()
+        self.0.to_be_bytes()
     }
-}
 
-impl Default for InvocationUuid {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+    pub fn generate(
+        invocation_target: &InvocationTarget,
+        idempotency_key: Option<&ByteString>,
+    ) -> Self {
+        // --- Rules for deterministic ID
+        // * If the target IS a workflow run, use workflow name + key
+        // * If the target IS an idempotent request, use the idempotency scope + key
+        // * If the target IS NOT an idempotent request, or IS NOT a workflow run, then just generate a random ulid
 
-impl TimestampAwareId for InvocationUuid {
-    fn timestamp(&self) -> MillisSinceEpoch {
-        self.0.timestamp_ms().into()
+        let id = match (idempotency_key, invocation_target.invocation_target_ty()) {
+            (_, InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)) => {
+                // Workflow run
+                let mut hasher = Sha256::new();
+                hasher.update(b"wf");
+                hasher.update([Self::HASH_SEPARATOR]);
+                hasher.update(invocation_target.service_name());
+                hasher.update([Self::HASH_SEPARATOR]);
+                hasher.update(
+                    invocation_target
+                        .key()
+                        .expect("Workflow targets MUST contain a key"),
+                );
+                let result = hasher.finalize();
+                let (int_bytes, _) = result.split_at(size_of::<u128>());
+                u128::from_be_bytes(
+                    int_bytes
+                        .try_into()
+                        .expect("Conversion after split can't fail"),
+                )
+            }
+            (Some(idempotency_key), _) => {
+                // Invocations with Idempotency key
+                let mut hasher = Sha256::new();
+                hasher.update(b"ik");
+                hasher.update([Self::HASH_SEPARATOR]);
+                hasher.update(invocation_target.service_name());
+                if let Some(key) = invocation_target.key() {
+                    hasher.update([Self::HASH_SEPARATOR]);
+                    hasher.update(key);
+                }
+                hasher.update([Self::HASH_SEPARATOR]);
+                hasher.update(invocation_target.handler_name());
+                hasher.update([Self::HASH_SEPARATOR]);
+                hasher.update(idempotency_key);
+                let result = hasher.finalize();
+                let (int_bytes, _) = result.split_at(size_of::<u128>());
+                u128::from_be_bytes(
+                    int_bytes
+                        .try_into()
+                        .expect("Conversion after split can't fail"),
+                )
+            }
+            (_, _) => {
+                // Regular invocation
+                Ulid::new().into()
+            }
+        };
+
+        InvocationUuid(id)
     }
 }
 
 impl fmt::Display for InvocationUuid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let raw: u128 = self.0.into();
+        let raw: u128 = self.0;
         let mut buf = String::with_capacity(base62_max_length_for_type::<u128>());
         base62_encode_fixed_width(raw, &mut buf);
         fmt::Display::fmt(&buf, f)
@@ -307,13 +359,13 @@ impl From<InvocationUuid> for Bytes {
 
 impl From<u128> for InvocationUuid {
     fn from(value: u128) -> Self {
-        Self(Ulid::from(value))
+        Self(value)
     }
 }
 
 impl From<InvocationUuid> for u128 {
     fn from(value: InvocationUuid) -> Self {
-        value.0.into()
+        value.0
     }
 }
 
@@ -422,31 +474,28 @@ pub trait WithInvocationId {
 pub type EncodedInvocationId = [u8; InvocationId::SIZE_IN_BYTES];
 
 impl InvocationId {
-    pub fn generate(invocation_target: &InvocationTarget) -> Self {
-        let partition_key = invocation_target
-            .key()
-            // If the invocation target is keyed, the PK is inferred from the key
-            .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
-            // In all the other cases, the PK is random
-            .unwrap_or_else(|| rand::thread_rng().next_u64());
-
-        InvocationId::from_parts(partition_key, InvocationUuid::new())
-    }
-
-    pub fn generate_with_idempotency_key(
+    pub fn generate(
         invocation_target: &InvocationTarget,
-        idempotency_key: impl Hash,
+        idempotency_key: Option<&ByteString>,
     ) -> Self {
+        // --- Partition key generation
         let partition_key = invocation_target
             .key()
             // If the invocation target is keyed, the PK is inferred from the key
             .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
             // The PK is inferred from the idempotency key
             .unwrap_or_else(|| {
-                partitioner::HashPartitioner::compute_partition_key(&idempotency_key)
+                idempotency_key
+                    .map(partitioner::HashPartitioner::compute_partition_key)
+                    // If no idempotency key provided, just pick a random number
+                    .unwrap_or_else(|| rand::thread_rng().next_u64())
             });
 
-        InvocationId::from_parts(partition_key, InvocationUuid::new())
+        // --- Invocation UUID generation
+        InvocationId::from_parts(
+            partition_key,
+            InvocationUuid::generate(invocation_target, idempotency_key),
+        )
     }
 
     pub const fn from_parts(partition_key: PartitionKey, invocation_uuid: InvocationUuid) -> Self {
@@ -475,12 +524,6 @@ impl From<InvocationId> for Bytes {
     }
 }
 
-impl TimestampAwareId for InvocationId {
-    fn timestamp(&self) -> MillisSinceEpoch {
-        self.inner.timestamp()
-    }
-}
-
 impl ResourceId for InvocationId {
     const SIZE_IN_BYTES: usize = size_of::<PartitionKey>() + InvocationUuid::SIZE_IN_BYTES;
     const RESOURCE_TYPE: IdResourceType = IdResourceType::Invocation;
@@ -489,8 +532,8 @@ impl ResourceId for InvocationId {
 
     fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
         encoder.encode_fixed_width(self.partition_key);
-        let ulid_raw: u128 = self.inner.0.into();
-        encoder.encode_fixed_width(ulid_raw);
+        let uuid_raw: u128 = self.inner.0;
+        encoder.encode_fixed_width(uuid_raw);
     }
 }
 
@@ -868,52 +911,24 @@ mod mocks {
     use rand::Rng;
 
     impl InvocationUuid {
-        /// Craft an invocation id from raw parts. Should be used only in tests.
-        pub fn from_timestamp(timestamp_ms: u64) -> Self {
-            use std::time::{Duration, SystemTime};
-
-            Self(Ulid::from_datetime(
-                SystemTime::UNIX_EPOCH + Duration::from_millis(timestamp_ms),
-            ))
+        pub fn mock_generate(invocation_target: &InvocationTarget) -> Self {
+            InvocationUuid::generate(invocation_target, None)
         }
 
-        /// Craft an invocation id from raw parts. Should be used only in tests.
-        pub fn as_raw_parts(&self) -> (u64, u128) {
-            (self.0.timestamp_ms(), self.0.random())
-        }
-
-        /// Increment the random part of the id, useful for testing purposes
-        pub fn increment_random(mut self) -> Self {
-            // this is called from tests, it's the caller responsibility to check if
-            // we are not overflowing the random part;
-            self.0 = self.0.increment().expect("ulid overflow");
-            self
-        }
-
-        /// Increment the random part of the id, useful for testing purposes
-        pub fn increment_timestamp(self) -> Self {
-            let (ts, random) = self.as_raw_parts();
-            Self::from_parts(ts + 1, random)
-        }
-
-        /// Craft an invocation id from raw parts. Should be used only in tests.
-        pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
-            Self(Ulid::from_parts(timestamp_ms, random))
+        pub fn mock_random() -> Self {
+            InvocationUuid::mock_generate(&InvocationTarget::mock_service())
         }
     }
 
     impl InvocationId {
+        pub fn mock_generate(invocation_target: &InvocationTarget) -> Self {
+            InvocationId::generate(invocation_target, None)
+        }
+
         pub fn mock_random() -> Self {
             Self::from_parts(
                 rand::thread_rng().sample::<PartitionKey, _>(rand::distributions::Standard),
-                InvocationUuid::new(),
-            )
-        }
-
-        pub fn mock_with(invocation_target: InvocationTarget) -> (Self, InvocationTarget) {
-            (
-                InvocationId::generate(&invocation_target),
-                invocation_target,
+                InvocationUuid::mock_random(),
             )
         }
     }
@@ -962,6 +977,7 @@ mod tests {
     use super::*;
 
     use crate::invocation::VirtualObjectHandlerType;
+    use rand::distributions::{Alphanumeric, DistString};
 
     #[test]
     fn service_id_and_invocation_id_partition_key_should_match() {
@@ -971,7 +987,7 @@ mod tests {
             "MyMethod",
             VirtualObjectHandlerType::Exclusive,
         );
-        let invocation_id = InvocationId::generate(&invocation_target);
+        let invocation_id = InvocationId::mock_generate(&invocation_target);
 
         assert_eq!(
             invocation_id.partition_key(),
@@ -984,7 +1000,8 @@ mod tests {
 
     #[test]
     fn roundtrip_invocation_id() {
-        let expected = InvocationId::from_parts(92, InvocationUuid::new());
+        let target = InvocationTarget::mock_service();
+        let expected = InvocationId::from_parts(92, InvocationUuid::mock_generate(&target));
         assert_eq!(
             expected,
             InvocationId::from_slice(&expected.to_bytes()).unwrap()
@@ -1056,5 +1073,28 @@ mod tests {
                 InvalidLambdaARN::MissingVersionSuffix
             );
         }
+    }
+
+    #[test]
+    fn deterministic_invocation_id_for_idempotent_request() {
+        let invocation_target = InvocationTarget::mock_service();
+        let idempotent_key = Alphanumeric
+            .sample_string(&mut rand::thread_rng(), 16)
+            .into();
+
+        assert_eq!(
+            InvocationId::generate(&invocation_target, Some(&idempotent_key)),
+            InvocationId::generate(&invocation_target, Some(&idempotent_key))
+        );
+    }
+
+    #[test]
+    fn deterministic_invocation_id_for_workflow_request() {
+        let invocation_target = InvocationTarget::mock_workflow();
+
+        assert_eq!(
+            InvocationId::mock_generate(&invocation_target),
+            InvocationId::mock_generate(&invocation_target)
+        );
     }
 }
