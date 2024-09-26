@@ -51,11 +51,8 @@ impl RemoteLogServer {
     }
 }
 
-struct RemoteLogServerManagerInner<T> {
-    loglet_id: ReplicatedLogletId,
+struct RemoteLogServerManagerInner {
     servers: BTreeMap<PlainNodeId, LogServerLock>,
-    nodeset: NodeSet,
-    networking: Networking<T>,
 }
 
 /// LogServerManager maintains a set of [`RemoteLogServer`]s that provided via the
@@ -63,35 +60,33 @@ struct RemoteLogServerManagerInner<T> {
 ///
 /// The manager makes sure there is only one active connection per server.
 /// It's up to the user of the client to do [`LogServerManager::renew`] if needed
-pub(crate) struct RemoteLogServerManager<T> {
-    inner: Arc<RemoteLogServerManagerInner<T>>,
+pub struct RemoteLogServerManager {
+    inner: Arc<RemoteLogServerManagerInner>,
+    loglet_id: ReplicatedLogletId,
 }
 
-impl<T> Clone for RemoteLogServerManager<T> {
+impl Clone for RemoteLogServerManager {
     fn clone(&self) -> Self {
         Self {
+            loglet_id: self.loglet_id,
             inner: Arc::clone(&self.inner),
         }
     }
 }
 
-impl<T: TransportConnect> RemoteLogServerManager<T> {
+impl RemoteLogServerManager {
     /// creates the node set and start the appenders
-    pub fn new(loglet_id: ReplicatedLogletId, networking: Networking<T>, nodeset: NodeSet) -> Self {
+    pub fn new(loglet_id: ReplicatedLogletId, nodeset: &NodeSet) -> Self {
         let mut servers = BTreeMap::default();
         for node_id in nodeset.iter() {
             servers.insert(*node_id, LogServerLock::default());
         }
 
-        let inner = RemoteLogServerManagerInner {
-            loglet_id,
-            servers,
-            nodeset,
-            networking,
-        };
+        let inner = RemoteLogServerManagerInner { servers };
 
         Self {
             inner: Arc::new(inner),
+            loglet_id,
         }
     }
 
@@ -101,7 +96,11 @@ impl<T: TransportConnect> RemoteLogServerManager<T> {
     ///
     /// It's up to the client to call [`Self::renew`] if the connection it holds
     /// is closed.
-    pub async fn get(&self, id: PlainNodeId) -> Result<RemoteLogServer, NetworkError> {
+    pub async fn get<T: TransportConnect>(
+        &self,
+        id: PlainNodeId,
+        networking: &Networking<T>,
+    ) -> Result<RemoteLogServer, NetworkError> {
         let server = self.inner.servers.get(&id).expect("node is in nodeset");
 
         let mut guard = server.lock().await;
@@ -110,9 +109,9 @@ impl<T: TransportConnect> RemoteLogServerManager<T> {
             return Ok(current.clone());
         }
 
-        let connection = self.inner.networking.node_connection(id.into()).await?;
+        let connection = networking.node_connection(id.into()).await?;
         let server = RemoteLogServer {
-            loglet_id: self.inner.loglet_id,
+            loglet_id: self.loglet_id,
             node_id: id,
             tail: TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST)),
             connection,
@@ -137,7 +136,11 @@ impl<T: TransportConnect> RemoteLogServerManager<T> {
     /// by calling [`Self::get()`].
     ///
     /// Holder of old instances will have to call renew if they need to.
-    pub async fn renew(&self, server: &mut RemoteLogServer) -> Result<(), NetworkError> {
+    pub async fn renew<T: TransportConnect>(
+        &self,
+        server: &mut RemoteLogServer,
+        networking: &Networking<T>,
+    ) -> Result<(), NetworkError> {
         // this key must already be in the map
         let current = self
             .inner
@@ -156,11 +159,7 @@ impl<T: TransportConnect> RemoteLogServerManager<T> {
             return Ok(());
         }
 
-        let connection = self
-            .inner
-            .networking
-            .node_connection(server.node_id.into())
-            .await?;
+        let connection = networking.node_connection(server.node_id.into()).await?;
         inner.connection = connection.clone();
         server.connection = connection.clone();
 

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod error;
+mod log_server_manager;
 mod loglet;
 pub(crate) mod metric_definitions;
 mod network;
