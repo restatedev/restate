@@ -194,8 +194,8 @@ mod tests {
     {
         let config = Live::from_value(Configuration::default());
 
-        let mut node_env =
-            TestCoreEnvBuilder::with_incoming_only_connector().add_mock_nodes_config();
+        let mut node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .add_mock_nodes_config(GenerationalNodeId::new(1, 1));
 
         let logserver_rpc = LogServersRpc::new(&mut node_env.router_builder);
         let sequencer_rpc = SequencersRpc::new(&mut node_env.router_builder);

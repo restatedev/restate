@@ -5627,6 +5627,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "bytestring",
+ "codederror",
  "dashmap 6.0.1",
  "derive_builder",
  "derive_more",

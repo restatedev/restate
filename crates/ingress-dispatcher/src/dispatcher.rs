@@ -276,7 +276,7 @@ mod tests {
     async fn idempotent_invoke() -> anyhow::Result<()> {
         // set it to 1 partition so that we know where the invocation for the IdempotentInvoker goes to
         let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
-            .add_mock_nodes_config()
+            .add_mock_nodes_config(GenerationalNodeId::new(1, 1))
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
@@ -390,7 +390,7 @@ mod tests {
     async fn attach_invocation() {
         // set it to 1 partition so that we know where the invocation for the IdempotentInvoker goes to
         let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
-            .add_mock_nodes_config()
+            .add_mock_nodes_config(GenerationalNodeId::new(1, 1))
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,

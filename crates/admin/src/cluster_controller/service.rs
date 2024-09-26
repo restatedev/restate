@@ -447,7 +447,7 @@ mod tests {
             builder.metadata.clone(),
             builder.networking.clone(),
             &mut builder.router_builder,
-            builder.metadata_writer.clone(),
+            builder.metadata_manager.writer().clone(),
             builder.metadata_store_client.clone(),
         );
         let metadata = builder.metadata.clone();
@@ -750,7 +750,7 @@ mod tests {
             builder.metadata.clone(),
             builder.networking.clone(),
             &mut builder.router_builder,
-            builder.metadata_writer.clone(),
+            builder.metadata_manager.writer(),
             builder.metadata_store_client.clone(),
         );
 
@@ -769,7 +769,11 @@ mod tests {
             Role::Worker.into(),
             LogServerConfig::default(),
         ));
-        let builder = modify_builder(builder.set_nodes_config(nodes_config));
+        let builder = modify_builder(builder.set_nodes_config(
+            "node-1",
+            GenerationalNodeId::new(1, 1),
+            nodes_config,
+        ));
 
         let node_env = builder.build().await;
 

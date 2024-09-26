@@ -1003,7 +1003,7 @@ mod tests {
         nodes_config.upsert_node(node_config);
 
         let test_env = TestCoreEnvBuilder::with_incoming_only_connector()
-            .set_nodes_config(nodes_config)
+            .set_nodes_config("42", node_id, nodes_config)
             .build()
             .await;
 

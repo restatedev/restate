@@ -12,47 +12,30 @@ use std::marker::PhantomData;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use enumset::EnumSet;
 use futures::Stream;
 
-use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
+use restate_types::cluster_controller::ReplicationStrategy;
 use restate_types::config::NetworkingOptions;
-use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
-};
+use restate_types::logs::metadata::ProviderKind;
 use restate_types::net::codec::{Targeted, WireDecode};
-use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
-use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::node::Message;
-use restate_types::{GenerationalNodeId, Version};
+use restate_types::retries::RetryPolicy;
+use restate_types::{GenerationalNodeId, NodeId, Version};
 
-use crate::metadata_store::{MetadataStoreClient, Precondition};
+use crate::metadata_store::MetadataStoreClient;
 use crate::network::{
-    ConnectionManager, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder,
-    NetworkError, Networking, ProtocolError, TransportConnect,
+    ConnectionManager, FailingConnector, Incoming, MessageHandler, NetworkError, Networking,
+    ProtocolError, TransportConnect,
 };
-use crate::{spawn_metadata_manager, MetadataBuilder, TaskId};
-use crate::{Metadata, MetadataManager, MetadataWriter};
+use crate::{CoreBuilder, CoreBuilderFinal, MetadataBuilder, StartedCore};
 use crate::{TaskCenter, TaskCenterBuilder};
 
-pub struct TestCoreEnvBuilder<T> {
-    pub tc: TaskCenter,
-    pub my_node_id: GenerationalNodeId,
-    pub metadata_manager: MetadataManager<T>,
-    pub metadata_writer: MetadataWriter,
-    pub metadata: Metadata,
-    pub networking: Networking<T>,
-    pub nodes_config: NodesConfiguration,
-    pub provider_kind: ProviderKind,
-    pub router_builder: MessageRouterBuilder,
-    pub partition_table: PartitionTable,
-    pub scheduling_plan: SchedulingPlan,
-    pub metadata_store_client: MetadataStoreClient,
-}
+pub type TestCoreEnvBuilder<T> = CoreBuilderFinal<T>;
 
-impl TestCoreEnvBuilder<FailingConnector> {
+impl CoreBuilderFinal<FailingConnector> {
     pub fn with_incoming_only_connector() -> Self {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -69,11 +52,11 @@ impl TestCoreEnvBuilder<FailingConnector> {
             connection_manager,
         );
 
-        TestCoreEnvBuilder::with_networking(tc, networking, metadata_builder)
+        Self::with_networking(tc, networking, metadata_builder)
     }
 }
-impl<T: TransportConnect> TestCoreEnvBuilder<T> {
-    pub fn with_transport_connector(tc: TaskCenter, connector: Arc<T>) -> TestCoreEnvBuilder<T> {
+impl<T: TransportConnect> CoreBuilderFinal<T> {
+    pub fn with_transport_connector(tc: TaskCenter, connector: Arc<T>) -> Self {
         let metadata_builder = MetadataBuilder::default();
         let net_opts = NetworkingOptions::default();
         let connection_manager =
@@ -84,7 +67,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
             connection_manager,
         );
 
-        TestCoreEnvBuilder::with_networking(tc, networking, metadata_builder)
+        Self::with_networking(tc, networking, metadata_builder)
     }
 
     pub fn with_networking(
@@ -92,72 +75,39 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
         networking: Networking<T>,
         metadata_builder: MetadataBuilder,
     ) -> Self {
-        let my_node_id = GenerationalNodeId::new(1, 1);
-        let metadata_store_client = MetadataStoreClient::new_in_memory();
-        let metadata = metadata_builder.to_metadata();
-        let metadata_manager = MetadataManager::new(
-            metadata_builder,
-            networking.clone(),
-            metadata_store_client.clone(),
-        );
-        let metadata_writer = metadata_manager.writer();
-        let router_builder = MessageRouterBuilder::default();
-        let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
-        let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 10);
-        let scheduling_plan =
-            SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes);
-        tc.try_set_global_metadata(metadata.clone());
-
         // Use memory-loglet as a default if in test-mode
         #[cfg(any(test, feature = "test-util"))]
         let provider_kind = ProviderKind::InMemory;
         #[cfg(not(any(test, feature = "test-util")))]
         let provider_kind = ProviderKind::Local;
 
-        TestCoreEnvBuilder {
-            tc,
-            my_node_id,
-            metadata_manager,
-            metadata_writer,
-            metadata,
-            networking,
-            nodes_config,
-            router_builder,
-            partition_table,
-            scheduling_plan,
-            metadata_store_client,
-            provider_kind,
-        }
+        CoreBuilder::with_metadata_store_client(MetadataStoreClient::new_in_memory())
+            .with_nodes_config(
+                NodesConfiguration::new(Version::MIN, "test-cluster".to_owned()),
+                "node-1".to_string(),
+                Some(NodeId::new_generational(1, 1)),
+                AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap(),
+                EnumSet::EMPTY,
+            )
+            .with_networking(networking, metadata_builder)
+            .with_tc(tc)
+            .set_num_partitions(10)
+            .set_replication_strategy(ReplicationStrategy::OnAllNodes)
+            .set_provider_kind(provider_kind)
+            .set_allow_bootstrap(true)
     }
 
-    pub fn set_nodes_config(mut self, nodes_config: NodesConfiguration) -> Self {
-        self.nodes_config = nodes_config;
-        self
+    pub fn set_my_node_id(self, my_node_id: GenerationalNodeId) -> Self {
+        self.set_force_node_id(NodeId::Generational(my_node_id))
     }
 
-    pub fn set_partition_table(mut self, partition_table: PartitionTable) -> Self {
-        self.partition_table = partition_table;
-        self
-    }
-
-    pub fn set_scheduling_plan(mut self, scheduling_plan: SchedulingPlan) -> Self {
-        self.scheduling_plan = scheduling_plan;
-        self
-    }
-
-    pub fn set_my_node_id(mut self, my_node_id: GenerationalNodeId) -> Self {
-        self.my_node_id = my_node_id;
-        self
-    }
-
-    pub fn set_provider_kind(mut self, provider_kind: ProviderKind) -> Self {
-        self.provider_kind = provider_kind;
-        self
-    }
-
-    pub fn add_mock_nodes_config(mut self) -> Self {
-        self.nodes_config =
-            create_mock_nodes_config(self.my_node_id.raw_id(), self.my_node_id.raw_generation());
+    pub fn add_mock_nodes_config(mut self, node_id: GenerationalNodeId) -> Self {
+        let node_config = create_mock_node_config(node_id.raw_id(), node_id.raw_generation());
+        self.force_node_id = Some(NodeId::Generational(node_id));
+        self.nodes_config.upsert_node(node_config.clone());
+        self.node_name = node_config.name;
+        self.advertise_address = node_config.address;
+        self.roles = node_config.roles;
         self
     }
 
@@ -169,99 +119,26 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
         self
     }
 
-    pub async fn build(mut self) -> TestCoreEnv<T> {
-        self.metadata_manager
-            .register_in_message_router(&mut self.router_builder);
-        self.networking
-            .connection_manager()
-            .set_message_router(self.router_builder.build());
-
-        let metadata_manager_task = spawn_metadata_manager(&self.tc, self.metadata_manager)
-            .expect("metadata manager should start");
-
-        self.metadata_store_client
-            .put(
-                NODES_CONFIG_KEY.clone(),
-                &self.nodes_config,
-                Precondition::None,
-            )
+    pub async fn build(self) -> StartedCore<T> {
+        let core = self.build_router();
+        core.start(RetryPolicy::None)
             .await
-            .expect("to store nodes config in metadata store");
-        self.metadata_writer.submit(self.nodes_config.clone());
-
-        let logs =
-            bootstrap_logs_metadata(self.provider_kind, self.partition_table.num_partitions());
-        self.metadata_store_client
-            .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
-            .await
-            .expect("to store bifrost config in metadata store");
-        self.metadata_writer.submit(logs.clone());
-
-        self.metadata_store_client
-            .put(
-                PARTITION_TABLE_KEY.clone(),
-                &self.partition_table,
-                Precondition::None,
-            )
-            .await
-            .expect("to store partition table in metadata store");
-        self.metadata_writer.submit(self.partition_table);
-
-        self.metadata_store_client
-            .put(
-                SCHEDULING_PLAN_KEY.clone(),
-                &self.scheduling_plan,
-                Precondition::None,
-            )
-            .await
-            .expect("sot store scheduling plan in metadata store");
-
-        self.tc
-            .run_in_scope("test-env", None, async {
-                let _ = self
-                    .metadata
-                    .wait_for_version(
-                        MetadataKind::NodesConfiguration,
-                        self.nodes_config.version(),
-                    )
-                    .await
-                    .unwrap();
-            })
-            .await;
-        self.metadata_writer.set_my_node_id(self.my_node_id);
-
-        TestCoreEnv {
-            tc: self.tc,
-            metadata: self.metadata,
-            metadata_manager_task,
-            metadata_writer: self.metadata_writer,
-            networking: self.networking,
-            metadata_store_client: self.metadata_store_client,
-        }
+            .expect("Core start to succeed")
     }
 }
 
-// This might need to be moved to a better place in the future.
-pub struct TestCoreEnv<T> {
-    pub tc: TaskCenter,
-    pub metadata: Metadata,
-    pub metadata_writer: MetadataWriter,
-    pub networking: Networking<T>,
-    pub metadata_manager_task: TaskId,
-    pub metadata_store_client: MetadataStoreClient,
-}
+pub type TestCoreEnv<T> = StartedCore<T>;
 
-impl TestCoreEnv<FailingConnector> {
+impl StartedCore<FailingConnector> {
     pub async fn create_with_single_node(node_id: u32, generation: u32) -> Self {
-        TestCoreEnvBuilder::with_incoming_only_connector()
-            .set_my_node_id(GenerationalNodeId::new(node_id, generation))
-            .add_mock_nodes_config()
+        CoreBuilderFinal::with_incoming_only_connector()
+            .add_mock_nodes_config(GenerationalNodeId::new(node_id, generation))
             .build()
             .await
     }
 }
 
-impl<T: TransportConnect> TestCoreEnv<T> {
+impl<T: TransportConnect> StartedCore<T> {
     pub async fn accept_incoming_connection<S>(
         &self,
         incoming: S,
@@ -276,20 +153,17 @@ impl<T: TransportConnect> TestCoreEnv<T> {
     }
 }
 
-pub fn create_mock_nodes_config(node_id: u32, generation: u32) -> NodesConfiguration {
-    let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+pub fn create_mock_node_config(node_id: u32, generation: u32) -> NodeConfig {
     let address = AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap();
     let node_id = GenerationalNodeId::new(node_id, generation);
     let roles = Role::Admin | Role::Worker;
-    let my_node = NodeConfig::new(
+    NodeConfig::new(
         format!("MyNode-{}", node_id),
         node_id,
         address,
         roles,
         LogServerConfig::default(),
-    );
-    nodes_config.upsert_node(my_node);
-    nodes_config
+    )
 }
 
 /// No-op message handler which simply drops the received messages. Useful if you don't want to

@@ -764,15 +764,14 @@ mod tests {
 
         let partition_table =
             PartitionTable::with_equally_sized_partitions(Version::MIN, num_partitions);
-        let initial_scheduling_plan = SchedulingPlan::from(&partition_table, replication_strategy);
         let metadata_store_client = builder.metadata_store_client.clone();
 
         let networking = builder.networking.clone();
 
         let env = builder
-            .set_nodes_config(nodes_config.clone())
+            .set_nodes_config(node_ids[0].to_string(), node_ids[0], nodes_config.clone())
             .set_partition_table(partition_table.clone())
-            .set_scheduling_plan(initial_scheduling_plan)
+            .set_replication_strategy(replication_strategy)
             .build()
             .await;
         let tc = env.tc.clone();
