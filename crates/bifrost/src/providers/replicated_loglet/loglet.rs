@@ -56,7 +56,7 @@ pub(super) struct ReplicatedLoglet<T> {
 }
 
 impl<T: TransportConnect> ReplicatedLoglet<T> {
-    pub fn start(
+    pub fn new(
         log_id: LogId,
         segment_index: SegmentIndex,
         my_params: ReplicatedLogletParams,
@@ -161,5 +161,112 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
 
     async fn seal(&self) -> Result<(), OperationError> {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU8;
+
+    use super::*;
+
+    use googletest::prelude::*;
+    use test_log::test;
+
+    use restate_core::TestCoreEnvBuilder;
+    use restate_log_server::LogServerService;
+    use restate_rocksdb::RocksDbManager;
+    use restate_types::config::Configuration;
+    use restate_types::live::Live;
+    use restate_types::logs::Keys;
+    use restate_types::replicated_loglet::{NodeSet, ReplicationProperty};
+    use restate_types::{GenerationalNodeId, PlainNodeId};
+
+    use crate::loglet::Loglet;
+
+    async fn run_in_test_env<F, O>(
+        loglet_params: ReplicatedLogletParams,
+        mut future: F,
+    ) -> googletest::Result<()>
+    where
+        F: FnMut(Arc<dyn Loglet>) -> O,
+        O: std::future::Future<Output = googletest::Result<()>>,
+    {
+        let config = Live::from_value(Configuration::default());
+
+        let mut node_env =
+            TestCoreEnvBuilder::with_incoming_only_connector().add_mock_nodes_config();
+
+        let logserver_rpc = LogServersRpc::new(&mut node_env.router_builder);
+        let sequencer_rpc = SequencersRpc::new(&mut node_env.router_builder);
+        let record_cache = RecordCache::new(1_000_000);
+
+        let log_server = LogServerService::create(
+            config.clone(),
+            node_env.tc.clone(),
+            node_env.metadata.clone(),
+            node_env.metadata_store_client.clone(),
+            &mut node_env.router_builder,
+        )
+        .await?;
+
+        let node_env = node_env.build().await;
+
+        node_env
+            .tc
+            .clone()
+            .run_in_scope("test", None, async {
+                RocksDbManager::init(config.clone().map(|c| &c.common));
+
+                log_server
+                    .start(node_env.metadata_writer.clone())
+                    .await
+                    .into_test_result()?;
+
+                let loglet = Arc::new(ReplicatedLoglet::new(
+                    LogId::new(1),
+                    SegmentIndex::from(1),
+                    loglet_params,
+                    node_env.networking.clone(),
+                    logserver_rpc,
+                    &sequencer_rpc,
+                    record_cache,
+                )?);
+
+                future(loglet).await
+            })
+            .await?;
+        node_env.tc.shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    // ** Single-node replicated-loglet smoke tests **
+    #[test(tokio::test(start_paused = true))]
+    async fn test_append_local_sequencer_single_node() -> Result<()> {
+        let params = ReplicatedLogletParams {
+            loglet_id: 122.into(),
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+            write_set: None,
+        };
+
+        run_in_test_env(params, |loglet| async move {
+            let batch: Arc<[Record]> = vec![
+                ("record-1", Keys::Single(1)).into(),
+                ("record-2", Keys::Single(2)).into(),
+                ("record-3", Keys::Single(1)).into(),
+            ]
+            .into();
+            let offset = loglet.enqueue_batch(batch.clone()).await?.await?;
+            assert_that!(offset, eq(LogletOffset::new(3)));
+            let offset = loglet.enqueue_batch(batch.clone()).await?.await?;
+            assert_that!(offset, eq(LogletOffset::new(6)));
+            let tail = loglet.find_tail().await?;
+            assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
+            Ok(())
+        })
+        .await
     }
 }

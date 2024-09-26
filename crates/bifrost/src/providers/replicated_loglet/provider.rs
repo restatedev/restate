@@ -156,7 +156,7 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
                 );
 
                 // Create loglet
-                let loglet = ReplicatedLoglet::start(
+                let loglet = ReplicatedLoglet::new(
                     log_id,
                     segment_index,
                     params,
