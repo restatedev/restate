@@ -860,6 +860,84 @@ impl FromStr for IngressRequestId {
     }
 }
 
+/// Unique Id of a partition snapshot.
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
+)]
+pub struct SnapshotId(pub(crate) Ulid);
+
+impl SnapshotId {
+    pub fn new() -> Self {
+        Self(Ulid::new())
+    }
+
+    pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
+        Self(Ulid::from_parts(timestamp_ms, random))
+    }
+}
+
+impl Default for SnapshotId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResourceId for SnapshotId {
+    const SIZE_IN_BYTES: usize = size_of::<Ulid>();
+    const RESOURCE_TYPE: IdResourceType = IdResourceType::Snapshot;
+    const STRING_CAPACITY_HINT: usize = base62_max_length_for_type::<u128>();
+
+    fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+        let raw: u128 = self.0.into();
+        encoder.encode_fixed_width(raw);
+    }
+}
+
+impl TimestampAwareId for SnapshotId {
+    fn timestamp(&self) -> MillisSinceEpoch {
+        self.0.timestamp_ms().into()
+    }
+}
+
+impl FromStr for SnapshotId {
+    type Err = IdDecodeError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let mut decoder = IdDecoder::new(input)?;
+        // Ensure we are decoding the correct resource type
+        if decoder.resource_type != Self::RESOURCE_TYPE {
+            return Err(IdDecodeError::TypeMismatch);
+        }
+
+        // ulid (u128)
+        let raw_ulid: u128 = decoder.cursor.decode_next()?;
+        Ok(Self::from(raw_ulid))
+    }
+}
+
+impl fmt::Display for SnapshotId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut encoder = IdEncoder::<Self>::new();
+        self.push_contents_to_encoder(&mut encoder);
+        fmt::Display::fmt(&encoder.finalize(), f)
+    }
+}
+
+impl From<u128> for SnapshotId {
+    fn from(value: u128) -> Self {
+        Self(Ulid::from(value))
+    }
+}
+
 #[cfg(any(test, feature = "test-util"))]
 mod mocks {
     use super::*;

@@ -12,20 +12,19 @@ use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use restate_types::live::BoxedLiveLoad;
+use rocksdb::ExportImportFilesMetaData;
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, error, info, warn};
 
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
-use restate_types::config::RocksDbOptions;
-use restate_types::config::StorageOptions;
-use restate_types::identifiers::PartitionId;
-use restate_types::identifiers::PartitionKey;
-use restate_types::live::LiveLoad;
+use restate_types::config::{RocksDbOptions, StorageOptions};
+use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::live::{BoxedLiveLoad, LiveLoad};
 
 use crate::cf_options;
+use crate::snapshots::LocalPartitionSnapshot;
 use crate::PartitionStore;
 use crate::DB;
 
@@ -56,7 +55,7 @@ impl PartitionStoreManager {
         mut storage_opts: impl LiveLoad<StorageOptions> + Send + 'static,
         updateable_opts: BoxedLiveLoad<RocksDbOptions>,
         initial_partition_set: &[(PartitionId, RangeInclusive<PartitionKey>)],
-    ) -> std::result::Result<Self, RocksError> {
+    ) -> Result<Self, RocksError> {
         let options = storage_opts.live_load();
 
         let per_partition_memory_budget = options.rocksdb_memory_budget()
@@ -102,7 +101,7 @@ impl PartitionStoreManager {
         partition_key_range: RangeInclusive<PartitionKey>,
         open_mode: OpenMode,
         opts: &RocksDbOptions,
-    ) -> std::result::Result<PartitionStore, RocksError> {
+    ) -> Result<PartitionStore, RocksError> {
         let mut guard = self.lookup.lock().await;
         if let Some(store) = guard.live.get(&partition_id) {
             return Ok(store.clone());
@@ -129,6 +128,79 @@ impl PartitionStoreManager {
         guard.live.insert(partition_id, partition_store.clone());
 
         Ok(partition_store)
+    }
+
+    /// Imports a partition snapshot and opens it as a partition store.
+    /// The database must not have an existing column family for the partition id;
+    /// it will be created based on the supplied snapshot.
+    pub async fn restore_partition_store_snapshot(
+        &self,
+        partition_id: PartitionId,
+        partition_key_range: RangeInclusive<PartitionKey>,
+        snapshot: LocalPartitionSnapshot,
+        opts: &RocksDbOptions,
+    ) -> Result<PartitionStore, RocksError> {
+        let mut guard = self.lookup.lock().await;
+        if guard.live.contains_key(&partition_id) {
+            warn!(
+                ?partition_id,
+                ?snapshot,
+                "The partition store is already open, refusing to import snapshot"
+            );
+            return Err(RocksError::AlreadyOpen);
+        }
+
+        let cf_name = cf_for_partition(partition_id);
+        let cf_exists = self.rocksdb.inner().cf_handle(&cf_name).is_some();
+        if cf_exists {
+            warn!(
+                ?partition_id,
+                ?cf_name,
+                ?snapshot,
+                "The column family for partition already exists in the database, cannot import snapshot"
+            );
+            return Err(RocksError::ColumnFamilyExists);
+        }
+
+        let mut import_metadata = ExportImportFilesMetaData::default();
+        import_metadata.set_db_comparator_name(snapshot.db_comparator_name.as_str());
+        import_metadata.set_files(&snapshot.files);
+
+        info!(
+            ?partition_id,
+            min_applied_lsn = ?snapshot.min_applied_lsn,
+            "Initializing partition store from snapshot"
+        );
+
+        if let Err(e) = self
+            .rocksdb
+            .import_cf(cf_name.clone(), opts, import_metadata)
+            .await
+        {
+            error!(?partition_id, "Failed to import snapshot");
+            return Err(e);
+        }
+
+        assert!(self.rocksdb.inner().cf_handle(&cf_name).is_some());
+        let partition_store = PartitionStore::new(
+            self.raw_db.clone(),
+            self.rocksdb.clone(),
+            cf_name,
+            partition_id,
+            partition_key_range,
+        );
+        guard.live.insert(partition_id, partition_store.clone());
+
+        Ok(partition_store)
+    }
+
+    pub async fn drop_partition(&self, partition_id: PartitionId) {
+        let mut guard = self.lookup.lock().await;
+        self.raw_db
+            .drop_cf(&cf_for_partition(partition_id))
+            .unwrap();
+
+        guard.live.remove(&partition_id);
     }
 }
 

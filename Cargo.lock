@@ -6016,6 +6016,7 @@ dependencies = [
  "futures",
  "futures-util",
  "googletest",
+ "humantime",
  "num-bigint",
  "once_cell",
  "paste",
@@ -6030,6 +6031,8 @@ dependencies = [
  "rust-rocksdb",
  "schemars",
  "serde",
+ "serde_json",
+ "serde_with",
  "static_assertions",
  "strum 0.26.2",
  "sync_wrapper 1.0.1",
@@ -6596,7 +6599,7 @@ dependencies = [
 [[package]]
 name = "rust-librocksdb-sys"
 version = "0.25.0+9.5.2"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=c6a279a40416cb47bbf576ffb190523d55818073#c6a279a40416cb47bbf576ffb190523d55818073"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=8f832b7e742e0d826fb9fed05a62e4bd747969bf#8f832b7e742e0d826fb9fed05a62e4bd747969bf"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -6612,7 +6615,7 @@ dependencies = [
 [[package]]
 name = "rust-rocksdb"
 version = "0.29.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=c6a279a40416cb47bbf576ffb190523d55818073#c6a279a40416cb47bbf576ffb190523d55818073"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=8f832b7e742e0d826fb9fed05a62e4bd747969bf#8f832b7e742e0d826fb9fed05a62e4bd747969bf"
 dependencies = [
  "libc",
  "parking_lot",
