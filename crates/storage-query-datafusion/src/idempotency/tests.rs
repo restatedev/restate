@@ -10,7 +10,7 @@
 
 use crate::mocks::*;
 use crate::row;
-use bytes::Bytes;
+use bytestring::ByteString;
 use datafusion::arrow::array::LargeStringArray;
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
@@ -36,7 +36,7 @@ async fn get_idempotency_key() {
     tx.put_idempotency_metadata(
         &IdempotencyId::new(
             "my-service".into(),
-            Some(Bytes::copy_from_slice(b"my-key")),
+            Some(ByteString::from_static("my-key")),
             "my-handler".into(),
             "my-idempotency-key".into(),
         ),
@@ -49,7 +49,7 @@ async fn get_idempotency_key() {
     tx.put_idempotency_metadata(
         &IdempotencyId::new(
             "my-service".into(),
-            Some(Bytes::copy_from_slice(b"my-key")),
+            Some(ByteString::from_static("my-key")),
             "my-handler-2".into(),
             "my-idempotency-key".into(),
         ),

@@ -191,6 +191,17 @@ impl Default for SubscriptionId {
 /// which identifies a consecutive range of partition keys.
 pub type PartitionKey = u64;
 
+/// Returns the partition key computed from either the service_key, or idempotency_key, if possible
+fn deterministic_partition_key(
+    service_key: Option<&ByteString>,
+    idempotency_key: Option<&ByteString>,
+) -> Option<PartitionKey> {
+    service_key
+        .as_ref()
+        .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
+        .or_else(|| idempotency_key.map(partitioner::HashPartitioner::compute_partition_key))
+}
+
 /// Trait for data structures that have a partition key
 pub trait WithPartitionKey {
     /// Returns the partition key
@@ -479,17 +490,17 @@ impl InvocationId {
         idempotency_key: Option<&ByteString>,
     ) -> Self {
         // --- Partition key generation
-        let partition_key = invocation_target
-            .key()
-            // If the invocation target is keyed, the PK is inferred from the key
-            .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
-            // The PK is inferred from the idempotency key
-            .unwrap_or_else(|| {
-                idempotency_key
-                    .map(partitioner::HashPartitioner::compute_partition_key)
-                    // If no idempotency key provided, just pick a random number
+        let partition_key =
+            // Either try to generate the deterministic partition key, if possible
+        deterministic_partition_key(
+            invocation_target
+                .key(),
+            idempotency_key
+        )
+
+                    // If no deterministic partition key can be generated, just pick a random number
                     .unwrap_or_else(|| rand::thread_rng().next_u64())
-            });
+        ;
 
         // --- Invocation UUID generation
         InvocationId::from_parts(
@@ -620,7 +631,7 @@ pub struct IdempotencyId {
     /// Identifies the invoked service
     pub service_name: ByteString,
     /// Service key, if any
-    pub service_key: Option<Bytes>,
+    pub service_key: Option<ByteString>,
     /// Identifies the invoked service handler
     pub service_handler: ByteString,
     /// The user supplied idempotency_key
@@ -632,7 +643,7 @@ pub struct IdempotencyId {
 impl IdempotencyId {
     pub fn new(
         service_name: ByteString,
-        service_key: Option<Bytes>,
+        service_key: Option<ByteString>,
         service_handler: ByteString,
         idempotency_key: ByteString,
     ) -> Self {
@@ -641,12 +652,9 @@ impl IdempotencyId {
         // * For services without key, the partition key is the hash(idempotency key).
         //   This makes sure that for a given idempotency key and its scope, we always land in the same partition.
         // * For services with key, the partition key is the hash(service key), this due to the virtual object locking requirement.
-        let partition_key = service_key
-            .as_ref()
-            .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
-            .unwrap_or_else(|| {
-                partitioner::HashPartitioner::compute_partition_key(&idempotency_key)
-            });
+        let partition_key =
+            deterministic_partition_key(service_key.as_ref(), Some(&idempotency_key))
+                .expect("A deterministic partition key can always be generated for idempotency id");
 
         Self {
             service_name,
@@ -664,7 +672,7 @@ impl IdempotencyId {
     ) -> Self {
         IdempotencyId {
             service_name: invocation_target.service_name().clone(),
-            service_key: invocation_target.key().map(|bs| bs.as_bytes().clone()),
+            service_key: invocation_target.key().cloned(),
             service_handler: invocation_target.handler_name().clone(),
             idempotency_key,
             partition_key: invocation_id.partition_key(),

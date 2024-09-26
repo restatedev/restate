@@ -46,7 +46,8 @@ fn create_key(idempotency_id: &IdempotencyId) -> IdempotencyKey {
                 .service_key
                 .as_ref()
                 .cloned()
-                .unwrap_or_default(),
+                .unwrap_or_default()
+                .into_bytes(),
         )
         .service_handler(idempotency_id.service_handler.clone())
         .idempotency_key(idempotency_id.idempotency_key.clone())
@@ -74,7 +75,10 @@ fn all_idempotency_metadata<S: StorageAccess>(
         Ok((
             IdempotencyId::new(
                 key.service_name_ok_or()?.clone(),
-                key.service_key.clone(),
+                key.service_key
+                    .clone()
+                    .map(|b| ByteString::try_from(b).map_err(|e| StorageError::Generic(e.into())))
+                    .transpose()?,
                 key.service_handler_ok_or()?.clone(),
                 key.idempotency_key_ok_or()?.clone(),
             ),
