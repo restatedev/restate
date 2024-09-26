@@ -13,12 +13,9 @@ use std::{cmp::Ordering, sync::Arc, time::Duration};
 use futures::{stream::FuturesUnordered, StreamExt};
 use tokio::{sync::OwnedSemaphorePermit, time::timeout};
 
-use restate_core::{
-    network::{
-        rpc_router::{RpcError, RpcRouter},
-        Incoming, NetworkError, Outgoing, TransportConnect,
-    },
-    Metadata,
+use restate_core::network::{
+    rpc_router::{RpcError, RpcRouter},
+    Incoming, NetworkError, Networking, Outgoing, TransportConnect,
 };
 use restate_types::{
     config::Configuration,
@@ -28,12 +25,13 @@ use restate_types::{
     replicated_loglet::NodeSet,
 };
 
-use super::{
-    node::{RemoteLogServer, RemoteLogServerManager},
-    BatchExt, SequencerSharedState,
-};
+use super::{BatchExt, SequencerSharedState};
 use crate::{
-    loglet::LogletCommitResolver, providers::replicated_loglet::replication::NodeSetChecker,
+    loglet::LogletCommitResolver,
+    providers::replicated_loglet::{
+        log_server_manager::{RemoteLogServer, RemoteLogServerManager},
+        replication::NodeSetChecker,
+    },
 };
 
 const DEFAULT_BACKOFF_TIME: Duration = Duration::from_millis(1000);
@@ -50,9 +48,9 @@ enum AppenderState {
 /// Appender makes sure a batch of records will run to completion
 pub(crate) struct Appender<T> {
     sequencer_shared_state: Arc<SequencerSharedState>,
-    log_server_manager: RemoteLogServerManager<T>,
+    log_server_manager: RemoteLogServerManager,
     store_router: RpcRouter<Store>,
-    metadata: Metadata,
+    networking: Networking<T>,
     first_offset: LogletOffset,
     records: Arc<[Record]>,
     // permit is held during the entire live
@@ -67,9 +65,9 @@ impl<T: TransportConnect> Appender<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sequencer_shared_state: Arc<SequencerSharedState>,
-        log_server_manager: RemoteLogServerManager<T>,
+        log_server_manager: RemoteLogServerManager,
         store_router: RpcRouter<Store>,
-        metadata: Metadata,
+        networking: Networking<T>,
         first_offset: LogletOffset,
         records: Arc<[Record]>,
         permit: OwnedSemaphorePermit,
@@ -79,7 +77,7 @@ impl<T: TransportConnect> Appender<T> {
             sequencer_shared_state,
             log_server_manager,
             store_router,
-            metadata,
+            networking,
             first_offset,
             records,
             permit: Some(permit),
@@ -88,7 +86,7 @@ impl<T: TransportConnect> Appender<T> {
         }
     }
 
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    pub async fn run(mut self) {
         // initial wave has 0 replicated and 0 gray listed node
         let mut state = AppenderState::Wave {
             graylist: NodeSet::empty(),
@@ -106,7 +104,7 @@ impl<T: TransportConnect> Appender<T> {
 
         loop {
             state = match state {
-                AppenderState::Done => return Ok(()),
+                AppenderState::Done => break,
                 AppenderState::Wave {
                     graylist: gray_list,
                 } => self.wave(gray_list).await,
@@ -129,7 +127,7 @@ impl<T: TransportConnect> Appender<T> {
         // select the spread
         let spread = match self.sequencer_shared_state.selector.select(
             &mut rand::thread_rng(),
-            &self.metadata.nodes_config_ref(),
+            &self.networking.metadata().nodes_config_ref(),
             &gray_list,
         ) {
             Ok(spread) => spread,
@@ -152,7 +150,7 @@ impl<T: TransportConnect> Appender<T> {
         for id in spread {
             // at this stage, if we fail to get connection to this server it must be
             // a first time use. We can safely assume this has to be gray listed
-            let server = match self.log_server_manager.get(id).await {
+            let server = match self.log_server_manager.get(id, &self.networking).await {
                 Ok(server) => server,
                 Err(err) => {
                     tracing::error!("failed to connect to {}: {}", id, err);
@@ -185,7 +183,7 @@ impl<T: TransportConnect> Appender<T> {
 
         let mut checker = NodeSetChecker::new(
             self.sequencer_shared_state.selector.nodeset(),
-            &self.metadata.nodes_config_snapshot(),
+            &self.networking.metadata().nodes_config_snapshot(),
             self.sequencer_shared_state.selector.replication_property(),
         );
 
@@ -206,12 +204,13 @@ impl<T: TransportConnect> Appender<T> {
             pending_servers.insert(server.node_id());
 
             let task = LogServerStoreTask {
-                sequencer_shared_state: Arc::clone(&self.sequencer_shared_state),
-                server_manager: self.log_server_manager.clone(),
+                sequencer_shared_state: &self.sequencer_shared_state,
+                server_manager: &self.log_server_manager,
                 server,
+                networking: &self.networking,
                 first_offset: self.first_offset,
-                records: Arc::clone(&self.records),
-                rpc_router: self.store_router.clone(),
+                records: &self.records,
+                rpc_router: &self.store_router,
             };
 
             store_tasks.push(task.run());
@@ -326,16 +325,17 @@ struct LogServerStoreTaskResult {
 ///
 /// The task will retry to connect to the remote server is connection
 /// was lost.
-struct LogServerStoreTask<T> {
-    sequencer_shared_state: Arc<SequencerSharedState>,
-    server_manager: RemoteLogServerManager<T>,
+struct LogServerStoreTask<'a, T> {
+    sequencer_shared_state: &'a Arc<SequencerSharedState>,
+    server_manager: &'a RemoteLogServerManager,
+    networking: &'a Networking<T>,
     server: RemoteLogServer,
     first_offset: LogletOffset,
-    records: Arc<[Record]>,
-    rpc_router: RpcRouter<Store>,
+    records: &'a [Record],
+    rpc_router: &'a RpcRouter<Store>,
 }
 
-impl<T: TransportConnect> LogServerStoreTask<T> {
+impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
     async fn run(mut self) -> LogServerStoreTaskResult {
         let result = self.send().await;
         LogServerStoreTaskResult {
@@ -417,7 +417,9 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
                         NetworkError::ConnectionClosed
                         | NetworkError::ConnectError(_)
                         | NetworkError::Timeout(_) => {
-                            self.server_manager.renew(&mut self.server).await?
+                            self.server_manager
+                                .renew(&mut self.server, self.networking)
+                                .await?
                         }
                         _ => return Err(err.source),
                     }

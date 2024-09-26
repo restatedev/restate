@@ -51,48 +51,27 @@ impl RemoteLogServer {
     }
 }
 
-struct RemoteLogServerManagerInner<T> {
-    loglet_id: ReplicatedLogletId,
-    servers: BTreeMap<PlainNodeId, LogServerLock>,
-    nodeset: NodeSet,
-    networking: Networking<T>,
-}
-
 /// LogServerManager maintains a set of [`RemoteLogServer`]s that provided via the
 /// [`NodeSet`].
 ///
 /// The manager makes sure there is only one active connection per server.
 /// It's up to the user of the client to do [`LogServerManager::renew`] if needed
-pub(crate) struct RemoteLogServerManager<T> {
-    inner: Arc<RemoteLogServerManagerInner<T>>,
+#[derive(Clone)]
+pub struct RemoteLogServerManager {
+    servers: Arc<BTreeMap<PlainNodeId, LogServerLock>>,
+    loglet_id: ReplicatedLogletId,
 }
 
-impl<T> Clone for RemoteLogServerManager<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
-    }
-}
-
-impl<T: TransportConnect> RemoteLogServerManager<T> {
+impl RemoteLogServerManager {
     /// creates the node set and start the appenders
-    pub fn new(loglet_id: ReplicatedLogletId, networking: Networking<T>, nodeset: NodeSet) -> Self {
-        let mut servers = BTreeMap::default();
-        for node_id in nodeset.iter() {
-            servers.insert(*node_id, LogServerLock::default());
-        }
+    pub fn new(loglet_id: ReplicatedLogletId, nodeset: &NodeSet) -> Self {
+        let servers = nodeset
+            .iter()
+            .map(|node_id| (*node_id, LogServerLock::default()))
+            .collect();
+        let servers = Arc::new(servers);
 
-        let inner = RemoteLogServerManagerInner {
-            loglet_id,
-            servers,
-            nodeset,
-            networking,
-        };
-
-        Self {
-            inner: Arc::new(inner),
-        }
+        Self { servers, loglet_id }
     }
 
     /// Gets a log-server instance. On first time it will initialize a new connection
@@ -101,8 +80,12 @@ impl<T: TransportConnect> RemoteLogServerManager<T> {
     ///
     /// It's up to the client to call [`Self::renew`] if the connection it holds
     /// is closed.
-    pub async fn get(&self, id: PlainNodeId) -> Result<RemoteLogServer, NetworkError> {
-        let server = self.inner.servers.get(&id).expect("node is in nodeset");
+    pub async fn get<T: TransportConnect>(
+        &self,
+        id: PlainNodeId,
+        networking: &Networking<T>,
+    ) -> Result<RemoteLogServer, NetworkError> {
+        let server = self.servers.get(&id).expect("node is in nodeset");
 
         let mut guard = server.lock().await;
 
@@ -110,9 +93,9 @@ impl<T: TransportConnect> RemoteLogServerManager<T> {
             return Ok(current.clone());
         }
 
-        let connection = self.inner.networking.node_connection(id.into()).await?;
+        let connection = networking.node_connection(id.into()).await?;
         let server = RemoteLogServer {
-            loglet_id: self.inner.loglet_id,
+            loglet_id: self.loglet_id,
             node_id: id,
             tail: TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST)),
             connection,
@@ -137,10 +120,13 @@ impl<T: TransportConnect> RemoteLogServerManager<T> {
     /// by calling [`Self::get()`].
     ///
     /// Holder of old instances will have to call renew if they need to.
-    pub async fn renew(&self, server: &mut RemoteLogServer) -> Result<(), NetworkError> {
+    pub async fn renew<T: TransportConnect>(
+        &self,
+        server: &mut RemoteLogServer,
+        networking: &Networking<T>,
+    ) -> Result<(), NetworkError> {
         // this key must already be in the map
         let current = self
-            .inner
             .servers
             .get(&server.node_id)
             .expect("node is in nodeset");
@@ -156,11 +142,7 @@ impl<T: TransportConnect> RemoteLogServerManager<T> {
             return Ok(());
         }
 
-        let connection = self
-            .inner
-            .networking
-            .node_connection(server.node_id.into())
-            .await?;
+        let connection = networking.node_connection(server.node_id.into()).await?;
         inner.connection = connection.clone();
         server.connection = connection.clone();
 
