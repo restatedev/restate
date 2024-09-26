@@ -17,7 +17,7 @@ pub enum StorageError {
     Generic(#[from] anyhow::Error),
     #[error("failed to convert Rust objects to/from protobuf: {0}")]
     Conversion(anyhow::Error),
-    #[error("Integrity constrained is violated")]
+    #[error("Integrity constraint is violated")]
     DataIntegrityError,
     #[error("Operational error that can be caused during a graceful shutdown")]
     OperationalError,

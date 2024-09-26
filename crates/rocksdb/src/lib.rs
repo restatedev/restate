@@ -30,11 +30,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use rocksdb::checkpoint::Checkpoint;
 use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
+use rocksdb::ExportImportFilesMetaData;
 
-use self::background::ReadyStorageTask;
 // re-exports
 pub use self::db_manager::RocksDbManager;
 pub use self::db_spec::*;
@@ -42,6 +43,7 @@ pub use self::error::*;
 pub use self::perf::RocksDbPerfGuard;
 pub use self::rock_access::RocksAccess;
 
+use self::background::ReadyStorageTask;
 use self::background::StorageTask;
 use self::background::StorageTaskKind;
 use self::metric_definitions::*;
@@ -347,6 +349,60 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::OpenColumnFamily)
             .op(move || db.open_cf(name, default_cf_options, cf_patterns))
+            .build()
+            .unwrap();
+
+        self.manager.async_spawn(task).await?
+    }
+
+    #[tracing::instrument(skip_all, fields(db = %self.name))]
+    pub async fn import_cf(
+        &self,
+        name: CfName,
+        opts: &RocksDbOptions,
+        metadata: ExportImportFilesMetaData,
+    ) -> Result<(), RocksError> {
+        let default_cf_options = self.manager.default_cf_options(opts);
+        let cf_patterns = self.cf_patterns.clone();
+        let db = self.db.clone();
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::ImportColumnFamily)
+            .priority(Priority::Low)
+            .op(move || {
+                let _x = RocksDbPerfGuard::new("import-column-family");
+                db.import_cf(name, default_cf_options, cf_patterns, metadata)
+            })
+            .build()
+            .unwrap();
+
+        self.manager.async_spawn(task).await?
+    }
+
+    #[tracing::instrument(skip_all, fields(db = %self.name))]
+    pub async fn export_cf(
+        &self,
+        name: CfName,
+        export_dir: PathBuf,
+    ) -> Result<ExportImportFilesMetaData, RocksError> {
+        let db = self.db.clone();
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::ExportColumnFamily)
+            .priority(Priority::Low)
+            .op(move || {
+                let _x = RocksDbPerfGuard::new("export-column-family");
+
+                let checkpoint = Checkpoint::new(db.as_raw_db()).unwrap();
+
+                let data_cf_handle = db
+                    .cf_handle(name.as_str())
+                    .ok_or_else(|| RocksError::UnknownColumnFamily(name.clone()))?;
+
+                let metadata = checkpoint
+                    .export_column_family(&data_cf_handle, export_dir.as_path())
+                    .map_err(RocksError::Other)?;
+
+                Ok(metadata)
+            })
             .build()
             .unwrap();
 

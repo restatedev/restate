@@ -12,12 +12,6 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
-restate-core = { workspace = true }
-restate-errors = { workspace = true }
-restate-rocksdb = { workspace = true }
-restate-storage-api = { workspace = true }
-restate-types = { workspace = true }
-
 anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
@@ -27,12 +21,20 @@ derive_more = { workspace = true }
 enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+humantime = { workspace = true }
 once_cell = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }
+restate-core = { workspace = true }
+restate-errors = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-storage-api = { workspace = true }
+restate-types = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true, features = ["hex"] }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 sync_wrapper = { workspace = true }
@@ -51,6 +53,7 @@ criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
 num-bigint = "0.4"
 rand = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [[bench]]

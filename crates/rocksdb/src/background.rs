@@ -24,6 +24,8 @@ use crate::{Priority, OP_TYPE, PRIORITY, STORAGE_BG_TASK_IN_FLIGHT};
 pub enum StorageTaskKind {
     WriteBatch,
     OpenColumnFamily,
+    ImportColumnFamily,
+    ExportColumnFamily,
     FlushWal,
     FlushMemtables,
     Shutdown,

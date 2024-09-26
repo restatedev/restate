@@ -22,6 +22,7 @@ mod partition_store_manager;
 pub mod promise_table;
 pub mod scan;
 pub mod service_status_table;
+pub mod snapshots;
 pub mod state_table;
 pub mod timer_table;
 
