@@ -11,7 +11,7 @@
 use super::schema::SysInboxBuilder;
 use crate::table_util::format_using;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
-use restate_types::identifiers::{TimestampAwareId, WithPartitionKey};
+use restate_types::identifiers::WithPartitionKey;
 
 #[inline]
 pub(crate) fn append_inbox_row(
@@ -36,11 +36,6 @@ pub(crate) fn append_inbox_row(
         }
 
         row.sequence_number(inbox_sequence_number);
-
-        if row.is_created_at_defined() {
-            let ts = invocation_id.timestamp();
-            row.created_at(ts.as_u64() as i64);
-        }
     } else {
         // todo think about how to present other inbox entries via datafusion: https://github.com/restatedev/restate/issues/1101
     }

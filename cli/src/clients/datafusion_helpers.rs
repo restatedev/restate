@@ -639,8 +639,7 @@ pub async fn get_locked_keys_status(
             "SELECT
                 service_name,
                 service_key,
-                COUNT(id),
-                MIN(created_at)
+                COUNT(id)
              FROM sys_inbox
              WHERE service_name IN {}
              GROUP BY service_name, service_key
