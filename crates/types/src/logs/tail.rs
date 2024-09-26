@@ -10,7 +10,7 @@
 /// Represents the state of the tail of the loglet.
 use super::{Lsn, SequenceNumber};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TailState<Offset = Lsn> {
     /// Loglet is open for appends
     Open(Offset),
