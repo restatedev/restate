@@ -64,7 +64,7 @@ impl WithPartitionKey for IngressDispatcherRequestInner {
 
 #[derive(Debug, Clone)]
 pub struct SubmittedInvocationNotification {
-    pub invocation_id: InvocationId,
+    pub is_new_invocation: bool,
 }
 
 #[derive(Debug)]
@@ -176,7 +176,6 @@ impl IngressDispatcherRequest {
                 futures::future::Either::Left(rx),
             )
         } else {
-            let invocation_id = service_invocation.invocation_id;
             (
                 IngressDispatcherRequest {
                     request_mode: IngressRequestMode::FireAndForget,
@@ -184,7 +183,9 @@ impl IngressDispatcherRequest {
                 },
                 IngressRequestId::default(),
                 futures::future::Either::Right(std::future::ready(Ok(
-                    SubmittedInvocationNotification { invocation_id },
+                    SubmittedInvocationNotification {
+                        is_new_invocation: true,
+                    },
                 ))),
             )
         }
@@ -250,7 +251,7 @@ impl IngressDispatcherRequest {
         };
 
         // Generate service invocation
-        let invocation_id = InvocationId::generate(&invocation_target);
+        let invocation_id = InvocationId::generate(&invocation_target, None);
         let mut service_invocation = ServiceInvocation::initialize(
             invocation_id,
             invocation_target,

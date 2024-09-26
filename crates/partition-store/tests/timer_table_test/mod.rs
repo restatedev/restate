@@ -19,8 +19,7 @@ use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use std::pin::pin;
 
-const FIXTURE_INVOCATION_UUID: InvocationUuid =
-    InvocationUuid::from_parts(1706027034946, 12345678900001);
+const FIXTURE_INVOCATION_UUID: InvocationUuid = InvocationUuid::from_u128(12345678900001);
 const FIXTURE_INVOCATION: InvocationId = InvocationId::from_parts(1337, FIXTURE_INVOCATION_UUID);
 
 async fn populate_data<T: TimerTable>(txn: &mut T) {

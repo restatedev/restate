@@ -447,7 +447,7 @@ async fn idempotency_key_and_send() {
 
         notification_tx
             .send(SubmittedInvocationNotification {
-                invocation_id: service_invocation.invocation_id,
+                is_new_invocation: true,
             })
             .unwrap();
     })
@@ -476,7 +476,10 @@ async fn idempotency_key_and_send_with_different_invocation_id() {
         )))
         .unwrap();
 
-    let expected_invocation_id = InvocationId::mock_random();
+    let expected_invocation_id = InvocationId::generate(
+        &InvocationTarget::service("greeter.Greeter", "greet"),
+        Some(&ByteString::from_static("123456")),
+    );
 
     let response = handle(req, move |ingress_req| {
         // Get the function invocation and assert on it
@@ -507,7 +510,7 @@ async fn idempotency_key_and_send_with_different_invocation_id() {
 
         notification_tx
             .send(SubmittedInvocationNotification {
-                invocation_id: expected_invocation_id,
+                is_new_invocation: true,
             })
             .unwrap();
     })

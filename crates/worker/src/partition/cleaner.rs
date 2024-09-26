@@ -230,13 +230,14 @@ mod tests {
             )
             .await;
 
-        let expired_invocation = InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::new());
+        let expired_invocation =
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
         let not_expired_invocation_1 =
-            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::new());
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
         let not_expired_invocation_2 =
-            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::new());
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
         let not_completed_invocation =
-            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::new());
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
 
         let mock_storage = MockInvocationStatusReader(vec![
             (

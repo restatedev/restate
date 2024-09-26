@@ -610,8 +610,8 @@ async fn get_state_keys() -> TestResult {
 #[test(tokio::test)]
 async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let mut test_env = TestEnv::create().await;
-    let (invocation_id, invocation_target) =
-        InvocationId::mock_with(InvocationTarget::mock_virtual_object());
+    let invocation_target = InvocationTarget::mock_virtual_object();
+    let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let node_id_1 = GenerationalNodeId::new(1, 1);
     let node_id_2 = GenerationalNodeId::new(2, 1);
@@ -793,10 +793,10 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
 async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResult {
     let mut test_env = TestEnv::create().await;
 
-    let (first_invocation_id, invocation_target) =
-        InvocationId::mock_with(InvocationTarget::mock_virtual_object());
+    let invocation_target = InvocationTarget::mock_virtual_object();
+    let first_invocation_id = InvocationId::mock_generate(&invocation_target);
     let keyed_service_id = invocation_target.as_keyed_service_id().unwrap();
-    let second_invocation_id = InvocationId::generate(&invocation_target);
+    let second_invocation_id = InvocationId::mock_generate(&invocation_target);
 
     // Let's start the first invocation
     let actions = test_env
@@ -916,7 +916,7 @@ async fn mock_start_invocation_with_invocation_target(
     state_machine: &mut TestEnv,
     invocation_target: InvocationTarget,
 ) -> InvocationId {
-    let invocation_id = InvocationId::generate(&invocation_target);
+    let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let actions = state_machine
         .apply(Command::Invoke(ServiceInvocation {

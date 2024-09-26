@@ -35,7 +35,7 @@ const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
     handler_ty: VirtualObjectHandlerType::Exclusive,
 };
 static INVOCATION_ID_1: Lazy<InvocationId> =
-    Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_1));
+    Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_1));
 
 const INVOCATION_TARGET_2: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -44,7 +44,7 @@ const INVOCATION_TARGET_2: InvocationTarget = InvocationTarget::VirtualObject {
     handler_ty: VirtualObjectHandlerType::Exclusive,
 };
 static INVOCATION_ID_2: Lazy<InvocationId> =
-    Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_2));
+    Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_2));
 
 const INVOCATION_TARGET_3: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -53,7 +53,7 @@ const INVOCATION_TARGET_3: InvocationTarget = InvocationTarget::VirtualObject {
     handler_ty: VirtualObjectHandlerType::Exclusive,
 };
 static INVOCATION_ID_3: Lazy<InvocationId> =
-    Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_3));
+    Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_3));
 
 const INVOCATION_TARGET_4: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -62,7 +62,7 @@ const INVOCATION_TARGET_4: InvocationTarget = InvocationTarget::VirtualObject {
     handler_ty: VirtualObjectHandlerType::Exclusive,
 };
 static INVOCATION_ID_4: Lazy<InvocationId> =
-    Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_4));
+    Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_4));
 
 const INVOCATION_TARGET_5: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -71,7 +71,7 @@ const INVOCATION_TARGET_5: InvocationTarget = InvocationTarget::VirtualObject {
     handler_ty: VirtualObjectHandlerType::Exclusive,
 };
 static INVOCATION_ID_5: Lazy<InvocationId> =
-    Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_5));
+    Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_5));
 
 fn invoked_status(
     invocation_target: InvocationTarget,

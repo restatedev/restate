@@ -12,8 +12,7 @@ use restate_partition_store::PartitionStore;
 use restate_storage_api::service_status_table::{VirtualObjectStatus, VirtualObjectStatusTable};
 use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
 
-const FIXTURE_INVOCATION: InvocationUuid =
-    InvocationUuid::from_parts(1706027034946, 12345678900001);
+const FIXTURE_INVOCATION: InvocationUuid = InvocationUuid::from_u128(12345678900001);
 
 async fn populate_data<T: VirtualObjectStatusTable>(txn: &mut T) {
     txn.put_virtual_object_status(

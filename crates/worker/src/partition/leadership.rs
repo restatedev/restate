@@ -595,7 +595,7 @@ where
             Action::IngressSubmitNotification(attach_notification) => {
                 Self::send_ingress_message(
                     network_tx.clone(),
-                    Some(attach_notification.inner.original_invocation_id),
+                    None,
                     attach_notification.target_node,
                     ingress::IngressMessage::SubmittedInvocationNotification(
                         attach_notification.inner,

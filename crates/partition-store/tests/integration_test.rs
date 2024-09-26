@@ -85,7 +85,7 @@ async fn test_read_write() {
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
     let invocation_target = InvocationTarget::mock_from_service_id(service_id);
     ServiceInvocation {
-        invocation_id: InvocationId::generate(&invocation_target),
+        invocation_id: InvocationId::mock_generate(&invocation_target),
         invocation_target,
         argument: Default::default(),
         source: Source::Ingress,

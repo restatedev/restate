@@ -222,10 +222,10 @@ mod tests {
     use rand::Rng;
     use restate_storage_api::timer_table::TimerKeyKindDiscriminants;
     use restate_types::identifiers::InvocationUuid;
+    use restate_types::invocation::InvocationTarget;
     use strum::VariantArray;
 
-    const FIXTURE_INVOCATION: InvocationUuid =
-        InvocationUuid::from_parts(1706027034946, 12345678900001);
+    const FIXTURE_INVOCATION: InvocationUuid = InvocationUuid::from_u128(12345678900001);
 
     #[test]
     fn round_trip_complete_journal_entry_kind() {
@@ -333,17 +333,7 @@ mod tests {
         };
         let b = TimerKey {
             kind: TimerKeyKind::CompleteJournalEntry {
-                invocation_uuid: FIXTURE_INVOCATION.increment_random(),
-                journal_index: 0,
-            },
-            timestamp: 300,
-        };
-        assert_in_range(&a, &b);
-
-        // Also ensure that higher timestamp is sorted correctly
-        let b = TimerKey {
-            kind: TimerKeyKind::CompleteJournalEntry {
-                invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
+                invocation_uuid: InvocationUuid::from_u128(u128::from(FIXTURE_INVOCATION) + 1),
                 journal_index: 0,
             },
             timestamp: 300,
@@ -362,16 +352,7 @@ mod tests {
         };
         let b = TimerKey {
             kind: TimerKeyKind::Invoke {
-                invocation_uuid: FIXTURE_INVOCATION.increment_random(),
-            },
-            timestamp: 300,
-        };
-        assert_in_range(&a, &b);
-
-        // Also ensure that higher timestamp is sorted correctly
-        let b = TimerKey {
-            kind: TimerKeyKind::Invoke {
-                invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
+                invocation_uuid: InvocationUuid::from_u128(u128::from(FIXTURE_INVOCATION) + 1),
             },
             timestamp: 300,
         };
@@ -389,16 +370,7 @@ mod tests {
         };
         let b = TimerKey {
             kind: TimerKeyKind::CleanInvocationStatus {
-                invocation_uuid: FIXTURE_INVOCATION.increment_random(),
-            },
-            timestamp: 300,
-        };
-        assert_in_range(&a, &b);
-
-        // Also ensure that higher timestamp is sorted correctly
-        let b = TimerKey {
-            kind: TimerKeyKind::CleanInvocationStatus {
-                invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
+                invocation_uuid: InvocationUuid::from_u128(u128::from(FIXTURE_INVOCATION) + 1),
             },
             timestamp: 300,
         };
@@ -416,16 +388,7 @@ mod tests {
         };
         let b = TimerKey {
             kind: TimerKeyKind::NeoInvoke {
-                invocation_uuid: FIXTURE_INVOCATION.increment_random(),
-            },
-            timestamp: 300,
-        };
-        assert_in_range(&a, &b);
-
-        // Also ensure that higher timestamp is sorted correctly
-        let b = TimerKey {
-            kind: TimerKeyKind::NeoInvoke {
-                invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
+                invocation_uuid: InvocationUuid::from_u128(u128::from(FIXTURE_INVOCATION) + 1),
             },
             timestamp: 300,
         };
@@ -535,20 +498,22 @@ mod tests {
                 [rand::thread_rng().gen_range(0..TimerKeyKindDiscriminants::VARIANTS.len())]
             {
                 TimerKeyKindDiscriminants::Invoke => TimerKeyKind::Invoke {
-                    invocation_uuid: InvocationUuid::new(),
+                    invocation_uuid: InvocationUuid::mock_generate(
+                        &InvocationTarget::mock_service(),
+                    ),
                 },
                 TimerKeyKindDiscriminants::NeoInvoke => TimerKeyKind::NeoInvoke {
-                    invocation_uuid: InvocationUuid::new(),
+                    invocation_uuid: InvocationUuid::mock_random(),
                 },
                 TimerKeyKindDiscriminants::CompleteJournalEntry => {
                     TimerKeyKind::CompleteJournalEntry {
-                        invocation_uuid: InvocationUuid::new(),
+                        invocation_uuid: InvocationUuid::mock_random(),
                         journal_index: rand::thread_rng().gen_range(0..2 ^ 16),
                     }
                 }
                 TimerKeyKindDiscriminants::CleanInvocationStatus => {
                     TimerKeyKind::CleanInvocationStatus {
-                        invocation_uuid: InvocationUuid::new(),
+                        invocation_uuid: InvocationUuid::mock_random(),
                     }
                 }
             }

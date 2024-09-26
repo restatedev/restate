@@ -23,10 +23,8 @@ pub struct IngressResponseEnvelope<T> {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubmittedInvocationNotification {
     pub request_id: IngressRequestId,
-    /// Invocation id that was submitted in the ServiceInvocation
-    pub original_invocation_id: InvocationId,
-    /// Invocation id we attached to.
-    pub attached_invocation_id: InvocationId,
+    /// If true, this request_id created a "fresh invocation", otherwise the invocation was previously submitted.
+    pub is_new_invocation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

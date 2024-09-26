@@ -101,7 +101,10 @@ pub mod test_util {
                 PlainEntryHeader::CompleteAwakeable { .. } => {
                     EnrichedEntryHeader::CompleteAwakeable {
                         enrichment_result: AwakeableEnrichmentResult {
-                            invocation_id: InvocationId::from_parts(0, InvocationUuid::new()),
+                            invocation_id: InvocationId::from_parts(
+                                0,
+                                InvocationUuid::mock_generate(&InvocationTarget::mock_service()),
+                            ),
                             entry_index: 1,
                         },
                     }

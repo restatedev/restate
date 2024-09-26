@@ -100,7 +100,7 @@ where
             ),
         };
 
-        let invocation_id = InvocationId::generate(&invocation_target);
+        let invocation_id = InvocationId::generate(&invocation_target, None);
 
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(&invocation_id, span_relation);

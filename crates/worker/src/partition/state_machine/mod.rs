@@ -381,7 +381,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             Self::send_submit_notification_if_needed(
                 ctx,
                 invocation_id,
-                None,
+                true,
                 submit_notification_sink,
             );
             return Ok(());
@@ -400,7 +400,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             Self::send_submit_notification_if_needed(
                 ctx,
                 invocation_id,
-                None,
+                true,
                 submit_notification_sink,
             );
             // Invocation was inboxed, nothing else to do here
@@ -411,7 +411,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Self::send_submit_notification_if_needed(
             ctx,
             invocation_id,
-            None,
+            true,
             submit_notification_sink,
         );
 
@@ -443,7 +443,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             {
                 warn!("The idempotency key for workflow methods is ignored!");
             } else {
-                if let Some(attached_invocation_id) = self
+                if self
                     .try_resolve_idempotent_request(
                         ctx,
                         &idempotency_id,
@@ -451,11 +451,12 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         service_invocation.response_sink.as_ref(),
                     )
                     .await?
+                    .is_some()
                 {
                     Self::send_submit_notification_if_needed(
                         ctx,
                         service_invocation.invocation_id,
-                        Some(attached_invocation_id),
+                        false,
                         service_invocation.submit_notification_sink,
                     );
                     debug_if_leader!(
@@ -547,7 +548,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 Self::send_submit_notification_if_needed(
                     ctx,
                     service_invocation.invocation_id,
-                    Some(original_invocation_id),
+                    false,
                     service_invocation.submit_notification_sink.take(),
                 );
 
@@ -2676,8 +2677,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     fn send_submit_notification_if_needed<State>(
         ctx: &mut StateMachineApplyContext<'_, State>,
-        original_invocation_id: InvocationId,
-        attached_invocation_id: Option<InvocationId>,
+        invocation_id: InvocationId,
+        is_new_invocation: bool,
         submit_notification_sink: Option<SubmitNotificationSink>,
     ) {
         // Notify the ingress, if needed, of the chosen invocation_id
@@ -2686,13 +2687,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             request_id,
         }) = submit_notification_sink
         {
-            let attached_invocation_id = attached_invocation_id.unwrap_or(original_invocation_id);
-
             debug_if_leader!(
                 ctx.is_leader,
-                "Sending ingress attach invocation {} to {}",
-                original_invocation_id,
-                attached_invocation_id,
+                "Sending ingress attach invocation for {}",
+                invocation_id,
             );
 
             ctx.action_collector
@@ -2700,8 +2698,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     target_node: node_id,
                     inner: ingress::SubmittedInvocationNotification {
                         request_id,
-                        original_invocation_id,
-                        attached_invocation_id,
+                        is_new_invocation,
                     },
                 }));
         }
