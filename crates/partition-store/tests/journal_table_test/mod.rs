@@ -38,7 +38,7 @@ static MOCK_INVOKE_JOURNAL_ENTRY: Lazy<JournalEntry> = Lazy::new(|| {
         EnrichedEntryHeader::Call {
             is_completed: true,
             enrichment_result: Some(CallEnrichmentResult {
-                invocation_id: InvocationId::from_parts(789, InvocationUuid::from_parts(123, 456)),
+                invocation_id: InvocationId::from_parts(789, InvocationUuid::from_u128(456)),
                 invocation_target: InvocationTarget::Service {
                     name: ByteString::from_static("MySvc"),
                     handler: ByteString::from_static("MyHandler"),
@@ -52,7 +52,7 @@ static MOCK_INVOKE_JOURNAL_ENTRY: Lazy<JournalEntry> = Lazy::new(|| {
 });
 
 const MOCK_INVOCATION_ID_1: InvocationId =
-    InvocationId::from_parts(1, InvocationUuid::from_parts(1706027034946, 12345678900001));
+    InvocationId::from_parts(1, InvocationUuid::from_u128(12345678900001));
 
 async fn populate_data<T: JournalTable>(txn: &mut T) {
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 0, &MOCK_SLEEP_JOURNAL_ENTRY)

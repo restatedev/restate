@@ -19,12 +19,9 @@ use restate_storage_api::idempotency_table::{
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{IdempotencyId, InvocationId, InvocationUuid};
 
-const FIXTURE_INVOCATION_1: InvocationUuid =
-    InvocationUuid::from_parts(1706027034946, 12345678900001);
-const FIXTURE_INVOCATION_2: InvocationUuid =
-    InvocationUuid::from_parts(1706027034946, 12345678900002);
-const FIXTURE_INVOCATION_3: InvocationUuid =
-    InvocationUuid::from_parts(1706027034946, 12345678900003);
+const FIXTURE_INVOCATION_1: InvocationUuid = InvocationUuid::from_u128(12345678900001);
+const FIXTURE_INVOCATION_2: InvocationUuid = InvocationUuid::from_u128(12345678900002);
+const FIXTURE_INVOCATION_3: InvocationUuid = InvocationUuid::from_u128(12345678900003);
 
 const IDEMPOTENCY_ID_1: IdempotencyId =
     IdempotencyId::unkeyed(10, "my-component", "my-handler", "my-key");

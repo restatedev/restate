@@ -18,7 +18,8 @@ use googletest::prelude::{assert_that, eq};
 use restate_core::TaskCenterBuilder;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::Transaction;
-use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId, WithPartitionKey};
+use restate_types::identifiers::InvocationId;
+use restate_types::invocation::InvocationTarget;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_inbox() {
@@ -31,16 +32,15 @@ async fn get_inbox() {
         .await;
 
     let mut tx = engine.partition_store().transaction();
-    let service_id = ServiceId::mock_random();
-    let invocation_id_1 =
-        InvocationId::from_parts(service_id.partition_key(), InvocationUuid::new());
+    let invocation_target = InvocationTarget::mock_virtual_object();
+    let service_id = invocation_target.as_keyed_service_id().unwrap();
+    let invocation_id_1 = InvocationId::mock_generate(&invocation_target);
     tx.put_inbox_entry(
         0,
         &InboxEntry::Invocation(service_id.clone(), invocation_id_1),
     )
     .await;
-    let invocation_id_2 =
-        InvocationId::from_parts(service_id.partition_key(), InvocationUuid::new());
+    let invocation_id_2 = InvocationId::mock_generate(&invocation_target);
     tx.put_inbox_entry(
         1,
         &InboxEntry::Invocation(service_id.clone(), invocation_id_2),

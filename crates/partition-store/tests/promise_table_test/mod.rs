@@ -40,17 +40,11 @@ async fn test_promise_table() {
     let promise_not_completed = Promise {
         state: PromiseState::NotCompleted(vec![
             JournalEntryId::from_parts(
-                InvocationId::from_parts(
-                    10,
-                    InvocationUuid::from_parts(1706027034946, 12345678900001),
-                ),
+                InvocationId::from_parts(10, InvocationUuid::from_u128(12345678900001)),
                 1,
             ),
             JournalEntryId::from_parts(
-                InvocationId::from_parts(
-                    11,
-                    InvocationUuid::from_parts(1706027034946, 12345678900021),
-                ),
+                InvocationId::from_parts(11, InvocationUuid::from_u128(12345678900021)),
                 2,
             ),
         ]),

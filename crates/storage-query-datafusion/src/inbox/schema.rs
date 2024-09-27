@@ -31,5 +31,6 @@ define_table!(sys_inbox(
     sequence_number: DataType::UInt64,
 
     /// Timestamp indicating the start of this invocation.
+    /// DEPRECATED: you should not use this field anymore, but join with the sys_invocation table
     created_at: DataType::Date64,
 ));

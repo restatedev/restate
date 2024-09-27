@@ -126,14 +126,7 @@ where
         } else {
             InvocationTarget::service(&*service_name, &*handler_name)
         };
-        let invocation_id = if let Some(ref idempotency_key) = idempotency_key {
-            // We need this to make sure the internal services will deliver correctly this idempotent invocation always
-            //  to the same partition. This piece of logic could be improved and moved into ingress-dispatcher with
-            //  https://github.com/restatedev/restate/issues/1329
-            InvocationId::generate_with_idempotency_key(&invocation_target, idempotency_key)
-        } else {
-            InvocationId::generate(&invocation_target)
-        };
+        let invocation_id = InvocationId::generate(&invocation_target, idempotency_key.as_deref());
 
         // Prepare the tracing span
         let runtime_span = tracing::info_span!(
@@ -265,7 +258,7 @@ where
 
         Self::reply_with_invocation_response(
             response.result,
-            Some(response.invocation_id.unwrap_or(invocation_id)),
+            Some(invocation_id),
             response.idempotency_expiry_time.as_deref(),
             move |_| Ok(invocation_target_metadata),
         )
@@ -299,22 +292,20 @@ where
             warn!("Response channel was closed");
             return Err(HandlerError::Unavailable);
         };
-        let submit_reattached_to_existing_invocation =
-            submit_notification.invocation_id != invocation_id;
 
         trace!("Complete external HTTP send request successfully");
         Ok(Response::builder()
             .status(StatusCode::ACCEPTED)
             .header(header::CONTENT_TYPE, APPLICATION_JSON)
-            .header(X_RESTATE_ID, submit_notification.invocation_id.to_string())
+            .header(X_RESTATE_ID, invocation_id.to_string())
             .body(Full::new(
                 serde_json::to_vec(&SendResponse {
-                    invocation_id: submit_notification.invocation_id,
+                    invocation_id,
                     execution_time: execution_time.map(SystemTime::from).map(Into::into),
-                    status: if submit_reattached_to_existing_invocation {
-                        SendStatus::PreviouslyAccepted
-                    } else {
+                    status: if submit_notification.is_new_invocation {
                         SendStatus::Accepted
+                    } else {
+                        SendStatus::PreviouslyAccepted
                     },
                 })
                 .unwrap()

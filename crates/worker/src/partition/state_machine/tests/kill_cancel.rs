@@ -26,9 +26,12 @@ use test_log::test;
 async fn kill_inboxed_invocation() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
 
-    let (invocation_id, invocation_target) =
-        InvocationId::mock_with(InvocationTarget::mock_virtual_object());
-    let (inboxed_id, inboxed_target) = InvocationId::mock_with(invocation_target.clone());
+    let invocation_target = InvocationTarget::mock_virtual_object();
+    let invocation_id = InvocationId::mock_generate(&invocation_target);
+
+    let inboxed_target = invocation_target.clone();
+    let inboxed_id = InvocationId::mock_generate(&inboxed_target);
+
     let caller_id = InvocationId::mock_random();
 
     let _ = test_env
@@ -114,8 +117,8 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     let finished_call_invocation_id = InvocationId::mock_random();
 
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate(&invocation_target);
-    let enqueued_invocation_id_on_same_target = InvocationId::generate(&invocation_target);
+    let invocation_id = InvocationId::mock_generate(&invocation_target);
+    let enqueued_invocation_id_on_same_target = InvocationId::mock_generate(&invocation_target);
 
     let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {
@@ -224,7 +227,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     let finished_call_invocation_id = InvocationId::mock_random();
 
     let invocation_target = InvocationTarget::mock_workflow();
-    let invocation_id = InvocationId::generate(&invocation_target);
+    let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {
@@ -337,7 +340,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     let finished_call_invocation_id = InvocationId::mock_random();
 
     let invocation_target = InvocationTarget::mock_workflow();
-    let invocation_id = InvocationId::generate(&invocation_target);
+    let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {

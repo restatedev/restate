@@ -186,14 +186,14 @@ impl MessageHandler for IngressDispatcher {
                     );
                 }
             }
-            IngressMessage::SubmittedInvocationNotification(attach_idempotent_invocation) => {
+            IngressMessage::SubmittedInvocationNotification(submitted_invocation_notification) => {
                 if let Some((_, sender)) = self
                     .state
                     .waiting_submit_notification
-                    .remove(&attach_idempotent_invocation.request_id)
+                    .remove(&submitted_invocation_notification.request_id)
                 {
                     if let Err(response) = sender.send(SubmittedInvocationNotification {
-                        invocation_id: attach_idempotent_invocation.attached_invocation_id,
+                        is_new_invocation: submitted_invocation_notification.is_new_invocation,
                     }) {
                         trace!(
                             "Ignoring submit notification '{:?}' because the handler has been \
@@ -202,13 +202,12 @@ impl MessageHandler for IngressDispatcher {
                         );
                     } else {
                         trace!(
-                            restate.invocation.id = %attach_idempotent_invocation.original_invocation_id,
                             partition_processor_peer = %reciprocal.peer(),
                             "Sent response of invocation out"
                         );
                     }
                 } else {
-                    trace!("Ignoring submit notification '{:?}' because no handler was found locally waiting for its invocation Id", &attach_idempotent_invocation.original_invocation_id);
+                    trace!("Ignoring submit notification with request id '{:?}' because no handler was found locally waiting for its invocation Id", &submitted_invocation_notification.request_id);
                 }
             }
         }
@@ -307,10 +306,8 @@ mod tests {
                 );
                 let argument = Bytes::from_static(b"nbfjksdfs");
                 let idempotency_key = ByteString::from_static("123");
-                let invocation_id = InvocationId::generate_with_idempotency_key(
-                    &invocation_target,
-                    Some(idempotency_key.clone()),
-                );
+                let invocation_id =
+                    InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
                 let mut invocation = ServiceInvocation::initialize(
                     invocation_id,

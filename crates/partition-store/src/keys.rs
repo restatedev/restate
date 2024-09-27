@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn invocation_uuid_roundtrip() {
-        let uuid = InvocationUuid::new();
+        let uuid = InvocationUuid::mock_random();
 
         let mut buf = BytesMut::new();
         uuid.encode(&mut buf);

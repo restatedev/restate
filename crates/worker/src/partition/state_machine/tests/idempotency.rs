@@ -35,10 +35,7 @@ async fn start_and_complete_idempotent_invocation() {
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
     let idempotency_id =
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
     let node_id = GenerationalNodeId::new(1, 1);
@@ -144,10 +141,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
     let idempotency_id =
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
     let node_id = GenerationalNodeId::new(1, 1);
@@ -256,10 +250,7 @@ async fn complete_already_completed_invocation() {
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
     let idempotency_id =
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
 
@@ -287,14 +278,10 @@ async fn complete_already_completed_invocation() {
     txn.commit().await.unwrap();
 
     // Send a request, should be completed immediately with result
-    let second_invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
     let request_id = IngressRequestId::default();
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id: second_invocation_id,
+            invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 node_id: ingress_id,
@@ -320,14 +307,6 @@ async fn complete_already_completed_invocation() {
             }
         ))))
     );
-    assert_that!(
-        test_env
-            .storage()
-            .get_invocation_status(&second_invocation_id)
-            .await
-            .unwrap(),
-        pat!(InvocationStatus::Free)
-    );
     test_env.shutdown().await;
 }
 
@@ -338,10 +317,7 @@ async fn known_invocation_id_but_missing_completion() {
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
     let idempotency_id =
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
 
@@ -354,14 +330,10 @@ async fn known_invocation_id_but_missing_completion() {
     txn.commit().await.unwrap();
 
     // Send a request, should be completed immediately with result
-    let second_invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
     let request_id = IngressRequestId::default();
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id: second_invocation_id,
+            invocation_id,
             invocation_target,
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 node_id: ingress_id,
@@ -379,7 +351,7 @@ async fn known_invocation_id_but_missing_completion() {
                 target_node: eq(ingress_id),
                 inner: pat!(ingress::InvocationResponse {
                     request_id: eq(request_id),
-                    invocation_id: some(eq(second_invocation_id)),
+                    invocation_id: some(eq(invocation_id)),
                     response: eq(IngressResponseResult::Failure(GONE_INVOCATION_ERROR))
                 })
             }
@@ -389,7 +361,7 @@ async fn known_invocation_id_but_missing_completion() {
         test_env
             .storage()
             .transaction()
-            .get_invocation_status(&second_invocation_id)
+            .get_invocation_status(&invocation_id)
             .await
             .unwrap(),
         pat!(InvocationStatus::Free)
@@ -404,10 +376,7 @@ async fn attach_with_service_invocation_command_while_executing() {
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let first_invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let node_id = GenerationalNodeId::new(1, 1);
     let request_id_1 = IngressRequestId::default();
@@ -416,7 +385,7 @@ async fn attach_with_service_invocation_command_while_executing() {
     // Send fresh invocation with idempotency key
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id: first_invocation_id,
+            invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 node_id,
@@ -430,19 +399,15 @@ async fn attach_with_service_invocation_command_while_executing() {
     assert_that!(
         actions,
         contains(pat!(Action::Invoke {
-            invocation_id: eq(first_invocation_id),
+            invocation_id: eq(invocation_id),
             invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
     // Latch to existing invocation
-    let second_invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id: second_invocation_id,
+            invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 node_id,
@@ -459,7 +424,7 @@ async fn attach_with_service_invocation_command_while_executing() {
     let actions = test_env
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
-                invocation_id: first_invocation_id,
+                invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -468,7 +433,7 @@ async fn attach_with_service_invocation_command_while_executing() {
                 },
             }),
             Command::InvokerEffect(InvokerEffect {
-                invocation_id: first_invocation_id,
+                invocation_id,
                 kind: InvokerEffectKind::End,
             }),
         ])
@@ -483,7 +448,7 @@ async fn attach_with_service_invocation_command_while_executing() {
                     target_node: eq(node_id),
                     inner: pat!(ingress::InvocationResponse {
                         request_id: eq(request_id_1),
-                        invocation_id: some(eq(first_invocation_id)),
+                        invocation_id: some(eq(invocation_id)),
                         response: eq(IngressResponseResult::Success(
                             invocation_target.clone(),
                             response_bytes.clone()
@@ -496,7 +461,7 @@ async fn attach_with_service_invocation_command_while_executing() {
                     target_node: eq(node_id),
                     inner: pat!(ingress::InvocationResponse {
                         request_id: eq(request_id_1),
-                        invocation_id: some(eq(first_invocation_id)),
+                        invocation_id: some(eq(invocation_id)),
                         response: eq(IngressResponseResult::Success(
                             invocation_target.clone(),
                             response_bytes.clone()
@@ -516,10 +481,7 @@ async fn attach_with_send_service_invocation() {
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let first_invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let node_id = GenerationalNodeId::new(1, 1);
     let request_id_1 = IngressRequestId::default();
@@ -528,7 +490,7 @@ async fn attach_with_send_service_invocation() {
     // Send fresh invocation with idempotency key
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id: first_invocation_id,
+            invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 node_id,
@@ -542,19 +504,15 @@ async fn attach_with_send_service_invocation() {
     assert_that!(
         actions,
         contains(pat!(Action::Invoke {
-            invocation_id: eq(first_invocation_id),
+            invocation_id: eq(invocation_id),
             invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
     // Latch to existing invocation, but with a send call
-    let second_invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id: second_invocation_id,
+            invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
             idempotency_key: Some(idempotency_key.clone()),
@@ -575,8 +533,7 @@ async fn attach_with_send_service_invocation() {
                     target_node: node_id,
                     inner: ingress::SubmittedInvocationNotification {
                         request_id: request_id_2,
-                        original_invocation_id: second_invocation_id,
-                        attached_invocation_id: first_invocation_id
+                        is_new_invocation: false,
                     },
                 }
             ))))
@@ -588,7 +545,7 @@ async fn attach_with_send_service_invocation() {
     let actions = test_env
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
-                invocation_id: first_invocation_id,
+                invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -597,7 +554,7 @@ async fn attach_with_send_service_invocation() {
                 },
             }),
             Command::InvokerEffect(InvokerEffect {
-                invocation_id: first_invocation_id,
+                invocation_id,
                 kind: InvokerEffectKind::End,
             }),
         ])
@@ -612,7 +569,7 @@ async fn attach_with_send_service_invocation() {
                     target_node: eq(node_id),
                     inner: pat!(ingress::InvocationResponse {
                         request_id: eq(request_id_1),
-                        invocation_id: some(eq(first_invocation_id)),
+                        invocation_id: some(eq(invocation_id)),
                         response: eq(IngressResponseResult::Success(
                             invocation_target.clone(),
                             response_bytes.clone()
@@ -647,7 +604,7 @@ async fn attach_inboxed_with_send_service_invocation() {
         let mut tx = test_env.storage.transaction();
         tx.put_virtual_object_status(
             &invocation_target.as_keyed_service_id().unwrap(),
-            &VirtualObjectStatus::Locked(InvocationId::generate(&invocation_target)),
+            &VirtualObjectStatus::Locked(InvocationId::mock_generate(&invocation_target)),
         )
         .await;
         tx.commit().await.unwrap();
@@ -656,11 +613,10 @@ async fn attach_inboxed_with_send_service_invocation() {
 
     // Send first invocation, this should end up in the inbox
     let idempotency_key = ByteString::from_static("my-idempotency-key");
-    let attached_invocation_id =
-        InvocationId::generate_with_idempotency_key(&invocation_target, &idempotency_key);
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id: attached_invocation_id,
+            invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
             completion_retention_duration: Some(Duration::from_secs(60) * 60 * 24),
@@ -675,15 +631,14 @@ async fn attach_inboxed_with_send_service_invocation() {
         actions,
         all!(
             not(contains(pat!(Action::Invoke {
-                invocation_id: eq(attached_invocation_id),
+                invocation_id: eq(invocation_id),
             }))),
             contains(pat!(Action::IngressSubmitNotification(eq(
                 IngressResponseEnvelope {
                     target_node: node_id,
                     inner: ingress::SubmittedInvocationNotification {
                         request_id: request_id_1,
-                        original_invocation_id: attached_invocation_id,
-                        attached_invocation_id
+                        is_new_invocation: true,
                     },
                 }
             ))))
@@ -700,20 +655,16 @@ async fn attach_inboxed_with_send_service_invocation() {
         some(pat!(SequenceNumberInboxEntry {
             inbox_entry: eq(InboxEntry::Invocation(
                 invocation_target.as_keyed_service_id().unwrap(),
-                attached_invocation_id
+                invocation_id
             ))
         }))
     );
 
     // Now send the request that should get the submit notification
     let idempotency_key = ByteString::from_static("my-idempotency-key");
-    let original_invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id: original_invocation_id,
+            invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
             completion_retention_duration: Some(Duration::from_secs(60) * 60 * 24),
@@ -728,7 +679,7 @@ async fn attach_inboxed_with_send_service_invocation() {
         actions,
         all!(
             not(contains(pat!(Action::Invoke {
-                invocation_id: eq(original_invocation_id),
+                invocation_id: eq(invocation_id),
             }))),
             not(contains(pat!(Action::IngressResponse(_)))),
             contains(pat!(Action::IngressSubmitNotification(eq(
@@ -736,8 +687,7 @@ async fn attach_inboxed_with_send_service_invocation() {
                     target_node: node_id,
                     inner: ingress::SubmittedInvocationNotification {
                         request_id: request_id_2,
-                        original_invocation_id,
-                        attached_invocation_id,
+                        is_new_invocation: false,
                     },
                 }
             ))))
@@ -753,10 +703,7 @@ async fn attach_command() {
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let completion_retention = Duration::from_secs(60) * 60 * 24;
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let node_id = GenerationalNodeId::new(1, 1);
     let request_id_1 = IngressRequestId::default();
@@ -861,10 +808,7 @@ async fn timer_cleanup() {
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
     let idempotency_id =
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
 
@@ -927,10 +871,7 @@ async fn purge_completed_idempotent_invocation() {
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate_with_idempotency_key(
-        &invocation_target,
-        Some(idempotency_key.clone()),
-    );
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
     let idempotency_id =
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
 

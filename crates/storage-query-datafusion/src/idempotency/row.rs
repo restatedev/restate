@@ -10,7 +10,6 @@
 
 use super::schema::SysIdempotencyBuilder;
 
-use crate::log_data_corruption_error;
 use crate::table_util::format_using;
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
@@ -28,12 +27,7 @@ pub(crate) fn append_idempotency_row(
     row.service_name(&idempotency_id.service_name);
     if row.is_service_key_defined() {
         if let Some(ref k) = idempotency_id.service_key {
-            match std::str::from_utf8(k) {
-                Ok(val) => row.service_key(val),
-                Err(e) => {
-                    log_data_corruption_error!("sys_idempotency", idempotency_id, "service_key", e)
-                }
-            }
+            row.service_key(k)
         }
     }
     row.service_handler(&idempotency_id.service_handler);
