@@ -193,12 +193,11 @@ pub type PartitionKey = u64;
 
 /// Returns the partition key computed from either the service_key, or idempotency_key, if possible
 fn deterministic_partition_key(
-    service_key: Option<&ByteString>,
-    idempotency_key: Option<&ByteString>,
+    service_key: Option<&str>,
+    idempotency_key: Option<&str>,
 ) -> Option<PartitionKey> {
     service_key
-        .as_ref()
-        .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
+        .map(partitioner::HashPartitioner::compute_partition_key)
         .or_else(|| idempotency_key.map(partitioner::HashPartitioner::compute_partition_key))
 }
 
@@ -491,16 +490,13 @@ impl InvocationId {
     ) -> Self {
         // --- Partition key generation
         let partition_key =
-            // Either try to generate the deterministic partition key, if possible
-        deterministic_partition_key(
-            invocation_target
-                .key(),
-            idempotency_key
-        )
-
-                    // If no deterministic partition key can be generated, just pick a random number
-                    .unwrap_or_else(|| rand::thread_rng().next_u64())
-        ;
+                // Either try to generate the deterministic partition key, if possible
+                deterministic_partition_key(
+                    invocation_target.key().map(|bs| bs.as_ref()),
+                    idempotency_key.map(|bs| bs.as_ref()),
+                )
+                // If no deterministic partition key can be generated, just pick a random number
+                .unwrap_or_else(|| rand::thread_rng().next_u64());
 
         // --- Invocation UUID generation
         InvocationId::from_parts(
@@ -652,9 +648,11 @@ impl IdempotencyId {
         // * For services without key, the partition key is the hash(idempotency key).
         //   This makes sure that for a given idempotency key and its scope, we always land in the same partition.
         // * For services with key, the partition key is the hash(service key), this due to the virtual object locking requirement.
-        let partition_key =
-            deterministic_partition_key(service_key.as_ref(), Some(&idempotency_key))
-                .expect("A deterministic partition key can always be generated for idempotency id");
+        let partition_key = deterministic_partition_key(
+            service_key.as_ref().map(|bs| bs.as_ref()),
+            Some(&idempotency_key),
+        )
+        .expect("A deterministic partition key can always be generated for idempotency id");
 
         Self {
             service_name,
@@ -698,7 +696,7 @@ pub mod partitioner {
     pub struct HashPartitioner;
 
     impl HashPartitioner {
-        pub fn compute_partition_key(value: &impl Hash) -> PartitionKey {
+        pub fn compute_partition_key(value: impl Hash) -> PartitionKey {
             let mut hasher = xxhash_rust::xxh3::Xxh3::default();
             value.hash(&mut hasher);
             hasher.finish()
