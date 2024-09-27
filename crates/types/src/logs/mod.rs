@@ -302,6 +302,7 @@ where
     derive_more::Display,
     Serialize,
     Deserialize,
+    Hash,
 )]
 #[repr(transparent)]
 #[serde(transparent)]

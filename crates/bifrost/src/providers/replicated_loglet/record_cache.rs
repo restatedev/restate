@@ -8,18 +8,63 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use moka::{
+    policy::EvictionPolicy,
+    sync::{Cache, CacheBuilder},
+};
+
+use restate_types::{
+    logs::{LogletOffset, Record, SequenceNumber},
+    replicated_loglet::ReplicatedLogletId,
+};
+
+/// Unique record key across different loglets.
+type RecordKey = (ReplicatedLogletId, LogletOffset);
+
 /// A placeholder for a global record cache.
 ///
 /// This can be safely shared between all ReplicatedLoglet(s) and the LocalSequencers or the
 /// RemoteSequencers
-///
-///
-/// This is a streaming LRU-cache with total memory budget tracking and enforcement.
-#[derive(Clone, Debug)]
-pub struct RecordCache {}
+#[derive(Clone)]
+pub struct RecordCache {
+    inner: Cache<RecordKey, Record>,
+}
 
 impl RecordCache {
-    pub fn new(_memory_budget_bytes: usize) -> Self {
-        Self {}
+    pub fn new(memory_budget_bytes: usize) -> Self {
+        let inner: Cache<RecordKey, Record> = CacheBuilder::default()
+            .weigher(|_, record: &Record| {
+                (size_of::<RecordKey>() + record.estimated_encode_size())
+                    .try_into()
+                    .unwrap_or(u32::MAX)
+            })
+            .max_capacity(memory_budget_bytes.try_into().unwrap_or(u64::MAX))
+            .eviction_policy(EvictionPolicy::lru())
+            .build();
+
+        Self { inner }
+    }
+
+    /// Writes a record to cache externally
+    pub fn add(&self, loglet_id: ReplicatedLogletId, offset: LogletOffset, record: Record) {
+        self.inner.insert((loglet_id, offset), record);
+    }
+
+    /// Extend cache with records
+    pub fn extend<I: AsRef<[Record]>>(
+        &self,
+        loglet_id: ReplicatedLogletId,
+        mut first_offset: LogletOffset,
+        records: I,
+    ) {
+        for record in records.as_ref() {
+            self.inner.insert((loglet_id, first_offset), record.clone());
+            first_offset = first_offset.next();
+        }
+    }
+
+    /// Get a for given loglet id and offset.
+    pub fn get(&self, loglet_id: ReplicatedLogletId, offset: LogletOffset) -> Option<Record> {
+        self.inner.get(&(loglet_id, offset))
     }
 }

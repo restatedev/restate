@@ -29,6 +29,7 @@ use restate_types::{
 
 use super::{
     log_server_manager::RemoteLogServerManager,
+    record_cache::RecordCache,
     replication::spread_selector::{SelectorStrategy, SpreadSelector},
 };
 use crate::loglet::{util::TailOffsetWatch, LogletCommit};
@@ -51,6 +52,7 @@ pub struct SequencerSharedState {
     my_params: ReplicatedLogletParams,
     committed_tail: TailOffsetWatch,
     selector: SpreadSelector,
+    record_cache: RecordCache,
 }
 
 impl SequencerSharedState {
@@ -103,6 +105,7 @@ impl<T: TransportConnect> Sequencer<T> {
         networking: Networking<T>,
         rpc_router: RpcRouter<Store>,
         log_server_manager: RemoteLogServerManager,
+        record_cache: RecordCache,
         global_tail: TailOffsetWatch,
     ) -> Self {
         let my_node_id = networking.my_node_id();
@@ -130,6 +133,7 @@ impl<T: TransportConnect> Sequencer<T> {
             my_params,
             selector,
             next_write_offset,
+            record_cache,
             committed_tail: global_tail,
         });
 

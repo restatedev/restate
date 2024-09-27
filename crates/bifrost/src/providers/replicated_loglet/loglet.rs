@@ -88,6 +88,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
                     networking.clone(),
                     logservers_rpc.store.clone(),
                     log_server_manager.clone(),
+                    record_cache.clone(),
                     known_global_tail.clone(),
                 ),
             }
@@ -186,17 +187,22 @@ mod tests {
     use restate_types::config::Configuration;
     use restate_types::live::Live;
     use restate_types::logs::Keys;
-    use restate_types::replicated_loglet::{NodeSet, ReplicationProperty};
+    use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicationProperty};
     use restate_types::{GenerationalNodeId, PlainNodeId};
 
     use crate::loglet::Loglet;
+
+    struct TestEnv {
+        pub loglet: Arc<dyn Loglet>,
+        pub record_cache: RecordCache,
+    }
 
     async fn run_in_test_env<F, O>(
         loglet_params: ReplicatedLogletParams,
         mut future: F,
     ) -> googletest::Result<()>
     where
-        F: FnMut(Arc<dyn Loglet>) -> O,
+        F: FnMut(TestEnv) -> O,
         O: std::future::Future<Output = googletest::Result<()>>,
     {
         let config = Live::from_value(Configuration::default());
@@ -237,10 +243,15 @@ mod tests {
                     node_env.networking.clone(),
                     logserver_rpc,
                     &sequencer_rpc,
-                    record_cache,
+                    record_cache.clone(),
                 )?);
 
-                future(loglet).await
+                let env = TestEnv {
+                    loglet,
+                    record_cache,
+                };
+
+                future(env).await
             })
             .await?;
         node_env.tc.shutdown_node("test completed", 0).await;
@@ -251,27 +262,35 @@ mod tests {
     // ** Single-node replicated-loglet smoke tests **
     #[test(tokio::test(start_paused = true))]
     async fn test_append_local_sequencer_single_node() -> Result<()> {
+        let loglet_id = ReplicatedLogletId::new(122);
         let params = ReplicatedLogletParams {
-            loglet_id: 122.into(),
+            loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
             write_set: None,
         };
 
-        run_in_test_env(params, |loglet| async move {
+        run_in_test_env(params, |env| async move {
             let batch: Arc<[Record]> = vec![
                 ("record-1", Keys::Single(1)).into(),
                 ("record-2", Keys::Single(2)).into(),
-                ("record-3", Keys::Single(1)).into(),
+                ("record-3", Keys::Single(3)).into(),
             ]
             .into();
-            let offset = loglet.enqueue_batch(batch.clone()).await?.await?;
+            let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
             assert_that!(offset, eq(LogletOffset::new(3)));
-            let offset = loglet.enqueue_batch(batch.clone()).await?.await?;
+            let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
             assert_that!(offset, eq(LogletOffset::new(6)));
-            let tail = loglet.find_tail().await?;
+            let tail = env.loglet.find_tail().await?;
             assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
+
+            let cached_record = env.record_cache.get(loglet_id, 1.into());
+            assert!(cached_record.is_some());
+            assert_that!(
+                cached_record.unwrap().keys().clone(),
+                matches_pattern!(Keys::Single(eq(1)))
+            );
             Ok(())
         })
         .await

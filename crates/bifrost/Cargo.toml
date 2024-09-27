@@ -27,6 +27,7 @@ derive_more = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
 metrics = { workspace = true }
+moka = { workspace = true, features = ["sync"] }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }
 rand = { workspace = true }

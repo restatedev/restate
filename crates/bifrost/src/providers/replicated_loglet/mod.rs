@@ -14,6 +14,7 @@ mod loglet;
 pub(crate) mod metric_definitions;
 mod network;
 mod provider;
+#[allow(dead_code)]
 mod record_cache;
 pub mod replication;
 mod rpc_routers;

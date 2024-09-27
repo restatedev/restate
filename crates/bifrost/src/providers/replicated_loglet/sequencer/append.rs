@@ -279,6 +279,11 @@ impl<T: TransportConnect> Appender<T> {
             if self.commit_resolver.is_some() && checker.check_write_quorum(|attr| *attr) {
                 // resolve the commit if not resolved yet
                 if let Some(resolver) = self.commit_resolver.take() {
+                    self.sequencer_shared_state.record_cache.extend(
+                        *self.sequencer_shared_state.loglet_id(),
+                        self.first_offset,
+                        &self.records,
+                    );
                     self.sequencer_shared_state
                         .global_committed_tail()
                         .notify_offset_update(last_offset.next());
