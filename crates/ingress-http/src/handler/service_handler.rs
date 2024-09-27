@@ -126,7 +126,7 @@ where
         } else {
             InvocationTarget::service(&*service_name, &*handler_name)
         };
-        let invocation_id = InvocationId::generate(&invocation_target, idempotency_key.as_ref());
+        let invocation_id = InvocationId::generate(&invocation_target, idempotency_key.as_deref());
 
         // Prepare the tracing span
         let runtime_span = tracing::info_span!(

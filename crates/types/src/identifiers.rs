@@ -254,43 +254,41 @@ pub struct InvocationUuid(u128);
 impl InvocationUuid {
     pub const SIZE_IN_BYTES: usize = size_of::<u128>();
 
-    const HASH_SEPARATOR: u8 = 0x2c;
-
     pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
-        Ok(Self(u128::from_be_bytes(
+        Ok(Self::from_u128(u128::from_be_bytes(
             b.try_into().map_err(|_| IdDecodeError::Length)?,
         )))
     }
 
     pub const fn from_u128(id: u128) -> Self {
+        debug_assert!(id != 0);
         Self(id)
     }
 
     pub const fn from_bytes(b: [u8; Self::SIZE_IN_BYTES]) -> Self {
-        Self(u128::from_be_bytes(b))
+        Self::from_u128(u128::from_be_bytes(b))
     }
 
     pub fn to_bytes(&self) -> [u8; Self::SIZE_IN_BYTES] {
         self.0.to_be_bytes()
     }
 
-    pub fn generate(
-        invocation_target: &InvocationTarget,
-        idempotency_key: Option<&ByteString>,
-    ) -> Self {
+    pub fn generate(invocation_target: &InvocationTarget, idempotency_key: Option<&str>) -> Self {
+        const HASH_SEPARATOR: u8 = 0x2c;
+
         // --- Rules for deterministic ID
         // * If the target IS a workflow run, use workflow name + key
         // * If the target IS an idempotent request, use the idempotency scope + key
-        // * If the target IS NOT an idempotent request, or IS NOT a workflow run, then just generate a random ulid
+        // * If the target IS NEITHER an idempotent request or a workflow run, then just generate a random ulid
 
         let id = match (idempotency_key, invocation_target.invocation_target_ty()) {
             (_, InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)) => {
                 // Workflow run
                 let mut hasher = Sha256::new();
                 hasher.update(b"wf");
-                hasher.update([Self::HASH_SEPARATOR]);
+                hasher.update([HASH_SEPARATOR]);
                 hasher.update(invocation_target.service_name());
-                hasher.update([Self::HASH_SEPARATOR]);
+                hasher.update([HASH_SEPARATOR]);
                 hasher.update(
                     invocation_target
                         .key()
@@ -308,15 +306,15 @@ impl InvocationUuid {
                 // Invocations with Idempotency key
                 let mut hasher = Sha256::new();
                 hasher.update(b"ik");
-                hasher.update([Self::HASH_SEPARATOR]);
+                hasher.update([HASH_SEPARATOR]);
                 hasher.update(invocation_target.service_name());
                 if let Some(key) = invocation_target.key() {
-                    hasher.update([Self::HASH_SEPARATOR]);
+                    hasher.update([HASH_SEPARATOR]);
                     hasher.update(key);
                 }
-                hasher.update([Self::HASH_SEPARATOR]);
+                hasher.update([HASH_SEPARATOR]);
                 hasher.update(invocation_target.handler_name());
-                hasher.update([Self::HASH_SEPARATOR]);
+                hasher.update([HASH_SEPARATOR]);
                 hasher.update(idempotency_key);
                 let result = hasher.finalize();
                 let (int_bytes, _) = result.split_at(size_of::<u128>());
@@ -332,6 +330,7 @@ impl InvocationUuid {
             }
         };
 
+        debug_assert!(id != 0);
         InvocationUuid(id)
     }
 }
@@ -484,16 +483,13 @@ pub trait WithInvocationId {
 pub type EncodedInvocationId = [u8; InvocationId::SIZE_IN_BYTES];
 
 impl InvocationId {
-    pub fn generate(
-        invocation_target: &InvocationTarget,
-        idempotency_key: Option<&ByteString>,
-    ) -> Self {
+    pub fn generate(invocation_target: &InvocationTarget, idempotency_key: Option<&str>) -> Self {
         // --- Partition key generation
         let partition_key =
                 // Either try to generate the deterministic partition key, if possible
                 deterministic_partition_key(
                     invocation_target.key().map(|bs| bs.as_ref()),
-                    idempotency_key.map(|bs| bs.as_ref()),
+                    idempotency_key,
                 )
                 // If no deterministic partition key can be generated, just pick a random number
                 .unwrap_or_else(|| rand::thread_rng().next_u64());
@@ -1084,9 +1080,7 @@ mod tests {
     #[test]
     fn deterministic_invocation_id_for_idempotent_request() {
         let invocation_target = InvocationTarget::mock_service();
-        let idempotent_key = Alphanumeric
-            .sample_string(&mut rand::thread_rng(), 16)
-            .into();
+        let idempotent_key = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
         assert_eq!(
             InvocationId::generate(&invocation_target, Some(&idempotent_key)),
