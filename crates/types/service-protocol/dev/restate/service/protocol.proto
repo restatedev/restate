@@ -22,6 +22,10 @@ enum ServiceProtocolVersion {
   // Added
   // * Entry retry mechanism: ErrorMessage.next_retry_delay, StartMessage.retry_count_since_last_stored_entry and StartMessage.duration_since_last_stored_entry
   V2 = 2;
+  // Added
+  // * New entry to cancel invocations: CancelInvocationEntryMessage
+  // * New entry to retrieve the invocation id: GetCallInvocationIdEntryMessage
+  V3 = 3;
 }
 
 // --- Core frames ---
@@ -53,8 +57,8 @@ message StartMessage {
 
   // Retry count since the last stored entry.
   //
-  // Please not this count might not be accurate, as it's not durably stored,
-  // thus it's susceptible to Restate's crashes/leader election changes.
+  // Please note that this count might not be accurate, as it's not durably stored,
+  // thus it might get reset in case Restate crashes/changes leader.
   uint32 retry_count_since_last_stored_entry = 7;
 
   // Duration since the last stored entry, in milliseconds.
@@ -383,10 +387,40 @@ message CompleteAwakeableEntryMessage {
 message RunEntryMessage {
   oneof result {
     bytes value = 14;
-    dev.restate.service.protocol.Failure failure = 15;
+    Failure failure = 15;
   };
 
   // Entry name
+  string name = 12;
+}
+
+// Completable: No
+// Fallible: Yes
+// Type: 0x0C00 + 6
+message CancelInvocationEntryMessage {
+  oneof target {
+    // Target invocation id to cancel
+    string invocation_id = 1;
+    // Target index of the call/one way call journal entry in this journal.
+    uint32 call_entry_index = 2;
+  }
+
+  // Entry name
+  string name = 12;
+}
+
+// Completable: Yes
+// Fallible: Yes
+// Type: 0x0C00 + 7
+message GetCallInvocationIdEntryMessage {
+  // Index of the call/one way call journal entry in this journal.
+  uint32 call_entry_index = 1;
+
+  oneof result {
+    string value = 14;
+    Failure failure = 15;
+  };
+
   string name = 12;
 }
 
