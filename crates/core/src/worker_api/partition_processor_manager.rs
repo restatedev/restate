@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::identifiers::PartitionId;
 use tokio::sync::{mpsc, oneshot};
+
+use restate_types::identifiers::{PartitionId, SnapshotId};
 
 use crate::ShutdownError;
 
 #[derive(Debug)]
 pub enum ProcessorsManagerCommand {
     GetLivePartitions(oneshot::Sender<Vec<PartitionId>>),
+    CreateSnapshot(PartitionId, oneshot::Sender<anyhow::Result<SnapshotId>>),
 }
 
 #[derive(Debug, Clone)]
@@ -33,5 +35,13 @@ impl ProcessorsManagerHandle {
             .await
             .unwrap();
         rx.await.map_err(|_| ShutdownError)
+    }
+
+    pub async fn create_snapshot(&self, partition_id: PartitionId) -> anyhow::Result<SnapshotId> {
+        let (tx, rx) = oneshot::channel();
+        self.0
+            .send(ProcessorsManagerCommand::CreateSnapshot(partition_id, tx))
+            .await?;
+        rx.await?
     }
 }

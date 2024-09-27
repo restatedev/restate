@@ -13,18 +13,17 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use assert2::let_assert;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
 use metrics::{counter, histogram};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, error, info, instrument, trace, warn, Span};
+use tracing::{debug, error, info, instrument, trace, warn, Instrument, Span};
 
 use restate_bifrost::{Bifrost, FindTailAttributes};
-use restate_core::cancellation_watcher;
-use restate_core::metadata;
 use restate_core::network::{Networking, TransportConnect};
+use restate_core::{cancellation_watcher, metadata, TaskHandle, TaskKind};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -34,9 +33,10 @@ use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_storage_api::outbox_table::ReadOnlyOutboxTable;
 use restate_storage_api::{invocation_status_table, StorageError, Transaction};
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
-use restate_types::config::WorkerOptions;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::config::{Configuration, WorkerOptions};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
 use restate_types::journal::raw::RawEntryCodec;
+use restate_types::live::Live;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::time::MillisSinceEpoch;
@@ -50,6 +50,7 @@ use crate::metric_definitions::{
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
+use crate::partition::snapshot_producer::{SnapshotProducer, SnapshotSource};
 use crate::partition::state_machine::{ActionCollector, StateMachine};
 
 mod action_effect_handler;
@@ -57,14 +58,15 @@ mod cleaner;
 pub mod invoker_storage_reader;
 mod leadership;
 pub mod shuffle;
+mod snapshot_producer;
 mod state_machine;
 pub mod types;
 
 /// Control messages from Manager to individual partition processor instances.
-#[allow(dead_code)]
 pub enum PartitionProcessorControlCommand {
     RunForLeader(LeaderEpoch),
     StepDown,
+    CreateSnapshot(Option<oneshot::Sender<anyhow::Result<SnapshotId>>>),
 }
 
 #[derive(Debug)]
@@ -123,6 +125,7 @@ where
         networking: Networking<T>,
         bifrost: Bifrost,
         mut partition_store: PartitionStore,
+        configuration: Live<Configuration>,
     ) -> Result<PartitionProcessor<Codec, InvokerInputSender, T>, StorageError> {
         let PartitionProcessorBuilder {
             partition_id,
@@ -178,11 +181,13 @@ where
             leadership_state,
             state_machine,
             max_command_batch_size,
-            partition_store: Some(partition_store),
+            partition_store,
             bifrost,
+            configuration,
             control_rx,
             status_watch_tx,
             status,
+            inflight_create_snapshot_task: None,
         })
     }
 
@@ -220,14 +225,13 @@ pub struct PartitionProcessor<Codec, InvokerSender, T> {
     leadership_state: LeadershipState<InvokerSender, T>,
     state_machine: StateMachine<Codec>,
     bifrost: Bifrost,
+    configuration: Live<Configuration>,
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     status: PartitionProcessorStatus,
-
     max_command_batch_size: usize,
-
-    // will be taken by the `run` method to decouple transactions from self
-    partition_store: Option<PartitionStore>,
+    partition_store: PartitionStore,
+    inflight_create_snapshot_task: Option<TaskHandle<anyhow::Result<()>>>,
 }
 
 impl<Codec, InvokerSender, T> PartitionProcessor<Codec, InvokerSender, T>
@@ -238,10 +242,7 @@ where
 {
     #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<()> {
-        let mut partition_store = self
-            .partition_store
-            .take()
-            .expect("partition storage must be configured");
+        let mut partition_store = self.partition_store.clone();
         let last_applied_lsn = partition_store.get_applied_lsn().await?;
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
 
@@ -253,13 +254,19 @@ where
                 FindTailAttributes::default(),
             )
             .await?;
-        info!(
+        debug!(
             last_applied_lsn = %last_applied_lsn,
             current_log_tail = ?current_tail,
             "PartitionProcessor creating log reader",
         );
         if current_tail.offset() == last_applied_lsn.next() {
-            self.status.replay_status = ReplayStatus::Active;
+            if self.status.replay_status != ReplayStatus::Active {
+                debug!(
+                    ?last_applied_lsn,
+                    "Processor has caught up with the log tail."
+                );
+                self.status.replay_status = ReplayStatus::Active;
+            }
         } else {
             // catching up.
             self.status.target_tail_lsn = Some(current_tail.offset());
@@ -447,6 +454,49 @@ where
                     .step_down()
                     .await
                     .context("failed handling StepDown command")?;
+            }
+            PartitionProcessorControlCommand::CreateSnapshot(maybe_sender) => {
+                if self
+                    .inflight_create_snapshot_task
+                    .as_ref()
+                    .is_some_and(|task| !task.is_finished())
+                {
+                    warn!("Snapshot creation already in progress, rejecting request");
+                    maybe_sender
+                        .and_then(|tx| tx.send(Err(anyhow!("Snapshot creation in progress"))).ok());
+                    return Ok(());
+                }
+
+                let config = self.configuration.live_load();
+                let snapshot_source = SnapshotSource {
+                    cluster_name: config.common.cluster_name().into(),
+                    node_name: config.common.node_name().into(),
+                };
+                let snapshot_base_path = config.worker.snapshots.snapshots_dir(self.partition_id);
+                let partition_store = self.partition_store.clone();
+                let snapshot_span = tracing::info_span!("create-snapshot");
+                let inflight_create_snapshot_task = restate_core::task_center().spawn_unmanaged(
+                    TaskKind::PartitionSnapshotProducer,
+                    "create-snapshot",
+                    Some(self.partition_id),
+                    async move {
+                        let result = SnapshotProducer::create(
+                            snapshot_source,
+                            partition_store,
+                            snapshot_base_path,
+                        )
+                        .await;
+
+                        if let Some(tx) = maybe_sender {
+                            tx.send(result.map(|metadata| metadata.snapshot_id)).ok();
+                        }
+                        Ok(())
+                    }
+                    .instrument(snapshot_span),
+                )?;
+
+                self.inflight_create_snapshot_task
+                    .replace(inflight_create_snapshot_task);
             }
         }
 

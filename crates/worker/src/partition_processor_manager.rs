@@ -20,7 +20,7 @@ use futures::stream::StreamExt;
 use futures::Stream;
 use metrics::gauge;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, instrument, trace, warn};
@@ -44,7 +44,7 @@ use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::{Configuration, StorageOptions};
 use restate_types::epoch::EpochMetadata;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::Live;
 use restate_types::live::LiveLoad;
 use restate_types::logs::Lsn;
@@ -238,6 +238,15 @@ impl PartitionProcessorHandle {
     ) -> Result<(), PartitionProcessorHandleError> {
         self.control_tx
             .try_send(PartitionProcessorControlCommand::RunForLeader(leader_epoch))?;
+        Ok(())
+    }
+
+    fn create_snapshot(
+        &self,
+        sender: Option<oneshot::Sender<anyhow::Result<SnapshotId>>>,
+    ) -> Result<(), PartitionProcessorHandleError> {
+        self.control_tx
+            .try_send(PartitionProcessorControlCommand::CreateSnapshot(sender))?;
         Ok(())
     }
 }
@@ -497,6 +506,11 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 let live_partitions = self.running_partition_processors.keys().cloned().collect();
                 let _ = sender.send(live_partitions);
             }
+            CreateSnapshot(partition_id, sender) => {
+                self.running_partition_processors
+                    .get(&partition_id)
+                    .map(|store| store.handle.create_snapshot(Some(sender)));
+            }
         }
     }
 
@@ -688,6 +702,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
 
         let invoker_name = Box::leak(Box::new(format!("invoker-{}", partition_id)));
         let invoker_config = self.updateable_config.clone().map(|c| &c.worker.invoker);
+        let configuration = self.updateable_config.clone();
 
         let maybe_task_id: Result<TaskId, RuntimeError> = self.task_center.start_runtime(
             TaskKind::PartitionProcessor,
@@ -715,7 +730,12 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     )?;
 
                     pp_builder
-                        .build::<ProtobufRawEntryCodec, T>(networking, bifrost, partition_store)
+                        .build::<ProtobufRawEntryCodec, T>(
+                            networking,
+                            bifrost,
+                            partition_store,
+                            configuration,
+                        )
                         .await?
                         .run()
                         .await
