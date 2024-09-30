@@ -36,7 +36,7 @@ use crate::{
 
 const DEFAULT_BACKOFF_TIME: Duration = Duration::from_millis(1000);
 
-enum AppenderState {
+enum SequencerAppenderState {
     Wave {
         // nodes that should be avoided by the spread selector
         graylist: NodeSet,
@@ -46,7 +46,7 @@ enum AppenderState {
 }
 
 /// Appender makes sure a batch of records will run to completion
-pub(crate) struct Appender<T> {
+pub(crate) struct SequencerAppender<T> {
     sequencer_shared_state: Arc<SequencerSharedState>,
     log_server_manager: RemoteLogServerManager,
     store_router: RpcRouter<Store>,
@@ -61,7 +61,7 @@ pub(crate) struct Appender<T> {
     configuration: Live<Configuration>,
 }
 
-impl<T: TransportConnect> Appender<T> {
+impl<T: TransportConnect> SequencerAppender<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sequencer_shared_state: Arc<SequencerSharedState>,
@@ -88,7 +88,7 @@ impl<T: TransportConnect> Appender<T> {
 
     pub async fn run(mut self) {
         // initial wave has 0 replicated and 0 gray listed node
-        let mut state = AppenderState::Wave {
+        let mut state = SequencerAppenderState::Wave {
             graylist: NodeSet::empty(),
         };
 
@@ -104,17 +104,17 @@ impl<T: TransportConnect> Appender<T> {
 
         loop {
             state = match state {
-                AppenderState::Done => break,
-                AppenderState::Wave {
+                SequencerAppenderState::Done => break,
+                SequencerAppenderState::Wave {
                     graylist: gray_list,
                 } => self.wave(gray_list).await,
-                AppenderState::Backoff => {
+                SequencerAppenderState::Backoff => {
                     // since backoff can be None, or run out of iterations,
                     // but appender should never give up we fall back to fixed backoff
                     let delay = retry.next().unwrap_or(DEFAULT_BACKOFF_TIME);
                     tokio::time::sleep(delay).await;
 
-                    AppenderState::Wave {
+                    SequencerAppenderState::Wave {
                         // todo: introduce some backoff strategy
                         graylist: NodeSet::empty(),
                     }
@@ -123,7 +123,7 @@ impl<T: TransportConnect> Appender<T> {
         }
     }
 
-    async fn wave(&mut self, mut gray_list: NodeSet) -> AppenderState {
+    async fn wave(&mut self, mut gray_list: NodeSet) -> SequencerAppenderState {
         // select the spread
         let spread = match self.sequencer_shared_state.selector.select(
             &mut rand::thread_rng(),
@@ -136,10 +136,10 @@ impl<T: TransportConnect> Appender<T> {
                     // gray list was empty during spread selection!
                     // yet we couldn't find a spread. there is
                     // no reason to retry immediately.
-                    return AppenderState::Backoff;
+                    return SequencerAppenderState::Backoff;
                 }
                 // otherwise, we retry without a gray list.
-                return AppenderState::Wave {
+                return SequencerAppenderState::Wave {
                     graylist: NodeSet::empty(),
                 };
             }
@@ -169,7 +169,7 @@ impl<T: TransportConnect> Appender<T> {
             // write quorum
 
             // we basically try again with a new set of gray_list
-            return AppenderState::Wave {
+            return SequencerAppenderState::Wave {
                 graylist: gray_list,
             };
         }
@@ -178,7 +178,7 @@ impl<T: TransportConnect> Appender<T> {
         self.send_wave(servers).await
     }
 
-    async fn send_wave(&mut self, spread_servers: Vec<RemoteLogServer>) -> AppenderState {
+    async fn send_wave(&mut self, spread_servers: Vec<RemoteLogServer>) -> SequencerAppenderState {
         let last_offset = self.records.last_offset(self.first_offset).unwrap();
 
         let mut checker = NodeSetChecker::new(
@@ -233,7 +233,7 @@ impl<T: TransportConnect> Appender<T> {
                     // timed out!
                     // none of the pending tasks has finished in time! we will assume all pending server
                     // are gray listed and try again
-                    return AppenderState::Wave {
+                    return SequencerAppenderState::Wave {
                         graylist: pending_servers,
                     };
                 }
@@ -296,9 +296,9 @@ impl<T: TransportConnect> Appender<T> {
         }
 
         if checker.check_write_quorum(|attr| *attr) {
-            AppenderState::Done
+            SequencerAppenderState::Done
         } else {
-            AppenderState::Wave {
+            SequencerAppenderState::Wave {
                 graylist: pending_servers,
             }
         }

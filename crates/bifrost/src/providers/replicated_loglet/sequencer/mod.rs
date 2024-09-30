@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod append;
+mod appender;
 
 use std::sync::{atomic::AtomicU32, Arc};
 
@@ -33,7 +33,7 @@ use super::{
     replication::spread_selector::{SelectorStrategy, SpreadSelector},
 };
 use crate::loglet::{util::TailOffsetWatch, LogletCommit};
-use append::Appender;
+use appender::SequencerAppender;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SequencerError {
@@ -202,7 +202,7 @@ impl<T: TransportConnect> Sequencer<T> {
 
         let (loglet_commit, commit_resolver) = LogletCommit::deferred();
 
-        let appender = Appender::new(
+        let appender = SequencerAppender::new(
             Arc::clone(&self.sequencer_shared_state),
             self.log_server_manager.clone(),
             self.rpc_router.clone(),
