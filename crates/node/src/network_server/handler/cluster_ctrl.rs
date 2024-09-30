@@ -25,6 +25,7 @@ use restate_types::logs::{LogId, Lsn};
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::{StorageCodec, StorageEncode};
+use restate_types::Versioned;
 
 use crate::network_server::AdminDependencies;
 
@@ -86,9 +87,9 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         let request = request.into_inner();
 
         let log_id = LogId::new(request.log_id);
-        let chain = self
-            .get_logs()
-            .await?
+        let logs = self.get_logs().await?;
+
+        let chain = logs
             .chain(&log_id)
             .ok_or(Status::not_found(format!(
                 "Log id {} not found",
@@ -96,13 +97,22 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             )))?
             .clone();
 
-        let tail_state = self
-            .bifrost_handle
-            .find_tail(log_id, FindTailAttributes::default())
-            .await
-            .map_err(|err| Status::internal(format!("Failed to find tail: {:?}", err)))?;
+        let (tail_state, trim_point) = tokio::join!(
+            self.bifrost_handle
+                .find_tail(log_id, FindTailAttributes::default()),
+            self.bifrost_handle.get_trim_point(log_id)
+        );
 
-        debug!(?log_id, ?tail_state, "Retrieved tail information");
+        let tail_state = tail_state
+            .map_err(|err| Status::internal(format!("Failed to find log tail: {:?}", err)))?;
+        let trim_point = trim_point
+            .map_err(|err| Status::internal(format!("Failed to find log trim point: {:?}", err)))?;
+        debug!(
+            ?log_id,
+            ?trim_point,
+            ?tail_state,
+            "Retrieved log information"
+        );
 
         let mut tail_segment = chain.tail();
         if tail_segment.tail_lsn.is_none() {
@@ -112,12 +122,15 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         chain.iter().last().as_mut().unwrap().tail_lsn = tail_segment.tail_lsn;
 
         Ok(Response::new(DescribeLogResponse {
+            log_id: log_id.into(),
+            logs_version: logs.version().into(),
             chain: serialize_value(chain),
             tail_state: match tail_state {
                 restate_types::logs::TailState::Open(_) => 1,
                 restate_types::logs::TailState::Sealed(_) => 2,
             },
             tail_offset: tail_state.offset().as_u64(),
+            trim_point: trim_point.as_u64(),
         }))
     }
 

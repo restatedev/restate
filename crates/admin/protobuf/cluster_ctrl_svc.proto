@@ -51,10 +51,13 @@ message DescribeLogRequest {
 }
 
 message DescribeLogResponse {
+  uint32 log_id = 5;
+  uint32 logs_version = 6;
   // Serialized restate_types::logs::metadata::Chain
   bytes chain = 1;
   TailState tail_state = 2;
   uint64 tail_offset = 3;
+  uint64 trim_point = 4;
 }
 
 message ListNodesRequest { }
