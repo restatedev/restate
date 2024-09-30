@@ -15,8 +15,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
-use datafusion::execution::context::{SQLOptions, SessionState};
+use datafusion::execution::context::SQLOptions;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::SessionStateBuilder;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
@@ -188,7 +190,10 @@ impl QueryContext {
         //
         // build the state
         //
-        let mut state = SessionState::new_with_config_rt(session_config, runtime);
+        let mut state_builder = SessionStateBuilder::new()
+            .with_config(session_config)
+            .with_runtime_env(runtime)
+            .with_default_features();
 
         // Rewrite the logical plan,  to transparently add a 'partition_key' column to Join's
         // To tables that have a partition key in their schema.
@@ -200,7 +205,7 @@ impl QueryContext {
         // 'SELECT  b.service_key FROM sys_invocation_status a JOIN state b on a.target_service_key = b.service_key AND a.partition_key = b.partition_key'
         //
         // This would be used by the SymmetricHashJoin as a watermark.
-        state.add_analyzer_rule(Arc::new(
+        state_builder = state_builder.with_analyzer_rule(Arc::new(
             analyzer::UseSymmetricHashJoinWhenPartitionKeyIsPresent::new(),
         ));
 
@@ -219,10 +224,13 @@ impl QueryContext {
         // A far more involved but potentially more robust solution would be wrap the SymmetricHashJoin in a ProjectionExec
         // If this would become an issue for any reason, then we can explore that alternative.
         //
-        let mut physical_optimizers = state.physical_optimizers().to_vec();
-        physical_optimizers.insert(0, Arc::new(physical_optimizer::JoinRewrite::new()));
+        let physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
+            vec![Arc::new(physical_optimizer::JoinRewrite::new())];
 
-        state = state.with_physical_optimizer_rules(physical_optimizers);
+        state_builder = state_builder.with_physical_optimizer_rules(physical_optimizers);
+
+        let state = state_builder.build();
+
         let ctx = SessionContext::new_with_state(state);
 
         let sql_options = SQLOptions::new()

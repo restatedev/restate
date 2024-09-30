@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
-use datafusion::execution::context::{SessionState, TaskContext};
+use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::{
@@ -75,7 +75,7 @@ where
 
     async fn scan(
         &self,
-        _state: &SessionState,
+        _state: &(dyn datafusion::catalog::Session),
         projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
@@ -239,7 +239,7 @@ impl TableProvider for GenericTableProvider {
 
     async fn scan(
         &self,
-        _state: &SessionState,
+        _state: &(dyn datafusion::catalog::Session),
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
