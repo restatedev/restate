@@ -50,6 +50,7 @@ pub struct RequestPump {
     get_loglet_info_stream: MessageStream<GetLogletInfo>,
     get_records_stream: MessageStream<GetRecords>,
     trim_stream: MessageStream<Trim>,
+    wait_for_tail_stream: MessageStream<WaitForTail>,
 }
 
 impl RequestPump {
@@ -71,6 +72,7 @@ impl RequestPump {
         let get_loglet_info_stream = router_builder.subscribe_to_stream(queue_length);
         let get_records_stream = router_builder.subscribe_to_stream(queue_length);
         let trim_stream = router_builder.subscribe_to_stream(queue_length);
+        let wait_for_tail_stream = router_builder.subscribe_to_stream(queue_length);
         Self {
             task_center,
             _metadata: metadata,
@@ -81,6 +83,7 @@ impl RequestPump {
             get_loglet_info_stream,
             get_records_stream,
             trim_stream,
+            wait_for_tail_stream,
         }
     }
 
@@ -97,6 +100,7 @@ impl RequestPump {
             mut get_loglet_info_stream,
             mut get_records_stream,
             mut trim_stream,
+            mut wait_for_tail_stream,
             ..
         } = self;
 
@@ -121,6 +125,7 @@ impl RequestPump {
                 biased;
                 _ = &mut shutdown => {
                     // stop accepting messages
+                    drop(wait_for_tail_stream);
                     drop(store_stream);
                     drop(release_stream);
                     drop(seal_stream);
@@ -129,6 +134,18 @@ impl RequestPump {
                     // shutdown all workers.
                     Self::shutdown(loglet_workers).await;
                     return Ok(());
+                }
+                Some(wait_for_tail) = wait_for_tail_stream.next() => {
+                    // find the worker or create one.
+                    // enqueue.
+                    let worker = Self::find_or_create_worker(
+                        wait_for_tail.body().header.loglet_id,
+                        &log_store,
+                        &task_center,
+                        &mut state_map,
+                        &mut loglet_workers,
+                    ).await?;
+                    Self::on_wait_for_tail(worker, wait_for_tail);
                 }
                 Some(release) = release_stream.next() => {
                     // find the worker or create one.
@@ -215,6 +232,15 @@ impl RequestPump {
         // await all tasks to shutdown
         while tasks.next().await.is_some() {}
         trace!("All loglet workers have terminated");
+    }
+
+    fn on_wait_for_tail(worker: &LogletWorkerHandle, msg: Incoming<WaitForTail>) {
+        if let Err(msg) = worker.enqueue_wait_for_tail(msg) {
+            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
+            if let Err(e) = msg.to_rpc_response(TailUpdated::empty()).try_send() {
+                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to WaitForTail message with status Disabled due to peer channel capacity being full");
+            }
+        }
     }
 
     fn on_store(worker: &LogletWorkerHandle, msg: Incoming<Store>) {

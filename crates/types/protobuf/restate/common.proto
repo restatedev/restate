@@ -57,10 +57,12 @@ enum TargetName {
   LOG_SERVER_TRIM = 20;
   LOG_SERVER_TRIMMED = 21;
 
+  LOG_SERVER_WAIT_FOR_TAIL = 22;
+  LOG_SERVER_TAIL_UPDATED = 23;
+  // Reserving space for more log-server messages
   // ReplicatedLoglet
-  REPLICATED_LOGLET_APPEND = 22;
-  REPLICATED_LOGLET_APPENDED = 23;
-
+  REPLICATED_LOGLET_APPEND = 40;
+  REPLICATED_LOGLET_APPENDED = 41;
 }
 
 enum NodeStatus {

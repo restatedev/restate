@@ -39,6 +39,7 @@ pub struct LogletWorkerHandle {
     get_loglet_info_tx: mpsc::UnboundedSender<Incoming<GetLogletInfo>>,
     get_records_tx: mpsc::UnboundedSender<Incoming<GetRecords>>,
     trim_tx: mpsc::UnboundedSender<Incoming<Trim>>,
+    wait_for_tail_tx: mpsc::UnboundedSender<Incoming<WaitForTail>>,
     tc_handle: TaskHandle<()>,
 }
 
@@ -46,6 +47,14 @@ impl LogletWorkerHandle {
     pub fn cancel(self) -> TaskHandle<()> {
         self.tc_handle.cancel();
         self.tc_handle
+    }
+
+    pub fn enqueue_wait_for_tail(
+        &self,
+        msg: Incoming<WaitForTail>,
+    ) -> Result<(), Incoming<WaitForTail>> {
+        self.wait_for_tail_tx.send(msg).map_err(|e| e.0)?;
+        Ok(())
     }
 
     pub fn enqueue_store(&self, msg: Incoming<Store>) -> Result<(), Incoming<Store>> {
@@ -112,6 +121,7 @@ impl<S: LogStore> LogletWorker<S> {
         let (get_loglet_info_tx, get_loglet_info_rx) = mpsc::unbounded_channel();
         let (get_records_tx, get_records_rx) = mpsc::unbounded_channel();
         let (trim_tx, trim_rx) = mpsc::unbounded_channel();
+        let (wait_for_tail_tx, wait_for_tail_rx) = mpsc::unbounded_channel();
         let tc_handle = task_center.spawn_unmanaged(
             TaskKind::LogletWriter,
             "loglet-worker",
@@ -123,6 +133,7 @@ impl<S: LogStore> LogletWorker<S> {
                 get_loglet_info_rx,
                 get_records_rx,
                 trim_rx,
+                wait_for_tail_rx,
             ),
         )?;
         Ok(LogletWorkerHandle {
@@ -132,6 +143,7 @@ impl<S: LogStore> LogletWorker<S> {
             get_loglet_info_tx,
             get_records_tx,
             trim_tx,
+            wait_for_tail_tx,
             tc_handle,
         })
     }
@@ -144,6 +156,7 @@ impl<S: LogStore> LogletWorker<S> {
         mut get_loglet_info_rx: mpsc::UnboundedReceiver<Incoming<GetLogletInfo>>,
         mut get_records_rx: mpsc::UnboundedReceiver<Incoming<GetRecords>>,
         mut trim_rx: mpsc::UnboundedReceiver<Incoming<Trim>>,
+        mut wait_for_tail_rx: mpsc::UnboundedReceiver<Incoming<WaitForTail>>,
     ) {
         // The worker is the sole writer to this loglet's local-tail so it's safe to maintain a moving
         // local tail view and serialize changes to logstore as long as we send them in the correct
@@ -158,6 +171,8 @@ impl<S: LogStore> LogletWorker<S> {
 
         loop {
             tokio::select! {
+                // todo(asoli): Benchmark on diverse workload to determine if biased causes
+                // starvation.
                 biased;
                 _ = &mut shutdown => {
                     // todo: consider a draining shutdown if needed
@@ -178,6 +193,12 @@ impl<S: LogStore> LogletWorker<S> {
                 Some(_) = waiting_for_seal.next() => {}
                 // The set of network sends waiting to complete
                 Some(_) = in_flight_network_sends.next() => {}
+                // WAIT_FOR_TAIL
+                Some(msg) = wait_for_tail_rx.recv() => {
+                    self.loglet_state.notify_known_global_tail(msg.body().header.known_global_tail);
+                    // responses are spawned as disposable tasks
+                    self.process_wait_for_tail(msg);
+                }
                 // RELEASE
                 Some(msg) = release_rx.recv() => {
                     self.loglet_state.notify_known_global_tail(msg.body().header.known_global_tail);
@@ -218,7 +239,7 @@ impl<S: LogStore> LogletWorker<S> {
                 Some(msg) = get_records_rx.recv() => {
                     self.loglet_state.notify_known_global_tail(msg.body().header.known_global_tail);
                     // read responses are spawned as disposable tasks
-                    self.process_get_records(msg).await;
+                    self.process_get_records(msg);
                 }
                 // TRIM
                 Some(msg) = trim_rx.recv() => {
@@ -364,7 +385,48 @@ impl<S: LogStore> LogletWorker<S> {
         }
     }
 
-    async fn process_get_records(&mut self, msg: Incoming<GetRecords>) {
+    fn process_wait_for_tail(&mut self, msg: Incoming<WaitForTail>) {
+        let loglet_state = self.loglet_state.clone();
+        // fails on shutdown, in this case, we ignore the request
+        let _ = self.task_center.spawn(
+            TaskKind::Disposable,
+            "loglet-tail-monitor",
+            None,
+            async move {
+                let (reciprocal, msg) = msg.split();
+                let local_tail_watch = loglet_state.get_local_tail_watch();
+                // If shutdown happened, this task will be disposed of and we won't send
+                // the response.
+                match msg.query {
+                    TailUpdateQuery::LocalTail(target_offset) => {
+                        local_tail_watch.wait_for_offset_or_seal(target_offset).await?;
+                    }
+                    TailUpdateQuery::GlobalTail(target_global_tail) => {
+                        let global_tail_tracker = loglet_state.get_global_tail_tracker();
+                        tokio::select! {
+                            res = global_tail_tracker.wait_for_offset(target_global_tail) => { res.map(|_|()) },
+                            // Are we locally sealed?
+                            res = local_tail_watch.wait_for_seal() => { res },
+                        }?;
+                    }
+                    TailUpdateQuery::LocalOrGlobal(target_offset) => {
+                        let global_tail_tracker = loglet_state.get_global_tail_tracker();
+                        tokio::select! {
+                            res = global_tail_tracker.wait_for_offset(target_offset) => { res.map(|_|()) },
+                            res = local_tail_watch.wait_for_offset_or_seal(target_offset) => { res.map(|_|()) },
+                        }?;
+                    }
+                };
+
+                let update =
+                    TailUpdated::new(loglet_state.local_tail(), loglet_state.known_global_tail());
+                let _ = reciprocal.prepare(update).send().await;
+                Ok(())
+            },
+        );
+    }
+
+    fn process_get_records(&mut self, msg: Incoming<GetRecords>) {
         let mut log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
         // fails on shutdown, in this case, we ignore the request
