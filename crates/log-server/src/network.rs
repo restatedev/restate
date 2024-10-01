@@ -32,7 +32,7 @@ use restate_types::replicated_loglet::ReplicatedLogletId;
 
 use crate::loglet_worker::{LogletWorker, LogletWorkerHandle};
 use crate::logstore::LogStore;
-use crate::metadata::{GlobalTailTrackerMap, LogletStateMap};
+use crate::metadata::LogletStateMap;
 
 const DEFAULT_WRITERS_CAPACITY: usize = 128;
 
@@ -101,7 +101,6 @@ impl RequestPump {
         } = self;
 
         let mut shutdown = std::pin::pin!(cancellation_watcher());
-        let global_tail_tracker = GlobalTailTrackerMap::default();
 
         // optimization to fetch all known loglets from disk
         let mut state_map = LogletStateMap::load_all(&log_store)
@@ -135,10 +134,9 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        release.body().loglet_id,
+                        release.body().header.loglet_id,
                         &log_store,
                         &task_center,
-                        &global_tail_tracker,
                         &mut state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -148,10 +146,9 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        seal.body().loglet_id,
+                        seal.body().header.loglet_id,
                         &log_store,
                         &task_center,
-                        &global_tail_tracker,
                         &mut state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -161,10 +158,9 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        get_loglet_info.body().loglet_id,
+                        get_loglet_info.body().header.loglet_id,
                         &log_store,
                         &task_center,
-                        &global_tail_tracker,
                         &mut state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -174,10 +170,9 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        get_records.body().loglet_id,
+                        get_records.body().header.loglet_id,
                         &log_store,
                         &task_center,
-                        &global_tail_tracker,
                         &mut state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -187,10 +182,9 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        trim.body().loglet_id,
+                        trim.body().header.loglet_id,
                         &log_store,
                         &task_center,
-                        &global_tail_tracker,
                         &mut state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -200,10 +194,9 @@ impl RequestPump {
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        store.body().loglet_id,
+                        store.body().header.loglet_id,
                         &log_store,
                         &task_center,
-                        &global_tail_tracker,
                         &mut state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -283,7 +276,6 @@ impl RequestPump {
         loglet_id: ReplicatedLogletId,
         log_store: &S,
         task_center: &TaskCenter,
-        global_tail_tracker: &GlobalTailTrackerMap,
         state_map: &mut LogletStateMap,
         loglet_workers: &'a mut LogletWorkerMap,
     ) -> anyhow::Result<&'a LogletWorkerHandle> {
@@ -297,7 +289,6 @@ impl RequestPump {
                 loglet_id,
                 log_store.clone(),
                 state.clone(),
-                global_tail_tracker.get_tracker(loglet_id),
             )?;
             e.insert(handle);
         }

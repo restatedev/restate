@@ -21,7 +21,7 @@ use restate_types::{
     config::Configuration,
     live::Live,
     logs::{LogletOffset, Record, SequenceNumber, TailState},
-    net::log_server::{Status, Store, StoreFlags, Stored},
+    net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
     replicated_loglet::NodeSet,
 };
 
@@ -398,11 +398,13 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
 
     async fn try_send(&mut self) -> Result<Incoming<Stored>, NetworkError> {
         let store = Store {
+            header: LogServerRequestHeader::new(
+                self.server.loglet_id(),
+                self.sequencer_shared_state.committed_tail.latest_offset(),
+            ),
             first_offset: self.first_offset,
             flags: StoreFlags::empty(),
             known_archived: LogletOffset::INVALID,
-            known_global_tail: self.sequencer_shared_state.committed_tail.latest_offset(),
-            loglet_id: self.server.loglet_id(),
             payloads: Vec::from_iter(self.records.iter().cloned()),
             sequencer: self.sequencer_shared_state.my_node_id,
             timeout_at: None,
