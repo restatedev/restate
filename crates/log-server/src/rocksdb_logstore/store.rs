@@ -172,8 +172,15 @@ impl LogStore for RocksDbLogStore {
             local_tail = trim_point.next();
         }
 
+        // todo(asoli): Persist last_known_global_tail for more efficient tail repairs
+        // perhaps we can set the known_tail to the trim_point.next() here but let's do that only
+        // when the need rises.
         Ok(LogletState::new(
-            sequencer, local_tail, is_sealed, trim_point,
+            sequencer,
+            local_tail,
+            is_sealed,
+            trim_point,
+            LogletOffset::OLDEST,
         ))
     }
 
@@ -205,7 +212,7 @@ impl LogStore for RocksDbLogStore {
         loglet_state: &LogletState,
     ) -> Result<Records, OperationError> {
         let data_cf = self.data_cf();
-        let loglet_id = msg.loglet_id;
+        let loglet_id = msg.header.loglet_id;
         // The order of operations is important to remain correct.
         // The scenario that we want to avoid is the silent data loss. Although the
         // replicated-loglet reader can ensure contiguous offset range and detect trim-point
@@ -332,7 +339,7 @@ impl LogStore for RocksDbLogStore {
         }
 
         Ok(Records {
-            header: LogServerResponseHeader::new(local_tail),
+            header: LogServerResponseHeader::new(local_tail, loglet_state.known_global_tail()),
             next_offset: read_pointer,
             records,
         })
@@ -349,7 +356,7 @@ mod tests {
     use restate_types::config::Configuration;
     use restate_types::live::Live;
     use restate_types::logs::{LogletOffset, Record, SequenceNumber};
-    use restate_types::net::log_server::{Store, StoreFlags};
+    use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
     use restate_types::replicated_loglet::ReplicatedLogletId;
     use restate_types::{GenerationalNodeId, PlainNodeId};
 
@@ -421,11 +428,10 @@ mod tests {
         let payloads = vec![Record::from("a sample record".to_owned())];
 
         let store_msg_1 = Store {
-            loglet_id: loglet_id_1,
+            header: LogServerRequestHeader::new(loglet_id_1, LogletOffset::INVALID),
             timeout_at: None,
             sequencer: sequencer_1,
             known_archived: LogletOffset::INVALID,
-            known_global_tail: LogletOffset::INVALID,
             first_offset: LogletOffset::OLDEST,
             flags: StoreFlags::empty(),
             payloads,
@@ -460,7 +466,10 @@ mod tests {
         );
         // make sure we can still get it if adjacent log has records
         let store_msg_3 = Store {
-            loglet_id: loglet_id_2,
+            header: LogServerRequestHeader {
+                loglet_id: loglet_id_2,
+                ..store_msg_1.header
+            },
             first_offset: LogletOffset::OLDEST,
             sequencer: sequencer_2,
             ..store_msg_1

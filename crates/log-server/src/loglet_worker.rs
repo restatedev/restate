@@ -22,7 +22,7 @@ use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::GenerationalNodeId;
 
 use crate::logstore::{AsyncToken, LogStore};
-use crate::metadata::{GlobalTailTracker, LogletState};
+use crate::metadata::LogletState;
 
 /// A loglet worker
 ///
@@ -90,7 +90,6 @@ pub struct LogletWorker<S> {
     loglet_id: ReplicatedLogletId,
     log_store: S,
     loglet_state: LogletState,
-    global_tail_tracker: GlobalTailTracker,
 }
 
 impl<S: LogStore> LogletWorker<S> {
@@ -99,14 +98,12 @@ impl<S: LogStore> LogletWorker<S> {
         loglet_id: ReplicatedLogletId,
         log_store: S,
         loglet_state: LogletState,
-        global_tail_tracker: GlobalTailTracker,
     ) -> Result<LogletWorkerHandle, ShutdownError> {
         let writer = Self {
             task_center: task_center.clone(),
             loglet_id,
             log_store,
             loglet_state,
-            global_tail_tracker,
         };
 
         let (store_tx, store_rx) = mpsc::unbounded_channel();
@@ -153,8 +150,6 @@ impl<S: LogStore> LogletWorker<S> {
         // order.
         let mut sealing_in_progress = false;
         let mut staging_local_tail = self.loglet_state.local_tail().offset();
-        let mut global_tail_subscriber = self.global_tail_tracker.subscribe();
-        let mut known_global_tail = *global_tail_subscriber.borrow_and_update();
         let mut in_flight_stores = FuturesUnordered::new();
         let mut in_flight_network_sends = FuturesUnordered::new();
         let mut waiting_for_seal = FuturesUnordered::new();
@@ -175,7 +170,7 @@ impl<S: LogStore> LogletWorker<S> {
                 // The in-flight seal (if any)
                 Some(Ok(_)) = &mut in_flight_seal => {
                     sealing_in_progress = false;
-                    self.loglet_state.get_tail_watch().notify_seal();
+                    self.loglet_state.get_local_tail_watch().notify_seal();
                     debug!(loglet_id = %self.loglet_id, "Loglet is sealed");
                     in_flight_seal.set(None.into());
                 }
@@ -183,28 +178,22 @@ impl<S: LogStore> LogletWorker<S> {
                 Some(_) = waiting_for_seal.next() => {}
                 // The set of network sends waiting to complete
                 Some(_) = in_flight_network_sends.next() => {}
-                // todo: consider removing if no external changes will happen to known_global_tail
-                Ok(_) = global_tail_subscriber.changed() => {
-                    // makes sure we don't ever see a backward's view
-                    known_global_tail = known_global_tail.max(*global_tail_subscriber.borrow_and_update());
-                }
                 // RELEASE
                 Some(msg) = release_rx.recv() => {
-                    self.global_tail_tracker.maybe_update(msg.body().known_global_tail);
-                    known_global_tail = known_global_tail.max(msg.body().known_global_tail);
+                    self.loglet_state.notify_known_global_tail(msg.body().header.known_global_tail);
                 }
                 Some(msg) = seal_rx.recv() => {
                     let (reciprocal, msg) = msg.split();
                     // this message might be telling us about a higher `known_global_tail`
-                    self.global_tail_tracker.maybe_update(msg.known_global_tail);
-                    known_global_tail = known_global_tail.max(msg.known_global_tail);
+                    self.loglet_state.notify_known_global_tail(msg.header.known_global_tail);
                     // If we have a seal operation in-flight, we'd want this request to wait for
                     // seal to happen
-                    let tail_watcher = self.loglet_state.get_tail_watch();
+                    let tail_watcher = self.loglet_state.get_local_tail_watch();
+                    let global_tail = self.loglet_state.get_global_tail_tracker();
                     waiting_for_seal.push(async move {
                         let seal_watcher = tail_watcher.wait_for_seal();
                         if seal_watcher.await.is_ok() {
-                            let body = Sealed::new(*tail_watcher.get()).with_status(Status::Ok);
+                            let body = Sealed::new(*tail_watcher.get(), global_tail.get()).with_status(Status::Ok);
                             let response = reciprocal.prepare(body);
                             // send the response over the network
                             let _ = response.send().await;
@@ -218,41 +207,38 @@ impl<S: LogStore> LogletWorker<S> {
                 }
                 // GET_LOGLET_INFO
                 Some(msg) = get_loglet_info_rx.recv() => {
-                    self.global_tail_tracker.maybe_update(msg.body().known_global_tail);
-                    known_global_tail = known_global_tail.max(msg.body().known_global_tail);
+                    self.loglet_state.notify_known_global_tail(msg.body().header.known_global_tail);
                     // drop response if connection is lost/congested
                     let peer = *msg.peer();
-                    if let Err(e) = msg.to_rpc_response(LogletInfo::new(self.loglet_state.local_tail(), self.loglet_state.trim_point())).try_send() {
+                    if let Err(e) = msg.to_rpc_response(LogletInfo::new(self.loglet_state.local_tail(), self.loglet_state.trim_point(), self.loglet_state.known_global_tail())).try_send() {
                         debug!(?e.source, peer = %peer, "Failed to respond to GetLogletInfo message due to peer channel capacity being full");
                     }
                 }
                 // GET_RECORDS
                 Some(msg) = get_records_rx.recv() => {
-                    self.global_tail_tracker.maybe_update(msg.body().known_global_tail);
-                    known_global_tail = known_global_tail.max(msg.body().known_global_tail);
+                    self.loglet_state.notify_known_global_tail(msg.body().header.known_global_tail);
                     // read responses are spawned as disposable tasks
                     self.process_get_records(msg).await;
                 }
                 // TRIM
                 Some(msg) = trim_rx.recv() => {
-                    self.global_tail_tracker.maybe_update(msg.body().known_global_tail);
-                    known_global_tail = known_global_tail.max(msg.body().known_global_tail);
-                    self.process_trim(msg, known_global_tail);
+                    self.loglet_state.notify_known_global_tail(msg.body().header.known_global_tail);
+                    self.process_trim(msg);
                 }
                 // STORE
                 Some(msg) = store_rx.recv() => {
                     let (reciprocal, msg) = msg.split();
                     // this message might be telling us about a higher `known_global_tail`
-                    self.global_tail_tracker.maybe_update(msg.known_global_tail);
-                    known_global_tail = known_global_tail.max(msg.known_global_tail);
-                    let next_ok_offset = std::cmp::max(staging_local_tail, known_global_tail );
+                    self.loglet_state.notify_known_global_tail(msg.header.known_global_tail);
+                    let next_ok_offset = std::cmp::max(staging_local_tail, self.loglet_state.known_global_tail());
                     let peer = *reciprocal.peer();
                     let (status, maybe_store_token) = self.process_store(peer, msg, &mut staging_local_tail, next_ok_offset, &sealing_in_progress).await;
                     // if this store is complete, the last committed is updated to this value.
                     let future_last_committed = staging_local_tail;
                     if let Some(store_token) = maybe_store_token {
                         // in-flight store...
-                        let local_tail_watch = self.loglet_state.get_tail_watch();
+                        let local_tail_watch = self.loglet_state.get_local_tail_watch();
+                        let global_tail = self.loglet_state.get_global_tail_tracker();
                         in_flight_stores.push(async move {
                             // wait for log store to finish
                             let res = store_token.await;
@@ -261,7 +247,7 @@ impl<S: LogStore> LogletWorker<S> {
                                     // advance local-tail
                                     local_tail_watch.notify_offset_update(future_last_committed);
                                     // ignoring the error if we couldn't send the response
-                                    let msg = Stored::new(*local_tail_watch.get()).with_status(status);
+                                    let msg = Stored::new(*local_tail_watch.get(), global_tail.get()).with_status(status);
                                     let response = reciprocal.prepare(msg);
                                     // send the response over the network
                                     let _ = response.send().await;
@@ -275,7 +261,7 @@ impl<S: LogStore> LogletWorker<S> {
                         });
                     } else {
                         // we didn't store, let's respond immediately with status
-                        let msg = Stored::new(self.loglet_state.local_tail()).with_status(status);
+                        let msg = Stored::new(self.loglet_state.local_tail(), self.loglet_state.known_global_tail()).with_status(status);
                         let response = reciprocal.prepare(msg);
                         in_flight_network_sends.push(async move {
                             // ignore send errors.
@@ -397,8 +383,12 @@ impl<S: LogStore> LogletWorker<S> {
                 }
                 let records = match log_store.read_records(msg, &loglet_state).await {
                     Ok(records) => records,
-                    Err(_) => Records::new(loglet_state.local_tail(), from_offset)
-                        .with_status(Status::Disabled),
+                    Err(_) => Records::new(
+                        loglet_state.local_tail(),
+                        loglet_state.known_global_tail(),
+                        from_offset,
+                    )
+                    .with_status(Status::Disabled),
                 };
                 // ship the response to the original connection
                 let _ = reciprocal.prepare(records).send().await;
@@ -406,7 +396,7 @@ impl<S: LogStore> LogletWorker<S> {
             });
     }
 
-    fn process_trim(&mut self, msg: Incoming<Trim>, known_global_tail: LogletOffset) {
+    fn process_trim(&mut self, msg: Incoming<Trim>) {
         // When trimming, we eagerly update the in-memory view of the trim-point _before_ we
         // perform the trim on the log-store since it's safer to over report the trim-point than
         // under report.
@@ -417,13 +407,14 @@ impl<S: LogStore> LogletWorker<S> {
         let _ = self
             .task_center
             .spawn(TaskKind::Disposable, "loglet-trim", None, async move {
-                let loglet_id = msg.body().loglet_id;
+                let loglet_id = msg.body().header.loglet_id;
                 let new_trim_point = msg.body().trim_point;
                 // cannot trim beyond the global known tail (if known) or the local_tail whichever is higher.
                 let local_tail = loglet_state.local_tail();
+                let known_global_tail = loglet_state.known_global_tail();
                 let high_watermark = known_global_tail.max(local_tail.offset());
                 if new_trim_point < LogletOffset::OLDEST || new_trim_point >= high_watermark {
-                    let _ = msg.to_rpc_response(Trimmed::new(loglet_state.local_tail()).with_status(Status::Malformed)).send().await;
+                    let _ = msg.to_rpc_response(Trimmed::new(loglet_state.local_tail(), known_global_tail).with_status(Status::Malformed)).send().await;
                     return Ok(());
                 }
 
@@ -435,19 +426,19 @@ impl<S: LogStore> LogletWorker<S> {
 
                 let body = if loglet_state.update_trim_point(msg.trim_point) {
                     match log_store.enqueue_trim(msg).await?.await {
-                        Ok(_) => Trimmed::new(loglet_state.local_tail()).with_status(Status::Ok),
+                        Ok(_) => Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail()).with_status(Status::Ok),
                         Err(_) => {
                             warn!(
                                 %loglet_id,
                                 "Log-store is disabled, and its trim-point will falsely be reported as {} since we couldn't commit that to the log-store. Trim-point will be correct after restart.",
                                 new_trim_point
                             );
-                            Trimmed::new(loglet_state.local_tail()).with_status(Status::Disabled)
+                            Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail()).with_status(Status::Disabled)
                         }
                     }
                 } else {
                     // it's already trimmed
-                    Trimmed::new(loglet_state.local_tail())
+                    Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
                 };
 
                 // ship the response to the original connection
@@ -498,7 +489,7 @@ mod tests {
     use restate_types::net::CURRENT_PROTOCOL_VERSION;
     use restate_types::replicated_loglet::ReplicatedLogletId;
 
-    use crate::metadata::{GlobalTailTrackerMap, LogletStateMap};
+    use crate::metadata::LogletStateMap;
     use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};
     use crate::setup_panic_handler;
 
@@ -534,18 +525,11 @@ mod tests {
 
         let (tc, log_store) = setup().await?;
         let mut loglet_state_map = LogletStateMap::default();
-        let global_tail_tracker = GlobalTailTrackerMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
-        let worker = LogletWorker::start(
-            tc.clone(),
-            LOGLET,
-            log_store,
-            loglet_state,
-            global_tail_tracker.get_tracker(LOGLET),
-        )?;
+        let worker = LogletWorker::start(tc.clone(), LOGLET, log_store, loglet_state)?;
 
         let payloads = vec![
             Record::from("a sample record"),
@@ -554,11 +538,10 @@ mod tests {
 
         // offsets 1, 2
         let msg1 = Store {
-            loglet_id: LOGLET,
+            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
             timeout_at: None,
             sequencer: SEQUENCER,
             known_archived: LogletOffset::INVALID,
-            known_global_tail: LogletOffset::INVALID,
             first_offset: LogletOffset::OLDEST,
             flags: StoreFlags::empty(),
             payloads: payloads.clone(),
@@ -566,11 +549,10 @@ mod tests {
 
         // offsets 3, 4
         let msg2 = Store {
-            loglet_id: LOGLET,
+            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
             timeout_at: None,
             sequencer: SEQUENCER,
             known_archived: LogletOffset::INVALID,
-            known_global_tail: LogletOffset::INVALID,
             first_offset: LogletOffset::new(3),
             flags: StoreFlags::empty(),
             payloads: payloads.clone(),
@@ -619,18 +601,11 @@ mod tests {
 
         let (tc, log_store) = setup().await?;
         let mut loglet_state_map = LogletStateMap::default();
-        let global_tail_tracker = GlobalTailTrackerMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
-        let worker = LogletWorker::start(
-            tc.clone(),
-            LOGLET,
-            log_store,
-            loglet_state,
-            global_tail_tracker.get_tracker(LOGLET),
-        )?;
+        let worker = LogletWorker::start(tc.clone(), LOGLET, log_store, loglet_state)?;
 
         let payloads = vec![
             Record::from("a sample record"),
@@ -639,35 +614,31 @@ mod tests {
 
         // offsets 1, 2
         let msg1 = Store {
-            loglet_id: LOGLET,
+            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
             timeout_at: None,
             sequencer: SEQUENCER,
             known_archived: LogletOffset::INVALID,
-            known_global_tail: LogletOffset::INVALID,
             first_offset: LogletOffset::OLDEST,
             flags: StoreFlags::empty(),
             payloads: payloads.clone(),
         };
 
         let seal1 = Seal {
-            known_global_tail: LogletOffset::INVALID,
-            loglet_id: LOGLET,
+            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
             sequencer: SEQUENCER,
         };
 
         let seal2 = Seal {
-            known_global_tail: LogletOffset::INVALID,
-            loglet_id: LOGLET,
+            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
             sequencer: SEQUENCER,
         };
 
         // offsets 3, 4
         let msg2 = Store {
-            loglet_id: LOGLET,
+            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
             timeout_at: None,
             sequencer: SEQUENCER,
             known_archived: LogletOffset::INVALID,
-            known_global_tail: LogletOffset::INVALID,
             first_offset: LogletOffset::new(3),
             flags: StoreFlags::empty(),
             payloads: payloads.clone(),
@@ -735,11 +706,10 @@ mod tests {
 
         // try another store
         let msg3 = Store {
-            loglet_id: LOGLET,
+            header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(3)),
             timeout_at: None,
             sequencer: SEQUENCER,
             known_archived: LogletOffset::INVALID,
-            known_global_tail: LogletOffset::new(3),
             first_offset: LogletOffset::new(3),
             flags: StoreFlags::empty(),
             payloads: payloads.clone(),
@@ -760,8 +730,7 @@ mod tests {
         // GetLogletInfo
         // offsets 3, 4
         let msg = GetLogletInfo {
-            loglet_id: LOGLET,
-            known_global_tail: LogletOffset::INVALID,
+            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
         };
         let msg = Incoming::for_testing(connection.downgrade(), msg, None);
         let msg_id = msg.msg_id();
@@ -792,18 +761,11 @@ mod tests {
 
         let (tc, log_store) = setup().await?;
         let mut loglet_state_map = LogletStateMap::default();
-        let global_tail_tracker = GlobalTailTrackerMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
-        let worker = LogletWorker::start(
-            tc.clone(),
-            LOGLET,
-            log_store,
-            loglet_state,
-            global_tail_tracker.get_tracker(LOGLET),
-        )?;
+        let worker = LogletWorker::start(tc.clone(), LOGLET, log_store, loglet_state)?;
 
         // Populate the log-store with some records (..,2,..,5,..,10, 11)
         // Note: dots mean we don't have records at those globally committed offsets.
@@ -811,12 +773,11 @@ mod tests {
             .enqueue_store(Incoming::for_testing(
                 connection.downgrade(),
                 Store {
-                    loglet_id: LOGLET,
+                    // faking that offset=1 is released
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(2)),
                     timeout_at: None,
                     sequencer: SEQUENCER,
                     known_archived: LogletOffset::INVALID,
-                    // faking that offset=1 is released
-                    known_global_tail: LogletOffset::new(2),
                     first_offset: LogletOffset::new(2),
                     flags: StoreFlags::empty(),
                     payloads: vec![Record::from("record2")],
@@ -829,12 +790,11 @@ mod tests {
             .enqueue_store(Incoming::for_testing(
                 connection.downgrade(),
                 Store {
-                    loglet_id: LOGLET,
+                    // faking that offset=4 is released
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(5)),
                     timeout_at: None,
                     sequencer: SEQUENCER,
                     known_archived: LogletOffset::INVALID,
-                    // faking that offset=1 is released
-                    known_global_tail: LogletOffset::new(5),
                     first_offset: LogletOffset::new(5),
                     flags: StoreFlags::empty(),
                     payloads: vec![Record::from(("record5", Keys::Single(11)))],
@@ -847,12 +807,11 @@ mod tests {
             .enqueue_store(Incoming::for_testing(
                 connection.downgrade(),
                 Store {
-                    loglet_id: LOGLET,
+                    // faking that offset=9 is released
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
                     timeout_at: None,
                     sequencer: SEQUENCER,
                     known_archived: LogletOffset::INVALID,
-                    // faking that offset=1 is released
-                    known_global_tail: LogletOffset::new(10),
                     first_offset: LogletOffset::new(10),
                     flags: StoreFlags::empty(),
                     payloads: vec![Record::from("record10"), Record::from("record11")],
@@ -878,12 +837,11 @@ mod tests {
             .enqueue_get_records(Incoming::for_testing(
                 connection.downgrade(),
                 GetRecords {
-                    loglet_id: LOGLET,
+                    // faking that offset=9 is released
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
                     filter: KeyFilter::Any,
                     // no memory limits
                     total_limit_in_bytes: None,
-                    // faking that offset=1 is released
-                    known_global_tail: LogletOffset::new(10),
                     from_offset: LogletOffset::new(1),
                     to_offset: LogletOffset::new(7),
                 },
@@ -918,12 +876,11 @@ mod tests {
             .enqueue_get_records(Incoming::for_testing(
                 connection.downgrade(),
                 GetRecords {
-                    loglet_id: LOGLET,
+                    // INVALID can be used when we don't have a reasonable value to pass in.
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
                     // no memory limits
                     total_limit_in_bytes: None,
                     filter: KeyFilter::Within(0..=5),
-                    // INVALID can be used when we don't have a reasonable value to pass in.
-                    known_global_tail: LogletOffset::INVALID,
                     from_offset: LogletOffset::new(1),
                     // to a point beyond local tail
                     to_offset: LogletOffset::new(100),
@@ -967,12 +924,11 @@ mod tests {
             .enqueue_get_records(Incoming::for_testing(
                 connection.downgrade(),
                 GetRecords {
-                    loglet_id: LOGLET,
+                    // INVALID can be used when we don't have a reasonable value to pass in.
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
                     // no memory limits
                     total_limit_in_bytes: Some(2),
                     filter: KeyFilter::Within(0..=5),
-                    // INVALID can be used when we don't have a reasonable value to pass in.
-                    known_global_tail: LogletOffset::INVALID,
                     from_offset: LogletOffset::new(4),
                     // to a point beyond local tail
                     to_offset: LogletOffset::new(100),
@@ -1023,18 +979,12 @@ mod tests {
 
         let (tc, log_store) = setup().await?;
         let mut loglet_state_map = LogletStateMap::default();
-        let global_tail_tracker = GlobalTailTrackerMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
-        let worker = LogletWorker::start(
-            tc.clone(),
-            LOGLET,
-            log_store.clone(),
-            loglet_state.clone(),
-            global_tail_tracker.get_tracker(LOGLET),
-        )?;
+        let worker =
+            LogletWorker::start(tc.clone(), LOGLET, log_store.clone(), loglet_state.clone())?;
 
         assert_that!(loglet_state.trim_point(), eq(LogletOffset::INVALID));
         assert_that!(loglet_state.local_tail().offset(), eq(LogletOffset::OLDEST));
@@ -1043,8 +993,7 @@ mod tests {
             .enqueue_trim(Incoming::for_testing(
                 connection.downgrade(),
                 Trim {
-                    loglet_id: LOGLET,
-                    known_global_tail: LogletOffset::OLDEST,
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::OLDEST),
                     trim_point: LogletOffset::OLDEST,
                 },
                 None,
@@ -1068,8 +1017,7 @@ mod tests {
             .enqueue_trim(Incoming::for_testing(
                 connection.downgrade(),
                 Trim {
-                    loglet_id: LOGLET,
-                    known_global_tail: LogletOffset::new(10),
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
                     trim_point: LogletOffset::new(9),
                 },
                 None,
@@ -1092,12 +1040,11 @@ mod tests {
             .enqueue_store(Incoming::for_testing(
                 connection.downgrade(),
                 Store {
-                    loglet_id: LOGLET,
+                    // faking that offset=9 is released
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
                     timeout_at: None,
                     sequencer: SEQUENCER,
                     known_archived: LogletOffset::INVALID,
-                    // faking that offset=1 is released
-                    known_global_tail: LogletOffset::new(10),
                     first_offset: LogletOffset::new(5),
                     flags: StoreFlags::empty(),
                     payloads: vec![Record::from("record5"), Record::from("record6")],
@@ -1120,8 +1067,7 @@ mod tests {
             .enqueue_trim(Incoming::for_testing(
                 connection.downgrade(),
                 Trim {
-                    loglet_id: LOGLET,
-                    known_global_tail: LogletOffset::new(10),
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
                     trim_point: LogletOffset::new(5),
                 },
                 None,
@@ -1144,11 +1090,9 @@ mod tests {
             .enqueue_get_records(Incoming::for_testing(
                 connection.downgrade(),
                 GetRecords {
-                    loglet_id: LOGLET,
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
                     total_limit_in_bytes: None,
                     filter: KeyFilter::Any,
-                    // INVALID can be used when we don't have a reasonable value to pass in.
-                    known_global_tail: LogletOffset::INVALID,
                     from_offset: LogletOffset::OLDEST,
                     // to a point beyond local tail
                     to_offset: LogletOffset::new(100),
@@ -1191,8 +1135,7 @@ mod tests {
             .enqueue_trim(Incoming::for_testing(
                 connection.downgrade(),
                 Trim {
-                    loglet_id: LOGLET,
-                    known_global_tail: LogletOffset::new(10),
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
                     trim_point: LogletOffset::new(9),
                 },
                 None,
@@ -1215,11 +1158,9 @@ mod tests {
             .enqueue_get_records(Incoming::for_testing(
                 connection.downgrade(),
                 GetRecords {
-                    loglet_id: LOGLET,
+                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
                     total_limit_in_bytes: None,
                     filter: KeyFilter::Any,
-                    // INVALID can be used when we don't have a reasonable value to pass in.
-                    known_global_tail: LogletOffset::INVALID,
                     from_offset: LogletOffset::OLDEST,
                     // to a point beyond local tail
                     to_offset: LogletOffset::new(100),

@@ -46,6 +46,9 @@ pub enum Status {
 }
 
 // ----- LogServer API -----
+// Requests: Bifrost -> LogServer //
+// Responses LogServer -> Bifrost //
+
 // Store
 define_rpc! {
     @request = Store,
@@ -78,14 +81,6 @@ define_rpc! {
     @response_target = TargetName::LogServerLogletInfo,
 }
 
-// GetRecords
-define_rpc! {
-    @request = GetRecords,
-    @response = Records,
-    @request_target = TargetName::LogServerGetRecords,
-    @response_target = TargetName::LogServerRecords,
-}
-
 // Trim
 define_rpc! {
     @request = Trim,
@@ -94,19 +89,49 @@ define_rpc! {
     @response_target = TargetName::LogServerTrimmed,
 }
 
-// ------- Bifrost to LogServer ------ //
+// GetRecords
+define_rpc! {
+    @request = GetRecords,
+    @response = Records,
+    @request_target = TargetName::LogServerGetRecords,
+    @response_target = TargetName::LogServerRecords,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogServerRequestHeader {
+    pub loglet_id: ReplicatedLogletId,
+    /// If the sender has now knowledge of this value, it can safely be set to
+    /// `LogletOffset::INVALID`
+    pub known_global_tail: LogletOffset,
+}
+
+impl LogServerRequestHeader {
+    pub fn new(loglet_id: ReplicatedLogletId, known_global_tail: LogletOffset) -> Self {
+        Self {
+            loglet_id,
+            known_global_tail,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogServerResponseHeader {
+    /// The position after the last locally committed record on this node
     pub local_tail: LogletOffset,
+    /// The node's view of the last global tail of the loglet. If unknown, it
+    /// can be safely set to `LogletOffset::INVALID`.
+    pub known_global_tail: LogletOffset,
+    /// Whether this node has sealed or not (local to the log-server)
     pub sealed: bool,
     pub status: Status,
 }
 
 impl LogServerResponseHeader {
-    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
+    pub fn new(local_tail_state: TailState<LogletOffset>, known_global_tail: LogletOffset) -> Self {
         Self {
-            local_tail: tail_state.offset(),
-            sealed: tail_state.is_sealed(),
+            local_tail: local_tail_state.offset(),
+            known_global_tail,
+            sealed: local_tail_state.is_sealed(),
             status: Status::Ok,
         }
     }
@@ -114,6 +139,7 @@ impl LogServerResponseHeader {
     pub fn empty() -> Self {
         Self {
             local_tail: LogletOffset::INVALID,
+            known_global_tail: LogletOffset::INVALID,
             sealed: false,
             status: Status::Disabled,
         }
@@ -132,12 +158,12 @@ bitflags! {
 /// Store one or more records on a log-server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Store {
+    #[serde(flatten)]
+    pub header: LogServerRequestHeader,
     // The receiver should skip handling this message if it hasn't started to act on it
     // before timeout expires.
     pub timeout_at: Option<MillisSinceEpoch>,
-    pub known_global_tail: LogletOffset,
     pub flags: StoreFlags,
-    pub loglet_id: ReplicatedLogletId,
     /// Offset of the first record in the batch of payloads. Payloads in the batch get a gap-less
     /// range of offsets that starts with (includes) the value of `first_offset`.
     pub first_offset: LogletOffset,
@@ -198,9 +224,9 @@ impl Stored {
         }
     }
 
-    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>, known_global_tail: LogletOffset) -> Self {
         Self {
-            header: LogServerResponseHeader::new(tail_state),
+            header: LogServerResponseHeader::new(tail_state, known_global_tail),
         }
     }
 
@@ -213,8 +239,8 @@ impl Stored {
 // ** RELEASE
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Release {
-    pub loglet_id: ReplicatedLogletId,
-    pub known_global_tail: LogletOffset,
+    #[serde(flatten)]
+    pub header: LogServerRequestHeader,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,9 +256,9 @@ impl Released {
         }
     }
 
-    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>, known_global_tail: LogletOffset) -> Self {
         Self {
-            header: LogServerResponseHeader::new(tail_state),
+            header: LogServerResponseHeader::new(tail_state, known_global_tail),
         }
     }
 
@@ -246,8 +272,8 @@ impl Released {
 /// Seals the loglet so no further stores can be accepted
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Seal {
-    pub known_global_tail: LogletOffset,
-    pub loglet_id: ReplicatedLogletId,
+    #[serde(flatten)]
+    pub header: LogServerRequestHeader,
     /// This is the sequencer identifier for this log. This should be set even for repair store messages.
     pub sequencer: GenerationalNodeId,
 }
@@ -280,9 +306,9 @@ impl Sealed {
         }
     }
 
-    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>, known_global_tail: LogletOffset) -> Self {
         Self {
-            header: LogServerResponseHeader::new(tail_state),
+            header: LogServerResponseHeader::new(tail_state, known_global_tail),
         }
     }
 
@@ -295,8 +321,8 @@ impl Sealed {
 // ** GET_LOGLET_INFO
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetLogletInfo {
-    pub known_global_tail: LogletOffset,
-    pub loglet_id: ReplicatedLogletId,
+    #[serde(flatten)]
+    pub header: LogServerRequestHeader,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,9 +354,13 @@ impl LogletInfo {
         }
     }
 
-    pub fn new(tail_state: TailState<LogletOffset>, trim_point: LogletOffset) -> Self {
+    pub fn new(
+        tail_state: TailState<LogletOffset>,
+        trim_point: LogletOffset,
+        known_global_tail: LogletOffset,
+    ) -> Self {
         Self {
-            header: LogServerResponseHeader::new(tail_state),
+            header: LogServerResponseHeader::new(tail_state, known_global_tail),
             trim_point,
         }
     }
@@ -371,8 +401,8 @@ pub enum MaybeRecord {
 /// local tail that was used during the read process and `next_offset` will be set accordingly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetRecords {
-    pub known_global_tail: LogletOffset,
-    pub loglet_id: ReplicatedLogletId,
+    #[serde(flatten)]
+    pub header: LogServerRequestHeader,
     /// if set, the server will stop reading when the next record will tip of the total number of
     /// bytes allocated. The returned `next_offset` can be used by the reader to move the cursor
     /// for subsequent reads.
@@ -428,9 +458,13 @@ impl Records {
         }
     }
 
-    pub fn new(tail_state: TailState<LogletOffset>, next_offset: LogletOffset) -> Self {
+    pub fn new(
+        tail_state: TailState<LogletOffset>,
+        known_global_tail: LogletOffset,
+        next_offset: LogletOffset,
+    ) -> Self {
         Self {
-            header: LogServerResponseHeader::new(tail_state),
+            header: LogServerResponseHeader::new(tail_state, known_global_tail),
             records: Vec::default(),
             next_offset,
         }
@@ -445,13 +479,13 @@ impl Records {
 // ** TRIM
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trim {
-    pub known_global_tail: LogletOffset,
-    pub loglet_id: ReplicatedLogletId,
+    #[serde(flatten)]
+    pub header: LogServerRequestHeader,
     /// The trim_point is inclusive (will be trimmed)
     pub trim_point: LogletOffset,
 }
 
-/// Response to a `GetTailInfo` request
+/// Response to a `Trim` request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trimmed {
     #[serde(flatten)]
@@ -479,9 +513,9 @@ impl Trimmed {
         }
     }
 
-    pub fn new(tail_state: TailState<LogletOffset>) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>, known_global_tail: LogletOffset) -> Self {
         Self {
-            header: LogServerResponseHeader::new(tail_state),
+            header: LogServerResponseHeader::new(tail_state, known_global_tail),
         }
     }
 
