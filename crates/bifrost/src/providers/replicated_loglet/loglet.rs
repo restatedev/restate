@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use tracing::debug;
+use tracing::{debug, info};
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::ShutdownError;
@@ -27,6 +27,7 @@ use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
 use crate::providers::replicated_loglet::replication::spread_selector::SelectorStrategy;
 use crate::providers::replicated_loglet::sequencer::Sequencer;
+use crate::providers::replicated_loglet::tasks::SealTask;
 
 use super::log_server_manager::RemoteLogServerManager;
 use super::record_cache::RecordCache;
@@ -168,7 +169,17 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     async fn seal(&self) -> Result<(), OperationError> {
-        todo!()
+        // todo(asoli): If we are the sequencer node, let the sequencer know.
+        let _ = SealTask::new(
+            task_center(),
+            self.my_params.clone(),
+            self.logservers_rpc.seal.clone(),
+            self.known_global_tail.clone(),
+        )
+        .run(self.networking.clone())
+        .await?;
+        info!(loglet_id=%self.my_params.loglet_id, "Loglet has been sealed successfully");
+        Ok(())
     }
 }
 
@@ -190,7 +201,7 @@ mod tests {
     use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicationProperty};
     use restate_types::{GenerationalNodeId, PlainNodeId};
 
-    use crate::loglet::Loglet;
+    use crate::loglet::{AppendError, Loglet};
 
     struct TestEnv {
         pub loglet: Arc<dyn Loglet>,
@@ -291,6 +302,48 @@ mod tests {
                 cached_record.unwrap().keys().clone(),
                 matches_pattern!(Keys::Single(eq(1)))
             );
+            Ok(())
+        })
+        .await
+    }
+
+    // ** Single-node replicated-loglet seal **
+    #[test(tokio::test(start_paused = true))]
+    async fn test_seal_local_sequencer_single_node() -> Result<()> {
+        let loglet_id = ReplicatedLogletId::new(122);
+        let params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+            write_set: None,
+        };
+
+        run_in_test_env(params, |env| async move {
+            let batch: Arc<[Record]> = vec![
+                ("record-1", Keys::Single(1)).into(),
+                ("record-2", Keys::Single(2)).into(),
+                ("record-3", Keys::Single(3)).into(),
+            ]
+            .into();
+            let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
+            assert_that!(offset, eq(LogletOffset::new(3)));
+            let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
+            assert_that!(offset, eq(LogletOffset::new(6)));
+            let tail = env.loglet.find_tail().await?;
+            assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
+
+            env.loglet.seal().await?;
+            let batch: Arc<[Record]> = vec![
+                ("record-4", Keys::Single(4)).into(),
+                ("record-5", Keys::Single(5)).into(),
+            ]
+            .into();
+            let not_appended = env.loglet.enqueue_batch(batch).await?.await;
+            assert_that!(not_appended, err(pat!(AppendError::Sealed)));
+            let tail = env.loglet.find_tail().await?;
+            assert_that!(tail, eq(TailState::Sealed(LogletOffset::new(7))));
+
             Ok(())
         })
         .await
