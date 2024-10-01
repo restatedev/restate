@@ -14,6 +14,7 @@ use restate_core::ShutdownError;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::LogId;
+use restate_types::replicated_loglet::ReplicatedLogletId;
 
 use crate::loglet::OperationError;
 
@@ -21,6 +22,8 @@ use crate::loglet::OperationError;
 pub(crate) enum ReplicatedLogletError {
     #[error("cannot parse loglet configuration for log_id={0} at segment_index={1}: {2}")]
     LogletParamsParsingError(LogId, SegmentIndex, serde_json::Error),
+    #[error("could not seal loglet_id={0}, insufficient nodes available for seal")]
+    SealFailed(ReplicatedLogletId),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }
@@ -29,6 +32,7 @@ impl MaybeRetryableError for ReplicatedLogletError {
     fn retryable(&self) -> bool {
         match self {
             Self::LogletParamsParsingError(..) => false,
+            Self::SealFailed(..) => true,
             Self::Shutdown(_) => false,
         }
     }
