@@ -18,7 +18,7 @@ use futures::stream::BoxStream;
 use tracing::{debug, info};
 
 use restate_core::network::{Networking, TransportConnect};
-use restate_core::ShutdownError;
+use restate_core::{task_center, ShutdownError};
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{KeyFilter, LogId, LogletOffset, Record, SequenceNumber, TailState};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
