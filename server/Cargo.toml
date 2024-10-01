@@ -10,7 +10,7 @@ description.workspace = true
 build = "build.rs"
 
 [features]
-default = []
+default = ["replicated-loglet"]
 console = [
     "tokio/full",
     "tokio/tracing",
