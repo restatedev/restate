@@ -148,6 +148,7 @@ impl<S: LogStore> LogletWorker<S> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         mut self,
         mut store_rx: mpsc::UnboundedReceiver<Incoming<Store>>,
