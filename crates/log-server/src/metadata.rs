@@ -207,7 +207,6 @@ impl GlobalTailTracker {
         });
     }
 
-    #[allow(dead_code)]
     pub async fn wait_for_offset(
         &self,
         offset: LogletOffset,
