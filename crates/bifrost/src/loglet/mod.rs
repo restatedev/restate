@@ -110,7 +110,7 @@ pub trait Loglet: Send + Sync + std::fmt::Debug {
     /// retry failing appends indefinitely until the loglet is sealed. In that case, such commits
     /// might still appear to future readers but without returning the commit acknowledgement to
     /// the original writer.
-    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, ShutdownError>;
+    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, OperationError>;
 
     /// The tail is *the first unwritten position* in the loglet.
     ///

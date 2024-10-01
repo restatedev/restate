@@ -136,7 +136,7 @@ impl Loglet for LocalLoglet {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, ShutdownError> {
+    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, OperationError> {
         // NOTE: This implementation doesn't perform pipelined writes yet. This will block the caller
         // while the underlying write is in progress and only return the Commit future as resolved.
         // This is temporary until pipelined writes are fully supported.

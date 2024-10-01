@@ -325,7 +325,7 @@ impl Loglet for MemoryLoglet {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, ShutdownError> {
+    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, OperationError> {
         let mut log = self.log.lock().unwrap();
         if self.sealed.load(Ordering::Relaxed) {
             return Ok(LogletCommit::sealed());
