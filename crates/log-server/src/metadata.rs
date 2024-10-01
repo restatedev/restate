@@ -12,12 +12,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use chrono::Utc;
-use dashmap::DashMap;
 use tokio::sync::watch;
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_bifrost::loglet::util::TailOffsetWatch;
 use restate_bifrost::loglet::OperationError;
+use restate_core::ShutdownError;
 use restate_types::logs::{LogletOffset, SequenceNumber, TailState};
 use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::{GenerationalNodeId, PlainNodeId};
@@ -98,6 +98,7 @@ pub struct LogletState {
     sequencer: Arc<OnceLock<GenerationalNodeId>>,
     local_tail: TailOffsetWatch,
     trim_point: watch::Sender<LogletOffset>,
+    known_global_tail: GlobalTailTracker,
 }
 
 impl LogletState {
@@ -106,10 +107,12 @@ impl LogletState {
         local_tail: LogletOffset,
         sealed: bool,
         trim_point: LogletOffset,
+        known_global_tail: LogletOffset,
     ) -> Self {
         let local_tail = TailOffsetWatch::new(TailState::new(sealed, local_tail));
         let trim_point = watch::Sender::new(trim_point);
         let sequencer = Arc::new(OnceLock::new());
+        let known_global_tail = GlobalTailTracker::new(known_global_tail);
         if let Some(sequencer_node) = sequencer_node {
             let _ = sequencer.set(sequencer_node);
         }
@@ -117,6 +120,7 @@ impl LogletState {
             sequencer,
             local_tail,
             trim_point,
+            known_global_tail,
         }
     }
 
@@ -129,8 +133,12 @@ impl LogletState {
         self.sequencer.set(sequencer).is_ok()
     }
 
-    pub fn get_tail_watch(&self) -> TailOffsetWatch {
+    pub fn get_local_tail_watch(&self) -> TailOffsetWatch {
         self.local_tail.clone()
+    }
+
+    pub fn get_global_tail_tracker(&self) -> GlobalTailTracker {
+        self.known_global_tail.clone()
     }
 
     pub fn is_sealed(&self) -> bool {
@@ -139,6 +147,14 @@ impl LogletState {
 
     pub fn local_tail(&self) -> TailState<LogletOffset> {
         *self.local_tail.get()
+    }
+
+    pub fn known_global_tail(&self) -> LogletOffset {
+        self.known_global_tail.get()
+    }
+
+    pub fn notify_known_global_tail(&self, known_global_tail: LogletOffset) {
+        self.known_global_tail.notify(known_global_tail)
     }
 
     pub fn trim_point(&self) -> LogletOffset {
@@ -171,18 +187,17 @@ impl Default for GlobalTailTracker {
 }
 
 impl GlobalTailTracker {
-    pub fn subscribe(&self) -> watch::Receiver<LogletOffset> {
-        let mut receiver = self.watch_tx.subscribe();
-        receiver.mark_changed();
-        receiver
+    pub fn new(initial_offset: LogletOffset) -> Self {
+        Self {
+            watch_tx: watch::Sender::new(initial_offset),
+        }
     }
 
-    #[allow(unused)]
-    pub fn known_global_tail(&self) -> LogletOffset {
+    pub fn get(&self) -> LogletOffset {
         *self.watch_tx.borrow()
     }
 
-    pub fn maybe_update(&self, potential_global_tail: LogletOffset) {
+    pub fn notify(&self, potential_global_tail: LogletOffset) {
         self.watch_tx.send_if_modified(|known_global_tail| {
             if potential_global_tail > *known_global_tail {
                 *known_global_tail = potential_global_tail;
@@ -191,25 +206,17 @@ impl GlobalTailTracker {
             false
         });
     }
-}
 
-/// Tracks known global tail for all loglets
-#[derive(Default, Clone)]
-pub struct GlobalTailTrackerMap {
-    inner: Arc<DashMap<ReplicatedLogletId, GlobalTailTracker, Xxh3Builder>>,
-}
-
-impl GlobalTailTrackerMap {
-    #[allow(unused)]
-    pub fn known_global_tail(&self, loglet_id: ReplicatedLogletId) -> LogletOffset {
-        self.inner
-            .entry(loglet_id)
-            .or_default()
-            .value()
-            .known_global_tail()
-    }
-
-    pub fn get_tracker(&self, loglet_id: ReplicatedLogletId) -> GlobalTailTracker {
-        self.inner.entry(loglet_id).or_default().value().clone()
+    pub async fn wait_for_offset(
+        &self,
+        offset: LogletOffset,
+    ) -> Result<LogletOffset, ShutdownError> {
+        let mut receiver = self.watch_tx.subscribe();
+        receiver.mark_changed();
+        receiver
+            .wait_for(|current| *current >= offset)
+            .await
+            .map(|m| *m)
+            .map_err(|_| ShutdownError)
     }
 }
