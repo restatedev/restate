@@ -32,7 +32,7 @@ use super::{
     record_cache::RecordCache,
     replication::spread_selector::{SelectorStrategy, SpreadSelector},
 };
-use crate::loglet::{util::TailOffsetWatch, LogletCommit};
+use crate::loglet::{util::TailOffsetWatch, LogletCommit, OperationError};
 use appender::SequencerAppender;
 
 #[derive(thiserror::Error, Debug)]
@@ -160,7 +160,7 @@ impl<T: TransportConnect> Sequencer<T> {
     pub async fn enqueue_batch(
         &self,
         payloads: Arc<[Record]>,
-    ) -> Result<LogletCommit, ShutdownError> {
+    ) -> Result<LogletCommit, OperationError> {
         if self
             .sequencer_shared_state
             .global_committed_tail()

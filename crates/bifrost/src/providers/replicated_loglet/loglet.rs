@@ -139,7 +139,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         Box::pin(self.known_global_tail.to_stream())
     }
 
-    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, ShutdownError> {
+    async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, OperationError> {
         match self.sequencer {
             SequencerAccess::Local { ref handle } => handle.enqueue_batch(payloads).await,
             SequencerAccess::Remote { .. } => {
