@@ -187,7 +187,7 @@ jobs:
           # keep output image small by removing the server binary
           RUN rm /restate-*/restate-server
 
-          FROM scratch
+          FROM alpine
           ARG TARGETARCH
           COPY --from=builder /restate-${TARGETARCH} /
           ENTRYPOINT [ "/restate" ]
