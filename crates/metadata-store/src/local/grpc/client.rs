@@ -31,8 +31,7 @@ pub struct LocalMetadataStoreClient {
 }
 impl LocalMetadataStoreClient {
     pub fn new(metadata_store_address: AdvertisedAddress) -> Self {
-        let channel = create_tonic_channel_from_advertised_address(metadata_store_address)
-            .expect("should not fail");
+        let channel = create_tonic_channel_from_advertised_address(metadata_store_address);
 
         Self {
             svc_client: MetadataStoreSvcClient::new(channel),

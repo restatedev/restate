@@ -376,7 +376,7 @@ async fn start_metadata_store(
 
     let health_client = HealthClient::new(create_tonic_channel_from_advertised_address(
         address.clone(),
-    )?);
+    ));
     let retry_policy = RetryPolicy::exponential(Duration::from_millis(10), 2.0, None, None);
 
     retry_policy
