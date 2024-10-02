@@ -110,7 +110,7 @@ impl NetworkServer {
                 .send_compressed(CompressionEncoding::Gzip),
             )
             .add_optional_service(cluster_controller_service)
-            .add_service(reflection_service_builder.build()?);
+            .add_service(reflection_service_builder.build_v1()?);
 
         // Multiplex both grpc and http based on content-type
         let service = TowerToHyperService::new(

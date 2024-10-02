@@ -181,10 +181,10 @@ tokio = { version = "1.40.0", default-features = false, features = [
 ] }
 tokio-stream = "0.1.15"
 tokio-util = { version = "0.7.11" }
-tonic = { version = "0.12.1", default-features = false }
-tonic-reflection = { version = "0.12.1" }
-tonic-health = { version = "0.12.1" }
-tonic-build = { version = "0.12.1" }
+tonic = { version = "0.12.3", default-features = false }
+tonic-reflection = { version = "0.12.3" }
+tonic-health = { version = "0.12.3" }
+tonic-build = { version = "0.12.3" }
 tonic-0-11 = { package = "tonic", version = "0.11.0", default-features = false }
 tower = "0.4"
 tower-http = { version = "0.5.2", default-features = false }
