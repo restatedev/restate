@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(out_dir.join("metadata_store_svc.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["./proto/metadata_store_svc.proto"], &["proto"])?;
+        .compile_protos(&["./proto/metadata_store_svc.proto"], &["proto"])?;
 
     Ok(())
 }
