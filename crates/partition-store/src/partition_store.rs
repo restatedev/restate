@@ -34,14 +34,14 @@ use restate_core::ShutdownError;
 use restate_rocksdb::{RocksDb, RocksError};
 use restate_storage_api::{Storage, StorageError, Transaction};
 
-use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-
+use crate::invocation_status_table::run_neo_invocation_status_migration;
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::LocalPartitionSnapshot;
+use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 
 pub type DB = rocksdb::DB;
 
@@ -451,6 +451,16 @@ impl PartitionStore {
             db_comparator_name: metadata.get_db_comparator_name(),
             min_applied_lsn: applied_lsn,
         })
+    }
+
+    /// Run migrations from Restate 1.1 to Restate 1.2
+    pub async fn run_1_1_to_1_2_migrations(&mut self) -> Result<()> {
+        let mut tx = self.transaction();
+
+        run_neo_invocation_status_migration(&mut tx).await?;
+        tx.commit().await?;
+
+        Ok(())
     }
 }
 
