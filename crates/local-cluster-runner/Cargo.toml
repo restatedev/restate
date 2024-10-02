@@ -12,9 +12,8 @@ default = []
 
 [dependencies]
 restate-metadata-store = { workspace = true }
-restate-core = { workspace = true }
-restate-rocksdb = { workspace = true }
-restate-types = { workspace = true, features = ["test-util"]}
+# nb features here will also affect the compiled restate-server binary in integration tests
+restate-types = { workspace = true, features = ["unsafe-mutable-config"] }
 
 arc-swap = { workspace = true }
 clap = { workspace = true }
@@ -23,8 +22,8 @@ futures = { workspace = true }
 enumset = { workspace = true }
 http = { workspace = true }
 libc = "0.2"
-pin-project = { workspace = true }
 regex = "1.1"
+reqwest = { workspace = true }
 rlimit = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace =  true }

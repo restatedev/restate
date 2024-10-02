@@ -12,12 +12,9 @@ use std::{
     time::Duration,
 };
 
-use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use enumset::{enum_set, EnumSet};
-use futures::{
-    stream, FutureExt, Stream, StreamExt, TryStreamExt,
-};
-use pin_project::pin_project;
+use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
 use regex::{Regex, RegexSet};
 use serde::{Deserialize, Serialize};
 // use subprocess::{Exec, ExitStatus, NullFile, Popen, PopenError, Redirection};
@@ -28,7 +25,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio::{process::Command, sync::mpsc::Sender};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use typed_builder::TypedBuilder;
 
 use restate_types::{
@@ -68,8 +65,8 @@ pub struct Node {
                     random_socket_address().expect("to find a random port for the ingress server");
             }
 
-            pub fn with_node_name(self, node_name: String) {
-                self.base_config.common.set_node_name(node_name);
+            pub fn with_node_name(self, node_name: impl Into<String>) {
+                self.base_config.common.set_node_name(node_name.into());
             }
 
             pub fn with_node_id(self, node_id: PlainNodeId) {
@@ -122,7 +119,7 @@ impl Node {
     }
 
     pub fn new_test_node(
-        node_name: String,
+        node_name: impl Into<String>,
         base_config: Configuration,
         binary_source: BinarySource,
         roles: EnumSet<Role>,
@@ -167,7 +164,7 @@ impl Node {
         nodes
     }
 
-    pub(crate) async fn start_clustered(
+    pub async fn start_clustered(
         mut self,
         base_dir: PathBuf,
         cluster_name: String,
@@ -260,7 +257,11 @@ impl Node {
 
         let mut child = cmd.spawn().map_err(NodeStartError::SpawnError)?;
         let pid = child.id().expect("child to have a pid");
-        info!("Started node {} (pid {pid})", base_config.node_name());
+        info!(
+            "Started node {} in {} (pid {pid})",
+            base_config.node_name(),
+            node_base_dir.display(),
+        );
         let stdout = child.stdout.take().expect("child to have a stdout pipe");
         let stderr = child.stderr.take().expect("child to have a stderr pipe");
 
@@ -407,7 +408,6 @@ impl TryInto<OsString> for BinarySource {
     }
 }
 
-#[pin_project]
 pub struct StartedNode {
     status: StartedNodeStatus,
     config: Configuration,
@@ -521,6 +521,10 @@ impl StartedNode {
         }
     }
 
+    pub async fn status(&mut self) -> io::Result<ExitStatus> {
+        (&mut self.status).await
+    }
+
     fn config(&self) -> &Configuration {
         &self.config
     }
@@ -529,8 +533,8 @@ impl StartedNode {
         self.config().common.node_name()
     }
 
-    pub fn node_address(&self) -> &BindAddress {
-        &self.config().common.bind_address
+    pub fn node_address(&self) -> &AdvertisedAddress {
+        &self.config().common.advertised_address
     }
 
     pub fn ingress_address(&self) -> Option<&SocketAddr> {
@@ -567,11 +571,56 @@ impl StartedNode {
             }
         }
     }
+
+    pub async fn metadata_client(
+        &self,
+    ) -> Result<restate_metadata_store::MetadataStoreClient, GenericError> {
+        restate_metadata_store::local::create_client(
+            self.config.common.metadata_store_client.clone(),
+        )
+        .await
+    }
+
+    pub async fn admin_healthy(&self) -> bool {
+        if let Some(address) = self.admin_address() {
+            match reqwest::get(format!("http://{address}/health")).await {
+                Ok(resp) => resp.status().is_success(),
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    pub async fn wait_admin_healthy(&self, timeout: Duration) -> bool {
+        let mut attempts = 1;
+        if tokio::time::timeout(timeout, async {
+            while !self.admin_healthy().await {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(250)).await
+            }
+        })
+        .await
+        .is_ok()
+        {
+            info!(
+                "Node {} is healthy after {attempts} attempts",
+                self.node_name(),
+            );
+            true
+        } else {
+            warn!(
+                "Timed out waiting for admin health on node {}",
+                self.node_name()
+            );
+            false
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct Searcher {
-    inner: Arc<ArcSwap<SearcherInner>>,
+    inner: Arc<ArcSwapOption<SearcherInner>>,
 }
 
 #[derive(Clone)]
@@ -583,7 +632,7 @@ struct SearcherInner {
 impl Searcher {
     fn new() -> Self {
         Self {
-            inner: Arc::new(ArcSwap::from_pointee(SearcherInner {
+            inner: Arc::new(ArcSwapOption::from_pointee(SearcherInner {
                 set: RegexSet::empty(),
                 senders: Vec::new(),
             })),
@@ -591,18 +640,17 @@ impl Searcher {
     }
 
     fn close(&self) {
-        self.inner.rcu(|_| SearcherInner {
-            set: RegexSet::empty(),
-            senders: Vec::new(),
-        });
+        self.inner.rcu(|_| None);
     }
 
     async fn matches(&self, haystack: &str) {
         let inner = self.inner.load();
-        for i in inner.set.matches(haystack) {
-            // ignore sender errors; it just means we have an outdated inner and the receiver
-            // has since dropped.
-            _ = inner.senders[i].send(haystack.to_owned()).await;
+        if let Some(inner) = &*inner {
+            for i in inner.set.matches(haystack) {
+                // ignore sender errors; it just means we have an outdated inner and the receiver
+                // has since dropped.
+                _ = inner.senders[i].send(haystack.to_owned()).await;
+            }
         }
     }
 
@@ -611,13 +659,18 @@ impl Searcher {
         let sender = Arc::new(sender);
         let sender_ptr = Arc::as_ptr(&sender);
         self.inner.rcu(|inner| {
-            let mut patterns: Vec<String> = inner.set.patterns().into();
-            patterns.push(regex.to_string());
-            let mut channels = inner.senders.clone();
-            channels.push(sender.clone());
-            SearcherInner {
-                set: RegexSet::new(patterns).unwrap(),
-                senders: channels,
+            if let Some(inner) = inner {
+                let mut patterns: Vec<String> = inner.set.patterns().into();
+                patterns.push(regex.to_string());
+                let mut channels = inner.senders.clone();
+                channels.push(sender.clone());
+                Some(Arc::new(SearcherInner {
+                    set: RegexSet::new(patterns).unwrap(),
+                    senders: channels,
+                }))
+            } else {
+                // by not storing the sender, the receiver will be implicitly closed
+                None
             }
         });
 
@@ -633,7 +686,7 @@ pub struct Receiver {
     receiver: mpsc::Receiver<String>,
     // for comparison to the senders in the Searcher
     sender_ptr: *const Sender<String>,
-    searcher: Arc<ArcSwap<SearcherInner>>,
+    searcher: Arc<ArcSwapOption<SearcherInner>>,
 }
 
 impl Deref for Receiver {
@@ -653,24 +706,28 @@ impl DerefMut for Receiver {
 impl Drop for Receiver {
     fn drop(&mut self) {
         self.searcher.rcu(|inner| {
-            let mut patterns: Vec<String> = inner.set.patterns().into();
-            let mut channels = inner.senders.clone();
+            if let Some(inner) = inner {
+                let mut patterns: Vec<String> = inner.set.patterns().into();
+                let mut channels = inner.senders.clone();
 
-            let i = match channels
-                .iter()
-                .enumerate()
-                .find(|(_, s)| Arc::as_ptr(s) == self.sender_ptr)
-            {
-                Some((i, _)) => i,
-                None => panic!("Could not find our pattern in the searcher"),
-            };
+                let i = match channels
+                    .iter()
+                    .enumerate()
+                    .find(|(_, s)| Arc::as_ptr(s) == self.sender_ptr)
+                {
+                    Some((i, _)) => i,
+                    None => panic!("Could not find our pattern in the searcher"),
+                };
 
-            channels.swap_remove(i);
-            patterns.swap_remove(i);
+                channels.swap_remove(i);
+                patterns.swap_remove(i);
 
-            SearcherInner {
-                set: RegexSet::new(patterns).unwrap(),
-                senders: channels,
+                Some(Arc::new(SearcherInner {
+                    set: RegexSet::new(patterns).unwrap(),
+                    senders: channels,
+                }))
+            } else {
+                None
             }
         });
     }

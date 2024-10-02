@@ -1,7 +1,6 @@
 use std::{io, path::PathBuf, time::Duration};
 
 use futures::future::{self};
-use pin_project::pin_project;
 use restate_types::errors::GenericError;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -69,7 +68,11 @@ impl Cluster {
 
         let mut started_nodes = Vec::with_capacity(nodes.len());
 
-        info!("Starting cluster {}", &cluster_name);
+        info!(
+            "Starting cluster {} in {}",
+            &cluster_name,
+            base_dir.display()
+        );
 
         for (i, node) in nodes.into_iter().enumerate() {
             started_nodes.push(
@@ -87,15 +90,17 @@ impl Cluster {
     }
 }
 
-#[pin_project]
 pub struct StartedCluster {
     cluster_name: String,
     base_dir: PathBuf,
-    #[pin]
     pub nodes: Vec<StartedNode>,
 }
 
 impl StartedCluster {
+    pub fn base_dir(&self) -> &PathBuf {
+        &self.base_dir
+    }
+
     pub async fn kill(&mut self) -> io::Result<()> {
         future::try_join_all(self.nodes.iter_mut().map(|n| n.kill()))
             .await
@@ -115,15 +120,18 @@ impl StartedCluster {
             .map(drop)
     }
 
-    pub async fn push_node(&mut self, mut node: Node) -> Result<(), NodeStartError> {
-        let node_config = node.config_mut();
+    pub async fn wait_admins_healthy(&mut self, dur: Duration) -> bool {
+        future::join_all(self.nodes.iter().map(|n| n.wait_admin_healthy(dur)))
+            .await
+            .into_iter()
+            .all(|b| b)
+    }
 
-        node_config
-            .common
-            .set_cluster_name(self.cluster_name.clone());
-        node_config.common.set_base_dir(self.base_dir.clone());
-
-        self.nodes.push(node.start().await?);
+    pub async fn push_node(&mut self, node: Node) -> Result<(), NodeStartError> {
+        self.nodes.push(
+            node.start_clustered(self.base_dir.clone(), self.cluster_name.clone())
+                .await?,
+        );
         Ok(())
     }
 }
