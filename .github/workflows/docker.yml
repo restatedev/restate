@@ -45,7 +45,7 @@ env:
 
 jobs:
   build-and-push-image:
-    runs-on: warp-ubuntu-latest-x64-16x-spot
+    runs-on: warp-ubuntu-latest-x64-16x
     timeout-minutes: ${{ inputs.debug && 140 || 70 }}
 
     steps:
@@ -120,7 +120,7 @@ jobs:
           platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
-            ACTIONS_CACHE_URL
+            ACTIONS_CACHE_URL=http://127.0.0.1:49160/
             ACTIONS_RUNTIME_TOKEN
             SCCACHE_GHA_ENABLED=true
           cache-from: type=gha,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
@@ -156,7 +156,7 @@ jobs:
           platforms: 'linux/arm64,linux/amd64'
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
-            ACTIONS_CACHE_URL
+            ACTIONS_CACHE_URL=http://127.0.0.1:49160/
             ACTIONS_RUNTIME_TOKEN
             SCCACHE_GHA_ENABLED=true
           cache-from: type=gha,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
