@@ -38,7 +38,7 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::inbox_table::ReadOnlyInboxTable;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
-    ReadOnlyInvocationStatusTable, SourceTable,
+    ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::OutboxTable;
@@ -90,7 +90,6 @@ impl TestEnv {
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
-            SourceTable::Old,
         ))
         .await
     }
@@ -101,7 +100,6 @@ impl TestEnv {
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
-            SourceTable::New,
         ))
         .await
     }
@@ -867,7 +865,6 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
             outbox_tail_index,
             Some(outbox_head_index),
             PartitionKey::MIN..=PartitionKey::MAX,
-            SourceTable::New,
         ))
         .await;
 

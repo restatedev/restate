@@ -31,7 +31,7 @@ use restate_storage_api::deduplication_table::{
 };
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_storage_api::outbox_table::ReadOnlyOutboxTable;
-use restate_storage_api::{invocation_status_table, StorageError, Transaction};
+use restate_storage_api::{StorageError, Transaction};
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::config::{Configuration, WorkerOptions};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
@@ -76,7 +76,6 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     pub partition_key_range: RangeInclusive<PartitionKey>,
 
     num_timers_in_memory_limit: Option<usize>,
-    enable_new_invocation_status_table: bool,
     cleanup_interval: Duration,
     channel_size: usize,
     max_command_batch_size: usize,
@@ -109,8 +108,6 @@ where
             partition_key_range,
             status,
             num_timers_in_memory_limit: options.num_timers_in_memory_limit(),
-            enable_new_invocation_status_table: options
-                .experimental_feature_new_invocation_status_table(),
             cleanup_interval: options.cleanup_interval(),
             channel_size: options.internal_queue_length(),
             max_command_batch_size: options.max_command_batch_size(),
@@ -132,7 +129,6 @@ where
             partition_key_range,
             num_timers_in_memory_limit,
             cleanup_interval,
-            enable_new_invocation_status_table,
             channel_size,
             max_command_batch_size,
             invoker_tx,
@@ -142,12 +138,9 @@ where
             ..
         } = self;
 
-        let state_machine = Self::create_state_machine::<Codec>(
-            &mut partition_store,
-            partition_key_range.clone(),
-            enable_new_invocation_status_table,
-        )
-        .await?;
+        let state_machine =
+            Self::create_state_machine::<Codec>(&mut partition_store, partition_key_range.clone())
+                .await?;
 
         let last_seen_leader_epoch = partition_store
             .get_dedup_sequence_number(&ProducerId::self_producer())
@@ -194,7 +187,6 @@ where
     async fn create_state_machine<Codec>(
         partition_store: &mut PartitionStore,
         partition_key_range: RangeInclusive<PartitionKey>,
-        enable_new_invocation_status_table: bool,
     ) -> Result<StateMachine<Codec>, StorageError>
     where
         Codec: RawEntryCodec + Default + Debug,
@@ -208,11 +200,6 @@ where
             outbox_seq_number,
             outbox_head_seq_number,
             partition_key_range,
-            if enable_new_invocation_status_table {
-                invocation_status_table::SourceTable::New
-            } else {
-                invocation_status_table::SourceTable::Old
-            },
         );
 
         Ok(state_machine)
