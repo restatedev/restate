@@ -796,37 +796,8 @@ pub mod v1 {
         }
 
         impl From<crate::invocation_status_table::InvocationStatusV1> for InvocationStatus {
-            fn from(
-                crate::invocation_status_table::InvocationStatusV1(value): crate::invocation_status_table::InvocationStatusV1,
-            ) -> Self {
-                let status = match value {
-                    crate::invocation_status_table::InvocationStatus::Inboxed(inboxed_status) => {
-                        invocation_status::Status::Inboxed(Inboxed::from(inboxed_status))
-                    }
-                    crate::invocation_status_table::InvocationStatus::Invoked(invoked_status) => {
-                        invocation_status::Status::Invoked(Invoked::from(invoked_status))
-                    }
-                    crate::invocation_status_table::InvocationStatus::Suspended {
-                        metadata,
-                        waiting_for_completed_entries,
-                    } => invocation_status::Status::Suspended(Suspended::from((
-                        metadata,
-                        waiting_for_completed_entries,
-                    ))),
-                    crate::invocation_status_table::InvocationStatus::Completed(completed) => {
-                        invocation_status::Status::Completed(Completed::from(completed))
-                    }
-                    crate::invocation_status_table::InvocationStatus::Free => {
-                        invocation_status::Status::Free(Free {})
-                    }
-                    crate::invocation_status_table::InvocationStatus::Scheduled(_) => {
-                        panic!("Unexpected conversion to old InvocationStatus when using Scheduled variant. This is a bug in the table implementation.")
-                    }
-                };
-
-                InvocationStatus {
-                    status: Some(status),
-                }
+            fn from(_: crate::invocation_status_table::InvocationStatusV1) -> Self {
+                panic!("Unexpected conversion to old InvocationStatus, this is not expected to happen.")
             }
         }
 
