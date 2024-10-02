@@ -89,7 +89,7 @@ impl LocalMetadataStoreService {
             .add_service(MetadataStoreSvcServer::new(LocalMetadataStoreHandler::new(
                 store.request_sender(),
             )))
-            .add_service(reflection_service_builder.build()?);
+            .add_service(reflection_service_builder.build_v1()?);
 
         let service = TowerToHyperService::new(
             server_builder
