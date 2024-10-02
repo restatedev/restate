@@ -20,6 +20,7 @@ use crate::logs::metadata::SegmentIndex;
 use crate::logs::{LogId, LogletOffset, Record, SequenceNumber, TailState};
 use crate::net::define_rpc;
 use crate::replicated_loglet::ReplicatedLogletId;
+use crate::storage::ArcVec;
 
 // ----- ReplicatedLoglet Sequencer API -----
 define_rpc! {
@@ -69,7 +70,7 @@ impl CommonResponseHeader {
 pub struct Append {
     #[serde(flatten)]
     pub header: CommonRequestHeader,
-    pub payloads: Vec<Record>,
+    pub payloads: ArcVec<Record>,
 }
 
 impl Append {

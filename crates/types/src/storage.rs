@@ -8,13 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use core::fmt;
+use std::marker::PhantomData;
 use std::mem;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use downcast_rs::{impl_downcast, DowncastSync};
 use serde::de::{DeserializeOwned, Error as DeserializationError};
 use serde::ser::Error as SerializationError;
+use serde::ser::SerializeSeq;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
@@ -392,6 +396,126 @@ pub fn decode_from_flexbuffers<T: DeserializeOwned, B: Buf>(
             err.into_inner()
         })?;
         Ok(result)
+    }
+}
+
+/// [`ArcVec`] mainly used by `message` types to improve
+/// cloning of messages.
+///
+/// It can replace [`Vec<T>`] most of the time in all structures
+/// that need to be serialized over the wire.
+///
+/// Internally it keeps the data inside an [`Arc<[T]>`]
+#[derive(Debug)]
+pub struct ArcVec<T> {
+    inner: Arc<[T]>,
+}
+
+impl<T> Deref for ArcVec<T> {
+    type Target = [T];
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T> serde::Serialize for ArcVec<T>
+where
+    T: serde::Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for elem in self.iter() {
+            seq.serialize_element(elem)?;
+        }
+
+        seq.end()
+    }
+}
+
+impl<'de, T> serde::Deserialize<'de> for ArcVec<T>
+where
+    T: serde::Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ArcVecVisitor::default())
+    }
+}
+
+struct ArcVecVisitor<T> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T> Default for ArcVecVisitor<T> {
+    fn default() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'de, T> serde::de::Visitor<'de> for ArcVecVisitor<T>
+where
+    T: serde::Deserialize<'de>,
+{
+    type Value = ArcVec<T>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "expecting an array")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut vec: Vec<T> = Vec::with_capacity(seq.size_hint().unwrap_or_default());
+        while let Some(value) = seq.next_element()? {
+            vec.push(value);
+        }
+
+        Ok(vec.into())
+    }
+}
+
+impl<T> Clone for ArcVec<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T> From<ArcVec<T>> for Arc<[T]> {
+    fn from(value: ArcVec<T>) -> Self {
+        value.inner
+    }
+}
+
+impl<T> From<ArcVec<T>> for Vec<T>
+where
+    T: Clone,
+{
+    fn from(value: ArcVec<T>) -> Self {
+        Vec::from_iter(value.iter().cloned())
+    }
+}
+
+impl<T> From<Vec<T>> for ArcVec<T> {
+    fn from(value: Vec<T>) -> Self {
+        Self {
+            inner: value.into(),
+        }
+    }
+}
+
+impl<T> From<Arc<[T]>> for ArcVec<T> {
+    fn from(value: Arc<[T]>) -> Self {
+        Self { inner: value }
     }
 }
 
