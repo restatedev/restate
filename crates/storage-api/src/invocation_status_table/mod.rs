@@ -24,12 +24,6 @@ use std::future::Future;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceTable {
-    Old,
-    New,
-}
-
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusTimestamps {
@@ -329,13 +323,13 @@ impl InvocationStatus {
     }
 }
 
-protobuf_storage_encode_decode!(InvocationStatus);
+protobuf_storage_encode_decode!(InvocationStatus, crate::storage::v1::InvocationStatusV2);
 
-/// Wrapper used by the table implementation, don't use it!
+/// Wrapper used by the table implementation only for the migration, don't use it!
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct InvocationStatusV2(pub InvocationStatus);
+pub struct InvocationStatusV1(pub InvocationStatus);
 
-protobuf_storage_encode_decode!(InvocationStatusV2);
+protobuf_storage_encode_decode!(InvocationStatusV1, crate::storage::v1::InvocationStatus);
 
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]
@@ -376,9 +370,6 @@ pub struct PreFlightInvocationMetadata {
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_duration: Duration,
     pub idempotency_key: Option<ByteString>,
-
-    /// Used by the Table implementation to pick where to write
-    pub source_table: SourceTable,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -395,10 +386,7 @@ impl ScheduledInvocation {
 }
 
 impl PreFlightInvocationMetadata {
-    pub fn from_service_invocation(
-        service_invocation: ServiceInvocation,
-        source_table: SourceTable,
-    ) -> Self {
+    pub fn from_service_invocation(service_invocation: ServiceInvocation) -> Self {
         Self {
             response_sinks: service_invocation.response_sink.into_iter().collect(),
             timestamps: StatusTimestamps::now(),
@@ -412,7 +400,6 @@ impl PreFlightInvocationMetadata {
                 .completion_retention_duration
                 .unwrap_or_default(),
             idempotency_key: service_invocation.idempotency_key,
-            source_table,
         }
     }
 }
@@ -460,9 +447,6 @@ pub struct InFlightInvocationMetadata {
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_duration: Duration,
     pub idempotency_key: Option<ByteString>,
-
-    /// Used by the Table implementation to pick where to write
-    pub source_table: SourceTable,
 }
 
 impl InFlightInvocationMetadata {
@@ -486,7 +470,6 @@ impl InFlightInvocationMetadata {
                 completion_retention_duration: pre_flight_invocation_metadata
                     .completion_retention_duration,
                 idempotency_key: pre_flight_invocation_metadata.idempotency_key,
-                source_table: pre_flight_invocation_metadata.source_table,
             },
             InvocationInput {
                 argument: pre_flight_invocation_metadata.argument,
@@ -520,9 +503,6 @@ pub struct CompletedInvocation {
     pub timestamps: StatusTimestamps,
     pub response_result: ResponseResult,
     pub completion_retention_duration: Duration,
-
-    /// Used by the Table implementation to pick where to write
-    pub source_table: SourceTable,
 }
 
 impl CompletedInvocation {
@@ -544,7 +524,6 @@ impl CompletedInvocation {
                 response_result,
                 completion_retention_duration: in_flight_invocation_metadata
                     .completion_retention_duration,
-                source_table: in_flight_invocation_metadata.source_table,
             },
             in_flight_invocation_metadata.completion_retention_duration,
         )
@@ -602,7 +581,6 @@ mod test_util {
                 source: Source::Ingress,
                 completion_retention_duration: Duration::ZERO,
                 idempotency_key: None,
-                source_table: SourceTable::New,
             }
         }
     }
@@ -626,7 +604,6 @@ mod test_util {
                 timestamps,
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
-                source_table: SourceTable::New,
             }
         }
 
@@ -644,7 +621,6 @@ mod test_util {
                 timestamps: StatusTimestamps::now(),
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
-                source_table: SourceTable::Old,
             }
         }
     }
