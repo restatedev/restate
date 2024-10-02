@@ -70,6 +70,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
+          # https://docs.warpbuild.com/cache/docker-layer-caching#step-1-set-up-docker-buildx-action
           driver-opts: |
             network=host
 
@@ -121,6 +122,7 @@ jobs:
           load: ${{ inputs.uploadImageAsTarball == true }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
+          network: host
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
             ACTIONS_CACHE_URL=http://127.0.0.1:49160/
@@ -157,6 +159,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           # ignore inputs.platforms as we always need to push both arm64 and amd64 docker images
           platforms: 'linux/arm64,linux/amd64'
+          network: host
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
             ACTIONS_CACHE_URL=http://127.0.0.1:49160/
