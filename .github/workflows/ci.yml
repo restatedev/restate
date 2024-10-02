@@ -19,8 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        #os: [ubuntu-22.04, macos-latest] # 1 macos-latest minute counts as 10 minutes --> quite expensive :-(
-        os: [ubuntu-22.04]
+        os: [warp-ubuntu-latest-x64-16x-spot]
     env:
       RUST_BACKTRACE: full
     steps:
