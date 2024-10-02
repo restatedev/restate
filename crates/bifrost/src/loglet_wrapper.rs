@@ -16,7 +16,6 @@ use std::sync::Arc;
 use futures::{Stream, StreamExt};
 use tracing::instrument;
 
-use restate_core::ShutdownError;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{KeyFilter, LogletOffset, Lsn, SequenceNumber};
 use restate_types::logs::{Record, TailState};
@@ -140,10 +139,7 @@ impl LogletWrapper {
     #[allow(unused)]
     #[cfg(any(test, feature = "test-util"))]
     pub async fn append(&self, payload: Record) -> Result<Lsn, AppendError> {
-        let commit = self
-            .enqueue_batch(Arc::new([payload]))
-            .await
-            .map_err(AppendError::Shutdown)?;
+        let commit = self.enqueue_batch(Arc::new([payload])).await?;
         commit.await
     }
 
@@ -166,13 +162,10 @@ impl LogletWrapper {
         )
     )]
     pub async fn append_batch(&self, payloads: Arc<[Record]>) -> Result<Lsn, AppendError> {
-        self.enqueue_batch(payloads)
-            .await
-            .map_err(AppendError::Shutdown)?
-            .await
+        self.enqueue_batch(payloads).await?.await
     }
 
-    pub async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<Commit, ShutdownError> {
+    pub async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<Commit, OperationError> {
         if self.tail_lsn.is_some() {
             return Ok(Commit::sealed());
         }
