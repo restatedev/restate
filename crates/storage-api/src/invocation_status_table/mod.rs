@@ -509,24 +509,21 @@ impl CompletedInvocation {
     pub fn from_in_flight_invocation_metadata(
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         response_result: ResponseResult,
-    ) -> (Self, Duration) {
+    ) -> Self {
         in_flight_invocation_metadata
             .timestamps
             .record_completed_transition_time();
 
-        (
-            Self {
-                invocation_target: in_flight_invocation_metadata.invocation_target,
-                span_context: in_flight_invocation_metadata.journal_metadata.span_context,
-                source: in_flight_invocation_metadata.source,
-                idempotency_key: in_flight_invocation_metadata.idempotency_key,
-                timestamps: in_flight_invocation_metadata.timestamps,
-                response_result,
-                completion_retention_duration: in_flight_invocation_metadata
-                    .completion_retention_duration,
-            },
-            in_flight_invocation_metadata.completion_retention_duration,
-        )
+        Self {
+            invocation_target: in_flight_invocation_metadata.invocation_target,
+            span_context: in_flight_invocation_metadata.journal_metadata.span_context,
+            source: in_flight_invocation_metadata.source,
+            idempotency_key: in_flight_invocation_metadata.idempotency_key,
+            timestamps: in_flight_invocation_metadata.timestamps,
+            response_result,
+            completion_retention_duration: in_flight_invocation_metadata
+                .completion_retention_duration,
+        }
     }
 }
 

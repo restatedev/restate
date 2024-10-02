@@ -14,9 +14,7 @@ use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
 use restate_storage_api::inbox_table::{InboxEntry, ReadOnlyInboxTable, SequenceNumberInboxEntry};
-use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, SourceTable, StatusTimestamps,
-};
+use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
 use restate_types::identifiers::{IdempotencyId, IngressRequestId};
 use restate_types::invocation::{
@@ -306,7 +304,6 @@ async fn complete_already_completed_invocation(#[case] disable_idempotency_table
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(response_bytes.clone()),
             completion_retention_duration: Default::default(),
-            source_table: SourceTable::New,
         }),
     )
     .await;
@@ -824,7 +821,6 @@ async fn timer_cleanup(#[case] disable_idempotency_table: bool) {
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(Bytes::from_static(b"123")),
             completion_retention_duration: Duration::MAX,
-            source_table: SourceTable::Old,
         }),
     )
     .await;

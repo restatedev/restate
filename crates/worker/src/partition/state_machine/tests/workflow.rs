@@ -10,9 +10,7 @@
 
 use super::*;
 
-use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, SourceTable, StatusTimestamps,
-};
+use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
 use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
@@ -398,7 +396,6 @@ async fn timer_cleanup(#[case] disable_idempotency_table: bool) {
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(Bytes::from_static(b"123")),
             completion_retention_duration: Default::default(),
-            source_table: SourceTable::New,
         }),
     )
     .await;
