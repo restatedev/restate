@@ -199,7 +199,7 @@ impl LogStoreWriter {
         let mut offset = store_message.first_offset;
         for payload in store_message.payloads {
             let key_bytes =
-                DataRecordKey::new(store_message.loglet_id, offset).encode_and_split(buffer);
+                DataRecordKey::new(store_message.header.loglet_id, offset).encode_and_split(buffer);
             let value_bytes = DataRecordEncoder::from(payload).encode_to_disk_format(buffer);
             write_batch.put_cf(data_cf, key_bytes, value_bytes);
             // advance the offset for the next record
@@ -299,7 +299,7 @@ impl RocksDbLogWriterHandle {
     pub async fn enqueue_seal(&self, seal_message: Seal) -> Result<AsyncToken, OperationError> {
         let (ack, receiver) = oneshot::channel();
         self.send_command(LogStoreWriteCommand {
-            loglet_id: seal_message.loglet_id,
+            loglet_id: seal_message.header.loglet_id,
             data_update: None,
             metadata_update: Some(MetadataUpdate::Seal),
             ack: Some(ack),
@@ -320,7 +320,7 @@ impl RocksDbLogWriterHandle {
             .last_offset()
             .expect("last_offset is within bounds");
 
-        let loglet_id = store_message.loglet_id;
+        let loglet_id = store_message.header.loglet_id;
         let metadata_update = set_sequencer_in_metadata.then_some(MetadataUpdate::SetSequencer {
             sequencer: store_message.sequencer,
         });
@@ -347,7 +347,7 @@ impl RocksDbLogWriterHandle {
         });
 
         self.send_command(LogStoreWriteCommand {
-            loglet_id: trim_message.loglet_id,
+            loglet_id: trim_message.header.loglet_id,
             data_update: Some(data_update),
             metadata_update,
             ack: Some(ack),

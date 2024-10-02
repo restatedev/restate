@@ -16,7 +16,7 @@ use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_core::{TaskCenter, TaskKind};
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::net::log_server::{Seal, Sealed, Status};
+use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
 use restate_types::replicated_loglet::{
     EffectiveNodeSet, ReplicatedLogletId, ReplicatedLogletParams,
 };
@@ -140,6 +140,8 @@ impl<T: TransportConnect> SealSingleNode<T> {
             match self.do_seal().await {
                 Ok(res) if res.body().sealed || res.body().status == Status::Ok => {
                     let _ = tx.send((self.node_id, res.body().local_tail));
+                    self.known_global_tail
+                        .notify_offset_update(res.body().header.known_global_tail);
                     return Ok(());
                 }
                 // not sealed, or seal has failed
@@ -164,9 +166,11 @@ impl<T: TransportConnect> SealSingleNode<T> {
 
     async fn do_seal(&self) -> Result<Incoming<Sealed>, RpcError<Seal>> {
         let request = Seal {
-            loglet_id: self.loglet_id,
-            sequencer: self.sequencer.clone(),
-            known_global_tail: self.known_global_tail.latest_offset(),
+            header: LogServerRequestHeader::new(
+                self.loglet_id,
+                self.known_global_tail.latest_offset(),
+            ),
+            sequencer: self.sequencer,
         };
         trace!(loglet_id = %self.loglet_id, "Sending seal message to node {}", self.node_id);
         self.seal_router
