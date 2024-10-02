@@ -28,10 +28,8 @@ use tracing::{debug, info, instrument, Span};
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 
-pub fn create_tonic_channel_from_advertised_address(
-    address: AdvertisedAddress,
-) -> Result<Channel, http::Error> {
-    let channel = match address {
+pub fn create_tonic_channel_from_advertised_address(address: AdvertisedAddress) -> Channel {
+    match address {
         AdvertisedAddress::Uds(uds_path) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
             Endpoint::try_from("http://127.0.0.1")
@@ -51,8 +49,7 @@ pub fn create_tonic_channel_from_advertised_address(
                 .http2_adaptive_window(true)
                 .connect_lazy()
         }
-    };
-    Ok(channel)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

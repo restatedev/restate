@@ -67,15 +67,13 @@ impl TransportConnect for GrpcConnector {
 
         trace!("Attempting to connect to node {} at {}", node_id, address);
         // Do we have a channel in cache for this address?
-        let channel = {
-            if let dashmap::Entry::Vacant(entry) = self.channel_cache.entry(address.clone()) {
-                let channel = create_tonic_channel_from_advertised_address(address)
-                    .map_err(|e| NetworkError::BadNodeAddress(node_id.into(), e))?;
-                entry.insert(channel.clone());
-                channel
-            } else {
-                self.channel_cache.get(&address).unwrap().clone()
-            }
+        let channel = match self.channel_cache.get(&address) {
+            Some(channel) => channel.clone(),
+            None => self
+                .channel_cache
+                .entry(address.clone())
+                .or_insert_with(|| create_tonic_channel_from_advertised_address(address))
+                .clone(),
         };
 
         // Establish the connection
