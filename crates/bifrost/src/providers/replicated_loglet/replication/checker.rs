@@ -8,11 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
+use std::collections::{hash_map, HashMap};
 
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::replicated_loglet::{NodeSet, ReplicationProperty};
 use restate_types::PlainNodeId;
+
+/// Trait for merging two attributes
+pub trait Merge {
+    fn merge(&mut self, other: Self);
+}
+
+impl Merge for bool {
+    fn merge(&mut self, other: Self) {
+        *self |= other;
+    }
+}
 
 /// NodeSetChecker maintains a set of nodes that can be tagged with
 /// an attribute, and provides an API for querying the replication properties of
@@ -126,8 +137,22 @@ impl<'a, Attribute> NodeSetChecker<'a, Attribute> {
         }
     }
 
-    pub fn remove_attribute(&mut self, node_id: &PlainNodeId) {
-        self.node_attribute.remove(node_id);
+    pub fn remove_attribute(&mut self, node_id: &PlainNodeId) -> Option<Attribute> {
+        self.node_attribute.remove(node_id)
+    }
+
+    pub fn merge_attribute(&mut self, node_id: PlainNodeId, attribute: Attribute)
+    where
+        Attribute: Merge,
+    {
+        match self.node_attribute.entry(node_id) {
+            hash_map::Entry::Occupied(mut existing) => {
+                existing.get_mut().merge(attribute);
+            }
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(attribute);
+            }
+        }
     }
 
     pub fn get_attribute(&mut self, node_id: &PlainNodeId) -> Option<&Attribute> {
@@ -153,6 +178,26 @@ impl<'a, Attribute> NodeSetChecker<'a, Attribute> {
         });
         // todo(asoli): Location-aware quorum check
         filtered.count() >= self.replication_property.num_copies().into()
+    }
+
+    /// Does any node matches the predicate?
+    pub fn any(&self, predicate: impl Fn(&Attribute) -> bool) -> bool {
+        self.node_attribute.values().any(predicate)
+    }
+
+    /// Do all nodes match the predicate?
+    pub fn all(&self, predicate: impl Fn(&Attribute) -> bool) -> bool {
+        self.node_attribute.values().all(predicate)
+    }
+
+    // Does any node matches the predicate?
+    pub fn filter(
+        &self,
+        predicate: impl Fn(&Attribute) -> bool,
+    ) -> impl Iterator<Item = (&PlainNodeId, &Attribute)> {
+        self.node_attribute
+            .iter()
+            .filter(move |(_, attribute)| predicate(attribute))
     }
 
     /// Check if enough nodes have certain values for the attribute so that that

@@ -24,6 +24,7 @@ use restate_types::{
     net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
     replicated_loglet::NodeSet,
 };
+use tracing::info;
 
 use super::{BatchExt, SequencerSharedState};
 use crate::{
@@ -112,6 +113,13 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     // since backoff can be None, or run out of iterations,
                     // but appender should never give up we fall back to fixed backoff
                     let delay = retry.next().unwrap_or(DEFAULT_BACKOFF_TIME);
+                    info!(
+                        loglet_id = %self.sequencer_shared_state.my_params.loglet_id,
+                        from_offset = %self.first_offset,
+                        to_offset = %self.records.last_offset(self.first_offset).unwrap(),
+                        delay = ?delay,
+                        "Append failed, retrying with a new wave after delay"
+                    );
                     tokio::time::sleep(delay).await;
 
                     SequencerAppenderState::Wave {
@@ -222,7 +230,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     .live_load()
                     .bifrost
                     .replicated_loglet
-                    .log_server_timeout,
+                    .log_server_rpc_timeout,
                 store_tasks.next(),
             )
             .await
