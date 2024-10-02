@@ -11,10 +11,10 @@
 use std::str::FromStr;
 
 use cling::prelude::*;
-use restate_types::net::AdvertisedAddress;
 
 use restate_cli_util::CliContext;
 use restate_cli_util::CommonOpts;
+use restate_types::net::AdvertisedAddress;
 
 use crate::commands::dump::Dump;
 use crate::commands::log::Log;
