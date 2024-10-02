@@ -97,6 +97,13 @@ define_rpc! {
     @response_target = TargetName::LogServerRecords,
 }
 
+define_rpc! {
+    @request = WaitForTail,
+    @response = TailUpdated,
+    @request_target = TargetName::LogServerWaitForTail,
+    @response_target = TargetName::LogServerTailUpdated,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogServerRequestHeader {
     pub loglet_id: ReplicatedLogletId,
@@ -507,6 +514,68 @@ impl DerefMut for Trimmed {
 }
 
 impl Trimmed {
+    pub fn empty() -> Self {
+        Self {
+            header: LogServerResponseHeader::empty(),
+        }
+    }
+
+    pub fn new(tail_state: TailState<LogletOffset>, known_global_tail: LogletOffset) -> Self {
+        Self {
+            header: LogServerResponseHeader::new(tail_state, known_global_tail),
+        }
+    }
+
+    pub fn with_status(mut self, status: Status) -> Self {
+        self.header.status = status;
+        self
+    }
+}
+
+/// Defines the tail we are interested in waiting for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TailUpdateQuery {
+    /// The node's local tail must be at or higher than this value
+    LocalTail(LogletOffset),
+    /// The node must observe the global tail at or higher than this value
+    GlobalTail(LogletOffset),
+    /// Either the local tail or the global tail arriving at this value will resolve this request.
+    LocalOrGlobal(LogletOffset),
+}
+
+/// Subscribes to a notification that will be sent when the log-server reaches a minimum local-tail
+/// or global-tail value OR if the node is sealed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaitForTail {
+    #[serde(flatten)]
+    pub header: LogServerRequestHeader,
+    /// If the caller is not interested in observing a specific tail value (i.e. only interested in
+    /// the seal signal), this should be set to `TailUpdateQuery::GlobalTail(LogletOffset::MAX)`.
+    pub query: TailUpdateQuery,
+}
+
+/// Response to a `WaitForTail` request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TailUpdated {
+    #[serde(flatten)]
+    pub header: LogServerResponseHeader,
+}
+
+impl Deref for TailUpdated {
+    type Target = LogServerResponseHeader;
+
+    fn deref(&self) -> &Self::Target {
+        &self.header
+    }
+}
+
+impl DerefMut for TailUpdated {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.header
+    }
+}
+
+impl TailUpdated {
     pub fn empty() -> Self {
         Self {
             header: LogServerResponseHeader::empty(),
