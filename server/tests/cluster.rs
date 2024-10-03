@@ -21,7 +21,7 @@ async fn node_id_mismatch() {
     );
 
     let mut cluster = Cluster::builder()
-        .random_base_dir()
+        .temp_base_dir()
         .nodes(nodes)
         .build()
         .start()
@@ -70,7 +70,7 @@ async fn cluster_name_mismatch() {
 
     let cluster = Cluster::builder()
         .cluster_name("cluster-1")
-        .random_base_dir()
+        .temp_base_dir()
         .nodes(nodes)
         .build()
         .start()

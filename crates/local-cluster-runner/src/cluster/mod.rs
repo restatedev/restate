@@ -26,7 +26,10 @@ pub struct Cluster {
 }
 
 impl<C, N> ClusterBuilder<(C, N, ())> {
-    pub fn random_base_dir(self) -> ClusterBuilder<(C, N, (MaybeTempDir,))> {
+    // Use a tempdir as the basedir; this will be removed on Cluster/StartedCluster drop.
+    // You may set LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true to instead log it out and retain
+    // it.
+    pub fn temp_base_dir(self) -> ClusterBuilder<(C, N, (MaybeTempDir,))> {
         let maybe_temp_dir = tempfile::tempdir().expect("to create a tempdir").into();
         let base_dir = (maybe_temp_dir,);
         let (cluster_name, nodes, ()) = self.fields;
