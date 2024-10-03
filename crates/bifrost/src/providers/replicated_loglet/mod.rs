@@ -16,6 +16,8 @@ mod network;
 mod provider;
 #[allow(dead_code)]
 mod record_cache;
+#[allow(dead_code)]
+mod remote_sequencer;
 pub mod replication;
 mod rpc_routers;
 #[allow(dead_code)]

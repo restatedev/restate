@@ -32,6 +32,7 @@ use crate::providers::replicated_loglet::tasks::{FindTailTask, SealTask};
 use super::error::ReplicatedLogletError;
 use super::log_server_manager::RemoteLogServerManager;
 use super::record_cache::RecordCache;
+use super::remote_sequencer::RemoteSequencer;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
 use super::tasks::FindTailResult;
 
@@ -97,7 +98,14 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
             }
         } else {
             SequencerAccess::Remote {
-                sequencers_rpc: sequencers_rpc.clone(),
+                handle: RemoteSequencer::new(
+                    log_id,
+                    segment_index,
+                    my_params.clone(),
+                    networking.clone(),
+                    known_global_tail.clone(),
+                    sequencers_rpc.clone(),
+                ),
             }
         };
         Ok(Self {
@@ -118,7 +126,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
 pub enum SequencerAccess<T> {
     /// The sequencer is remote (or retired/preempted)
     #[debug("Remote")]
-    Remote { sequencers_rpc: SequencersRpc },
+    Remote { handle: RemoteSequencer<T> },
     /// We are the loglet leaders
     #[debug("Local")]
     Local { handle: Sequencer<T> },
@@ -145,9 +153,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, OperationError> {
         match self.sequencer {
             SequencerAccess::Local { ref handle } => handle.enqueue_batch(payloads).await,
-            SequencerAccess::Remote { .. } => {
-                todo!("Access to remote sequencers is not implemented yet")
-            }
+            SequencerAccess::Remote { ref handle } => handle.append(payloads).await,
         }
     }
 
