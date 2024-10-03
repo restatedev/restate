@@ -6433,6 +6433,7 @@ dependencies = [
  "rlimit",
  "serde",
  "serde_json",
+ "strum 0.26.2",
  "thiserror",
  "tokio",
  "tokio-stream",

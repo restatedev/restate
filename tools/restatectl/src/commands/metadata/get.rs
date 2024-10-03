@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::PathBuf;
-
 use bytestring::ByteString;
 use clap::Parser;
 use cling::{Collect, Run};
@@ -19,7 +17,9 @@ use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 
-use crate::commands::metadata::GenericMetadataValue;
+use crate::commands::metadata::{
+    create_metadata_store_client, GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts,
+};
 use crate::environment::metadata_store;
 use crate::environment::task_center::run_in_task_center;
 
@@ -27,14 +27,8 @@ use crate::environment::task_center::run_in_task_center;
 #[clap()]
 #[cling(run = "get_value")]
 pub struct GetValueOpts {
-    /// Restate configuration file
-    #[arg(
-        short,
-        long = "config-file",
-        env = "RESTATE_CONFIG",
-        value_name = "FILE"
-    )]
-    config_file: Option<PathBuf>,
+    #[clap(flatten)]
+    metadata: MetadataCommonOpts,
 
     /// The key to get
     #[arg(short, long)]
@@ -42,8 +36,29 @@ pub struct GetValueOpts {
 }
 
 async fn get_value(opts: &GetValueOpts) -> anyhow::Result<()> {
-    let value = run_in_task_center(
-        opts.config_file.as_ref(),
+    let value = match opts.metadata.access_mode {
+        MetadataAccessMode::Remote => get_value_remote(opts).await?,
+        MetadataAccessMode::Direct => get_value_direct(opts).await?,
+    };
+
+    let value = serde_json::to_string_pretty(&value).map_err(|e| anyhow::anyhow!(e))?;
+    println!("{}", value);
+
+    Ok(())
+}
+
+async fn get_value_remote(opts: &GetValueOpts) -> anyhow::Result<Option<GenericMetadataValue>> {
+    let metadata_store_client = create_metadata_store_client(&opts.metadata).await?;
+
+    metadata_store_client
+        .get(ByteString::from(opts.key.as_str()))
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get value: {}", e))
+}
+
+async fn get_value_direct(opts: &GetValueOpts) -> anyhow::Result<Option<GenericMetadataValue>> {
+    run_in_task_center(
+        opts.metadata.config_file.as_ref(),
         |config, task_center| async move {
             let rocksdb_manager =
                 RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
@@ -69,10 +84,5 @@ async fn get_value(opts: &GetValueOpts) -> anyhow::Result<()> {
             anyhow::Ok(value)
         },
     )
-    .await?;
-
-    let value = serde_json::to_string_pretty(&value).map_err(|e| anyhow::anyhow!(e))?;
-    println!("{}", value);
-
-    Ok(())
+    .await
 }

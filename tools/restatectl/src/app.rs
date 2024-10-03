@@ -29,8 +29,6 @@ pub struct CliApp {
     pub common_opts: CommonOpts,
     #[clap(flatten)]
     pub connection: ConnectionInfo,
-    #[clap(flatten)]
-    pub metadata_store: MetadataStoreOpts,
     #[clap(subcommand)]
     pub cmd: Command,
 }
@@ -38,25 +36,8 @@ pub struct CliApp {
 #[derive(Parser, Collect, Debug, Clone)]
 pub struct ConnectionInfo {
     /// Cluster Controller host:port (e.g. http://localhost:5122/)
-    #[clap(long, value_hint= clap::ValueHint::Url, default_value_t = AdvertisedAddress::from_str("http://localhost:5122/").unwrap(), global = true)]
+    #[clap(long, value_hint = clap::ValueHint::Url, default_value_t = AdvertisedAddress::from_str("http://localhost:5122/").unwrap(), global = true)]
     pub cluster_controller: AdvertisedAddress,
-}
-
-#[derive(Parser, Collect, Debug, Clone)]
-pub struct MetadataStoreOpts {
-    /// Metadata store host:port (e.g. http://localhost:5123/)
-    #[clap(long, value_hint= clap::ValueHint::Url, default_value_t = AdvertisedAddress::from_str("http://localhost:5123/").unwrap(), global = true)]
-    pub address: AdvertisedAddress,
-    #[clap(long, default_value_t = MetadataStoreType::Embedded, global = true)]
-    /// Metadata store type
-    pub store: MetadataStoreType,
-}
-
-#[derive(Parser, Collect, Debug, Clone, derive_more::Display, derive_more::FromStr)]
-pub enum MetadataStoreType {
-    Local,
-    Embedded,
-    Etcd,
 }
 
 #[derive(Run, Subcommand, Clone)]

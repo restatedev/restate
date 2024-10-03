@@ -22,7 +22,7 @@ pub use service::{Error, LocalMetadataStoreService};
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
 
-/// Creates a [`MetadataStoreClient`] for the [`LocalMetadataStoreService`].
+/// Creates a [`MetadataStoreClient`].
 pub async fn create_client(
     metadata_store_client_options: MetadataStoreClientOptions,
 ) -> Result<MetadataStoreClient, GenericError> {
