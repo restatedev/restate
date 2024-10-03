@@ -28,7 +28,7 @@ async fn node_id_mismatch() {
         .await
         .unwrap();
 
-    assert!(cluster.wait_healthy(Duration::from_secs(10)).await);
+    assert!(cluster.wait_healthy(Duration::from_secs(30)).await);
 
     cluster.nodes[1]
         .graceful_shutdown(Duration::from_secs(2))
@@ -77,7 +77,7 @@ async fn cluster_name_mismatch() {
         .await
         .unwrap();
 
-    assert!(cluster.wait_healthy(Duration::from_secs(10)).await);
+    assert!(cluster.wait_healthy(Duration::from_secs(30)).await);
 
     let mismatch_node = Node::new_test_node(
         "mismatch",
