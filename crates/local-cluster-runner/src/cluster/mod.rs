@@ -101,6 +101,10 @@ impl StartedCluster {
         &self.base_dir
     }
 
+    pub fn cluster_name(&self) -> &str {
+        &self.cluster_name
+    }
+
     pub async fn kill(&mut self) -> io::Result<()> {
         future::try_join_all(self.nodes.iter_mut().map(|n| n.kill()))
             .await
@@ -120,7 +124,7 @@ impl StartedCluster {
             .map(drop)
     }
 
-    pub async fn wait_admins_healthy(&mut self, dur: Duration) -> bool {
+    pub async fn wait_admins_healthy(&self, dur: Duration) -> bool {
         future::join_all(self.nodes.iter().map(|n| n.wait_admin_healthy(dur)))
             .await
             .into_iter()

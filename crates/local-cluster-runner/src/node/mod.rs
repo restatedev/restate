@@ -38,7 +38,7 @@ use restate_types::{
 
 use crate::random_socket_address;
 
-#[derive(Debug, Serialize, Deserialize, TypedBuilder)]
+#[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Node {
     #[builder(mutators(
@@ -525,7 +525,7 @@ impl StartedNode {
         (&mut self.status).await
     }
 
-    fn config(&self) -> &Configuration {
+    pub fn config(&self) -> &Configuration {
         &self.config
     }
 
@@ -561,7 +561,7 @@ impl StartedNode {
         }
     }
 
-    pub fn lines(&mut self, pattern: Regex) -> impl Stream<Item = String> + Unpin + '_ {
+    pub fn lines(&self, pattern: Regex) -> impl Stream<Item = String> + '_ {
         match self.status {
             StartedNodeStatus::Exited { .. } => futures::stream::empty().left_stream(),
             StartedNodeStatus::Failed { .. } => futures::stream::empty().left_stream(),

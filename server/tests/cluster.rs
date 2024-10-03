@@ -6,7 +6,11 @@ use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
-use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
+use restate_types::{
+    config::Configuration,
+    nodes_config::Role,
+    PlainNodeId,
+};
 
 #[tokio::test]
 async fn node_id_mismatch() {
