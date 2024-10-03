@@ -3,6 +3,8 @@ use std::time::Duration;
 use enumset::enum_set;
 use futures::StreamExt;
 use regex::Regex;
+use tracing::{error, info};
+
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
@@ -12,7 +14,6 @@ use restate_types::{
     config::{Configuration, LogFormat},
     nodes_config::Role,
 };
-use tracing::{error, info};
 
 #[tokio::main]
 async fn main() {

@@ -21,12 +21,12 @@ clap-verbosity-flag = { workspace = true }
 futures = { workspace = true }
 enumset = { workspace = true }
 http = { workspace = true }
-libc = "0.2"
+nix = { version = "0.29.0", features = ["signal"] }
 regex = "1.1"
 reqwest = { workspace = true }
 rlimit = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace =  true }
+tempfile = { workspace = true }
 thiserror = { workspace =  true }
 tokio = { workspace = true, features = ["process", "fs"] }
 toml = "0.8"

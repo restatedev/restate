@@ -6,16 +6,12 @@ use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
-use restate_types::{
-    config::Configuration,
-    nodes_config::Role,
-    PlainNodeId,
-};
+
+use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
 
 #[tokio::test]
 async fn node_id_mismatch() {
     let base_config = Configuration::default();
-    let base_dir = tempfile::tempdir().expect("tempdir failed").into_path();
 
     let nodes = Node::new_test_nodes_with_metadata(
         base_config.clone(),
@@ -25,14 +21,14 @@ async fn node_id_mismatch() {
     );
 
     let mut cluster = Cluster::builder()
-        .base_dir(base_dir)
+        .random_base_dir()
         .nodes(nodes)
         .build()
         .start()
         .await
         .unwrap();
 
-    assert!(cluster.wait_admins_healthy(Duration::from_secs(10)).await);
+    assert!(cluster.wait_healthy(Duration::from_secs(10)).await);
 
     cluster.nodes[1]
         .graceful_shutdown(Duration::from_secs(2))
@@ -64,7 +60,6 @@ async fn node_id_mismatch() {
 #[tokio::test]
 async fn cluster_name_mismatch() {
     let base_config = Configuration::default();
-    let base_dir = tempfile::tempdir().expect("tempdir failed").into_path();
 
     let nodes = Node::new_test_nodes_with_metadata(
         base_config.clone(),
@@ -75,12 +70,14 @@ async fn cluster_name_mismatch() {
 
     let cluster = Cluster::builder()
         .cluster_name("cluster-1")
-        .base_dir(base_dir)
+        .random_base_dir()
         .nodes(nodes)
         .build()
         .start()
         .await
         .unwrap();
+
+    assert!(cluster.wait_healthy(Duration::from_secs(10)).await);
 
     let mismatch_node = Node::new_test_node(
         "mismatch",
@@ -90,7 +87,7 @@ async fn cluster_name_mismatch() {
     );
 
     let mut mismatch_node = mismatch_node
-        .start_clustered(cluster.base_dir().clone(), "cluster-2".into())
+        .start_clustered(cluster.base_dir(), "cluster-2")
         .await
         .unwrap();
 

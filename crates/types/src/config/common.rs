@@ -234,8 +234,8 @@ impl CommonOptions {
     }
 
     #[cfg(feature = "unsafe-mutable-config")]
-    pub fn set_node_name(&mut self, node_name: String) {
-        self.node_name = Some(node_name)
+    pub fn set_node_name(&mut self, node_name: impl Into<String>) {
+        self.node_name = Some(node_name.into())
     }
 
     // same as node_name
@@ -244,8 +244,8 @@ impl CommonOptions {
     }
 
     #[cfg(feature = "unsafe-mutable-config")]
-    pub fn set_cluster_name(&mut self, cluster_name: String) {
-        self.cluster_name = cluster_name
+    pub fn set_cluster_name(&mut self, cluster_name: impl Into<String>) {
+        self.cluster_name = cluster_name.into()
     }
 
     pub fn bootstrap_num_partitions(&self) -> u16 {
@@ -253,8 +253,8 @@ impl CommonOptions {
     }
 
     #[cfg(feature = "unsafe-mutable-config")]
-    pub fn set_base_dir(&mut self, path: PathBuf) {
-        self.base_dir = Some(path);
+    pub fn set_base_dir(&mut self, path: impl Into<PathBuf>) {
+        self.base_dir = Some(path.into());
     }
 
     pub fn base_dir(&self) -> PathBuf {

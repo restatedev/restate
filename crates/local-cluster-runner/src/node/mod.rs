@@ -17,7 +17,6 @@ use enumset::{enum_set, EnumSet};
 use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
 use regex::{Regex, RegexSet};
 use serde::{Deserialize, Serialize};
-// use subprocess::{Exec, ExitStatus, NullFile, Popen, PopenError, Redirection};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -39,7 +38,6 @@ use restate_types::{
 use crate::random_socket_address;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Node {
     #[builder(mutators(
             #[mutator(requires = [base_dir])]
@@ -118,6 +116,9 @@ impl Node {
         &mut self.base_config
     }
 
+    // Creates a new Node that uses a node socket, a metadata socket, and random ports,
+    // suitable for running in a cluster. Node name, roles, bind/advertise addresses,
+    // and the metadata address from the base_config will all be overwritten.
     pub fn new_test_node(
         node_name: impl Into<String>,
         base_config: Configuration,
@@ -135,6 +136,9 @@ impl Node {
             .build()
     }
 
+    // Creates a group of Nodes with a single metadata node "metadata-node", and a given number
+    //  of other nodes ["node-1", ..] each with the provided roles. Node name, roles,
+    // bind/advertise addresses, and the metadata address from the base_config will all be overwritten.
     pub fn new_test_nodes_with_metadata(
         base_config: Configuration,
         binary_source: BinarySource,
@@ -145,14 +149,14 @@ impl Node {
 
         {
             nodes.push(Self::new_test_node(
-                "metadata-node".to_owned(),
+                "metadata-node",
                 base_config.clone(),
                 binary_source.clone(),
                 enum_set!(Role::Admin | Role::MetadataStore),
             ));
         }
 
-        for node in 1..size + 1 {
+        for node in 1..=size {
             nodes.push(Self::new_test_node(
                 format!("node-{node}"),
                 base_config.clone(),
@@ -164,11 +168,17 @@ impl Node {
         nodes
     }
 
+    // Start this Node, providing the base_dir and the cluster_name of the cluster its
+    // expected to attach to. All relative file paths addresses specified in the node config
+    // (eg, nodename/node.sock) will be absolutized against the base path, and the base dir
+    // and cluster name present in config will be overwritten.
     pub async fn start_clustered(
         mut self,
-        base_dir: PathBuf,
-        cluster_name: String,
+        base_dir: impl Into<PathBuf>,
+        cluster_name: impl Into<String>,
     ) -> Result<StartedNode, NodeStartError> {
+        let base_dir = base_dir.into();
+
         // ensure file paths are relative to the base dir
         if let MetadataStoreClient::Embedded {
             address: AdvertisedAddress::Uds(file),
@@ -196,6 +206,8 @@ impl Node {
         self.start().await
     }
 
+    // Start this node with the current config. A subprocess will be created, and a tokio task
+    // spawned to process output logs and watch for exit.
     pub async fn start(self) -> Result<StartedNode, NodeStartError> {
         let Self {
             base_config,
@@ -334,7 +346,6 @@ impl Node {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum BinarySource {
     Path(OsString),
     EnvVar(String),
@@ -445,26 +456,29 @@ impl Future for StartedNodeStatus {
 }
 
 impl StartedNode {
+    // Send a SIGKILL to the current process, if it is running, and await for its exit
     pub async fn kill(&mut self) -> io::Result<ExitStatus> {
-        match &mut self.status {
-            StartedNodeStatus::Exited(status) => Ok(*status),
-            StartedNodeStatus::Failed(kind) => Err((*kind).into()),
+        match self.status {
+            StartedNodeStatus::Exited(status) => Ok(status),
+            StartedNodeStatus::Failed(kind) => Err(kind.into()),
             StartedNodeStatus::Running { pid, .. } => {
                 info!(
                     "Sending SIGKILL to node {} (pid {})",
                     self.config.node_name(),
                     pid
                 );
-                let code = unsafe { libc::kill(*pid as libc::pid_t, libc::SIGKILL) };
-                if code == -1 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    (&mut self.status).await
+                match nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
+                    nix::sys::signal::SIGKILL,
+                ) {
+                    Ok(()) => (&mut self.status).await,
+                    Err(errno) => Err(io::Error::from_raw_os_error(errno as i32)),
                 }
             }
         }
     }
 
+    // Send a SIGTERM to the current process, if it is running
     pub fn terminate(&self) -> io::Result<()> {
         match self.status {
             StartedNodeStatus::Exited(_) => Ok(()),
@@ -475,28 +489,28 @@ impl StartedNode {
                     self.config.node_name(),
                     pid
                 );
-                let code = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-                if code == -1 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
+                nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
+                    nix::sys::signal::SIGTERM,
+                )
+                .map_err(|errno| io::Error::from_raw_os_error(errno as i32))
             }
         }
     }
 
+    // Send a SIGTERM, then wait for `dur` for exit, otherwise send a SIGKILL
     pub async fn graceful_shutdown(&mut self, dur: Duration) -> io::Result<ExitStatus> {
         match self.status {
             StartedNodeStatus::Exited(status) => Ok(status),
             StartedNodeStatus::Failed(kind) => Err(kind.into()),
             StartedNodeStatus::Running { .. } => {
                 let timeout = tokio::time::sleep(dur);
-                tokio::pin!(timeout);
+                let timeout = std::pin::pin!(timeout);
 
                 self.terminate()?;
 
                 tokio::select! {
-                    () = &mut timeout => {
+                    () = timeout => {
                         info!(
                             "Graceful shutdown deadline exceeded for node {}",
                             self.config().node_name(),
@@ -511,7 +525,7 @@ impl StartedNode {
         }
     }
 
-    // Returns none after the child has been polled to completion
+    // Get the pid of the subprocess. Returns none after it has exited.
     pub fn pid(&self) -> Option<u32> {
         match self.status {
             StartedNodeStatus::Exited { .. } | StartedNodeStatus::Failed { .. } => None,
@@ -519,6 +533,7 @@ impl StartedNode {
         }
     }
 
+    // Wait for the node to exit and report its exist status
     pub async fn status(&mut self) -> io::Result<ExitStatus> {
         (&mut self.status).await
     }
@@ -559,6 +574,8 @@ impl StartedNode {
         }
     }
 
+    // Obtain a stream of loglines matching this pattern. The stream will end
+    // when the stdout and stderr files on the process close.
     pub fn lines(&self, pattern: Regex) -> impl Stream<Item = String> + '_ {
         match self.status {
             StartedNodeStatus::Exited { .. } => futures::stream::empty().left_stream(),
@@ -570,6 +587,7 @@ impl StartedNode {
         }
     }
 
+    // Obtain a metadata client based on this nodes client config.
     pub async fn metadata_client(
         &self,
     ) -> Result<restate_metadata_store::MetadataStoreClient, GenericError> {
@@ -579,6 +597,7 @@ impl StartedNode {
         .await
     }
 
+    // Check to see if the admin address is healthy. Returns false if this node has no admin role.
     pub async fn admin_healthy(&self) -> bool {
         if let Some(address) = self.admin_address() {
             match reqwest::get(format!("http://{address}/health")).await {
@@ -590,6 +609,8 @@ impl StartedNode {
         }
     }
 
+    // Check every 250ms to see if the admin address is healthy, waiting for up to `timeout`.
+    // Returns false if this node has no admin role.
     pub async fn wait_admin_healthy(&self, timeout: Duration) -> bool {
         let mut attempts = 1;
         if tokio::time::timeout(timeout, async {
@@ -602,13 +623,52 @@ impl StartedNode {
         .is_ok()
         {
             info!(
-                "Node {} is healthy after {attempts} attempts",
+                "Node {} admin endpoint is healthy after {attempts} attempts",
                 self.node_name(),
             );
             true
         } else {
             warn!(
                 "Timed out waiting for admin health on node {}",
+                self.node_name()
+            );
+            false
+        }
+    }
+
+    // Check to see if the ingress address is healthy. Returns false if this node has no ingress role.
+    pub async fn ingress_healthy(&self) -> bool {
+        if let Some(address) = self.ingress_address() {
+            match reqwest::get(format!("http://{address}/restate/health")).await {
+                Ok(resp) => resp.status().is_success(),
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    // Check every 250ms to see if the ingress address is healthy, waiting for up to `timeout`.
+    // Returns false if this node has no ingress role.
+    pub async fn wait_ingress_healthy(&self, timeout: Duration) -> bool {
+        let mut attempts = 1;
+        if tokio::time::timeout(timeout, async {
+            while !self.ingress_healthy().await {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(250)).await
+            }
+        })
+        .await
+        .is_ok()
+        {
+            info!(
+                "Node {} ingress endpoint is healthy after {attempts} attempts",
+                self.node_name(),
+            );
+            true
+        } else {
+            warn!(
+                "Timed out waiting for ingress health on node {}",
                 self.node_name()
             );
             false
@@ -652,7 +712,7 @@ impl Searcher {
         }
     }
 
-    pub fn search(&self, regex: Regex) -> Receiver {
+    fn search(&self, regex: Regex) -> Receiver {
         let (sender, receiver) = mpsc::channel(1);
         let sender = Arc::new(sender);
         let sender_ptr = Arc::as_ptr(&sender);

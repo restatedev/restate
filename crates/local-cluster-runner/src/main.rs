@@ -2,8 +2,9 @@ use std::{path::PathBuf, time::Duration};
 
 use clap::Parser;
 use clap_verbosity_flag::InfoLevel;
-use restate_local_cluster_runner::{cluster::Cluster, shutdown};
 use tracing::{error, info};
+
+use restate_local_cluster_runner::{cluster::Cluster, shutdown};
 
 #[derive(Debug, Clone, clap::Parser)]
 #[command(author, version, about)]
@@ -41,7 +42,6 @@ async fn main() {
 
     // start capturing signals
     let shutdown_fut = shutdown();
-    tokio::pin!(shutdown_fut);
 
     let mut cluster = cluster.start().await.unwrap();
 
