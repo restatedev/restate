@@ -13,9 +13,12 @@ use std::{cmp::Ordering, sync::Arc, time::Duration};
 use futures::{stream::FuturesUnordered, StreamExt};
 use tokio::{sync::OwnedSemaphorePermit, time::timeout};
 
-use restate_core::network::{
-    rpc_router::{RpcError, RpcRouter},
-    Incoming, NetworkError, Networking, Outgoing, TransportConnect,
+use restate_core::{
+    cancellation_token,
+    network::{
+        rpc_router::{RpcError, RpcRouter},
+        Incoming, NetworkError, Networking, Outgoing, TransportConnect,
+    },
 };
 use restate_types::{
     config::Configuration,
@@ -24,6 +27,7 @@ use restate_types::{
     net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
     replicated_loglet::NodeSet,
 };
+use tracing::instrument;
 
 use super::{BatchExt, SequencerSharedState};
 use crate::{
@@ -86,12 +90,23 @@ impl<T: TransportConnect> SequencerAppender<T> {
         }
     }
 
+    #[instrument(
+        level="trace", 
+        skip(self),
+        fields(
+            loglet_id=%self.sequencer_shared_state.loglet_id(),
+            first_offset=%self.first_offset,
+        )
+    )]
     pub async fn run(mut self) {
         // initial wave has 0 replicated and 0 gray listed node
         let mut state = SequencerAppenderState::Wave {
             graylist: NodeSet::empty(),
         };
 
+        let cancellation = cancellation_token();
+
+        let mut cancelled = std::pin::pin!(cancellation.cancelled());
         let retry_policy = self
             .configuration
             .live_load()
@@ -102,24 +117,47 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
         let mut retry = retry_policy.iter();
 
-        loop {
+        // this loop retries forever or until the task is cancelled
+        let is_cancelled = loop {
+            if cancellation.is_cancelled() {
+                break true;
+            }
+
             state = match state {
-                SequencerAppenderState::Done => break,
+                SequencerAppenderState::Done => break false,
                 SequencerAppenderState::Wave {
                     graylist: gray_list,
-                } => self.wave(gray_list).await,
+                } => {
+                    tokio::select! {
+                        next_state = self.wave(gray_list) => {next_state},
+                        _ = &mut cancelled => {
+                            break true;
+                        }
+                    }
+                }
                 SequencerAppenderState::Backoff => {
                     // since backoff can be None, or run out of iterations,
                     // but appender should never give up we fall back to fixed backoff
                     let delay = retry.next().unwrap_or(DEFAULT_BACKOFF_TIME);
-                    tokio::time::sleep(delay).await;
+
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {},
+                        _ = &mut cancelled => {
+                            break true;
+                        }
+                    };
 
                     SequencerAppenderState::Wave {
-                        // todo: introduce some backoff strategy
                         graylist: NodeSet::empty(),
                     }
                 }
             }
+        };
+
+        if is_cancelled {
+            tracing::trace!("appender task cancelled");
+        } else {
+            tracing::trace!("appender task completed");
         }
     }
 
@@ -193,14 +231,6 @@ impl<T: TransportConnect> SequencerAppender<T> {
         let mut store_tasks = FuturesUnordered::new();
 
         for server in spread_servers {
-            // it is possible that we have visited this server
-            // in a previous wave. So we can short circuit here
-            // and just skip
-            if server.local_tail().latest_offset() > last_offset {
-                checker.set_attribute(server.node_id(), true);
-                continue;
-            }
-
             pending_servers.insert(server.node_id());
 
             let task = LogServerStoreTask {
@@ -249,14 +279,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     continue;
                 }
                 StoreTaskStatus::Sealed(_) => {
-                    tracing::trace!(node_id=%server.node_id(), "node is sealed");
-                    continue;
-                }
-                StoreTaskStatus::AdvancedLocalTail(_) => {
-                    // node local tail is behind the batch first offset
-                    // question(azmy): we assume node has been replicated?
-                    checker.set_attribute(node_id, true);
-                    pending_servers.remove(&node_id);
+                    tracing::trace!(node_id=%server.node_id(), "store task cancelled duo to sealing");
                     continue;
                 }
                 StoreTaskStatus::Stored(stored) => stored,
@@ -272,7 +295,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 }
                 _ => {
                     // todo(azmy): handle other status
-                    // note: we don't remove the node from the gray list
+                    // note: we don't remove the node from the pending list
                 }
             }
 
@@ -307,7 +330,6 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
 enum StoreTaskStatus {
     Sealed(LogletOffset),
-    AdvancedLocalTail(LogletOffset),
     Stored(Stored),
     Error(NetworkError),
 }
@@ -353,23 +375,33 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
         let server_local_tail = self
             .server
             .local_tail()
-            .wait_for_offset_or_seal(self.first_offset)
-            .await?;
+            .wait_for_offset_or_seal(self.first_offset);
 
-        match server_local_tail {
+        let global_tail = self
+            .sequencer_shared_state
+            .committed_tail
+            .wait_for_offset_or_seal(self.first_offset);
+
+        let tail_state = tokio::select! {
+            local_state = server_local_tail => {
+                local_state?
+            }
+            global_state = global_tail => {
+                global_state?
+            }
+        };
+
+        match tail_state {
             TailState::Sealed(offset) => return Ok(StoreTaskStatus::Sealed(offset)),
             TailState::Open(offset) => {
                 match offset.cmp(&self.first_offset) {
-                    Ordering::Equal => {
+                    Ordering::Equal | Ordering::Greater => {
                         // we ready to send our write
                     }
                     Ordering::Less => {
                         // this should never happen since we waiting
                         // for local tail!
                         unreachable!()
-                    }
-                    Ordering::Greater => {
-                        return Ok(StoreTaskStatus::AdvancedLocalTail(offset));
                     }
                 };
             }
@@ -389,6 +421,7 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
         match incoming.body().status {
             Status::Sealing | Status::Sealed => {
                 self.server.local_tail().notify_seal();
+                return Ok(StoreTaskStatus::Sealed(incoming.body().header.local_tail));
             }
             _ => {}
         }
