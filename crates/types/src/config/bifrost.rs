@@ -228,10 +228,10 @@ pub struct ReplicatedLogletOptions {
     /// of log servers
     pub sequencer_backoff_strategy: RetryPolicy,
 
-    /// Log Server timeout
+    /// Log Server RPC timeout
     ///
     /// Timeout waiting on log server response
-    pub log_server_timeout: Duration,
+    pub log_server_rpc_timeout: Duration,
 
     /// log_server RPC retry policy
     ///
@@ -250,7 +250,7 @@ impl Default for ReplicatedLogletOptions {
                 None,
                 Some(Duration::from_millis(2000)),
             ),
-            log_server_timeout: Duration::from_millis(500),
+            log_server_rpc_timeout: Duration::from_millis(2000),
             log_server_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,
