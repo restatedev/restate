@@ -47,7 +47,7 @@ pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuff
 )]
 pub enum AdvertisedAddress {
     /// Unix domain socket
-    #[display("unix:{}", "_0.display()")]
+    #[display("unix:{}", _0.display())]
     Uds(PathBuf),
     /// Hostname or host:port pair, or any unrecognizable string.
     #[display("{}", _0)]
@@ -81,7 +81,7 @@ impl FromStr for AdvertisedAddress {
 )]
 pub enum BindAddress {
     /// Unix domain socket
-    #[display("unix:{}", "_0.display()")]
+    #[display("unix:{}", _0.display())]
     Uds(PathBuf),
     /// Socket addr.
     #[display("{}", _0)]

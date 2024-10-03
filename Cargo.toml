@@ -46,6 +46,7 @@ restate-ingress-http = { path = "crates/ingress-http" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
 restate-invoker-api = { path = "crates/invoker-api" }
 restate-invoker-impl = { path = "crates/invoker-impl" }
+restate-local-cluster-runner = { path = "crates/local-cluster-runner" }
 restate-log-server = { path = "crates/log-server" }
 restate-metadata-store = { path = "crates/metadata-store" }
 restate-node = { path = "crates/node" }

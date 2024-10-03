@@ -18,7 +18,7 @@ use restate_types::{
     config::{MetadataStoreClient as MetadataStoreClientConfig, MetadataStoreClientOptions},
     errors::GenericError,
 };
-pub use service::LocalMetadataStoreService;
+pub use service::{Error, LocalMetadataStoreService};
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
 

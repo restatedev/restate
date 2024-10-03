@@ -64,6 +64,11 @@ toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
 
+[dev-dependencies]
+restate-local-cluster-runner = { workspace = true }
+
+tracing-subscriber = { workspace = true }
+
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }
 

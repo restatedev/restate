@@ -10,7 +10,6 @@
 
 use restate_types::net::{CodecError, MIN_SUPPORTED_PROTOCOL_VERSION};
 use restate_types::nodes_config::NodesConfigError;
-use restate_types::NodeId;
 
 use crate::{ShutdownError, SyncError};
 
@@ -42,8 +41,6 @@ pub enum NetworkError {
     UnknownNode(#[from] NodesConfigError),
     #[error("operation aborted, node is shutting down")]
     Shutdown(#[from] ShutdownError),
-    #[error("node {0} address is bad: {1}")]
-    BadNodeAddress(NodeId, http::Error),
     #[error("timeout: {0}")]
     Timeout(&'static str),
     #[error("protocol error: {0}")]
