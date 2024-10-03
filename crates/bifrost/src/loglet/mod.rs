@@ -168,6 +168,10 @@ impl LogletCommitResolver {
     pub fn offset(self, offset: LogletOffset) {
         let _ = self.tx.send(Ok(offset));
     }
+
+    pub fn error(self, err: AppendError) {
+        let _ = self.tx.send(Err(err));
+    }
 }
 
 pub struct LogletCommit {

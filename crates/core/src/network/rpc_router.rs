@@ -100,6 +100,19 @@ where
             .map_err(|_| RpcError::Shutdown(ShutdownError))
     }
 
+    pub async fn send_on_connection(
+        &self,
+        outgoing: Outgoing<T, HasConnection>,
+    ) -> Result<RpcToken<T::ResponseMessage>, NetworkSendError<Outgoing<T, HasConnection>>> {
+        let token = self
+            .response_tracker
+            .register(&outgoing)
+            .expect("msg-id is registered once");
+
+        outgoing.send().await?;
+        Ok(token)
+    }
+
     pub fn num_in_flight(&self) -> usize {
         self.response_tracker.num_in_flight()
     }
