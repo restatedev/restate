@@ -343,10 +343,8 @@ pub enum BinarySource {
     // as the current binary
     CargoRun,
     // Suitable when called from a `cargo test` or `cargo run --example` command;
-    // this will attempt to finda `restate-server` binary in the parent directory of
+    // this will attempt to find a `restate-server` binary in the parent directory of
     // the current binary.
-    // NB, if this is called from an integration test in the restate-server package
-    // the compiled binary will have `cfg(test)` true, and so will store in tempdirs.
     CargoTest,
 }
 

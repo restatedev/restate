@@ -28,16 +28,6 @@ fn default_cluster_name() -> String {
     "local-cluster".to_owned()
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub enum MetadataClientSource {
-    // Use a metadata service run by the local-cluster-runner, inject the socket into base_config as needed
-    #[default]
-    Runner,
-    // Use whatever metadata service is specified in base_config
-    Configuration,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum ClusterStartError {
     #[error("Failed to start node {0}: {1}")]
