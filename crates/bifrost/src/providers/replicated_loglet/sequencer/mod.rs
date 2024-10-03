@@ -215,7 +215,7 @@ impl<T: TransportConnect> Sequencer<T> {
 
         // We are sure that if task-center is shutting down that all future appends will fail so we
         // are not so worried about the offset that was updated already above.
-        task_center().spawn(
+        task_center().spawn_child(
             TaskKind::ReplicatedLogletAppender,
             "sequencer-appender",
             None,
