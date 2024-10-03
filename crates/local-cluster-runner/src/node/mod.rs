@@ -137,7 +137,7 @@ impl Node {
     }
 
     // Creates a group of Nodes with a single metadata node "metadata-node", and a given number
-    //  of other nodes ["node-1", ..] each with the provided roles. Node name, roles,
+    // of other nodes ["node-1", ..] each with the provided roles. Node name, roles,
     // bind/advertise addresses, and the metadata address from the base_config will all be overwritten.
     pub fn new_test_nodes_with_metadata(
         base_config: Configuration,
@@ -148,18 +148,22 @@ impl Node {
         let mut nodes = Vec::with_capacity((size + 1) as usize);
 
         {
+            let mut base_config = base_config.clone();
+            base_config.common.allow_bootstrap = true;
             nodes.push(Self::new_test_node(
                 "metadata-node",
-                base_config.clone(),
+                base_config,
                 binary_source.clone(),
                 enum_set!(Role::Admin | Role::MetadataStore),
             ));
         }
 
         for node in 1..=size {
+            let mut base_config = base_config.clone();
+            base_config.common.allow_bootstrap = false;
             nodes.push(Self::new_test_node(
                 format!("node-{node}"),
-                base_config.clone(),
+                base_config,
                 binary_source.clone(),
                 roles,
             ));

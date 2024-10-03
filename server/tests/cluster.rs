@@ -16,7 +16,7 @@ async fn node_id_mismatch() {
     let nodes = Node::new_test_nodes_with_metadata(
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::Admin | Role::Worker),
+        enum_set!(Role::Worker),
         1,
     );
 
@@ -64,7 +64,7 @@ async fn cluster_name_mismatch() {
     let nodes = Node::new_test_nodes_with_metadata(
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::Admin | Role::Worker),
+        enum_set!(Role::Worker),
         1,
     );
 
