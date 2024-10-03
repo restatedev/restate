@@ -91,7 +91,8 @@ impl Append {
         self.payloads
             .iter()
             .map(|p| p.estimated_encode_size())
-            .sum()
+            .sum::<usize>()
+            + size_of::<CommonRequestHeader>()
     }
 }
 
@@ -136,4 +137,30 @@ impl Appended {
         self.header.status = status;
         self
     }
+}
+
+define_rpc! {
+    @request = GetSequencerInfo,
+    @response = SequencerInfo,
+    @request_target = TargetName::ReplicatedLogletGetInfo,
+    @response_target = TargetName::ReplicatedLogletInfo,
+}
+
+// ** APPEND
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSequencerInfo {
+    #[serde(flatten)]
+    pub header: CommonRequestHeader,
+}
+
+impl GetSequencerInfo {
+    pub fn estimated_encode_size(&self) -> usize {
+        size_of::<CommonRequestHeader>()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequencerInfo {
+    #[serde(flatten)]
+    pub header: CommonResponseHeader,
 }

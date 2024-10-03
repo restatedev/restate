@@ -20,15 +20,17 @@ use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 
 use restate_core::{
     network::{
-        rpc_router::{RpcRouter, RpcToken},
+        rpc_router::{RpcError, RpcRouter, RpcToken},
         NetworkError, NetworkSendError, Networking, Outgoing, TransportConnect, WeakConnection,
     },
     task_center, ShutdownError, TaskKind,
 };
 use restate_types::{
     config::Configuration,
-    logs::{metadata::SegmentIndex, LogId, LogletOffset, Record},
-    net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
+    logs::{metadata::SegmentIndex, LogId, LogletOffset, Record, SequenceNumber, TailState},
+    net::replicated_loglet::{
+        Append, Appended, CommonRequestHeader, GetSequencerInfo, SequencerStatus,
+    },
     replicated_loglet::ReplicatedLogletParams,
     GenerationalNodeId,
 };
@@ -204,6 +206,76 @@ where
         *guard = Some(connection.clone());
 
         Ok(connection)
+    }
+
+    /// Attempts to find tail.
+    ///
+    /// This first tries to find tail by synchronizing with sequencer. If this failed
+    /// duo to sequencer not reachable, it will immediately try to find tail by querying
+    /// fmajority of loglet servers
+    pub async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
+        // try to sync with sequencer
+        if self.sync_sequencer_tail().await.is_ok() {
+            return Ok(*self.known_global_tail.get());
+        }
+
+        // otherwise we need to try to fetch this from the log servers.
+        self.sync_log_servers_tail().await?;
+        Ok(*self.known_global_tail.get())
+    }
+
+    /// Synchronize known_global_tail with the sequencer
+    async fn sync_sequencer_tail(&self) -> Result<(), NetworkError> {
+        let result = self
+            .sequencers_rpc
+            .info
+            .call(
+                &self.networking,
+                self.params.sequencer,
+                GetSequencerInfo {
+                    header: CommonRequestHeader {
+                        log_id: self.log_id,
+                        loglet_id: self.params.loglet_id,
+                        segment_index: self.segment_index,
+                    },
+                },
+            )
+            .await
+            .map(|incoming| incoming.into_body());
+
+        let info = match result {
+            Ok(info) => info,
+            Err(RpcError::Shutdown(shutdown)) => return Err(NetworkError::Shutdown(shutdown)),
+            Err(RpcError::SendError(err)) => return Err(err.source),
+        };
+
+        match info.header.status {
+            SequencerStatus::Ok => {
+                // update header info
+                if let Some(offset) = info.header.known_global_tail {
+                    self.known_global_tail.notify_offset_update(offset);
+                }
+            }
+            SequencerStatus::Sealed => {
+                self.known_global_tail.notify(
+                    true,
+                    info.header
+                        .known_global_tail
+                        .unwrap_or(LogletOffset::INVALID),
+                );
+            }
+            _ => {
+                unreachable!()
+            }
+        };
+
+        Ok(())
+    }
+
+    /// A fallback mechanism in case sequencer is not available
+    /// to try and sync known_global_tail with fmajority of LogServers
+    async fn sync_log_servers_tail(&self) -> Result<(), OperationError> {
+        todo!()
     }
 }
 

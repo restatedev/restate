@@ -158,9 +158,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
         match self.sequencer {
             SequencerAccess::Local { .. } => Ok(*self.known_global_tail.get()),
-            SequencerAccess::Remote { .. } => {
-                todo!("find_tail() is not implemented yet")
-            }
+            SequencerAccess::Remote { ref handle } => handle.find_tail().await,
         }
     }
 
