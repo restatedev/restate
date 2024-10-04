@@ -19,7 +19,7 @@ use restate_types::{GenerationalNodeId, NodeId};
 
 use super::{
     ConnectionManager, HasConnection, NetworkError, NetworkSendError, NetworkSender, NoConnection,
-    Outgoing, WeakConnection,
+    Outgoing, OwnedConnection, WeakConnection,
 };
 use super::{GrpcConnector, TransportConnect};
 use crate::Metadata;
@@ -82,7 +82,11 @@ impl<T: TransportConnect> Networking<T> {
 
     /// A connection sender is pinned to a single stream, thus guaranteeing ordered delivery of
     /// messages.
-    pub async fn node_connection(&self, node: NodeId) -> Result<WeakConnection, NetworkError> {
+    pub async fn node_connection(
+        &self,
+        node: impl Into<NodeId>,
+    ) -> Result<WeakConnection, NetworkError> {
+        let node = node.into();
         // find latest generation if this is not generational node id
         let node = match node.as_generational() {
             Some(node) => node,
@@ -95,6 +99,27 @@ impl<T: TransportConnect> Networking<T> {
         };
 
         Ok(self.connections.get_or_connect(node).await?.downgrade())
+    }
+
+    /// A connection sender is pinned to a single stream, thus guaranteeing ordered delivery of
+    /// messages.
+    pub async fn node_owned_connection(
+        &self,
+        node: impl Into<NodeId>,
+    ) -> Result<Arc<OwnedConnection>, NetworkError> {
+        let node = node.into();
+        // find latest generation if this is not generational node id
+        let node = match node.as_generational() {
+            Some(node) => node,
+            None => {
+                self.metadata
+                    .nodes_config_ref()
+                    .find_node_by_id(node)?
+                    .current_generation
+            }
+        };
+
+        Ok(self.connections.get_or_connect(node).await?)
     }
 }
 

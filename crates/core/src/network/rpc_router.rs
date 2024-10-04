@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
@@ -16,14 +17,15 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use restate_types::NodeId;
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 use tracing::{error, warn};
 
 use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
 use restate_types::net::RpcRequest;
 
 use super::{
-    HasConnection, Incoming, MessageHandler, MessageRouterBuilder, NetworkSendError, NetworkSender,
-    Outgoing,
+    HasConnection, Incoming, MessageHandler, MessageRouterBuilder, NetworkError, NetworkSendError,
+    NetworkSender, Networking, Outgoing, TransportConnect,
 };
 use crate::{cancellation_watcher, ShutdownError};
 
@@ -83,6 +85,26 @@ where
             .map_err(|_| RpcError::Shutdown(ShutdownError))
     }
 
+    /// Does not perform retries
+    pub async fn call_timeout<X: TransportConnect>(
+        &self,
+        networking: &Networking<X>,
+        peer: impl Into<NodeId>,
+        msg: T,
+        timeout: Duration,
+    ) -> Result<Incoming<T::ResponseMessage>, NetworkError> {
+        let start = Instant::now();
+        let peer = peer.into();
+        let connection = tokio::time::timeout(timeout, networking.node_connection(peer))
+            .await
+            .map_err(|_| {
+                NetworkError::Timeout("deadline exceeded while waiting to establish connection")
+            })??;
+        let outgoing = Outgoing::new(peer, msg).assign_connection(connection);
+        self.call_outgoing_timeout(outgoing, timeout - start.elapsed())
+            .await
+    }
+
     /// Use this method when you have a connection associated with the outgoing request
     pub async fn call_on_connection(
         &self,
@@ -98,6 +120,30 @@ where
             .recv()
             .await
             .map_err(|_| RpcError::Shutdown(ShutdownError))
+    }
+
+    /// Use this method when you have a connection associated with the outgoing request
+    ///
+    /// Timeout encompasses the time it takes to send the request and the time it takes to receive
+    /// the response.
+    pub async fn call_outgoing_timeout(
+        &self,
+        outgoing: Outgoing<T, HasConnection>,
+        timeout: Duration,
+    ) -> Result<Incoming<T::ResponseMessage>, NetworkError> {
+        let token = self
+            .response_tracker
+            .register(&outgoing)
+            .expect("msg-id is registered once");
+
+        let start = Instant::now();
+        outgoing.send_timeout(timeout).await.map_err(|e| e.source)?;
+        let remaining = timeout - start.elapsed();
+        tokio::time::timeout(remaining, token.recv())
+            .await
+            .map_err(|_| NetworkError::Timeout("deadline exceeded while waiting for rpc response"))?
+            // We only fail here if the response tracker was dropped.
+            .map_err(|e| NetworkError::Shutdown(e))
     }
 
     pub fn num_in_flight(&self) -> usize {

@@ -13,11 +13,35 @@
 use metrics::{describe_counter, Unit};
 
 pub(crate) const BIFROST_REPLICATED_APPEND: &str = "restate.bifrost.replicatedloglet.appends.total";
+pub(crate) const BIFROST_REPLICATED_READ_CACHE_HIT: &str =
+    "restate.bifrost.replicatedloglet.read_record_cache_hit.total";
+pub(crate) const BIFROST_REPLICATED_READ_CACHE_FILTERED: &str =
+    "restate.bifrost.replicatedloglet.read_record_cache_filtered.total";
+pub(crate) const BIFROST_REPLICATED_READ_TOTAL: &str =
+    "restate.bifrost.replicatedloglet.read_record.total";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
         BIFROST_REPLICATED_APPEND,
         Unit::Count,
         "Number of append requests to bifrost's replicated loglet"
+    );
+
+    describe_counter!(
+        BIFROST_REPLICATED_READ_CACHE_HIT,
+        Unit::Count,
+        "Number of records read from RecordCache"
+    );
+
+    describe_counter!(
+        BIFROST_REPLICATED_READ_CACHE_FILTERED,
+        Unit::Count,
+        "Number of records filtered out while reading from RecordCache"
+    );
+
+    describe_counter!(
+        BIFROST_REPLICATED_READ_TOTAL,
+        Unit::Count,
+        "Number of records read"
     );
 }
