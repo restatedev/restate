@@ -39,6 +39,10 @@ pub struct IngressOptions {
 }
 
 impl IngressOptions {
+    pub fn set_bind_address(&mut self, bind_address: SocketAddr) {
+        self.bind_address = bind_address
+    }
+
     pub fn get_kafka_cluster(&self, name: &str) -> Option<&KafkaClusterOptions> {
         // a cluster is likely to have a very small number of kafka clusters configured.
         self.kafka_clusters.iter().find(|c| c.name == name)

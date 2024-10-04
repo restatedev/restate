@@ -1,0 +1,36 @@
+[package]
+name = "restate-local-cluster-runner"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+restate-metadata-store = { workspace = true }
+# nb features here will also affect the compiled restate-server binary in integration tests
+restate-types = { workspace = true, features = ["unsafe-mutable-config"] }
+
+arc-swap = { workspace = true }
+clap = { workspace = true }
+clap-verbosity-flag = { workspace = true }
+futures = { workspace = true }
+enumset = { workspace = true }
+http = { workspace = true }
+nix = { version = "0.29.0", features = ["signal"] }
+regex = "1.1"
+reqwest = { workspace = true }
+rlimit = { workspace = true }
+serde = { workspace =  true }
+tempfile = { workspace = true }
+thiserror = { workspace =  true }
+tokio = { workspace = true, features = ["process", "fs"] }
+toml = "0.8"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+typed-builder = "0.20.0"
+test_bin = "0.4.0"

@@ -12,6 +12,7 @@ use moka::{
     policy::EvictionPolicy,
     sync::{Cache, CacheBuilder},
 };
+use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_types::{
     logs::{LogletOffset, Record, SequenceNumber},
@@ -21,18 +22,19 @@ use restate_types::{
 /// Unique record key across different loglets.
 type RecordKey = (ReplicatedLogletId, LogletOffset);
 
-/// A placeholder for a global record cache.
+/// A a simple LRU-based record cache.
 ///
 /// This can be safely shared between all ReplicatedLoglet(s) and the LocalSequencers or the
 /// RemoteSequencers
 #[derive(Clone)]
 pub struct RecordCache {
-    inner: Cache<RecordKey, Record>,
+    inner: Cache<RecordKey, Record, Xxh3Builder>,
 }
 
 impl RecordCache {
     pub fn new(memory_budget_bytes: usize) -> Self {
-        let inner: Cache<RecordKey, Record> = CacheBuilder::default()
+        let inner: Cache<RecordKey, Record, _> = CacheBuilder::default()
+            .name("ReplicatedLogRecordCache")
             .weigher(|_, record: &Record| {
                 (size_of::<RecordKey>() + record.estimated_encode_size())
                     .try_into()
@@ -40,14 +42,14 @@ impl RecordCache {
             })
             .max_capacity(memory_budget_bytes.try_into().unwrap_or(u64::MAX))
             .eviction_policy(EvictionPolicy::lru())
-            .build();
+            .build_with_hasher(Xxh3Builder::default());
 
         Self { inner }
     }
 
     /// Writes a record to cache externally
     pub fn add(&self, loglet_id: ReplicatedLogletId, offset: LogletOffset, record: Record) {
-        self.inner.insert((loglet_id, offset), record);
+        // self.inner.insert((loglet_id, offset), record);
     }
 
     /// Extend cache with records
@@ -57,10 +59,10 @@ impl RecordCache {
         mut first_offset: LogletOffset,
         records: I,
     ) {
-        for record in records.as_ref() {
-            self.inner.insert((loglet_id, first_offset), record.clone());
-            first_offset = first_offset.next();
-        }
+        // for record in records.as_ref() {
+        //     self.inner.insert((loglet_id, first_offset), record.clone());
+        //     first_offset = first_offset.next();
+        // }
     }
 
     /// Get a for given loglet id and offset.

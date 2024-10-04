@@ -109,8 +109,8 @@ impl NodeSet {
         self.0.insert(node);
     }
 
-    pub fn remove(&mut self, node: &PlainNodeId) {
-        self.0.remove(node);
+    pub fn remove(&mut self, node: &PlainNodeId) -> bool {
+        self.0.remove(node)
     }
 
     pub fn is_empty(&self) -> bool {

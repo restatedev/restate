@@ -46,6 +46,7 @@ restate-ingress-http = { path = "crates/ingress-http" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
 restate-invoker-api = { path = "crates/invoker-api" }
 restate-invoker-impl = { path = "crates/invoker-impl" }
+restate-local-cluster-runner = { path = "crates/local-cluster-runner" }
 restate-log-server = { path = "crates/log-server" }
 restate-metadata-store = { path = "crates/metadata-store" }
 restate-node = { path = "crates/node" }
@@ -131,7 +132,7 @@ metrics = { version = "0.23" }
 metrics-exporter-prometheus = { version = "0.15", default-features = false, features = [
     "async-runtime",
 ] }
-moka = "0.12.5"
+moka = { version = "0.12.8" }
 once_cell = "1.18"
 opentelemetry = { version = "0.24.0" }
 opentelemetry-http = { version = "0.13.0" }
