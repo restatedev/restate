@@ -31,6 +31,7 @@ use crate::providers::replicated_loglet::tasks::{FindTailTask, SealTask};
 
 use super::error::ReplicatedLogletError;
 use super::log_server_manager::RemoteLogServerManager;
+use super::read_path::{ReadStreamTask, ReplicatedLogletReadStream};
 use super::record_cache::RecordCache;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
 use super::tasks::FindTailResult;
@@ -128,11 +129,30 @@ pub enum SequencerAccess<T> {
 impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     async fn create_read_stream(
         self: Arc<Self>,
-        _filter: KeyFilter,
-        _from: LogletOffset,
-        _to: Option<LogletOffset>,
+        filter: KeyFilter,
+        from: LogletOffset,
+        to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError> {
-        todo!()
+        let cache = self.record_cache.clone();
+        let known_global_tail = self.known_global_tail.clone();
+        let my_params = self.my_params.clone();
+        let networking = self.networking.clone();
+        let logservers_rpc = self.logservers_rpc.clone();
+
+        let (rx_stream, reader_task) = ReadStreamTask::start(
+            my_params,
+            networking,
+            logservers_rpc,
+            filter,
+            from,
+            to,
+            known_global_tail,
+            cache,
+        )
+        .await?;
+        let read_stream = ReplicatedLogletReadStream::new(from, rx_stream, reader_task);
+
+        Ok(Box::pin(read_stream))
     }
 
     fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
@@ -181,7 +201,8 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
-        todo!()
+        // todo(asoli): Implement trim
+        Ok(None)
     }
 
     /// Trim the log to the minimum of new_trim_point and last_committed_offset
@@ -324,6 +345,7 @@ mod tests {
                 cached_record.unwrap().keys().clone(),
                 matches_pattern!(Keys::Single(eq(1)))
             );
+
             Ok(())
         })
         .await
@@ -367,6 +389,55 @@ mod tests {
             assert_that!(tail, eq(TailState::Sealed(LogletOffset::new(7))));
 
             Ok(())
+        })
+        .await
+    }
+
+    // ** Single-node replicated-loglet read-stream **
+    #[test(tokio::test(start_paused = true))]
+    async fn replicated_loglet_single_loglet_readstream() -> Result<()> {
+        let loglet_id = ReplicatedLogletId::new(122);
+        let params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+            write_set: None,
+        };
+        run_in_test_env(params, |env| {
+            crate::loglet::loglet_tests::single_loglet_readstream(env.loglet)
+        })
+        .await
+    }
+
+    #[test(tokio::test(start_paused = true))]
+    async fn replicated_loglet_single_append_after_seal() -> Result<()> {
+        let loglet_id = ReplicatedLogletId::new(122);
+        let params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+            write_set: None,
+        };
+        run_in_test_env(params, |env| {
+            crate::loglet::loglet_tests::append_after_seal(env.loglet)
+        })
+        .await
+    }
+
+    #[test(tokio::test(start_paused = true))]
+    async fn replicated_loglet_single_append_after_seal_concurrent() -> Result<()> {
+        let loglet_id = ReplicatedLogletId::new(122);
+        let params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+            write_set: None,
+        };
+        run_in_test_env(params, |env| {
+            crate::loglet::loglet_tests::append_after_seal_concurrent(env.loglet)
         })
         .await
     }

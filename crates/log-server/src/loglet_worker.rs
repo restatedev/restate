@@ -391,7 +391,7 @@ impl<S: LogStore> LogletWorker<S> {
         // fails on shutdown, in this case, we ignore the request
         let _ = self.task_center.spawn(
             TaskKind::Disposable,
-            "loglet-tail-monitor",
+            "logserver-tail-monitor",
             None,
             async move {
                 let (reciprocal, msg) = msg.split();
@@ -431,9 +431,11 @@ impl<S: LogStore> LogletWorker<S> {
         let mut log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
         // fails on shutdown, in this case, we ignore the request
-        let _ = self
-            .task_center
-            .spawn(TaskKind::Disposable, "loglet-read", None, async move {
+        let _ = self.task_center.spawn(
+            TaskKind::Disposable,
+            "logserver-get-records",
+            None,
+            async move {
                 let (reciprocal, msg) = msg.split();
                 let from_offset = msg.from_offset;
                 // validate that from_offset <= to_offset
@@ -456,7 +458,8 @@ impl<S: LogStore> LogletWorker<S> {
                 // ship the response to the original connection
                 let _ = reciprocal.prepare(records).send().await;
                 Ok(())
-            });
+            },
+        );
     }
 
     fn process_trim(&mut self, msg: Incoming<Trim>) {
@@ -469,7 +472,7 @@ impl<S: LogStore> LogletWorker<S> {
         let mut log_store = self.log_store.clone();
         let _ = self
             .task_center
-            .spawn(TaskKind::Disposable, "loglet-trim", None, async move {
+            .spawn(TaskKind::Disposable, "logserver-trim", None, async move {
                 let loglet_id = msg.body().header.loglet_id;
                 let new_trim_point = msg.body().trim_point;
                 // cannot trim beyond the global known tail (if known) or the local_tail whichever is higher.

@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 use std::sync::Weak;
+use std::time::Duration;
 use std::time::Instant;
 
 use enum_map::{enum_map, EnumMap};
@@ -161,6 +162,25 @@ impl OwnedConnection {
     pub async fn reserve<M>(&self) -> Option<SendPermit<'_, M>> {
         let permit = self.sender.reserve().await.ok()?;
         Some(SendPermit {
+            permit,
+            protocol_version: self.protocol_version,
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
+    /// Allocates capacity to send one message on this connection within a timeout.
+    /// If connection is closed, this returns Ok(None).
+    pub async fn reserve_timeout<M>(
+        &self,
+        timeout: Duration,
+    ) -> Result<SendPermit<'_, M>, NetworkError> {
+        let permit = tokio::time::timeout(timeout, self.sender.reserve())
+            .await
+            .map_err(|_| {
+                NetworkError::Timeout("deadline exceeded while waiting for network send capacity")
+            })?
+            .map_err(|_| NetworkError::ConnectionClosed)?;
+        Ok(SendPermit {
             permit,
             protocol_version: self.protocol_version,
             _phantom: std::marker::PhantomData,
