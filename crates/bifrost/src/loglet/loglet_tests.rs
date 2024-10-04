@@ -19,6 +19,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_stream::StreamExt;
 use tracing::info;
 
+use restate_core::{task_center, TaskHandle, TaskKind};
 use restate_test_util::let_assert;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber, TailState};
@@ -117,37 +118,39 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     // read from the future returns None
     assert!(loglet.read_opt(Lsn::new(end)).await?.is_none());
 
-    let handle1: JoinHandle<googletest::Result<()>> = tokio::spawn({
-        let loglet = loglet.clone();
-        async move {
-            // read future record 4
-            let record = loglet.read(Lsn::new(4)).await?;
-            assert_that!(record.sequence_number(), eq(Lsn::new(4)));
-            assert!(record.is_data_record());
-            assert_that!(
-                record.decode_unchecked::<String>(),
-                eq("record4".to_owned())
-            );
-            Ok(())
-        }
-    });
+    let handle1: TaskHandle<googletest::Result<()>> =
+        task_center().spawn_unmanaged(TaskKind::TestRunner, "read", None, {
+            let loglet = loglet.clone();
+            async move {
+                // read future record 4
+                let record = loglet.read(Lsn::new(4)).await?;
+                assert_that!(record.sequence_number(), eq(Lsn::new(4)));
+                assert!(record.is_data_record());
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq("record4".to_owned())
+                );
+                Ok(())
+            }
+        })?;
 
     // Waiting for 10
-    let handle2: JoinHandle<googletest::Result<()>> = tokio::spawn({
-        let loglet = loglet.clone();
-        async move {
-            // read future record 10
-            let record = loglet.read(Lsn::new(10)).await?;
-            assert_that!(record.sequence_number(), eq(Lsn::new(10)));
-            assert!(record.is_data_record());
-            assert_that!(
-                record.decode_unchecked::<String>(),
-                eq("record10".to_owned())
-            );
+    let handle2: TaskHandle<googletest::Result<()>> =
+        task_center().spawn_unmanaged(TaskKind::TestRunner, "read", None, {
+            let loglet = loglet.clone();
+            async move {
+                // read future record 10
+                let record = loglet.read(Lsn::new(10)).await?;
+                assert_that!(record.sequence_number(), eq(Lsn::new(10)));
+                assert!(record.is_data_record());
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq("record10".to_owned())
+                );
 
-            Ok(())
-        }
-    });
+                Ok(())
+            }
+        })?;
 
     // Giving a chance to other tasks to work.
     tokio::task::yield_now().await;
@@ -437,41 +440,47 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
         assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
+
     // +1 for the main task waiting on all concurrent appenders
     let append_barrier = Arc::new(Barrier::new(CONCURRENT_APPENDERS + 1));
 
     let mut appenders: JoinSet<googletest::Result<_>> = JoinSet::new();
+    let tc = task_center();
     for appender_id in 0..CONCURRENT_APPENDERS {
         appenders.spawn({
             let loglet = loglet.clone();
             let append_barrier = append_barrier.clone();
+            let tc = tc.clone();
             async move {
-                let mut i = 1;
-                let mut committed = Vec::new();
-                let mut warmup = true;
-                loop {
-                    let res = loglet
-                        .append(format!("appender-{}-record{}", appender_id, i).into())
-                        .await;
-                    i += 1;
-                    if i > WARMUP_APPENDS && warmup {
-                        println!("appender({}) - warmup complete....", appender_id);
-                        append_barrier.wait().await;
-                        warmup = false;
-                    }
-                    match res {
-                        Ok(offset) => {
-                            committed.push(offset);
+                tc.run_in_scope("append", None, async move {
+                    let mut i = 1;
+                    let mut committed = Vec::new();
+                    let mut warmup = true;
+                    loop {
+                        let res = loglet
+                            .append(format!("appender-{}-record{}", appender_id, i).into())
+                            .await;
+                        i += 1;
+                        if i > WARMUP_APPENDS && warmup {
+                            println!("appender({}) - warmup complete....", appender_id);
+                            append_barrier.wait().await;
+                            warmup = false;
                         }
-                        Err(AppendError::Sealed) => {
-                            break;
+                        match res {
+                            Ok(offset) => {
+                                committed.push(offset);
+                            }
+                            Err(AppendError::Sealed) => {
+                                break;
+                            }
+                            Err(e) => fail!("unexpected error: {}", e)?,
                         }
-                        Err(e) => fail!("unexpected error: {}", e)?,
+                        // give a chance to other tasks to work
+                        tokio::task::yield_now().await;
                     }
-                    // give a chance to other tasks to work
-                    tokio::task::yield_now().await;
-                }
-                Ok(committed)
+                    Ok(committed)
+                })
+                .await
             }
         });
     }

@@ -287,7 +287,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     continue;
                 }
                 StoreTaskStatus::Sealed(_) => {
-                    tracing::trace!(node_id=%server.node_id(), "store task cancelled duo to sealing");
+                    tracing::trace!(node_id=%server.node_id(), "store task cancelled, the node is sealed");
                     continue;
                 }
                 StoreTaskStatus::Stored(stored) => stored,
