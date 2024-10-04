@@ -234,7 +234,8 @@ impl<T: TransportConnect> Scheduler<T> {
             scheduling_plan_builder.modify_partition(&partition_id, |target_state| {
                 if target_state.leader.is_none() {
                     target_state.leader = self.select_leader_from(&target_state.node_set);
-                    return true;
+                    // check whether we modified the leader
+                    return target_state.leader.is_some();
                 }
 
                 false
@@ -415,11 +416,6 @@ impl ObservedPartitionState {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::num::NonZero;
-    use std::sync::Arc;
-    use std::time::Duration;
-
     use futures::StreamExt;
     use googletest::matcher::{Matcher, MatcherResult};
     use googletest::matchers::{empty, eq};
@@ -427,12 +423,16 @@ mod tests {
     use http::Uri;
     use rand::prelude::ThreadRng;
     use rand::Rng;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::num::NonZero;
+    use std::sync::Arc;
+    use std::time::Duration;
     use test_log::test;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
 
     use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
-    use restate_core::{TaskCenterBuilder, TestCoreEnvBuilder};
+    use restate_core::{TaskCenterBuilder, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
@@ -689,6 +689,39 @@ mod tests {
         NodeState::Dead(DeadNode {
             last_seen_alive: None,
         })
+    }
+
+    #[test(tokio::test)]
+    async fn empty_leadership_changes_dont_modify_plan() -> googletest::Result<()> {
+        let test_env = TestCoreEnv::create_with_single_node(0, 0).await;
+        let tc = test_env.tc.clone();
+        let metadata_store_client = test_env.metadata_store_client.clone();
+        let networking = test_env.networking.clone();
+
+        test_env
+            .tc
+            .run_in_scope("test", None, async {
+                let initial_scheduling_plan = metadata_store_client
+                    .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+                    .await
+                    .expect("scheduling plan");
+                let mut scheduler =
+                    Scheduler::init(tc, metadata_store_client.clone(), networking).await?;
+
+                scheduler
+                    .on_cluster_state_update(Arc::new(ClusterState::empty()))
+                    .await?;
+
+                let scheduling_plan = metadata_store_client
+                    .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+                    .await
+                    .expect("scheduling plan");
+
+                assert_eq!(initial_scheduling_plan, scheduling_plan);
+
+                Ok(())
+            })
+            .await
     }
 
     #[test(tokio::test(start_paused = true))]

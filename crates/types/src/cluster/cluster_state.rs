@@ -57,6 +57,17 @@ impl ClusterState {
             NodeState::Dead(_) => Some(node_id),
         })
     }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn empty() -> Self {
+        ClusterState {
+            last_refreshed: None,
+            nodes_config_version: Version::INVALID,
+            partition_table_version: Version::INVALID,
+            logs_metadata_version: Version::INVALID,
+            nodes: BTreeMap::default(),
+        }
+    }
 }
 
 fn instant_to_proto(t: Instant) -> prost_types::Duration {
