@@ -27,7 +27,6 @@ use restate_types::{
     net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
     replicated_loglet::NodeSet,
 };
-use tracing::instrument;
 
 use super::{BatchExt, SequencerSharedState};
 use crate::{
@@ -45,8 +44,10 @@ enum SequencerAppenderState {
         // nodes that should be avoided by the spread selector
         graylist: NodeSet,
     },
-    Done,
     Backoff,
+    Done,
+    Sealed,
+    Cancelled,
 }
 
 /// Appender makes sure a batch of records will run to completion
@@ -90,12 +91,14 @@ impl<T: TransportConnect> SequencerAppender<T> {
         }
     }
 
-    #[instrument(
-        level="trace", 
+    #[tracing::instrument(
+        level="trace",
         skip(self),
         fields(
             loglet_id=%self.sequencer_shared_state.loglet_id(),
             first_offset=%self.first_offset,
+            to_offset=%self.records.last_offset(self.first_offset).unwrap(),
+            length=%self.records.len(),
         )
     )]
     pub async fn run(mut self) {
@@ -118,20 +121,19 @@ impl<T: TransportConnect> SequencerAppender<T> {
         let mut retry = retry_policy.iter();
 
         // this loop retries forever or until the task is cancelled
-        let is_cancelled = loop {
-            if cancellation.is_cancelled() {
-                break true;
-            }
-
+        let final_state = loop {
             state = match state {
-                SequencerAppenderState::Done => break false,
+                // termination conditions
+                SequencerAppenderState::Done
+                | SequencerAppenderState::Cancelled
+                | SequencerAppenderState::Sealed => break state,
                 SequencerAppenderState::Wave {
                     graylist: gray_list,
                 } => {
                     tokio::select! {
                         next_state = self.wave(gray_list) => {next_state},
                         _ = &mut cancelled => {
-                            break true;
+                            break SequencerAppenderState::Cancelled;
                         }
                     }
                 }
@@ -139,11 +141,15 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     // since backoff can be None, or run out of iterations,
                     // but appender should never give up we fall back to fixed backoff
                     let delay = retry.next().unwrap_or(DEFAULT_BACKOFF_TIME);
+                    tracing::info!(
+                        delay = ?delay,
+                        "Append wave failed, retrying with a new wave after delay"
+                    );
 
                     tokio::select! {
                         _ = tokio::time::sleep(delay) => {},
                         _ = &mut cancelled => {
-                            break true;
+                            break SequencerAppenderState::Cancelled;
                         }
                     };
 
@@ -154,10 +160,19 @@ impl<T: TransportConnect> SequencerAppender<T> {
             }
         };
 
-        if is_cancelled {
-            tracing::trace!("appender task cancelled");
-        } else {
-            tracing::trace!("appender task completed");
+        match final_state {
+            SequencerAppenderState::Done => {
+                tracing::trace!("appender task completed");
+            }
+            SequencerAppenderState::Cancelled => {
+                tracing::trace!("appender task cancelled");
+            }
+            SequencerAppenderState::Sealed => {
+                tracing::trace!("appender ended because of sealing");
+            }
+            _ => {
+                unreachable!()
+            }
         }
     }
 
@@ -219,15 +234,14 @@ impl<T: TransportConnect> SequencerAppender<T> {
     async fn send_wave(&mut self, spread_servers: Vec<RemoteLogServer>) -> SequencerAppenderState {
         let last_offset = self.records.last_offset(self.first_offset).unwrap();
 
-        let mut checker = NodeSetChecker::new(
+        let mut checker = NodeSetChecker::<NodeAttributes>::new(
             self.sequencer_shared_state.selector.nodeset(),
-            &self.networking.metadata().nodes_config_snapshot(),
+            &self.networking.metadata().nodes_config_ref(),
             self.sequencer_shared_state.selector.replication_property(),
         );
 
         // track the in flight server ids
         let mut pending_servers = NodeSet::empty();
-
         let mut store_tasks = FuturesUnordered::new();
 
         for server in spread_servers {
@@ -279,7 +293,8 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     continue;
                 }
                 StoreTaskStatus::Sealed(_) => {
-                    tracing::trace!(node_id=%server.node_id(), "store task cancelled duo to sealing");
+                    tracing::trace!(node_id=%server.node_id(), "store task cancelled, the node is sealed");
+                    checker.set_attribute(node_id, NodeAttributes::sealed());
                     continue;
                 }
                 StoreTaskStatus::Stored(stored) => stored,
@@ -290,7 +305,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 Status::Ok => {
                     // only if status is okay that we remove this node
                     // from the gray list, and move to replicated list
-                    checker.set_attribute(node_id, true);
+                    checker.set_attribute(node_id, NodeAttributes::committed());
                     pending_servers.remove(&node_id);
                 }
                 _ => {
@@ -299,7 +314,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 }
             }
 
-            if self.commit_resolver.is_some() && checker.check_write_quorum(|attr| *attr) {
+            if self.commit_resolver.is_some() && checker.check_write_quorum(|attr| attr.committed) {
                 // resolve the commit if not resolved yet
                 if let Some(resolver) = self.commit_resolver.take() {
                     self.sequencer_shared_state.record_cache.extend(
@@ -318,12 +333,36 @@ impl<T: TransportConnect> SequencerAppender<T> {
             }
         }
 
-        if checker.check_write_quorum(|attr| *attr) {
+        if checker.check_write_quorum(|attr| attr.committed) {
             SequencerAppenderState::Done
+        } else if checker.check_fmajority(|attr| attr.sealed).passed() {
+            SequencerAppenderState::Sealed
         } else {
             SequencerAppenderState::Wave {
                 graylist: pending_servers,
             }
+        }
+    }
+}
+
+#[derive(Default)]
+struct NodeAttributes {
+    committed: bool,
+    sealed: bool,
+}
+
+impl NodeAttributes {
+    fn committed() -> Self {
+        NodeAttributes {
+            committed: true,
+            sealed: false,
+        }
+    }
+
+    fn sealed() -> Self {
+        NodeAttributes {
+            committed: false,
+            sealed: true,
         }
     }
 }
