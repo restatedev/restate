@@ -93,7 +93,7 @@ impl RemoteLogServerManager {
             return Ok(current.clone());
         }
 
-        let connection = networking.node_connection(id.into()).await?;
+        let connection = networking.node_connection(id).await?;
         let server = RemoteLogServer {
             loglet_id: self.loglet_id,
             node_id: id,
@@ -142,7 +142,7 @@ impl RemoteLogServerManager {
             return Ok(());
         }
 
-        let connection = networking.node_connection(server.node_id.into()).await?;
+        let connection = networking.node_connection(server.node_id).await?;
         inner.connection = connection.clone();
         server.connection = connection.clone();
 
