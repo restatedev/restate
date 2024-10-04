@@ -52,6 +52,8 @@ fn default_cluster_name() -> String {
 pub enum ClusterStartError {
     #[error("Failed to start node {0}: {1}")]
     NodeStartError(usize, NodeStartError),
+    #[error("Admin node is not healthy after waiting 60 seconds")]
+    AdminUnhealthy,
     #[error("Failed to create cluster base directory: {0}")]
     CreateDirectory(io::Error),
     #[error("Failed to create metadata client: {0}")]
@@ -86,11 +88,17 @@ impl Cluster {
         );
 
         for (i, node) in nodes.into_iter().enumerate() {
-            started_nodes.push(
-                node.start_clustered(base_dir.as_path(), &cluster_name)
-                    .await
-                    .map_err(|err| ClusterStartError::NodeStartError(i, err))?,
-            )
+            let node = node
+                .start_clustered(base_dir.as_path(), &cluster_name)
+                .await
+                .map_err(|err| ClusterStartError::NodeStartError(i, err))?;
+            if node.admin_address().is_some() {
+                // admin nodes are needed for later nodes to bootstrap. we should wait until they are serving
+                if !node.wait_admin_healthy(Duration::from_secs(30)).await {
+                    return Err(ClusterStartError::AdminUnhealthy);
+                }
+            }
+            started_nodes.push(node)
         }
 
         Ok(StartedCluster {
