@@ -17,8 +17,8 @@ use restate_admin::cluster_controller::protobuf::{
     DescribeLogRequest, DescribeLogResponse, TailState,
 };
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{c_println, c_title};
 use restate_types::logs::metadata::{Chain, Segment};
 use restate_types::storage::StorageCodec;
 
@@ -51,6 +51,16 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
     };
     let response = client.describe_log(req).await?.into_inner();
 
+    c_title!("📋", format!("Log {}", response.log_id));
+
+    let mut table = Table::new_styled();
+    table.add_row(vec![
+        "Metadata version",
+        &format!("v{}", response.logs_version),
+    ]);
+    table.add_row(vec!["Trim point", &format!("{}", response.trim_point)]);
+    c_println!("{}", table);
+
     let mut chain_table = Table::new_styled();
     chain_table.set_styled_header(vec!["SEGMENT", "STATE", "BASE LSN", "TAIL LSN", "KIND"]);
 
@@ -59,16 +69,17 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
 
     let tail_base_lsn = chain.tail().base_lsn;
     for (idx, segment) in chain.iter().enumerate() {
-        let is_tail = segment.base_lsn == tail_base_lsn;
+        let is_tail_segment = segment.base_lsn == tail_base_lsn;
         chain_table.add_row(vec![
             Cell::new(idx),
-            render_segment_state(is_tail, &response),
-            render_base_lsn(is_tail, &segment),
-            render_tail_lsn(is_tail, &response),
+            render_segment_state(is_tail_segment, &response),
+            render_base_lsn(is_tail_segment, &segment),
+            render_tail_lsn(is_tail_segment, &response),
             Cell::new(format!("{:?}", segment.config.kind)),
         ]);
     }
-
+    c_println!();
+    c_println!("Segments");
     c_println!("{}", chain_table);
 
     Ok(())
@@ -90,8 +101,8 @@ fn render_tail_state(response: &DescribeLogResponse) -> Cell {
         .add_attribute(Attribute::Bold)
 }
 
-fn render_tail_lsn(is_tail: bool, response: &DescribeLogResponse) -> Cell {
-    if is_tail {
+fn render_tail_lsn(is_tail_segment: bool, response: &DescribeLogResponse) -> Cell {
+    if is_tail_segment {
         Cell::new(format!("{}", response.tail_offset))
             .fg(Color::Green)
             .add_attribute(Attribute::Bold)
@@ -100,8 +111,8 @@ fn render_tail_lsn(is_tail: bool, response: &DescribeLogResponse) -> Cell {
     }
 }
 
-fn render_base_lsn(is_tail: bool, segment: &Segment) -> Cell {
-    if is_tail {
+fn render_base_lsn(is_tail_segment: bool, segment: &Segment) -> Cell {
+    if is_tail_segment {
         Cell::new(format!("{}", segment.base_lsn))
             .fg(Color::Green)
             .add_attribute(Attribute::Bold)
