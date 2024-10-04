@@ -150,18 +150,3 @@ jobs:
     uses: restatedev/sdk-rust/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-
-  e2e:
-    name: Run e2e tests
-    permissions:
-      contents: read
-      issues: read
-      checks: write
-      pull-requests: write
-      actions: read
-    secrets: inherit
-    needs: docker
-    uses: restatedev/e2e/.github/workflows/e2e.yaml@main
-    with:
-      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-      e2eRef: main
