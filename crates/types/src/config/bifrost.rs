@@ -247,6 +247,7 @@ pub struct ReplicatedLogletOptions {
     pub record_cache_memory_size: ByteCount,
 }
 
+#[cfg(feature = "replicated-loglet")]
 impl Default for ReplicatedLogletOptions {
     fn default() -> Self {
         Self {
