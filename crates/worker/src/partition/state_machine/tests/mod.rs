@@ -68,6 +68,7 @@ use restate_types::state_mut::ExternalStateMutation;
 use restate_types::{ingress, GenerationalNodeId};
 use std::collections::{HashMap, HashSet};
 use test_log::test;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 pub struct TestEnv {
     #[allow(dead_code)]
@@ -91,6 +92,7 @@ impl TestEnv {
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
             SourceTable::Old,
+            false,
         ))
         .await
     }
@@ -102,6 +104,22 @@ impl TestEnv {
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
             SourceTable::New,
+            false,
+        ))
+        .await
+    }
+
+    pub async fn create_with_options(
+        source_table: SourceTable,
+        disable_idempotency_table: bool,
+    ) -> Self {
+        Self::create_with_state_machine(StateMachine::new(
+            0,    /* inbox_seq_number */
+            0,    /* outbox_seq_number */
+            None, /* outbox_head_seq_number */
+            PartitionKey::MIN..=PartitionKey::MAX,
+            source_table,
+            disable_idempotency_table,
         ))
         .await
     }
@@ -109,6 +127,28 @@ impl TestEnv {
     pub async fn create_with_state_machine(
         state_machine: StateMachine<ProtobufRawEntryCodec>,
     ) -> Self {
+        // Try init logging, if not already initialized. This removes the need for the test_log macro
+        let _ = tracing_subscriber::FmtSubscriber::builder().with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_span_events(  match std::env::var_os("RUST_LOG_SPAN_EVENTS") {
+                Some(mut value) => {
+                    value.make_ascii_lowercase();
+                    let value = value.to_str().expect("test-log: RUST_LOG_SPAN_EVENTS must be valid UTF-8");
+                    value.split(",").map(|filter| match filter.trim() {
+                        "new" => FmtSpan::NEW,
+                        "enter" => FmtSpan::ENTER,
+                        "exit" => FmtSpan::EXIT,
+                        "close" => FmtSpan::CLOSE,
+                        "active" => FmtSpan::ACTIVE,
+                        "full" => FmtSpan::FULL,
+                        _ => panic!("test-log: RUST_LOG_SPAN_EVENTS must contain filters separated by `,`.\n\t\
+                  For example: `active` or `new,close`\n\t\
+                  Supported filters: new, enter, exit, close, active, full\n\t\
+                  Got: {}", value),
+                    }).fold(FmtSpan::NONE, |acc, filter| filter | acc)
+                }
+                None => FmtSpan::NONE,
+            }).with_test_writer().try_init();
+
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
             .ingress_runtime_handle(tokio::runtime::Handle::current())
@@ -869,6 +909,7 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
             Some(outbox_head_index),
             PartitionKey::MIN..=PartitionKey::MAX,
             SourceTable::New,
+            false,
         ))
         .await;
 

@@ -51,6 +51,9 @@ pub struct WorkerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     experimental_feature_new_invocation_status_table: bool,
 
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    experimental_feature_disable_idempotency_table: bool,
+
     pub storage: StorageOptions,
 
     pub invoker: InvokerOptions,
@@ -85,6 +88,10 @@ impl WorkerOptions {
     pub fn experimental_feature_new_invocation_status_table(&self) -> bool {
         self.experimental_feature_new_invocation_status_table
     }
+
+    pub fn experimental_feature_disable_idempotency_table(&self) -> bool {
+        self.experimental_feature_disable_idempotency_table
+    }
 }
 
 impl Default for WorkerOptions {
@@ -94,6 +101,7 @@ impl Default for WorkerOptions {
             num_timers_in_memory_limit: None,
             cleanup_interval: Duration::from_secs(60 * 60).into(),
             experimental_feature_new_invocation_status_table: false,
+            experimental_feature_disable_idempotency_table: false,
             storage: StorageOptions::default(),
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(4).expect("Non zero number"),
