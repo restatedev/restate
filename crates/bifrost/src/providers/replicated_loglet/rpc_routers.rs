@@ -13,7 +13,9 @@
 
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::MessageRouterBuilder;
-use restate_types::net::log_server::{GetLogletInfo, GetRecords, Release, Seal, Store, Trim};
+use restate_types::net::log_server::{
+    GetLogletInfo, GetRecords, Release, Seal, Store, Trim, WaitForTail,
+};
 use restate_types::net::replicated_loglet::Append;
 
 /// Used by replicated loglets to send requests and receive responses from log-servers
@@ -26,6 +28,7 @@ pub struct LogServersRpc {
     pub seal: RpcRouter<Seal>,
     pub get_loglet_info: RpcRouter<GetLogletInfo>,
     pub get_records: RpcRouter<GetRecords>,
+    pub wait_for_tail: RpcRouter<WaitForTail>,
 }
 
 impl LogServersRpc {
@@ -38,6 +41,7 @@ impl LogServersRpc {
         let seal = RpcRouter::new(router_builder);
         let get_loglet_info = RpcRouter::new(router_builder);
         let get_records = RpcRouter::new(router_builder);
+        let wait_for_tail = RpcRouter::new(router_builder);
 
         Self {
             store,
@@ -46,6 +50,7 @@ impl LogServersRpc {
             seal,
             get_loglet_info,
             get_records,
+            wait_for_tail,
         }
     }
 }

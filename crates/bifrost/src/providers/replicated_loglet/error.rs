@@ -22,6 +22,8 @@ use crate::loglet::OperationError;
 pub(crate) enum ReplicatedLogletError {
     #[error("cannot parse loglet configuration for log_id={0} at segment_index={1}: {2}")]
     LogletParamsParsingError(LogId, SegmentIndex, serde_json::Error),
+    #[error("cannot find the tail of the loglet: {0}")]
+    FindTailFailed(String),
     #[error("could not seal loglet_id={0}, insufficient nodes available for seal")]
     SealFailed(ReplicatedLogletId),
     #[error(transparent)]
@@ -33,6 +35,7 @@ impl MaybeRetryableError for ReplicatedLogletError {
         match self {
             Self::LogletParamsParsingError(..) => false,
             Self::SealFailed(..) => true,
+            Self::FindTailFailed(..) => true,
             Self::Shutdown(_) => false,
         }
     }

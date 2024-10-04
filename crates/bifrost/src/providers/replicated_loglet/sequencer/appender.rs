@@ -266,7 +266,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     .live_load()
                     .bifrost
                     .replicated_loglet
-                    .log_server_timeout,
+                    .log_server_rpc_timeout,
                 store_tasks.next(),
             )
             .await

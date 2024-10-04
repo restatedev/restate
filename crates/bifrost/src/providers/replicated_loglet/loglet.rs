@@ -27,11 +27,13 @@ use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
 use crate::providers::replicated_loglet::replication::spread_selector::SelectorStrategy;
 use crate::providers::replicated_loglet::sequencer::Sequencer;
-use crate::providers::replicated_loglet::tasks::SealTask;
+use crate::providers::replicated_loglet::tasks::{FindTailTask, SealTask};
 
+use super::error::ReplicatedLogletError;
 use super::log_server_manager::RemoteLogServerManager;
 use super::record_cache::RecordCache;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
+use super::tasks::FindTailResult;
 
 #[derive(derive_more::Debug)]
 pub(super) struct ReplicatedLoglet<T> {
@@ -153,7 +155,27 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         match self.sequencer {
             SequencerAccess::Local { .. } => Ok(*self.known_global_tail.get()),
             SequencerAccess::Remote { .. } => {
-                todo!("find_tail() is not implemented yet")
+                let task = FindTailTask::new(
+                    task_center(),
+                    self.my_params.clone(),
+                    self.networking.clone(),
+                    self.logservers_rpc.clone(),
+                    self.known_global_tail.clone(),
+                );
+                let tail_status = task.run().await;
+                match tail_status {
+                    FindTailResult::Open { global_tail } => {
+                        self.known_global_tail.notify_offset_update(global_tail);
+                        Ok(*self.known_global_tail.get())
+                    }
+                    FindTailResult::Sealed { global_tail } => {
+                        self.known_global_tail.notify(true, global_tail);
+                        Ok(*self.known_global_tail.get())
+                    }
+                    FindTailResult::Error(reason) => {
+                        Err(ReplicatedLogletError::FindTailFailed(reason).into())
+                    }
+                }
             }
         }
     }
