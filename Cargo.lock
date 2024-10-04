@@ -4072,6 +4072,7 @@ dependencies = [
  "crossbeam-channel",
  "crossbeam-epoch",
  "crossbeam-utils",
+ "log",
  "once_cell",
  "parking_lot",
  "quanta",
@@ -5565,6 +5566,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
+ "xxhash-rust",
 ]
 
 [[package]]

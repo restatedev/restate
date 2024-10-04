@@ -10,7 +10,7 @@
 
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::net::RpcRequest;
@@ -340,6 +340,24 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
             connection.reserve().await,
             NetworkError::ConnectionClosed
         );
+
+        with_metadata(|metadata| {
+            permit.send(self, metadata);
+        });
+        CONNECTION_SEND_DURATION.record(send_start.elapsed());
+        Ok(())
+    }
+
+    /// Sends a message with timeout limit. Returns [`NetworkError::Timeout`] if deadline exceeded while waiting for capacity
+    /// on the assigned connection or returns [`NetworkError::ConnectionClosed`] immediately if the
+    /// assigned connection is no longer valid.
+    pub async fn send_timeout(self, timeout: Duration) -> Result<(), NetworkSendError<Self>> {
+        let send_start = Instant::now();
+        let connection = bail_on_error!(self, self.try_upgrade());
+        let permit = match connection.reserve_timeout(timeout).await {
+            Ok(permit) => permit,
+            Err(e) => return Err(NetworkSendError::new(self, e)),
+        };
 
         with_metadata(|metadata| {
             permit.send(self, metadata);
