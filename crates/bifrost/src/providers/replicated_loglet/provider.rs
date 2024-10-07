@@ -121,8 +121,13 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
             active_loglets: Default::default(),
             _metadata_store_client: metadata_store_client,
             networking,
-            // todo(asoli): read memory budget from ReplicatedLogletOptions
-            record_cache: RecordCache::new(20_000_000), // 20MB
+            record_cache: RecordCache::new(
+                Configuration::pinned()
+                    .bifrost
+                    .replicated_loglet
+                    .record_cache_memory_size
+                    .as_usize(),
+            ),
             logserver_rpc_routers,
             sequencer_rpc_routers,
         }

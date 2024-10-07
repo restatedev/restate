@@ -27,27 +27,39 @@ type RecordKey = (ReplicatedLogletId, LogletOffset);
 /// RemoteSequencers
 #[derive(Clone)]
 pub struct RecordCache {
-    inner: Cache<RecordKey, Record>,
+    inner: Option<Cache<RecordKey, Record>>,
 }
 
 impl RecordCache {
+    /// Creates a new instance of RecordCache. If memory budget is None
+    /// cache will be disabled
     pub fn new(memory_budget_bytes: usize) -> Self {
-        let inner: Cache<RecordKey, Record> = CacheBuilder::default()
-            .weigher(|_, record: &Record| {
-                (size_of::<RecordKey>() + record.estimated_encode_size())
-                    .try_into()
-                    .unwrap_or(u32::MAX)
-            })
-            .max_capacity(memory_budget_bytes.try_into().unwrap_or(u64::MAX))
-            .eviction_policy(EvictionPolicy::lru())
-            .build();
+        let inner = if memory_budget_bytes > 0 {
+            Some(
+                CacheBuilder::default()
+                    .weigher(|_, record: &Record| {
+                        (size_of::<RecordKey>() + record.estimated_encode_size())
+                            .try_into()
+                            .unwrap_or(u32::MAX)
+                    })
+                    .max_capacity(memory_budget_bytes.try_into().unwrap_or(u64::MAX))
+                    .eviction_policy(EvictionPolicy::lru())
+                    .build(),
+            )
+        } else {
+            None
+        };
 
         Self { inner }
     }
 
     /// Writes a record to cache externally
     pub fn add(&self, loglet_id: ReplicatedLogletId, offset: LogletOffset, record: Record) {
-        self.inner.insert((loglet_id, offset), record);
+        let Some(ref inner) = self.inner else {
+            return;
+        };
+
+        inner.insert((loglet_id, offset), record);
     }
 
     /// Extend cache with records
@@ -57,14 +69,20 @@ impl RecordCache {
         mut first_offset: LogletOffset,
         records: I,
     ) {
+        let Some(ref inner) = self.inner else {
+            return;
+        };
+
         for record in records.as_ref() {
-            self.inner.insert((loglet_id, first_offset), record.clone());
+            inner.insert((loglet_id, first_offset), record.clone());
             first_offset = first_offset.next();
         }
     }
 
     /// Get a for given loglet id and offset.
     pub fn get(&self, loglet_id: ReplicatedLogletId, offset: LogletOffset) -> Option<Record> {
-        self.inner.get(&(loglet_id, offset))
+        let inner = self.inner.as_ref()?;
+
+        inner.get(&(loglet_id, offset))
     }
 }
