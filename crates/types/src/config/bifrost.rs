@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
 use crate::logs::metadata::ProviderKind;
@@ -237,6 +237,14 @@ pub struct ReplicatedLogletOptions {
     ///
     /// Retry policy for log server RPCs
     pub log_server_retry_policy: RetryPolicy,
+
+    /// # In-memory RecordCache memory limit
+    ///
+    /// Optional size of record cache in bytes.
+    /// If set to 0, record cache will be disabled.
+    /// Defaults: 20M
+    #[cfg_attr(feature = "schemars", schemars(with = "ByteCount"))]
+    pub record_cache_memory_size: ByteCount,
 }
 
 impl Default for ReplicatedLogletOptions {
@@ -257,6 +265,7 @@ impl Default for ReplicatedLogletOptions {
                 Some(10),
                 Some(Duration::from_millis(2000)),
             ),
+            record_cache_memory_size: 20_000_000u64.into(), // 20MB
         }
     }
 }
