@@ -394,9 +394,9 @@ impl Node {
                 "admin-init",
                 None,
                 admin_role.start(
-                    config.common.allow_bootstrap,
                     bifrost.clone(),
                     all_partitions_started_tx,
+                    config.common.advertised_address.clone(),
                 ),
             )?;
 
