@@ -95,6 +95,12 @@ impl TailOffsetWatch {
             .map_err(|_| ShutdownError)
     }
 
+    pub fn subscribe(&self) -> watch::Receiver<TailState<LogletOffset>> {
+        let mut receiver = self.sender.subscribe();
+        receiver.mark_changed();
+        receiver
+    }
+
     /// The first yielded value is the latest known tail
     pub fn to_stream(&self) -> WatchStream<TailState<LogletOffset>> {
         let mut receiver = self.sender.subscribe();
