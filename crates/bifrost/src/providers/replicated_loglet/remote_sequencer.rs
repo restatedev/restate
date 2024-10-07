@@ -169,7 +169,7 @@ where
 
         let connection = self
             .networking
-            .node_connection(self.params.sequencer.into())
+            .node_connection(self.params.sequencer)
             .await?;
         let connection =
             RemoteSequencerConnection::start(self.known_global_tail.clone(), connection)?;
@@ -195,7 +195,7 @@ where
 
         let connection = self
             .networking
-            .node_connection(self.params.sequencer.into())
+            .node_connection(self.params.sequencer)
             .await?;
 
         let connection =
