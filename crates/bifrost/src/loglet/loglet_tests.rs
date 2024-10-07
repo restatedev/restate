@@ -24,7 +24,7 @@ use restate_test_util::let_assert;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber, TailState};
 
-use super::{Loglet, LogletOffset};
+use super::Loglet;
 use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::setup_panic_handler;
@@ -574,11 +574,12 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
 /// Validates that an empty loglet can be sealed
 pub async fn seal_empty(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     setup_panic_handler();
+    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
 
@@ -589,19 +590,19 @@ pub async fn seal_empty(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
             .next()
             .await
             .expect("get the last known tail immediately");
-        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
 
     loglet.seal().await?;
     let tail = loglet.find_tail().await?;
-    assert_eq!(LogletOffset::OLDEST, tail.offset());
+    assert_eq!(Lsn::OLDEST, tail.offset());
     assert!(tail.is_sealed());
 
     {
         // last known tail should be immediately available through the tail watch
         let tail = watch.next().await.expect("see the sealed tail");
-        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(tail.is_sealed());
     }
 

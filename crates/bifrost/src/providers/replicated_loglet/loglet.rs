@@ -447,4 +447,20 @@ mod tests {
         })
         .await
     }
+
+    #[test(tokio::test(start_paused = true))]
+    async fn replicated_loglet_single_seal_empty() -> Result<()> {
+        let loglet_id = ReplicatedLogletId::new(122);
+        let params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+            write_set: None,
+        };
+        run_in_test_env(params, |env| {
+            crate::loglet::loglet_tests::seal_empty(env.loglet)
+        })
+        .await
+    }
 }
