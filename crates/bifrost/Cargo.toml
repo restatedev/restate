@@ -11,13 +11,14 @@ publish = false
 default = []
 replicated-loglet = ["restate-types/replicated-loglet"]
 memory-loglet = ["restate-types/memory-loglet"]
-test-util = ["memory-loglet"]
+test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util"]
 
 [dependencies]
 restate-core = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 restate-metadata-store = { workspace = true }
+restate-test-util = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -26,6 +27,7 @@ dashmap = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
+googletest = { workspace = true, features = ["anyhow"], optional = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }
@@ -46,12 +48,10 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-log-server = { workspace = true }
 restate-metadata-store = { workspace = true }
-restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
 criterion = { workspace = true, features = ["async_tokio"] }
 enumset = { workspace = true }
-googletest = { workspace = true, features = ["anyhow"] }
 paste = { workspace = true }
 rlimit = { workspace = true }
 tempfile = { workspace = true }
