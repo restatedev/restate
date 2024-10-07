@@ -61,16 +61,7 @@ impl LogServerService {
         })
     }
 
-    pub async fn start(self, metadata_writer: MetadataWriter) -> anyhow::Result<()> {
-        let tc = self.task_center.clone();
-        tc.spawn(TaskKind::SystemService, "log-server", None, async {
-            self.run(metadata_writer).await
-        })?;
-
-        Ok(())
-    }
-
-    async fn run(self, mut metadata_writer: MetadataWriter) -> anyhow::Result<()> {
+    pub async fn start(self, mut metadata_writer: MetadataWriter) -> anyhow::Result<()> {
         let LogServerService {
             updateable_config,
             task_center,
@@ -103,8 +94,8 @@ impl LogServerService {
         .await?;
 
         task_center.spawn_child(
-            TaskKind::NetworkMessageHandler,
-            "log-server-req-pump",
+            TaskKind::SystemService,
+            "log-server",
             None,
             request_pump.run(log_store, storage_state),
         )?;
