@@ -14,6 +14,7 @@ mod loglet;
 pub(crate) mod metric_definitions;
 mod network;
 mod provider;
+mod read_path;
 #[allow(dead_code)]
 mod record_cache;
 #[allow(dead_code)]
