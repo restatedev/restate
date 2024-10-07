@@ -20,15 +20,19 @@ use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
 };
 use restate_wal_protocol::timer::TimerKeyValue;
+use rstest::*;
 use std::time::Duration;
-use test_log::test;
 
-#[test(tokio::test)]
-async fn start_workflow_method() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn start_workflow_method(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let invocation_target = InvocationTarget::mock_workflow();
-    let invocation_id = InvocationId::mock_random();
+    let invocation_id = InvocationId::mock_generate(&invocation_target);
     let node_id = GenerationalNodeId::new(1, 1);
     let request_id_1 = IngressRequestId::default();
     let request_id_2 = IngressRequestId::default();
@@ -54,20 +58,31 @@ async fn start_workflow_method() {
         }))
     );
 
-    // Assert service is locked
-    let mut txn = test_env.storage().transaction();
-    assert_that!(
-        txn.get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
-            .await
-            .unwrap(),
-        eq(VirtualObjectStatus::Locked(invocation_id))
-    );
-    txn.commit().await.unwrap();
+    // Assert service is locked only if we enable the idempotency table
+    if disable_idempotency_table {
+        assert_that!(
+            test_env
+                .storage()
+                .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
+                .await
+                .unwrap(),
+            eq(VirtualObjectStatus::Unlocked)
+        );
+    } else {
+        assert_that!(
+            test_env
+                .storage()
+                .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
+                .await
+                .unwrap(),
+            eq(VirtualObjectStatus::Locked(invocation_id))
+        );
+    }
 
     // Sending another invocation won't re-execute
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id: InvocationId::mock_random(),
+            invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 node_id,
@@ -200,12 +215,16 @@ async fn start_workflow_method() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
-async fn attach_by_workflow_key() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn attach_by_workflow_key(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let invocation_target = InvocationTarget::mock_workflow();
-    let invocation_id = InvocationId::mock_random();
+    let invocation_id = InvocationId::mock_generate(&invocation_target);
     let node_id = GenerationalNodeId::new(1, 1);
     let request_id_1 = IngressRequestId::default();
     let request_id_2 = IngressRequestId::default();
@@ -246,10 +265,13 @@ async fn attach_by_workflow_key() {
         .await;
     assert_that!(
         actions,
-        not(contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
-        })))
+        all!(
+            not(contains(pat!(Action::Invoke {
+                invocation_id: eq(invocation_id),
+                invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+            }))),
+            not(contains(pat!(Action::IngressResponse { .. })))
+        )
     );
 
     // Send output, then end
@@ -353,9 +375,13 @@ async fn attach_by_workflow_key() {
 }
 
 // TODO remove this once we remove the old invocation status table
-#[test(tokio::test)]
-async fn timer_cleanup() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn timer_cleanup(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
@@ -416,9 +442,13 @@ async fn timer_cleanup() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
-async fn purge_completed_workflow() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn purge_completed_workflow(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();

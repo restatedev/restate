@@ -77,6 +77,7 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
 
     num_timers_in_memory_limit: Option<usize>,
     enable_new_invocation_status_table: bool,
+    disable_idempotency_table: bool,
     cleanup_interval: Duration,
     channel_size: usize,
     max_command_batch_size: usize,
@@ -111,6 +112,7 @@ where
             num_timers_in_memory_limit: options.num_timers_in_memory_limit(),
             enable_new_invocation_status_table: options
                 .experimental_feature_new_invocation_status_table(),
+            disable_idempotency_table: options.experimental_feature_disable_idempotency_table(),
             cleanup_interval: options.cleanup_interval(),
             channel_size: options.internal_queue_length(),
             max_command_batch_size: options.max_command_batch_size(),
@@ -133,6 +135,7 @@ where
             num_timers_in_memory_limit,
             cleanup_interval,
             enable_new_invocation_status_table,
+            disable_idempotency_table,
             channel_size,
             max_command_batch_size,
             invoker_tx,
@@ -146,6 +149,7 @@ where
             &mut partition_store,
             partition_key_range.clone(),
             enable_new_invocation_status_table,
+            disable_idempotency_table,
         )
         .await?;
 
@@ -195,6 +199,7 @@ where
         partition_store: &mut PartitionStore,
         partition_key_range: RangeInclusive<PartitionKey>,
         enable_new_invocation_status_table: bool,
+        disable_idempotency_table: bool,
     ) -> Result<StateMachine<Codec>, StorageError>
     where
         Codec: RawEntryCodec + Default + Debug,
@@ -213,6 +218,7 @@ where
             } else {
                 invocation_status_table::SourceTable::Old
             },
+            disable_idempotency_table,
         );
 
         Ok(state_machine)
