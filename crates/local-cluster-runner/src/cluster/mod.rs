@@ -26,9 +26,9 @@ pub struct Cluster {
 }
 
 impl<C, N> ClusterBuilder<(C, N, ())> {
-    // Use a tempdir as the basedir; this will be removed on Cluster/StartedCluster drop.
-    // You may set LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true to instead log it out and retain
-    // it.
+    /// Use a tempdir as the basedir; this will be removed on Cluster/StartedCluster drop.
+    /// You may set LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true to instead log it out and retain
+    /// it.
     pub fn temp_base_dir(self) -> ClusterBuilder<(C, N, (MaybeTempDir,))> {
         let maybe_temp_dir = tempfile::tempdir().expect("to create a tempdir").into();
         let base_dir = (maybe_temp_dir,);
@@ -124,14 +124,14 @@ impl StartedCluster {
         &self.cluster_name
     }
 
-    // Send a SIGKILL to every node in the cluster
+    /// Send a SIGKILL to every node in the cluster
     pub async fn kill(&mut self) -> io::Result<()> {
         future::try_join_all(self.nodes.iter_mut().map(|n| n.kill()))
             .await
             .map(drop)
     }
 
-    // Send a SIGTERM to every node in the cluster
+    /// Send a SIGTERM to every node in the cluster
     pub fn terminate(&self) -> io::Result<()> {
         for node in &self.nodes {
             node.terminate()?
@@ -139,16 +139,16 @@ impl StartedCluster {
         Ok(())
     }
 
-    // Send a SIGTERM to every node in the cluster, then wait for `dur` for them to exit,
-    // otherwise send a SIGKILL to nodes that are still running.
+    /// Send a SIGTERM to every node in the cluster, then wait for `dur` for them to exit,
+    /// otherwise send a SIGKILL to nodes that are still running.
     pub async fn graceful_shutdown(&mut self, dur: Duration) -> io::Result<()> {
         future::try_join_all(self.nodes.iter_mut().map(|n| n.graceful_shutdown(dur)))
             .await
             .map(drop)
     }
 
-    // For every node in the cluster with an admin role, wait for up to dur for the admin endpoint
-    // to respond to health checks, otherwise return false.
+    /// For every node in the cluster with an admin role, wait for up to dur for the admin endpoint
+    /// to respond to health checks, otherwise return false.
     pub async fn wait_admins_healthy(&self, dur: Duration) -> bool {
         future::join_all(
             self.nodes
@@ -161,8 +161,8 @@ impl StartedCluster {
         .all(|b| b)
     }
 
-    // For every node in the cluster with an ingress role, wait for up to dur for the admin endpoint
-    // to respond to health checks, otherwise return false.
+    /// For every node in the cluster with an ingress role, wait for up to dur for the admin endpoint
+    /// to respond to health checks, otherwise return false.
     pub async fn wait_ingresses_healthy(&self, dur: Duration) -> bool {
         future::join_all(
             self.nodes
@@ -175,7 +175,7 @@ impl StartedCluster {
         .all(|b| b)
     }
 
-    // Wait for all ingress and admin endpoints in the cluster to be healthy
+    /// Wait for all ingress and admin endpoints in the cluster to be healthy
     pub async fn wait_healthy(&self, dur: Duration) -> bool {
         future::join(
             self.wait_admins_healthy(dur),

@@ -172,10 +172,10 @@ impl Node {
         nodes
     }
 
-    // Start this Node, providing the base_dir and the cluster_name of the cluster its
-    // expected to attach to. All relative file paths addresses specified in the node config
-    // (eg, nodename/node.sock) will be absolutized against the base path, and the base dir
-    // and cluster name present in config will be overwritten.
+    /// Start this Node, providing the base_dir and the cluster_name of the cluster its
+    /// expected to attach to. All relative file paths addresses specified in the node config
+    /// (eg, nodename/node.sock) will be absolutized against the base path, and the base dir
+    /// and cluster name present in config will be overwritten.
     pub async fn start_clustered(
         mut self,
         base_dir: impl Into<PathBuf>,
@@ -210,8 +210,8 @@ impl Node {
         self.start().await
     }
 
-    // Start this node with the current config. A subprocess will be created, and a tokio task
-    // spawned to process output logs and watch for exit.
+    /// Start this node with the current config. A subprocess will be created, and a tokio task
+    /// spawned to process output logs and watch for exit.
     pub async fn start(self) -> Result<StartedNode, NodeStartError> {
         let Self {
             base_config,
@@ -354,13 +354,13 @@ impl Node {
 pub enum BinarySource {
     Path(OsString),
     EnvVar(String),
-    // Suitable when called from a `cargo run` command, except examples.
-    // This will attempt to find a `restate-server` binary in the same directory
-    // as the current binary
+    /// Suitable when called from a `cargo run` command, except examples.
+    /// This will attempt to find a `restate-server` binary in the same directory
+    /// as the current binary
     CargoRun,
-    // Suitable when called from a `cargo test` or `cargo run --example` command;
-    // this will attempt to find a `restate-server` binary in the parent directory of
-    // the current binary.
+    /// Suitable when called from a `cargo test` or `cargo run --example` command;
+    /// this will attempt to find a `restate-server` binary in the parent directory of
+    /// the current binary.
     CargoTest,
 }
 
@@ -461,7 +461,7 @@ impl Future for StartedNodeStatus {
 }
 
 impl StartedNode {
-    // Send a SIGKILL to the current process, if it is running, and await for its exit
+    /// Send a SIGKILL to the current process, if it is running, and await for its exit
     pub async fn kill(&mut self) -> io::Result<ExitStatus> {
         match self.status {
             StartedNodeStatus::Exited(status) => Ok(status),
@@ -483,7 +483,7 @@ impl StartedNode {
         }
     }
 
-    // Send a SIGTERM to the current process, if it is running
+    /// Send a SIGTERM to the current process, if it is running
     pub fn terminate(&self) -> io::Result<()> {
         match self.status {
             StartedNodeStatus::Exited(_) => Ok(()),
@@ -503,7 +503,7 @@ impl StartedNode {
         }
     }
 
-    // Send a SIGTERM, then wait for `dur` for exit, otherwise send a SIGKILL
+    /// Send a SIGTERM, then wait for `dur` for exit, otherwise send a SIGKILL
     pub async fn graceful_shutdown(&mut self, dur: Duration) -> io::Result<ExitStatus> {
         match self.status {
             StartedNodeStatus::Exited(status) => Ok(status),
@@ -530,7 +530,7 @@ impl StartedNode {
         }
     }
 
-    // Get the pid of the subprocess. Returns none after it has exited.
+    /// Get the pid of the subprocess. Returns none after it has exited.
     pub fn pid(&self) -> Option<u32> {
         match self.status {
             StartedNodeStatus::Exited { .. } | StartedNodeStatus::Failed { .. } => None,
@@ -538,7 +538,7 @@ impl StartedNode {
         }
     }
 
-    // Wait for the node to exit and report its exist status
+    /// Wait for the node to exit and report its exist status
     pub async fn status(&mut self) -> io::Result<ExitStatus> {
         (&mut self.status).await
     }
@@ -579,8 +579,8 @@ impl StartedNode {
         }
     }
 
-    // Obtain a stream of loglines matching this pattern. The stream will end
-    // when the stdout and stderr files on the process close.
+    /// Obtain a stream of loglines matching this pattern. The stream will end
+    /// when the stdout and stderr files on the process close.
     pub fn lines(&self, pattern: Regex) -> impl Stream<Item = String> + '_ {
         match self.status {
             StartedNodeStatus::Exited { .. } => futures::stream::empty().left_stream(),
@@ -592,7 +592,7 @@ impl StartedNode {
         }
     }
 
-    // Obtain a metadata client based on this nodes client config.
+    /// Obtain a metadata client based on this nodes client config.
     pub async fn metadata_client(
         &self,
     ) -> Result<restate_metadata_store::MetadataStoreClient, GenericError> {
@@ -602,7 +602,7 @@ impl StartedNode {
         .await
     }
 
-    // Check to see if the admin address is healthy. Returns false if this node has no admin role.
+    /// Check to see if the admin address is healthy. Returns false if this node has no admin role.
     pub async fn admin_healthy(&self) -> bool {
         if let Some(address) = self.admin_address() {
             match reqwest::get(format!("http://{address}/health")).await {
@@ -614,8 +614,8 @@ impl StartedNode {
         }
     }
 
-    // Check every 250ms to see if the admin address is healthy, waiting for up to `timeout`.
-    // Returns false if this node has no admin role.
+    /// Check every 250ms to see if the admin address is healthy, waiting for up to `timeout`.
+    /// Returns false if this node has no admin role.
     pub async fn wait_admin_healthy(&self, timeout: Duration) -> bool {
         let mut attempts = 1;
         if tokio::time::timeout(timeout, async {
@@ -641,7 +641,7 @@ impl StartedNode {
         }
     }
 
-    // Check to see if the ingress address is healthy. Returns false if this node has no ingress role.
+    /// Check to see if the ingress address is healthy. Returns false if this node has no ingress role.
     pub async fn ingress_healthy(&self) -> bool {
         if let Some(address) = self.ingress_address() {
             match reqwest::get(format!("http://{address}/restate/health")).await {
@@ -653,8 +653,8 @@ impl StartedNode {
         }
     }
 
-    // Check every 250ms to see if the ingress address is healthy, waiting for up to `timeout`.
-    // Returns false if this node has no ingress role.
+    /// Check every 250ms to see if the ingress address is healthy, waiting for up to `timeout`.
+    /// Returns false if this node has no ingress role.
     pub async fn wait_ingress_healthy(&self, timeout: Duration) -> bool {
         let mut attempts = 1;
         if tokio::time::timeout(timeout, async {
