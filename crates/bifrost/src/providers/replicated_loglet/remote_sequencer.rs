@@ -27,7 +27,7 @@ use restate_core::{
 };
 use restate_types::{
     config::Configuration,
-    logs::{metadata::SegmentIndex, LogId, LogletOffset, Record},
+    logs::{metadata::SegmentIndex, LogId, Record},
     net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
     replicated_loglet::ReplicatedLogletParams,
     GenerationalNodeId,
