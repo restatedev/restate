@@ -25,7 +25,7 @@ async fn main() {
     let nodes = Node::new_test_nodes_with_metadata(
         base_config,
         BinarySource::CargoTest,
-        enum_set!(Role::Admin | Role::Worker),
+        enum_set!(Role::Worker),
         2,
     );
 
