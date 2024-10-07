@@ -12,6 +12,7 @@ use moka::{
     policy::EvictionPolicy,
     sync::{Cache, CacheBuilder},
 };
+use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_types::{
     logs::{LogletOffset, Record, SequenceNumber},
@@ -21,13 +22,13 @@ use restate_types::{
 /// Unique record key across different loglets.
 type RecordKey = (ReplicatedLogletId, LogletOffset);
 
-/// A placeholder for a global record cache.
+/// A a simple LRU-based record cache.
 ///
 /// This can be safely shared between all ReplicatedLoglet(s) and the LocalSequencers or the
 /// RemoteSequencers
 #[derive(Clone)]
 pub struct RecordCache {
-    inner: Option<Cache<RecordKey, Record>>,
+    inner: Option<Cache<RecordKey, Record, Xxh3Builder>>,
 }
 
 impl RecordCache {
@@ -37,6 +38,7 @@ impl RecordCache {
         let inner = if memory_budget_bytes > 0 {
             Some(
                 CacheBuilder::default()
+                    .name("ReplicatedLogRecordCache")
                     .weigher(|_, record: &Record| {
                         (size_of::<RecordKey>() + record.estimated_encode_size())
                             .try_into()
@@ -44,7 +46,7 @@ impl RecordCache {
                     })
                     .max_capacity(memory_budget_bytes.try_into().unwrap_or(u64::MAX))
                     .eviction_policy(EvictionPolicy::lru())
-                    .build(),
+                    .build_with_hasher(Xxh3Builder::default()),
             )
         } else {
             None
