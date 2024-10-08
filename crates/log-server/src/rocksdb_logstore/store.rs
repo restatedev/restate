@@ -355,7 +355,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
-    use restate_types::logs::{LogletOffset, Record, SequenceNumber};
+    use restate_types::logs::{LogletOffset, Record, RecordCache, SequenceNumber};
     use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
     use restate_types::replicated_loglet::ReplicatedLogletId;
     use restate_types::{GenerationalNodeId, PlainNodeId};
@@ -378,6 +378,7 @@ mod tests {
                 let builder = RocksDbLogStoreBuilder::create(
                     config.clone().map(|c| &c.log_server).boxed(),
                     config.map(|c| &c.log_server.rocksdb).boxed(),
+                    RecordCache::new(1_000_000),
                 )
                 .await?;
                 let log_store = builder.start(&tc).await?;

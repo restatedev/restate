@@ -40,6 +40,7 @@ hostname = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
 itertools = { workspace = true }
+moka = { workspace = true, features = ["sync", "logging"] }
 num-traits = { version = "0.2.17" }
 once_cell = { workspace = true }
 opentelemetry = { workspace = true }

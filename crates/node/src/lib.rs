@@ -13,6 +13,7 @@ mod network_server;
 mod roles;
 
 use restate_types::errors::GenericError;
+use restate_types::logs::RecordCache;
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -160,6 +161,14 @@ impl Node {
         metadata_manager.register_in_message_router(&mut router_builder);
         let updating_schema_information = metadata.updateable_schema();
 
+        #[cfg(feature = "replicated-loglet")]
+        let record_cache = RecordCache::new(
+            Configuration::pinned()
+                .bifrost
+                .record_cache_memory_size
+                .as_usize(),
+        );
+
         // Setup bifrost
         // replicated-loglet
         #[cfg(feature = "replicated-loglet")]
@@ -167,6 +176,7 @@ impl Node {
             tc.clone(),
             metadata_store_client.clone(),
             networking.clone(),
+            record_cache.clone(),
             &mut router_builder,
         );
         let bifrost_svc = BifrostService::new(tc.clone(), metadata.clone())
@@ -189,6 +199,7 @@ impl Node {
                     tc.clone(),
                     metadata.clone(),
                     metadata_store_client.clone(),
+                    record_cache,
                     &mut router_builder,
                 )
                 .await?,
