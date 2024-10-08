@@ -56,9 +56,10 @@ enum TargetName {
   LOG_SERVER_RECORDS = 19;
   LOG_SERVER_TRIM = 20;
   LOG_SERVER_TRIMMED = 21;
-
   LOG_SERVER_WAIT_FOR_TAIL = 22;
   LOG_SERVER_TAIL_UPDATED = 23;
+  LOG_SERVER_GET_DIGEST = 24;
+  LOG_SERVER_DIGEST = 25;
   // Reserving space for more log-server messages
   // ReplicatedLoglet
   REPLICATED_LOGLET_APPEND = 40;
