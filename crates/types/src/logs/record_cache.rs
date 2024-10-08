@@ -14,10 +14,8 @@ use moka::{
 };
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_types::{
-    logs::{LogletOffset, Record, SequenceNumber},
-    replicated_loglet::ReplicatedLogletId,
-};
+use super::{LogletOffset, Record, SequenceNumber};
+use crate::replicated_loglet::ReplicatedLogletId;
 
 /// Unique record key across different loglets.
 type RecordKey = (ReplicatedLogletId, LogletOffset);

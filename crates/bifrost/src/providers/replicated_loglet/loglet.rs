@@ -20,7 +20,9 @@ use tracing::{debug, info};
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{task_center, ShutdownError};
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{KeyFilter, LogId, LogletOffset, Record, SequenceNumber, TailState};
+use restate_types::logs::{
+    KeyFilter, LogId, LogletOffset, Record, RecordCache, SequenceNumber, TailState,
+};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use crate::loglet::util::TailOffsetWatch;
@@ -32,7 +34,6 @@ use crate::providers::replicated_loglet::tasks::{FindTailTask, SealTask};
 use super::error::ReplicatedLogletError;
 use super::log_server_manager::RemoteLogServerManager;
 use super::read_path::{ReadStreamTask, ReplicatedLogletReadStream};
-use super::record_cache::RecordCache;
 use super::remote_sequencer::RemoteSequencer;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
 use super::tasks::FindTailResult;
@@ -279,6 +280,7 @@ mod tests {
             node_env.tc.clone(),
             node_env.metadata.clone(),
             node_env.metadata_store_client.clone(),
+            record_cache.clone(),
             &mut node_env.router_builder,
         )
         .await?;

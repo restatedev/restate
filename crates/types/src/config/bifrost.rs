@@ -69,6 +69,14 @@ pub struct BifrostOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     append_retry_max_interval: humantime::Duration,
+
+    /// # In-memory RecordCache memory limit
+    ///
+    /// Optional size of record cache in bytes.
+    /// If set to 0, record cache will be disabled.
+    /// Defaults: 20M
+    #[cfg_attr(feature = "schemars", schemars(with = "ByteCount"))]
+    pub record_cache_memory_size: ByteCount,
 }
 
 impl BifrostOptions {
@@ -104,6 +112,7 @@ impl Default for BifrostOptions {
             append_retry_min_interval: Duration::from_millis(10).into(),
             append_retry_max_interval: Duration::from_secs(1).into(),
             seal_retry_interval: Duration::from_secs(2).into(),
+            record_cache_memory_size: 20_000_000u64.into(), // 20MB
         }
     }
 }
@@ -237,14 +246,6 @@ pub struct ReplicatedLogletOptions {
     ///
     /// Retry policy for log server RPCs
     pub log_server_retry_policy: RetryPolicy,
-
-    /// # In-memory RecordCache memory limit
-    ///
-    /// Optional size of record cache in bytes.
-    /// If set to 0, record cache will be disabled.
-    /// Defaults: 20M
-    #[cfg_attr(feature = "schemars", schemars(with = "ByteCount"))]
-    pub record_cache_memory_size: ByteCount,
 }
 
 #[cfg(feature = "replicated-loglet")]
@@ -266,7 +267,6 @@ impl Default for ReplicatedLogletOptions {
                 Some(10),
                 Some(Duration::from_millis(2000)),
             ),
-            record_cache_memory_size: 20_000_000u64.into(), // 20MB
         }
     }
 }
