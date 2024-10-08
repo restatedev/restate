@@ -19,7 +19,8 @@ use restate_types::config::LogServerOptions;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
-    Gap, GetRecords, LogServerResponseHeader, MaybeRecord, Records, Seal, Store, Trim,
+    Digest, DigestEntry, Gap, GetDigest, GetRecords, LogServerResponseHeader, MaybeRecord,
+    RecordStatus, Records, Seal, Store, Trim,
 };
 use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::GenerationalNodeId;
@@ -344,6 +345,142 @@ impl LogStore for RocksDbLogStore {
             records,
         })
     }
+
+    async fn get_records_digest(
+        &mut self,
+        msg: GetDigest,
+        loglet_state: &LogletState,
+    ) -> Result<Digest, OperationError> {
+        let data_cf = self.data_cf();
+        let loglet_id = msg.header.loglet_id;
+        // The order of operations is important to remain correct.
+        // The scenario that we want to avoid is the silent data loss. Although the
+        // replicated-loglet reader can ensure contiguous offset range and detect trim-point
+        // detection errors or data loss, we try to structure this to reduce the possibilities for
+        // errors as much as possible.
+        //
+        // If we are reading beyond the tail, the first thing we do is to clip to the
+        // local_tail.
+        let local_tail = loglet_state.local_tail();
+        let trim_point = loglet_state.trim_point();
+
+        // inclusive
+        let read_from = msg.from_offset.max(trim_point.next());
+        // exclusive
+        let read_until = msg.until_offset.min(local_tail.offset());
+
+        // allocate for near-worst-case.
+        let mut entries = Vec::with_capacity(
+            (*read_until)
+                .saturating_sub(*read_from)
+                .try_into()
+                .expect("usize >= u32"),
+        );
+
+        // Issue a trim gap until the known head
+        if read_from > msg.from_offset {
+            entries.push(DigestEntry {
+                from_offset: msg.from_offset,
+                until_offset: read_from,
+                status: RecordStatus::Trimmed,
+            });
+        }
+
+        // setup the iterator
+        let mut readopts = rocksdb::ReadOptions::default();
+        let oldest_key = DataRecordKey::new(loglet_id, read_from);
+        // exclusive bound
+        let upper_bound = DataRecordKey::new(loglet_id, read_until);
+        readopts.set_tailing(false);
+        // In some cases, the underlying ForwardIterator will fail if it hits a `RangeDelete` tombstone.
+        // For our purposes, we can ignore these tombstones, meaning that we will return those records
+        // instead of a gap.
+        // In summary, if loglet reader started before a trim point and data is readable, we should
+        // continue reading them. It's the responsibility of the upper layer to decide on a sane
+        // value of _from_offset_.
+        readopts.set_ignore_range_deletions(true);
+        readopts.set_prefix_same_as_start(true);
+        readopts.set_total_order_seek(false);
+        readopts.set_async_io(true);
+        let oldest_key_bytes = oldest_key.to_bytes();
+        readopts.set_iterate_lower_bound(oldest_key_bytes.clone());
+        readopts.set_iterate_upper_bound(upper_bound.to_bytes());
+        let mut iterator = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(&data_cf, readopts);
+
+        // read_pointer points to the next offset we should attempt to read (or expect to read)
+        let mut read_pointer = read_from;
+        iterator.seek(oldest_key_bytes);
+
+        let mut current_open_entry: Option<DigestEntry> = None;
+
+        while iterator.valid() && iterator.key().is_some() && read_pointer < read_until {
+            let loaded_key = DataRecordKey::from_slice(iterator.key().expect("log record exists"));
+            let offset = loaded_key.offset();
+            if offset > read_pointer {
+                // We found a record but it's beyond what we expect as next (local gap)
+                // close the entry if we had one
+                if let Some(mut open) = current_open_entry.take() {
+                    open.until_offset = read_pointer;
+                    entries.push(open);
+                }
+                if offset >= read_until {
+                    // we are done.
+                    break;
+                }
+
+                // open a new entry
+                current_open_entry = Some(DigestEntry {
+                    from_offset: offset,
+                    until_offset: offset.next(),
+                    status: RecordStatus::Exists,
+                });
+                // reset the pointer
+                read_pointer = offset.next();
+            } else if offset == read_pointer {
+                if let Some(open) = current_open_entry.as_mut() {
+                    open.until_offset = offset.next();
+                } else {
+                    // open a new entry
+                    current_open_entry = Some(DigestEntry {
+                        from_offset: offset,
+                        until_offset: offset.next(),
+                        status: RecordStatus::Exists,
+                    });
+                }
+                read_pointer = read_pointer.next();
+            } else {
+                // offset < read_pointer?
+                panic!("Bad logic, iterator is going backward!");
+            }
+
+            iterator.next();
+            // Allow other tasks on this thread to run, but only if we have exhausted the coop
+            // budget.
+            tokio::task::consume_budget().await;
+        }
+
+        // we reached the end due to an error
+        if read_pointer < read_until {
+            if let Err(e) = iterator.status() {
+                // whoa, we have I/O errors, we should switch into failsafe mode (todo)
+                return Err(RocksDbLogStoreError::Rocksdb(e).into());
+            }
+        }
+
+        if let Some(last) = current_open_entry.take() {
+            // close the last entry
+            entries.push(last);
+        }
+
+        Ok(Digest {
+            header: LogServerResponseHeader::new(local_tail, loglet_state.known_global_tail()),
+            entries,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -356,7 +493,9 @@ mod tests {
     use restate_types::config::Configuration;
     use restate_types::live::Live;
     use restate_types::logs::{LogletOffset, Record, SequenceNumber};
-    use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
+    use restate_types::net::log_server::{
+        DigestEntry, GetDigest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
+    };
     use restate_types::replicated_loglet::ReplicatedLogletId;
     use restate_types::{GenerationalNodeId, PlainNodeId};
 
@@ -495,6 +634,172 @@ mod tests {
         assert_that!(
             state.sequencer(),
             some(eq(&GenerationalNodeId::new(2, 212)))
+        );
+
+        tc.shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[test(tokio::test(start_paused = true))]
+    async fn test_digest() -> Result<()> {
+        let (tc, mut log_store) = setup().await?;
+        let loglet_id_1 = ReplicatedLogletId::new(88);
+        let loglet_id_2 = ReplicatedLogletId::new(89);
+        let sequencer_1 = GenerationalNodeId::new(5, 213);
+        let sequencer_2 = GenerationalNodeId::new(2, 212);
+
+        let mut state = log_store.load_loglet_state(loglet_id_1).await?;
+        assert!(!state.is_sealed());
+        assert_that!(state.local_tail().offset(), eq(LogletOffset::OLDEST));
+        assert_that!(state.trim_point(), eq(LogletOffset::INVALID));
+
+        // get digest for empty log.
+        let msg = GetDigest {
+            // global offset is ignored by the log-store, it's safe to set it to any value.
+            header: LogServerRequestHeader::new(loglet_id_1, LogletOffset::new(10)),
+            from_offset: LogletOffset::new(5),
+            until_offset: LogletOffset::new(200),
+        };
+        let digest = log_store.get_records_digest(msg, &state).await?;
+        assert_that!(digest.header.status, eq(Status::Ok));
+        assert_that!(digest.header.local_tail, eq(LogletOffset::OLDEST));
+        assert!(digest.entries.is_empty());
+
+        // store some records
+
+        // loglet_1 will have those offsets
+        // [5 7 10 11 12 13 18].
+        let payloads = vec![Record::from("a sample record".to_owned())];
+
+        for offset in [5, 7, 10, 11, 12, 13, 18] {
+            let offset = LogletOffset::new(offset);
+            let store_msg = Store {
+                // fake movement of global commit to allow this store
+                header: LogServerRequestHeader::new(loglet_id_1, offset),
+                timeout_at: None,
+                sequencer: sequencer_1,
+                known_archived: LogletOffset::INVALID,
+                first_offset: offset,
+                flags: StoreFlags::empty(),
+                payloads: payloads.clone(),
+            };
+            log_store
+                .enqueue_store(store_msg.clone(), true)
+                .await?
+                .await?;
+        }
+
+        // the store doesn't update local-state, so we update it manually here to 20
+        state
+            .get_local_tail_watch()
+            .notify_offset_update(LogletOffset::new(20));
+
+        assert!(!state.is_sealed());
+        assert_that!(state.local_tail().offset(), eq(LogletOffset::new(20)));
+        assert_that!(state.trim_point(), eq(LogletOffset::INVALID));
+        // add records to the adjacent log just to validate we are not spilling over.
+        let store_msg = Store {
+            header: LogServerRequestHeader::new(loglet_id_2, LogletOffset::OLDEST),
+            timeout_at: None,
+            first_offset: LogletOffset::OLDEST,
+            sequencer: sequencer_2,
+            known_archived: LogletOffset::INVALID,
+            flags: StoreFlags::empty(),
+            payloads,
+        };
+        log_store.enqueue_store(store_msg, true).await?.await?;
+        // the adjacent log is at 2
+        let state2 = log_store.load_loglet_state(loglet_id_2.into()).await?;
+        assert!(!state2.is_sealed());
+        assert_that!(state2.local_tail().offset(), eq(LogletOffset::new(2)));
+        assert_that!(state2.trim_point(), eq(LogletOffset::INVALID));
+
+        // Get the digest of loglet_1
+        // Scenario 1. Reasonable request bounds
+        let msg = GetDigest {
+            // global offset is ignored by the log-store, it's safe to set it to any value.
+            header: LogServerRequestHeader::new(loglet_id_1, LogletOffset::new(200)),
+            from_offset: LogletOffset::new(1),
+            until_offset: LogletOffset::new(200),
+        };
+        let digest = log_store.get_records_digest(msg, &state).await?;
+        assert_that!(digest.header.status, eq(Status::Ok));
+        assert_that!(digest.header.local_tail, eq(LogletOffset::new(20)));
+        // we expect [5..6) X,[7..8) X, [10..14) X, [18..19) X
+        assert_that!(digest.entries.len(), eq(4));
+        // left intentionally to debug tests
+        println!("Scenario 1");
+        for entry in &digest.entries {
+            println!("{}", entry);
+        }
+
+        assert_that!(
+            digest.entries,
+            elements_are![
+                eq(DigestEntry {
+                    from_offset: 5.into(),
+                    until_offset: 6.into(),
+                    status: RecordStatus::Exists,
+                }),
+                eq(DigestEntry {
+                    from_offset: 7.into(),
+                    until_offset: 8.into(),
+                    status: RecordStatus::Exists,
+                }),
+                eq(DigestEntry {
+                    from_offset: 10.into(),
+                    until_offset: 14.into(),
+                    status: RecordStatus::Exists,
+                }),
+                eq(DigestEntry {
+                    from_offset: 18.into(),
+                    until_offset: 19.into(),
+                    status: RecordStatus::Exists,
+                }),
+            ]
+        );
+
+        // Scenario 2.
+        // Get the digest, with a trim gap that eats up offset 11.
+        state.update_trim_point(LogletOffset::new(11));
+        let msg = GetDigest {
+            // global offset is ignored by the log-store, it's safe to set it to any value.
+            header: LogServerRequestHeader::new(loglet_id_1, LogletOffset::new(200)),
+            // start from 5 this time
+            from_offset: LogletOffset::new(5),
+            until_offset: LogletOffset::new(200),
+        };
+        let digest = log_store.get_records_digest(msg, &state).await?;
+        assert_that!(digest.header.status, eq(Status::Ok));
+        assert_that!(digest.header.local_tail, eq(LogletOffset::new(20)));
+        // we expect [5..12) T, [12..14) X, [18..19) X
+        assert_that!(digest.entries.len(), eq(3));
+        // left intentionally to debug tests
+        println!("Scenario 2");
+        for entry in &digest.entries {
+            println!("{}", entry);
+        }
+
+        assert_that!(
+            digest.entries,
+            elements_are![
+                eq(DigestEntry {
+                    from_offset: 5.into(),
+                    until_offset: 12.into(),
+                    status: RecordStatus::Trimmed,
+                }),
+                eq(DigestEntry {
+                    from_offset: 12.into(),
+                    until_offset: 14.into(),
+                    status: RecordStatus::Exists,
+                }),
+                eq(DigestEntry {
+                    from_offset: 18.into(),
+                    until_offset: 19.into(),
+                    status: RecordStatus::Exists,
+                }),
+            ]
         );
 
         tc.shutdown_node("test completed", 0).await;

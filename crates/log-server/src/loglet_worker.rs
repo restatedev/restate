@@ -40,6 +40,7 @@ pub struct LogletWorkerHandle {
     get_records_tx: mpsc::UnboundedSender<Incoming<GetRecords>>,
     trim_tx: mpsc::UnboundedSender<Incoming<Trim>>,
     wait_for_tail_tx: mpsc::UnboundedSender<Incoming<WaitForTail>>,
+    get_digest_tx: mpsc::UnboundedSender<Incoming<GetDigest>>,
     tc_handle: TaskHandle<()>,
 }
 
@@ -47,6 +48,11 @@ impl LogletWorkerHandle {
     pub fn cancel(self) -> TaskHandle<()> {
         self.tc_handle.cancel();
         self.tc_handle
+    }
+
+    pub fn enqueue_get_digest(&self, msg: Incoming<GetDigest>) -> Result<(), Incoming<GetDigest>> {
+        self.get_digest_tx.send(msg).map_err(|e| e.0)?;
+        Ok(())
     }
 
     pub fn enqueue_wait_for_tail(
@@ -122,6 +128,7 @@ impl<S: LogStore> LogletWorker<S> {
         let (get_records_tx, get_records_rx) = mpsc::unbounded_channel();
         let (trim_tx, trim_rx) = mpsc::unbounded_channel();
         let (wait_for_tail_tx, wait_for_tail_rx) = mpsc::unbounded_channel();
+        let (get_digest_tx, get_digest_rx) = mpsc::unbounded_channel();
         let tc_handle = task_center.spawn_unmanaged(
             TaskKind::LogletWriter,
             "loglet-worker",
@@ -134,6 +141,7 @@ impl<S: LogStore> LogletWorker<S> {
                 get_records_rx,
                 trim_rx,
                 wait_for_tail_rx,
+                get_digest_rx,
             ),
         )?;
         Ok(LogletWorkerHandle {
@@ -144,6 +152,7 @@ impl<S: LogStore> LogletWorker<S> {
             get_records_tx,
             trim_tx,
             wait_for_tail_tx,
+            get_digest_tx,
             tc_handle,
         })
     }
@@ -158,6 +167,7 @@ impl<S: LogStore> LogletWorker<S> {
         mut get_records_rx: mpsc::UnboundedReceiver<Incoming<GetRecords>>,
         mut trim_rx: mpsc::UnboundedReceiver<Incoming<Trim>>,
         mut wait_for_tail_rx: mpsc::UnboundedReceiver<Incoming<WaitForTail>>,
+        mut get_digest_rx: mpsc::UnboundedReceiver<Incoming<GetDigest>>,
     ) {
         // The worker is the sole writer to this loglet's local-tail so it's safe to maintain a moving
         // local tail view and serialize changes to logstore as long as we send them in the correct
@@ -181,6 +191,12 @@ impl<S: LogStore> LogletWorker<S> {
                     // handoff
                     debug!(loglet_id = %self.loglet_id, "Loglet writer shutting down");
                     return;
+                }
+                // GET_DIGEST
+                Some(msg) = get_digest_rx.recv() => {
+                    self.loglet_state.notify_known_global_tail(msg.body().header.known_global_tail);
+                    // digest responses are spawned as tasks
+                    self.process_get_digest(msg);
                 }
                 Some(_) = in_flight_stores.next() => {}
                 // The in-flight seal (if any)
@@ -457,6 +473,40 @@ impl<S: LogStore> LogletWorker<S> {
                 };
                 // ship the response to the original connection
                 let _ = reciprocal.prepare(records).send().await;
+                Ok(())
+            },
+        );
+    }
+
+    fn process_get_digest(&mut self, msg: Incoming<GetDigest>) {
+        let mut log_store = self.log_store.clone();
+        let loglet_state = self.loglet_state.clone();
+        // fails on shutdown, in this case, we ignore the request
+        let _ = self.task_center.spawn(
+            TaskKind::Disposable,
+            "logserver-get-digest",
+            None,
+            async move {
+                let (reciprocal, msg) = msg.split();
+                // validation. Note that until_offset is exclusive.
+                if msg.from_offset >= msg.until_offset {
+                    let response =
+                        reciprocal.prepare(Digest::empty().with_status(Status::Malformed));
+                    // ship the response to the original connection
+                    let _ = response.send().await;
+                    return Ok(());
+                }
+                let digest = match log_store.get_records_digest(msg, &loglet_state).await {
+                    Ok(digest) => digest,
+                    Err(_) => Digest::new(
+                        loglet_state.local_tail(),
+                        loglet_state.known_global_tail(),
+                        Default::default(),
+                    )
+                    .with_status(Status::Disabled),
+                };
+                // ship the response to the original connection
+                let _ = reciprocal.prepare(digest).send().await;
                 Ok(())
             },
         );
