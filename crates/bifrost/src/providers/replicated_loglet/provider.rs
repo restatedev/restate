@@ -19,13 +19,12 @@ use restate_core::{TaskCenter, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::LogId;
+use restate_types::logs::{LogId, RecordCache};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use super::loglet::ReplicatedLoglet;
 use super::metric_definitions;
 use super::network::RequestPump;
-use super::record_cache::RecordCache;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
 use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
@@ -38,6 +37,7 @@ pub struct Factory<T> {
     logserver_rpc_routers: LogServersRpc,
     sequencer_rpc_routers: SequencersRpc,
     request_pump: RequestPump,
+    record_cache: RecordCache,
 }
 
 impl<T: TransportConnect> Factory<T> {
@@ -45,6 +45,7 @@ impl<T: TransportConnect> Factory<T> {
         task_center: TaskCenter,
         metadata_store_client: MetadataStoreClient,
         networking: Networking<T>,
+        record_cache: RecordCache,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         // Handling Sequencer(s) incoming requests
@@ -64,6 +65,7 @@ impl<T: TransportConnect> Factory<T> {
             logserver_rpc_routers,
             sequencer_rpc_routers,
             request_pump,
+            record_cache,
         }
     }
 }
@@ -81,6 +83,7 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
             self.networking,
             self.logserver_rpc_routers,
             self.sequencer_rpc_routers,
+            self.record_cache,
         ));
         // run the request pump. The request pump handles/routes incoming messages to our
         // locally hosted sequencers.
@@ -114,6 +117,7 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
         networking: Networking<T>,
         logserver_rpc_routers: LogServersRpc,
         sequencer_rpc_routers: SequencersRpc,
+        record_cache: RecordCache,
     ) -> Self {
         // todo(asoli): create all global state here that'll be shared across loglet instances
         // - NodeState map.
@@ -121,13 +125,7 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
             active_loglets: Default::default(),
             _metadata_store_client: metadata_store_client,
             networking,
-            record_cache: RecordCache::new(
-                Configuration::pinned()
-                    .bifrost
-                    .replicated_loglet
-                    .record_cache_memory_size
-                    .as_usize(),
-            ),
+            record_cache,
             logserver_rpc_routers,
             sequencer_rpc_routers,
         }

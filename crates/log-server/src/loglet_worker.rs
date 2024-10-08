@@ -550,7 +550,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
-    use restate_types::logs::{KeyFilter, Keys, Record};
+    use restate_types::logs::{KeyFilter, Keys, Record, RecordCache};
     use restate_types::net::codec::MessageBodyExt;
     use restate_types::net::CURRENT_PROTOCOL_VERSION;
     use restate_types::replicated_loglet::ReplicatedLogletId;
@@ -575,6 +575,7 @@ mod tests {
                 let builder = RocksDbLogStoreBuilder::create(
                     config.clone().map(|c| &c.log_server).boxed(),
                     config.map(|c| &c.log_server.rocksdb).boxed(),
+                    RecordCache::new(1_000_000),
                 )
                 .await?;
                 let log_store = builder.start(&tc).await?;

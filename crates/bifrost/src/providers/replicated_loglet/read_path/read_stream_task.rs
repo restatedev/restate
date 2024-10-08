@@ -18,7 +18,7 @@ use tracing::{info, trace};
 
 use restate_core::network::{NetworkError, Networking, TransportConnect};
 use restate_core::{task_center, ShutdownError, TaskHandle, TaskKind};
-use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetRecords, LogServerRequestHeader, MaybeRecord};
 use restate_types::replicated_loglet::{EffectiveNodeSet, NodeSet, ReplicatedLogletParams};
 use restate_types::PlainNodeId;
@@ -29,7 +29,6 @@ use crate::providers::replicated_loglet::metric_definitions::{
     BIFROST_REPLICATED_READ_CACHE_FILTERED, BIFROST_REPLICATED_READ_CACHE_HIT,
     BIFROST_REPLICATED_READ_TOTAL,
 };
-use crate::providers::replicated_loglet::record_cache::RecordCache;
 use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 use crate::LogEntry;
 

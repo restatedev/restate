@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::Context;
+use restate_types::logs::RecordCache;
 use tracing::{debug, info, instrument};
 
 use restate_core::network::MessageRouterBuilder;
@@ -33,6 +34,7 @@ pub struct LogServerService {
     metadata: Metadata,
     request_processor: RequestPump,
     metadata_store_client: MetadataStoreClient,
+    record_cache: RecordCache,
 }
 
 impl LogServerService {
@@ -41,6 +43,7 @@ impl LogServerService {
         task_center: TaskCenter,
         metadata: Metadata,
         metadata_store_client: MetadataStoreClient,
+        record_cache: RecordCache,
         router_builder: &mut MessageRouterBuilder,
     ) -> Result<Self, LogServerBuildError> {
         describe_metrics();
@@ -58,6 +61,7 @@ impl LogServerService {
             metadata,
             request_processor,
             metadata_store_client,
+            record_cache,
         })
     }
 
@@ -68,6 +72,7 @@ impl LogServerService {
             metadata,
             request_processor: request_pump,
             mut metadata_store_client,
+            record_cache,
         } = self;
         // What do we need to start the log-server?
         //
@@ -75,6 +80,7 @@ impl LogServerService {
         let log_store_builder = RocksDbLogStoreBuilder::create(
             updateable_config.clone().map(|c| &c.log_server).boxed(),
             updateable_config.map(|c| &c.log_server.rocksdb).boxed(),
+            record_cache,
         )
         .await?;
 

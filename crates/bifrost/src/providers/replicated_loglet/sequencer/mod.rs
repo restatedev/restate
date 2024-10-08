@@ -21,7 +21,7 @@ use restate_core::{
 };
 use restate_types::{
     config::Configuration,
-    logs::{LogletOffset, Record, SequenceNumber},
+    logs::{LogletOffset, Record, RecordCache, SequenceNumber},
     net::log_server::Store,
     replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty},
     GenerationalNodeId,
@@ -29,7 +29,6 @@ use restate_types::{
 
 use super::{
     log_server_manager::RemoteLogServerManager,
-    record_cache::RecordCache,
     replication::spread_selector::{SelectorStrategy, SpreadSelector},
 };
 use crate::loglet::{util::TailOffsetWatch, LogletCommit, OperationError};

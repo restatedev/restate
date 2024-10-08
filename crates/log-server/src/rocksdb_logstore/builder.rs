@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use restate_types::logs::RecordCache;
 use rocksdb::{DBCompressionType, SliceTransform};
 use static_assertions::const_assert;
 
@@ -31,12 +32,14 @@ const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
 pub struct RocksDbLogStoreBuilder {
     rocksdb: Arc<RocksDb>,
     updateable_options: BoxedLiveLoad<LogServerOptions>,
+    record_cache: RecordCache,
 }
 
 impl RocksDbLogStoreBuilder {
     pub async fn create(
         mut updateable_options: BoxedLiveLoad<LogServerOptions>,
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        record_cache: RecordCache,
     ) -> Result<Self, RocksDbLogStoreError> {
         let options = updateable_options.live_load();
         let data_dir = options.data_dir();
@@ -69,6 +72,7 @@ impl RocksDbLogStoreBuilder {
         Ok(Self {
             rocksdb,
             updateable_options,
+            record_cache,
         })
     }
 
@@ -76,10 +80,12 @@ impl RocksDbLogStoreBuilder {
         let RocksDbLogStoreBuilder {
             rocksdb,
             updateable_options,
+            record_cache,
         } = self;
         // todo (asoli) load up our loglet metadata cache.
         let writer_handle =
-            LogStoreWriter::new(rocksdb.clone(), updateable_options.clone()).start(task_center)?;
+            LogStoreWriter::new(rocksdb.clone(), updateable_options.clone(), record_cache)
+                .start(task_center)?;
 
         Ok(RocksDbLogStore {
             _updateable_options: updateable_options,
