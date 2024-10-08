@@ -19,6 +19,7 @@ use restate_core::{
         rpc_router::{RpcError, RpcRouter},
         Incoming, NetworkError, Networking, Outgoing, TransportConnect,
     },
+    ShutdownError,
 };
 use restate_types::{
     config::Configuration,
@@ -30,7 +31,7 @@ use restate_types::{
 
 use super::{BatchExt, SequencerSharedState};
 use crate::{
-    loglet::LogletCommitResolver,
+    loglet::{AppendError, LogletCommitResolver},
     providers::replicated_loglet::{
         log_server_manager::{RemoteLogServer, RemoteLogServerManager},
         replication::NodeSetChecker,
@@ -163,12 +164,19 @@ impl<T: TransportConnect> SequencerAppender<T> {
         match final_state {
             SequencerAppenderState::Done => {
                 tracing::trace!("appender task completed");
+                assert!(self.commit_resolver.is_none());
             }
             SequencerAppenderState::Cancelled => {
                 tracing::trace!("appender task cancelled");
+                if let Some(commit_resolver) = self.commit_resolver.take() {
+                    commit_resolver.error(AppendError::Shutdown(ShutdownError));
+                }
             }
             SequencerAppenderState::Sealed => {
                 tracing::trace!("appender ended because of sealing");
+                if let Some(commit_resolver) = self.commit_resolver.take() {
+                    commit_resolver.sealed();
+                }
             }
             _ => {
                 unreachable!()
