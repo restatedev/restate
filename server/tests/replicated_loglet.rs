@@ -150,7 +150,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn three_logserver_append_after_seal_concurrent() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
