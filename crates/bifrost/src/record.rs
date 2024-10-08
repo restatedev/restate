@@ -12,8 +12,8 @@ use core::str;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use restate_types::logs::LogletOffset;
 use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn, Record};
+use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::storage::{PolyBytes, StorageDecode, StorageDecodeError, StorageEncode};
 use restate_types::time::NanosSinceEpoch;
 
@@ -72,6 +72,17 @@ impl<S: Copy> LogEntry<S> {
     #[inline]
     pub fn sequence_number(&self) -> S {
         self.offset
+    }
+
+    #[inline]
+    pub fn next_sequence_number(&self) -> S
+    where
+        S: SequenceNumber,
+    {
+        match &self.record {
+            MaybeRecord::TrimGap(gap) => gap.to.next(),
+            _ => self.offset.next(),
+        }
     }
 
     #[inline]

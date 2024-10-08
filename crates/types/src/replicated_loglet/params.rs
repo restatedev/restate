@@ -109,8 +109,18 @@ impl NodeSet {
         self.0.insert(node);
     }
 
-    pub fn remove(&mut self, node: &PlainNodeId) {
-        self.0.remove(node);
+    /// Returns true if all nodes in the nodeset are disabled
+    pub fn all_disabled(&self, nodes_config: &NodesConfiguration) -> bool {
+        self.is_empty()
+            || self
+                .0
+                .iter()
+                .map(|node_id| nodes_config.get_log_server_storage_state(node_id))
+                .all(|storage_state| storage_state.is_disabled())
+    }
+
+    pub fn remove(&mut self, node: &PlainNodeId) -> bool {
+        self.0.remove(node)
     }
 
     pub fn is_empty(&self) -> bool {
