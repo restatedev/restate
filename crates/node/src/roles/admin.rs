@@ -10,13 +10,13 @@
 
 use std::time::Duration;
 
-use anyhow::Context;
 use codederror::CodedError;
 use restate_admin::cluster_controller;
 use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::metadata_store::MetadataStoreClient;
+use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
 use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
@@ -27,9 +27,9 @@ use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::live::Live;
+use restate_types::net::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
 use tokio::sync::oneshot;
-use tonic::transport::Channel;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {
@@ -98,9 +98,9 @@ impl<T: TransportConnect> AdminRole<T> {
 
     pub async fn start(
         self,
-        _bootstrap_cluster: bool,
         bifrost: Bifrost,
         all_partitions_started_tx: oneshot::Sender<()>,
+        node_address: AdvertisedAddress,
     ) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
@@ -112,22 +112,13 @@ impl<T: TransportConnect> AdminRole<T> {
                 .run(bifrost.clone(), Some(all_partitions_started_tx)),
         )?;
 
-        // todo: Make address configurable
-        let worker_channel = Channel::builder(
-            "http://127.0.0.1:5122/"
-                .parse()
-                .context("valid worker address uri")?,
-        )
-        .connect_lazy();
-        let node_svc_client = NodeSvcClient::new(worker_channel);
-
         tc.spawn_child(
             TaskKind::RpcServer,
             "admin-rpc-server",
             None,
             self.admin.run(
                 self.updateable_config.map(|c| &c.admin),
-                node_svc_client,
+                NodeSvcClient::new(create_tonic_channel_from_advertised_address(node_address)),
                 bifrost,
             ),
         )?;
