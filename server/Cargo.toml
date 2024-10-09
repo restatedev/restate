@@ -65,8 +65,17 @@ tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
 
 [dev-dependencies]
+restate-bifrost = { workspace = true, features = ["test-util"] }
+restate-core = { workspace = true, features = ["test-util"] }
 restate-local-cluster-runner = { workspace = true }
+restate-test-util = { workspace = true }
 
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+googletest = { workspace = true }
+tempfile = { workspace = true }
+test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]

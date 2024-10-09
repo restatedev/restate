@@ -189,8 +189,11 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
             .expect("to store nodes config in metadata store");
         self.metadata_writer.submit(self.nodes_config.clone());
 
-        let logs =
-            bootstrap_logs_metadata(self.provider_kind, self.partition_table.num_partitions());
+        let logs = bootstrap_logs_metadata(
+            self.provider_kind,
+            None,
+            self.partition_table.num_partitions(),
+        );
         self.metadata_store_client
             .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
             .await

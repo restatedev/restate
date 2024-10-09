@@ -337,7 +337,11 @@ pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletPa
 
 /// Initializes the bifrost metadata with static log metadata, it creates a log for every partition
 /// with a chain of the default loglet provider kind.
-pub fn bootstrap_logs_metadata(default_provider: ProviderKind, num_partitions: u16) -> Logs {
+pub fn bootstrap_logs_metadata(
+    default_provider: ProviderKind,
+    default_loglet_params: Option<String>,
+    num_partitions: u16,
+) -> Logs {
     // Get metadata from somewhere
     let mut builder = LogsBuilder::default();
     #[allow(clippy::mutable_key_type)]
@@ -345,13 +349,16 @@ pub fn bootstrap_logs_metadata(default_provider: ProviderKind, num_partitions: u
     // pre-fill with all possible logs up to `num_partitions`
     (0..num_partitions).for_each(|i| {
         // a little paranoid about collisions
-        let params = loop {
-            let params = new_single_node_loglet_params(default_provider);
-            if !generated_params.contains(&params) {
-                generated_params.insert(params.clone());
-                break params;
-            }
-        };
+        let params = default_loglet_params
+            .clone()
+            .map(LogletParams::from)
+            .unwrap_or_else(|| loop {
+                let params = new_single_node_loglet_params(default_provider);
+                if !generated_params.contains(&params) {
+                    generated_params.insert(params.clone());
+                    break params;
+                }
+            });
         builder
             .add_log(LogId::from(i), Chain::new(default_provider, params))
             .unwrap();

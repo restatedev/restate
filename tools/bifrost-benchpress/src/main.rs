@@ -170,6 +170,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (TaskCenter,
 
         let logs = restate_types::logs::metadata::bootstrap_logs_metadata(
             config.pinned().bifrost.default_provider,
+            None,
             num_logs,
         );
 

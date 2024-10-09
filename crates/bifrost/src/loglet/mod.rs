@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod error;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub mod loglet_tests;
 mod provider;
 pub mod util;
