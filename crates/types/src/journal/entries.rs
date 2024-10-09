@@ -356,24 +356,7 @@ pub struct InvokeRequest {
     /// The reason this is not Option<ByteString> is that it cannot be distinguished purely from the message
     /// whether the key is none or empty.
     pub key: ByteString,
-}
-
-impl InvokeRequest {
-    pub fn new(
-        service_name: impl Into<ByteString>,
-        method_name: impl Into<ByteString>,
-        parameter: impl Into<Bytes>,
-        headers: impl Into<Vec<Header>>,
-        key: impl Into<ByteString>,
-    ) -> Self {
-        InvokeRequest {
-            service_name: service_name.into(),
-            handler_name: method_name.into(),
-            parameter: parameter.into(),
-            headers: headers.into(),
-            key: key.into(),
-        }
-    }
+    pub idempotency_key: Option<ByteString>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

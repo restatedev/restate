@@ -25,6 +25,7 @@ enum ServiceProtocolVersion {
   // Added
   // * New entry to cancel invocations: CancelInvocationEntryMessage
   // * New entry to retrieve the invocation id: GetCallInvocationIdEntryMessage
+  // * New field to set idempotency key for Call entries
   V3 = 3;
 }
 
@@ -317,6 +318,9 @@ message CallEntryMessage {
   // If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
   string key = 5;
 
+  // If present, it must be non empty.
+  optional string idempotency_key = 6;
+
   oneof result {
     bytes value = 14;
     Failure failure = 15;
@@ -345,6 +349,9 @@ message OneWayCallEntryMessage {
 
   // If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
   string key = 6;
+
+  // If present, it must be non empty.
+  optional string idempotency_key = 7;
 
   // Entry name
   string name = 12;
