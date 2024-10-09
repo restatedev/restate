@@ -33,9 +33,6 @@ use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 pub struct BifrostOptions {
     /// # The default kind of loglet to be used
     pub default_provider: ProviderKind,
-    /// An opaque string that gets passed to the loglet provider to seed the creation of new
-    /// loglets.
-    pub default_provider_config: Option<String>,
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     /// Configuration of local loglet provider
     pub local: LocalLogletOptions,
@@ -80,10 +77,6 @@ pub struct BifrostOptions {
 }
 
 impl BifrostOptions {
-    pub fn default_provider_config(&self) -> Option<&str> {
-        self.default_provider_config.as_deref()
-    }
-
     pub fn append_retry_policy(&self) -> RetryPolicy {
         // Appends are retried with exponential backoff, forever.
         RetryPolicy::exponential(
@@ -99,7 +92,6 @@ impl Default for BifrostOptions {
     fn default() -> Self {
         Self {
             default_provider: ProviderKind::Local,
-            default_provider_config: None,
             #[cfg(feature = "replicated-loglet")]
             replicated_loglet: ReplicatedLogletOptions::default(),
             local: LocalLogletOptions::default(),

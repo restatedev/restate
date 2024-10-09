@@ -140,7 +140,7 @@ pub async fn run(
 
     println!(
         "Log Chain: {:#?}",
-        tc.metadata().unwrap().logs().chain(&LOG_ID).unwrap()
+        tc.metadata().unwrap().logs_ref().chain(&LOG_ID).unwrap()
     );
     println!("Payload size per record: {} bytes", args.payload_size);
     println!();

@@ -8,7 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod cluster_state;
+pub mod cluster_state_refresher;
+mod logs_controller;
+mod observed_cluster_state;
 pub mod protobuf;
 pub mod scheduler;
 pub mod service;

@@ -26,8 +26,8 @@ options_schema = [
     "restate-tracing-instrumentation/options_schema",
     "restate-types/schemars",
 ]
-memory-loglet = ["restate-node/memory-loglet"]
-replicated-loglet = ["restate-node/replicated-loglet"]
+memory-loglet = ["restate-node/memory-loglet", "restate-admin/memory-loglet"]
+replicated-loglet = ["restate-node/replicated-loglet", "restate-admin/replicated-loglet"]
 
 [dependencies]
 restate-admin = { workspace = true }
@@ -60,8 +60,10 @@ tokio-util = { workspace = true }
 toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
+regex = "1.10.4"
 
 [dev-dependencies]
+restate-admin = { workspace = true, features = ["memory-loglet"] }
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-local-cluster-runner = { workspace = true }

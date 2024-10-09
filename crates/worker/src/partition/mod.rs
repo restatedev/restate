@@ -39,6 +39,7 @@ use restate_types::journal::raw::RawEntryCodec;
 use restate_types::live::Live;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
+use restate_types::retries::RetryPolicy;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 use restate_wal_protocol::control::AnnounceLeader;
@@ -247,13 +248,27 @@ where
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
 
         self.status.last_applied_log_lsn = Some(last_applied_lsn);
-        let current_tail = self
-            .bifrost
-            .find_tail(
-                LogId::from(self.partition_id),
-                FindTailAttributes::default(),
-            )
-            .await?;
+
+        // todo make this configurable
+        let find_tail_retry_policy = RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.0,
+            None,
+            Some(Duration::from_secs(10)),
+        );
+
+        // It can happen that the log is currently unavailable. That's why we need to retry.
+        // todo if being stuck expose the state to the controller to allow it to make a control decision
+        let current_tail = find_tail_retry_policy
+            .retry(|| {
+                self.bifrost.find_tail(
+                    LogId::from(self.partition_id),
+                    FindTailAttributes::default(),
+                )
+            })
+            .await
+            .expect("we should be retrying indefinitely");
+
         debug!(
             last_applied_lsn = %last_applied_lsn,
             current_log_tail = ?current_tail,

@@ -348,7 +348,7 @@ impl Stream for LogReadStream {
                         panic!("substream must be set at this point");
                     };
 
-                    let log_metadata = bifrost_inner.metadata.logs();
+                    let log_metadata = bifrost_inner.metadata.logs_ref();
 
                     // The log is gone!
                     let Some(chain) = log_metadata.chain(this.log_id) else {
@@ -760,7 +760,7 @@ mod tests {
             // perform manual reconfiguration (can be replaced with bifrost reconfiguration API
             // when it's implemented)
             let old_version = bifrost.inner.metadata.logs_version();
-            let mut builder = bifrost.inner.metadata.logs().clone().into_builder();
+            let mut builder = bifrost.inner.metadata.logs_ref().clone().into_builder();
             let mut chain_builder = builder.chain(&LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
@@ -893,7 +893,7 @@ mod tests {
                 2,
                 node_env
                     .metadata
-                    .logs()
+                    .logs_ref()
                     .chain(&LOG_ID)
                     .unwrap()
                     .num_segments()
@@ -981,7 +981,7 @@ mod tests {
 
             // prepare a chain that starts from Lsn 10 (we expect trim from OLDEST -> 9)
             let old_version = bifrost.inner.metadata.logs_version();
-            let mut builder = bifrost.inner.metadata.logs().clone().into_builder();
+            let mut builder = bifrost.inner.metadata.logs_ref().clone().into_builder();
             let mut chain_builder = builder.chain(&LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::Local);
