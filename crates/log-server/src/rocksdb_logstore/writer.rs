@@ -202,7 +202,7 @@ impl LogStoreWriter {
     ) {
         buffer.reserve(store_message.estimated_encode_size());
         let mut offset = store_message.first_offset;
-        for payload in store_message.payloads {
+        for payload in store_message.payloads.iter() {
             let key_bytes =
                 DataRecordKey::new(store_message.header.loglet_id, offset).encode_and_split(buffer);
             record_cache.add(store_message.header.loglet_id, offset, payload.clone());

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
@@ -188,7 +189,7 @@ pub struct Store {
     /// Denotes the last record that has been safely uploaded to an archiving data store.
     pub known_archived: LogletOffset,
     // todo (asoli) serialize efficiently
-    pub payloads: Vec<Record>,
+    pub payloads: Arc<[Record]>,
 }
 
 impl Store {
