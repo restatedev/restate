@@ -253,11 +253,6 @@ impl CommonOptions {
     }
 
     #[cfg(feature = "unsafe-mutable-config")]
-    pub fn set_bootstrap_num_partitions(&mut self, num_partitions: NonZeroU16) {
-        self.bootstrap_num_partitions = num_partitions
-    }
-
-    #[cfg(feature = "unsafe-mutable-config")]
     pub fn set_base_dir(&mut self, path: impl Into<PathBuf>) {
         self.base_dir = Some(path.into());
     }

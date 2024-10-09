@@ -504,7 +504,7 @@ impl Node {
             metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
                 bootstrap_logs_metadata(
                     config.bifrost.default_provider,
-                    config.bifrost.default_provider_config(),
+                    config.bifrost.default_provider_config.clone(),
                     num_partitions,
                 )
             })

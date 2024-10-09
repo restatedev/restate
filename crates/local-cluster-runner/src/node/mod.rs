@@ -151,7 +151,7 @@ impl Node {
         {
             let mut base_config = base_config.clone();
             base_config.common.allow_bootstrap = true;
-            base_config.common.force_node_id = Some(PlainNodeId::new(0));
+            base_config.common.force_node_id = Some(PlainNodeId::new(1));
             nodes.push(Self::new_test_node(
                 "metadata-node",
                 base_config,
@@ -163,7 +163,7 @@ impl Node {
         for node in 1..=size {
             let mut base_config = base_config.clone();
             base_config.common.allow_bootstrap = false;
-            base_config.common.force_node_id = Some(PlainNodeId::new(node));
+            base_config.common.force_node_id = Some(PlainNodeId::new(node + 1));
             nodes.push(Self::new_test_node(
                 format!("node-{node}"),
                 base_config,
@@ -683,8 +683,8 @@ impl StartedNode {
         }
     }
 
-    /// Check to see if the logserver is active. Returns false if this node has no logserver role.
-    pub async fn logserver_active(&self) -> bool {
+    /// Check to see if the logserver is provisioned. Returns false if this node has no logserver role.
+    pub async fn logserver_provisioned(&self) -> bool {
         let metadata_client = self
             .metadata_client()
             .await
@@ -694,27 +694,26 @@ impl StartedNode {
             .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
             .await;
 
-        let nodes_config = if let Ok(Some(nodes_config)) = nodes_config {
-            nodes_config
-        } else {
+        let Ok(Some(nodes_config)) = nodes_config else {
             return false;
         };
 
-        let node_id = if let Some(node) = nodes_config.find_node_by_name(self.node_name()) {
-            node.current_generation.as_plain()
-        } else {
+        let Some(node_id) = nodes_config
+            .find_node_by_name(self.node_name())
+            .map(|n| n.current_generation.as_plain())
+        else {
             return false;
         };
 
         !nodes_config.get_log_server_storage_state(&node_id).empty()
     }
 
-    /// Check every 250ms to see if the logserver is active, waiting for up to `timeout`.
+    /// Check every 250ms to see if the logserver is provisioned, waiting for up to `timeout`.
     /// Returns false if this node has no logserver role.
-    pub async fn wait_logserver_active(&self, timeout: Duration) -> bool {
+    pub async fn wait_logserver_provisioned(&self, timeout: Duration) -> bool {
         let mut attempts = 1;
         if tokio::time::timeout(timeout, async {
-            while !self.logserver_active().await {
+            while !self.logserver_provisioned().await {
                 attempts += 1;
                 tokio::time::sleep(Duration::from_millis(250)).await
             }

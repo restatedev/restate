@@ -31,8 +31,8 @@ mod tests {
     async fn test_append_local_sequencer_three_logserver() -> Result<()> {
         run_in_test_env(
             Configuration::default(),
-            GenerationalNodeId::new(4, 1), // local sequencer
-            ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            GenerationalNodeId::new(5, 1), // local sequencer
+            ReplicationProperty::new(NonZeroU8::new(3).unwrap()),
             3,
             |env| async move {
                 let batch: Arc<[Record]> = vec![
@@ -58,8 +58,8 @@ mod tests {
     async fn test_seal_local_sequencer_three_logserver() -> Result<()> {
         run_in_test_env(
             Configuration::default(),
-            GenerationalNodeId::new(4, 1), // local sequencer
-            ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            GenerationalNodeId::new(5, 1), // local sequencer
+            ReplicationProperty::new(NonZeroU8::new(3).unwrap()),
             3,
             |env| async move {
                 let batch: Arc<[Record]> = vec![
@@ -97,8 +97,8 @@ mod tests {
     async fn three_logserver_gapless_smoke_test() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
-            GenerationalNodeId::new(4, 1), // local sequencer
-            ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            GenerationalNodeId::new(5, 1), // local sequencer
+            ReplicationProperty::new(NonZeroU8::new(3).unwrap()),
             3,
             |test_env| {
                 restate_bifrost::loglet::loglet_tests::gapless_loglet_smoke_test(test_env.loglet)
@@ -111,8 +111,8 @@ mod tests {
     async fn three_logserver_readstream() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
-            GenerationalNodeId::new(4, 1), // local sequencer
-            ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            GenerationalNodeId::new(5, 1), // local sequencer
+            ReplicationProperty::new(NonZeroU8::new(3).unwrap()),
             3,
             |test_env| {
                 restate_bifrost::loglet::loglet_tests::single_loglet_readstream(test_env.loglet)
@@ -126,8 +126,8 @@ mod tests {
     async fn three_logserver_readstream_with_trims() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
-            GenerationalNodeId::new(4, 1), // local sequencer
-            ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            GenerationalNodeId::new(5, 1), // local sequencer
+            ReplicationProperty::new(NonZeroU8::new(3).unwrap()),
             3,
             |test_env| {
                 restate_bifrost::loglet::loglet_tests::single_loglet_readstream_with_trims(
@@ -142,8 +142,8 @@ mod tests {
     async fn three_logserver_append_after_seal() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
-            GenerationalNodeId::new(4, 1), // local sequencer
-            ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            GenerationalNodeId::new(5, 1), // local sequencer
+            ReplicationProperty::new(NonZeroU8::new(3).unwrap()),
             3,
             |test_env| restate_bifrost::loglet::loglet_tests::append_after_seal(test_env.loglet),
         )
@@ -154,8 +154,8 @@ mod tests {
     async fn three_logserver_append_after_seal_concurrent() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
-            GenerationalNodeId::new(4, 1), // local sequencer
-            ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            GenerationalNodeId::new(5, 1), // local sequencer
+            ReplicationProperty::new(NonZeroU8::new(3).unwrap()),
             3,
             |test_env| {
                 restate_bifrost::loglet::loglet_tests::append_after_seal_concurrent(test_env.loglet)
@@ -168,8 +168,8 @@ mod tests {
     async fn three_logserver_seal_empty() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
-            GenerationalNodeId::new(4, 1), // local sequencer
-            ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            GenerationalNodeId::new(5, 1), // local sequencer
+            ReplicationProperty::new(NonZeroU8::new(3).unwrap()),
             3,
             |test_env| restate_bifrost::loglet::loglet_tests::seal_empty(test_env.loglet),
         )

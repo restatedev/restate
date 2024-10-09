@@ -1,8 +1,9 @@
 #![allow(dead_code)]
-use std::{num::NonZeroU16, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use enumset::{enum_set, EnumSet};
 use googletest::IntoTestResult;
+
 use restate_bifrost::{loglet::Loglet, Bifrost, BifrostAdmin, FindTailAttributes};
 use restate_core::{metadata_store::MetadataStoreClient, MetadataWriter, TaskCenterBuilder};
 use restate_local_cluster_runner::{
@@ -103,15 +104,13 @@ where
         loglet_id: ReplicatedLogletId::new(1),
         sequencer,
         replication,
-        nodeset: (1..log_server_count).collect(),
+        // node 1 is the metadata, 2..=count+1 are logservers
+        nodeset: (2..=log_server_count + 1).collect(),
         write_set: None,
     };
     let loglet_params = loglet_params.serialize()?;
     base_config.bifrost.default_provider = ProviderKind::Replicated;
     base_config.bifrost.default_provider_config = Some(loglet_params.clone());
-    base_config
-        .common
-        .set_bootstrap_num_partitions(NonZeroU16::new(1).unwrap());
 
     let nodes = Node::new_test_nodes_with_metadata(
         base_config,
@@ -143,9 +142,9 @@ where
         assert!(cluster.wait_healthy(Duration::from_secs(30)).await);
 
         // join a new node to the cluster solely to act as a bifrost client
-        // it will have node id log_server_count+1
+        // it will have node id log_server_count+2duplicate plain node id 'N4
         let (bifrost, loglet, metadata_writer, metadata_store_client) =
-            replicated_loglet_client(&cluster, PlainNodeId::new(log_server_count + 1)).await?;
+            replicated_loglet_client(&cluster, PlainNodeId::new(log_server_count + 2)).await?;
 
         // global metadata should now be set, running in scope sets it in the task center context
         tc.run_in_scope(

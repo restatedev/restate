@@ -208,7 +208,13 @@ impl Bifrost {
         attributes: FindTailAttributes,
     ) -> Result<Arc<dyn crate::loglet::Loglet>> {
         self.inner.fail_if_shutting_down()?;
-        Ok(self.inner.find_tail(log_id, attributes).await?.0.loglet())
+        Ok(self
+            .inner
+            .find_tail(log_id, attributes)
+            .await?
+            .0
+            .inner()
+            .clone())
     }
 
     /// The lsn of the slot **before** the first readable record (if it exists), or the offset

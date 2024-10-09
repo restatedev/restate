@@ -176,28 +176,26 @@ impl StartedCluster {
     }
 
     /// For every node in the cluster with a logserver role, wait for up to dur for the logserver
-    /// to be active, otherwise return false.
-    pub async fn wait_logservers_active(&self, dur: Duration) -> bool {
+    /// to be provisioned, otherwise return false.
+    pub async fn wait_logservers_provisioned(&self, dur: Duration) -> bool {
         future::join_all(
             self.nodes
                 .iter()
                 .filter(|n| n.config().has_role(Role::LogServer))
-                .map(|n| n.wait_logserver_active(dur)),
+                .map(|n| n.wait_logserver_provisioned(dur)),
         )
         .await
         .into_iter()
         .all(|b| b)
     }
 
-    /// Wait for all ingress, admin, logserver roles in the cluster to be healthy
+    /// Wait for all ingress, admin, logserver roles in the cluster to be healthy/provisioned
     pub async fn wait_healthy(&self, dur: Duration) -> bool {
-        future::join3(
+        tokio::join!(
             self.wait_admins_healthy(dur),
             self.wait_ingresses_healthy(dur),
-            self.wait_logservers_active(dur),
-        )
-        .await
-            == (true, true, true)
+            self.wait_logservers_provisioned(dur),
+        ) == (true, true, true)
     }
 
     pub async fn push_node(&mut self, node: Node) -> Result<(), NodeStartError> {

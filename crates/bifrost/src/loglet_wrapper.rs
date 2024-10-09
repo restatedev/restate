@@ -211,8 +211,8 @@ impl LogletWrapper {
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub fn loglet(&self) -> Arc<dyn Loglet> {
-        self.loglet.clone()
+    pub fn inner(&self) -> &Arc<dyn Loglet> {
+        &self.loglet
     }
 }
 

@@ -339,7 +339,7 @@ pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletPa
 /// with a chain of the default loglet provider kind.
 pub fn bootstrap_logs_metadata(
     default_provider: ProviderKind,
-    default_loglet_params: Option<&str>,
+    default_loglet_params: Option<String>,
     num_partitions: u16,
 ) -> Logs {
     // Get metadata from somewhere
@@ -349,15 +349,16 @@ pub fn bootstrap_logs_metadata(
     // pre-fill with all possible logs up to `num_partitions`
     (0..num_partitions).for_each(|i| {
         // a little paranoid about collisions
-        let params = loop {
-            let params = default_loglet_params
-                .map(|p| LogletParams::from(p.to_owned()))
-                .unwrap_or_else(|| new_single_node_loglet_params(default_provider));
-            if !generated_params.contains(&params) {
-                generated_params.insert(params.clone());
-                break params;
-            }
-        };
+        let params = default_loglet_params
+            .clone()
+            .map(LogletParams::from)
+            .unwrap_or_else(|| loop {
+                let params = new_single_node_loglet_params(default_provider);
+                if !generated_params.contains(&params) {
+                    generated_params.insert(params.clone());
+                    break params;
+                }
+            });
         builder
             .add_log(LogId::from(i), Chain::new(default_provider, params))
             .unwrap();
