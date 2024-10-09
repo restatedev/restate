@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
+use std::fmt::Display;
 
 use serde_with::DisplayFromStr;
 
@@ -85,6 +86,19 @@ impl ReplicatedLogletId {
     derive_more::From,
 )]
 pub struct NodeSet(#[serde_as(as = "HashSet<DisplayFromStr>")] HashSet<PlainNodeId>);
+
+impl Display for NodeSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[")?;
+        for (i, id) in self.0.iter().enumerate() {
+            if i != 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", id)?;
+        }
+        write!(f, "]")
+    }
+}
 
 impl NodeSet {
     pub fn empty() -> Self {
