@@ -97,11 +97,20 @@ define_rpc! {
     @response_target = TargetName::LogServerRecords,
 }
 
+// WaitForTail
 define_rpc! {
     @request = WaitForTail,
     @response = TailUpdated,
     @request_target = TargetName::LogServerWaitForTail,
     @response_target = TargetName::LogServerTailUpdated,
+}
+
+// GetDigest
+define_rpc! {
+    @request = GetDigest,
+    @response = Digest,
+    @request_target = TargetName::LogServerGetDigest,
+    @response_target = TargetName::LogServerDigest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -532,6 +541,8 @@ impl Trimmed {
     }
 }
 
+// ** WAIT_FOR_TAIL
+
 /// Defines the tail we are interested in waiting for.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TailUpdateQuery {
@@ -585,6 +596,94 @@ impl TailUpdated {
     pub fn new(tail_state: TailState<LogletOffset>, known_global_tail: LogletOffset) -> Self {
         Self {
             header: LogServerResponseHeader::new(tail_state, known_global_tail),
+        }
+    }
+
+    pub fn with_status(mut self, status: Status) -> Self {
+        self.header.status = status;
+        self
+    }
+}
+
+// ** GET_DIGEST
+
+/// Request a digest of the loglet between two offsets from this node
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetDigest {
+    #[serde(flatten)]
+    pub header: LogServerRequestHeader,
+    // inclusive
+    pub from_offset: LogletOffset,
+    pub to_offset: LogletOffset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize)]
+#[display("[{from_offset}..{to_offset}] -> {status} ({})",  self.len())]
+pub struct DigestEntry {
+    // inclusive
+    pub from_offset: LogletOffset,
+    pub to_offset: LogletOffset,
+    pub status: RecordStatus,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, derive_more::Display, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum RecordStatus {
+    #[display("T")]
+    Trimmed,
+    #[display("A")]
+    Archived,
+    #[display("X")]
+    Exists,
+}
+
+impl DigestEntry {
+    // how many offsets are included in this entry
+    pub fn len(&self) -> usize {
+        if self.to_offset >= self.from_offset {
+            return 0;
+        }
+
+        usize::try_from(self.to_offset.saturating_sub(*self.from_offset)).expect("no overflow") + 1
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.from_offset > self.to_offset
+    }
+}
+
+/// Response to a `GetDigest` request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Digest {
+    #[serde(flatten)]
+    pub header: LogServerResponseHeader,
+    // If the node's local trim-point (or archival-point) overlaps with the digest range, an entry will be
+    // added to include where the trim-gap ends. Otherwise, offsets for non-existing records
+    // will not be included in the response.
+    //
+    // Entries are sorted by `from_offset`. The response header includes the node's local tail and
+    // its known_global_tail as per usual.
+    //
+    // entries's contents must be ignored if `status` != `Status::Ok`.
+    pub entries: Vec<DigestEntry>,
+}
+
+impl Digest {
+    pub fn empty() -> Self {
+        Self {
+            header: LogServerResponseHeader::empty(),
+            entries: Default::default(),
+        }
+    }
+
+    pub fn new(
+        tail_state: TailState<LogletOffset>,
+        known_global_tail: LogletOffset,
+        entries: Vec<DigestEntry>,
+    ) -> Self {
+        Self {
+            header: LogServerResponseHeader::new(tail_state, known_global_tail),
+            entries,
         }
     }
 
