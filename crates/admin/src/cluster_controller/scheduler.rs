@@ -169,7 +169,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 let mut modified = false;
 
                 match target_state.replication_strategy {
-                    ReplicationStrategy::OnAllNodes => {
+                    ReplicationStrategy::Flood => {
                         if target_state.node_set != alive_nodes {
                             target_state.node_set.clone_from(&alive_nodes);
                             modified = true;
@@ -735,7 +735,7 @@ mod tests {
 
     #[test(tokio::test(start_paused = true))]
     async fn schedule_partitions_with_all_nodes_replication() -> googletest::Result<()> {
-        schedule_partitions(ReplicationStrategy::OnAllNodes).await?;
+        schedule_partitions(ReplicationStrategy::Flood).await?;
         Ok(())
     }
 
@@ -854,7 +854,7 @@ mod tests {
 
                         // assert that the replication strategy was respected
                         match replication_strategy {
-                            ReplicationStrategy::OnAllNodes => {
+                            ReplicationStrategy::Flood => {
                                 assert_eq!(target_state.node_set, alive_nodes)
                             }
                             ReplicationStrategy::Factor(replication_factor) => assert_eq!(

@@ -105,7 +105,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 10);
         let scheduling_plan =
-            SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes);
+            SchedulingPlan::from(&partition_table, ReplicationStrategy::Flood);
         tc.try_set_global_metadata(metadata.clone());
 
         // Use memory-loglet as a default if in test-mode
