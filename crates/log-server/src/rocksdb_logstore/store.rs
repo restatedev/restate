@@ -571,7 +571,7 @@ mod tests {
             known_archived: LogletOffset::INVALID,
             first_offset: LogletOffset::OLDEST,
             flags: StoreFlags::empty(),
-            payloads,
+            payloads: payloads.into(),
         };
         // add record at offset=1, no sequencer set.
         log_store
@@ -680,7 +680,7 @@ mod tests {
                 known_archived: LogletOffset::INVALID,
                 first_offset: offset,
                 flags: StoreFlags::empty(),
-                payloads: payloads.clone(),
+                payloads: payloads.clone().into(),
             };
             log_store
                 .enqueue_store(store_msg.clone(), true)
@@ -704,7 +704,7 @@ mod tests {
             sequencer: sequencer_2,
             known_archived: LogletOffset::INVALID,
             flags: StoreFlags::empty(),
-            payloads,
+            payloads: payloads.into(),
         };
         log_store.enqueue_store(store_msg, true).await?.await?;
         // the adjacent log is at 2

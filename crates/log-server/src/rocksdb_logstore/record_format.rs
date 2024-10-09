@@ -75,9 +75,9 @@ impl<'a> DataRecordDecoder<'a> {
 }
 
 #[derive(derive_more::From)]
-pub(super) struct DataRecordEncoder(Record);
+pub(super) struct DataRecordEncoder<'a>(&'a Record);
 
-impl DataRecordEncoder {
+impl<'a> DataRecordEncoder<'a> {
     /// On-disk record layout.
     /// For the record header, byte-order is little-endian.
     ///
@@ -90,7 +90,7 @@ impl DataRecordEncoder {
     ///    [8 bytes]       `created_at` timestamp
     ///    [remaining]     Serialized Payload
     pub fn encode_to_disk_format(self, buf: &mut BytesMut) -> BytesMut {
-        let (created_at, body, keys) = self.0.dissolve();
+        let (created_at, body, keys) = (self.0.created_at(), self.0.body(), self.0.keys());
 
         // Write the format version
         buf.put_u8(RecordFormat::CustomV1 as u8);
@@ -99,12 +99,12 @@ impl DataRecordEncoder {
             Keys::None => buf.put_u8(KeyStyle::None as u8),
             Keys::Single(key) => {
                 buf.put_u8(KeyStyle::Single as u8);
-                buf.put_u64_le(key);
+                buf.put_u64_le(*key);
             }
             Keys::Pair(key1, key2) => {
                 buf.put_u8(KeyStyle::Pair as u8);
-                buf.put_u64_le(key1);
-                buf.put_u64_le(key2);
+                buf.put_u64_le(*key1);
+                buf.put_u64_le(*key2);
             }
             Keys::RangeInclusive(range) => {
                 buf.put_u8(KeyStyle::RangeInclusive as u8);

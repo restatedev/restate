@@ -583,6 +583,8 @@ impl<S: LogStore> LogletWorker<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use googletest::prelude::*;
     use test_log::test;
@@ -640,10 +642,11 @@ mod tests {
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(tc.clone(), LOGLET, log_store, loglet_state)?;
 
-        let payloads = vec![
+        let payloads: Arc<[Record]> = vec![
             Record::from("a sample record"),
             Record::from("another record"),
-        ];
+        ]
+        .into();
 
         // offsets 1, 2
         let msg1 = Store {
@@ -716,10 +719,11 @@ mod tests {
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(tc.clone(), LOGLET, log_store, loglet_state)?;
 
-        let payloads = vec![
+        let payloads: Arc<[Record]> = vec![
             Record::from("a sample record"),
             Record::from("another record"),
-        ];
+        ]
+        .into();
 
         // offsets 1, 2
         let msg1 = Store {
@@ -889,7 +893,7 @@ mod tests {
                     known_archived: LogletOffset::INVALID,
                     first_offset: LogletOffset::new(2),
                     flags: StoreFlags::empty(),
-                    payloads: vec![Record::from("record2")],
+                    payloads: vec![Record::from("record2")].into(),
                 },
                 None,
             ))
@@ -906,7 +910,7 @@ mod tests {
                     known_archived: LogletOffset::INVALID,
                     first_offset: LogletOffset::new(5),
                     flags: StoreFlags::empty(),
-                    payloads: vec![Record::from(("record5", Keys::Single(11)))],
+                    payloads: vec![Record::from(("record5", Keys::Single(11)))].into(),
                 },
                 None,
             ))
@@ -923,7 +927,7 @@ mod tests {
                     known_archived: LogletOffset::INVALID,
                     first_offset: LogletOffset::new(10),
                     flags: StoreFlags::empty(),
-                    payloads: vec![Record::from("record10"), Record::from("record11")],
+                    payloads: vec![Record::from("record10"), Record::from("record11")].into(),
                 },
                 None,
             ))
@@ -1156,7 +1160,7 @@ mod tests {
                     known_archived: LogletOffset::INVALID,
                     first_offset: LogletOffset::new(5),
                     flags: StoreFlags::empty(),
-                    payloads: vec![Record::from("record5"), Record::from("record6")],
+                    payloads: vec![Record::from("record5"), Record::from("record6")].into(),
                 },
                 None,
             ))

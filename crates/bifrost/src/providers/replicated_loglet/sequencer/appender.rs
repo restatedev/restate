@@ -420,7 +420,7 @@ struct LogServerStoreTask<'a, T> {
     networking: &'a Networking<T>,
     server: RemoteLogServer,
     first_offset: LogletOffset,
-    records: &'a [Record],
+    records: &'a Arc<[Record]>,
     rpc_router: &'a RpcRouter<Store>,
 }
 
@@ -521,7 +521,7 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
             first_offset: self.first_offset,
             flags: StoreFlags::empty(),
             known_archived: LogletOffset::INVALID,
-            payloads: Vec::from_iter(self.records.iter().cloned()),
+            payloads: Arc::clone(self.records),
             sequencer: self.sequencer_shared_state.my_node_id,
             timeout_at: None,
         };
