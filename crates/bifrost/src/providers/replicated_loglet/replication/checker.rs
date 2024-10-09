@@ -229,6 +229,11 @@ impl<'a, Attribute> NodeSetChecker<'a, Attribute> {
             }
         }
 
+        if self.storage_states.len() < usize::from(self.replication_property.num_copies()) {
+            // short-circuit to avoid overflow on subtraction
+            return FMajorityResult::None;
+        }
+
         // todo(asoli): Location-aware quorum check
         let fmajority_requires: usize =
             self.storage_states.len() - usize::from(self.replication_property.num_copies()) + 1;
@@ -420,5 +425,24 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_dont_panic_on_replication_factor_exceeding_nodeset_size() {
+        let nodes_config = generate_logserver_nodes_config(3, StorageState::ReadWrite);
+
+        let nodeset: NodeSet = (1..=3).collect();
+        let replication = ReplicationProperty::new(5.try_into().unwrap());
+
+        // replication > nodeset size; could happen as misconfiguration or by nodes getting removed in operation.
+        assert_that!(replication.num_copies() as usize, gt(nodeset.len()));
+
+        let checker: NodeSetChecker<bool> =
+            NodeSetChecker::new(&nodeset, &nodes_config, &replication);
+
+        assert_that!(
+            checker.check_fmajority(|attr| !(*attr)),
+            eq(FMajorityResult::None)
+        );
     }
 }
