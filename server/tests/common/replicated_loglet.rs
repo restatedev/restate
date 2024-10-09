@@ -142,7 +142,7 @@ where
         assert!(cluster.wait_healthy(Duration::from_secs(30)).await);
 
         // join a new node to the cluster solely to act as a bifrost client
-        // it will have node id log_server_count+2duplicate plain node id 'N4
+        // it will have node id log_server_count+2
         let (bifrost, loglet, metadata_writer, metadata_store_client) =
             replicated_loglet_client(&cluster, PlainNodeId::new(log_server_count + 2)).await?;
 
