@@ -35,7 +35,7 @@ pub struct BifrostOptions {
     pub default_provider: ProviderKind,
     /// An opaque string that gets passed to the loglet provider to seed the creation of new
     /// loglets.
-    default_provider_config: Option<String>,
+    pub default_provider_config: Option<String>,
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     /// Configuration of local loglet provider
     pub local: LocalLogletOptions,

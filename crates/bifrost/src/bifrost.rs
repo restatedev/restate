@@ -200,6 +200,23 @@ impl Bifrost {
         Ok(self.inner.find_tail(log_id, attributes).await?.1)
     }
 
+    // Get the loglet currently serving the tail of the chain, for use in integration tests.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn find_tail_loglet(
+        &self,
+        log_id: LogId,
+        attributes: FindTailAttributes,
+    ) -> Result<Arc<dyn crate::loglet::Loglet>> {
+        self.inner.fail_if_shutting_down()?;
+        Ok(self
+            .inner
+            .find_tail(log_id, attributes)
+            .await?
+            .0
+            .inner()
+            .clone())
+    }
+
     /// The lsn of the slot **before** the first readable record (if it exists), or the offset
     /// before the next slot that will be written to. Another way to think about `get_trim_point`
     /// is that it points to the last lsn that was trimmed/deleted.

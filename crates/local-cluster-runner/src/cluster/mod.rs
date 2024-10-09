@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use typed_builder::TypedBuilder;
 
-use restate_types::errors::GenericError;
+use restate_types::{errors::GenericError, nodes_config::Role};
 
 use crate::node::{Node, NodeStartError, StartedNode};
 
@@ -161,7 +161,7 @@ impl StartedCluster {
         .all(|b| b)
     }
 
-    /// For every node in the cluster with an ingress role, wait for up to dur for the admin endpoint
+    /// For every node in the cluster with an ingress role, wait for up to dur for the ingress endpoint
     /// to respond to health checks, otherwise return false.
     pub async fn wait_ingresses_healthy(&self, dur: Duration) -> bool {
         future::join_all(
@@ -175,14 +175,27 @@ impl StartedCluster {
         .all(|b| b)
     }
 
-    /// Wait for all ingress and admin endpoints in the cluster to be healthy
-    pub async fn wait_healthy(&self, dur: Duration) -> bool {
-        future::join(
-            self.wait_admins_healthy(dur),
-            self.wait_ingresses_healthy(dur),
+    /// For every node in the cluster with a logserver role, wait for up to dur for the logserver
+    /// to be provisioned, otherwise return false.
+    pub async fn wait_logservers_provisioned(&self, dur: Duration) -> bool {
+        future::join_all(
+            self.nodes
+                .iter()
+                .filter(|n| n.config().has_role(Role::LogServer))
+                .map(|n| n.wait_logserver_provisioned(dur)),
         )
         .await
-            == (true, true)
+        .into_iter()
+        .all(|b| b)
+    }
+
+    /// Wait for all ingress, admin, logserver roles in the cluster to be healthy/provisioned
+    pub async fn wait_healthy(&self, dur: Duration) -> bool {
+        tokio::join!(
+            self.wait_admins_healthy(dur),
+            self.wait_ingresses_healthy(dur),
+            self.wait_logservers_provisioned(dur),
+        ) == (true, true, true)
     }
 
     pub async fn push_node(&mut self, node: Node) -> Result<(), NodeStartError> {
@@ -201,7 +214,7 @@ pub enum MaybeTempDir {
 }
 
 impl MaybeTempDir {
-    fn as_path(&self) -> &Path {
+    pub fn as_path(&self) -> &Path {
         match self {
             MaybeTempDir::PathBuf(p) => p.as_path(),
             MaybeTempDir::TempDir(d) => d.path(),

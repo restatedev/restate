@@ -502,7 +502,11 @@ impl Node {
     ) -> Result<Logs, Error> {
         Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
             metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                bootstrap_logs_metadata(config.bifrost.default_provider, num_partitions)
+                bootstrap_logs_metadata(
+                    config.bifrost.default_provider,
+                    config.bifrost.default_provider_config.clone(),
+                    num_partitions,
+                )
             })
         })
         .await
@@ -619,6 +623,18 @@ impl Node {
                 }
             })
             .await
+    }
+
+    pub fn bifrost(&self) -> restate_bifrost::Bifrost {
+        self.bifrost.handle()
+    }
+
+    pub fn metadata_store_client(&self) -> MetadataStoreClient {
+        self.metadata_store_client.clone()
+    }
+
+    pub fn metadata_writer(&self) -> restate_core::MetadataWriter {
+        self.metadata_manager.writer()
     }
 }
 

@@ -209,6 +209,11 @@ impl LogletWrapper {
 
         self.loglet.seal().await
     }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn inner(&self) -> &Arc<dyn Loglet> {
+        &self.loglet
+    }
 }
 
 impl PartialEq for LogletWrapper {
