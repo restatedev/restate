@@ -35,9 +35,9 @@ use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::{GenerationalNodeId, Version};
-
+use crate::cluster_controller::logs_controller::LogsController;
 use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
-use crate::cluster_controller::scheduler::Scheduler;
+use crate::cluster_controller::scheduler::{ObservedClusterState, Scheduler};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -222,6 +222,9 @@ impl<T: TransportConnect> Service<T> {
         )
         .await?;
 
+        let mut logs_controller = LogsController::new(self.metadata.clone(), bifrost.clone(), self.metadata_store_client.clone(), self.metadata_writer.clone())?;
+        let mut observed_cluster_state = ObservedClusterState::default();
+
         loop {
             tokio::select! {
                 _ = self.heartbeat_interval.tick() => {
@@ -236,7 +239,12 @@ impl<T: TransportConnect> Service<T> {
                     }
                 }
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
-                    scheduler.on_cluster_state_update(cluster_state).await?;
+                    observed_cluster_state.update(&cluster_state);
+                    scheduler.on_observed_cluster_state(&observed_cluster_state).await?;
+                    logs_controller.on_observed_cluster_state(&observed_cluster_state)?;
+                }
+                result = logs_controller.run_async_operations() => {
+                    result?;
                 }
                 Some(cmd) = self.command_rx.recv() => {
                     self.on_cluster_cmd(cmd, bifrost_admin).await;

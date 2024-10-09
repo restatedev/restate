@@ -47,7 +47,6 @@ pub enum Error {
 
 pub struct Scheduler<T> {
     scheduling_plan: SchedulingPlan,
-    observed_cluster_state: ObservedClusterState,
 
     task_center: TaskCenter,
     metadata_store_client: MetadataStoreClient,
@@ -71,7 +70,6 @@ impl<T: TransportConnect> Scheduler<T> {
 
         Ok(Self {
             scheduling_plan,
-            observed_cluster_state: ObservedClusterState::default(),
             task_center,
             metadata_store_client,
             networking,
@@ -87,14 +85,13 @@ impl<T: TransportConnect> Scheduler<T> {
         Ok(Vec::new())
     }
 
-    pub async fn on_cluster_state_update(
+    pub async fn on_observed_cluster_state(
         &mut self,
-        cluster_state: Arc<ClusterState>,
+        observed_cluster_state: &ObservedClusterState,
     ) -> Result<(), Error> {
-        self.update_observed_cluster_state(cluster_state);
         // todo: Only update scheduling plan on observed cluster changes?
-        self.update_scheduling_plan().await?;
-        self.instruct_nodes()?;
+        self.update_scheduling_plan(observed_cluster_state).await?;
+        self.instruct_nodes(observed_cluster_state)?;
 
         Ok(())
     }
@@ -103,14 +100,10 @@ impl<T: TransportConnect> Scheduler<T> {
         // nothing to do since we don't make time based scheduling decisions yet
     }
 
-    fn update_observed_cluster_state(&mut self, cluster_state: Arc<ClusterState>) {
-        self.observed_cluster_state.update(&cluster_state);
-    }
-
-    async fn update_scheduling_plan(&mut self) -> Result<(), Error> {
+    async fn update_scheduling_plan(&mut self, observed_cluster_state: &ObservedClusterState) -> Result<(), Error> {
         let mut builder = self.scheduling_plan.clone().into_builder();
 
-        self.ensure_replication(&mut builder);
+        self.ensure_replication(&mut builder, observed_cluster_state);
         self.ensure_leadership(&mut builder);
 
         if let Some(scheduling_plan) = builder.build_if_modified() {
@@ -153,11 +146,10 @@ impl<T: TransportConnect> Scheduler<T> {
         Ok(())
     }
 
-    fn ensure_replication(&self, scheduling_plan_builder: &mut SchedulingPlanBuilder) {
+    fn ensure_replication(&self, scheduling_plan_builder: &mut SchedulingPlanBuilder, observed_cluster_state: &ObservedClusterState) {
         let partition_ids: Vec<_> = scheduling_plan_builder.partition_ids().cloned().collect();
 
-        let alive_nodes: BTreeSet<_> = self
-            .observed_cluster_state
+        let alive_nodes: BTreeSet<_> = observed_cluster_state
             .alive_nodes
             .keys()
             .cloned()
@@ -249,14 +241,14 @@ impl<T: TransportConnect> Scheduler<T> {
         leader_candidates.iter().choose(&mut rng).cloned()
     }
 
-    fn instruct_nodes(&self) -> Result<(), Error> {
+    fn instruct_nodes(&self, observed_cluster_state: &ObservedClusterState) -> Result<(), Error> {
         let mut partitions: BTreeSet<_> = self.scheduling_plan.partition_ids().cloned().collect();
-        partitions.extend(self.observed_cluster_state.partitions.keys().cloned());
+        partitions.extend(observed_cluster_state.partitions.keys().cloned());
 
         let mut commands = BTreeMap::default();
 
         for partition_id in &partitions {
-            self.generate_instructions_for_partition(partition_id, &mut commands);
+            self.generate_instructions_for_partition(partition_id, observed_cluster_state, &mut commands);
         }
 
         for (node_id, commands) in commands.into_iter() {
@@ -288,12 +280,12 @@ impl<T: TransportConnect> Scheduler<T> {
     fn generate_instructions_for_partition(
         &self,
         partition_id: &PartitionId,
+        observed_cluster_state: &ObservedClusterState,
         commands: &mut BTreeMap<PlainNodeId, Vec<ControlProcessor>>,
     ) {
         let target_state = self.scheduling_plan.get(partition_id);
         // todo: Avoid cloning of node_set if this becomes measurable
-        let mut observed_state = self
-            .observed_cluster_state
+        let mut observed_state = observed_cluster_state
             .partitions
             .get(partition_id)
             .map(|state| state.node_set.clone())
@@ -326,15 +318,15 @@ impl<T: TransportConnect> Scheduler<T> {
 /// Represents the scheduler's observed state of the cluster. The scheduler will use this
 /// information and the target scheduling plan to instruct nodes to start/stop partition processors.
 #[derive(Debug, Default, Clone)]
-struct ObservedClusterState {
-    partitions: BTreeMap<PartitionId, ObservedPartitionState>,
-    alive_nodes: BTreeMap<PlainNodeId, GenerationalNodeId>,
-    dead_nodes: BTreeSet<PlainNodeId>,
-    nodes_to_partitions: BTreeMap<PlainNodeId, BTreeSet<PartitionId>>,
+pub struct ObservedClusterState {
+    pub partitions: BTreeMap<PartitionId, ObservedPartitionState>,
+    pub alive_nodes: BTreeMap<PlainNodeId, GenerationalNodeId>,
+    pub dead_nodes: BTreeSet<PlainNodeId>,
+    pub nodes_to_partitions: BTreeMap<PlainNodeId, BTreeSet<PartitionId>>,
 }
 
 impl ObservedClusterState {
-    fn update(&mut self, cluster_state: &ClusterState) {
+    pub fn update(&mut self, cluster_state: &ClusterState) {
         self.update_nodes(cluster_state);
         self.update_partitions(cluster_state);
     }
@@ -400,8 +392,8 @@ impl ObservedClusterState {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct ObservedPartitionState {
-    node_set: BTreeMap<PlainNodeId, RunMode>,
+pub struct ObservedPartitionState {
+    pub node_set: BTreeMap<PlainNodeId, RunMode>,
 }
 
 impl ObservedPartitionState {
@@ -707,9 +699,10 @@ mod tests {
                     .expect("scheduling plan");
                 let mut scheduler =
                     Scheduler::init(tc, metadata_store_client.clone(), networking).await?;
+                let observed_cluster_state = ObservedClusterState::default();
 
                 scheduler
-                    .on_cluster_state_update(Arc::new(ClusterState::empty()))
+                    .on_observed_cluster_state(&observed_cluster_state)
                     .await?;
 
                 let scheduling_plan = metadata_store_client
@@ -813,13 +806,14 @@ mod tests {
             .run_in_scope("test", None, async move {
                 let mut scheduler =
                     Scheduler::init(tc, metadata_store_client.clone(), networking).await?;
+                let mut observed_cluster_state = ObservedClusterState::default();
 
                 for _ in 0..num_scheduling_rounds {
                     let cluster_state = random_cluster_state(&node_ids, num_partitions);
 
-                    let cluster_state = Arc::new(cluster_state);
+                    observed_cluster_state.update(&cluster_state);
                     scheduler
-                        .on_cluster_state_update(Arc::clone(&cluster_state))
+                        .on_observed_cluster_state(&observed_cluster_state)
                         .await?;
                     // collect all control messages from the network to build up the effective scheduling plan
                     let control_messages = control_recv
