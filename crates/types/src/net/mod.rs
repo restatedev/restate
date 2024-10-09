@@ -22,7 +22,7 @@ pub mod replicated_loglet;
 // re-exports for convenience
 pub use error::*;
 
-use std::net::{AddrParseError, SocketAddr};
+use std::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -65,6 +65,27 @@ impl FromStr for AdvertisedAddress {
         } else {
             // try to parse as a URI
             Ok(AdvertisedAddress::Http(s.parse()?))
+        }
+    }
+}
+
+impl AdvertisedAddress {
+    // Helper function to extract the port from the AdvertisedAddress
+    pub fn derive_bind_address(&self) -> Option<BindAddress> {
+        match self {
+            AdvertisedAddress::Http(uri) => {
+                // Try to extract the port from the URI
+                if let Some(authority) = uri.authority() {
+                    if let Some(port) = authority.port_u16() {
+                        // Derive the BindAddress with 0.0.0.0 and the same port
+                        let socket_addr =
+                            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
+                        return Some(BindAddress::Socket(socket_addr));
+                    }
+                }
+                None
+            }
+            AdvertisedAddress::Uds(_) => None, // No bind address for Unix domain sockets
         }
     }
 }
@@ -225,5 +246,49 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_derive_bind_address_http_with_port() {
+        // Test case for AdvertisedAddress::Http with a valid host and port
+        let advertised_address = AdvertisedAddress::from_str("http://127.0.0.1:1337").unwrap();
+
+        // Derive the bind address
+        let bind_address = advertised_address.derive_bind_address().unwrap();
+
+        // Expected bind address
+        let expected_bind_address =
+            BindAddress::Socket(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 1337));
+
+        assert_eq!(bind_address, expected_bind_address);
+    }
+
+    #[test]
+    fn test_derive_bind_address_http_without_port() {
+        // Test case for AdvertisedAddress::Http without a port
+        let advertised_address = AdvertisedAddress::from_str("http://localhost").unwrap();
+
+        // Deriving a bind address should return None since no port is provided
+        let bind_address = advertised_address.derive_bind_address();
+        assert!(bind_address.is_none());
+    }
+
+    #[test]
+    fn test_derive_bind_address_unix_socket() {
+        // Test case for AdvertisedAddress::Uds (Unix domain socket)
+        let advertised_address = AdvertisedAddress::Uds(PathBuf::from("/tmp/socket"));
+
+        // Deriving a bind address for a Unix socket should return None
+        let bind_address = advertised_address.derive_bind_address();
+        assert!(bind_address.is_none());
+    }
+
+    #[test]
+    fn test_invalid_advertised_address() {
+        // Test case for an invalid AdvertisedAddress string
+        let advertised_address = AdvertisedAddress::from_str("invalid-address");
+
+        // Parsing should fail, resulting in an error
+        assert!(advertised_address.is_err());
     }
 }
