@@ -10,7 +10,7 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{describe_counter, Unit};
+use metrics::{describe_counter, describe_histogram, Unit};
 
 pub(crate) const BIFROST_REPLICATED_APPEND: &str = "restate.bifrost.replicatedloglet.appends.total";
 pub(crate) const BIFROST_REPLICATED_READ_CACHE_HIT: &str =
@@ -19,6 +19,16 @@ pub(crate) const BIFROST_REPLICATED_READ_CACHE_FILTERED: &str =
     "restate.bifrost.replicatedloglet.read_record_cache_filtered.total";
 pub(crate) const BIFROST_REPLICATED_READ_TOTAL: &str =
     "restate.bifrost.replicatedloglet.read_record.total";
+pub(crate) const BIFROST_RECORDS_ENQUEUED_TOTAL: &str =
+    "restate.bifrost.replicatedloglet.enqueued_records.total";
+pub(crate) const BIFROST_RECORDS_ENQUEUED_BYTES: &str =
+    "restate.bifrost.replicatedloglet.enqueued_records.bytes";
+
+pub(crate) const BIFROST_SEQ_RECORDS_COMMITTED_TOTAL: &str =
+    "restate.bifrost.sequencer.committed_records.total";
+pub(crate) const BIFROST_SEQ_RECORDS_COMMITTED_BYTES: &str =
+    "restate.bifrost.sequencer.committed_records.bytes";
+pub(crate) const BIFROST_SEQ_STORE_DURATION: &str = "restate.bifrost.sequencer.store_duration";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -43,5 +53,35 @@ pub(crate) fn describe_metrics() {
         BIFROST_REPLICATED_READ_TOTAL,
         Unit::Count,
         "Number of records read"
+    );
+
+    describe_counter!(
+        BIFROST_RECORDS_ENQUEUED_TOTAL,
+        Unit::Count,
+        "Number of records enqueued for writing"
+    );
+
+    describe_counter!(
+        BIFROST_RECORDS_ENQUEUED_BYTES,
+        Unit::Bytes,
+        "Size of records enqueued for writing"
+    );
+
+    describe_counter!(
+        BIFROST_SEQ_RECORDS_COMMITTED_TOTAL,
+        Unit::Count,
+        "Number of records committed"
+    );
+
+    describe_counter!(
+        BIFROST_SEQ_RECORDS_COMMITTED_BYTES,
+        Unit::Bytes,
+        "Size of records committed"
+    );
+
+    describe_histogram!(
+        BIFROST_SEQ_STORE_DURATION,
+        Unit::Seconds,
+        "Log server store duration in seconds as measured by the sequencer"
     );
 }
