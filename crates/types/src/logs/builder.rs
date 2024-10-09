@@ -20,6 +20,7 @@ use crate::Version;
 #[derive(Debug, Default, Clone)]
 pub struct LogsBuilder {
     inner: Logs,
+    modified: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,12 +42,16 @@ impl LogsBuilder {
             return Err(BuilderError::LogAlreadyExists(log_id));
         }
         self.inner.logs.insert(log_id, chain);
+        self.modified = true;
         Ok(self.chain(&log_id).unwrap())
     }
 
     pub fn chain(&mut self, log_id: &LogId) -> Option<ChainBuilder<'_>> {
         let chain = self.inner.logs.get_mut(log_id)?;
-        Some(ChainBuilder { inner: chain })
+        Some(ChainBuilder {
+            inner: chain,
+            modified: &mut self.modified,
+        })
     }
 
     /// Bumps the version and returns the constructed log metadata.
@@ -62,6 +67,17 @@ impl LogsBuilder {
         // outcome of the build() call.
         self.inner.version = Version::from(u32::from(version) - 1);
     }
+
+    pub fn build_if_modified(self) -> Option<Logs> {
+        if self.modified {
+            Some(Logs {
+                version: self.inner.version.next(),
+                logs: self.inner.logs,
+            })
+        } else {
+            None
+        }
+    }
 }
 
 impl AsRef<Logs> for LogsBuilder {
@@ -72,13 +88,17 @@ impl AsRef<Logs> for LogsBuilder {
 
 impl From<Logs> for LogsBuilder {
     fn from(value: Logs) -> LogsBuilder {
-        LogsBuilder { inner: value }
+        LogsBuilder {
+            inner: value,
+            modified: false,
+        }
     }
 }
 
 #[derive(Debug)]
 pub struct ChainBuilder<'a> {
     inner: &'a mut Chain,
+    modified: &'a mut bool,
 }
 
 impl<'a> ChainBuilder<'a> {
@@ -95,6 +115,7 @@ impl<'a> ChainBuilder<'a> {
         };
 
         self.inner.chain = self.inner.chain.split_off(&found_base_lsn);
+        *self.modified = true;
     }
 
     /// `base_lsn` must be higher than all previous base_lsns.
@@ -106,7 +127,7 @@ impl<'a> ChainBuilder<'a> {
         base_lsn: Lsn,
         provider: ProviderKind,
         params: LogletParams,
-    ) -> Result<(), BuilderError> {
+    ) -> Result<SegmentIndex, BuilderError> {
         let mut last_entry = self
             .inner
             .chain
@@ -119,13 +140,15 @@ impl<'a> ChainBuilder<'a> {
                 self.inner
                     .chain
                     .insert(base_lsn, LogletConfig::new(new_index, provider, params));
-                Ok(())
+                *self.modified = true;
+                Ok(new_index)
             }
             key if key == base_lsn => {
                 // Replace the last segment (empty segment)
                 let new_index = SegmentIndex(last_entry.get().index().0 + 1);
                 last_entry.insert(LogletConfig::new(new_index, provider, params));
-                Ok(())
+                *self.modified = true;
+                Ok(new_index)
             }
             _ => {
                 // can't add to the back.

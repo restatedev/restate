@@ -62,6 +62,13 @@ impl From<PartitionId> for LogId {
     }
 }
 
+impl From<LogId> for PartitionId {
+    fn from(value: LogId) -> Self {
+        // lower 16 bits represent the partition id
+        PartitionId::from(value.0 as u16)
+    }
+}
+
 impl From<u16> for LogId {
     fn from(value: u16) -> Self {
         LogId(u32::from(value))

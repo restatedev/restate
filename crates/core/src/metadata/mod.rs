@@ -141,8 +141,12 @@ impl Metadata {
         Ok(self.partition_table_ref())
     }
 
-    pub fn logs(&self) -> Pinned<Logs> {
+    pub fn logs_ref(&self) -> Pinned<Logs> {
         Pinned::new(&self.inner.logs)
+    }
+
+    pub fn logs_snapshot(&self) -> Arc<Logs> {
+        self.inner.logs.load_full()
     }
 
     /// Returns Version::INVALID if logs has not been loaded yet.

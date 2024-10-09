@@ -292,7 +292,7 @@ impl RequestPump {
         header: &CommonRequestHeader,
     ) -> Result<Arc<ReplicatedLoglet<T>>, SequencerStatus> {
         // search the chain
-        let logs = self.metadata.logs();
+        let logs = self.metadata.logs_ref();
         let chain = logs
             .chain(&header.log_id)
             .ok_or(SequencerStatus::UnknownLogId)?;

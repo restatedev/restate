@@ -210,6 +210,13 @@ impl NodesConfiguration {
         })
     }
 
+    pub fn get_admin_nodes(&self) -> impl Iterator<Item = &NodeConfig> {
+        self.nodes.values().filter_map(|maybe| match maybe {
+            MaybeNode::Node(node) if node.roles.contains(Role::Admin) => Some(node),
+            _ => None,
+        })
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (PlainNodeId, &'_ NodeConfig)> {
         self.nodes.iter().filter_map(|(k, v)| {
             if let MaybeNode::Node(node) = v {

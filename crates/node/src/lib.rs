@@ -31,13 +31,9 @@ use restate_core::{task_center, TaskKind};
 use restate_log_server::LogServerService;
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::live::Live;
-use restate_types::logs::metadata::{bootstrap_logs_metadata, Logs};
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
-};
+use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
 use restate_types::retries::RetryPolicy;
@@ -113,6 +109,7 @@ pub struct Node {
     #[cfg(feature = "replicated-loglet")]
     log_server: Option<LogServerService>,
     server: NetworkServer,
+    networking: Networking<GrpcConnector>,
 }
 
 impl Node {
@@ -272,6 +269,7 @@ impl Node {
             #[cfg(feature = "replicated-loglet")]
             log_server,
             server,
+            networking,
         })
     }
 
@@ -306,12 +304,11 @@ impl Node {
 
         if config.common.allow_bootstrap {
             // only try to insert static configuration if in bootstrap mode
-            let (partition_table, logs) =
+            let partition_table =
                 Self::fetch_or_insert_initial_configuration(&self.metadata_store_client, &config)
                     .await?;
 
             metadata_writer.update(partition_table).await?;
-            metadata_writer.update(logs).await?;
         } else {
             // otherwise, just sync the required metadata
             metadata
@@ -322,12 +319,10 @@ impl Node {
                 .await?;
 
             // safety check until we can tolerate missing partition table and logs configuration
-            if metadata.partition_table_version() == Version::INVALID
-                || metadata.logs_version() == Version::INVALID
-            {
+            if metadata.partition_table_version() == Version::INVALID {
                 return Err(Error::SafetyCheck(
                     format!(
-                        "Missing partition table or logs configuration for cluster '{}'. This indicates that the cluster bootstrap is incomplete. Please re-run with '--allow-bootstrap true'.",
+                        "Missing partition table for cluster '{}'. This indicates that the cluster bootstrap is incomplete. Please re-run with '--allow-bootstrap true'.",
                         config.common.cluster_name(),
                     )))?;
             }
@@ -377,6 +372,28 @@ impl Node {
             roles = %my_node_config.roles,
             address = %my_node_config.address,
             "My Node ID is {}", my_node_config.current_generation);
+
+        // todo this is a temporary solution to announce the updated NodesConfiguration to the
+        //  configured admin nodes. It should be removed once we have a gossip-based node status
+        //  protocol. Notifying the admin nodes is done on a best effort basis in case one admin
+        //  node is currently not available. This is ok, because the admin nodes will periodically
+        //  sync the NodesConfiguration from the metadata store themselves.
+        for admin_node in nodes_config.get_admin_nodes() {
+            // we don't have to announce us to ourselves
+            if admin_node.current_generation != my_node_id {
+                let admin_node_id = admin_node.current_generation;
+                let networking = self.networking.clone();
+
+                tc.spawn_unmanaged(TaskKind::Disposable, "announce-node-at-admin-node", None, async move {
+                    if let Err(err) = networking
+                        .node_connection(admin_node_id)
+                        .await
+                    {
+                        info!("Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}");
+                    }
+                })?;
+            }
+        }
 
         let bifrost = self.bifrost.handle();
 
@@ -440,24 +457,11 @@ impl Node {
     async fn fetch_or_insert_initial_configuration(
         metadata_store_client: &MetadataStoreClient,
         options: &Configuration,
-    ) -> Result<(PartitionTable, Logs), Error> {
+    ) -> Result<PartitionTable, Error> {
         let partition_table =
             Self::fetch_or_insert_partition_table(metadata_store_client, options).await?;
-        Self::try_insert_initial_scheduling_plan(metadata_store_client, options, &partition_table)
-            .await?;
-        let logs = Self::fetch_or_insert_logs_configuration(
-            metadata_store_client,
-            options,
-            partition_table.num_partitions(),
-        )
-        .await?;
 
-        // sanity check
-        if usize::from(partition_table.num_partitions()) != logs.num_logs() {
-            return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.num_logs())))?;
-        }
-
-        Ok((partition_table, logs))
+        Ok(partition_table)
     }
 
     async fn fetch_or_insert_partition_table(
@@ -469,41 +473,6 @@ impl Node {
                 PartitionTable::with_equally_sized_partitions(
                     Version::MIN,
                     config.common.bootstrap_num_partitions(),
-                )
-            })
-        })
-        .await
-        .map_err(Into::into)
-    }
-
-    /// Tries to insert an initial scheduling plan which is aligned with the given
-    /// [`PartitionTable`]. If a scheduling plan already exists, then this method does nothing.
-    async fn try_insert_initial_scheduling_plan(
-        metadata_store_client: &MetadataStoreClient,
-        config: &Configuration,
-        partition_table: &PartitionTable,
-    ) -> Result<(), Error> {
-        Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
-            metadata_store_client.get_or_insert(SCHEDULING_PLAN_KEY.clone(), || {
-                SchedulingPlan::from(partition_table, config.admin.default_replication_strategy)
-            })
-        })
-        .await
-        .map_err(Into::into)
-        .map(|_| ())
-    }
-
-    async fn fetch_or_insert_logs_configuration(
-        metadata_store_client: &MetadataStoreClient,
-        config: &Configuration,
-        num_partitions: u16,
-    ) -> Result<Logs, Error> {
-        Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
-            metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                bootstrap_logs_metadata(
-                    config.bifrost.default_provider,
-                    config.bifrost.default_provider_config.clone(),
-                    num_partitions,
                 )
             })
         })

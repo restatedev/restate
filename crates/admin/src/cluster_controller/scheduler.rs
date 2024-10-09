@@ -8,30 +8,32 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-
 use rand::seq::IteratorRandom;
+use std::collections::{BTreeMap, BTreeSet};
 use tracing::{debug, trace};
 
-use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadError, WriteError};
+use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use restate_core::metadata_store::{
+    MetadataStoreClient, Precondition, ReadError, ReadWriteError, WriteError,
+};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
-use restate_core::{ShutdownError, SyncError, TaskCenter, TaskKind};
-use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
+use restate_core::{metadata, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::cluster_controller::{
-    ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder,
+    ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
 };
 use restate_types::identifiers::PartitionId;
+use restate_types::logs::metadata::Logs;
 use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
 use restate_types::net::cluster_controller::Action;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
-use restate_types::{GenerationalNodeId, PlainNodeId, Version, Versioned};
+use restate_types::partition_table::PartitionTable;
+use restate_types::{GenerationalNodeId, PlainNodeId, Versioned};
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading scheduling plan from metadata store: {0}")]
-pub struct BuildError(#[from] ReadError);
+pub struct BuildError(#[from] ReadWriteError);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -45,9 +47,22 @@ pub enum Error {
     Shutdown(#[from] ShutdownError),
 }
 
+enum UpdateOutcome<T> {
+    Written(T),
+    NewerVersionFound(T),
+}
+
+impl<T> UpdateOutcome<T> {
+    fn into_inner(self) -> T {
+        match self {
+            UpdateOutcome::Written(value) => value,
+            UpdateOutcome::NewerVersionFound(value) => value,
+        }
+    }
+}
+
 pub struct Scheduler<T> {
     scheduling_plan: SchedulingPlan,
-    observed_cluster_state: ObservedClusterState,
 
     task_center: TaskCenter,
     metadata_store_client: MetadataStoreClient,
@@ -65,13 +80,11 @@ impl<T: TransportConnect> Scheduler<T> {
         networking: Networking<T>,
     ) -> Result<Self, BuildError> {
         let scheduling_plan = metadata_store_client
-            .get(SCHEDULING_PLAN_KEY.clone())
-            .await?
-            .expect("Scheduling plan should be initialized by bootstrap node");
+            .get_or_insert(SCHEDULING_PLAN_KEY.clone(), SchedulingPlan::default)
+            .await?;
 
         Ok(Self {
             scheduling_plan,
-            observed_cluster_state: ObservedClusterState::default(),
             task_center,
             metadata_store_client,
             networking,
@@ -87,14 +100,13 @@ impl<T: TransportConnect> Scheduler<T> {
         Ok(Vec::new())
     }
 
-    pub async fn on_cluster_state_update(
+    pub async fn on_observed_cluster_state(
         &mut self,
-        cluster_state: Arc<ClusterState>,
+        observed_cluster_state: &ObservedClusterState,
     ) -> Result<(), Error> {
-        self.update_observed_cluster_state(cluster_state);
         // todo: Only update scheduling plan on observed cluster changes?
-        self.update_scheduling_plan().await?;
-        self.instruct_nodes()?;
+        self.update_scheduling_plan(observed_cluster_state).await?;
+        self.instruct_nodes(observed_cluster_state)?;
 
         Ok(())
     }
@@ -103,35 +115,67 @@ impl<T: TransportConnect> Scheduler<T> {
         // nothing to do since we don't make time based scheduling decisions yet
     }
 
-    fn update_observed_cluster_state(&mut self, cluster_state: Arc<ClusterState>) {
-        self.observed_cluster_state.update(&cluster_state);
-    }
-
-    async fn update_scheduling_plan(&mut self) -> Result<(), Error> {
+    pub async fn on_logs_update(
+        &mut self,
+        logs: &Logs,
+        partition_table: &PartitionTable,
+    ) -> Result<(), Error> {
         let mut builder = self.scheduling_plan.clone().into_builder();
 
-        self.ensure_replication(&mut builder);
+        loop {
+            // add partitions to the scheduling plan for which we have provisioned the logs
+            for (log_id, _) in logs.iter() {
+                let partition_id = (*log_id).into();
+
+                // add the partition to the scheduling plan if we aren't already scheduling it
+                if !builder.contains_partition(&partition_id) {
+                    // check whether the provisioned log is actually needed
+                    if let Some(partition) = partition_table.get_partition(&partition_id) {
+                        builder.insert_partition(
+                            partition_id,
+                            TargetPartitionState::new(
+                                partition.key_range.clone(),
+                                ReplicationStrategy::OnAllNodes,
+                            ),
+                        )
+                    }
+                }
+            }
+
+            if let Some(scheduling_plan) = builder.build_if_modified() {
+                let scheduling_plan = self.try_update_scheduling_plan(scheduling_plan).await?;
+                match scheduling_plan {
+                    UpdateOutcome::Written(scheduling_plan) => {
+                        self.scheduling_plan = scheduling_plan;
+                        break;
+                    }
+                    UpdateOutcome::NewerVersionFound(scheduling_plan) => {
+                        self.scheduling_plan = scheduling_plan.clone();
+                        builder = scheduling_plan.into_builder();
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn update_scheduling_plan(
+        &mut self,
+        observed_cluster_state: &ObservedClusterState,
+    ) -> Result<(), Error> {
+        let mut builder = self.scheduling_plan.clone().into_builder();
+
+        self.ensure_replication(&mut builder, observed_cluster_state);
         self.ensure_leadership(&mut builder);
 
         if let Some(scheduling_plan) = builder.build_if_modified() {
-            if let Err(err) = self
-                .metadata_store_client
-                .put(
-                    SCHEDULING_PLAN_KEY.clone(),
-                    &scheduling_plan,
-                    Precondition::MatchesVersion(self.scheduling_plan.version()),
-                )
-                .await
-            {
-                return match err {
-                    WriteError::FailedPrecondition(_) => {
-                        // There was a concurrent modification of the scheduling plan. Fetch the latest version.
-                        self.fetch_scheduling_plan().await?;
-                        Ok(())
-                    }
-                    err => Err(err.into()),
-                };
-            }
+            let scheduling_plan = self
+                .try_update_scheduling_plan(scheduling_plan)
+                .await?
+                .into_inner();
 
             debug!("Updated scheduling plan: {scheduling_plan:?}");
             self.scheduling_plan = scheduling_plan;
@@ -140,28 +184,48 @@ impl<T: TransportConnect> Scheduler<T> {
         Ok(())
     }
 
-    async fn fetch_scheduling_plan(&mut self) -> Result<(), ReadError> {
-        if let Some(scheduling_plan) = self
+    async fn try_update_scheduling_plan(
+        &self,
+        scheduling_plan: SchedulingPlan,
+    ) -> Result<UpdateOutcome<SchedulingPlan>, Error> {
+        match self
             .metadata_store_client
-            .get(SCHEDULING_PLAN_KEY.clone())
-            .await?
+            .put(
+                SCHEDULING_PLAN_KEY.clone(),
+                &scheduling_plan,
+                Precondition::MatchesVersion(self.scheduling_plan.version()),
+            )
+            .await
         {
-            debug!("Fetched scheduling plan from metadata store: {scheduling_plan:?}");
-            self.scheduling_plan = scheduling_plan;
+            Ok(_) => Ok(UpdateOutcome::Written(scheduling_plan)),
+            Err(err) => match err {
+                WriteError::FailedPrecondition(_) => {
+                    // There was a concurrent modification of the scheduling plan. Fetch the latest version.
+                    let scheduling_plan = self
+                        .fetch_scheduling_plan()
+                        .await?
+                        .expect("must be present");
+                    Ok(UpdateOutcome::NewerVersionFound(scheduling_plan))
+                }
+                err => Err(err.into()),
+            },
         }
-
-        Ok(())
     }
 
-    fn ensure_replication(&self, scheduling_plan_builder: &mut SchedulingPlanBuilder) {
+    async fn fetch_scheduling_plan(&self) -> Result<Option<SchedulingPlan>, ReadError> {
+        self.metadata_store_client
+            .get(SCHEDULING_PLAN_KEY.clone())
+            .await
+    }
+
+    fn ensure_replication(
+        &self,
+        scheduling_plan_builder: &mut SchedulingPlanBuilder,
+        observed_cluster_state: &ObservedClusterState,
+    ) {
         let partition_ids: Vec<_> = scheduling_plan_builder.partition_ids().cloned().collect();
 
-        let alive_nodes: BTreeSet<_> = self
-            .observed_cluster_state
-            .alive_nodes
-            .keys()
-            .cloned()
-            .collect();
+        let alive_nodes: BTreeSet<_> = observed_cluster_state.alive_nodes.keys().cloned().collect();
         let mut rng = rand::thread_rng();
 
         for partition_id in &partition_ids {
@@ -249,20 +313,25 @@ impl<T: TransportConnect> Scheduler<T> {
         leader_candidates.iter().choose(&mut rng).cloned()
     }
 
-    fn instruct_nodes(&self) -> Result<(), Error> {
+    fn instruct_nodes(&self, observed_cluster_state: &ObservedClusterState) -> Result<(), Error> {
         let mut partitions: BTreeSet<_> = self.scheduling_plan.partition_ids().cloned().collect();
-        partitions.extend(self.observed_cluster_state.partitions.keys().cloned());
+        partitions.extend(observed_cluster_state.partitions.keys().cloned());
 
         let mut commands = BTreeMap::default();
 
         for partition_id in &partitions {
-            self.generate_instructions_for_partition(partition_id, &mut commands);
+            self.generate_instructions_for_partition(
+                partition_id,
+                observed_cluster_state,
+                &mut commands,
+            );
         }
 
         for (node_id, commands) in commands.into_iter() {
             let control_processors = ControlProcessors {
                 // todo: Maybe remove unneeded partition table version
-                min_partition_table_version: Version::MIN,
+                min_partition_table_version: metadata().partition_table_version(),
+                min_logs_table_version: metadata().logs_version(),
                 commands,
             };
 
@@ -288,15 +357,15 @@ impl<T: TransportConnect> Scheduler<T> {
     fn generate_instructions_for_partition(
         &self,
         partition_id: &PartitionId,
+        observed_cluster_state: &ObservedClusterState,
         commands: &mut BTreeMap<PlainNodeId, Vec<ControlProcessor>>,
     ) {
         let target_state = self.scheduling_plan.get(partition_id);
         // todo: Avoid cloning of node_set if this becomes measurable
-        let mut observed_state = self
-            .observed_cluster_state
+        let mut observed_state = observed_cluster_state
             .partitions
             .get(partition_id)
-            .map(|state| state.node_set.clone())
+            .map(|state| state.partition_processors.clone())
             .unwrap_or_default();
 
         if let Some(target_state) = target_state {
@@ -323,114 +392,23 @@ impl<T: TransportConnect> Scheduler<T> {
     }
 }
 
-/// Represents the scheduler's observed state of the cluster. The scheduler will use this
-/// information and the target scheduling plan to instruct nodes to start/stop partition processors.
-#[derive(Debug, Default, Clone)]
-struct ObservedClusterState {
-    partitions: BTreeMap<PartitionId, ObservedPartitionState>,
-    alive_nodes: BTreeMap<PlainNodeId, GenerationalNodeId>,
-    dead_nodes: BTreeSet<PlainNodeId>,
-    nodes_to_partitions: BTreeMap<PlainNodeId, BTreeSet<PartitionId>>,
-}
-
-impl ObservedClusterState {
-    fn update(&mut self, cluster_state: &ClusterState) {
-        self.update_nodes(cluster_state);
-        self.update_partitions(cluster_state);
-    }
-
-    fn update_nodes(&mut self, cluster_state: &ClusterState) {
-        for (node_id, node_state) in &cluster_state.nodes {
-            match node_state {
-                NodeState::Alive(alive_node) => {
-                    self.dead_nodes.remove(node_id);
-                    self.alive_nodes
-                        .insert(*node_id, alive_node.generational_node_id);
-                }
-                NodeState::Dead(_) => {
-                    self.alive_nodes.remove(node_id);
-                    self.dead_nodes.insert(*node_id);
-                }
-            }
-        }
-    }
-
-    fn update_partitions(&mut self, cluster_state: &ClusterState) {
-        // remove dead nodes
-        for dead_node in cluster_state.dead_nodes() {
-            if let Some(partitions) = self.nodes_to_partitions.remove(dead_node) {
-                for partition_id in partitions {
-                    if let Some(partition) = self.partitions.get_mut(&partition_id) {
-                        partition.remove_node(dead_node);
-                    }
-                }
-            }
-        }
-
-        // update node_sets and leaders of partitions
-        for alive_node in cluster_state.alive_nodes() {
-            let mut current_partitions = BTreeSet::default();
-
-            let node_id = alive_node.generational_node_id.as_plain();
-
-            for (partition_id, status) in &alive_node.partitions {
-                let partition = self.partitions.entry(*partition_id).or_default();
-                partition.upsert_node(node_id, status.effective_mode);
-
-                current_partitions.insert(*partition_id);
-            }
-
-            if let Some(previous_partitions) = self.nodes_to_partitions.get(&node_id) {
-                // remove partitions that are no longer running on the given node
-                for partition_id in previous_partitions.difference(&current_partitions) {
-                    if let Some(partition) = self.partitions.get_mut(partition_id) {
-                        partition.remove_node(&node_id);
-                    }
-                }
-            }
-
-            // update nodes to partition index
-            self.nodes_to_partitions.insert(node_id, current_partitions);
-        }
-
-        // remove empty partitions
-        self.partitions
-            .retain(|_, partition| !partition.node_set.is_empty());
-    }
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct ObservedPartitionState {
-    node_set: BTreeMap<PlainNodeId, RunMode>,
-}
-
-impl ObservedPartitionState {
-    fn remove_node(&mut self, node_id: &PlainNodeId) {
-        self.node_set.remove(node_id);
-    }
-
-    fn upsert_node(&mut self, node_id: PlainNodeId, run_mode: RunMode) {
-        self.node_set.insert(node_id, run_mode);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use futures::StreamExt;
+    use googletest::assert_that;
     use googletest::matcher::{Matcher, MatcherResult};
-    use googletest::matchers::{empty, eq};
-    use googletest::{assert_that, elements_are, unordered_elements_are};
     use http::Uri;
     use rand::prelude::ThreadRng;
     use rand::Rng;
     use std::collections::{BTreeMap, BTreeSet};
     use std::num::NonZero;
-    use std::sync::Arc;
     use std::time::Duration;
     use test_log::test;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
 
+    use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+    use crate::cluster_controller::scheduler::Scheduler;
     use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
     use restate_core::{TaskCenterBuilder, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{
@@ -446,250 +424,6 @@ mod tests {
     use restate_types::partition_table::PartitionTable;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-
-    use crate::cluster_controller::scheduler::{
-        ObservedClusterState, ObservedPartitionState, Scheduler,
-    };
-
-    impl ObservedClusterState {
-        fn remove_node_from_partition(
-            &mut self,
-            partition_id: &PartitionId,
-            node_id: &PlainNodeId,
-        ) {
-            if let Some(partition) = self.partitions.get_mut(partition_id) {
-                partition.remove_node(node_id)
-            }
-            if let Some(partitions) = self.nodes_to_partitions.get_mut(node_id) {
-                partitions.remove(partition_id);
-            }
-        }
-
-        fn add_node_to_partition(
-            &mut self,
-            partition_id: PartitionId,
-            node_id: PlainNodeId,
-            run_mode: RunMode,
-        ) {
-            self.partitions
-                .entry(partition_id)
-                .or_default()
-                .upsert_node(node_id, run_mode);
-            self.nodes_to_partitions
-                .entry(node_id)
-                .or_default()
-                .insert(partition_id);
-        }
-    }
-
-    impl ObservedPartitionState {
-        fn new(node_set: impl IntoIterator<Item = (PlainNodeId, RunMode)>) -> Self {
-            let node_set: BTreeMap<_, _> = node_set.into_iter().collect();
-
-            Self { node_set }
-        }
-    }
-
-    #[test]
-    fn observed_partition_state_updates_leader() {
-        let node_1 = PlainNodeId::from(1);
-        let node_2 = PlainNodeId::from(2);
-        let node_3 = PlainNodeId::from(3);
-
-        let mut state = ObservedPartitionState::default();
-        assert_that!(state.node_set, empty());
-
-        state.upsert_node(node_1, RunMode::Leader);
-        state.upsert_node(node_2, RunMode::Leader);
-        state.upsert_node(node_3, RunMode::Follower);
-
-        assert_that!(
-            state.node_set,
-            unordered_elements_are![
-                (eq(node_1), eq(RunMode::Leader)),
-                (eq(node_2), eq(RunMode::Leader)),
-                (eq(node_3), eq(RunMode::Follower))
-            ]
-        );
-
-        state.remove_node(&node_2);
-
-        assert_that!(
-            state.node_set,
-            unordered_elements_are![
-                (eq(node_1), eq(RunMode::Leader)),
-                (eq(node_3), eq(RunMode::Follower))
-            ]
-        );
-    }
-
-    #[test]
-    fn updating_observed_cluster_state() {
-        let mut observed_cluster_state = ObservedClusterState::default();
-        let partition_1 = PartitionId::from(0);
-        let partition_2 = PartitionId::from(1);
-        let partition_3 = PartitionId::from(2);
-        let node_1 = GenerationalNodeId::new(1, 0);
-        let partitions_1 = [
-            (partition_1, leader_partition()),
-            (partition_2, leader_partition()),
-        ]
-        .into_iter()
-        .collect();
-        let node_2 = GenerationalNodeId::new(2, 0);
-        let partitions_2 = [
-            (partition_1, follower_partition()),
-            (partition_2, follower_partition()),
-        ]
-        .into_iter()
-        .collect();
-
-        let cluster_state = ClusterState {
-            last_refreshed: None,
-            nodes_config_version: Version::MIN,
-            partition_table_version: Version::MIN,
-            logs_metadata_version: Version::MIN,
-            nodes: [
-                (node_1.as_plain(), alive_node(node_1, partitions_1)),
-                (node_2.as_plain(), alive_node(node_2, partitions_2)),
-            ]
-            .into_iter()
-            .collect(),
-        };
-
-        observed_cluster_state.update(&cluster_state);
-
-        assert_that!(
-            observed_cluster_state
-                .alive_nodes
-                .keys()
-                .collect::<Vec<_>>(),
-            unordered_elements_are![eq(&node_1.as_plain()), eq(&node_2.as_plain())]
-        );
-        assert_that!(observed_cluster_state.dead_nodes, empty());
-        assert_that!(
-            observed_cluster_state.nodes_to_partitions,
-            unordered_elements_are![
-                (
-                    eq(node_1.as_plain()),
-                    unordered_elements_are![eq(partition_1), eq(partition_2)]
-                ),
-                (
-                    eq(node_2.as_plain()),
-                    unordered_elements_are![eq(partition_1), eq(partition_2)]
-                )
-            ]
-        );
-        assert_that!(
-            observed_cluster_state.partitions,
-            unordered_elements_are![
-                (
-                    eq(partition_1),
-                    eq(ObservedPartitionState::new([
-                        (node_1.as_plain(), RunMode::Leader),
-                        (node_2.as_plain(), RunMode::Follower)
-                    ]))
-                ),
-                (
-                    eq(partition_2),
-                    eq(ObservedPartitionState::new([
-                        (node_1.as_plain(), RunMode::Leader),
-                        (node_2.as_plain(), RunMode::Follower)
-                    ]))
-                )
-            ]
-        );
-
-        let partitions_1_new = [
-            // forget partition_1
-            (partition_2, leader_partition()),
-            (partition_3, follower_partition()), // insert a new partition
-        ]
-        .into_iter()
-        .collect();
-        let cluster_state = ClusterState {
-            last_refreshed: None,
-            nodes_config_version: Version::MIN,
-            partition_table_version: Version::MIN,
-            logs_metadata_version: Version::MIN,
-            nodes: [
-                (node_1.as_plain(), alive_node(node_1, partitions_1_new)),
-                // report node_2 as dead
-                (node_2.as_plain(), dead_node()),
-            ]
-            .into_iter()
-            .collect(),
-        };
-
-        observed_cluster_state.update(&cluster_state);
-
-        assert_that!(
-            observed_cluster_state
-                .alive_nodes
-                .keys()
-                .collect::<Vec<_>>(),
-            elements_are![eq(&node_1.as_plain())]
-        );
-        assert_that!(
-            observed_cluster_state.dead_nodes,
-            elements_are![eq(node_2.as_plain())]
-        );
-        assert_that!(
-            observed_cluster_state.nodes_to_partitions,
-            unordered_elements_are![(
-                eq(node_1.as_plain()),
-                unordered_elements_are![eq(partition_2), eq(partition_3)]
-            )]
-        );
-        assert_that!(
-            observed_cluster_state.partitions,
-            unordered_elements_are![
-                (
-                    eq(partition_2),
-                    eq(ObservedPartitionState::new([(
-                        node_1.as_plain(),
-                        RunMode::Leader
-                    )]))
-                ),
-                (
-                    eq(partition_3),
-                    eq(ObservedPartitionState::new([(
-                        node_1.as_plain(),
-                        RunMode::Follower
-                    )]))
-                ),
-            ]
-        );
-    }
-
-    fn leader_partition() -> PartitionProcessorStatus {
-        PartitionProcessorStatus {
-            planned_mode: RunMode::Leader,
-            effective_mode: RunMode::Leader,
-            ..PartitionProcessorStatus::default()
-        }
-    }
-
-    fn follower_partition() -> PartitionProcessorStatus {
-        PartitionProcessorStatus::default()
-    }
-
-    fn alive_node(
-        generational_node_id: GenerationalNodeId,
-        partitions: BTreeMap<PartitionId, PartitionProcessorStatus>,
-    ) -> NodeState {
-        NodeState::Alive(AliveNode {
-            generational_node_id,
-            last_heartbeat_at: MillisSinceEpoch::now(),
-            partitions,
-        })
-    }
-
-    fn dead_node() -> NodeState {
-        NodeState::Dead(DeadNode {
-            last_seen_alive: None,
-        })
-    }
 
     #[test(tokio::test)]
     async fn empty_leadership_changes_dont_modify_plan() -> googletest::Result<()> {
@@ -707,9 +441,10 @@ mod tests {
                     .expect("scheduling plan");
                 let mut scheduler =
                     Scheduler::init(tc, metadata_store_client.clone(), networking).await?;
+                let observed_cluster_state = ObservedClusterState::default();
 
                 scheduler
-                    .on_cluster_state_update(Arc::new(ClusterState::empty()))
+                    .on_observed_cluster_state(&observed_cluster_state)
                     .await?;
 
                 let scheduling_plan = metadata_store_client
@@ -813,13 +548,14 @@ mod tests {
             .run_in_scope("test", None, async move {
                 let mut scheduler =
                     Scheduler::init(tc, metadata_store_client.clone(), networking).await?;
+                let mut observed_cluster_state = ObservedClusterState::default();
 
                 for _ in 0..num_scheduling_rounds {
                     let cluster_state = random_cluster_state(&node_ids, num_partitions);
 
-                    let cluster_state = Arc::new(cluster_state);
+                    observed_cluster_state.update(&cluster_state);
                     scheduler
-                        .on_cluster_state_update(Arc::clone(&cluster_state))
+                        .on_observed_cluster_state(&observed_cluster_state)
                         .await?;
                     // collect all control messages from the network to build up the effective scheduling plan
                     let control_messages = control_recv
@@ -892,12 +628,12 @@ mod tests {
 
             for (partition_id, target_state) in self.scheduling_plan.iter() {
                 if let Some(observed_state) = actual.partitions.get(partition_id) {
-                    if observed_state.node_set.len() != target_state.node_set.len() {
+                    if observed_state.partition_processors.len() != target_state.node_set.len() {
                         return MatcherResult::NoMatch;
                     }
 
                     for (node_id, run_mode) in target_state.iter() {
-                        if observed_state.node_set.get(&node_id) != Some(&run_mode) {
+                        if observed_state.partition_processors.get(&node_id) != Some(&run_mode) {
                             return MatcherResult::NoMatch;
                         }
                     }
