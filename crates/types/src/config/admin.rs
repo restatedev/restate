@@ -92,7 +92,7 @@ impl Default for AdminOptions {
             // try to trim the log every hour
             log_trim_interval: Some(Duration::from_secs(60 * 60).into()),
             log_trim_threshold: 1000,
-            default_replication_strategy: ReplicationStrategy::OnAllNodes,
+            default_replication_strategy: ReplicationStrategy::Flood,
         }
     }
 }
