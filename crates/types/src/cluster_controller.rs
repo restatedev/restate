@@ -23,7 +23,7 @@ use std::ops::RangeInclusive;
 #[serde(rename_all = "kebab-case")]
 pub enum ReplicationStrategy {
     /// Schedule partition processor replicas on all available nodes
-    OnAllNodes,
+    Flood,
     /// Schedule this number of partition processor replicas
     Factor(NonZero<u32>),
 }
