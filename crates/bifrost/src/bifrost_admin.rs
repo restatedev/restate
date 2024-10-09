@@ -156,7 +156,7 @@ impl<'a> BifrostAdmin<'a> {
 
     /// Adds a segment to the end of the chain
     ///
-    /// The loglet must be sealed first. This operations assumes that the loglet with
+    /// The loglet must be sealed first. This operation assumes that the loglet with
     /// `last_segment_index` has been sealed prior to this call.
     #[instrument(level = "debug", skip(self), err)]
     async fn add_segment_with_params(

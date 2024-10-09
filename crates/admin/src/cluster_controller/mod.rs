@@ -10,6 +10,9 @@
 
 pub mod cluster_state;
 pub mod protobuf;
+// todo(pavel): remove when integrated
+#[allow(dead_code, unused)]
+pub mod replicated_loglet_controller;
 pub mod scheduler;
 pub mod service;
 

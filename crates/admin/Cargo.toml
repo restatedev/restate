@@ -8,21 +8,21 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
 clients = []
 servers = []
 options_schema = ["restate-service-client/options_schema"]
 
 [dependencies]
 restate-admin-rest-model = { workspace = true, features = ["schema"] }
-restate-bifrost = { workspace = true }
+restate-bifrost = { workspace = true, features = ["replicated-loglet"] }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
-restate-types = { workspace = true, features = ["schemars"] }
+#restate-types = { workspace = true, features = ["schemars"] }
+restate-types = { workspace = true, features = ["schemars", "replicated-loglet"] }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
@@ -35,11 +35,13 @@ codederror = { workspace = true }
 datafusion = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
+enumset = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 hyper-util = { workspace = true }
+itertools = { workspace = true }
 okapi-operation = { version = "0.3.0-rc2", features = ["axum-integration"] }
 prost = { workspace = true }
 prost-dto = { workspace = true }

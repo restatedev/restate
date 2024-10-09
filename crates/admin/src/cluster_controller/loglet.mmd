@@ -1,0 +1,44 @@
+---
+title: Cluster Scheduler - Replicated loglet control
+---
+stateDiagram-v2
+
+    [*] --> ObserveCluster
+
+    state UpdateLogletSchedule {
+        [*] --> ObtainLease
+        state bootstrap_or_seal <<choice>>
+        ObtainLease --> bootstrap_or_seal
+        bootstrap_or_seal --> SealPreviousLoglet: loglet exists
+        bootstrap_or_seal --> CreateNewLoglet
+        SealPreviousLoglet --> CreateNewLoglet
+        CreateNewLoglet --> SelectSequencer
+        SelectSequencer --> WriteUpdatedLogletParams
+        WriteUpdatedLogletParams --> DropLease
+        DropLease --> [*]
+    }
+
+    note left of UpdateLogletSchedule
+        Once the previous segment is sealed,
+        call BifrostAdmin.add_segment_with_params for
+        each log that doesn't have an open loglet.
+
+        This must be done exactly once even in the presence
+        of multiple admin nodes running multiple schedulers.
+    end note
+
+    UpdateLogletSchedule --> Wait
+
+    Wait --> ObserveCluster
+
+    note right of Wait
+        Wait for LogServers to pick up their assigned
+        tasks; sequencers
+    end note
+
+    ObserveCluster --> Decide
+
+    state some_updates <<choice>>
+    Decide --> some_updates
+    some_updates --> UpdateLogletSchedule: loglet update required
+    some_updates --> ObserveCluster: nothing to do
