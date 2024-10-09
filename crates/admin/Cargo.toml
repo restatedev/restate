@@ -12,6 +12,7 @@ default = []
 clients = []
 servers = []
 options_schema = ["restate-service-client/options_schema"]
+memory-loglet = ["restate-bifrost/memory-loglet"]
 
 [dependencies]
 restate-admin-rest-model = { workspace = true, features = ["schema"] }

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 pub mod cluster_state;
+mod logs_controller;
 pub mod protobuf;
 pub mod scheduler;
 pub mod service;
