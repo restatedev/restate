@@ -19,6 +19,7 @@ pub mod partition_processor_manager;
 #[cfg(feature = "replicated-loglet")]
 pub mod replicated_loglet;
 
+use anyhow::Context;
 // re-exports for convenience
 pub use error::*;
 
@@ -55,16 +56,30 @@ pub enum AdvertisedAddress {
 }
 
 impl FromStr for AdvertisedAddress {
-    type Err = http::uri::InvalidUri;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err(anyhow::anyhow!("Input cannot be empty"));
+        }
+
         if let Some(stripped_address) = s.strip_prefix("unix:") {
-            Ok(AdvertisedAddress::Uds(
-                stripped_address.parse().expect("infallible"),
-            ))
+            let path = stripped_address
+                .parse::<PathBuf>()
+                .with_context(|| format!("Failed to parse as PathBuf: '{}'", stripped_address))?;
+            return Ok(AdvertisedAddress::Uds(path));
         } else {
-            // try to parse as a URI
-            Ok(AdvertisedAddress::Http(s.parse()?))
+            // Attempt to parse the string as a URI
+            let uri = s
+                .parse::<Uri>()
+                .with_context(|| format!("Failed to parse as URI: '{}'", s))?;
+
+            // Ensure the URI has a valid scheme
+            uri.scheme_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing URI scheme in: '{}'", s))?;
+
+            // Return the AdvertisedAddress::Http variant
+            return Ok(AdvertisedAddress::Http(uri));
         }
     }
 }
@@ -282,13 +297,18 @@ mod tests {
         let bind_address = advertised_address.derive_bind_address();
         assert!(bind_address.is_none());
     }
-
     #[test]
     fn test_invalid_advertised_address() {
         // Test case for an invalid AdvertisedAddress string
-        let advertised_address = AdvertisedAddress::from_str("invalid-address");
+        let result = AdvertisedAddress::from_str("invalid-address");
+
+        // Print the result for debugging
+        match &result {
+            Ok(addr) => println!("Parsed address: {:?}", addr),
+            Err(err) => println!("Error occurred: {}", err),
+        }
 
         // Parsing should fail, resulting in an error
-        assert!(advertised_address.is_err());
+        assert!(result.is_err(), "Expected an error for invalid address");
     }
 }
