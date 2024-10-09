@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Display;
+
 use crate::PlainNodeId;
 
 #[derive(
@@ -25,6 +27,18 @@ use crate::PlainNodeId;
 )]
 pub struct Spread(Box<[PlainNodeId]>);
 
+impl Display for Spread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[")?;
+        for (i, id) in self.iter().enumerate() {
+            if i != 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", id)?;
+        }
+        write!(f, "]")
+    }
+}
 impl From<Vec<PlainNodeId>> for Spread {
     fn from(v: Vec<PlainNodeId>) -> Self {
         Self(v.into_boxed_slice())
