@@ -67,7 +67,7 @@ impl FromStr for AdvertisedAddress {
             let path = stripped_address
                 .parse::<PathBuf>()
                 .with_context(|| format!("Failed to parse as PathBuf: '{}'", stripped_address))?;
-            return Ok(AdvertisedAddress::Uds(path));
+            Ok(AdvertisedAddress::Uds(path))
         } else {
             // Attempt to parse the string as a URI
             let uri = s
@@ -79,7 +79,7 @@ impl FromStr for AdvertisedAddress {
                 .ok_or_else(|| anyhow::anyhow!("Missing URI scheme in: '{}'", s))?;
 
             // Return the AdvertisedAddress::Http variant
-            return Ok(AdvertisedAddress::Http(uri));
+            Ok(AdvertisedAddress::Http(uri))
         }
     }
 }
@@ -301,12 +301,6 @@ mod tests {
     fn test_invalid_advertised_address() {
         // Test case for an invalid AdvertisedAddress string
         let result = AdvertisedAddress::from_str("invalid-address");
-
-        // Print the result for debugging
-        match &result {
-            Ok(addr) => println!("Parsed address: {:?}", addr),
-            Err(err) => println!("Error occurred: {}", err),
-        }
 
         // Parsing should fail, resulting in an error
         assert!(result.is_err(), "Expected an error for invalid address");
