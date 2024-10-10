@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU32;
 use std::ops::Deref;
 
 use super::metadata::{
     Chain, LogletConfig, LogletParams, Logs, MaybeSegment, ProviderKind, SegmentIndex,
 };
 use super::{LogId, Lsn};
+use crate::Version;
 
 #[derive(Debug, Default, Clone)]
 pub struct LogsBuilder {
@@ -53,6 +55,12 @@ impl LogsBuilder {
             version: self.inner.version.next(),
             logs: self.inner.logs,
         }
+    }
+
+    pub fn set_version(&mut self, version: NonZeroU32) {
+        // because we increment this value on build() so we assume that the input is the intended
+        // outcome of the build() call.
+        self.inner.version = Version::from(u32::from(version) - 1);
     }
 }
 
