@@ -20,8 +20,11 @@ use restate_types::errors::GenericError;
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
+use std::future::Future;
 use std::sync::Arc;
-use tracing::debug;
+use std::time::{Duration, Instant};
+use tracing::log::trace;
+use tracing::{debug, info};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
@@ -384,3 +387,29 @@ impl MetadataStoreClientError for WriteError {
 }
 
 static_assertions::assert_impl_all!(MetadataStoreClient: Send, Sync, Clone);
+
+pub async fn retry_on_network_error<Fn, Fut, T, E, P>(retry_policy: P, action: Fn) -> Result<T, E>
+where
+    P: Into<RetryPolicy>,
+    Fn: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: MetadataStoreClientError + std::fmt::Display,
+{
+    let upsert_start = Instant::now();
+
+    retry_policy
+        .into()
+        .retry_if(action, |err: &E| {
+            if err.is_network_error() {
+                if upsert_start.elapsed() < Duration::from_secs(5) {
+                    trace!("could not connect to metadata store: {err}; retrying");
+                } else {
+                    info!("could not connect to metadata store: {err}; retrying");
+                }
+                true
+            } else {
+                false
+            }
+        })
+        .await
+}

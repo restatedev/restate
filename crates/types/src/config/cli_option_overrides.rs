@@ -82,6 +82,13 @@ pub struct CommonOptionCliOverride {
     #[clap(long, global = true)]
     pub bootstrap_num_partitions: Option<NonZeroU64>,
 
+    /// # Automatically provision number of configured partitions
+    ///
+    /// If this option is set to `false`, then one needs to manually write a partition table to
+    /// the metadata store. Without a partition table, the cluster will not start.
+    #[clap(long, global = true)]
+    pub auto_provision_partitions: Option<bool>,
+
     /// This timeout is used when shutting down the various Restate components to drain all the internal queues.
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[clap(long, global = true)]

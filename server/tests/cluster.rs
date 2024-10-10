@@ -6,8 +6,8 @@ use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
-use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
 use restate_types::logs::metadata::ProviderKind;
+use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
 
 mod common;
 
