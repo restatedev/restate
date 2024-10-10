@@ -14,13 +14,15 @@ use tracing::{debug, trace};
 
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use restate_core::metadata_store::{
-    MetadataStoreClient, Precondition, ReadError, ReadWriteError, WriteError,
+    retry_on_network_error, MetadataStoreClient, Precondition, ReadError, ReadWriteError,
+    WriteError,
 };
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{metadata, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::cluster_controller::{
     ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
 };
+use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::Logs;
 use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
@@ -75,13 +77,19 @@ pub struct Scheduler<T> {
 /// scheduling plan).
 impl<T: TransportConnect> Scheduler<T> {
     pub async fn init(
+        configuration: &Configuration,
         task_center: TaskCenter,
         metadata_store_client: MetadataStoreClient,
         networking: Networking<T>,
     ) -> Result<Self, BuildError> {
-        let scheduling_plan = metadata_store_client
-            .get_or_insert(SCHEDULING_PLAN_KEY.clone(), SchedulingPlan::default)
-            .await?;
+        let scheduling_plan = retry_on_network_error(
+            configuration.common.network_error_retry_policy.clone(),
+            || {
+                metadata_store_client
+                    .get_or_insert(SCHEDULING_PLAN_KEY.clone(), SchedulingPlan::default)
+            },
+        )
+        .await?;
 
         Ok(Self {
             scheduling_plan,
@@ -415,6 +423,7 @@ mod tests {
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
     use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
+    use restate_types::config::Configuration;
     use restate_types::identifiers::PartitionId;
     use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
     use restate_types::net::codec::WireDecode;
@@ -439,8 +448,13 @@ mod tests {
                     .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
                     .await
                     .expect("scheduling plan");
-                let mut scheduler =
-                    Scheduler::init(tc, metadata_store_client.clone(), networking).await?;
+                let mut scheduler = Scheduler::init(
+                    Configuration::pinned().as_ref(),
+                    tc,
+                    metadata_store_client.clone(),
+                    networking,
+                )
+                .await?;
                 let observed_cluster_state = ObservedClusterState::default();
 
                 scheduler
@@ -546,8 +560,13 @@ mod tests {
         let tc = env.tc.clone();
         env.tc
             .run_in_scope("test", None, async move {
-                let mut scheduler =
-                    Scheduler::init(tc, metadata_store_client.clone(), networking).await?;
+                let mut scheduler = Scheduler::init(
+                    Configuration::pinned().as_ref(),
+                    tc,
+                    metadata_store_client.clone(),
+                    networking,
+                )
+                .await?;
                 let mut observed_cluster_state = ObservedClusterState::default();
 
                 for _ in 0..num_scheduling_rounds {
