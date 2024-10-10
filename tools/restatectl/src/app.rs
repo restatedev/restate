@@ -20,6 +20,7 @@ use crate::commands::dump::Dump;
 use crate::commands::log::Log;
 use crate::commands::metadata::Metadata;
 use crate::commands::node::Node;
+use crate::commands::partitions::Partitions;
 
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
@@ -51,6 +52,9 @@ pub enum Command {
     /// Cluster node status
     #[clap(subcommand)]
     Nodes(Node),
+    /// Manage partition table
+    #[clap(subcommand)]
+    Partitions(Partitions),
     /// Cluster metadata
     #[clap(subcommand)]
     Metadata(Metadata),
