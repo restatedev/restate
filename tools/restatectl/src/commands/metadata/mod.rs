@@ -21,6 +21,7 @@ use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 mod get;
 mod patch;
+mod put;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Metadata {
@@ -28,6 +29,8 @@ pub enum Metadata {
     Get(get::GetValueOpts),
     /// Patch a value stored in the metadata store
     Patch(patch::PatchValueOpts),
+    /// Replace a single key's value from the metastore
+    Put(put::PutValueOpts),
 }
 
 #[derive(Args, Clone, Debug)]

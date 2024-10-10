@@ -31,26 +31,26 @@ use crate::environment::task_center::run_in_task_center;
 #[cling(run = "patch_value")]
 pub struct PatchValueOpts {
     #[clap(flatten)]
-    metadata: MetadataCommonOpts,
+    pub metadata: MetadataCommonOpts,
 
     /// The key to patch
     #[arg(short, long)]
-    key: String,
+    pub key: String,
 
-    /// The JSON patch to apply to value
+    /// The JSON document to put
     #[arg(short, long)]
-    patch: String,
+    pub patch: String,
 
     /// Expected version for conditional update
     #[arg(short = 'e', long)]
-    version: Option<u32>,
+    pub version: Option<u32>,
 
     /// Preview the change without applying it
     #[arg(short = 'n', long, default_value_t = false)]
-    dry_run: bool,
+    pub dry_run: bool,
 }
 
-async fn patch_value(opts: &PatchValueOpts) -> anyhow::Result<()> {
+pub(crate) async fn patch_value(opts: &PatchValueOpts) -> anyhow::Result<()> {
     let patch = serde_json::from_str(opts.patch.as_str())
         .map_err(|e| anyhow::anyhow!("Parsing JSON patch: {}", e))?;
 
