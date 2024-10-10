@@ -1,5 +1,6 @@
 use std::{
     ffi::OsString,
+    fmt::Display,
     future::Future,
     io::{self, ErrorKind},
     net::SocketAddr,
@@ -15,7 +16,9 @@ use std::{
 use arc_swap::ArcSwapOption;
 use enumset::{enum_set, EnumSet};
 use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
+use itertools::Itertools;
 use regex::{Regex, RegexSet};
+use rev_lines::RevLines;
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs::File,
@@ -24,7 +27,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio::{process::Command, sync::mpsc::Sender};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use typed_builder::TypedBuilder;
 
 use restate_types::{
@@ -250,10 +253,12 @@ impl Node {
                 .map_err(NodeStartError::CreateConfig)?;
         }
 
+        let node_log_filename = node_base_dir.join("restate.log");
+
         let node_log_file = tokio::fs::OpenOptions::new()
             .append(true)
             .create(true)
-            .open(node_base_dir.join("restate.log"))
+            .open(&node_log_filename)
             .await
             .map_err(NodeStartError::CreateLog)?;
 
@@ -343,6 +348,7 @@ impl Node {
         });
 
         Ok(StartedNode {
+            log_file: node_log_filename,
             status: StartedNodeStatus::Running {
                 child_handle,
                 searcher,
@@ -426,6 +432,7 @@ impl TryInto<OsString> for BinarySource {
 }
 
 pub struct StartedNode {
+    log_file: PathBuf,
     status: StartedNodeStatus,
     config: Configuration,
 }
@@ -558,6 +565,23 @@ impl StartedNode {
         &self.config().common.advertised_address
     }
 
+    pub async fn last_n_lines(&self, n: usize) -> Result<Vec<String>, rev_lines::RevLinesError> {
+        let log_file = self.log_file.clone();
+        match tokio::task::spawn_blocking(move || {
+            let log_file = std::fs::File::open(log_file)?;
+            let mut lines = Vec::with_capacity(n);
+            for line in RevLines::new(log_file).take(n) {
+                lines.push(line?)
+            }
+            Ok(lines)
+        })
+        .await
+        {
+            Ok(res) => res,
+            Err(_) => Err(io::Error::other("background task failed").into()),
+        }
+    }
+
     pub fn ingress_address(&self) -> Option<&SocketAddr> {
         if self.config().has_role(Role::Worker) {
             Some(&self.config().ingress.bind_address)
@@ -617,33 +641,6 @@ impl StartedNode {
         }
     }
 
-    /// Check every 250ms to see if the admin address is healthy, waiting for up to `timeout`.
-    /// Returns false if this node has no admin role.
-    pub async fn wait_admin_healthy(&self, timeout: Duration) -> bool {
-        let mut attempts = 1;
-        if tokio::time::timeout(timeout, async {
-            while !self.admin_healthy().await {
-                attempts += 1;
-                tokio::time::sleep(Duration::from_millis(250)).await
-            }
-        })
-        .await
-        .is_ok()
-        {
-            info!(
-                "Node {} admin endpoint is healthy after {attempts} attempts",
-                self.node_name(),
-            );
-            true
-        } else {
-            warn!(
-                "Timed out waiting for admin health on node {}",
-                self.node_name()
-            );
-            false
-        }
-    }
-
     /// Check to see if the ingress address is healthy. Returns false if this node has no ingress role.
     pub async fn ingress_healthy(&self) -> bool {
         if let Some(address) = self.ingress_address() {
@@ -652,33 +649,6 @@ impl StartedNode {
                 Err(_) => false,
             }
         } else {
-            false
-        }
-    }
-
-    /// Check every 250ms to see if the ingress address is healthy, waiting for up to `timeout`.
-    /// Returns false if this node has no ingress role.
-    pub async fn wait_ingress_healthy(&self, timeout: Duration) -> bool {
-        let mut attempts = 1;
-        if tokio::time::timeout(timeout, async {
-            while !self.ingress_healthy().await {
-                attempts += 1;
-                tokio::time::sleep(Duration::from_millis(250)).await
-            }
-        })
-        .await
-        .is_ok()
-        {
-            info!(
-                "Node {} ingress endpoint is healthy after {attempts} attempts",
-                self.node_name(),
-            );
-            true
-        } else {
-            warn!(
-                "Timed out waiting for ingress health on node {}",
-                self.node_name()
-            );
             false
         }
     }
@@ -707,13 +677,57 @@ impl StartedNode {
 
         !nodes_config.get_log_server_storage_state(&node_id).empty()
     }
+}
 
-    /// Check every 250ms to see if the logserver is provisioned, waiting for up to `timeout`.
-    /// Returns false if this node has no logserver role.
-    pub async fn wait_logserver_provisioned(&self, timeout: Duration) -> bool {
+#[derive(Debug, Clone, Copy)]
+pub enum HealthCheck {
+    Admin,
+    Ingress,
+    Logserver,
+}
+
+impl Display for HealthCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HealthCheck::Admin => write!(f, "admin"),
+            HealthCheck::Ingress => write!(f, "ingress"),
+            HealthCheck::Logserver => write!(f, "logserver"),
+        }
+    }
+}
+
+impl HealthCheck {
+    pub fn applicable(&self, node: &StartedNode) -> bool {
+        match self {
+            HealthCheck::Admin => node.admin_address().is_some(),
+            HealthCheck::Ingress => node.ingress_address().is_some(),
+            HealthCheck::Logserver => node.config().has_role(Role::LogServer),
+        }
+    }
+
+    async fn check(&self, node: &StartedNode) -> bool {
+        match self {
+            HealthCheck::Admin => node.admin_healthy().await,
+            HealthCheck::Ingress => node.ingress_healthy().await,
+            HealthCheck::Logserver => node.logserver_provisioned().await,
+        }
+    }
+
+    /// Check every 250ms to see if the check is healthy, waiting for up to `timeout`.
+    pub async fn wait_healthy(
+        &self,
+        node: &StartedNode,
+        timeout: Duration,
+    ) -> Result<(), HealthError> {
+        if !self.applicable(node) {
+            return Err(HealthError::NotApplicable(
+                *self,
+                node.node_name().to_owned(),
+            ));
+        }
         let mut attempts = 1;
         if tokio::time::timeout(timeout, async {
-            while !self.logserver_provisioned().await {
+            while !self.check(node).await {
                 attempts += 1;
                 tokio::time::sleep(Duration::from_millis(250)).await
             }
@@ -722,17 +736,55 @@ impl StartedNode {
         .is_ok()
         {
             info!(
-                "Node {} logserver is active after {attempts} attempts",
-                self.node_name(),
+                "Node {} {self} check is healthy after {attempts} attempts",
+                node.node_name(),
             );
-            true
+            Ok(())
         } else {
-            warn!(
-                "Timed out waiting for logserver to be active on node {}",
-                self.node_name()
-            );
-            false
+            let err = HealthError::new_timeout(*self, node).await;
+            error!("{err}");
+            Err(err)
         }
+    }
+}
+
+#[derive(Debug)]
+pub enum HealthError {
+    NotApplicable(HealthCheck, String),
+    Timeout(HealthCheck, String, Vec<String>),
+}
+
+impl std::error::Error for HealthError {}
+
+impl Display for HealthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotApplicable(check, node_name) => write!(
+                f,
+                "Check {check} is not applicable to node {node_name} and cannot pass"
+            ),
+            Self::Timeout(check, node_name, lines) => write!(
+                f,
+                r#"Timed out waiting for check {check} on node {node_name} to be active. Log tail:
+
+NODE LOG {node_name}: {}
+                "#,
+                lines
+                    .iter()
+                    .rev()
+                    .join(format!("\nNODE LOG {node_name}: ").as_str())
+            ),
+        }
+    }
+}
+
+impl HealthError {
+    async fn new_timeout(check: HealthCheck, node: &StartedNode) -> Self {
+        let lines = match node.last_n_lines(20).await {
+            Ok(lines) => lines,
+            Err(err) => vec![format!("Failed to read loglines: {err}")],
+        };
+        Self::Timeout(check, node.node_name().to_owned(), lines)
     }
 }
 
