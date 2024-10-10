@@ -43,6 +43,13 @@ impl MillisSinceEpoch {
         SystemTime::now().into()
     }
 
+    pub fn after(duration: Duration) -> MillisSinceEpoch {
+        SystemTime::now()
+            .checked_add(duration)
+            .map(|time| time.into())
+            .unwrap_or(Self::MAX)
+    }
+
     pub fn as_u64(&self) -> u64 {
         self.0
     }
