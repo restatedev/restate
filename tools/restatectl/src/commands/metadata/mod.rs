@@ -11,15 +11,26 @@
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use anyhow::Context;
+use bytestring::ByteString;
 use cling::prelude::*;
 
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_metadata_store::local::create_client;
-use restate_types::config::MetadataStoreClientOptions;
+use restate_metadata_store::Precondition;
+use restate_rocksdb::RocksDbManager;
+use restate_types::config::{Configuration, MetadataStoreClientOptions};
+use restate_types::live::Live;
 use restate_types::net::AdvertisedAddress;
+use restate_types::storage::{StorageDecode, StorageEncode};
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
+use tracing::debug;
+
+use crate::environment::metadata_store;
+use crate::environment::task_center::run_in_task_center;
 
 mod get;
+mod logs;
 mod patch;
 
 #[derive(Run, Subcommand, Clone)]
@@ -28,6 +39,9 @@ pub enum Metadata {
     Get(get::GetValueOpts),
     /// Patch a value stored in the metadata store
     Patch(patch::PatchValueOpts),
+    /// Logs metadata manipulation
+    #[clap(subcommand)]
+    Logs(logs::Logs),
 }
 
 #[derive(Args, Clone, Debug)]
@@ -121,4 +135,139 @@ pub async fn create_metadata_store_client(
     create_client(metadata_store_client_options)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create metadata store client: {}", e))
+}
+
+pub async fn get_value<K, T>(opts: &MetadataCommonOpts, key: K) -> anyhow::Result<Option<T>>
+where
+    K: AsRef<str>,
+    T: Versioned + StorageDecode,
+{
+    let value = match opts.access_mode {
+        MetadataAccessMode::Remote => get_value_remote(opts, key).await?,
+        MetadataAccessMode::Direct => get_value_direct(opts, key).await?,
+    };
+
+    Ok(value)
+}
+
+async fn get_value_remote<K, T>(opts: &MetadataCommonOpts, key: K) -> anyhow::Result<Option<T>>
+where
+    K: AsRef<str>,
+    T: Versioned + StorageDecode,
+{
+    let metadata_store_client = create_metadata_store_client(opts).await?;
+
+    metadata_store_client
+        .get(ByteString::from(key.as_ref()))
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get value: {}", e))
+}
+
+async fn get_value_direct<K, T>(opts: &MetadataCommonOpts, key: K) -> anyhow::Result<Option<T>>
+where
+    K: AsRef<str>,
+    T: Versioned + StorageDecode,
+{
+    run_in_task_center(
+        opts.config_file.as_ref(),
+        |config, task_center| async move {
+            let rocksdb_manager =
+                RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+            debug!("RocksDB Initialized");
+
+            let metadata_store_client = metadata_store::start_metadata_store(
+                config.common.metadata_store_client.clone(),
+                Live::from_value(config.metadata_store.clone()).boxed(),
+                Live::from_value(config.metadata_store.clone())
+                    .map(|c| &c.rocksdb)
+                    .boxed(),
+                &task_center,
+            )
+            .await?;
+            debug!("Metadata store client created");
+
+            let value = metadata_store_client
+                .get(ByteString::from(key.as_ref()))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get value: {}", e))?;
+
+            rocksdb_manager.shutdown().await;
+            anyhow::Ok(value)
+        },
+    )
+    .await
+}
+
+pub async fn set_value<K, T>(
+    opts: &MetadataCommonOpts,
+    key: K,
+    value: &T,
+    version: Version,
+) -> anyhow::Result<()>
+where
+    K: Into<ByteString>,
+    T: Versioned + StorageEncode,
+{
+    match opts.access_mode {
+        MetadataAccessMode::Remote => set_value_remote(opts, key, value, version).await,
+        MetadataAccessMode::Direct => set_value_direct(opts, key, value, version).await,
+    }
+}
+
+async fn set_value_remote<K, T>(
+    opts: &MetadataCommonOpts,
+    key: K,
+    value: &T,
+    version: Version,
+) -> anyhow::Result<()>
+where
+    K: Into<ByteString>,
+    T: Versioned + StorageEncode,
+{
+    let metadata_store_client = create_metadata_store_client(opts).await?;
+
+    metadata_store_client
+        .put(key.into(), value, Precondition::MatchesVersion(version))
+        .await
+        .context("Failed to set metadata key")
+}
+
+async fn set_value_direct<K, T>(
+    opts: &MetadataCommonOpts,
+    key: K,
+    value: &T,
+    version: Version,
+) -> anyhow::Result<()>
+where
+    K: Into<ByteString>,
+    T: Versioned + StorageEncode,
+{
+    run_in_task_center(
+        opts.config_file.as_ref(),
+        |config, task_center| async move {
+            let rocksdb_manager =
+                RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+            debug!("RocksDB Initialized");
+
+            let metadata_store_client = metadata_store::start_metadata_store(
+                config.common.metadata_store_client.clone(),
+                Live::from_value(config.metadata_store.clone()).boxed(),
+                Live::from_value(config.metadata_store.clone())
+                    .map(|c| &c.rocksdb)
+                    .boxed(),
+                &task_center,
+            )
+            .await?;
+            debug!("Metadata store client created");
+
+            metadata_store_client
+                .put(key.into(), value, Precondition::MatchesVersion(version))
+                .await
+                .context("Failed to set metadata key")?;
+
+            rocksdb_manager.shutdown().await;
+            Ok(())
+        },
+    )
+    .await
 }

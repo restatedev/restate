@@ -10,7 +10,6 @@
 
 mod describe_log;
 mod dump_log;
-mod gen_metadata;
 mod list_logs;
 mod trim_log;
 
@@ -20,8 +19,6 @@ use cling::prelude::*;
 pub enum Log {
     /// List the logs by partition
     List(list_logs::ListLogsOpts),
-    /// Prints a generated log-metadata in JSON format
-    GenerateMetadata(gen_metadata::GenerateLogMetadataOpts),
     /// Get the details of a specific log
     Describe(describe_log::DescribeLogIdOpts),
     /// Dump the contents of a bifrost log
