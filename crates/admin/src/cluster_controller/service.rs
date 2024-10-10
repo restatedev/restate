@@ -227,11 +227,14 @@ impl<T: TransportConnect> Service<T> {
             bifrost.clone(),
             self.metadata_store_client.clone(),
             self.metadata_writer.clone(),
-        ).await?;
+            self.configuration.live_load().bifrost.default_provider,
+        )
+        .await?;
 
         let mut observed_cluster_state = ObservedClusterState::default();
 
         let mut logs_watcher = self.metadata.watch(MetadataKind::Logs);
+        let mut partition_watcher = self.metadata.watch(MetadataKind::PartitionTable);
         let mut logs = self.metadata.updateable_logs_metadata();
         let mut partition_table = self.metadata.updateable_partition_table();
 
@@ -259,6 +262,10 @@ impl<T: TransportConnect> Service<T> {
                 Ok(_) = logs_watcher.changed() => {
                     // tell the scheduler about potentially newly provisioned logs
                     scheduler.on_logs_update(logs.live_load(), partition_table.live_load()).await?
+                    // todo probably also tell the logs_controller about it, however we need to distinguish between our own updates and from others
+                }
+                Ok(_) = partition_watcher.changed() => {
+                    logs_controller.on_partition_table_update(partition_table.live_load())
                 }
                 Some(cmd) = self.command_rx.recv() => {
                     self.on_cluster_cmd(cmd, bifrost_admin).await;

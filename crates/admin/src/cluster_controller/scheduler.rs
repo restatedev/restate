@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use datafusion::functions::math::log;
 use rand::seq::IteratorRandom;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 use tracing::{debug, trace};
 
-use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadError, ReadWriteError, WriteError};
+use restate_core::metadata_store::{
+    MetadataStoreClient, Precondition, ReadError, ReadWriteError, WriteError,
+};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
@@ -115,7 +115,11 @@ impl<T: TransportConnect> Scheduler<T> {
         // nothing to do since we don't make time based scheduling decisions yet
     }
 
-    pub async fn on_logs_update(&mut self, logs: &Logs, partition_table: &PartitionTable) -> Result<(), Error> {
+    pub async fn on_logs_update(
+        &mut self,
+        logs: &Logs,
+        partition_table: &PartitionTable,
+    ) -> Result<(), Error> {
         let mut builder = self.scheduling_plan.clone().into_builder();
 
         loop {
@@ -139,7 +143,9 @@ impl<T: TransportConnect> Scheduler<T> {
             }
 
             if let Some(scheduling_plan) = builder.build_if_modified() {
-                let scheduling_plan = self.write_or_fetch_latest_scheduling_plan(scheduling_plan).await?;
+                let scheduling_plan = self
+                    .write_or_fetch_latest_scheduling_plan(scheduling_plan)
+                    .await?;
                 match scheduling_plan {
                     WriteOrFetch::Write(scheduling_plan) => {
                         self.scheduling_plan = scheduling_plan;
@@ -168,7 +174,10 @@ impl<T: TransportConnect> Scheduler<T> {
         self.ensure_leadership(&mut builder);
 
         if let Some(scheduling_plan) = builder.build_if_modified() {
-            let scheduling_plan = self.write_or_fetch_latest_scheduling_plan(scheduling_plan).await?.into_inner();
+            let scheduling_plan = self
+                .write_or_fetch_latest_scheduling_plan(scheduling_plan)
+                .await?
+                .into_inner();
 
             debug!("Updated scheduling plan: {scheduling_plan:?}");
             self.scheduling_plan = scheduling_plan;
@@ -177,29 +186,36 @@ impl<T: TransportConnect> Scheduler<T> {
         Ok(())
     }
 
-    async fn write_or_fetch_latest_scheduling_plan(&self, scheduling_plan: SchedulingPlan) -> Result<WriteOrFetch<SchedulingPlan>, Error> {
-        match self.metadata_store_client
+    async fn write_or_fetch_latest_scheduling_plan(
+        &self,
+        scheduling_plan: SchedulingPlan,
+    ) -> Result<WriteOrFetch<SchedulingPlan>, Error> {
+        match self
+            .metadata_store_client
             .put(
                 SCHEDULING_PLAN_KEY.clone(),
                 &scheduling_plan,
                 Precondition::MatchesVersion(self.scheduling_plan.version()),
             )
-            .await {
+            .await
+        {
             Ok(_) => Ok(WriteOrFetch::Write(scheduling_plan)),
             Err(err) => match err {
                 WriteError::FailedPrecondition(_) => {
                     // There was a concurrent modification of the scheduling plan. Fetch the latest version.
-                    let scheduling_plan = self.fetch_scheduling_plan().await?.expect("must be present");
+                    let scheduling_plan = self
+                        .fetch_scheduling_plan()
+                        .await?
+                        .expect("must be present");
                     Ok(WriteOrFetch::Fetch(scheduling_plan))
                 }
                 err => Err(err.into()),
-            }
+            },
         }
     }
 
     async fn fetch_scheduling_plan(&self) -> Result<Option<SchedulingPlan>, ReadError> {
-        self
-            .metadata_store_client
+        self.metadata_store_client
             .get(SCHEDULING_PLAN_KEY.clone())
             .await
     }

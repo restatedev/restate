@@ -31,13 +31,9 @@ use restate_core::{task_center, TaskKind};
 use restate_log_server::LogServerService;
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::live::Live;
-use restate_types::logs::metadata::{bootstrap_logs_metadata, Logs};
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
-};
+use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
 use restate_types::retries::RetryPolicy;
@@ -445,19 +441,6 @@ impl Node {
     ) -> Result<PartitionTable, Error> {
         let partition_table =
             Self::fetch_or_insert_partition_table(metadata_store_client, options).await?;
-        // Self::try_insert_initial_scheduling_plan(metadata_store_client, options, &partition_table)
-        //     .await?;
-        // let logs = Self::fetch_or_insert_logs_configuration(
-        //     metadata_store_client,
-        //     options,
-        //     partition_table.num_partitions(),
-        // )
-        // .await?;
-
-        // // sanity check
-        // if usize::from(partition_table.num_partitions()) != logs.num_logs() {
-        //     return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.num_logs())))?;
-        // }
 
         Ok(partition_table)
     }
@@ -471,41 +454,6 @@ impl Node {
                 PartitionTable::with_equally_sized_partitions(
                     Version::MIN,
                     config.common.bootstrap_num_partitions(),
-                )
-            })
-        })
-        .await
-        .map_err(Into::into)
-    }
-
-    /// Tries to insert an initial scheduling plan which is aligned with the given
-    /// [`PartitionTable`]. If a scheduling plan already exists, then this method does nothing.
-    async fn try_insert_initial_scheduling_plan(
-        metadata_store_client: &MetadataStoreClient,
-        config: &Configuration,
-        partition_table: &PartitionTable,
-    ) -> Result<(), Error> {
-        Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
-            metadata_store_client.get_or_insert(SCHEDULING_PLAN_KEY.clone(), || {
-                SchedulingPlan::from(partition_table, config.admin.default_replication_strategy)
-            })
-        })
-        .await
-        .map_err(Into::into)
-        .map(|_| ())
-    }
-
-    async fn fetch_or_insert_logs_configuration(
-        metadata_store_client: &MetadataStoreClient,
-        config: &Configuration,
-        num_partitions: u16,
-    ) -> Result<Logs, Error> {
-        Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
-            metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                bootstrap_logs_metadata(
-                    config.bifrost.default_provider,
-                    config.bifrost.default_provider_config.clone(),
-                    num_partitions,
                 )
             })
         })
