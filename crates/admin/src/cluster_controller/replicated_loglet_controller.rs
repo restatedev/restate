@@ -122,7 +122,7 @@ impl ReplicatedLogletController {
             .copied()
             .collect::<BTreeSet<_>>();
 
-        let have_workers = healthy_workers.is_empty();
+        let have_workers = !healthy_workers.is_empty();
 
         // This is perhaps a configurable preference: should we consider making any decisions until we have
         // the preferred number of log servers available, or just the minimum hard requirement? The default
@@ -361,6 +361,8 @@ impl ReplicatedLogletController {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+    use axum::response::IntoResponse;
     use super::*;
 
     use enumset::enum_set;
