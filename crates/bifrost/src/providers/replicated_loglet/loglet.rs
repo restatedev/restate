@@ -18,7 +18,7 @@ use futures::stream::BoxStream;
 use tracing::{debug, info};
 
 use restate_core::network::{Networking, TransportConnect};
-use restate_core::{task_center, ShutdownError};
+use restate_core::task_center;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{
     KeyFilter, LogId, LogletOffset, Record, RecordCache, SequenceNumber, TailState,
@@ -74,7 +74,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         logservers_rpc: LogServersRpc,
         sequencers_rpc: &SequencersRpc,
         record_cache: RecordCache,
-    ) -> Result<Self, ShutdownError> {
+    ) -> Self {
         let known_global_tail = TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST));
         let log_server_manager =
             RemoteLogServerManager::new(my_params.loglet_id, &my_params.nodeset);
@@ -111,7 +111,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
                 ),
             }
         };
-        Ok(Self {
+        Self {
             log_id,
             segment_index,
             my_params,
@@ -121,7 +121,19 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
             known_global_tail,
             sequencer,
             log_server_manager,
-        })
+        }
+    }
+
+    pub(crate) fn params(&self) -> &ReplicatedLogletParams {
+        &self.my_params
+    }
+
+    pub(crate) fn is_sequencer_local(&self) -> bool {
+        matches!(self.sequencer, SequencerAccess::Local { .. })
+    }
+
+    pub(crate) fn known_global_tail(&self) -> &TailOffsetWatch {
+        &self.known_global_tail
     }
 }
 
@@ -315,7 +327,7 @@ mod tests {
                     logserver_rpc,
                     &sequencer_rpc,
                     record_cache.clone(),
-                )?);
+                ));
 
                 let env = TestEnv {
                     loglet,

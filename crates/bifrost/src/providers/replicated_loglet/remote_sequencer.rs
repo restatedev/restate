@@ -27,6 +27,7 @@ use restate_core::{
 };
 use restate_types::{
     config::Configuration,
+    errors::MaybeRetryableError,
     logs::{metadata::SegmentIndex, LogId, Record},
     net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
     replicated_loglet::ReplicatedLogletParams,
@@ -343,21 +344,28 @@ impl RemoteSequencerConnection {
             }
 
             // handle status of the response.
-            match appended.status {
+            match appended.header.status {
                 SequencerStatus::Ok => {
                     commit_resolver.offset(appended.first_offset);
                 }
-                SequencerStatus::Malformed => {
-                    // While the malformed status is non-terminal for the connection
-                    // (since only one request is malformed),
-                    // the AppendError for the caller is terminal
-                    commit_resolver.error(AppendError::terminal(Malformed));
-                }
+
                 SequencerStatus::Sealed => {
                     // A sealed status returns a terminal error since we can immediately cancel
                     // all inflight append jobs.
                     commit_resolver.sealed();
                     break AppendError::Sealed;
+                }
+                SequencerStatus::UnknownLogId
+                | SequencerStatus::UnknownSegmentIndex
+                | SequencerStatus::LogletIdMismatch
+                | SequencerStatus::NotSequencer
+                | SequencerStatus::Shutdown
+                | SequencerStatus::Error { .. } => {
+                    let err = RemoteSequencerError::try_from(appended.header.status).unwrap();
+                    // While the UnknownLoglet status is non-terminal for the connection
+                    // (since only one request is bad),
+                    // the AppendError for the caller is terminal
+                    commit_resolver.error(AppendError::other(err));
                 }
             }
         };
@@ -413,8 +421,54 @@ pub(crate) struct RemoteInflightAppend {
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
-#[error("Malformed request")]
-pub struct Malformed;
+pub enum RemoteSequencerError {
+    #[error("Unknown log-id")]
+    UnknownLogId,
+    #[error("Unknown segment index")]
+    UnknownSegmentIndex,
+    #[error("LogletID mismatch")]
+    LogletIdMismatch,
+    #[error("Remote node is not a sequencer")]
+    NotSequencer,
+    #[error("Sequencer shutdown")]
+    Shutdown,
+    #[error("Unknown remote error: {message}")]
+    Error { retryable: bool, message: String },
+}
+
+impl MaybeRetryableError for RemoteSequencerError {
+    fn retryable(&self) -> bool {
+        match self {
+            Self::UnknownLogId => false,
+            Self::UnknownSegmentIndex => false,
+            Self::LogletIdMismatch => false,
+            Self::NotSequencer => false,
+            Self::Shutdown => false,
+            Self::Error { retryable, .. } => *retryable,
+        }
+    }
+}
+
+impl TryFrom<SequencerStatus> for RemoteSequencerError {
+    type Error = &'static str;
+    fn try_from(value: SequencerStatus) -> Result<Self, &'static str> {
+        let value = match value {
+            SequencerStatus::UnknownLogId => RemoteSequencerError::UnknownLogId,
+            SequencerStatus::UnknownSegmentIndex => RemoteSequencerError::UnknownSegmentIndex,
+            SequencerStatus::LogletIdMismatch => RemoteSequencerError::LogletIdMismatch,
+            SequencerStatus::NotSequencer => RemoteSequencerError::NotSequencer,
+            SequencerStatus::Shutdown => RemoteSequencerError::Shutdown,
+            SequencerStatus::Error { retryable, message } => {
+                RemoteSequencerError::Error { retryable, message }
+            }
+            SequencerStatus::Ok | SequencerStatus::Sealed => {
+                return Err("not a failure status");
+            }
+        };
+
+        Ok(value)
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -481,7 +535,7 @@ mod test {
                 header: CommonResponseHeader {
                     known_global_tail: None,
                     sealed: Some(false),
-                    status: self.reply_status,
+                    status: self.reply_status.clone(),
                 },
             });
             let delay = rand::thread_rng().gen_range(50..350);
