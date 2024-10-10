@@ -58,14 +58,13 @@ pub struct LogletControllerConfig {
 }
 
 /// Possible effects that the controller inner decider might request.
-// todo: add log_id to all entries
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogletEffect {
     /// Bootstrap?
-    Initialize(ReplicatedLogletId),
+    Initialize(LogId, ReplicatedLogletId),
 
     /// Seal the specified segment and extend the loglet chain with a new segment.
-    SealAndExtendChain(SegmentIndex),
+    SealAndExtendChain(LogId, SegmentIndex),
 }
 
 /// Input to the inner decider representing the state of the world we've observed.
@@ -181,7 +180,7 @@ impl ReplicatedLogletController {
                         });
 
                         // right now this is purely informational - alt we can make this be the bootstrap signal?
-                        effects.push(LogletEffect::Initialize(loglet_id));
+                        effects.push(LogletEffect::Initialize(*log_id, loglet_id));
                     }
 
                     // We've got prior state - check if the loglet requires any remediating actions
@@ -311,7 +310,7 @@ impl ReplicatedLogletController {
                                 LogletParams::from(params.serialize().expect("can serialize"));
 
                             effects
-                                .push(LogletEffect::SealAndExtendChain(loglet_state.segment_index));
+                                .push(LogletEffect::SealAndExtendChain(*log_id, loglet_state.segment_index));
                             updated_plan.insert_loglet(state);
                         } else if f_majority == FMajorityResult::Success
                             && !cluster_state
@@ -338,7 +337,7 @@ impl ReplicatedLogletController {
                             state.sequencer = replacement_sequencer;
 
                             effects
-                                .push(LogletEffect::SealAndExtendChain(loglet_state.segment_index));
+                                .push(LogletEffect::SealAndExtendChain(*log_id, loglet_state.segment_index));
                             updated_plan.insert_loglet(state);
                         }
                     }
@@ -572,7 +571,7 @@ mod tests {
         assert_that!(proposed_plan.logs, len(eq(1)));
         let (log_id, target_state) = proposed_plan.logs.iter().next().unwrap();
 
-        assert_that!(log_id, eq(&LogId::from(0u32)));
+        assert_that!(*log_id, eq(LogId::from(0u32)));
         assert_that!(
             target_state.clone(),
             pat!(TargetLogletState {
@@ -610,7 +609,7 @@ mod tests {
         let existing_plan = SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes)
             .into_builder()
             .insert_loglet(TargetLogletState {
-                log_id: LogId::from(0u32),
+                log_id: 0u32.into(),
                 loglet_id: ReplicatedLogletId::new(42),
                 loglet_state: LogletLifecycleState::Available,
                 replication: ReplicationProperty::new(2.try_into()?),
@@ -670,7 +669,7 @@ mod tests {
         let existing_plan = SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes)
             .into_builder()
             .insert_loglet(TargetLogletState {
-                log_id: LogId::from(0u32),
+                log_id: 0u32.into(),
                 loglet_id: ReplicatedLogletId::new(42),
                 loglet_state: LogletLifecycleState::Available,
                 replication: ReplicationProperty::new(2.try_into()?),
@@ -716,7 +715,7 @@ mod tests {
         assert_that!(proposed_plan.logs, len(eq(1)));
         let (log_id, target_state) = proposed_plan.logs.iter().next().unwrap();
 
-        assert_that!(log_id, eq(&LogId::from(0u32)));
+        assert_that!(*log_id, eq(LogId::from(0u32)));
         assert_that!(
             target_state.clone(),
             pat!(TargetLogletState {
@@ -731,7 +730,7 @@ mod tests {
 
         assert_that!(
             effects,
-            elements_are![eq(LogletEffect::SealAndExtendChain(SegmentIndex::from(0)))]
+            elements_are![eq(LogletEffect::SealAndExtendChain(0u32.into(), 0.into()))]
         );
 
         Ok(())
@@ -758,7 +757,7 @@ mod tests {
         let existing_plan = SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes)
             .into_builder()
             .insert_loglet(TargetLogletState {
-                log_id: LogId::from(0u32),
+                log_id: 0u32.into(),
                 loglet_id: ReplicatedLogletId::new(42),
                 loglet_state: LogletLifecycleState::Available,
                 replication: ReplicationProperty::new(2.try_into()?),
@@ -816,10 +815,10 @@ mod tests {
         assert_that!(proposed_plan.logs, len(eq(1)));
         let (log_id, target_state) = proposed_plan.logs.iter().next().unwrap();
 
-        assert_that!(log_id, eq(&LogId::from(0u32)));
+        assert_that!(*log_id, eq(LogId::from(0u32)));
         assert_that!(
             effects,
-            elements_are![eq(LogletEffect::SealAndExtendChain(SegmentIndex::from(0)))]
+            elements_are![eq(LogletEffect::SealAndExtendChain(0u32.into(), SegmentIndex::from(0)))]
         );
         assert_that!(
             target_state.clone(),
