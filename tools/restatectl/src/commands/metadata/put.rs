@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 
-use anyhow::anyhow;
 use clap::Parser;
 use clap_stdin::FileOrStdin;
 use cling::{Collect, Run};
@@ -45,10 +44,9 @@ pub struct PutValueOpts {
 async fn put_value(opts: &PutValueOpts) -> anyhow::Result<()> {
     let opts = opts.clone();
 
-    let doc_body = opts.doc.contents().map_err(|e| anyhow!(e))?;
+    let doc_body = opts.doc.contents()?;
 
-    let mut doc: Value = serde_json::from_str(&doc_body)
-        .map_err(|e| anyhow::anyhow!("Parsing JSON value: {}", e))?;
+    let mut doc: Value = serde_json::from_str(&doc_body)?;
 
     if let Some(obj) = doc.as_object_mut() {
         // make sure that the value does not contain the version field.
@@ -61,7 +59,7 @@ async fn put_value(opts: &PutValueOpts) -> anyhow::Result<()> {
     patch_command.insert("value", doc);
 
     let patch = vec![patch_command];
-    let patch_as_str = serde_json::to_string_pretty(&patch).map_err(|e| anyhow::anyhow!(e))?;
+    let patch_as_str = serde_json::to_string_pretty(&patch)?;
 
     let patch_opts = PatchValueOpts {
         metadata: opts.metadata,
