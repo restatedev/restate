@@ -20,8 +20,11 @@ use tracing::debug;
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_bifrost::{Bifrost, BifrostAdmin};
-use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadWriteError, WriteError};
+use restate_core::metadata_store::{
+    retry_on_network_error, MetadataStoreClient, Precondition, ReadWriteError, WriteError,
+};
 use restate_core::{metadata, task_center, Metadata, MetadataWriter, ShutdownError};
+use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::live::Pinned;
 use restate_types::logs::builder::LogsBuilder;
@@ -746,23 +749,25 @@ pub struct LogsController {
 
 impl LogsController {
     pub async fn init(
+        configuration: &Configuration,
         metadata: Metadata,
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
         metadata_writer: MetadataWriter,
-        default_provider: ProviderKind,
     ) -> Result<Self> {
         // obtain the latest logs or init it with an empty logs variant
-        let logs = metadata_store_client
-            .get_or_insert(BIFROST_CONFIG_KEY.clone(), Logs::default)
-            .await?;
+        let logs = retry_on_network_error(
+            configuration.common.network_error_retry_policy.clone(),
+            || metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), Logs::default),
+        )
+        .await?;
         metadata_writer.update(logs).await?;
         Ok(Self {
             effects: Some(Vec::new()),
             inner: LogsControllerInner::new(
                 metadata.logs_ref(),
                 metadata.partition_table_ref().as_ref(),
-                default_provider,
+                configuration.bifrost.default_provider,
             )?,
             metadata,
             bifrost,
