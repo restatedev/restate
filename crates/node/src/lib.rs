@@ -308,12 +308,12 @@ impl Node {
 
         if config.common.allow_bootstrap {
             // only try to insert static configuration if in bootstrap mode
-            let (partition_table, logs) =
+            let partition_table =
                 Self::fetch_or_insert_initial_configuration(&self.metadata_store_client, &config)
                     .await?;
 
             metadata_writer.update(partition_table).await?;
-            metadata_writer.update(logs).await?;
+            // metadata_writer.update(logs).await?;
         } else {
             // otherwise, just sync the required metadata
             metadata
@@ -442,24 +442,24 @@ impl Node {
     async fn fetch_or_insert_initial_configuration(
         metadata_store_client: &MetadataStoreClient,
         options: &Configuration,
-    ) -> Result<(PartitionTable, Logs), Error> {
+    ) -> Result<PartitionTable, Error> {
         let partition_table =
             Self::fetch_or_insert_partition_table(metadata_store_client, options).await?;
-        Self::try_insert_initial_scheduling_plan(metadata_store_client, options, &partition_table)
-            .await?;
-        let logs = Self::fetch_or_insert_logs_configuration(
-            metadata_store_client,
-            options,
-            partition_table.num_partitions(),
-        )
-        .await?;
+        // Self::try_insert_initial_scheduling_plan(metadata_store_client, options, &partition_table)
+        //     .await?;
+        // let logs = Self::fetch_or_insert_logs_configuration(
+        //     metadata_store_client,
+        //     options,
+        //     partition_table.num_partitions(),
+        // )
+        // .await?;
 
-        // sanity check
-        if usize::from(partition_table.num_partitions()) != logs.num_logs() {
-            return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.num_logs())))?;
-        }
+        // // sanity check
+        // if usize::from(partition_table.num_partitions()) != logs.num_logs() {
+        //     return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.num_logs())))?;
+        // }
 
-        Ok((partition_table, logs))
+        Ok(partition_table)
     }
 
     async fn fetch_or_insert_partition_table(
