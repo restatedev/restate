@@ -110,13 +110,12 @@ async fn replicated_loglet() {
     let nodes = Node::new_test_nodes_with_metadata(
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::Worker | Role::Admin | Role::LogServer),
+        enum_set!(Role::Worker | Role::LogServer),
         3,
     );
 
     let cluster = Cluster::builder()
         .cluster_name("cluster-1")
-        .temp_base_dir()
         .nodes(nodes)
         .build()
         .start()
@@ -124,4 +123,12 @@ async fn replicated_loglet() {
         .unwrap();
 
     assert!(cluster.wait_healthy(Duration::from_secs(30)).await);
+
+    for idx in 1..=3 {
+        assert!(cluster.nodes[idx]
+            .lines("PartitionProcessor starting up".parse().unwrap())
+            .next()
+            .await
+            .is_some())
+    }
 }

@@ -9,22 +9,23 @@
 // by the Apache License, Version 2.0.
 
 use crate::cluster_controller::scheduler::ObservedClusterState;
+use rand::prelude::IteratorRandom;
 use rand::{thread_rng, RngCore};
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::{MetadataStoreClient, Precondition, WriteError};
-use restate_core::{task_center, Metadata, MetadataWriter};
+use restate_core::{metadata, task_center, Metadata, MetadataWriter};
 use restate_types::logs::builder::{ChainBuilder, LogsBuilder};
 use restate_types::logs::metadata::{
     Chain, LogletConfig, LogletParams, Logs, ProviderKind, SegmentIndex,
 };
 use restate_types::logs::{LogId, Lsn};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+use restate_types::nodes_config::Role;
 use restate_types::partition_table::PartitionTable;
 use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
 use restate_types::{Version, Versioned};
 use std::collections::BTreeMap;
 use std::num::NonZeroU8;
-use rand::prelude::IteratorRandom;
 use tokio::task::JoinSet;
 use tracing::debug;
 
@@ -220,30 +221,44 @@ fn find_new_replicated_loglet_configuration(
 ) -> Option<ReplicatedLogletParams> {
     let mut rng = rand::thread_rng();
     // todo make min nodeset size configurable, respect roles, etc.
-    if observed_cluster_state.alive_nodes.len() >= 3 {
+    let nodes_config = metadata().nodes_config_ref();
+
+    let log_servers: Vec<_> = observed_cluster_state
+        .alive_nodes
+        .values()
+        .filter(|node| {
+            nodes_config
+                .find_node_by_id(**node)
+                .ok()
+                .is_some_and(|config| config.has_role(Role::LogServer))
+        })
+        .collect();
+
+    if log_servers.len() >= 3 {
         let replication = ReplicationProperty::new(NonZeroU8::new(2).expect("to be valid"));
         let mut nodeset = NodeSet::empty();
 
-        for node in observed_cluster_state.alive_nodes.keys() {
-            nodeset.insert(*node);
+        for node in &log_servers {
+            nodeset.insert(node.as_plain());
         }
 
         Some(ReplicatedLogletParams {
             loglet_id: rng.next_u64().into(),
-            sequencer: *observed_cluster_state.alive_nodes.values().choose(&mut rng).expect("one node must exist"),
+            sequencer: **log_servers
+                .iter()
+                .choose(&mut rng)
+                .expect("one node must exist"),
             replication,
             nodeset,
             write_set: None,
         })
+    } else if let Some(sequencer) = log_servers.iter().choose(&mut rng) {
+        previous_configuration.cloned().map(|mut configuration| {
+            configuration.sequencer = **sequencer;
+            configuration
+        })
     } else {
-        if let Some(sequencer) = observed_cluster_state.alive_nodes.values().choose(&mut rng) {
-            previous_configuration.cloned().map(|mut configuration| {
-                configuration.sequencer = *sequencer;
-                configuration
-            })
-        } else {
-            None
-        }
+        None
     }
 }
 
@@ -307,13 +322,8 @@ impl LogletConfiguration {
             }
         };
 
-        if let Some(new_configuration) =
-            find_new_replicated_loglet_configuration(observed_cluster_state, previous_configuration)
-        {
-            Some(LogletConfiguration::Replicated(new_configuration))
-        } else {
-            None
-        }
+        find_new_replicated_loglet_configuration(observed_cluster_state, previous_configuration)
+            .map(LogletConfiguration::Replicated)
     }
 }
 
@@ -371,7 +381,11 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(logs: Logs, partition_table: &PartitionTable, default_provider: ProviderKind) -> Result<Self, anyhow::Error> {
+    fn new(
+        logs: Logs,
+        partition_table: &PartitionTable,
+        default_provider: ProviderKind,
+    ) -> Result<Self, anyhow::Error> {
         let mut this = Self {
             default_provider,
             logs: Logs::default(),
@@ -444,7 +458,9 @@ impl Inner {
         logs_builder: &mut LogsBuilder,
     ) -> Result<(), anyhow::Error> {
         for (log_id, log_state) in &mut self.logs_state {
-            let mut chain_builder = logs_builder.chain(log_id).expect("should be present");
+            let mut chain_builder = logs_builder
+                .chain(log_id)
+                .expect("Log with '{log_id}' should be present");
             log_state.try_reconfiguring(observed_cluster_state, &mut chain_builder)?;
         }
 
@@ -580,11 +596,15 @@ impl LogsController {
         default_provider: ProviderKind,
     ) -> anyhow::Result<Self> {
         let logs = metadata_store_client
-            .get_or_insert(BIFROST_CONFIG_KEY.clone(), || Logs::default())
+            .get_or_insert(BIFROST_CONFIG_KEY.clone(), Logs::default)
             .await?;
         Ok(Self {
             effects: Some(Vec::new()),
-            inner: Inner::new(logs, metadata.partition_table_ref().as_ref(), default_provider)?,
+            inner: Inner::new(
+                logs,
+                metadata.partition_table_ref().as_ref(),
+                default_provider,
+            )?,
             bifrost,
             metadata_store_client,
             metadata_writer,
@@ -692,7 +712,7 @@ impl LogsController {
         let bifrost = self.bifrost.clone();
         let metadata_store_client = self.metadata_store_client.clone();
         let metadata_writer = self.metadata_writer.clone();
-        self.async_operations.spawn_local(async move {
+        self.async_operations.spawn(async move {
             tc.run_in_scope("seal-log", None, async {
                 let bifrost_admin =
                     BifrostAdmin::new(&bifrost, &metadata_writer, &metadata_store_client);

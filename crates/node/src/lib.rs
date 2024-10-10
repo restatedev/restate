@@ -309,7 +309,6 @@ impl Node {
                     .await?;
 
             metadata_writer.update(partition_table).await?;
-            // metadata_writer.update(logs).await?;
         } else {
             // otherwise, just sync the required metadata
             metadata
@@ -320,12 +319,10 @@ impl Node {
                 .await?;
 
             // safety check until we can tolerate missing partition table and logs configuration
-            if metadata.partition_table_version() == Version::INVALID
-                || metadata.logs_version() == Version::INVALID
-            {
+            if metadata.partition_table_version() == Version::INVALID {
                 return Err(Error::SafetyCheck(
                     format!(
-                        "Missing partition table or logs configuration for cluster '{}'. This indicates that the cluster bootstrap is incomplete. Please re-run with '--allow-bootstrap true'.",
+                        "Missing partition table for cluster '{}'. This indicates that the cluster bootstrap is incomplete. Please re-run with '--allow-bootstrap true'.",
                         config.common.cluster_name(),
                     )))?;
             }

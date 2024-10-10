@@ -16,7 +16,7 @@ use restate_core::metadata_store::{
     MetadataStoreClient, Precondition, ReadError, ReadWriteError, WriteError,
 };
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
-use restate_core::{ShutdownError, SyncError, TaskCenter, TaskKind};
+use restate_core::{metadata, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
 use restate_types::cluster_controller::{
     ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
@@ -29,7 +29,7 @@ use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
 use restate_types::partition_table::PartitionTable;
-use restate_types::{GenerationalNodeId, PlainNodeId, Version, Versioned};
+use restate_types::{GenerationalNodeId, PlainNodeId, Versioned};
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading scheduling plan from metadata store: {0}")]
@@ -80,7 +80,7 @@ impl<T: TransportConnect> Scheduler<T> {
         networking: Networking<T>,
     ) -> Result<Self, BuildError> {
         let scheduling_plan = metadata_store_client
-            .get_or_insert(SCHEDULING_PLAN_KEY.clone(), || SchedulingPlan::default())
+            .get_or_insert(SCHEDULING_PLAN_KEY.clone(), SchedulingPlan::default)
             .await?;
 
         Ok(Self {
@@ -332,7 +332,8 @@ impl<T: TransportConnect> Scheduler<T> {
         for (node_id, commands) in commands.into_iter() {
             let control_processors = ControlProcessors {
                 // todo: Maybe remove unneeded partition table version
-                min_partition_table_version: Version::MIN,
+                min_partition_table_version: metadata().partition_table_version(),
+                min_logs_table_version: metadata().logs_version(),
                 commands,
             };
 
@@ -495,7 +496,6 @@ mod tests {
     use rand::Rng;
     use std::collections::{BTreeMap, BTreeSet};
     use std::num::NonZero;
-    use std::sync::Arc;
     use std::time::Duration;
     use test_log::test;
     use tokio::sync::mpsc;

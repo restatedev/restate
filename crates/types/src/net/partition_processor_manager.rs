@@ -45,6 +45,7 @@ define_message! {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlProcessors {
     pub min_partition_table_version: Version,
+    pub min_logs_table_version: Version,
     pub commands: Vec<ControlProcessor>,
 }
 
