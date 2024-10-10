@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -19,7 +20,10 @@ pub struct Cluster {
     #[builder(setter(into), default = default_cluster_name())]
     #[serde(default = "default_cluster_name")]
     cluster_name: String,
-    nodes: Vec<Node>,
+    #[builder(setter(transform = |nodes: impl IntoIterator<Item = Node>| {
+        nodes.into_iter().map(|n| (n.node_name().to_owned(), n)).collect()
+    }))]
+    nodes: BTreeMap<String, Node>,
     #[builder(setter(into), default = default_base_dir())]
     #[serde(default = "default_base_dir")]
     base_dir: MaybeTempDir,
@@ -45,13 +49,13 @@ fn default_base_dir() -> MaybeTempDir {
 }
 
 fn default_cluster_name() -> String {
-    "local-cluster".to_owned()
+    "localcluster".to_owned()
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClusterStartError {
     #[error("Failed to start node {0}: {1}")]
-    NodeStartError(usize, NodeStartError),
+    NodeStartError(String, NodeStartError),
     #[error("Admin node is not healthy after waiting 60 seconds")]
     AdminUnhealthy,
     #[error("Failed to create cluster base directory: {0}")]
@@ -79,7 +83,7 @@ impl Cluster {
                 .map_err(ClusterStartError::CreateDirectory)?;
         }
 
-        let mut started_nodes = Vec::with_capacity(nodes.len());
+        let mut started_nodes = BTreeMap::new();
 
         info!(
             "Starting cluster {} in {}",
@@ -87,18 +91,18 @@ impl Cluster {
             base_dir.as_path().display()
         );
 
-        for (i, node) in nodes.into_iter().enumerate() {
+        for (node_name, node) in nodes.into_iter() {
             let node = node
                 .start_clustered(base_dir.as_path(), &cluster_name)
                 .await
-                .map_err(|err| ClusterStartError::NodeStartError(i, err))?;
+                .map_err(|err| ClusterStartError::NodeStartError(node_name.clone(), err))?;
             if node.admin_address().is_some() {
                 // admin nodes are needed for later nodes to bootstrap. we should wait until they are serving
                 if !node.wait_admin_healthy(Duration::from_secs(30)).await {
                     return Err(ClusterStartError::AdminUnhealthy);
                 }
             }
-            started_nodes.push(node)
+            started_nodes.insert(node_name, node);
         }
 
         Ok(StartedCluster {
@@ -112,7 +116,7 @@ impl Cluster {
 pub struct StartedCluster {
     cluster_name: String,
     base_dir: MaybeTempDir,
-    pub nodes: Vec<StartedNode>,
+    pub nodes: BTreeMap<String, StartedNode>,
 }
 
 impl StartedCluster {
@@ -126,14 +130,14 @@ impl StartedCluster {
 
     /// Send a SIGKILL to every node in the cluster
     pub async fn kill(&mut self) -> io::Result<()> {
-        future::try_join_all(self.nodes.iter_mut().map(|n| n.kill()))
+        future::try_join_all(self.nodes.values_mut().map(|n| n.kill()))
             .await
             .map(drop)
     }
 
     /// Send a SIGTERM to every node in the cluster
     pub fn terminate(&self) -> io::Result<()> {
-        for node in &self.nodes {
+        for node in self.nodes.values() {
             node.terminate()?
         }
         Ok(())
@@ -142,7 +146,7 @@ impl StartedCluster {
     /// Send a SIGTERM to every node in the cluster, then wait for `dur` for them to exit,
     /// otherwise send a SIGKILL to nodes that are still running.
     pub async fn graceful_shutdown(&mut self, dur: Duration) -> io::Result<()> {
-        future::try_join_all(self.nodes.iter_mut().map(|n| n.graceful_shutdown(dur)))
+        future::try_join_all(self.nodes.values_mut().map(|n| n.graceful_shutdown(dur)))
             .await
             .map(drop)
     }
@@ -152,7 +156,7 @@ impl StartedCluster {
     pub async fn wait_admins_healthy(&self, dur: Duration) -> bool {
         future::join_all(
             self.nodes
-                .iter()
+                .values()
                 .filter(|n| n.admin_address().is_some())
                 .map(|n| n.wait_admin_healthy(dur)),
         )
@@ -166,7 +170,7 @@ impl StartedCluster {
     pub async fn wait_ingresses_healthy(&self, dur: Duration) -> bool {
         future::join_all(
             self.nodes
-                .iter()
+                .values()
                 .filter(|n| n.ingress_address().is_some())
                 .map(|n| n.wait_ingress_healthy(dur)),
         )
@@ -180,7 +184,7 @@ impl StartedCluster {
     pub async fn wait_logservers_provisioned(&self, dur: Duration) -> bool {
         future::join_all(
             self.nodes
-                .iter()
+                .values()
                 .filter(|n| n.config().has_role(Role::LogServer))
                 .map(|n| n.wait_logserver_provisioned(dur)),
         )
@@ -199,7 +203,8 @@ impl StartedCluster {
     }
 
     pub async fn push_node(&mut self, node: Node) -> Result<(), NodeStartError> {
-        self.nodes.push(
+        self.nodes.insert(
+            node.node_name().to_owned(),
             node.start_clustered(self.base_dir.as_path(), self.cluster_name.clone())
                 .await?,
         );

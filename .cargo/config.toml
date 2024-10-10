@@ -3,6 +3,8 @@ RUST_TEST_THREADS = "1"
 
 [alias]
 xtask = "run --package xtask --"
+local-cluster-runner = "run --package local-cluster-runner --"
+lcr = "run --package local-cluster-runner --"
 
 [build]
 rustflags = [

@@ -1,0 +1,46 @@
+extends "./Cluster.pkl"
+
+import "Node.pkl"
+import "Configuration.pkl"
+import "ReplicatedLogletParams.pkl"
+
+hidden base_config: Configuration = new {}
+
+// We default to CargoRun given that we generally expect to be executed via `cargo local-cluster-runner`
+hidden binary_source: Node.BinarySource = "CargoRun"
+
+hidden roles: Listing<Configuration.Role>
+
+hidden size: Int
+
+hidden replicated_loglet_params: ReplicatedLogletParams?
+
+local _base_config = if (replicated_loglet_params != null) (base_config) {
+    bifrost {
+        default_provider = "replicated"
+        default_provider_config = replicated_loglet_params.toString()
+    }
+} else base_config
+
+nodes {
+    ["metadata-node"] = new Node {
+        base_config = (_base_config) {
+            node_name = "metadata-node"
+            allow_bootstrap = true
+            force_node_id = 0
+            roles = new {"admin" "metadata-store"}
+        }
+        binary_source = module.binary_source
+    } |> Node.withNodeSocket |> Node.withSocketMetadata |> Node.withRandomPorts
+    for (i in IntSeq(1, size)) {
+        ["node-\(i)"] = new Node {
+            base_config = (_base_config) {
+                allow_bootstrap = false
+                node_name = "node-\(i)"
+                force_node_id = i
+                roles = module.roles
+            }
+            binary_source = module.binary_source
+        } |> Node.withNodeSocket |> Node.withSocketMetadata |> Node.withRandomPorts
+    }
+}
