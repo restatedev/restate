@@ -1,0 +1,22 @@
+amends "../pkl/TestCluster.pkl"
+
+import "../pkl/Node.pkl"
+
+replicated_loglet_params {
+  loglet_id = 1
+  sequencer = "N1:1"
+  replication {
+    ["node"] = 3
+  }
+  nodeset = new { "N1" "N2" "N3" }
+}
+
+roles = new {"worker" "log-server"}
+size = 3
+
+nodes {
+    // expose a port 9070
+    ["metadata-node"] = super["metadata-node"] |> Node.withDefaultPorts
+    // expose a port 8080 on the sequencer
+    ["node-1"] = super["node-1"] |> Node.withDefaultPorts
+}

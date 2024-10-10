@@ -1,0 +1,8 @@
+amends "../pkl/TestCluster.pkl"
+
+import "../pkl/Node.pkl"
+
+roles = new {"worker"}
+size = 2
+
+nodes = super.nodes |> Node.withRandomNode
