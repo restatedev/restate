@@ -20,6 +20,9 @@ use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
+use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
+use crate::cluster_controller::logs_controller::LogsController;
+use crate::cluster_controller::scheduler::{ObservedClusterState, Scheduler};
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::{Incoming, MessageRouterBuilder, Networking, TransportConnect};
@@ -35,9 +38,6 @@ use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::{GenerationalNodeId, Version};
-use crate::cluster_controller::logs_controller::LogsController;
-use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
-use crate::cluster_controller::scheduler::{ObservedClusterState, Scheduler};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -222,7 +222,12 @@ impl<T: TransportConnect> Service<T> {
         )
         .await?;
 
-        let mut logs_controller = LogsController::new(self.metadata.clone(), bifrost.clone(), self.metadata_store_client.clone(), self.metadata_writer.clone())?;
+        let mut logs_controller = LogsController::new(
+            self.metadata.clone(),
+            bifrost.clone(),
+            self.metadata_store_client.clone(),
+            self.metadata_writer.clone(),
+        )?;
         let mut observed_cluster_state = ObservedClusterState::default();
 
         loop {
