@@ -39,7 +39,7 @@ async fn main() {
 
     let mut cluster = cluster.start().await.unwrap();
 
-    match cluster.nodes[0]
+    match cluster.nodes["metadata-node"]
         .lines(Regex::new("Server listening").unwrap())
         .next()
         .await
