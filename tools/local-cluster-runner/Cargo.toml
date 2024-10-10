@@ -1,0 +1,23 @@
+[package]
+name = "local-cluster-runner"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = ["replicated-loglet"]
+replicated-loglet = ["restate-types/replicated-loglet"]
+
+[dependencies]
+restate-types = { workspace = true }
+restate-local-cluster-runner = { workspace = true }
+
+clap = { workspace = true }
+clap-verbosity-flag = { workspace = true }
+figment = { version = "0.10.8", features = ["toml"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

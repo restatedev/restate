@@ -27,8 +27,10 @@ pub fn shutdown() -> impl Future<Output = &'static str> {
     }
 }
 
+const RANDOM_SOCKET_ADDRESS: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+
 pub fn random_socket_address() -> io::Result<SocketAddr> {
-    let listener = TcpListener::bind((IpAddr::V4(Ipv4Addr::LOCALHOST), 0))?;
+    let listener = TcpListener::bind(RANDOM_SOCKET_ADDRESS)?;
     let socket_addr = listener.local_addr()?;
 
     Ok(socket_addr)

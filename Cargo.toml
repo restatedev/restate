@@ -6,6 +6,7 @@ members = [
     "server",
     "benchmarks",
     "tools/bifrost-benchpress",
+    "tools/local-cluster-runner",
     "tools/mock-service-endpoint",
     "tools/restatectl",
     "tools/service-protocol-wireshark-dissector",

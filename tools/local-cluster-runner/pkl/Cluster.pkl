@@ -1,0 +1,23 @@
+open module Cluster
+
+import "Node.pkl"
+import "package://pkg.pkl-lang.org/pkl-pantry/pkl.toml@1.0.0#/toml.pkl"
+
+cluster_name: String = "localcluster"
+
+nodes: Mapping<String, Node>
+
+base_dir: String = "\(read("env:PWD"))/restate-data"
+
+output {
+  value = new {
+      cluster_name = module.cluster_name
+      nodes = new {
+          for (node_name, node in module.nodes) {
+              [node_name] = node.output.value
+          }
+      }
+      base_dir = module.base_dir
+  }
+  renderer = new toml.Renderer {}
+}

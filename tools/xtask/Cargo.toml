@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["replicated-loglet"]
+replicated-loglet = ["restate-types/replicated-loglet"]
+
 [dependencies]
 restate-admin = { workspace = true, features = ["options_schema"] }
 restate-bifrost = { workspace = true, features = ["test-util"] }

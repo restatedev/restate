@@ -47,7 +47,7 @@ async fn replicated_loglet_client(
         .set_cluster_name(cluster.cluster_name().to_owned());
     config.common.advertised_address = AdvertisedAddress::Uds(node_socket.clone());
     config.common.bind_address = BindAddress::Uds(node_socket.clone());
-    config.common.metadata_store_client = cluster.nodes[0]
+    config.common.metadata_store_client = cluster.nodes["metadata-node"]
         .config()
         .common
         .metadata_store_client

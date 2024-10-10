@@ -1,0 +1,1177 @@
+/// Restate configuration file
+///
+/// Configuration for Restate server.
+///
+/// This module was generated from JSON Schema from <file://pkl/configuration.json>.
+///
+/// WARN: The root schema describes open-ended properties, but this is not possible to describe at the
+/// module level.
+module Configuration
+
+/// Default if undefined: `{ ["cleanup-interval"] = "1h"
+/// ["experimental-feature-new-invocation-status-table"] = false ["internal-queue-length"] = 1000
+/// ["invoker"] { ["abort-timeout"] = "1m" ["concurrent-invocations-limit"] = 100
+/// ["in-memory-queue-length-limit"] = 1056784 ["inactivity-timeout"] = "1m" ["message-size-limit"] =
+/// null ["message-size-warning"] = "10.0 MB" ["retry-policy"] { ["factor"] = 2.0 ["initial-interval"] =
+/// "50ms" ["max-attempts"] = null ["max-interval"] = "10s" ["type"] = "exponential" } ["tmp-dir"] = null
+/// } ["max-command-batch-size"] = 4 ["num-timers-in-memory-limit"] = null ["storage"] {
+/// ["persist-lsn-interval"] = "1h" ["persist-lsn-threshold"] = 1000 ["rocksdb-disable-wal"] = true
+/// ["rocksdb-memory-ratio"] = 0.49000000953674316 } }`
+worker: WorkerOptions?
+
+/// Default if undefined: `{ ["bind-address"] = "0.0.0.0:9070" ["concurrent-api-requests-limit"] = null
+/// ["default-replication-strategy"] = "on-all-nodes" ["heartbeat-interval"] = "1s 500ms"
+/// ["log-trim-interval"] = "1h" ["log-trim-threshold"] = 1000 ["query-engine"] { ["memory-size"] = "4.0
+/// GB" ["pgsql-bind-address"] = "0.0.0.0:9071" ["query-parallelism"] = null ["tmp-dir"] = null } }`
+admin: AdminOptions?
+
+/// Default if undefined: `{ ["bind-address"] = "0.0.0.0:8080" ["concurrent-api-requests-limit"] = null
+/// ["kafka-clusters"] {} }`
+ingress: IngressOptions?
+
+/// Default if undefined: `{ ["append-retry-max-interval"] = "1s" ["append-retry-min-interval"] = "10ms"
+/// ["default-provider"] = "local" ["default-provider-config"] = null ["local"] { ["rocksdb-disable-wal"]
+/// = false ["rocksdb-disable-wal-fsync"] = false ["rocksdb-memory-ratio"] = 0.5
+/// ["writer-batch-commit-count"] = 5000 ["writer-batch-commit-duration"] = "0s" } ["read-retry-policy"]
+/// { ["factor"] = 2.0 ["initial-interval"] = "50ms" ["max-attempts"] = 50 ["max-interval"] = "1s"
+/// ["type"] = "exponential" } ["record-cache-memory-size"] = "20.0 MB" ["replicated-loglet"] {
+/// ["log-server-retry-policy"] { ["factor"] = 2.0 ["initial-interval"] = "250ms" ["max-attempts"] = 10
+/// ["max-interval"] = "2s" ["type"] = "exponential" } ["log-server-rpc-timeout"] { ["nanos"] = 0
+/// ["secs"] = 2 } ["maximum-inflight-records"] = 1000 ["sequencer-backoff-strategy"] { ["factor"] = 2.0
+/// ["initial-interval"] = "100ms" ["max-attempts"] = null ["max-interval"] = "2s" ["type"] =
+/// "exponential" } } ["seal-retry-interval"] = "2s" }`
+bifrost: BifrostOptions?
+
+/// Default if undefined: `{ ["bind-address"] = "0.0.0.0:5123" ["request-queue-length"] = 32 ["rocksdb"]
+/// { ["rocksdb-disable-wal"] = false } ["rocksdb-memory-ratio"] = 0.009999999776482582 }`
+metadata_store: LocalMetadataStoreOptions?
+
+/// Default if undefined: `{ ["connect-retry-policy"] { ["factor"] = 2.0 ["initial-interval"] = "10ms"
+/// ["max-attempts"] = 10 ["max-interval"] = "500ms" ["type"] = "exponential" } ["handshake-timeout"] =
+/// "3s" ["outbound-queue-length"] = 1000 }`
+networking: NetworkingOptions?
+
+/// Default if undefined: `{ ["incoming-network-queue-length"] = 1000 ["rocksdb-disable-wal"] = false
+/// ["rocksdb-disable-wal-fsync"] = false ["rocksdb-memory-ratio"] = 0.5 ["writer-batch-commit-count"] =
+/// 5000 }`
+log_server: LogServer?
+
+/// Defines the roles which this Restate node should run, by default the node starts with all roles.
+///
+/// Default if undefined: `{ "worker" "admin" "metadata-store" }`
+roles: Listing<Role>(isDistinct)?
+
+/// Node Name
+///
+/// Unique name for this node in the cluster. The node must not change unless it's started with empty
+/// local store. It defaults to the node's hostname.
+node_name: String?
+
+/// If set, the node insists on acquiring this node ID.
+force_node_id: Number(isPositive)?
+
+/// Cluster Name
+///
+/// A unique identifier for the cluster. All nodes in the same cluster should have the same.
+///
+/// Default if undefined: `"localcluster"`
+cluster_name: String?
+
+/// If true, then a new cluster is bootstrapped. This node *must* have an admin role and a new nodes
+/// configuration will be created that includes this node.
+///
+/// Default if undefined: `true`
+allow_bootstrap: Boolean?
+
+/// The working directory which this Restate node should use for relative paths. The default is
+/// `restate-data` under the current working directory.
+base_dir: String?
+
+/// Address to bind for the Node server. Default is `0.0.0.0:5122`
+///
+/// Default if undefined: `"0.0.0.0:5122"`
+bind_address: String?
+
+/// Address that other nodes will use to connect to this node. Default is `http://127.0.0.1:5122/`
+///
+/// Default if undefined: `"http://127.0.0.1:5122/"`
+advertised_address: String?
+
+/// Partitions
+///
+/// Number of partitions that will be provisioned during cluster bootstrap, partitions used to process
+/// messages.
+///
+/// NOTE: This config entry only impacts the initial number of partitions, the value of this entry is
+/// ignored for bootstrapped nodes/clusters.
+///
+/// Cannot be higher than `65535` (You should almost never need as many partitions anyway)
+///
+/// Default if undefined: `24`
+bootstrap_num_partitions: Int(this >= 1.0)?
+
+/// Shutdown grace timeout
+///
+/// This timeout is used when shutting down the various Restate components to drain all the internal
+/// queues.
+///
+/// Can be configured using the
+/// [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+///
+/// Default if undefined: `"1m"`
+shutdown_timeout: String?
+
+/// Default async runtime thread pool
+///
+/// Size of the default thread pool used to perform internal tasks. If not set, it defaults to the number
+/// of CPU cores.
+default_thread_pool_size: Number(isPositive)?
+
+/// Logging Filter
+///
+/// Log filter configuration. Can be overridden by the `RUST_LOG` environment variable. Check the
+/// [`RUST_LOG`
+/// documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)
+/// for more details how to configure it.
+///
+/// Default if undefined: `"warn,restate=info"`
+log_filter: String?
+
+/// Logging format
+///
+/// Format to use when logging.
+///
+/// Default if undefined: `"pretty"`
+log_format: LogFormat?
+
+/// Disable ANSI in log output
+///
+/// Disable ANSI terminal codes for logs. This is useful when the log collector doesn't support
+/// processing ANSI terminal codes.
+///
+/// Default if undefined: `false`
+log_disable_ansi_codes: Boolean?
+
+/// Timeout for idle histograms.
+///
+/// The duration after which a histogram is considered idle and will be removed from metric responses to
+/// save memory. Unsetting means that histograms will never be removed.
+histogram_inactivity_timeout: String?
+
+/// Disable prometheus metric recording and reporting. Default is `false`.
+///
+/// Default if undefined: `false`
+disable_prometheus: Boolean?
+
+/// Storage high priority thread pool
+///
+/// This configures the restate-managed storage thread pool for performing high-priority or
+/// latency-sensitive storage tasks when the IO operation cannot be performed on in-memory caches.
+storage_high_priority_bg_threads: Number(this >= 1.0)?
+
+/// Storage low priority thread pool
+///
+/// This configures the restate-managed storage thread pool for performing low-priority or
+/// latency-insensitive storage tasks.
+storage_low_priority_bg_threads: Number(this >= 1.0)?
+
+/// Total memory limit for rocksdb caches and memtables.
+///
+/// This includes memory for uncompressed block cache and all memtables by all open databases. The memory
+/// size used for rocksdb caches.
+///
+/// Default if undefined: `"6.0 GB"`
+rocksdb_total_memory_size: NonZeroHumanBytes?
+
+/// Rocksdb total memtable size ratio
+///
+/// The memory size used across all memtables (ratio between 0 to 1.0). This limits how much memory
+/// memtables can eat up from the value in rocksdb-total-memory-limit. When set to 0, memtables can take
+/// all available memory up to the value specified in rocksdb-total-memory-limit. This value will be
+/// sanitized to 1.0 if outside the valid bounds.
+///
+/// Default if undefined: `0.5`
+rocksdb_total_memtables_ratio: Number?
+
+/// Rocksdb Background Threads
+///
+/// The number of threads to reserve to Rocksdb background tasks. Defaults to the number of cores on the
+/// machine.
+rocksdb_bg_threads: Number(this >= 1.0)?
+
+/// Rocksdb High Priority Background Threads
+///
+/// The number of threads to reserve to high priority Rocksdb background tasks.
+///
+/// Default if undefined: `2`
+rocksdb_high_priority_bg_threads: Int(this >= 1.0)?
+
+/// Rocksdb stall detection threshold
+///
+/// This defines the duration afterwhich a write is to be considered in "stall" state. For every write
+/// that meets this threshold, the system will increment the `restate.rocksdb_stall_flare` gauge, if the
+/// write is unstalled, the guage will be updated accordingly.
+///
+/// Default if undefined: `"3s"`
+rocksdb_write_stall_threshold: String?
+
+/// Allow rocksdb writes to stall if memory limit is reached
+///
+/// Note if automatic memory budgeting is enabled, it should be safe to allow rocksdb to stall if it hits
+/// the limit. However, if rocksdb stall kicked in, it's unlikely that the system will recover from this
+/// without intervention.
+///
+/// Default if undefined: `false`
+rocksdb_enable_stall_on_memory_limit: Boolean?
+
+/// Rocksdb performance statistics level
+///
+/// Defines the level of PerfContext used internally by rocksdb. Default is `enable-count` which should
+/// be sufficient for most users. Note that higher levels incur a CPU cost and might slow down the
+/// critical path.
+///
+/// Default if undefined: `"enable-count"`
+rocksdb_perf_level: RocksbPerfStatisticsLevel?
+
+/// Metadata update interval
+///
+/// The interval at which each node checks for metadata updates it has observed from different nodes or
+/// other sources.
+///
+/// Default if undefined: `"3s"`
+metadata_update_interval: String?
+
+/// Network error retry policy
+///
+/// The retry policy for node network error
+///
+/// Default if undefined: `{ ["factor"] = 2.0 ["initial-interval"] = "10ms" ["max-attempts"] = 15
+/// ["max-interval"] = "5s" ["type"] = "exponential" }`
+network_error_retry_policy: RetryPolicy?
+
+/// Metadata store server to bootstrap the node from.
+///
+/// Default if undefined: `{ ["address"] = "http://127.0.0.1:5123/" ["type"] = "embedded" }`
+metadata_store_client: MetadataStoreClient?
+
+/// Backoff policy used by the metadata store client
+///
+/// Backoff policy used by the metadata store client when it encounters concurrent modifications.
+///
+/// Default if undefined: `{ ["factor"] = 2.0 ["initial-interval"] = "10ms" ["max-attempts"] = null
+/// ["max-interval"] = "100ms" ["type"] = "exponential" }`
+metadata_store_client_backoff_policy: RetryPolicy?
+
+/// Tracing Endpoint
+///
+/// This is a shortcut to set both [`Self::tracing_runtime_endpoint`], and
+/// [`Self::tracing_services_endpoint`].
+///
+/// Specify the tracing endpoint to send runtime traces to. Traces will be exported using [OTLP
+/// gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc) through
+/// [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
+///
+/// To configure the sampling, please refer to the [opentelemetry autoconfigure
+/// docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
+tracing_endpoint: String?
+
+/// Runtime Tracing Endpoint
+///
+/// Overrides [`Self::tracing_endpoint`] for runtime traces
+///
+/// Specify the tracing endpoint to send runtime traces to. Traces will be exported using [OTLP
+/// gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc) through
+/// [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
+///
+/// To configure the sampling, please refer to the [opentelemetry autoconfigure
+/// docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
+tracing_runtime_endpoint: String?
+
+/// Services Tracing Endpoint
+///
+/// Overrides [`Self::tracing_endpoint`] for services traces
+///
+/// Specify the tracing endpoint to send services traces to. Traces will be exported using [OTLP
+/// gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc) through
+/// [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
+///
+/// To configure the sampling, please refer to the [opentelemetry autoconfigure
+/// docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
+tracing_services_endpoint: String?
+
+/// Distributed Tracing JSON Export Path
+///
+/// If set, an exporter will be configured to write traces to files using the Jaeger JSON format. Each
+/// trace file will start with the `trace` prefix.
+///
+/// If unset, no traces will be written to file.
+///
+/// It can be used to export traces in a structured format without configuring a Jaeger agent.
+///
+/// To inspect the traces, open the Jaeger UI and use the Upload JSON feature to load and inspect them.
+tracing_json_path: String?
+
+/// Tracing Filter
+///
+/// Distributed tracing exporter filter. Check the [`RUST_LOG`
+/// documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)
+/// for more details how to configure it.
+tracing_filter: String?
+
+/// Additional tracing headers
+///
+/// Specify additional headers you want the system to send to the tracing endpoint (e.g. authentication
+/// headers).
+tracing_headers: Mapping<String, String>
+
+/// Request identity private key PEM file
+///
+/// A path to a file, such as "/var/secrets/key.pem", which contains exactly one ed25519 private key in
+/// PEM format. Such a file can be generated with `openssl genpkey -algorithm ed25519`. If provided, this
+/// key will be used to attach JWTs to requests from this client which SDKs may optionally verify,
+/// proving that the caller is a particular Restate instance.
+///
+/// This file is currently only read on client creation, but this may change in future. Parsed public
+/// keys will be logged at INFO level in the same format that SDKs expect.
+request_identity_private_key_pem_file: String?
+
+/// HTTP/2 Keep-alive
+///
+/// Configuration for the HTTP/2 keep-alive mechanism, using PING frames. If unset, HTTP/2 keep-alive are
+/// disabled.
+///
+/// Default if undefined: `{ ["interval"] = "40s" ["timeout"] = "20s" }`
+http_keep_alive_options: Http2KeepAliveOptions?
+
+/// Proxy URI
+///
+/// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with
+/// the `Host` header set to the deployment URI. HTTPS proxy URIs are supported, but only HTTP endpoint
+/// traffic will be proxied currently. Can be overridden by the `HTTP_PROXY` environment variable.
+http_proxy: String?
+
+/// Connect timeout
+///
+/// How long to wait for a TCP connection to be established before considering it a failed attempt.
+///
+/// Default if undefined: `"10s"`
+connect_timeout: String?
+
+/// AWS Profile
+///
+/// Name of the AWS profile to select. Defaults to 'AWS_PROFILE' env var, or otherwise the `default`
+/// profile.
+aws_profile: String?
+
+/// AssumeRole external ID
+///
+/// An external ID to apply to any AssumeRole operations taken by this client.
+/// https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html Can be
+/// overridden by the `AWS_EXTERNAL_ID` environment variable.
+aws_assume_role_external_id: String?
+
+/// Disable Direct IO for reads
+///
+/// Files will be opened in "direct I/O" mode which means that data r/w from the disk will not be cached
+/// or buffered. The hardware buffer of the devices may however still be used. Memory mapped files are
+/// not impacted by these parameters.
+rocksdb_disable_direct_io_for_reads: Boolean?
+
+/// Disable Direct IO for flush and compactions
+///
+/// Use O_DIRECT for writes in background flush and compactions.
+rocksdb_disable_direct_io_for_flush_and_compactions: Boolean?
+
+/// Disable WAL
+///
+/// The default depends on the different rocksdb use-cases at Restate.
+///
+/// Supports hot-reloading (Partial / Bifrost only)
+rocksdb_disable_wal: Boolean?
+
+/// Disable rocksdb statistics collection
+///
+/// Default: False (statistics enabled)
+rocksdb_disable_statistics: Boolean?
+
+/// RocksDB max background jobs (flushes and compactions)
+///
+/// Default: the number of CPU cores on this node.
+rocksdb_max_background_jobs: Number(this >= 1.0)?
+
+/// RocksDB compaction readahead size in bytes
+///
+/// If non-zero, we perform bigger reads when doing compaction. If you're running RocksDB on spinning
+/// disks, you should set this to at least 2MB. That way RocksDB's compaction is doing sequential instead
+/// of random reads.
+rocksdb_compaction_readahead_size: (NonZeroHumanBytes|Any)?
+
+/// RocksDB statistics level
+///
+/// StatsLevel can be used to reduce statistics overhead by skipping certain types of stats in the stats
+/// collection process.
+///
+/// Default: "except-detailed-timers"
+rocksdb_statistics_level: (RocksbStatistics|Any)?
+
+/// Worker options
+///
+/// Configures the worker store partition snapshot mechanism.
+class WorkerOptions {
+  /// Internal queue for partition processor communication
+  ///
+  /// Default if undefined: `1000`
+  internal_queue_length: Int(this >= 1.0)?
+
+  /// Num timers in memory limit
+  ///
+  /// The number of timers in memory limit is used to bound the amount of timers loaded in memory. If
+  /// this limit is set, when exceeding it, the timers farther in the future will be spilled to disk.
+  num_timers_in_memory_limit: Number(this >= 1.0)?
+
+  /// Cleanup interval
+  ///
+  /// In order to clean up completed invocations, that is invocations invoked with an idempotency id, or
+  /// workflows, Restate periodically scans among the completed invocations to check whether they need to
+  /// be removed or not. This interval sets the scan interval of the cleanup procedure. Default: 1 hour.
+  ///
+  /// Can be configured using the
+  /// [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+  ///
+  /// Default if undefined: `"1h"`
+  cleanup_interval: String?
+
+  /// Default if undefined: `{ ["persist-lsn-interval"] = "1h" ["persist-lsn-threshold"] = 1000
+  /// ["rocksdb-disable-wal"] = true ["rocksdb-memory-ratio"] = 0.49000000953674316 }`
+  storage: StorageOptions?
+
+  /// Default if undefined: `{ ["abort-timeout"] = "1m" ["concurrent-invocations-limit"] = 100
+  /// ["in-memory-queue-length-limit"] = 1056784 ["inactivity-timeout"] = "1m" ["message-size-limit"] =
+  /// null ["message-size-warning"] = "10.0 MB" ["retry-policy"] { ["factor"] = 2.0 ["initial-interval"]
+  /// = "50ms" ["max-attempts"] = null ["max-interval"] = "10s" ["type"] = "exponential" } ["tmp-dir"] =
+  /// null }`
+  invoker: InvokerOptions?
+
+  /// Maximum command batch size for partition processors
+  ///
+  /// The maximum number of commands a partition processor will apply in a batch. The larger this value
+  /// is, the higher the throughput and latency are.
+  ///
+  /// Default if undefined: `4`
+  max_command_batch_size: Int(this >= 1.0)?
+}
+
+/// Storage options
+class StorageOptions {
+  /// How many partitions to divide memory across?
+  ///
+  /// By default this uses the value defined in `bootstrap-num-partitions` in the common section of the
+  /// config.
+  num_partitions_to_share_memory_budget: Number(this >= 1.0)?
+
+  /// The memory budget for rocksdb memtables in bytes
+  ///
+  /// The total is divided evenly across partitions. The divisor is defined in
+  /// `num-partitions-to-share-memory-budget`. If this value is set, it overrides the ratio defined in
+  /// `rocksdb-memory-ratio`.
+  rocksdb_memory_budget: (NonZeroHumanBytes|Any)?
+
+  /// The memory budget for rocksdb memtables as ratio
+  ///
+  /// This defines the total memory for rocksdb as a ratio of all memory available to memtables (See
+  /// `rocksdb-total-memtables-ratio` in common). The budget is then divided evenly across partitions.
+  /// The divisor is defined in `num-partitions-to-share-memory-budget`
+  ///
+  /// Default if undefined: `0.49000000953674316`
+  rocksdb_memory_ratio: Number?
+
+  /// Persist lsn interval
+  ///
+  /// Controls the interval at which worker tries to persist the last applied lsn. Lsn persisting can be
+  /// disabled by setting it to "".
+  ///
+  /// Default if undefined: `"1h"`
+  persist_lsn_interval: String?
+
+  /// Persist lsn threshold
+  ///
+  /// Minimum number of applied log entries before persisting the lsn. The worker will only persist a lsn
+  /// if the partition processor has applied at least #threshold log entries since the last persisting.
+  /// This prevents the worker from flushing the RocksDB memtables too often.
+  ///
+  /// Default if undefined: `1000`
+  persist_lsn_threshold: Int(isPositive)?
+
+  /// Disable Direct IO for reads
+  ///
+  /// Files will be opened in "direct I/O" mode which means that data r/w from the disk will not be
+  /// cached or buffered. The hardware buffer of the devices may however still be used. Memory mapped
+  /// files are not impacted by these parameters.
+  rocksdb_disable_direct_io_for_reads: Boolean?
+
+  /// Disable Direct IO for flush and compactions
+  ///
+  /// Use O_DIRECT for writes in background flush and compactions.
+  rocksdb_disable_direct_io_for_flush_and_compactions: Boolean?
+
+  /// Disable WAL
+  ///
+  /// The default depends on the different rocksdb use-cases at Restate.
+  ///
+  /// Supports hot-reloading (Partial / Bifrost only)
+  rocksdb_disable_wal: Boolean?
+
+  /// Disable rocksdb statistics collection
+  ///
+  /// Default: False (statistics enabled)
+  rocksdb_disable_statistics: Boolean?
+
+  /// RocksDB max background jobs (flushes and compactions)
+  ///
+  /// Default: the number of CPU cores on this node.
+  rocksdb_max_background_jobs: Number(this >= 1.0)?
+
+  /// RocksDB compaction readahead size in bytes
+  ///
+  /// If non-zero, we perform bigger reads when doing compaction. If you're running RocksDB on spinning
+  /// disks, you should set this to at least 2MB. That way RocksDB's compaction is doing sequential
+  /// instead of random reads.
+  rocksdb_compaction_readahead_size: (NonZeroHumanBytes|Any)?
+
+  /// RocksDB statistics level
+  ///
+  /// StatsLevel can be used to reduce statistics overhead by skipping certain types of stats in the
+  /// stats collection process.
+  ///
+  /// Default: "except-detailed-timers"
+  rocksdb_statistics_level: (RocksbStatistics|Any)?
+}
+
+/// Invoker options
+class InvokerOptions {
+  /// Retry policy
+  ///
+  /// Retry policy to use for all the invocations handled by this invoker.
+  ///
+  /// Default if undefined: `{ ["factor"] = 2.0 ["initial-interval"] = "50ms" ["max-attempts"] = null
+  /// ["max-interval"] = "10s" ["type"] = "exponential" }`
+  retry_policy: RetryPolicy?
+
+  /// Inactivity timeout
+  ///
+  /// This timer guards against stalled service/handler invocations. Once it expires, Restate triggers a
+  /// graceful termination by asking the service invocation to suspend (which preserves intermediate
+  /// progress).
+  ///
+  /// The 'abort timeout' is used to abort the invocation, in case it doesn't react to the request to
+  /// suspend.
+  ///
+  /// Can be configured using the
+  /// [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+  ///
+  /// Default if undefined: `"1m"`
+  inactivity_timeout: String?
+
+  /// Abort timeout
+  ///
+  /// This timer guards against stalled service/handler invocations that are supposed to terminate. The
+  /// abort timeout is started after the 'inactivity timeout' has expired and the service/handler
+  /// invocation has been asked to gracefully terminate. Once the timer expires, it will abort the
+  /// service/handler invocation.
+  ///
+  /// This timer potentially **interrupts** user code. If the user code needs longer to gracefully
+  /// terminate, then this value needs to be set accordingly.
+  ///
+  /// Can be configured using the
+  /// [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+  ///
+  /// Default if undefined: `"1m"`
+  abort_timeout: String?
+
+  /// Message size warning
+  ///
+  /// Threshold to log a warning in case protocol messages coming from a service are larger than the
+  /// specified amount.
+  ///
+  /// Default if undefined: `"10.0 MB"`
+  message_size_warning: NonZeroHumanBytes?
+
+  /// Message size limit
+  ///
+  /// Threshold to fail the invocation in case protocol messages coming from a service are larger than
+  /// the specified amount.
+  message_size_limit: (NonZeroHumanBytes|Any)?
+
+  /// Temporary directory
+  ///
+  /// Temporary directory to use for the invoker temporary files. If empty, the system temporary
+  /// directory will be used instead.
+  tmp_dir: String?
+
+  /// Spill invocations to disk
+  ///
+  /// Defines the threshold after which queues invocations will spill to disk at the path defined in
+  /// `tmp-dir`. In other words, this is the number of invocations that can be kept in memory before
+  /// spilling to disk.
+  ///
+  /// Default if undefined: `1056784`
+  in_memory_queue_length_limit: Int(this >= 1.0)?
+
+  /// Limit number of concurrent invocations from this node
+  ///
+  /// Number of concurrent invocations that can be processed by the invoker.
+  ///
+  /// Default if undefined: `100`
+  concurrent_invocations_limit: Number(this >= 1.0)?
+}
+
+/// None
+///
+/// No retry strategy.
+class RetryPolicyNone {
+  type: "none"
+}
+
+/// Fixed delay
+///
+/// Retry with a fixed delay strategy.
+class RetryPolicyFixedDelay {
+  type: "fixed-delay"
+
+  /// Interval
+  ///
+  /// Interval between retries.
+  ///
+  /// Can be configured using the
+  /// [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+  interval: String
+
+  /// Max attempts
+  ///
+  /// Number of maximum attempts before giving up. Infinite retries if unset.
+  max_attempts: Number(this >= 1.0)?
+}
+
+/// Exponential
+///
+/// Retry with an exponential strategy. The next retry is computed as `min(last_retry_interval * factor,
+/// max_interval)`.
+class RetryPolicyExponential {
+  type: "exponential"
+
+  /// Initial Interval
+  ///
+  /// Initial interval for the first retry attempt.
+  ///
+  /// Can be configured using the
+  /// [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+  initial_interval: String
+
+  /// Factor
+  ///
+  /// The factor to use to compute the next retry attempt.
+  factor: Number
+
+  /// Max attempts
+  ///
+  /// Number of maximum attempts before giving up. Infinite retries if unset.
+  max_attempts: Number(this >= 1.0)?
+
+  /// Max interval
+  ///
+  /// Maximum interval between retries.
+  max_interval: String?
+}
+
+/// Admin server options
+class AdminOptions {
+  /// Endpoint address
+  ///
+  /// Address to bind for the Admin APIs.
+  ///
+  /// Default if undefined: `"0.0.0.0:9070"`
+  bind_address: String?
+
+  /// Concurrency limit
+  ///
+  /// Concurrency limit for the Admin APIs. Default is unlimited.
+  concurrent_api_requests_limit: Number(this >= 1.0)?
+
+  /// Default if undefined: `{ ["memory-size"] = "4.0 GB" ["pgsql-bind-address"] = "0.0.0.0:9071"
+  /// ["query-parallelism"] = null ["tmp-dir"] = null }`
+  query_engine: QueryEngineOptions?
+
+  /// Controller heartbeats
+  ///
+  /// Controls the interval at which cluster controller polls nodes of the cluster.
+  ///
+  /// Default if undefined: `"1s 500ms"`
+  heartbeat_interval: String?
+
+  /// Log trim interval
+  ///
+  /// Controls the interval at which cluster controller tries to trim the logs. Log trimming can be
+  /// disabled by setting it to "".
+  ///
+  /// Default if undefined: `"1h"`
+  log_trim_interval: String?
+
+  /// Log trim threshold
+  ///
+  /// Minimum number of trimmable log entries. The cluster controller will only trim a log if it can
+  /// remove equal or more entries than this threshold. This prevents too many small trim operations.
+  ///
+  /// Default if undefined: `1000`
+  log_trim_threshold: Int(isPositive)?
+
+  /// Default replication strategy
+  ///
+  /// The default replication strategy to be used by the cluster controller to schedule partition
+  /// processors.
+  ///
+  /// Default if undefined: `"on-all-nodes"`
+  default_replication_strategy: ReplicationStrategy?
+}
+
+/// Storage query engine options
+class QueryEngineOptions {
+  /// Memory size limit
+  ///
+  /// The total memory in bytes that can be used to preform sql queries
+  ///
+  /// Default if undefined: `"4.0 GB"`
+  memory_size: NonZeroHumanBytes?
+
+  /// Temp folder to use for spill
+  ///
+  /// The path to spill to
+  tmp_dir: String?
+
+  /// Default query parallelism
+  ///
+  /// The number of parallel partitions to use for a query execution
+  query_parallelism: Number(this >= 1.0)?
+
+  /// Pgsql Bind address
+  ///
+  /// The address to bind for the psql service.
+  ///
+  /// Default if undefined: `"0.0.0.0:9071"`
+  pgsql_bind_address: String?
+}
+
+/// Schedule this number of partition processor replicas
+class ReplicationStrategyFactor {
+  factor: Int(this >= 1.0)
+}
+
+/// Ingress options
+class IngressOptions {
+  /// Bind address
+  ///
+  /// The address to bind for the ingress.
+  ///
+  /// Default if undefined: `"0.0.0.0:8080"`
+  bind_address: String?
+
+  /// Concurrency limit
+  ///
+  /// Local concurrency limit to use to limit the amount of concurrent requests. If exceeded, the ingress
+  /// will reply immediately with an appropriate status code. Default is unlimited.
+  concurrent_api_requests_limit: Number(this >= 1.0)?
+
+  /// Default if undefined: `{}`
+  kafka_clusters: Listing<KafkaClusterOptions>?
+}
+
+/// Kafka cluster options
+///
+/// Configuration options to connect to a Kafka cluster.
+class KafkaClusterOptions {
+  /// Cluster name (Used to identify subscriptions).
+  name: String
+
+  /// Servers
+  ///
+  /// Initial list of brokers (host or host:port).
+  brokers: Listing<String>
+}
+
+/// Bifrost options
+class BifrostOptions {
+  /// The default kind of loglet to be used
+  ///
+  /// Default if undefined: `"local"`
+  default_provider: ProviderKind?
+
+  /// An opaque string that gets passed to the loglet provider to seed the creation of new loglets.
+  default_provider_config: String?
+
+  /// Configuration of local loglet provider
+  ///
+  /// Default if undefined: `{ ["rocksdb-disable-wal"] = false ["rocksdb-disable-wal-fsync"] = false
+  /// ["rocksdb-memory-ratio"] = 0.5 ["writer-batch-commit-count"] = 5000
+  /// ["writer-batch-commit-duration"] = "0s" }`
+  `local`: String?
+
+  /// [IN DEVELOPMENT] Configuration of replicated loglet provider
+  ///
+  /// Default if undefined: `{ ["log-server-retry-policy"] { ["factor"] = 2.0 ["initial-interval"] =
+  /// "250ms" ["max-attempts"] = 10 ["max-interval"] = "2s" ["type"] = "exponential" }
+  /// ["log-server-rpc-timeout"] { ["nanos"] = 0 ["secs"] = 2 } ["maximum-inflight-records"] = 1000
+  /// ["sequencer-backoff-strategy"] { ["factor"] = 2.0 ["initial-interval"] = "100ms" ["max-attempts"] =
+  /// null ["max-interval"] = "2s" ["type"] = "exponential" } }`
+  replicated_loglet: ReplicatedLoglet?
+
+  /// Read retry policy
+  ///
+  /// Retry policy to use when bifrost waits for reconfiguration to complete during read operations
+  ///
+  /// Default if undefined: `{ ["factor"] = 2.0 ["initial-interval"] = "50ms" ["max-attempts"] = 50
+  /// ["max-interval"] = "1s" ["type"] = "exponential" }`
+  read_retry_policy: RetryPolicy?
+
+  /// Seal retry interval
+  ///
+  /// Interval to wait between retries of loglet seal failures
+  ///
+  /// Default if undefined: `"2s"`
+  seal_retry_interval: String?
+
+  /// Append retry minimum interval
+  ///
+  /// Minimum retry duration used by the exponential backoff mechanism for bifrost appends.
+  ///
+  /// Default if undefined: `"10ms"`
+  append_retry_min_interval: String?
+
+  /// Append retry maximum interval
+  ///
+  /// Maximum retry duration used by the exponential backoff mechanism for bifrost appends.
+  ///
+  /// Default if undefined: `"1s"`
+  append_retry_max_interval: String?
+
+  /// In-memory RecordCache memory limit
+  ///
+  /// Optional size of record cache in bytes. If set to 0, record cache will be disabled. Defaults: 20M
+  ///
+  /// Default if undefined: `"20.0 MB"`
+  record_cache_memory_size: HumanBytes?
+}
+
+class ReplicatedLoglet {
+  /// Maximum number of inflight records sequencer can accept
+  ///
+  /// Once this maximum is hit, sequencer will induce back pressure on clients. This controls the total
+  /// number of records regardless of how many batches.
+  ///
+  /// Note that this will be increased to fit the biggest batch of records being enqueued.
+  ///
+  /// Default if undefined: `1000`
+  maximum_inflight_records: Int(this >= 1.0)?
+
+  /// Sequencer backoff strategy
+  ///
+  /// Backoff introduced when sequencer fail to find a suitable spread of log servers
+  ///
+  /// Default if undefined: `{ ["factor"] = 2.0 ["initial-interval"] = "100ms" ["max-attempts"] = null
+  /// ["max-interval"] = "2s" ["type"] = "exponential" }`
+  sequencer_backoff_strategy: RetryPolicy?
+
+  /// Log Server RPC timeout
+  ///
+  /// Timeout waiting on log server response
+  ///
+  /// Default if undefined: `{ ["nanos"] = 0 ["secs"] = 2 }`
+  log_server_rpc_timeout: Duration?
+
+  /// log_server RPC retry policy
+  ///
+  /// Retry policy for log server RPCs
+  ///
+  /// Default if undefined: `{ ["factor"] = 2.0 ["initial-interval"] = "250ms" ["max-attempts"] = 10
+  /// ["max-interval"] = "2s" ["type"] = "exponential" }`
+  log_server_retry_policy: RetryPolicy?
+}
+
+class Duration {
+  secs: Int(isPositive)
+
+  nanos: Int(isPositive)
+}
+
+/// Metadata store options
+class LocalMetadataStoreOptions {
+  /// Bind address of the metadata store
+  ///
+  /// Address to which the metadata store will bind to.
+  ///
+  /// Default if undefined: `"0.0.0.0:5123"`
+  bind_address: String?
+
+  /// Limit number of in-flight requests
+  ///
+  /// Number of in-flight metadata store requests.
+  ///
+  /// Default if undefined: `32`
+  request_queue_length: Int(this >= 1.0)?
+
+  /// The memory budget for rocksdb memtables in bytes
+  ///
+  /// If this value is set, it overrides the ratio defined in `rocksdb-memory-ratio`.
+  rocksdb_memory_budget: (NonZeroHumanBytes|Any)?
+
+  /// The memory budget for rocksdb memtables as ratio
+  ///
+  /// This defines the total memory for rocksdb as a ratio of all memory available to memtables (See
+  /// `rocksdb-total-memtables-ratio` in common).
+  ///
+  /// Default if undefined: `0.009999999776482582`
+  rocksdb_memory_ratio: Number?
+
+  /// RocksDB options for metadata store's RocksDB instance
+  ///
+  /// The RocksDB options which will be used to configure the metadata store's RocksDB instance.
+  ///
+  /// Default if undefined: `{ ["rocksdb-disable-wal"] = false }`
+  rocksdb: RocksDbOptions?
+}
+
+class RocksDbOptions {
+  /// Disable Direct IO for reads
+  ///
+  /// Files will be opened in "direct I/O" mode which means that data r/w from the disk will not be
+  /// cached or buffered. The hardware buffer of the devices may however still be used. Memory mapped
+  /// files are not impacted by these parameters.
+  rocksdb_disable_direct_io_for_reads: Boolean?
+
+  /// Disable Direct IO for flush and compactions
+  ///
+  /// Use O_DIRECT for writes in background flush and compactions.
+  rocksdb_disable_direct_io_for_flush_and_compactions: Boolean?
+
+  /// Disable WAL
+  ///
+  /// The default depends on the different rocksdb use-cases at Restate.
+  ///
+  /// Supports hot-reloading (Partial / Bifrost only)
+  rocksdb_disable_wal: Boolean?
+
+  /// Disable rocksdb statistics collection
+  ///
+  /// Default: False (statistics enabled)
+  rocksdb_disable_statistics: Boolean?
+
+  /// RocksDB max background jobs (flushes and compactions)
+  ///
+  /// Default: the number of CPU cores on this node.
+  rocksdb_max_background_jobs: Number(this >= 1.0)?
+
+  /// RocksDB compaction readahead size in bytes
+  ///
+  /// If non-zero, we perform bigger reads when doing compaction. If you're running RocksDB on spinning
+  /// disks, you should set this to at least 2MB. That way RocksDB's compaction is doing sequential
+  /// instead of random reads.
+  rocksdb_compaction_readahead_size: (NonZeroHumanBytes|Any)?
+
+  /// RocksDB statistics level
+  ///
+  /// StatsLevel can be used to reduce statistics overhead by skipping certain types of stats in the
+  /// stats collection process.
+  ///
+  /// Default: "except-detailed-timers"
+  rocksdb_statistics_level: (RocksbStatistics|Any)?
+}
+
+/// Networking options
+class NetworkingOptions {
+  /// Retry policy
+  ///
+  /// Retry policy to use for internal node-to-node networking.
+  ///
+  /// Default if undefined: `{ ["factor"] = 2.0 ["initial-interval"] = "10ms" ["max-attempts"] = 10
+  /// ["max-interval"] = "500ms" ["type"] = "exponential" }`
+  connect_retry_policy: RetryPolicy?
+
+  /// Connection Send Buffer
+  ///
+  /// The number of messages that can be queued on the outbound stream of a single connection
+  ///
+  /// Default if undefined: `1000`
+  outbound_queue_length: Int(this >= 1.0)?
+
+  /// Handshake timeout
+  ///
+  /// Timeout for handshake message for internal node-to-node networking.
+  ///
+  /// Default if undefined: `"3s"`
+  handshake_timeout: String?
+}
+
+/// Log server options
+///
+/// Configuration is only used on nodes running with `log-server` role.
+class LogServer {
+  /// The memory budget for rocksdb memtables in bytes
+  ///
+  /// If this value is set, it overrides the ratio defined in `rocksdb-memory-ratio`.
+  rocksdb_memory_budget: (NonZeroHumanBytes|Any)?
+
+  /// The memory budget for rocksdb memtables as ratio
+  ///
+  /// This defines the total memory for rocksdb as a ratio of all memory available to the log-server.
+  ///
+  /// (See `rocksdb-total-memtables-ratio` in common).
+  ///
+  /// Default if undefined: `0.5`
+  rocksdb_memory_ratio: Number?
+
+  /// Disable fsync of WAL on every batch
+  ///
+  /// Default if undefined: `false`
+  rocksdb_disable_wal_fsync: Boolean?
+
+  /// Trigger a commit when the batch size exceeds this threshold.
+  ///
+  /// Set to 0 or 1 to commit the write batch on every command.
+  ///
+  /// Default if undefined: `5000`
+  writer_batch_commit_count: Int(isPositive)?
+
+  /// The number of messages that can queue up on input network stream while request processor is busy.
+  ///
+  /// Default if undefined: `1000`
+  incoming_network_queue_length: Int(this >= 1.0)?
+
+  /// Disable Direct IO for reads
+  ///
+  /// Files will be opened in "direct I/O" mode which means that data r/w from the disk will not be
+  /// cached or buffered. The hardware buffer of the devices may however still be used. Memory mapped
+  /// files are not impacted by these parameters.
+  rocksdb_disable_direct_io_for_reads: Boolean?
+
+  /// Disable Direct IO for flush and compactions
+  ///
+  /// Use O_DIRECT for writes in background flush and compactions.
+  rocksdb_disable_direct_io_for_flush_and_compactions: Boolean?
+
+  /// Disable WAL
+  ///
+  /// The default depends on the different rocksdb use-cases at Restate.
+  ///
+  /// Supports hot-reloading (Partial / Bifrost only)
+  rocksdb_disable_wal: Boolean?
+
+  /// Disable rocksdb statistics collection
+  ///
+  /// Default: False (statistics enabled)
+  rocksdb_disable_statistics: Boolean?
+
+  /// RocksDB max background jobs (flushes and compactions)
+  ///
+  /// Default: the number of CPU cores on this node.
+  rocksdb_max_background_jobs: Number(this >= 1.0)?
+
+  /// RocksDB compaction readahead size in bytes
+  ///
+  /// If non-zero, we perform bigger reads when doing compaction. If you're running RocksDB on spinning
+  /// disks, you should set this to at least 2MB. That way RocksDB's compaction is doing sequential
+  /// instead of random reads.
+  rocksdb_compaction_readahead_size: (NonZeroHumanBytes|Any)?
+
+  /// RocksDB statistics level
+  ///
+  /// StatsLevel can be used to reduce statistics overhead by skipping certain types of stats in the
+  /// stats collection process.
+  ///
+  /// Default: "except-detailed-timers"
+  rocksdb_statistics_level: (RocksbStatistics|Any)?
+}
+
+/// Connects to an embedded metadata store that is run by nodes that run with the MetadataStore role.
+class MetadataStoreClientEmbedded {
+  type: "embedded"
+
+  address: String
+}
+
+/// Uses external etcd as metadata store. The addresses are formatted as `host:port`
+class MetadataStoreClientEtcd {
+  type: "etcd"
+
+  addresses: String
+}
+
+/// HTTP/2 Keep alive options
+///
+/// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
+///
+/// Please note: most gateways don't propagate the HTTP/2 keep-alive between downstream and upstream
+/// hosts. In those environments, you need to make sure the gateway can detect a broken connection to the
+/// upstream deployment(s).
+class Http2KeepAliveOptions {
+  /// HTTP/2 Keep-alive interval
+  ///
+  /// Sets an interval for HTTP/2 PING frames should be sent to keep a connection alive.
+  ///
+  /// You should set this timeout with a value lower than the `abort_timeout`.
+  ///
+  /// Default if undefined: `"40s"`
+  interval: String?
+
+  /// Timeout
+  ///
+  /// Sets a timeout for receiving an acknowledgement of the keep-alive ping.
+  ///
+  /// If the ping is not acknowledged within the timeout, the connection will be closed.
+  ///
+  /// Default if undefined: `"20s"`
+  timeout: String?
+}
+
+/// Non-zero human-readable bytes
+///
+/// Non-zero human-readable bytes
+typealias NonZeroHumanBytes = String(!isEmpty, matches(Regex(#"^\d+(\.\d+)? ?[KMG]B$"#)))
+
+typealias RocksbStatistics =
+  "disable-all"
+  |"except-histogram-or-timers"
+  |"except-timers"
+  |"except-detailed-timers"
+  |"except-time-for-mutex"
+  |"all"
+
+/// Retry policy
+///
+/// Definition of a retry policy
+typealias RetryPolicy = RetryPolicyNone|RetryPolicyFixedDelay|RetryPolicyExponential
+
+/// Replication strategy for partition processors.
+typealias ReplicationStrategy = "on-all-nodes"|ReplicationStrategyFactor
+
+/// An enum with the list of supported loglet providers.
+typealias ProviderKind = "local"|"in-memory"|"replicated"
+
+/// Human-readable bytes
+///
+/// Human-readable bytes
+typealias HumanBytes = String(!isEmpty, matches(Regex(#"^\d+(\.\d+)? ?[KMG]B$"#)))
+
+typealias Role = "worker"|"admin"|"metadata-store"|"log-server"
+
+/// Log format
+typealias LogFormat = "pretty"|"compact"|"json"
+
+typealias RocksbPerfStatisticsLevel =
+  "disable"
+  |"enable-count"
+  |"enable-time-except-for-mutex"
+  |"enable-time-and-c-p-u-time-except-for-mutex"
+  |"enable-time"
+
+/// Metadata Store
+///
+/// Definition of a bootstrap metadata store
+typealias MetadataStoreClient = MetadataStoreClientEmbedded|MetadataStoreClientEtcd

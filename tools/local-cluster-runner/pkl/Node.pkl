@@ -1,0 +1,107 @@
+module Node
+
+import "./Configuration.pkl"
+
+base_config: Configuration
+
+binary_source: BinarySource
+
+args: Listing<String> = new {}
+
+inherit_env: Boolean = true
+
+env: Listing<Listing(length.isBetween(2, 2))> = new {}
+
+typealias BinarySource = BinarySourcePath|BinarySourceEnvVar|"CargoRun"|"CargoTest"
+
+class BinarySourcePath {
+  Path: String
+}
+
+class BinarySourceEnvVar {
+  EnvVar: String
+}
+
+hidden withNodeSocket = mappingMixin(new Mixin<module> {
+    base_config {
+        bind_address = "unix:\(base_config.node_name)/node.sock"
+        advertised_address = bind_address
+    }
+})
+
+hidden withRandomNode = mappingMixin(new Mixin<module> {
+    base_config {
+        bind_address = "127.0.0.1:0"
+        // node/mod.rs will set this appropriately if it observes a random bind address
+        advertised_address = null
+    }
+})
+
+hidden withDefaultNode = mappingMixin(new Mixin<module> {
+    base_config {
+        bind_address = null
+        advertised_address = null
+    }
+})
+
+hidden withSocketMetadata = mappingMixin(new Mixin<module> {
+    base_config {
+        metadata_store {
+            bind_address = "unix:metadata.sock"
+        }
+        metadata_store_client = (Configuration.MetadataStoreClientEmbedded) {
+            address = "unix:metadata.sock"
+        }
+    }
+})
+
+hidden withRandomPorts = mappingMixin(new Mixin<module> {
+    base_config {
+        admin {
+            bind_address = "127.0.0.1:0"
+            query_engine{
+                pgsql_bind_address = "127.0.0.1:0"
+            }
+        }
+        ingress {
+            bind_address = "127.0.0.1:0"
+        }
+    }
+})
+
+hidden withDefaultPorts = mappingMixin(new Mixin<module> {
+    base_config {
+        admin {
+            bind_address = null
+            query_engine{
+                pgsql_bind_address = null
+            }
+        }
+        ingress {
+            bind_address = null
+        }
+    }
+})
+
+// allow mixins to operate on both `nodes` or individual `node`
+local function mappingMixin(base: Mixin<module>): Mixin<module | Mapping<String, module>> = (input) -> if (input is module) base.apply(input) else new Mapping {
+    for (node_name, node in input) {
+        [node_name] = base.apply(node)
+    }
+}
+
+output {
+    value = new {
+        base_config = typedToKebabCase(module.base_config)
+        binary_source = module.binary_source
+        args = module.args
+        inherit_env = module.inherit_env
+        env = module.env
+    }
+}
+
+local function typedToKebabCase(typed: Typed) = new Mapping {
+    for (k, v in typed.toMap()) {
+        [k.replaceAll("_", "-")] = if (v is Typed) (typedToKebabCase(v)) else v
+    }
+}

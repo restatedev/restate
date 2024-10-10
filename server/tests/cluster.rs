@@ -31,7 +31,10 @@ async fn node_id_mismatch() -> googletest::Result<()> {
 
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 
-    cluster.nodes[1]
+    cluster
+        .nodes
+        .get_mut("node-1")
+        .unwrap()
         .graceful_shutdown(Duration::from_secs(2))
         .await?;
 
@@ -46,15 +49,18 @@ async fn node_id_mismatch() -> googletest::Result<()> {
         .with_roles(enum_set!(Role::Admin | Role::Worker))
         .build();
 
-    cluster.push_node(mismatch_node).await?;
+    let mut mismatch_node = mismatch_node
+        .start_clustered(cluster.base_dir(), cluster.cluster_name())
+        .await
+        .expect("mismatched node to start");
 
-    assert!(cluster.nodes[2]
-        .lines("Node ID mismatch".parse()?)
+    assert!(mismatch_node
+        .lines("Node ID mismatch".parse().unwrap())
         .next()
         .await
         .is_some());
 
-    assert_eq!(Some(1), cluster.nodes[2].status().await?.code());
+    assert_eq!(Some(1), mismatch_node.status().await.unwrap().code());
 
     Ok(())
 }
