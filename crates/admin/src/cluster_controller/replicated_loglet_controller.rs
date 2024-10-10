@@ -47,7 +47,14 @@ pub struct ReplicatedLogletController {
 /// user-configurable aspects of replicated logs. This should get folded into Restate config.
 #[derive(Debug, Clone)]
 pub struct LogletControllerConfig {
-    replication: ReplicationProperty,
+    /// The desired upper bound of log copies.
+    ///
+    /// todo: we should replace the ad-hoc selector with a new `SelectorStrategy` type - perhaps a
+    ///  new policy of `Subset` with a configurable goal, or similar.
+    log_replication_target: usize,
+
+    /// The hard requirement for durable log replication.
+    replication_requirement: ReplicationProperty,
 }
 
 /// Possible effects that the controller inner decider might request.
@@ -73,7 +80,7 @@ struct ObservedClusterState {
     /// Any node that was previously known but isn't seen as healthy.
     dead_nodes: BTreeSet<PlainNodeId>,
 
-    // todo: can we replace both sets of servers above with a simple?
+    // todo
     // nodes: NodesConfiguration,
 
     // Extra info - is it necessary for scheduling decisions?
@@ -94,17 +101,20 @@ impl ReplicatedLogletController {
     ) -> (Option<SchedulingPlan>, Vec<LogletEffect>) {
         let have_workers = !cluster_state.healthy_workers.is_empty();
 
-        // todo: completely ignores replication scopes and only cares about matching the copies at
-        //  the largest scope to nodes; we'll make this understand different scopes later
+        // This is perhaps a configurable preference: should we consider making any decisions until we have
+        // the preferred number of log servers available, or just the minimum hard requirement? The default
+        // _should_ be to start with the optimum to allow for failure, but with an option to bootstrap with
+        // less than the ideal number if the operator really wants to.
         let have_log_servers = cluster_state.healthy_log_servers.len()
-            >= self.config.replication.num_copies() as usize;
+            >= self.config.replication_requirement.num_copies() as usize;
 
-        info!(
+        debug!(
             ?have_workers,
             ?have_log_servers,
             log_servers = cluster_state.healthy_log_servers.len(),
-            replication = self.config.replication.num_copies(),
-            "Deciding on next cluster plan"
+            log_replication_target = ?self.config.log_replication_target,
+            replication = self.config.replication_requirement.num_copies(),
+            "Deciding on next loglet configuration"
         );
 
         if have_workers && have_log_servers {
@@ -116,18 +126,29 @@ impl ReplicatedLogletController {
                 match scheduling_plan.loglet_config(log_id) {
                     // NEW! SHINY! No prior log configuration, we'll be bootstrapping this log!
                     None => {
+                        if cluster_state.healthy_log_servers.len()
+                            < self.config.log_replication_target {
+                            warn!(
+                                log_id = ?log_id,
+                                log_replication_target = ?self.config.log_replication_target,
+                                available_log_servers = cluster_state.healthy_log_servers.len(),
+                                "Refusing to bootstrap loglet with less than the preferred number of log servers"
+                            );
+                            continue;
+                        }
+
                         let nodes = cluster_state
                             .healthy_log_servers
                             .keys()
                             .cloned()
                             .choose_multiple(
                                 &mut rand::thread_rng(),
-                                self.config.replication.num_copies() as usize,
+                                self.config.log_replication_target,
                             );
                         let log_servers_node_set = NodeSet::from_iter(nodes);
                         assert_eq!(
                             log_servers_node_set.len(),
-                            self.config.replication.num_copies() as usize
+                            self.config.log_replication_target
                         );
 
                         let sequencer = cluster_state
@@ -143,7 +164,7 @@ impl ReplicatedLogletController {
                         let params = ReplicatedLogletParams {
                             loglet_id,
                             nodeset: log_servers_node_set.clone(),
-                            replication: self.config.replication.clone(),
+                            replication: self.config.replication_requirement.clone(),
                             sequencer,
                             write_set: None,
                         };
@@ -155,7 +176,7 @@ impl ReplicatedLogletController {
                             loglet_state: LogletLifecycleState::Available, // we're (soon going to be) in business, baby!
                             sequencer,
                             log_servers: log_servers_node_set,
-                            replication: self.config.replication.clone(),
+                            replication: self.config.replication_requirement.clone(),
                             params: LogletParams::from(params.serialize().expect("can serialize")),
                         });
 
@@ -189,7 +210,7 @@ impl ReplicatedLogletController {
                         let mut healthy_quorum = NodeSetChecker::new(
                             &loglet_state.log_servers,
                             &nodes_config,
-                            &self.config.replication,
+                            &self.config.replication_requirement,
                         );
                         healthy_quorum.set_attribute_on_each(
                             cluster_state
@@ -282,7 +303,7 @@ impl ReplicatedLogletController {
                             let params = ReplicatedLogletParams {
                                 loglet_id: loglet_state.loglet_id,
                                 nodeset: log_servers_nodeset,
-                                replication: self.config.replication.clone(),
+                                replication: self.config.replication_requirement.clone(),
                                 sequencer: state.sequencer,
                                 write_set: None,
                             };
@@ -361,7 +382,8 @@ mod tests {
     #[test]
     fn test_schedule_empty_cluster() -> Result<()> {
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
-            replication: ReplicationProperty::new(2.try_into()?),
+            replication_requirement: ReplicationProperty::new(2.try_into()?),
+            log_replication_target: 3,
         });
 
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 1);
@@ -391,7 +413,8 @@ mod tests {
     #[test]
     fn test_schedule_no_log_servers() -> Result<()> {
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
-            replication: ReplicationProperty::new(2.try_into()?),
+            replication_requirement: ReplicationProperty::new(2.try_into()?),
+            log_replication_target: 3,
         });
 
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 1);
@@ -422,7 +445,8 @@ mod tests {
     #[test]
     fn test_schedule_insufficient_log_servers() -> Result<()> {
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
-            replication: ReplicationProperty::new(2.try_into()?),
+            replication_requirement: ReplicationProperty::new(2.try_into()?),
+            log_replication_target: 3,
         });
 
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 1);
@@ -451,9 +475,10 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_bootstrap_loglet() -> Result<()> {
+    fn test_schedule_dont_bootstrap_loglet_with_less_than_preferred_spread() -> Result<()> {
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
-            replication: ReplicationProperty::new(2.try_into()?),
+            replication_requirement: ReplicationProperty::new(2.try_into()?),
+            log_replication_target: 3,
         });
 
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 1);
@@ -488,6 +513,54 @@ mod tests {
         let (proposed_plan, effects) =
             controller.derive_plan_and_effects(&initial_scheduling_plan, &state);
 
+        assert!(proposed_plan.is_none());
+        assert_that!(effects, empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_schedule_bootstrap_loglet() -> Result<()> {
+        let controller = ReplicatedLogletController::new(LogletControllerConfig {
+            replication_requirement: ReplicationProperty::new(2.try_into()?),
+            log_replication_target: 2,
+        });
+
+        let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 1);
+        let initial_scheduling_plan =
+            SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes);
+
+        // Disjoint worker and log server nodes
+
+        let w1 = PlainNodeId::new(0);
+
+        let n1 = PlainNodeId::new(1);
+        let n2 = PlainNodeId::new(2);
+        let n3 = PlainNodeId::new(2);
+
+        let state = ObservedClusterState {
+            healthy_workers: BTreeMap::from([(w1, w1.with_generation(1))]),
+            healthy_log_servers: BTreeMap::from([
+                (n1, n1.with_generation(1)),
+                (n2, n2.with_generation(1)),
+                (n3, n3.with_generation(1)),
+            ]),
+            dead_nodes: BTreeSet::new(),
+            node_roles: BTreeMap::from([(n1, EnumSet::only(Role::Worker))]),
+            log_server_states: BTreeMap::from([
+                (n1, StorageState::ReadWrite),
+                (n2, StorageState::ReadWrite),
+                (n3, StorageState::ReadWrite),
+            ]),
+            logs: (0u16..)
+                .map(|idx| (LogId::from(idx), SegmentIndex::from(0)))
+                .take(partition_table.num_partitions() as usize)
+                .collect(),
+        };
+
+        let (proposed_plan, effects) =
+            controller.derive_plan_and_effects(&initial_scheduling_plan, &state);
+
         assert!(proposed_plan.is_some());
         let proposed_plan = proposed_plan.unwrap();
         assert_that!(
@@ -507,10 +580,10 @@ mod tests {
                 replication: eq(ReplicationProperty::new(2.try_into()?)),
                 segment_index: eq(SegmentIndex::from(0)),
                 sequencer: eq(w1.with_generation(1)),
-                log_servers: eq(NodeSet::from_iter(vec![n1, n2])), // can not be any other
+                log_servers: eq(NodeSet::from_iter(vec![n1, n2, n3])), // can not be any other
             })
         );
-        // todo: check loglet config, node set, etc.
+        // todo: check loglet config, serialized params
 
         assert_that!(
             effects,
@@ -523,7 +596,8 @@ mod tests {
     #[test]
     fn test_schedule_loglet_steady_state_noop() -> Result<()> {
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
-            replication: ReplicationProperty::new(2.try_into()?),
+            replication_requirement: ReplicationProperty::new(2.try_into()?),
+            log_replication_target: 3,
         });
 
         // Co-located everything
@@ -582,7 +656,8 @@ mod tests {
     fn test_schedule_loglet_loses_sequencer_and_log_capacity_meets_replication_factor() -> Result<()>
     {
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
-            replication: ReplicationProperty::new(2.try_into()?),
+            replication_requirement: ReplicationProperty::new(2.try_into()?),
+            log_replication_target: 3,
         });
 
         // Co-located everything
@@ -606,7 +681,8 @@ mod tests {
             })
             .build();
 
-        // n1, which was previously the sequencer for log 1, dies
+        // n1, which was previously the sequencer for log 1, goes AWOL. The bare minimum of healthy log servers to
+        // continue operations exist, but we need to reconfigure the loglet to get a new sequencer.
 
         let healthy = BTreeMap::from([(n2, n2.with_generation(1)), (n3, n3.with_generation(1))]);
 
@@ -651,7 +727,7 @@ mod tests {
                 log_servers: eq(NodeSet::from_iter(vec![n1, n2, n3])), // unchanged since we can't do better than this with what's available
             })
         );
-        // todo: check loglet config, node set, etc.
+        // todo: check loglet config, serialized params
 
         assert_that!(
             effects,
@@ -668,7 +744,8 @@ mod tests {
             .init();
 
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
-            replication: ReplicationProperty::new(2.try_into()?),
+            replication_requirement: ReplicationProperty::new(2.try_into()?),
+            log_replication_target: 3,
         });
 
         // Co-located everything
