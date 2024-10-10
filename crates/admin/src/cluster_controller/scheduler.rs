@@ -8,30 +8,32 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use datafusion::functions::math::log;
+use rand::seq::IteratorRandom;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-
-use rand::seq::IteratorRandom;
 use tracing::{debug, trace};
 
-use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadError, WriteError};
+use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
 use restate_types::cluster_controller::{
-    ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder,
+    ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
 };
 use restate_types::identifiers::PartitionId;
+use restate_types::logs::metadata::Logs;
 use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
 use restate_types::net::cluster_controller::Action;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
+use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading scheduling plan from metadata store: {0}")]
-pub struct BuildError(#[from] ReadError);
+pub struct BuildError(#[from] ReadWriteError);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -43,6 +45,20 @@ pub enum Error {
     Metadata(#[from] SyncError),
     #[error("system is shutting down")]
     Shutdown(#[from] ShutdownError),
+}
+
+enum WriteOrFetch<T> {
+    Write(T),
+    Fetch(T),
+}
+
+impl<T> WriteOrFetch<T> {
+    fn into_inner(self) -> T {
+        match self {
+            WriteOrFetch::Write(value) => value,
+            WriteOrFetch::Fetch(value) => value,
+        }
+    }
 }
 
 pub struct Scheduler<T> {
@@ -64,9 +80,8 @@ impl<T: TransportConnect> Scheduler<T> {
         networking: Networking<T>,
     ) -> Result<Self, BuildError> {
         let scheduling_plan = metadata_store_client
-            .get(SCHEDULING_PLAN_KEY.clone())
-            .await?
-            .expect("Scheduling plan should be initialized by bootstrap node");
+            .get_or_insert(SCHEDULING_PLAN_KEY.clone(), || SchedulingPlan::default())
+            .await?;
 
         Ok(Self {
             scheduling_plan,
@@ -100,31 +115,60 @@ impl<T: TransportConnect> Scheduler<T> {
         // nothing to do since we don't make time based scheduling decisions yet
     }
 
-    async fn update_scheduling_plan(&mut self, observed_cluster_state: &ObservedClusterState) -> Result<(), Error> {
+    pub async fn on_logs_update(&mut self, logs: &Logs, partition_table: &PartitionTable) -> Result<(), Error> {
+        let mut builder = self.scheduling_plan.clone().into_builder();
+
+        loop {
+            // add partitions to the scheduling plan for which we have provisioned the logs
+            for (log_id, _) in logs.iter() {
+                let partition_id = (*log_id).into();
+
+                // add the partition to the scheduling plan if we aren't already scheduling it
+                if !builder.contains_partition(&partition_id) {
+                    // check whether the provisioned log is actually needed
+                    if let Some(partition) = partition_table.get_partition(&partition_id) {
+                        builder.insert_partition(
+                            partition_id,
+                            TargetPartitionState::new(
+                                partition.key_range.clone(),
+                                ReplicationStrategy::OnAllNodes,
+                            ),
+                        )
+                    }
+                }
+            }
+
+            if let Some(scheduling_plan) = builder.build_if_modified() {
+                let scheduling_plan = self.write_or_fetch_latest_scheduling_plan(scheduling_plan).await?;
+                match scheduling_plan {
+                    WriteOrFetch::Write(scheduling_plan) => {
+                        self.scheduling_plan = scheduling_plan;
+                        break;
+                    }
+                    WriteOrFetch::Fetch(scheduling_plan) => {
+                        self.scheduling_plan = scheduling_plan.clone();
+                        builder = scheduling_plan.into_builder();
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn update_scheduling_plan(
+        &mut self,
+        observed_cluster_state: &ObservedClusterState,
+    ) -> Result<(), Error> {
         let mut builder = self.scheduling_plan.clone().into_builder();
 
         self.ensure_replication(&mut builder, observed_cluster_state);
         self.ensure_leadership(&mut builder);
 
         if let Some(scheduling_plan) = builder.build_if_modified() {
-            if let Err(err) = self
-                .metadata_store_client
-                .put(
-                    SCHEDULING_PLAN_KEY.clone(),
-                    &scheduling_plan,
-                    Precondition::MatchesVersion(self.scheduling_plan.version()),
-                )
-                .await
-            {
-                return match err {
-                    WriteError::FailedPrecondition(_) => {
-                        // There was a concurrent modification of the scheduling plan. Fetch the latest version.
-                        self.fetch_scheduling_plan().await?;
-                        Ok(())
-                    }
-                    err => Err(err.into()),
-                };
-            }
+            let scheduling_plan = self.write_or_fetch_latest_scheduling_plan(scheduling_plan).await?.into_inner();
 
             debug!("Updated scheduling plan: {scheduling_plan:?}");
             self.scheduling_plan = scheduling_plan;
@@ -133,27 +177,41 @@ impl<T: TransportConnect> Scheduler<T> {
         Ok(())
     }
 
-    async fn fetch_scheduling_plan(&mut self) -> Result<(), ReadError> {
-        if let Some(scheduling_plan) = self
-            .metadata_store_client
-            .get(SCHEDULING_PLAN_KEY.clone())
-            .await?
-        {
-            debug!("Fetched scheduling plan from metadata store: {scheduling_plan:?}");
-            self.scheduling_plan = scheduling_plan;
+    async fn write_or_fetch_latest_scheduling_plan(&self, scheduling_plan: SchedulingPlan) -> Result<WriteOrFetch<SchedulingPlan>, Error> {
+        match self.metadata_store_client
+            .put(
+                SCHEDULING_PLAN_KEY.clone(),
+                &scheduling_plan,
+                Precondition::MatchesVersion(self.scheduling_plan.version()),
+            )
+            .await {
+            Ok(_) => Ok(WriteOrFetch::Write(scheduling_plan)),
+            Err(err) => match err {
+                WriteError::FailedPrecondition(_) => {
+                    // There was a concurrent modification of the scheduling plan. Fetch the latest version.
+                    let scheduling_plan = self.fetch_scheduling_plan().await?.expect("must be present");
+                    Ok(WriteOrFetch::Fetch(scheduling_plan))
+                }
+                err => Err(err.into()),
+            }
         }
-
-        Ok(())
     }
 
-    fn ensure_replication(&self, scheduling_plan_builder: &mut SchedulingPlanBuilder, observed_cluster_state: &ObservedClusterState) {
+    async fn fetch_scheduling_plan(&self) -> Result<Option<SchedulingPlan>, ReadError> {
+        self
+            .metadata_store_client
+            .get(SCHEDULING_PLAN_KEY.clone())
+            .await
+    }
+
+    fn ensure_replication(
+        &self,
+        scheduling_plan_builder: &mut SchedulingPlanBuilder,
+        observed_cluster_state: &ObservedClusterState,
+    ) {
         let partition_ids: Vec<_> = scheduling_plan_builder.partition_ids().cloned().collect();
 
-        let alive_nodes: BTreeSet<_> = observed_cluster_state
-            .alive_nodes
-            .keys()
-            .cloned()
-            .collect();
+        let alive_nodes: BTreeSet<_> = observed_cluster_state.alive_nodes.keys().cloned().collect();
         let mut rng = rand::thread_rng();
 
         for partition_id in &partition_ids {
@@ -248,7 +306,11 @@ impl<T: TransportConnect> Scheduler<T> {
         let mut commands = BTreeMap::default();
 
         for partition_id in &partitions {
-            self.generate_instructions_for_partition(partition_id, observed_cluster_state, &mut commands);
+            self.generate_instructions_for_partition(
+                partition_id,
+                observed_cluster_state,
+                &mut commands,
+            );
         }
 
         for (node_id, commands) in commands.into_iter() {
