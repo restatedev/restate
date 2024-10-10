@@ -80,6 +80,7 @@ impl ReplicatedLogletId {
     serde::Deserialize,
     Debug,
     Clone,
+    Default,
     Eq,
     PartialEq,
     derive_more::IntoIterator,
@@ -119,8 +120,9 @@ impl NodeSet {
         self.0.contains(node)
     }
 
-    pub fn insert(&mut self, node: PlainNodeId) {
-        self.0.insert(node);
+    /// returns true if this node didn't already exist in the nodeset
+    pub fn insert(&mut self, node: PlainNodeId) -> bool {
+        self.0.insert(node)
     }
 
     /// Returns true if all nodes in the nodeset are disabled
@@ -131,6 +133,15 @@ impl NodeSet {
                 .iter()
                 .map(|node_id| nodes_config.get_log_server_storage_state(node_id))
                 .all(|storage_state| storage_state.is_disabled())
+    }
+
+    pub fn all_provisioning(&self, nodes_config: &NodesConfiguration) -> bool {
+        self.is_empty()
+            || self
+                .0
+                .iter()
+                .map(|node_id| nodes_config.get_log_server_storage_state(node_id))
+                .all(|storage_state| storage_state.is_provisioning())
     }
 
     pub fn remove(&mut self, node: &PlainNodeId) -> bool {
@@ -148,6 +159,16 @@ impl NodeSet {
     /// Filters out nodes that are not part of the effective nodeset (empty nodes)
     pub fn to_effective(&self, nodes_config: &NodesConfiguration) -> EffectiveNodeSet {
         EffectiveNodeSet::new(self, nodes_config)
+    }
+}
+
+impl<'a> IntoIterator for &'a NodeSet {
+    type Item = &'a PlainNodeId;
+
+    type IntoIter = <&'a HashSet<PlainNodeId> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
     }
 }
 

@@ -170,6 +170,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
             to,
             known_global_tail,
             cache,
+            false,
         )
         .await?;
         let read_stream = ReplicatedLogletReadStream::new(from, rx_stream, reader_task);
@@ -209,6 +210,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
                     self.networking.clone(),
                     self.logservers_rpc.clone(),
                     self.known_global_tail.clone(),
+                    self.record_cache.clone(),
                 );
                 let tail_status = task.run().await;
                 match tail_status {

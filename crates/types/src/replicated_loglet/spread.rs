@@ -62,3 +62,13 @@ impl<const N: usize> From<[u32; N]> for Spread {
         Self(value.into_iter().map(PlainNodeId::from).collect())
     }
 }
+
+impl<'a> IntoIterator for &'a Spread {
+    type Item = &'a PlainNodeId;
+
+    type IntoIter = <&'a Box<[PlainNodeId]> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
