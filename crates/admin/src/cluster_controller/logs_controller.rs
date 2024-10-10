@@ -18,7 +18,7 @@ use restate_types::logs::metadata::{
     Chain, LogletConfig, LogletParams, Logs, ProviderKind, SegmentIndex,
 };
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, SCHEDULING_PLAN_KEY};
 use restate_types::partition_table::PartitionTable;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::{Version, Versioned};
@@ -27,7 +27,9 @@ use std::ops::Deref;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 use tracing::debug;
+use restate_types::cluster_controller::SchedulingPlan;
 
+#[derive(Debug)]
 enum LogsState {
     Provisioning {
         log_id: LogId,
@@ -221,6 +223,7 @@ fn find_new_replicated_loglet_configuration(
     previous_configuration.cloned()
 }
 
+#[derive(Debug)]
 enum LogletConfiguration {
     Replicated(ReplicatedLogletParams),
     Local(u64),
@@ -487,6 +490,8 @@ impl Inner {
         // filter out, outdated commits
         if Some(version) == self.logs_commit_in_progress {
             self.logs_commit_in_progress = None;
+
+            debug!("Committed new logs configuration: {:?}", self.logs);
         }
     }
 
@@ -526,16 +531,16 @@ impl Inner {
                     );
                 }
             }
+        }
 
-            // update the provisioning logs
-            for (partition_id, _) in partition_table.partitions() {
-                self.logs_state
-                    .entry((*partition_id).into())
-                    .or_insert_with(|| LogsState::Provisioning {
-                        log_id: (*partition_id).into(),
-                        provider_kind: self.default_provider,
-                    });
-            }
+        // update the provisioning logs
+        for (partition_id, _) in partition_table.partitions() {
+            self.logs_state
+                .entry((*partition_id).into())
+                .or_insert_with(|| LogsState::Provisioning {
+                    log_id: (*partition_id).into(),
+                    provider_kind: self.default_provider,
+                });
         }
 
         Ok(())
@@ -564,14 +569,15 @@ pub struct LogsController {
 }
 
 impl LogsController {
-    pub fn new(
+    pub async fn init(
         metadata: Metadata,
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
         metadata_writer: MetadataWriter,
     ) -> anyhow::Result<Self> {
-        // todo get rid of clone by using Arc<Logs>
-        let logs = metadata.logs_snapshot().deref().clone();
+        let logs = metadata_store_client
+            .get_or_insert(BIFROST_CONFIG_KEY.clone(), || Logs::default())
+            .await?;
         Ok(Self {
             effects: Some(Vec::new()),
             inner: Inner::new(logs, metadata.partition_table_ref().as_ref())?,
@@ -622,7 +628,7 @@ impl LogsController {
         let tc = task_center().clone();
         let metadata_store_client = self.metadata_store_client.clone();
         let metadata_writer = self.metadata_writer.clone();
-        self.async_operations.spawn_local(async move {
+        self.async_operations.spawn(async move {
             tc.run_in_scope("commit-logs", None, async {
                 if let Err(err) = metadata_store_client
                     .put(

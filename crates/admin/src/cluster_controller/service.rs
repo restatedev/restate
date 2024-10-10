@@ -222,13 +222,18 @@ impl<T: TransportConnect> Service<T> {
         )
         .await?;
 
-        let mut logs_controller = LogsController::new(
+        let mut logs_controller = LogsController::init(
             self.metadata.clone(),
             bifrost.clone(),
             self.metadata_store_client.clone(),
             self.metadata_writer.clone(),
-        )?;
+        ).await?;
+
         let mut observed_cluster_state = ObservedClusterState::default();
+
+        let mut logs_watcher = self.metadata.watch(MetadataKind::Logs);
+        let mut logs = self.metadata.updateable_logs_metadata();
+        let mut partition_table = self.metadata.updateable_partition_table();
 
         loop {
             tokio::select! {
@@ -245,11 +250,15 @@ impl<T: TransportConnect> Service<T> {
                 }
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     observed_cluster_state.update(&cluster_state);
-                    scheduler.on_observed_cluster_state(&observed_cluster_state).await?;
                     logs_controller.on_observed_cluster_state(&observed_cluster_state)?;
+                    scheduler.on_observed_cluster_state(&observed_cluster_state).await?;
                 }
                 result = logs_controller.run_async_operations() => {
                     result?;
+                }
+                Ok(_) = logs_watcher.changed() => {
+                    // tell the scheduler about potentially newly provisioned logs
+                    scheduler.on_logs_update(logs.live_load(), partition_table.live_load()).await?
                 }
                 Some(cmd) = self.command_rx.recv() => {
                     self.on_cluster_cmd(cmd, bifrost_admin).await;
