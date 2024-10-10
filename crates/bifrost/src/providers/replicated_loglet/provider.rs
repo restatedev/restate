@@ -130,16 +130,24 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
             sequencer_rpc_routers,
         }
     }
-}
 
-#[async_trait]
-impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
-    async fn get_loglet(
+    /// Gets a loglet if it's already have been activated
+    pub(crate) fn get_active_loglet(
+        &self,
+        log_id: LogId,
+        segment_index: SegmentIndex,
+    ) -> Option<Arc<ReplicatedLoglet<T>>> {
+        self.active_loglets
+            .get(&(log_id, segment_index))
+            .map(|l| l.clone())
+    }
+
+    pub(crate) fn get_or_create_loglet(
         &self,
         log_id: LogId,
         segment_index: SegmentIndex,
         params: &LogletParams,
-    ) -> Result<Arc<dyn Loglet>, Error> {
+    ) -> Result<Arc<ReplicatedLoglet<T>>, ReplicatedLogletError> {
         let loglet = match self.active_loglets.entry((log_id, segment_index)) {
             dashmap::Entry::Vacant(entry) => {
                 // NOTE: replicated-loglet expects params to be a `json` string.
@@ -167,13 +175,26 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
                     self.logserver_rpc_routers.clone(),
                     &self.sequencer_rpc_routers,
                     self.record_cache.clone(),
-                )?;
+                );
                 let key_value = entry.insert(Arc::new(loglet));
                 Arc::clone(key_value.value())
             }
             dashmap::Entry::Occupied(entry) => entry.get().clone(),
         };
 
+        Ok(loglet)
+    }
+}
+
+#[async_trait]
+impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
+    async fn get_loglet(
+        &self,
+        log_id: LogId,
+        segment_index: SegmentIndex,
+        params: &LogletParams,
+    ) -> Result<Arc<dyn Loglet>, Error> {
+        let loglet = self.get_or_create_loglet(log_id, segment_index, params)?;
         Ok(loglet as Arc<dyn Loglet>)
     }
 

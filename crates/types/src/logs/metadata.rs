@@ -305,7 +305,7 @@ impl Chain {
     /// Note that this is a special case, we don't set tail_lsn on segments, why?
     /// - It adds complexity
     /// - Tail LSN can be established by visiting the next item in the iterator externally
-    pub fn iter(&self) -> impl Iterator<Item = Segment<'_>> + '_ {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = Segment<'_>> + '_ {
         self.chain.iter().map(|(lsn, loglet_config)| Segment {
             base_lsn: *lsn,
             // See note above
