@@ -111,6 +111,62 @@ impl SpreadSelector {
 
         Ok(selected)
     }
+
+    /// Starting from an existing set of nodes that already have copies of a record, this
+    /// returns additional nodes that we can replicate to, in order to satisfy the replication
+    /// property. If not possible, it fails with `InsufficientWriteableNodes'
+    ///
+    /// Note that this can return _more_ nodes than needed, depending on the selector strategy.
+    ///
+    /// The selector automatically avoids nodes non-writeable nodes
+    pub fn select_fixups<R: Rng + ?Sized>(
+        &self,
+        existing_copies: &NodeSet,
+        rng: &mut R,
+        nodes_config: &NodesConfiguration,
+        exclude_nodes: &NodeSet,
+    ) -> Result<Spread, SpreadSelectorError> {
+        // Get the list of non-empty nodes from the nodeset given the nodes configuration
+        let effective_nodeset = self.nodeset.to_effective(nodes_config);
+        let mut writeable_nodes: Vec<_> = effective_nodeset
+            .into_iter()
+            .filter(|node_id| !exclude_nodes.contains(node_id))
+            .filter(|node_id| {
+                nodes_config
+                    .get_log_server_storage_state(node_id)
+                    .can_write_to()
+            })
+            .collect();
+        if writeable_nodes.len() < self.replication_property.num_copies().into() {
+            return Err(SpreadSelectorError::InsufficientWriteableNodes);
+        }
+
+        let selected: Spread = match &self.strategy {
+            SelectorStrategy::Flood => {
+                writeable_nodes.shuffle(rng);
+                Spread::from(writeable_nodes)
+            }
+            #[cfg(any(test, feature = "test-util"))]
+            SelectorStrategy::Fixed(selector) => selector.select()?,
+        };
+
+        // validate that we can have write quorum with this spread
+        let mut checker =
+            NodeSetChecker::new(&self.nodeset, nodes_config, &self.replication_property);
+        checker.set_attribute_on_each(&selected, || true);
+        if !checker.check_write_quorum(|attr| *attr) {
+            return Err(SpreadSelectorError::InsufficientWriteableNodes);
+        }
+
+        // Remove existing nodes from selected spread to return the fixups only.
+        let selected: Vec<_> = selected
+            .into_iter()
+            // keep nodes that are not in existing_copies.
+            .filter(|n| !existing_copies.contains(n))
+            .collect();
+
+        Ok(selected.into())
+    }
 }
 
 static_assertions::assert_impl_all!(SpreadSelector: Send, Sync);
