@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use typed_builder::TypedBuilder;
 
-use restate_types::{errors::GenericError, nodes_config::Role};
+use restate_types::errors::GenericError;
 
-use crate::node::{Node, NodeStartError, StartedNode};
+use crate::node::{HealthCheck, HealthError, Node, NodeStartError, StartedNode};
 
 #[derive(Debug, Serialize, Deserialize, TypedBuilder)]
 pub struct Cluster {
@@ -53,7 +53,7 @@ pub enum ClusterStartError {
     #[error("Failed to start node {0}: {1}")]
     NodeStartError(usize, NodeStartError),
     #[error("Admin node is not healthy after waiting 60 seconds")]
-    AdminUnhealthy,
+    AdminUnhealthy(#[from] HealthError),
     #[error("Failed to create cluster base directory: {0}")]
     CreateDirectory(io::Error),
     #[error("Failed to create metadata client: {0}")]
@@ -94,9 +94,9 @@ impl Cluster {
                 .map_err(|err| ClusterStartError::NodeStartError(i, err))?;
             if node.admin_address().is_some() {
                 // admin nodes are needed for later nodes to bootstrap. we should wait until they are serving
-                if !node.wait_admin_healthy(Duration::from_secs(30)).await {
-                    return Err(ClusterStartError::AdminUnhealthy);
-                }
+                HealthCheck::Admin
+                    .wait_healthy(&node, Duration::from_secs(30))
+                    .await?;
             }
             started_nodes.push(node)
         }
@@ -147,55 +147,31 @@ impl StartedCluster {
             .map(drop)
     }
 
-    /// For every node in the cluster with an admin role, wait for up to dur for the admin endpoint
-    /// to respond to health checks, otherwise return false.
-    pub async fn wait_admins_healthy(&self, dur: Duration) -> bool {
-        future::join_all(
+    /// For every relevant node in the cluster for this check, wait for up to dur for the check
+    /// to pass
+    pub async fn wait_check_healthy(
+        &self,
+        check: HealthCheck,
+        dur: Duration,
+    ) -> Result<(), HealthError> {
+        future::try_join_all(
             self.nodes
                 .iter()
-                .filter(|n| n.admin_address().is_some())
-                .map(|n| n.wait_admin_healthy(dur)),
+                .filter(|n| check.applicable(n))
+                .map(|n| check.wait_healthy(n, dur)),
         )
         .await
-        .into_iter()
-        .all(|b| b)
-    }
-
-    /// For every node in the cluster with an ingress role, wait for up to dur for the ingress endpoint
-    /// to respond to health checks, otherwise return false.
-    pub async fn wait_ingresses_healthy(&self, dur: Duration) -> bool {
-        future::join_all(
-            self.nodes
-                .iter()
-                .filter(|n| n.ingress_address().is_some())
-                .map(|n| n.wait_ingress_healthy(dur)),
-        )
-        .await
-        .into_iter()
-        .all(|b| b)
-    }
-
-    /// For every node in the cluster with a logserver role, wait for up to dur for the logserver
-    /// to be provisioned, otherwise return false.
-    pub async fn wait_logservers_provisioned(&self, dur: Duration) -> bool {
-        future::join_all(
-            self.nodes
-                .iter()
-                .filter(|n| n.config().has_role(Role::LogServer))
-                .map(|n| n.wait_logserver_provisioned(dur)),
-        )
-        .await
-        .into_iter()
-        .all(|b| b)
+        .map(drop)
     }
 
     /// Wait for all ingress, admin, logserver roles in the cluster to be healthy/provisioned
-    pub async fn wait_healthy(&self, dur: Duration) -> bool {
-        tokio::join!(
-            self.wait_admins_healthy(dur),
-            self.wait_ingresses_healthy(dur),
-            self.wait_logservers_provisioned(dur),
-        ) == (true, true, true)
+    pub async fn wait_healthy(&self, dur: Duration) -> Result<(), HealthError> {
+        tokio::try_join!(
+            self.wait_check_healthy(HealthCheck::Admin, dur),
+            self.wait_check_healthy(HealthCheck::Ingress, dur),
+            self.wait_check_healthy(HealthCheck::Logserver, dur),
+        )?;
+        Ok(())
     }
 
     pub async fn push_node(&mut self, node: Node) -> Result<(), NodeStartError> {

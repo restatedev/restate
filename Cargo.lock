@@ -5735,11 +5735,13 @@ dependencies = [
  "enumset",
  "futures",
  "http 1.1.0",
+ "itertools 0.13.0",
  "nix 0.29.0",
  "regex",
  "reqwest",
  "restate-metadata-store",
  "restate-types",
+ "rev_lines",
  "rlimit",
  "serde",
  "tempfile",
@@ -6471,6 +6473,15 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "vergen",
+]
+
+[[package]]
+name = "rev_lines"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed62916ac7a5ccbf13fa5e1d303029ff015600fee841756dfc134a1ac62bf05f"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]
