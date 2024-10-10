@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::commands::metadata::patch::{patch_value, PatchValueOpts};
-use crate::commands::metadata::MetadataCommonOpts;
+use std::collections::HashMap;
+
 use anyhow::anyhow;
 use clap::Parser;
 use clap_stdin::FileOrStdin;
 use cling::{Collect, Run};
 use serde_json::Value;
-use std::collections::HashMap;
+
+use crate::commands::metadata::patch::{patch_value, PatchValueOpts};
+use crate::commands::metadata::MetadataCommonOpts;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
