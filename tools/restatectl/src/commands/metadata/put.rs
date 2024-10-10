@@ -10,11 +10,12 @@
 
 use crate::commands::metadata::patch::{patch_value, PatchValueOpts};
 use crate::commands::metadata::MetadataCommonOpts;
+use anyhow::anyhow;
 use clap::Parser;
+use clap_stdin::FileOrStdin;
 use cling::{Collect, Run};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
@@ -27,13 +28,9 @@ pub struct PutValueOpts {
     #[arg(short, long)]
     key: String,
 
-    /// The JSON document to store
+    /// The JSON document to store, can be read from stdin or a file path
     #[arg(short, long)]
-    doc: Option<String>,
-
-    /// The local path to the JSON document to store
-    #[arg(short, long)]
-    path: Option<String>,
+    content: FileOrStdin,
 
     /// Expected version for conditional update
     #[arg(short = 'e', long)]
@@ -47,14 +44,7 @@ pub struct PutValueOpts {
 async fn put_value(opts: &PutValueOpts) -> anyhow::Result<()> {
     let opts = opts.clone();
 
-    let doc_body = if let Some(doc) = opts.doc {
-        doc
-    } else if let Some(path) = opts.path {
-        fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Unable to read the document: {}", e))?
-    } else {
-        anyhow::bail!("Please specify either doc or path");
-    };
+    let doc_body = opts.content.contents().map_err(|e| anyhow!(e))?;
 
     let mut doc: Value = serde_json::from_str(&doc_body)
         .map_err(|e| anyhow::anyhow!("Parsing JSON value: {}", e))?;

@@ -1347,6 +1347,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap-stdin"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "471df7896633bfc1e7d3da5b598422891e4cb8931210168ec63ea586e285803f"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "clap-verbosity-flag"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6426,6 +6435,7 @@ dependencies = [
  "bytestring",
  "chrono",
  "clap",
+ "clap-stdin",
  "clap-verbosity-flag",
  "cling",
  "crossterm 0.27.0",
