@@ -313,6 +313,8 @@ impl CommonOptions {
 
 impl Default for CommonOptions {
     fn default() -> Self {
+        let advertised_address = AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap();
+
         Self {
             // todo (asoli): Remove this when:
             //   a. The safe rollback version supports log-server (at least supports parsing the
@@ -330,8 +332,8 @@ impl Default for CommonOptions {
             allow_bootstrap: true,
             base_dir: None,
             metadata_store_client: MetadataStoreClientOptions::default(),
-            bind_address: "0.0.0.0:5122".parse().unwrap(),
-            advertised_address: AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap(),
+            bind_address: advertised_address.derive_bind_address().unwrap(),
+            advertised_address,
             bootstrap_num_partitions: NonZeroU16::new(24).unwrap(),
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
