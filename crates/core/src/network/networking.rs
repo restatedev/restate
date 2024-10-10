@@ -124,7 +124,7 @@ impl<T: TransportConnect> Networking<T> {
 }
 
 impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
-    #[instrument(level = "trace", skip(self, msg), fields(to = %msg.peer(), msg = ?msg.body().target()))]
+    #[instrument(level = "error", skip(self, msg), fields(to = %msg.peer(), msg = ?msg.body().target()))]
     async fn send<M>(&self, mut msg: Outgoing<M>) -> Result<(), NetworkSendError<Outgoing<M>>>
     where
         M: WireEncode + Targeted + Send + Sync,
