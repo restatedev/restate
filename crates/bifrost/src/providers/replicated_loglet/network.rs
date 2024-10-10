@@ -160,7 +160,7 @@ impl RequestPump {
             Some(loglet) if loglet.params().loglet_id == header.loglet_id => loglet,
             Some(_) => return Err(SequencerStatus::LogletIdMismatch),
             None => {
-                let logs = self.metadata.logs();
+                let logs = self.metadata.logs_ref();
                 let chain = logs
                     .chain(&header.log_id)
                     .ok_or(SequencerStatus::UnknownLogId)?;

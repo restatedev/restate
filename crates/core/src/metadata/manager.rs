@@ -121,7 +121,7 @@ impl MetadataMessageHandler {
     }
 
     fn send_logs(&self, to: Reciprocal, version: Option<Version>) {
-        let logs = self.metadata.logs();
+        let logs = self.metadata.logs_ref();
         if logs.version() != Version::INVALID {
             self.send_metadata_internal(to, version, logs.deref(), "logs");
         }
