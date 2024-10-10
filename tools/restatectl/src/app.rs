@@ -11,13 +11,14 @@
 use std::str::FromStr;
 
 use cling::prelude::*;
-use restate_types::net::AdvertisedAddress;
 
 use restate_cli_util::CliContext;
 use restate_cli_util::CommonOpts;
+use restate_types::net::AdvertisedAddress;
 
 use crate::commands::dump::Dump;
 use crate::commands::log::Log;
+use crate::commands::metadata::Metadata;
 use crate::commands::node::Node;
 
 #[derive(Run, Parser, Clone)]
@@ -35,7 +36,7 @@ pub struct CliApp {
 #[derive(Parser, Collect, Debug, Clone)]
 pub struct ConnectionInfo {
     /// Cluster Controller host:port (e.g. http://localhost:5122/)
-    #[clap(long, value_hint= clap::ValueHint::Url, default_value_t = AdvertisedAddress::from_str("http://localhost:5122/").unwrap(), global = true)]
+    #[clap(long, value_hint = clap::ValueHint::Url, default_value_t = AdvertisedAddress::from_str("http://localhost:5122/").unwrap(), global = true)]
     pub cluster_controller: AdvertisedAddress,
 }
 
@@ -50,6 +51,9 @@ pub enum Command {
     /// Cluster node status
     #[clap(subcommand)]
     Nodes(Node),
+    /// Cluster metadata
+    #[clap(subcommand)]
+    Metadata(Metadata),
 }
 
 fn init(common_opts: &CommonOpts) {
