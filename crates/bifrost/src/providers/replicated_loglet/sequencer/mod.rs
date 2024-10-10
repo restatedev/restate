@@ -10,10 +10,12 @@
 
 mod appender;
 
-use std::sync::{atomic::AtomicU32, Arc};
+use std::sync::{
+    atomic::{AtomicU32, AtomicUsize, Ordering},
+    Arc,
+};
 
 use tokio::sync::Semaphore;
-use tracing::debug;
 
 use restate_core::{
     network::{rpc_router::RpcRouter, Networking, TransportConnect},
@@ -90,7 +92,7 @@ pub struct Sequencer<T> {
     rpc_router: RpcRouter<Store>,
     /// The value we read from configuration, we keep it around because we can't get the original
     /// capacity directly from `record_permits` Semaphore.
-    max_in_flight_records_in_config: usize,
+    max_inflight_records_in_config: AtomicUsize,
     /// Semaphore for the number of records in-flight.
     /// This is an Arc<> to allow sending owned permits
     record_permits: Arc<Semaphore>,
@@ -142,7 +144,7 @@ impl<T: TransportConnect> Sequencer<T> {
             rpc_router,
             networking,
             record_permits,
-            max_in_flight_records_in_config,
+            max_inflight_records_in_config: AtomicUsize::new(max_in_flight_records_in_config),
         }
     }
 
@@ -154,6 +156,26 @@ impl<T: TransportConnect> Sequencer<T> {
     /// capacity
     pub fn available_capacity(&self) -> usize {
         self.record_permits.available_permits()
+    }
+
+    pub fn ensure_enough_permits(&self, required: usize) {
+        let mut available = self.max_inflight_records_in_config.load(Ordering::Relaxed);
+        while available < required {
+            let delta = required - available;
+            match self.max_inflight_records_in_config.compare_exchange(
+                available,
+                required,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    self.record_permits.add_permits(delta);
+                }
+                Err(current) => {
+                    available = current;
+                }
+            }
+        }
     }
 
     pub async fn enqueue_batch(
@@ -168,15 +190,7 @@ impl<T: TransportConnect> Sequencer<T> {
             return Ok(LogletCommit::sealed());
         }
 
-        if payloads.len() > self.max_in_flight_records_in_config {
-            let delta = payloads.len() - self.max_in_flight_records_in_config;
-            debug!(
-                "Resizing sequencer in-flight records capacity to allow admission for this batch. \
-                Capacity in configuration is {} and we are adding capacity of {} to it",
-                self.max_in_flight_records_in_config, delta
-            );
-            self.record_permits.add_permits(delta);
-        }
+        self.ensure_enough_permits(payloads.len());
 
         let len = u32::try_from(payloads.len()).expect("batch sizes fit in u32");
         let permit = self

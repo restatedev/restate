@@ -31,6 +31,7 @@ use restate_types::{
     logs::{LogletOffset, Record, SequenceNumber, TailState},
     net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
     replicated_loglet::NodeSet,
+    time::MillisSinceEpoch,
 };
 
 use super::{RecordsExt, SequencerSharedState};
@@ -205,20 +206,17 @@ impl<T: TransportConnect> SequencerAppender<T> {
         ) {
             Ok(spread) => spread,
             Err(_) => {
-                if graylist.is_empty() {
-                    // gray list was empty during spread selection!
-                    // yet we couldn't find a spread. there is
-                    // no reason to retry immediately.
-                    return SequencerAppenderState::Backoff;
-                }
-                // otherwise, we retry without a gray list.
-                return SequencerAppenderState::Wave {
-                    graylist: NodeSet::empty(),
-                };
+                return SequencerAppenderState::Backoff;
             }
         };
 
         tracing::trace!(graylist=%graylist, spread=%spread, "Sending store wave");
+
+        let mut checker = NodeSetChecker::new(
+            self.sequencer_shared_state.selector.nodeset(),
+            &self.networking.metadata().nodes_config_ref(),
+            self.sequencer_shared_state.selector.replication_property(),
+        );
 
         let mut gray = false;
         let mut servers = Vec::with_capacity(spread.len());
@@ -235,15 +233,13 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 }
             };
 
+            checker.set_attribute(id, true);
             servers.push(server);
         }
 
-        if gray {
-            // Some nodes has been gray listed (wasn't in the original gray list)
-            // todo(azmy): we should check if the remaining set of nodes can still achieve
-            // write quorum
-
-            // we basically try again with a new set of graylist
+        if gray && !checker.check_write_quorum(|attr| *attr) {
+            // the remaining nodes in the spread cannot achieve a write quorum
+            // hence we try again with the updated new graylist
             return SequencerAppenderState::Wave { graylist };
         }
 
@@ -260,6 +256,14 @@ impl<T: TransportConnect> SequencerAppender<T> {
             self.sequencer_shared_state.selector.replication_property(),
         );
 
+        let store_timeout = self
+            .configuration
+            .live_load()
+            .bifrost
+            .replicated_loglet
+            .log_server_rpc_timeout;
+
+        let timeout_at = MillisSinceEpoch::after(store_timeout);
         // track the in flight server ids
         let mut pending_servers = NodeSet::empty();
         let mut store_tasks = FuturesUnordered::new();
@@ -275,25 +279,17 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 first_offset: self.first_offset,
                 records: &self.records,
                 rpc_router: &self.store_router,
+                timeout_at,
             };
 
             store_tasks.push(task.run());
         }
 
         loop {
-            let store_result = match timeout(
-                self.configuration
-                    .live_load()
-                    .bifrost
-                    .replicated_loglet
-                    .log_server_rpc_timeout,
-                store_tasks.next(),
-            )
-            .await
-            {
+            let store_result = match timeout(store_timeout, store_tasks.next()).await {
                 Ok(Some(result)) => result,
                 Ok(None) => break, //no more tasks
-                Err(_err) => {
+                Err(_) => {
                     // timed out!
                     // none of the pending tasks has finished in time! we will assume all pending server
                     // are gray listed and try again
@@ -330,9 +326,16 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     checker.set_attribute(node_id, NodeAttributes::committed());
                     pending_servers.remove(&node_id);
                 }
-                _ => {
-                    // todo(azmy): handle other status
-                    // note: we don't remove the node from the pending list
+                Status::Sealed | Status::Sealing => {
+                    checker.set_attribute(node_id, NodeAttributes::sealed());
+                }
+                Status::Disabled
+                | Status::Dropped
+                | Status::SequencerMismatch
+                | Status::Malformed
+                | Status::OutOfBounds => {
+                    // just leave this log server in graylist (pending)
+                    tracing::trace!(node_id=%server.node_id(), status=?response.status, "Store task returned an error status");
                 }
             }
 
@@ -422,6 +425,7 @@ struct LogServerStoreTask<'a, T> {
     first_offset: LogletOffset,
     records: &'a Arc<[Record]>,
     rpc_router: &'a RpcRouter<Store>,
+    timeout_at: MillisSinceEpoch,
 }
 
 impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
@@ -506,7 +510,9 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
                 self.server.local_tail().notify_seal();
                 return Ok(StoreTaskStatus::Sealed(incoming.body().header.local_tail));
             }
-            _ => {}
+            _ => {
+                // all other status types are handled by the caller
+            }
         }
 
         Ok(StoreTaskStatus::Stored(incoming.into_body()))
@@ -523,7 +529,7 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
             known_archived: LogletOffset::INVALID,
             payloads: Arc::clone(self.records),
             sequencer: self.sequencer_shared_state.my_node_id,
-            timeout_at: None,
+            timeout_at: Some(self.timeout_at),
         };
 
         let mut msg = Outgoing::new(self.server.node_id(), store);
