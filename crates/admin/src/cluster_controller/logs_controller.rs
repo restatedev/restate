@@ -17,17 +17,16 @@ use restate_types::logs::builder::{ChainBuilder, LogsBuilder};
 use restate_types::logs::metadata::{
     Chain, LogletConfig, LogletParams, Logs, ProviderKind, SegmentIndex,
 };
-use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, SCHEDULING_PLAN_KEY};
+use restate_types::logs::{LogId, Lsn};
+use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::partition_table::PartitionTable;
-use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
 use restate_types::{Version, Versioned};
 use std::collections::BTreeMap;
-use std::ops::Deref;
-use std::sync::Arc;
+use std::num::NonZeroU8;
+use rand::prelude::IteratorRandom;
 use tokio::task::JoinSet;
 use tracing::debug;
-use restate_types::cluster_controller::SchedulingPlan;
 
 #[derive(Debug)]
 enum LogsState {
@@ -219,8 +218,33 @@ fn find_new_replicated_loglet_configuration(
     observed_cluster_state: &ObservedClusterState,
     previous_configuration: Option<&ReplicatedLogletParams>,
 ) -> Option<ReplicatedLogletParams> {
-    // todo: calculate new configuration for replicated loglet based on observed cluster state
-    previous_configuration.cloned()
+    let mut rng = rand::thread_rng();
+    // todo make min nodeset size configurable, respect roles, etc.
+    if observed_cluster_state.alive_nodes.len() >= 3 {
+        let replication = ReplicationProperty::new(NonZeroU8::new(2).expect("to be valid"));
+        let mut nodeset = NodeSet::empty();
+
+        for node in observed_cluster_state.alive_nodes.keys() {
+            nodeset.insert(*node);
+        }
+
+        Some(ReplicatedLogletParams {
+            loglet_id: rng.next_u64().into(),
+            sequencer: *observed_cluster_state.alive_nodes.values().choose(&mut rng).expect("one node must exist"),
+            replication,
+            nodeset,
+            write_set: None,
+        })
+    } else {
+        if let Some(sequencer) = observed_cluster_state.alive_nodes.values().choose(&mut rng) {
+            previous_configuration.cloned().map(|mut configuration| {
+                configuration.sequencer = *sequencer;
+                configuration
+            })
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -347,15 +371,16 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(logs: Logs, partition_table: &PartitionTable) -> Result<Self, anyhow::Error> {
+    fn new(logs: Logs, partition_table: &PartitionTable, default_provider: ProviderKind) -> Result<Self, anyhow::Error> {
         let mut this = Self {
-            default_provider: ProviderKind::Local,
+            default_provider,
             logs: Logs::default(),
             logs_state: BTreeMap::default(),
             logs_commit_in_progress: None,
         };
 
-        this.on_new_logs(logs, partition_table)?;
+        this.on_new_logs(logs)?;
+        this.on_partition_table_update(partition_table);
         Ok(this)
     }
 
@@ -406,7 +431,7 @@ impl Inner {
         observed_cluster_state: &ObservedClusterState,
         logs_builder: &mut LogsBuilder,
     ) -> Result<(), anyhow::Error> {
-        for (log_state) in self.logs_state.values_mut() {
+        for log_state in self.logs_state.values_mut() {
             log_state.try_provisioning(observed_cluster_state, logs_builder)?;
         }
 
@@ -426,31 +451,13 @@ impl Inner {
         Ok(())
     }
 
-    fn on_events(
-        &mut self,
-        events: impl Iterator<Item = Event>,
-        effects: &mut Vec<Effect>,
-        partition_table: &PartitionTable,
-    ) -> Result<(), anyhow::Error> {
-        for event in events {
-            self.on_event(event, effects, partition_table)?;
-        }
-
-        Ok(())
-    }
-
-    fn on_event(
-        &mut self,
-        event: Event,
-        effects: &mut Vec<Effect>,
-        partition_table: &PartitionTable,
-    ) -> Result<(), anyhow::Error> {
+    fn on_event(&mut self, event: Event, effects: &mut Vec<Effect>) -> Result<(), anyhow::Error> {
         match event {
             Event::LogsCommitSucceeded(version) => {
                 self.on_logs_committed(version);
             }
             Event::NewLogs(logs) => {
-                self.on_new_logs(logs, partition_table)?;
+                self.on_new_logs(logs)?;
             }
             Event::Sealed {
                 log_id,
@@ -495,18 +502,18 @@ impl Inner {
         }
     }
 
-    fn on_new_logs(
-        &mut self,
-        logs: Logs,
-        partition_table: &PartitionTable,
-    ) -> Result<(), anyhow::Error> {
+    fn on_new_logs(&mut self, logs: Logs) -> Result<(), anyhow::Error> {
         // rebuild the internal state if we receive a newer logs or one with a version we were
         // supposed to commit (race condition)
         if logs.version() > self.logs.version()
             || Some(logs.version()) == self.logs_commit_in_progress
         {
-            self.clear();
+            self.logs_commit_in_progress = None;
             self.logs = logs;
+
+            // only keep provisioning logs since they are derived from the partition table
+            self.logs_state
+                .retain(|_, state| matches!(state, LogsState::Provisioning { .. }));
 
             for (log_id, chain) in self.logs.iter() {
                 let tail = chain.tail();
@@ -533,6 +540,10 @@ impl Inner {
             }
         }
 
+        Ok(())
+    }
+
+    fn on_partition_table_update(&mut self, partition_table: &PartitionTable) {
         // update the provisioning logs
         for (partition_id, _) in partition_table.partitions() {
             self.logs_state
@@ -542,8 +553,6 @@ impl Inner {
                     provider_kind: self.default_provider,
                 });
         }
-
-        Ok(())
     }
 
     fn on_sealed_log(&mut self, log_id: LogId, segment_index: SegmentIndex, seal_lsn: Lsn) {
@@ -551,17 +560,11 @@ impl Inner {
             logs_state.try_seal(segment_index, seal_lsn);
         }
     }
-
-    fn clear(&mut self) {
-        self.logs_commit_in_progress = None;
-        self.logs_state.clear();
-    }
 }
 
 pub struct LogsController {
     effects: Option<Vec<Effect>>,
     inner: Inner,
-    metadata: Metadata,
     bifrost: Bifrost,
     metadata_store_client: MetadataStoreClient,
     metadata_writer: MetadataWriter,
@@ -574,14 +577,14 @@ impl LogsController {
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
         metadata_writer: MetadataWriter,
+        default_provider: ProviderKind,
     ) -> anyhow::Result<Self> {
         let logs = metadata_store_client
             .get_or_insert(BIFROST_CONFIG_KEY.clone(), || Logs::default())
             .await?;
         Ok(Self {
             effects: Some(Vec::new()),
-            inner: Inner::new(logs, metadata.partition_table_ref().as_ref())?,
-            metadata,
+            inner: Inner::new(logs, metadata.partition_table_ref().as_ref(), default_provider)?,
             bifrost,
             metadata_store_client,
             metadata_writer,
@@ -600,6 +603,10 @@ impl LogsController {
         self.apply_effects();
 
         Ok(())
+    }
+
+    pub fn on_partition_table_update(&mut self, partition_table: &PartitionTable) {
+        self.inner.on_partition_table_update(partition_table);
     }
 
     fn apply_effects(&mut self) {
@@ -728,11 +735,8 @@ impl LogsController {
                     .join_next()
                     .await
                     .expect("should not be empty")?;
-                self.inner.on_event(
-                    event,
-                    self.effects.as_mut().expect("to be present"),
-                    self.metadata.partition_table_ref().as_ref(),
-                )?;
+                self.inner
+                    .on_event(event, self.effects.as_mut().expect("to be present"))?;
                 self.apply_effects();
             }
         }

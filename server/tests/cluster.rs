@@ -7,6 +7,7 @@ use restate_local_cluster_runner::{
     node::{BinarySource, Node},
 };
 use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
+use restate_types::logs::metadata::ProviderKind;
 
 mod common;
 
@@ -99,4 +100,28 @@ async fn cluster_name_mismatch() {
         .is_some());
 
     assert_eq!(Some(1), mismatch_node.status().await.unwrap().code())
+}
+
+#[tokio::test]
+async fn replicated_loglet() {
+    let mut base_config = Configuration::default();
+    base_config.bifrost.default_provider = ProviderKind::Replicated;
+
+    let nodes = Node::new_test_nodes_with_metadata(
+        base_config.clone(),
+        BinarySource::CargoTest,
+        enum_set!(Role::Worker | Role::Admin | Role::LogServer),
+        3,
+    );
+
+    let cluster = Cluster::builder()
+        .cluster_name("cluster-1")
+        .temp_base_dir()
+        .nodes(nodes)
+        .build()
+        .start()
+        .await
+        .unwrap();
+
+    assert!(cluster.wait_healthy(Duration::from_secs(30)).await);
 }
