@@ -79,12 +79,13 @@ struct ObservedClusterState {
     /// Any node that was previously known but isn't seen as healthy.
     dead_nodes: BTreeSet<PlainNodeId>,
 
-    // todo
-    // nodes: NodesConfiguration,
-
+    /// The known cluster configuration.
+    nodes_config: NodesConfiguration,
     // Extra info - is it necessary for scheduling decisions?
-    node_roles: BTreeMap<PlainNodeId, EnumSet<Role>>,
-    log_server_states: BTreeMap<PlainNodeId, StorageState>,
+    // node_roles: BTreeMap<PlainNodeId, EnumSet<Role>>,
+
+    // The Bifrost metadata should provide this, we might not need to pass it in explicitly
+    // log_server_states: BTreeMap<PlainNodeId, StorageState>,
 }
 
 impl ReplicatedLogletController {
@@ -93,7 +94,8 @@ impl ReplicatedLogletController {
     }
 
     /// Derive a new scheduling plan for a single log based on the previous plan and observed cluster state.
-    fn derive_plan_and_effects(
+    // todo: decouple from SchedulingPlan
+    fn decide_next_state(
         &self,
         scheduling_plan: &SchedulingPlan, // latest schedule from metadata store
         cluster_state: &ObservedClusterState, // observed cluster state pertinent to replicated loglets
@@ -126,7 +128,8 @@ impl ReplicatedLogletController {
                     // NEW! SHINY! No prior log configuration, we'll be bootstrapping this log!
                     None => {
                         if cluster_state.healthy_log_servers.len()
-                            < self.config.log_replication_target {
+                            < self.config.log_replication_target
+                        {
                             warn!(
                                 log_id = ?log_id,
                                 log_replication_target = ?self.config.log_replication_target,
@@ -185,30 +188,12 @@ impl ReplicatedLogletController {
 
                     // We've got prior state - check if the loglet requires any remediating actions
                     Some(loglet_state) => {
-                        // TODO: HACK! HACK! HACK! this will come from observed state
-                        let mut nodes_config = NodesConfiguration::default();
-                        cluster_state
-                            .healthy_workers
-                            .iter()
-                            .to_owned()
-                            .for_each(|(node_id, _)| {
-                                nodes_config.upsert_node(NodeConfig::new(
-                                    format!("node-{}", node_id),
-                                    cluster_state.healthy_workers[node_id],
-                                    format!("unix:/tmp/my_socket-{}", node_id).parse().unwrap(),
-                                    Role::LogServer.into(),
-                                    LogServerConfig {
-                                        storage_state: cluster_state.log_server_states[node_id],
-                                    },
-                                ));
-                            });
-
                         // 1. Is the log node set healthy? Can we do better than the existing state?
                         // Nodes passed into the healthy_log_servers list must meet the storage criteria
                         // for writable log server, so we intersect with those and check if the result is ok.
                         let mut healthy_quorum = NodeSetChecker::new(
                             &loglet_state.log_servers,
-                            &nodes_config,
+                            &cluster_state.nodes_config,
                             &self.config.replication_requirement,
                         );
                         healthy_quorum.set_attribute_on_each(
@@ -226,7 +211,7 @@ impl ReplicatedLogletController {
                         // Do the healthy log servers still form write quorum? We need that for any
                         // reconfiguration to take place. If we can, we will reconfigure the loglet segment
                         // for higher availability. If necessary, a new sequencer will also be chosen.
-                        // todo: should we attempt reconfiguration from BestEffort, too?
+                        // todo(open question): should we attempt reconfiguration from BestEffort, too?
                         if f_majority == FMajorityResult::SuccessWithRisk {
                             info!(log_id = ?loglet_state.log_id, "Not all log servers are healthy, will attempt to add replacements");
 
@@ -309,8 +294,10 @@ impl ReplicatedLogletController {
                             state.params =
                                 LogletParams::from(params.serialize().expect("can serialize"));
 
-                            effects
-                                .push(LogletEffect::SealAndExtendChain(*log_id, loglet_state.segment_index));
+                            effects.push(LogletEffect::SealAndExtendChain(
+                                *log_id,
+                                loglet_state.segment_index,
+                            ));
                             updated_plan.insert_loglet(state);
                         } else if f_majority == FMajorityResult::Success
                             && !cluster_state
@@ -336,8 +323,10 @@ impl ReplicatedLogletController {
                             let mut state = loglet_state.clone();
                             state.sequencer = replacement_sequencer;
 
-                            effects
-                                .push(LogletEffect::SealAndExtendChain(*log_id, loglet_state.segment_index));
+                            effects.push(LogletEffect::SealAndExtendChain(
+                                *log_id,
+                                loglet_state.segment_index,
+                            ));
                             updated_plan.insert_loglet(state);
                         }
                     }
@@ -363,7 +352,7 @@ mod tests {
 
     use enumset::enum_set;
     use googletest::prelude::*;
-
+    use restate_bifrost::providers::replicated_loglet::test_util::generate_logserver_node;
     use restate_types::cluster_controller::{
         ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder, TargetLogletState,
     };
@@ -380,6 +369,8 @@ mod tests {
 
     #[test]
     fn test_schedule_empty_cluster() -> Result<()> {
+        let nodes_config = NodesConfiguration::new(Version::MIN, "empty-cluster".to_owned());
+
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
             replication_requirement: ReplicationProperty::new(2.try_into()?),
             log_replication_target: 3,
@@ -393,15 +384,14 @@ mod tests {
             healthy_workers: BTreeMap::new(),
             healthy_log_servers: BTreeMap::new(),
             dead_nodes: BTreeSet::new(),
-            node_roles: BTreeMap::new(),
-            log_server_states: BTreeMap::new(),
+            nodes_config,
             logs: (0u16..)
                 .map(|idx| (LogId::from(idx), SegmentIndex::from(0)))
                 .take(partition_table.num_partitions() as usize)
                 .collect(),
         };
 
-        let (plan, effects) = controller.derive_plan_and_effects(&initial_scheduling_plan, &state);
+        let (plan, effects) = controller.decide_next_state(&initial_scheduling_plan, &state);
 
         assert_eq!(plan, None);
         assert!(effects.is_empty());
@@ -411,6 +401,10 @@ mod tests {
 
     #[test]
     fn test_schedule_no_log_servers() -> Result<()> {
+        let mut nodes_config = NodesConfiguration::new(Version::MIN, "no-log-servers".to_owned());
+        nodes_config.upsert_node(generate_worker_node(1));
+        nodes_config.upsert_node(generate_worker_node(2));
+
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
             replication_requirement: ReplicationProperty::new(2.try_into()?),
             log_replication_target: 3,
@@ -425,15 +419,14 @@ mod tests {
             healthy_workers: BTreeMap::new(),
             healthy_log_servers: BTreeMap::from([(n1, n1.with_generation(1))]),
             dead_nodes: BTreeSet::new(),
-            node_roles: BTreeMap::from([(n1, EnumSet::only(Role::Worker))]),
-            log_server_states: BTreeMap::new(),
+            nodes_config,
             logs: (0u16..)
                 .map(|idx| (LogId::from(idx), SegmentIndex::from(0)))
                 .take(partition_table.num_partitions() as usize)
                 .collect(),
         };
 
-        let (plan, effects) = controller.derive_plan_and_effects(&initial_scheduling_plan, &state);
+        let (plan, effects) = controller.decide_next_state(&initial_scheduling_plan, &state);
 
         assert_eq!(plan, None);
         assert!(effects.is_empty());
@@ -443,6 +436,10 @@ mod tests {
 
     #[test]
     fn test_schedule_insufficient_log_servers() -> Result<()> {
+        let mut nodes_config = NodesConfiguration::new(Version::MIN, "no-log-servers".to_owned());
+        nodes_config.upsert_node(generate_worker_node(1));
+        nodes_config.upsert_node(generate_worker_node(2));
+
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
             replication_requirement: ReplicationProperty::new(2.try_into()?),
             log_replication_target: 3,
@@ -457,15 +454,14 @@ mod tests {
             healthy_workers: BTreeMap::new(),
             healthy_log_servers: BTreeMap::from([(n1, n1.with_generation(1))]),
             dead_nodes: BTreeSet::new(),
-            node_roles: BTreeMap::from([(n1, EnumSet::only(Role::Worker))]),
-            log_server_states: BTreeMap::new(),
+            nodes_config,
             logs: (0u16..)
                 .map(|idx| (LogId::from(idx), SegmentIndex::from(0)))
                 .take(partition_table.num_partitions() as usize)
                 .collect(),
         };
 
-        let (plan, effects) = controller.derive_plan_and_effects(&initial_scheduling_plan, &state);
+        let (plan, effects) = controller.decide_next_state(&initial_scheduling_plan, &state);
 
         assert_eq!(plan, None);
         assert!(effects.is_empty());
@@ -475,6 +471,11 @@ mod tests {
 
     #[test]
     fn test_schedule_dont_bootstrap_loglet_with_less_than_preferred_spread() -> Result<()> {
+        let mut nodes_config = NodesConfiguration::new(Version::MIN, "insufficient-capacity".to_owned());
+        nodes_config.upsert_node(generate_worker_node(0));
+        nodes_config.upsert_node(generate_logserver_node(1, StorageState::ReadWrite));
+        nodes_config.upsert_node(generate_logserver_node(2, StorageState::ReadWrite));
+
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
             replication_requirement: ReplicationProperty::new(2.try_into()?),
             log_replication_target: 3,
@@ -498,11 +499,7 @@ mod tests {
                 (n2, n2.with_generation(1)),
             ]),
             dead_nodes: BTreeSet::new(),
-            node_roles: BTreeMap::from([(n1, EnumSet::only(Role::Worker))]),
-            log_server_states: BTreeMap::from([
-                (n1, StorageState::ReadWrite),
-                (n2, StorageState::ReadWrite),
-            ]),
+            nodes_config,
             logs: (0u16..)
                 .map(|idx| (LogId::from(idx), SegmentIndex::from(0)))
                 .take(partition_table.num_partitions() as usize)
@@ -510,7 +507,7 @@ mod tests {
         };
 
         let (proposed_plan, effects) =
-            controller.derive_plan_and_effects(&initial_scheduling_plan, &state);
+            controller.decide_next_state(&initial_scheduling_plan, &state);
 
         assert!(proposed_plan.is_none());
         assert_that!(effects, empty());
@@ -520,22 +517,26 @@ mod tests {
 
     #[test]
     fn test_schedule_bootstrap_loglet() -> Result<()> {
+        // Disjoint worker and log server nodes, enough to bootstrap a loglet at preferred replication
+        let mut nodes_config = NodesConfiguration::new(Version::MIN, "minimum-viable".to_owned());
+        nodes_config.upsert_node(generate_worker_node(0));
+        nodes_config.upsert_node(generate_logserver_node(1, StorageState::ReadWrite));
+        nodes_config.upsert_node(generate_logserver_node(2, StorageState::ReadWrite));
+        nodes_config.upsert_node(generate_logserver_node(3, StorageState::ReadWrite));
+
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
             replication_requirement: ReplicationProperty::new(2.try_into()?),
-            log_replication_target: 2,
+            log_replication_target: 3,
         });
 
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 1);
         let initial_scheduling_plan =
             SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes);
 
-        // Disjoint worker and log server nodes
-
         let w1 = PlainNodeId::new(0);
-
         let n1 = PlainNodeId::new(1);
         let n2 = PlainNodeId::new(2);
-        let n3 = PlainNodeId::new(2);
+        let n3 = PlainNodeId::new(3);
 
         let state = ObservedClusterState {
             healthy_workers: BTreeMap::from([(w1, w1.with_generation(1))]),
@@ -545,12 +546,7 @@ mod tests {
                 (n3, n3.with_generation(1)),
             ]),
             dead_nodes: BTreeSet::new(),
-            node_roles: BTreeMap::from([(n1, EnumSet::only(Role::Worker))]),
-            log_server_states: BTreeMap::from([
-                (n1, StorageState::ReadWrite),
-                (n2, StorageState::ReadWrite),
-                (n3, StorageState::ReadWrite),
-            ]),
+            nodes_config,
             logs: (0u16..)
                 .map(|idx| (LogId::from(idx), SegmentIndex::from(0)))
                 .take(partition_table.num_partitions() as usize)
@@ -558,7 +554,7 @@ mod tests {
         };
 
         let (proposed_plan, effects) =
-            controller.derive_plan_and_effects(&initial_scheduling_plan, &state);
+            controller.decide_next_state(&initial_scheduling_plan, &state);
 
         assert!(proposed_plan.is_some());
         let proposed_plan = proposed_plan.unwrap();
@@ -594,6 +590,11 @@ mod tests {
 
     #[test]
     fn test_schedule_loglet_steady_state_noop() -> Result<()> {
+        let mut nodes_config = NodesConfiguration::new(Version::MIN, "healthy".to_owned());
+        nodes_config.upsert_node(generate_mixed_use_node(1, StorageState::ReadWrite));
+        nodes_config.upsert_node(generate_mixed_use_node(2, StorageState::ReadWrite));
+        nodes_config.upsert_node(generate_mixed_use_node(3, StorageState::ReadWrite));
+
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
             replication_requirement: ReplicationProperty::new(2.try_into()?),
             log_replication_target: 3,
@@ -633,19 +634,14 @@ mod tests {
             healthy_workers: healthy.clone(),
             healthy_log_servers: healthy,
             dead_nodes: BTreeSet::new(),
-            node_roles: BTreeMap::from([(n1, mixed_roles), (n2, mixed_roles), (n3, mixed_roles)]),
-            log_server_states: BTreeMap::from([
-                (n1, StorageState::DataLoss),
-                (n2, StorageState::ReadWrite),
-                (n3, StorageState::ReadWrite),
-            ]),
+            nodes_config,
             logs: (0u16..)
                 .map(|idx| (LogId::from(idx), SegmentIndex::from(0)))
                 .take(partition_table.num_partitions() as usize)
                 .collect(),
         };
 
-        let (proposed_plan, effects) = controller.derive_plan_and_effects(&existing_plan, &state);
+        let (proposed_plan, effects) = controller.decide_next_state(&existing_plan, &state);
         assert_that!(effects, empty());
 
         Ok(())
@@ -654,6 +650,11 @@ mod tests {
     #[test]
     fn test_schedule_loglet_loses_sequencer_and_log_capacity_meets_replication_factor() -> Result<()>
     {
+        let mut nodes_config = NodesConfiguration::new(Version::MIN, "mixed-use".to_owned());
+        nodes_config.upsert_node(generate_mixed_use_node(1, StorageState::ReadWrite));
+        nodes_config.upsert_node(generate_mixed_use_node(2, StorageState::ReadWrite));
+        nodes_config.upsert_node(generate_mixed_use_node(3, StorageState::ReadWrite));
+
         let controller = ReplicatedLogletController::new(LogletControllerConfig {
             replication_requirement: ReplicationProperty::new(2.try_into()?),
             log_replication_target: 3,
@@ -690,19 +691,14 @@ mod tests {
             healthy_workers: healthy.clone(),
             healthy_log_servers: healthy,
             dead_nodes: BTreeSet::from([n1]),
-            node_roles: BTreeMap::from([(n1, mixed_roles), (n2, mixed_roles), (n3, mixed_roles)]),
-            log_server_states: BTreeMap::from([
-                (n1, StorageState::DataLoss),
-                (n2, StorageState::ReadWrite),
-                (n3, StorageState::ReadWrite),
-            ]),
+            nodes_config,
             logs: (0u16..)
                 .map(|idx| (LogId::from(idx), SegmentIndex::from(0)))
                 .take(partition_table.num_partitions() as usize)
                 .collect(),
         };
 
-        let (proposed_plan, effects) = controller.derive_plan_and_effects(&existing_plan, &state);
+        let (proposed_plan, effects) = controller.decide_next_state(&existing_plan, &state);
 
         assert!(proposed_plan.is_some());
         let proposed_plan = proposed_plan.unwrap();
@@ -738,6 +734,12 @@ mod tests {
 
     #[test]
     fn test_schedule_loglet_loses_log_server_capacity_and_gets_reconfigured() -> Result<()> {
+        let mut nodes_config = NodesConfiguration::new(Version::MIN, "mixed-use".to_owned());
+        nodes_config.upsert_node(generate_mixed_use_node(1, StorageState::Disabled));
+        nodes_config.upsert_node(generate_mixed_use_node(2, StorageState::ReadWrite));
+        nodes_config.upsert_node(generate_mixed_use_node(3, StorageState::ReadWrite));
+        nodes_config.upsert_node(generate_mixed_use_node(4, StorageState::ReadWrite));
+
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .init();
@@ -784,25 +786,14 @@ mod tests {
             healthy_workers: healthy.clone(),
             healthy_log_servers: healthy.clone(),
             dead_nodes: BTreeSet::from([n1, n2]),
-            node_roles: BTreeMap::from([
-                (n1, mixed_roles),
-                (n2, mixed_roles),
-                (n3, mixed_roles),
-                (n4, mixed_roles),
-            ]),
-            log_server_states: BTreeMap::from([
-                (n1, StorageState::Disabled),
-                (n2, StorageState::ReadWrite),
-                (n3, StorageState::ReadWrite),
-                (n4, StorageState::ReadWrite),
-            ]),
+            nodes_config,
             logs: (0u16..)
                 .map(|idx| (LogId::from(idx), SegmentIndex::from(0)))
                 .take(partition_table.num_partitions() as usize)
                 .collect(),
         };
 
-        let (proposed_plan, effects) = controller.derive_plan_and_effects(&existing_plan, &state);
+        let (proposed_plan, effects) = controller.decide_next_state(&existing_plan, &state);
 
         assert!(proposed_plan.is_some());
         let proposed_plan = proposed_plan.unwrap();
@@ -818,7 +809,10 @@ mod tests {
         assert_that!(*log_id, eq(LogId::from(0u32)));
         assert_that!(
             effects,
-            elements_are![eq(LogletEffect::SealAndExtendChain(0u32.into(), SegmentIndex::from(0)))]
+            elements_are![eq(LogletEffect::SealAndExtendChain(
+                0u32.into(),
+                SegmentIndex::from(0)
+            ))]
         );
         assert_that!(
             target_state.clone(),
@@ -826,13 +820,39 @@ mod tests {
                 log_id: eq(LogId::from(0u32)),
                 loglet_state: eq(LogletLifecycleState::Available),
                 replication: eq(ReplicationProperty::new(2.try_into()?)),
-                // params: eq(LogletParams { ... matches loglet config }), // todo
                 segment_index: eq(SegmentIndex::from(0)),
                 sequencer: predicate(|seq| healthy.values().any(|gen_node_id| gen_node_id == seq)),
                 log_servers: eq(NodeSet::from_iter(vec![n1, n2, n3])), // best we can do under the conditions, sufficiently intersects with old set
             })
         );
+        // todo: check loglet config, serialized params
 
         Ok(())
+    }
+
+    pub fn generate_worker_node(id: impl Into<PlainNodeId>) -> NodeConfig {
+        let id: PlainNodeId = id.into();
+        NodeConfig::new(
+            format!("worker-{}", id),
+            GenerationalNodeId::new(id.into(), 1),
+            format!("http://w{}", id).parse().unwrap(),
+            Role::Worker.into(),
+            LogServerConfig {
+                storage_state: StorageState::Disabled,
+            },
+        )
+    }
+
+    pub fn generate_mixed_use_node(id: impl Into<PlainNodeId>, storage_state: StorageState) -> NodeConfig {
+        let id: PlainNodeId = id.into();
+        NodeConfig::new(
+            format!("node-{}", id),
+            GenerationalNodeId::new(id.into(), 1),
+            format!("http://n{}", id).parse().unwrap(),
+            enum_set!(Role::LogServer | Role::Worker),
+            LogServerConfig {
+                storage_state,
+            },
+        )
     }
 }
