@@ -8,9 +8,5 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod app;
-pub(crate) mod commands;
-pub(crate) mod util;
-pub use app::CliApp;
-mod build_info;
-pub(crate) mod environment;
+pub mod metadata_store;
+pub mod task_center;

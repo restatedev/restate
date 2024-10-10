@@ -11,4 +11,5 @@
 mod display_util;
 pub mod dump;
 pub mod log;
+pub mod metadata;
 pub mod node;
