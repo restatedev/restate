@@ -8,14 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cluster::cluster_state::RunMode;
-use crate::identifiers::{PartitionId, PartitionKey};
-use crate::partition_table::PartitionTable;
-use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
-use serde_with::serde_as;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZero;
 use std::ops::RangeInclusive;
+
+use serde_with::serde_as;
+
+use crate::cluster::cluster_state::RunMode;
+use crate::identifiers::{PartitionId, PartitionKey};
+use crate::logs::metadata::{LogletParams, SegmentIndex};
+use crate::logs::LogId;
+use crate::partition_table::PartitionTable;
+use crate::replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicationProperty};
+use crate::{
+    flexbuffers_storage_encode_decode, GenerationalNodeId, PlainNodeId, Version, Versioned,
+};
 
 /// Replication strategy for partition processors.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -33,10 +40,13 @@ pub enum ReplicationStrategy {
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchedulingPlan {
-    version: Version,
+    pub version: Version,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    partitions: BTreeMap<PartitionId, TargetPartitionState>,
+    pub partitions: BTreeMap<PartitionId, TargetPartitionState>,
+    // /// Replicated loglet target configuration.
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    pub logs: BTreeMap<LogId, TargetLogletState>,
 }
 
 flexbuffers_storage_encode_decode!(SchedulingPlan);
@@ -78,6 +88,10 @@ impl SchedulingPlan {
         self.partitions.iter()
     }
 
+    pub fn loglet_config(&self, log_id: &LogId) -> Option<&TargetLogletState> {
+        self.logs.get(log_id)
+    }
+
     #[cfg(feature = "test-util")]
     pub fn partitions(&self) -> &BTreeMap<PartitionId, TargetPartitionState> {
         &self.partitions
@@ -95,6 +109,7 @@ impl Default for SchedulingPlan {
         Self {
             version: Version::INVALID,
             partitions: BTreeMap::default(),
+            logs: BTreeMap::default(),
         }
     }
 }
@@ -108,6 +123,53 @@ pub struct TargetPartitionState {
     /// Set of nodes that should run a partition processor for this partition
     pub node_set: BTreeSet<PlainNodeId>,
     pub replication_strategy: ReplicationStrategy,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LogletLifecycleState {
+    #[default]
+    Unknown,
+
+    /// New loglets start in this state before transitioning to Available.
+    New,
+
+    /// An ongoing sealing operation is in progress. The loglet will transition back to Available once extended with
+    /// a new segment.
+    Sealing,
+
+    /// The loglet is usable.
+    Available,
+
+    /// The existing loglet segment is impaired and requires reconfiguration, which is currently blocked.
+    /// The control plane may be able to remediate the problem once resources become available.
+    /// This can happen for example if tail segment sequencer has disappeared, and we don't have a candidate
+    /// to replace it, or if an insufficient number of log servers are available to meet the replication requirement.
+    ReconfigurationPendingResources,
+
+    /// The existing loglet segment is impaired and operator intervention is required. This can happen if we don't
+    /// have sufficient healthy log servers to seal the current segment. In such cases, a manual seal operation can
+    /// be performed on the loglet.
+    PermanentlyImpaired,
+
+    /// This is a terminal state for a loglet. The control plane will never transition to this state.
+    Terminated,
+}
+
+/// The target state of a log. We must be able to derive the LogletProvider configuration
+/// from this as an input.
+///
+/// See: [LogletProviderFactory], [ReplicatedLogletParams]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TargetLogletState {
+    pub log_id: LogId,
+    pub loglet_id: ReplicatedLogletId,
+    pub segment_index: SegmentIndex,
+    pub loglet_state: LogletLifecycleState,
+    /// Matches the sequencer in the current serialized LogletParams.
+    pub sequencer: GenerationalNodeId,
+    pub log_servers: NodeSet,
+    pub replication: ReplicationProperty,
+    pub params: LogletParams,
 }
 
 impl TargetPartitionState {
@@ -173,6 +235,16 @@ impl SchedulingPlanBuilder {
         self.modified = true;
     }
 
+    pub fn loglet_config(&self, log_id: &LogId) -> Option<&TargetLogletState> {
+        self.inner.logs.get(log_id)
+    }
+
+    pub fn insert_loglet(&mut self, loglet: TargetLogletState) -> &mut Self {
+        self.inner.logs.insert(loglet.log_id, loglet);
+        self.modified = true;
+        self
+    }
+
     pub fn build_if_modified(mut self) -> Option<SchedulingPlan> {
         if self.modified {
             self.inner.version = self.inner.version.next();
@@ -182,9 +254,9 @@ impl SchedulingPlanBuilder {
         }
     }
 
-    pub fn build(mut self) -> SchedulingPlan {
+    pub fn build(&mut self) -> SchedulingPlan {
         self.inner.version = self.inner.version.next();
-        self.inner
+        self.inner.clone()
     }
 
     pub fn partition_ids(&self) -> impl Iterator<Item = &PartitionId> {

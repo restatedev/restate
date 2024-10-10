@@ -40,7 +40,7 @@ pub struct LogletWrapper {
     /// record exists. It only means that we want to offset the loglet offsets by base_lsn -
     /// Loglet::Offset::OLDEST.
     pub(crate) base_lsn: Lsn,
-    /// If set, it points to the first first LSN outside the boundary of this loglet (bifrost's tail semantics)
+    /// If set, it points to the first LSN outside the boundary of this loglet (bifrost's tail semantics)
     pub(crate) tail_lsn: Option<Lsn>,
     loglet: Arc<dyn Loglet>,
 }
