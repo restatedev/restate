@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod display_util;
-pub mod dump;
-pub mod log;
-pub mod metadata;
-pub mod node;
-pub mod partitions;
+mod gen_metadata;
+
+use cling::prelude::*;
+
+#[derive(Run, Subcommand, Clone)]
+pub enum Partitions {
+    /// Prints a generated partition table in JSON format
+    GenerateMetadata(gen_metadata::GeneratePartitionTableOpts),
+}
