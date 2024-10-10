@@ -206,8 +206,10 @@ fn try_provisioning(
             let log_id = thread_rng().next_u64();
             Some(LogletConfiguration::Memory(log_id))
         }
-        ProviderKind::Replicated => find_new_replicated_loglet_configuration(observed_cluster_state, None)
-            .map(LogletConfiguration::Replicated),
+        ProviderKind::Replicated => {
+            find_new_replicated_loglet_configuration(observed_cluster_state, None)
+                .map(LogletConfiguration::Replicated)
+        }
     }
 }
 
@@ -434,7 +436,12 @@ impl Inner {
         Ok(())
     }
 
-    fn on_event(&mut self, event: Event, effects: &mut Vec<Effect>, partition_table: &PartitionTable) -> Result<(), anyhow::Error> {
+    fn on_event(
+        &mut self,
+        event: Event,
+        effects: &mut Vec<Effect>,
+        partition_table: &PartitionTable,
+    ) -> Result<(), anyhow::Error> {
         match event {
             Event::LogsCommitSucceeded(version) => {
                 self.on_logs_committed(version);
@@ -715,8 +722,11 @@ impl LogsController {
                     .join_next()
                     .await
                     .expect("should not be empty")?;
-                self.inner
-                    .on_event(event, self.effects.as_mut().expect("to be present"), self.metadata.partition_table_ref().as_ref())?;
+                self.inner.on_event(
+                    event,
+                    self.effects.as_mut().expect("to be present"),
+                    self.metadata.partition_table_ref().as_ref(),
+                )?;
                 self.apply_effects();
             }
         }
