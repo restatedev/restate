@@ -28,9 +28,9 @@ use tracing::{debug, info, instrument, trace, warn};
 use restate_bifrost::Bifrost;
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Incoming, MessageRouterBuilder};
-use restate_core::network::{Networking, TransportConnect};
+use restate_core::network::{MessageHandler, Networking, TransportConnect};
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
-use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskId, TaskKind};
+use restate_core::{cancellation_watcher, task_center, Metadata, ShutdownError, TaskId, TaskKind};
 use restate_core::{RuntimeError, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_invoker_impl::Service as InvokerService;
@@ -52,9 +52,12 @@ use restate_types::logs::SequenceNumber;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::cluster_controller::AttachRequest;
 use restate_types::net::cluster_controller::{Action, AttachResponse};
-use restate_types::net::partition_processor_manager::ProcessorsStateResponse;
 use restate_types::net::partition_processor_manager::{
-    ControlProcessor, ControlProcessors, GetProcessorsState, ProcessorCommand,
+    ControlProcessor, ControlProcessors, CreateSnapshotResponse, GetProcessorsState,
+    ProcessorCommand, SnapshotError,
+};
+use restate_types::net::partition_processor_manager::{
+    CreateSnapshotRequest, ProcessorsStateResponse,
 };
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
@@ -251,6 +254,66 @@ impl PartitionProcessorHandle {
     }
 }
 
+/// RPC message handler for Partition Processor management operations.
+pub struct PartitionProcessorManagerMessageHandler {
+    processors_manager_handle: ProcessorsManagerHandle,
+}
+
+impl PartitionProcessorManagerMessageHandler {
+    fn new(
+        processors_manager_handle: ProcessorsManagerHandle,
+    ) -> PartitionProcessorManagerMessageHandler {
+        Self {
+            processors_manager_handle,
+        }
+    }
+}
+
+impl MessageHandler for PartitionProcessorManagerMessageHandler {
+    type MessageType = CreateSnapshotRequest;
+
+    async fn on_message(&self, msg: Incoming<Self::MessageType>) {
+        debug!("Received '{:?}' from {}", msg.body(), msg.peer());
+
+        let processors_manager_handle = self.processors_manager_handle.clone();
+        task_center()
+            .spawn_child(
+                TaskKind::Disposable,
+                "create-snapshot-request-rpc",
+                None,
+                async move {
+                    let create_snapshot_result = processors_manager_handle
+                        .create_snapshot(msg.body().partition_id)
+                        .await;
+                    debug!(
+                        partition_id = ?msg.body().partition_id,
+                        result = ?create_snapshot_result,
+                        "Create snapshot completed",
+                    );
+
+                    match create_snapshot_result.as_ref() {
+                        Ok(snapshot_id) => msg.to_rpc_response(CreateSnapshotResponse {
+                            result: Ok(*snapshot_id),
+                        }),
+                        Err(error) => msg.to_rpc_response(CreateSnapshotResponse {
+                            result: Err(SnapshotError::SnapshotCreationFailed(error.to_string())),
+                        }),
+                    }
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        warn!(result = ?create_snapshot_result, "Failed to send response: {}", e);
+                        anyhow::anyhow!("Failed to send response to create snapshot request: {}", e)
+                    })
+                },
+            )
+            .map_err(|e| {
+                warn!("Failed to spawn request handler: {}", e);
+            })
+            .ok();
+    }
+}
+
 type ChannelStatusReaderList = Vec<(RangeInclusive<PartitionKey>, ChannelStatusReader)>;
 
 #[derive(Debug, Clone, Default)]
@@ -334,6 +397,10 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
 
     pub fn handle(&self) -> ProcessorsManagerHandle {
         ProcessorsManagerHandle::new(self.tx.clone())
+    }
+
+    pub(crate) fn message_handler(&self) -> PartitionProcessorManagerMessageHandler {
+        PartitionProcessorManagerMessageHandler::new(self.handle())
     }
 
     async fn attach(&mut self) -> Result<Incoming<AttachResponse>, AttachError> {
