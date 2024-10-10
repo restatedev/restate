@@ -215,6 +215,12 @@ pub struct CommonOptions {
     ///
     /// The retry policy for node network error
     pub network_error_retry_policy: RetryPolicy,
+
+    /// # Automatically provision number of configured partitions
+    ///
+    /// If this option is set to `false`, then one needs to manually write a partition table to
+    /// the metadata store. Without a partition table, the cluster will not start.
+    pub auto_provision_partitions: bool,
 }
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| {
@@ -359,6 +365,7 @@ impl Default for CommonOptions {
                 Some(15),
                 Some(Duration::from_secs(5)),
             ),
+            auto_provision_partitions: true,
         }
     }
 }

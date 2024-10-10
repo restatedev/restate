@@ -190,6 +190,10 @@ impl SchedulingPlanBuilder {
     pub fn partition_ids(&self) -> impl Iterator<Item = &PartitionId> {
         self.inner.partition_ids()
     }
+
+    pub fn contains_partition(&self, partition_id: &PartitionId) -> bool {
+        self.inner.partitions.contains_key(partition_id)
+    }
 }
 
 impl From<SchedulingPlan> for SchedulingPlanBuilder {

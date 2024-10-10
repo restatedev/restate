@@ -345,7 +345,7 @@ impl BifrostInner {
     }
 
     async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
-        let log_metadata = self.metadata.logs();
+        let log_metadata = self.metadata.logs_ref();
 
         let log_chain = log_metadata
             .chain(&log_id)
@@ -373,7 +373,7 @@ impl BifrostInner {
     }
 
     pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
-        let log_metadata = self.metadata.logs();
+        let log_metadata = self.metadata.logs_ref();
 
         let log_chain = log_metadata
             .chain(&log_id)
@@ -426,7 +426,7 @@ impl BifrostInner {
 
     /// Checks if the log_id exists and that the provider is not disabled (can be created).
     pub(crate) fn check_log_id(&self, log_id: LogId) -> Result<(), Error> {
-        let logs = self.metadata.logs();
+        let logs = self.metadata.logs_ref();
         let chain = logs.chain(&log_id).ok_or(Error::UnknownLogId(log_id))?;
 
         let kind = chain.tail().config.kind;
@@ -436,7 +436,7 @@ impl BifrostInner {
     }
 
     pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
-        let log_metadata = self.metadata.logs();
+        let log_metadata = self.metadata.logs_ref();
         let tail_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
@@ -445,7 +445,7 @@ impl BifrostInner {
     }
 
     pub async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<MaybeLoglet> {
-        let log_metadata = self.metadata.logs();
+        let log_metadata = self.metadata.logs_ref();
         let maybe_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
@@ -786,7 +786,7 @@ mod tests {
 
             let old_version = bifrost.inner.metadata.logs_version();
 
-            let mut builder = bifrost.inner.metadata.logs().clone().into_builder();
+            let mut builder = bifrost.inner.metadata.logs_ref().clone().into_builder();
             let mut chain_builder = builder.chain(&LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
@@ -817,7 +817,7 @@ mod tests {
 
             {
                 // validate that the stored metadata matches our expectations.
-                let new_metadata = bifrost.inner.metadata.logs().clone();
+                let new_metadata = bifrost.inner.metadata.logs_ref().clone();
                 let chain_builder = new_metadata.chain(&LOG_ID).unwrap();
                 assert_eq!(2, chain_builder.num_segments());
             }
