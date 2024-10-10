@@ -29,8 +29,7 @@ pub struct PutValueOpts {
     key: String,
 
     /// The JSON document to store, can be read from stdin or a file path
-    #[arg(short, long)]
-    content: FileOrStdin,
+    doc: FileOrStdin,
 
     /// Expected version for conditional update
     #[arg(short = 'e', long)]
@@ -44,7 +43,7 @@ pub struct PutValueOpts {
 async fn put_value(opts: &PutValueOpts) -> anyhow::Result<()> {
     let opts = opts.clone();
 
-    let doc_body = opts.content.contents().map_err(|e| anyhow!(e))?;
+    let doc_body = opts.doc.contents().map_err(|e| anyhow!(e))?;
 
     let mut doc: Value = serde_json::from_str(&doc_body)
         .map_err(|e| anyhow::anyhow!("Parsing JSON value: {}", e))?;
