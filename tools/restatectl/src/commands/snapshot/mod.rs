@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod display_util;
-pub mod dump;
-pub mod log;
-pub mod metadata;
-pub mod node;
-pub mod partitions;
-pub mod snapshot;
+mod create_snapshot;
+
+use cling::prelude::*;
+
+#[derive(Run, Subcommand, Clone)]
+pub enum Snapshot {
+    /// Create.
+    CreateSnapshot(create_snapshot::CreateSnapshotOpts),
+}
