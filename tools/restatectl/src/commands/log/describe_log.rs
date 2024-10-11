@@ -88,8 +88,13 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
 
     if let Some(tail_segment) = tail_segment {
         c_title!("🔗", "TAIL SEGMENT");
-        let config = tail_segment.config.params.as_bytes().escape_ascii().to_string();
-        c_println!("Configuration:\n\n{}", config);
+        let raw_config = tail_segment
+            .config
+            .params
+            .as_bytes()
+            .escape_ascii()
+            .to_string();
+        c_println!("Configuration:\n\n{}", raw_config);
     }
 
     Ok(())
