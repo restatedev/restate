@@ -147,18 +147,18 @@ impl MetadataMessageHandler {
         if version.is_some_and(|min_version| min_version > metadata.version()) {
             // We don't have the version that the peer is asking for. Just ignore.
             info!(
-                "Peer requested '{}' version {} but we have {}, ignoring their request",
-                metadata_name,
-                version.unwrap(),
-                metadata.version()
+                kind = metadata_name,
+                version = %metadata.version(),
+                requested_min_version = ?version,
+                "Peer requested metadata version but we don't have it, ignoring their request",
             );
             return;
         }
-        info!(
-            "Sending '{}' {} to peer, requested version? {:?}",
-            metadata_name,
-            metadata.version(),
-            version,
+        debug!(
+            kind = metadata_name,
+            version = %metadata.version(),
+            requested_min_version = ?version,
+            "Sending metadata to peer",
         );
         let metadata = metadata.clone();
         let outgoing = to.prepare(MetadataMessage::MetadataUpdate(MetadataUpdate {
@@ -187,9 +187,10 @@ impl MessageHandler for MetadataMessageHandler {
         match msg {
             MetadataMessage::MetadataUpdate(update) => {
                 info!(
-                    "Received '{}' metadata update from peer {}",
-                    update.container.kind(),
-                    reciprocal.peer(),
+                    kind  = %update.container.kind(),
+                    version = %update.container.version(),
+                    peer = %reciprocal.peer(),
+                    "Received metadata update from peer",
                 );
                 if let Err(e) = self
                     .sender
@@ -202,8 +203,10 @@ impl MessageHandler for MetadataMessageHandler {
             }
             MetadataMessage::GetMetadataRequest(request) => {
                 debug!(
-                    "Received GetMetadataRequest from peer {}",
-                    reciprocal.peer()
+                    kind  = %request.metadata_kind,
+                    requested_min_version = ?request.min_version,
+                    peer = %reciprocal.peer(),
+                    "Received GetMetadataRequest from peer",
                 );
                 self.send_metadata(reciprocal, request.metadata_kind, request.min_version);
             }
@@ -438,7 +441,7 @@ impl<T: TransportConnect> MetadataManager<T> {
             container.store(Arc::new(new_value));
         } else {
             /* Do nothing, current is already newer */
-            debug!(
+            trace!(
                 "Ignoring update {} because we are at {}",
                 new_value.version(),
                 current_value.version(),

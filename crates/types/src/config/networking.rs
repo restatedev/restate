@@ -47,10 +47,10 @@ impl Default for NetworkingOptions {
     fn default() -> Self {
         Self {
             connect_retry_policy: RetryPolicy::exponential(
-                Duration::from_millis(10),
+                Duration::from_millis(250),
                 2.0,
                 Some(10),
-                Some(Duration::from_millis(500)),
+                Some(Duration::from_millis(3000)),
             ),
 
             outbound_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
