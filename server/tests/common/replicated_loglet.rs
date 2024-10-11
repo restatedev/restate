@@ -139,7 +139,7 @@ where
             .start()
             .await?;
 
-        assert!(cluster.wait_healthy(Duration::from_secs(30)).await);
+        cluster.wait_healthy(Duration::from_secs(30)).await?;
 
         // join a new node to the cluster solely to act as a bifrost client
         // it will have node id log_server_count+2

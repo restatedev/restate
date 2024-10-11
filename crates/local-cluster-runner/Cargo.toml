@@ -21,9 +21,11 @@ clap-verbosity-flag = { workspace = true }
 futures = { workspace = true }
 enumset = { workspace = true }
 http = { workspace = true }
+itertools = { workspace = true }
 nix = { version = "0.29.0", features = ["signal"] }
 regex = "1.1"
 reqwest = { workspace = true }
+rev_lines = "0.3.0"
 rlimit = { workspace = true }
 serde = { workspace =  true }
 tempfile = { workspace = true }
