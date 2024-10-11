@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::net::RpcRequest;
-use restate_types::{GenerationalNodeId, NodeId};
+use restate_types::protobuf::node::Header;
+use restate_types::{GenerationalNodeId, NodeId, Version};
 
 use crate::with_metadata;
 
@@ -69,12 +70,31 @@ struct MsgMeta {
     in_response_to: Option<u64>,
 }
 
+#[derive(Clone, Debug, Copy, Default)]
+pub struct PeerMetadataVersion {
+    pub logs: Option<Version>,
+    pub nodes_config: Option<Version>,
+    pub partition_table: Option<Version>,
+    pub schema: Option<Version>,
+}
+
+impl From<Header> for PeerMetadataVersion {
+    fn from(value: Header) -> Self {
+        Self {
+            logs: value.my_logs_version.map(Version::from),
+            nodes_config: value.my_nodes_config_version.map(Version::from),
+            partition_table: value.my_partition_table_version.map(Version::from),
+            schema: value.my_schema_version.map(Version::from),
+        }
+    }
+}
 /// A wrapper for incoming messages that includes the sender information
 #[derive(Debug, Clone)]
 pub struct Incoming<M> {
     meta: MsgMeta,
     connection: WeakConnection,
     body: M,
+    metadata_version: PeerMetadataVersion,
 }
 
 impl<M> Incoming<M> {
@@ -83,6 +103,7 @@ impl<M> Incoming<M> {
         connection: WeakConnection,
         msg_id: u64,
         in_response_to: Option<u64>,
+        metadata_version: PeerMetadataVersion,
     ) -> Self {
         Self {
             connection,
@@ -91,13 +112,20 @@ impl<M> Incoming<M> {
                 msg_id,
                 in_response_to,
             },
+            metadata_version,
         }
     }
 
     #[cfg(any(test, feature = "test-util"))]
     pub fn for_testing(connection: WeakConnection, body: M, in_response_to: Option<u64>) -> Self {
         let msg_id = generate_msg_id();
-        Self::from_parts(body, connection, msg_id, in_response_to)
+        Self::from_parts(
+            body,
+            connection,
+            msg_id,
+            in_response_to,
+            PeerMetadataVersion::default(),
+        )
     }
 
     pub fn peer(&self) -> &GenerationalNodeId {
@@ -127,6 +155,10 @@ impl<M> Incoming<M> {
         self.meta.in_response_to
     }
 
+    pub fn metadata_version(&self) -> &PeerMetadataVersion {
+        &self.metadata_version
+    }
+
     /// Creates a reciprocal for this incoming message without consuming it. This will internall
     /// clone the original connection reference.
     pub fn create_reciprocal(&self) -> Reciprocal {
@@ -138,6 +170,7 @@ impl<M> Incoming<M> {
             connection: self.connection,
             body: f(self.body)?,
             meta: self.meta,
+            metadata_version: self.metadata_version,
         })
     }
 
@@ -146,6 +179,7 @@ impl<M> Incoming<M> {
             connection: self.connection,
             body: f(self.body),
             meta: self.meta,
+            metadata_version: self.metadata_version,
         }
     }
 
