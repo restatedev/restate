@@ -8,8 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod digests;
 mod find_tail;
+mod repair_tail;
 mod seal;
 
 pub use find_tail::*;
+pub use repair_tail::*;
 pub use seal::*;

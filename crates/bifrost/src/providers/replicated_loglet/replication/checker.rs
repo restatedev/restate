@@ -110,6 +110,26 @@ impl<'a, Attribute> NodeSetChecker<'a, Attribute> {
         self.node_attribute.is_empty()
     }
 
+    /// resets all attributes for all nodes to this value
+    pub fn reset_with(&mut self, attribute: Attribute)
+    where
+        Attribute: Clone,
+    {
+        for (_, v) in self.node_attribute.iter_mut() {
+            *v = attribute.clone();
+        }
+    }
+
+    /// resets all attributes for all nodes with the default value of Attribute
+    pub fn reset_with_default(&mut self)
+    where
+        Attribute: Default,
+    {
+        for (_, v) in self.node_attribute.iter_mut() {
+            *v = Default::default();
+        }
+    }
+
     /// Set the attribute value of a node. Note that a node can only be
     /// associated with one attribute value at a time, so if the node has an
     /// existing attribute value, the value will be cleared.
@@ -128,8 +148,12 @@ impl<'a, Attribute> NodeSetChecker<'a, Attribute> {
         }
     }
 
-    pub fn set_attribute_on_each(&mut self, nodes: &[PlainNodeId], f: impl Fn() -> Attribute) {
-        for node in nodes {
+    pub fn set_attribute_on_each<'b>(
+        &mut self,
+        nodes: impl IntoIterator<Item = &'b PlainNodeId>,
+        f: impl Fn() -> Attribute,
+    ) {
+        for node in nodes.into_iter() {
             // ignore if the node is not in the original nodeset
             if self.storage_states.contains_key(node) {
                 self.node_attribute.insert(*node, f());

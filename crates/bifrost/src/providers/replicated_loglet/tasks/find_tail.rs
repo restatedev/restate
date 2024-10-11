@@ -8,21 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use tokio::task::JoinSet;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::TaskCenter;
 use restate_types::config::Configuration;
-use restate_types::logs::LogletOffset;
+use restate_types::logs::{LogletOffset, RecordCache};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail};
 use restate_types::replicated_loglet::{
     EffectiveNodeSet, ReplicatedLogletId, ReplicatedLogletParams,
 };
 use restate_types::PlainNodeId;
 
-use super::SealTask;
+use super::{RepairTail, RepairTailResult, SealTask};
 use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::replication::{Merge, NodeSetChecker};
 use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
@@ -35,7 +37,7 @@ use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 /// it to get the tail but this can be used as a side channel optimization.
 ///
 /// If the loglet is being sealed partially, this will create a new seal task to assist (in case
-/// the previous seal process crashed). Additionally, we will start a TailRepair task to ensure consistent
+/// the previous seal process crashed). Additionally, we will start a RepairTail task to ensure consistent
 /// state of the records between known_global_tail and the max(local_tail) observed from f-majority
 /// of sealed log-servers.
 ///
@@ -47,6 +49,7 @@ pub struct FindTailTask<T> {
     networking: Networking<T>,
     logservers_rpc: LogServersRpc,
     known_global_tail: TailOffsetWatch,
+    record_cache: RecordCache,
 }
 
 pub enum FindTailResult {
@@ -124,6 +127,7 @@ impl<T: TransportConnect> FindTailTask<T> {
         networking: Networking<T>,
         logservers_rpc: LogServersRpc,
         known_global_tail: TailOffsetWatch,
+        record_cache: RecordCache,
     ) -> Self {
         Self {
             task_center,
@@ -131,6 +135,7 @@ impl<T: TransportConnect> FindTailTask<T> {
             my_params,
             logservers_rpc,
             known_global_tail,
+            record_cache,
         }
     }
 
@@ -255,7 +260,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                             // Great. All nodes sealed and we have a stable value to return.
                             //
                             // todo: If some nodes have lower global-tail than max-local-tail, then
-                            // broadcast a a release to max-tail to avoid unnecessary repair if
+                            // broadcast a release to max-tail to avoid unnecessary repair if
                             // underreplication happened after this point.
                             inflight_info_requests.abort_all();
                             // Note: We don't set the known_global_tail watch to this value nor the
@@ -266,9 +271,9 @@ impl<T: TransportConnect> FindTailTask<T> {
                             };
                         }
                         // F-majority sealed, but tail needs repair in range
-                        // [current_known_tail..max_local_tail]
+                        // [current_known_global..max_local_tail]
                         //
-                        // todo: Although we have f-majority, it's not always guaranteed that we are
+                        // Although we have f-majority, it's not always guaranteed that we are
                         // able to form a write-quorum within this set of nodes. For instance, if
                         // replication-factor is 4 in a nodeset of 5 nodes, F-majority is 2 nodes which
                         // isn't enough to form write-quorum. In this case, we need to wait for more
@@ -276,8 +281,40 @@ impl<T: TransportConnect> FindTailTask<T> {
                         // current_known_global. Once we have enough sealed node that match
                         // write-quorum **and** f-majority, then we can repair the tail.
                         if nodeset_checker.check_write_quorum(NodeTailStatus::is_known) {
-                            // We can repair.
-                            todo!("Tail repair is not implemented yet")
+                            // We can start repair.
+                            match RepairTail::new(
+                                self.my_params.clone(),
+                                self.task_center.clone(),
+                                self.networking.clone(),
+                                self.logservers_rpc.clone(),
+                                self.record_cache.clone(),
+                                self.known_global_tail.clone(),
+                                current_known_global,
+                                max_local_tail,
+                            )
+                            .run()
+                            .await
+                            {
+                                RepairTailResult::Completed => {
+                                    return FindTailResult::Sealed {
+                                        global_tail: max_local_tail,
+                                    }
+                                }
+                                RepairTailResult::DigestFailed
+                                | RepairTailResult::ReplicationFailed { .. } => {
+                                    // retry the whole find-tail procedure.
+                                    info!(
+                                        "Tail repair failed. Restarting FindTail task for loglet_id={}",
+                                        self.my_params.loglet_id
+                                    );
+                                    // todo: configuration
+                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                    continue 'find_tail;
+                                }
+                                RepairTailResult::Shutdown(e) => {
+                                    return FindTailResult::Error(e.to_string());
+                                }
+                            }
                         } else {
                             // wait for more nodes
                             break 'check_nodeset;
