@@ -23,7 +23,8 @@ use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
 use restate_types::config::ReplicatedLogletOptions;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::replicated_loglet::{
-    Append, Appended, CommonRequestHeader, CommonResponseHeader, SequencerStatus,
+    Append, Appended, CommonRequestHeader, CommonResponseHeader, GetSequencerState, SequencerState,
+    SequencerStatus,
 };
 
 use super::error::ReplicatedLogletError;
@@ -76,6 +77,7 @@ macro_rules! return_error_status {
 pub struct RequestPump {
     metadata: Metadata,
     append_stream: MessageStream<Append>,
+    get_sequencer_state_stream: MessageStream<GetSequencerState>,
 }
 
 impl RequestPump {
@@ -87,9 +89,11 @@ impl RequestPump {
         // todo(asoli) read from opts
         let queue_length = 10;
         let append_stream = router_builder.subscribe_to_stream(queue_length);
+        let get_sequencer_state_stream = router_builder.subscribe_to_stream(queue_length);
         Self {
             metadata,
             append_stream,
+            get_sequencer_state_stream,
         }
     }
 
@@ -108,10 +112,47 @@ impl RequestPump {
                 Some(append) = self.append_stream.next() => {
                     self.handle_append(&provider, append).await;
                 }
+                Some(get_sequencer_state) = self.get_sequencer_state_stream.next() => {
+                    self.handle_get_sequencer_state(&provider, get_sequencer_state).await;
+                }
             }
         }
 
         Ok(())
+    }
+
+    async fn handle_get_sequencer_state<T: TransportConnect>(
+        &mut self,
+        provider: &ReplicatedLogletProvider<T>,
+        incoming: Incoming<GetSequencerState>,
+    ) {
+        let (reciprocal, body) = incoming.split();
+
+        let loglet = match self.get_loglet(provider, &body.header).await {
+            Ok(loglet) => loglet,
+            Err(err) => {
+                return_error_status!(reciprocal, err);
+            }
+        };
+
+        if !loglet.is_sequencer_local() {
+            return_error_status!(reciprocal, SequencerStatus::NotSequencer);
+        }
+
+        let tail = loglet.known_global_tail().get();
+        let sequencer_state = SequencerState {
+            header: CommonResponseHeader {
+                known_global_tail: Some(tail.offset()),
+                sealed: Some(tail.is_sealed()),
+                status: if tail.is_sealed() {
+                    SequencerStatus::Sealed
+                } else {
+                    SequencerStatus::Ok
+                },
+            },
+        };
+
+        let _ = reciprocal.prepare(sequencer_state).try_send();
     }
 
     /// Infailable handle_append method
