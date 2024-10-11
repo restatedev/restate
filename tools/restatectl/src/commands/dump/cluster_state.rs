@@ -63,6 +63,7 @@ async fn dump_cluster_state(
         .cluster_state
         .ok_or_else(|| anyhow::anyhow!("no cluster state returned"))?;
 
+    println!("{:#?}", state);
     let mut processors: BTreeMap<u32, PartitionDetails> = BTreeMap::new();
     let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
     for (node_id, node_state) in state.nodes {

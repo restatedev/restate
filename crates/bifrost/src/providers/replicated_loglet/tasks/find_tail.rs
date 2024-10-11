@@ -24,9 +24,9 @@ use restate_types::replicated_loglet::{
 };
 use restate_types::PlainNodeId;
 
-use super::{RepairTail, RepairTailResult, SealTask};
+use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
 use crate::loglet::util::TailOffsetWatch;
-use crate::providers::replicated_loglet::replication::{Merge, NodeSetChecker};
+use crate::providers::replicated_loglet::replication::NodeSetChecker;
 use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 
 /// Represents a task to determine and repair the tail of the loglet by consulting f-majority
@@ -62,62 +62,6 @@ pub enum FindTailResult {
         global_tail: LogletOffset,
     },
     Error(String),
-}
-
-#[derive(Debug, Default)]
-enum NodeTailStatus {
-    #[default]
-    Unknown,
-    Known {
-        local_tail: LogletOffset,
-        sealed: bool,
-    },
-}
-
-impl NodeTailStatus {
-    fn local_tail(&self) -> Option<LogletOffset> {
-        match self {
-            NodeTailStatus::Known { local_tail, .. } => Some(*local_tail),
-            _ => None,
-        }
-    }
-
-    fn is_known(&self) -> bool {
-        matches!(self, NodeTailStatus::Known { .. })
-    }
-
-    #[allow(dead_code)]
-    fn is_known_unsealed(&self) -> bool {
-        matches!(self, NodeTailStatus::Known { sealed, .. } if !*sealed)
-    }
-
-    fn is_known_sealed(&self) -> bool {
-        matches!(self, NodeTailStatus::Known { sealed, .. } if *sealed)
-    }
-}
-
-impl Merge for NodeTailStatus {
-    fn merge(&mut self, other: Self) {
-        match (self, other) {
-            (_, NodeTailStatus::Unknown) => {}
-            (this @ NodeTailStatus::Unknown, o) => {
-                *this = o;
-            }
-            (
-                NodeTailStatus::Known {
-                    local_tail: my_offset,
-                    sealed: my_seal,
-                },
-                NodeTailStatus::Known {
-                    local_tail: other_offset,
-                    sealed: other_seal,
-                },
-            ) => {
-                *my_offset = (*my_offset).max(other_offset);
-                *my_seal |= other_seal;
-            }
-        }
-    }
 }
 
 impl<T: TransportConnect> FindTailTask<T> {
@@ -180,17 +124,20 @@ impl<T: TransportConnect> FindTailTask<T> {
 
             let mut inflight_info_requests = JoinSet::new();
             for node in effective_nodeset.iter() {
-                let task = FindTailOnNode {
-                    node_id: *node,
-                    loglet_id: self.my_params.loglet_id,
-                    get_loglet_info_rpc: self.logservers_rpc.get_loglet_info.clone(),
-                    known_global_tail: self.known_global_tail.clone(),
-                };
                 inflight_info_requests.spawn({
                     let tc = self.task_center.clone();
                     let networking = self.networking.clone();
+                    let get_loglet_info_rpc = self.logservers_rpc.get_loglet_info.clone();
+                    let known_global_tail = self.known_global_tail.clone();
+                    let node = *node;
                     async move {
-                        tc.run_in_scope("find-tail-on-node", None, task.run(networking))
+                        let task = FindTailOnNode {
+                            node_id: node,
+                            loglet_id: self.my_params.loglet_id,
+                            get_loglet_info_rpc: &get_loglet_info_rpc,
+                            known_global_tail: &known_global_tail,
+                        };
+                        tc.run_in_scope("find-tail-on-node", None, task.run(&networking))
                             .await
                     }
                 });
@@ -490,17 +437,17 @@ impl<T: TransportConnect> FindTailTask<T> {
     }
 }
 
-struct FindTailOnNode {
-    node_id: PlainNodeId,
-    loglet_id: ReplicatedLogletId,
-    get_loglet_info_rpc: RpcRouter<GetLogletInfo>,
-    known_global_tail: TailOffsetWatch,
+pub(super) struct FindTailOnNode<'a> {
+    pub(super) node_id: PlainNodeId,
+    pub(super) loglet_id: ReplicatedLogletId,
+    pub(super) get_loglet_info_rpc: &'a RpcRouter<GetLogletInfo>,
+    pub(super) known_global_tail: &'a TailOffsetWatch,
 }
 
-impl FindTailOnNode {
+impl<'a> FindTailOnNode<'a> {
     pub async fn run<T: TransportConnect>(
         self,
-        networking: Networking<T>,
+        networking: &'a Networking<T>,
     ) -> (PlainNodeId, NodeTailStatus) {
         let request_timeout = Configuration::pinned()
             .bifrost
@@ -525,7 +472,7 @@ impl FindTailOnNode {
             let maybe_info = tokio::time::timeout(
                 request_timeout,
                 self.get_loglet_info_rpc
-                    .call(&networking, self.node_id, request),
+                    .call(networking, self.node_id, request),
             )
             .await;
 
@@ -550,7 +497,12 @@ impl FindTailOnNode {
                         }
                         // unexpected statuses
                         Status::SequencerMismatch | Status::OutOfBounds | Status::Malformed => {
-                            error!("Unexpected status from log-server node_id={} when getting loglet info for loglet_id={}: {:?}", self.node_id, self.loglet_id, msg.body().status);
+                            error!(
+                                loglet_id = %self.loglet_id,
+                                peer = %self.node_id,
+                                "Unexpected status from log-server when calling GetLogletInfo: {:?}",
+                                msg.body().status
+                            );
                             return (self.node_id, NodeTailStatus::Unknown);
                         }
                     }

@@ -136,6 +136,10 @@ impl Appender {
         for sleep_dur in retry_iter.by_ref() {
             bifrost_inner.fail_if_shutting_down()?;
             tokio::time::sleep(sleep_dur).await;
+            info!(
+                "Waiting for seal, my logs-version = {}",
+                bifrost_inner.metadata.logs_version()
+            );
             let loglet = bifrost_inner.writeable_loglet(log_id).await?;
             // Do we think that the last tail loglet is different and unsealed?
             if loglet.tail_lsn.is_none() && loglet.segment_index() > sealed_segment {
