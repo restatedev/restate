@@ -25,20 +25,23 @@ use crate::state::row::append_state_row;
 use crate::state::schema::StateBuilder;
 use crate::table_providers::PartitionedTableProvider;
 
+const NAME: &str = "state";
+
 pub(crate) fn register_self(
     ctx: &QueryContext,
     partition_selector: impl SelectPartitions,
     partition_store_manager: PartitionStoreManager,
 ) -> datafusion::common::Result<()> {
+    let local_scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        StateScanner,
+    ));
     let table = PartitionedTableProvider::new(
         partition_selector,
         StateBuilder::schema(),
-        LocalPartitionsScanner::new(partition_store_manager, StateScanner),
+        ctx.create_distributed_scanner(NAME, local_scanner),
     );
-
-    ctx.as_ref()
-        .register_table("state", Arc::new(table))
-        .map(|_| ())
+    ctx.register_partitioned_table(NAME, Arc::new(table))
 }
 
 #[derive(Debug, Clone)]

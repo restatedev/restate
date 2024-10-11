@@ -35,10 +35,7 @@ pub(crate) fn register_self(
         SysDeploymentBuilder::schema(),
         Arc::new(DeploymentMetadataScanner(resolver)),
     );
-
-    ctx.as_ref()
-        .register_table("sys_deployment", Arc::new(deployment_table))
-        .map(|_| ())
+    ctx.register_non_partitioned_table("sys_deployment", Arc::new(deployment_table))
 }
 
 #[derive(Clone, derive_more::Debug)]
