@@ -13,12 +13,13 @@ use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 
 use crate::logs::metadata::Logs;
+use crate::net::define_message;
 use crate::net::TargetName;
 use crate::nodes_config::NodesConfiguration;
 use crate::partition_table::PartitionTable;
 use crate::schema::Schema;
-
-use crate::net::define_message;
+use crate::Version;
+use crate::Versioned;
 
 #[derive(
     Debug,
@@ -81,6 +82,15 @@ pub struct MetadataUpdate {
 }
 
 impl MetadataContainer {
+    pub fn version(&self) -> Version {
+        match self {
+            MetadataContainer::NodesConfiguration(c) => c.version(),
+            MetadataContainer::PartitionTable(p) => p.version(),
+            MetadataContainer::Logs(l) => l.version(),
+            MetadataContainer::Schema(s) => s.version(),
+        }
+    }
+
     pub fn kind(&self) -> MetadataKind {
         match self {
             MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
