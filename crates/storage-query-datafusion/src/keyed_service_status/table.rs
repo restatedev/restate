@@ -25,21 +25,25 @@ use crate::keyed_service_status::row::append_virtual_object_status_row;
 use crate::keyed_service_status::schema::SysKeyedServiceStatusBuilder;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::PartitionedTableProvider;
+const NAME: &str = "sys_keyed_service_status";
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
     partition_selector: impl SelectPartitions,
     partition_store_manager: PartitionStoreManager,
 ) -> datafusion::common::Result<()> {
+    let local_scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        VirtualObjectStatusScanner,
+    ));
+
     let status_table = PartitionedTableProvider::new(
         partition_selector,
         SysKeyedServiceStatusBuilder::schema(),
-        LocalPartitionsScanner::new(partition_store_manager, VirtualObjectStatusScanner),
+        ctx.create_distributed_scanner(NAME, local_scanner),
     );
 
-    ctx.as_ref()
-        .register_table("sys_keyed_service_status", Arc::new(status_table))
-        .map(|_| ())
+    ctx.register_partitioned_table(NAME, Arc::new(status_table))
 }
 
 #[derive(Debug, Clone)]
