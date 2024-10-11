@@ -67,10 +67,14 @@ pub struct ReadStreamTask {
     read_pointer: LogletOffset,
     /// Last offset to read before terminating the stream. None means "tailing" reader.
     /// *Inclusive*
+    /// This must be set if `move_beyond_global_tail` is true.
     read_to: Option<LogletOffset>,
     tx: mpsc::Sender<Result<LogEntry<LogletOffset>, OperationError>>,
     record_cache: RecordCache,
     stats: Stats,
+    /// If set to true, we won't wait for the global tail to be updated before requesting the next
+    /// batch. This is used in tail repair tasks.
+    move_beyond_global_tail: bool,
 }
 
 impl ReadStreamTask {
@@ -84,6 +88,7 @@ impl ReadStreamTask {
         read_to: Option<LogletOffset>,
         known_global_tail: TailOffsetWatch,
         record_cache: RecordCache,
+        move_beyond_global_tail: bool,
     ) -> Result<
         (
             mpsc::Receiver<Result<LogEntry<LogletOffset>, OperationError>>,
@@ -91,6 +96,9 @@ impl ReadStreamTask {
         ),
         OperationError,
     > {
+        if move_beyond_global_tail && read_to.is_none() {
+            panic!("read_to must be set if move_beyond_global_tail=true");
+        }
         // todo(asoli): configuration
         let (tx, rx) = mpsc::channel(100);
         // Reading from INVALID resets to OLDEST.
@@ -107,6 +115,7 @@ impl ReadStreamTask {
             tx,
             record_cache,
             stats: Stats::default(),
+            move_beyond_global_tail,
         };
         let handle = task_center().spawn_unmanaged(
             TaskKind::ReplicatedLogletReadStream,
@@ -140,12 +149,20 @@ impl ReadStreamTask {
         debug_assert!(readahead_trigger >= 1 && readahead_trigger <= self.tx.max_capacity());
 
         let mut tail_subscriber = self.global_tail_watch.subscribe();
-        // resolves immediately as it's pre-marked as changed.
-        tail_subscriber
-            .changed()
-            .await
-            .map_err(|_| OperationError::Shutdown(ShutdownError))?;
-        self.last_known_tail = tail_subscriber.borrow_and_update().offset();
+        if self.move_beyond_global_tail {
+            self.last_known_tail = self
+                .read_to
+                .expect("read_to must be set with move_beyond_global_tail=true")
+                .next();
+        } else {
+            // resolves immediately as it's pre-marked as changed.
+            tail_subscriber
+                .changed()
+                .await
+                .map_err(|_| OperationError::Shutdown(ShutdownError))?;
+            self.last_known_tail = tail_subscriber.borrow_and_update().offset();
+        }
+
         // todo(asoli): [important] Need to fire up a FindTail task in the background? It depends on whether we
         // are on the sequencer node or not. We might ask Bifrost's watchdog instead to dedupe
         // FindTails and time-throttle them.
@@ -205,7 +222,7 @@ impl ReadStreamTask {
 
             // Are we reading after last_known_tail offset?
             // We are at tail. We need to wait until new records have been released.
-            if !self.can_advance() {
+            if !self.can_advance() && !self.move_beyond_global_tail {
                 // HODL.
                 // todo(asoli): Measure tail-change wait time in histogram
                 // todo(asoli): (who's going to change this? - background FindTail?)
@@ -440,7 +457,10 @@ impl ReadStreamTask {
         timeout: Duration,
     ) -> Result<ServerReadResult, OperationError> {
         let request = GetRecords {
-            header: LogServerRequestHeader::new(self.my_params.loglet_id, self.last_known_tail),
+            header: LogServerRequestHeader::new(
+                self.my_params.loglet_id,
+                self.global_tail_watch.latest_offset(),
+            ),
             total_limit_in_bytes: None,
             filter: self.filter.clone(),
             from_offset: self.read_pointer,
