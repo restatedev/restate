@@ -10,18 +10,17 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-
-use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState};
 use std::time::Instant;
+
 use tokio::sync::watch;
 
 use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
+use restate_core::network::{MessageRouterBuilder, Networking, Outgoing, TransportConnect};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle};
+use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState};
 use restate_types::net::partition_processor_manager::GetProcessorsState;
 use restate_types::nodes_config::Role;
 use restate_types::time::MillisSinceEpoch;
-
-use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle};
 use restate_types::Version;
 
 pub struct ClusterStateRefresher<T> {
@@ -145,19 +144,24 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                     .name("get-processors-state")
                     .spawn(async move {
                         tc.run_in_scope("get-processor-state", None, async move {
-                            (
-                                node_id,
-                                tokio::time::timeout(
-                                    // todo: make configurable
-                                    std::time::Duration::from_secs(1),
-                                    rpc_router.call(
-                                        &network_sender,
+                            match network_sender.node_connection(node_id).await {
+                                Ok(connection) => {
+                                    let outgoing =
+                                        Outgoing::new(node_id, GetProcessorsState::default())
+                                            .assign_connection(connection);
+
+                                    (
                                         node_id,
-                                        GetProcessorsState::default(),
-                                    ),
-                                )
-                                .await,
-                            )
+                                        rpc_router
+                                            .call_outgoing_timeout(
+                                                outgoing,
+                                                std::time::Duration::from_secs(1), // todo: make configurable
+                                            )
+                                            .await,
+                                    )
+                                }
+                                Err(network_error) => (node_id, Err(network_error)),
+                            }
                         })
                         .await
                     })
@@ -171,7 +175,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                 // enough that a single timeout signifies a dead node.
                 //
                 // The node gets the same treatment on other RpcErrors.
-                let Ok(Ok(res)) = res else {
+                let Ok(res) = res else {
                     // determine last seen alive.
                     let last_seen_alive =
                         last_state
