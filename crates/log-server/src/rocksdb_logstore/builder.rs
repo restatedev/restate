@@ -59,6 +59,7 @@ impl RocksDbLogStoreBuilder {
             // not very important but it's to reduce the number of merges by flushing.
             // it's also a small cf so it should be quick.
             .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
+            .add_to_flush_on_shutdown(CfExactPattern::new(DATA_CF))
             .ensure_column_families(cfs)
             .build()
             .expect("valid spec");

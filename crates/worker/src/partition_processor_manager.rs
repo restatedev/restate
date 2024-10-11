@@ -449,7 +449,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         tokio::pin!(shutdown);
 
         // Initial attach
-        let response = tokio::time::timeout(Duration::from_secs(5), self.attach())
+        let response = tokio::time::timeout(Duration::from_secs(10), self.attach())
             .await
             .context("Timeout waiting to attach to a cluster controller")??;
 

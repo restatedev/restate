@@ -17,7 +17,7 @@ use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::TaskCenter;
 use restate_types::config::Configuration;
-use restate_types::logs::{LogletOffset, RecordCache};
+use restate_types::logs::{LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail};
 use restate_types::replicated_loglet::{
     EffectiveNodeSet, ReplicatedLogletId, ReplicatedLogletParams,
@@ -140,6 +140,18 @@ impl<T: TransportConnect> FindTailTask<T> {
     }
 
     pub async fn run(self) -> FindTailResult {
+        // Special case:
+        // If all nodes in the nodeset is in "provisioning", we can confidently short-circuit
+        // the result to LogletOffset::Oldest and the loglet is definitely unsealed.
+        if self
+            .my_params
+            .nodeset
+            .all_provisioning(&self.networking.metadata().nodes_config_ref())
+        {
+            return FindTailResult::Open {
+                global_tail: LogletOffset::OLDEST,
+            };
+        }
         // Be warned, this is a complex state machine.
         //
         // We need two pieces of information

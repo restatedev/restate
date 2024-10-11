@@ -106,6 +106,7 @@ impl Appender {
                 Err(AppendError::Sealed) => {
                     info!(
                         attempt = attempt,
+                        segment_index = %loglet.segment_index(),
                         "Append batch will be retried (loglet being sealed), waiting for tail to be determined"
                     );
                     let new_loglet = Self::wait_next_unsealed_loglet(
@@ -124,7 +125,7 @@ impl Appender {
         }
     }
 
-    #[instrument(level = "debug" err, skip(retry_iter, bifrost_inner))]
+    #[instrument(level = "error" err, skip(retry_iter, bifrost_inner))]
     async fn wait_next_unsealed_loglet(
         log_id: LogId,
         bifrost_inner: &Arc<BifrostInner>,
@@ -146,7 +147,10 @@ impl Appender {
                 );
                 return Ok(loglet);
             } else {
-                debug!("Still waiting for sealing to complete");
+                debug!(
+                    "Still waiting for sealing to complete. Elapsed={:?}",
+                    start.elapsed(),
+                );
             }
         }
 

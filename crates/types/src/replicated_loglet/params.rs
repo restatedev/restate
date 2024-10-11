@@ -135,6 +135,15 @@ impl NodeSet {
                 .all(|storage_state| storage_state.is_disabled())
     }
 
+    pub fn all_provisioning(&self, nodes_config: &NodesConfiguration) -> bool {
+        self.is_empty()
+            || self
+                .0
+                .iter()
+                .map(|node_id| nodes_config.get_log_server_storage_state(node_id))
+                .all(|storage_state| storage_state.is_provisioning())
+    }
+
     pub fn remove(&mut self, node: &PlainNodeId) -> bool {
         self.0.remove(node)
     }
