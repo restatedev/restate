@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::fmt::Display;
 
+use rand::seq::SliceRandom;
 use serde_with::DisplayFromStr;
 
 use crate::nodes_config::NodesConfiguration;
@@ -160,6 +161,28 @@ impl NodeSet {
     pub fn to_effective(&self, nodes_config: &NodesConfiguration) -> EffectiveNodeSet {
         EffectiveNodeSet::new(self, nodes_config)
     }
+
+    /// Shuffles the nodes but puts our node-id at the end if it exists. In other words,
+    /// `pop()` will return our node if it's in the nodeset.
+    pub fn shuffle_for_reads(
+        self: &NodeSet,
+        my_node_id: impl Into<PlainNodeId>,
+    ) -> Vec<PlainNodeId> {
+        let my_node_id = my_node_id.into();
+        let mut new_nodeset: Vec<_> = self.iter().cloned().collect();
+        // Shuffle nodes
+        new_nodeset.shuffle(&mut rand::thread_rng());
+
+        let has_my_node_idx = self.iter().position(|&x| x == my_node_id);
+
+        // put my node at the end if it's there
+        if let Some(idx) = has_my_node_idx {
+            let len = new_nodeset.len();
+            new_nodeset.swap(idx, len - 1);
+        }
+
+        new_nodeset
+    }
 }
 
 impl<'a> IntoIterator for &'a NodeSet {
@@ -214,6 +237,7 @@ impl<A: Into<PlainNodeId>> FromIterator<A> for NodeSet {
     derive_more::AsRef,
     derive_more::DerefMut,
     derive_more::IntoIterator,
+    derive_more::Display,
     derive_more::Into,
 )]
 pub struct EffectiveNodeSet(NodeSet);

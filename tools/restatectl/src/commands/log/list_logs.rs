@@ -53,8 +53,11 @@ async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow:
 
     c_title!("📋", format!("Log Configuration {}", logs.version()));
 
+    println!("{:#?}", logs);
+
     // sort by log-id for display
     let logs: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
+
 
     for (log_id, chain) in logs {
         logs_table.add_row(vec![
