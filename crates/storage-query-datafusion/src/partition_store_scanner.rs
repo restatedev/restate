@@ -11,11 +11,12 @@
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 
+use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use futures::{Stream, StreamExt};
-use tracing::warn;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_types::identifiers::{PartitionId, PartitionKey};
@@ -68,13 +69,13 @@ where
         let tx = stream_builder.tx();
         let partition_store_manager = self.partition_store_manager.clone();
         let background_task = async move {
-            let Some(partition_store) = partition_store_manager
-                .get_partition_store(partition_id)
-                .await
-            else {
-                warn!("partition {} doesn't exist, this is benign if the partition is being transferred out of this node", partition_id);
-                return Ok(());
-            };
+            let partition_store = partition_store_manager.get_partition_store(partition_id).await.ok_or_else(|| {
+                // make sure that the consumer of this stream to learn about the fact that this node does not have
+                // that partition anymore, so that it can decide how to react to this.
+                // for example, they can retry or fail the query with a useful message.
+                let err = anyhow!("partition {} doesn't exist on this node, this is benign if the partition is being transferred out of/into this node.", partition_id);
+                DataFusionError::External(err.into())
+            })?;
 
             let rows = S::scan_partition_store(&partition_store, range);
             let mut builder = S::Builder::new(projection.clone());

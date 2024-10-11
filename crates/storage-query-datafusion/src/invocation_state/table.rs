@@ -35,10 +35,7 @@ pub(crate) fn register_self(
         SysInvocationStateBuilder::schema(),
         Arc::new(StatusScanner(status)),
     );
-
-    ctx.as_ref()
-        .register_table("sys_invocation_state", Arc::new(status_table))
-        .map(|_| ())
+    ctx.register_non_partitioned_table("sys_invocation_state", Arc::new(status_table))
 }
 
 #[derive(Debug, Clone)]

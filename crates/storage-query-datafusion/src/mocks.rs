@@ -8,15 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::ops::RangeInclusive;
-
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
 
 use restate_core::task_center;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
@@ -28,13 +29,19 @@ use restate_types::errors::GenericError;
 use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
 use restate_types::invocation::ServiceType;
 use restate_types::live::{Constant, Live};
+use restate_types::net::remote_query_scanner::{
+    RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
+    RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened,
+};
 use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
+use restate_types::NodeId;
 
 use super::context::QueryContext;
 use crate::context::SelectPartitions;
+use crate::remote_query_scanner_client::RemoteScannerService;
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MockSchemas(
@@ -93,6 +100,36 @@ impl SelectPartitions for MockPartitionSelector {
 #[allow(dead_code)]
 pub(crate) struct MockQueryEngine(PartitionStoreManager, PartitionStore, QueryContext);
 
+#[derive(Debug)]
+struct NoopSvc;
+
+#[async_trait]
+impl RemoteScannerService for NoopSvc {
+    async fn open(
+        &self,
+        _peer: NodeId,
+        _req: RemoteQueryScannerOpen,
+    ) -> Result<RemoteQueryScannerOpened, DataFusionError> {
+        panic!("remote service should not be used")
+    }
+
+    async fn next_batch(
+        &self,
+        _peer: NodeId,
+        _req: RemoteQueryScannerNext,
+    ) -> Result<RemoteQueryScannerNextResult, DataFusionError> {
+        panic!("remote service should not be used")
+    }
+
+    async fn close(
+        &self,
+        _peer: NodeId,
+        _req: RemoteQueryScannerClose,
+    ) -> Result<RemoteQueryScannerClosed, DataFusionError> {
+        panic!("remote service should not be used")
+    }
+}
+
 impl MockQueryEngine {
     pub async fn create_with(
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
@@ -135,6 +172,7 @@ impl MockQueryEngine {
                 manager,
                 status,
                 Live::from_value(schemas),
+                Arc::new(NoopSvc),
             )
             .await
             .unwrap(),
