@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -28,6 +29,7 @@ use super::network::RequestPump;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
 use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
+use crate::providers::replicated_loglet::tasks::PeriodicTailChecker;
 use crate::Error;
 
 pub struct Factory<T> {
@@ -79,6 +81,7 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
     async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
         metric_definitions::describe_metrics();
         let provider = Arc::new(ReplicatedLogletProvider::new(
+            self.task_center.clone(),
             self.metadata_store_client,
             self.networking,
             self.logserver_rpc_routers,
@@ -103,6 +106,7 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
 }
 
 pub(super) struct ReplicatedLogletProvider<T> {
+    task_center: TaskCenter,
     active_loglets: DashMap<(LogId, SegmentIndex), Arc<ReplicatedLoglet<T>>>,
     _metadata_store_client: MetadataStoreClient,
     networking: Networking<T>,
@@ -113,15 +117,15 @@ pub(super) struct ReplicatedLogletProvider<T> {
 
 impl<T: TransportConnect> ReplicatedLogletProvider<T> {
     fn new(
+        task_center: TaskCenter,
         metadata_store_client: MetadataStoreClient,
         networking: Networking<T>,
         logserver_rpc_routers: LogServersRpc,
         sequencer_rpc_routers: SequencersRpc,
         record_cache: RecordCache,
     ) -> Self {
-        // todo(asoli): create all global state here that'll be shared across loglet instances
-        // - NodeState map.
         Self {
+            task_center,
             active_loglets: Default::default(),
             _metadata_store_client: metadata_store_client,
             networking,
@@ -166,6 +170,7 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                     "Creating a replicated loglet client"
                 );
 
+                let loglet_id = params.loglet_id;
                 // Create loglet
                 let loglet = ReplicatedLoglet::new(
                     log_id,
@@ -177,6 +182,15 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                     self.record_cache.clone(),
                 );
                 let key_value = entry.insert(Arc::new(loglet));
+                let loglet = Arc::downgrade(key_value.value());
+                let _ = self.task_center.spawn(
+                    TaskKind::Watchdog,
+                    "periodic-tail-checker",
+                    None,
+                    async move {
+                        PeriodicTailChecker::run(loglet_id, loglet, Duration::from_secs(2)).await
+                    },
+                );
                 Arc::clone(key_value.value())
             }
             dashmap::Entry::Occupied(entry) => entry.get().clone(),
