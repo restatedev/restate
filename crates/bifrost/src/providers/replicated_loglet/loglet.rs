@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// todo(asoli): remove once this is fleshed out
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -37,16 +34,10 @@ use super::metric_definitions::{BIFROST_RECORDS_ENQUEUED_BYTES, BIFROST_RECORDS_
 use super::read_path::{ReadStreamTask, ReplicatedLogletReadStream};
 use super::remote_sequencer::RemoteSequencer;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
-use super::tasks::FindTailResult;
+use super::tasks::{CheckSealOutcome, CheckSealTask, FindTailResult};
 
 #[derive(derive_more::Debug)]
 pub(super) struct ReplicatedLoglet<T> {
-    /// This is used only to populate header of outgoing request to a remotely owned sequencer.
-    /// Otherwise, it's unused.
-    log_id: LogId,
-    /// This is used only to populate header of outgoing request to a remotely owned sequencer.
-    /// Otherwise, it's unused.
-    segment_index: SegmentIndex,
     my_params: ReplicatedLogletParams,
     #[debug(skip)]
     networking: Networking<T>,
@@ -61,8 +52,6 @@ pub(super) struct ReplicatedLoglet<T> {
     ///   should run a proper tail search.
     known_global_tail: TailOffsetWatch,
     sequencer: SequencerAccess<T>,
-    #[debug(skip)]
-    log_server_manager: RemoteLogServerManager,
 }
 
 impl<T: TransportConnect> ReplicatedLoglet<T> {
@@ -112,15 +101,12 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
             }
         };
         Self {
-            log_id,
-            segment_index,
             my_params,
             networking,
             logservers_rpc,
             record_cache,
             known_global_tail,
             sequencer,
-            log_server_manager,
         }
     }
 
@@ -202,7 +188,30 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
         match self.sequencer {
-            SequencerAccess::Local { .. } => Ok(*self.known_global_tail.get()),
+            SequencerAccess::Local { .. } => {
+                let latest_tail = *self.known_global_tail.get();
+                if latest_tail.is_sealed() {
+                    return Ok(latest_tail);
+                }
+                // We might have been sealed by external node and the sequencer is unaware. In this
+                // case, we run the a check seal task to determine if we suspect that sealing is
+                // happening.
+                let result = CheckSealTask::run(
+                    &self.my_params,
+                    &self.logservers_rpc.get_loglet_info,
+                    &self.known_global_tail,
+                    &self.networking,
+                )
+                .await?;
+                if result == CheckSealOutcome::Sealing {
+                    // We are likely to be sealing...
+                    // let's fire a seal to ensure this seal is complete
+                    if self.seal().await.is_ok() {
+                        self.known_global_tail.notify_seal();
+                    }
+                }
+                return Ok(*self.known_global_tail.get());
+            }
             SequencerAccess::Remote { .. } => {
                 let task = FindTailTask::new(
                     task_center(),
