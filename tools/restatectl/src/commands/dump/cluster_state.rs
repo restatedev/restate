@@ -63,7 +63,7 @@ async fn dump_cluster_state(
         .cluster_state
         .ok_or_else(|| anyhow::anyhow!("no cluster state returned"))?;
 
-    let mut processors: BTreeMap<u32, PartitionDetails> = BTreeMap::new();
+    let mut partitions: BTreeMap<u32, Vec<PartitionDetails>> = BTreeMap::new();
     let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
     for (node_id, node_state) in state.nodes {
         match node_state.state.expect("node state is set") {
@@ -79,12 +79,12 @@ async fn dump_cluster_state(
                     let host_node =
                         GenerationalNodeId::new(host.id, host.generation.expect("generation"));
                     let details = PartitionDetails { host_node, status };
-                    processors.insert(partition_id, details);
+                    partitions.entry(partition_id).or_default().push(details);
                 }
             }
         }
     }
-    // Show information organized by partition
+    // Show information organized by partition and node
     let mut partitions_table = Table::new_styled();
     partitions_table.set_styled_header(vec![
         "P-ID",
@@ -97,49 +97,52 @@ async fn dump_cluster_state(
         "# SKIPS",
         "LAST REFRESH",
     ]);
-    for (partition_id, details) in processors {
-        partitions_table.add_row(vec![
-            Cell::new(partition_id),
-            Cell::new(details.host_node),
-            render_mode(
-                details.status.planned_mode(),
-                details.status.effective_mode(),
-            ),
-            render_replay_status(
-                details.status.replay_status(),
-                details.status.target_tail_lsn.map(Into::into),
-            ),
-            Cell::new(
-                details
-                    .status
-                    .last_applied_log_lsn
-                    .map(|x| x.to_string())
-                    .unwrap_or("??".to_owned()),
-            ),
-            Cell::new(
-                details
-                    .status
-                    .last_persisted_log_lsn
-                    .map(|x| x.to_string())
-                    .unwrap_or("??".to_owned()),
-            ),
-            Cell::new(format!(
-                "{} - {}",
-                details
-                    .status
-                    .last_observed_leader_node
-                    .map(|x| x.to_string())
-                    .unwrap_or("??".to_owned()),
-                details
-                    .status
-                    .last_observed_leader_epoch
-                    .map(|x| x.to_string())
-                    .unwrap_or("??".to_owned()),
-            )),
-            Cell::new(details.status.num_skipped_records),
-            render_as_duration(details.status.updated_at, Tense::Past),
-        ]);
+    for (partition_id, processors) in partitions {
+        for details in processors {
+            partitions_table.add_row(vec![
+                Cell::new(partition_id),
+                Cell::new(details.host_node),
+                render_mode(
+                    details.status.planned_mode(),
+                    details.status.effective_mode(),
+                ),
+                render_replay_status(
+                    details.status.replay_status(),
+                    details.status.target_tail_lsn.map(Into::into),
+                ),
+                Cell::new(
+                    details
+                        .status
+                        .last_applied_log_lsn
+                        .map(|x| x.to_string())
+                        .unwrap_or("??".to_owned()),
+                ),
+                Cell::new(
+                    details
+                        .status
+                        .last_persisted_log_lsn
+                        .map(|x| x.to_string())
+                        .unwrap_or("??".to_owned()),
+                ),
+                Cell::new(format!(
+                    "{} - {}",
+                    details
+                        .status
+                        .last_observed_leader_node
+                        .map(|x| x.to_string())
+                        .unwrap_or("??".to_owned()),
+                    details
+                        .status
+                        .last_observed_leader_epoch
+                        .map(|x| x.to_string())
+                        .unwrap_or("??".to_owned()),
+                )),
+                Cell::new(details.status.num_skipped_records),
+                render_as_duration(details.status.updated_at, Tense::Past),
+            ]);
+        }
     }
+    c_title!("🔄️", "ALIVE PARTITION PROCESSORS");
     c_println!("{}", partitions_table);
 
     if !dead_nodes.is_empty() {
