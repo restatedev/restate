@@ -339,6 +339,7 @@ pub mod test_util {
     use crate::network::MessageHandler;
     use crate::network::MessageRouterBuilder;
     use crate::network::NetworkError;
+    use crate::network::PeerMetadataVersion;
     use crate::network::ProtocolError;
     use crate::network::TransportConnect;
     use crate::TaskCenter;
@@ -735,6 +736,7 @@ pub mod test_util {
                                 self.connection.downgrade(),
                                 header.msg_id,
                                 header.in_response_to,
+                                PeerMetadataVersion::from(header),
                             ),
                             self.connection.protocol_version,
                         )

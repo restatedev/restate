@@ -370,7 +370,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::network::WeakConnection;
+    use crate::network::{PeerMetadataVersion, WeakConnection};
 
     use super::*;
     use futures::future::join_all;
@@ -438,6 +438,7 @@ mod test {
                 WeakConnection::new_closed(GenerationalNodeId::new(1, 1)),
                 1,
                 Some(42),
+                PeerMetadataVersion::default(),
             ))
             .await;
 
@@ -450,6 +451,7 @@ mod test {
             WeakConnection::new_closed(GenerationalNodeId::new(1, 1)),
             1,
             Some(42),
+            PeerMetadataVersion::default(),
         ));
         assert!(maybe_msg.is_some());
 
@@ -464,6 +466,7 @@ mod test {
                 WeakConnection::new_closed(GenerationalNodeId::new(1, 1)),
                 1,
                 Some(1),
+                PeerMetadataVersion::default(),
             ))
             .await;
 
@@ -505,6 +508,7 @@ mod test {
                     WeakConnection::new_closed(GenerationalNodeId::new(0, 0)),
                     1,
                     Some(idx),
+                    PeerMetadataVersion::default(),
                 ));
             });
 

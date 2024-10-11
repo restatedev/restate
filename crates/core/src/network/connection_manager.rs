@@ -39,7 +39,7 @@ use super::transport_connector::TransportConnect;
 use super::{Handler, MessageRouter};
 use crate::metadata::Urgency;
 use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
-use crate::network::Incoming;
+use crate::network::{Incoming, PeerMetadataVersion};
 use crate::Metadata;
 use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
 
@@ -592,6 +592,7 @@ where
                             connection.downgrade(),
                             header.msg_id,
                             header.in_response_to,
+                            PeerMetadataVersion::from(header),
                         ),
                         connection.protocol_version,
                     )
@@ -641,6 +642,7 @@ where
                             WeakConnection::new_closed(peer_node_id),
                             header.msg_id,
                             header.in_response_to,
+                            PeerMetadataVersion::from(header),
                         ),
                         protocol_version,
                     )
