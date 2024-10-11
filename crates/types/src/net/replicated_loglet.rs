@@ -29,6 +29,13 @@ define_rpc! {
     @response_target = TargetName::ReplicatedLogletAppended,
 }
 
+define_rpc! {
+    @request = GetSequencerState,
+    @response = SequencerState,
+    @request_target = TargetName::ReplicatedLogletGetSequencerState,
+    @response_target = TargetName::ReplicatedLogletSequencerState,
+}
+
 /// Status of sequencer response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SequencerStatus {
@@ -145,4 +152,16 @@ impl Appended {
         self.header.status = status;
         self
     }
+}
+
+// ** GET_TAIL_INFO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSequencerState {
+    #[serde(flatten)]
+    pub header: CommonRequestHeader,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequencerState {
+    pub header: CommonResponseHeader,
 }
