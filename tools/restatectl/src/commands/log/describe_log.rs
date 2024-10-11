@@ -51,7 +51,7 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
     };
     let response = client.describe_log(req).await?.into_inner();
 
-    c_title!("📋", format!("Log {}", response.log_id));
+    c_title!("📋", format!("LOG {}", response.log_id));
 
     let mut table = Table::new_styled();
     table.add_row(vec![
@@ -67,6 +67,7 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
     let mut buf = response.chain.clone();
     let chain = StorageCodec::decode::<Chain, _>(&mut buf)?;
 
+    let mut tail_segment = None;
     let tail_base_lsn = chain.tail().base_lsn;
     for (idx, segment) in chain.iter().enumerate() {
         let is_tail_segment = segment.base_lsn == tail_base_lsn;
@@ -77,10 +78,19 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
             render_tail_lsn(is_tail_segment, &response),
             Cell::new(format!("{:?}", segment.config.kind)),
         ]);
+        if is_tail_segment {
+            tail_segment = Some(segment);
+        }
     }
     c_println!();
     c_println!("Segments");
     c_println!("{}", chain_table);
+
+    if let Some(tail_segment) = tail_segment {
+        c_title!("🔗", "TAIL SEGMENT");
+        let config = tail_segment.config.params.as_bytes().escape_ascii().to_string();
+        c_println!("Configuration:\n\n{}", config);
+    }
 
     Ok(())
 }
