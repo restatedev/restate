@@ -567,7 +567,7 @@ impl StartedNode {
 
     pub async fn last_n_lines(&self, n: usize) -> Result<Vec<String>, rev_lines::RevLinesError> {
         let log_file = self.log_file.clone();
-        match tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let log_file = std::fs::File::open(log_file)?;
             let mut lines = Vec::with_capacity(n);
             for line in RevLines::new(log_file).take(n) {
@@ -576,10 +576,7 @@ impl StartedNode {
             Ok(lines)
         })
         .await
-        {
-            Ok(res) => res,
-            Err(_) => Err(io::Error::other("background task failed").into()),
-        }
+        .unwrap_or_else(|_| Err(io::Error::other("background task failed").into()))
     }
 
     pub fn ingress_address(&self) -> Option<&SocketAddr> {
