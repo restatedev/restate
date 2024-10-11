@@ -62,7 +62,13 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
     c_println!("{}", table);
 
     let mut chain_table = Table::new_styled();
-    chain_table.set_styled_header(vec!["SEGMENT", "STATE", "BASE LSN", "TAIL LSN", "KIND"]);
+    chain_table.set_styled_header(vec![
+        "SEGMENT",
+        "STATE",
+        "SEGMENT START",
+        "SEGMENT TAIL",
+        "LOGLET KIND",
+    ]);
 
     let mut buf = response.chain.clone();
     let chain = StorageCodec::decode::<Chain, _>(&mut buf)?;
