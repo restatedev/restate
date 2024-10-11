@@ -11,7 +11,9 @@
 use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
+use anyhow::anyhow;
 use codederror::CodedError;
 use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
@@ -22,18 +24,22 @@ use tracing::{debug, info, warn};
 
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::network::{Incoming, MessageRouterBuilder, Networking, TransportConnect};
+use restate_core::network::rpc_router::RpcRouter;
+use restate_core::network::{
+    Incoming, MessageRouterBuilder, NetworkSender, Networking, TransportConnect,
+};
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
     TaskKind,
 };
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, NodeState};
 use restate_types::config::{AdminOptions, Configuration};
-use restate_types::identifiers::PartitionId;
+use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
 use restate_types::net::metadata::MetadataKind;
+use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
 use restate_types::{GenerationalNodeId, Version};
 
 use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
@@ -52,6 +58,7 @@ pub struct Service<T> {
     networking: Networking<T>,
     incoming_messages: Pin<Box<dyn Stream<Item = Incoming<AttachRequest>> + Send + Sync + 'static>>,
     cluster_state_refresher: ClusterStateRefresher<T>,
+    processor_manager_client: PartitionProcessorManagerClient<Networking<T>>,
     command_tx: mpsc::Sender<ClusterControllerCommand>,
     command_rx: mpsc::Receiver<ClusterControllerCommand>,
 
@@ -86,8 +93,10 @@ where
             router_builder,
         );
 
-        let options = configuration.live_load();
+        let processor_manager_client =
+            PartitionProcessorManagerClient::new(networking.clone(), router_builder);
 
+        let options = configuration.live_load();
         let heartbeat_interval = Self::create_heartbeat_interval(&options.admin);
         let (log_trim_interval, log_trim_threshold) =
             Self::create_log_trim_interval(&options.admin);
@@ -101,6 +110,7 @@ where
             cluster_state_refresher,
             metadata_writer,
             metadata_store_client,
+            processor_manager_client,
             command_tx,
             command_rx,
             heartbeat_interval,
@@ -132,12 +142,17 @@ where
     }
 }
 
+#[derive(Debug)]
 enum ClusterControllerCommand {
     GetClusterState(oneshot::Sender<Arc<ClusterState>>),
     TrimLog {
         log_id: LogId,
         trim_point: Lsn,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
+    },
+    CreateSnapshot {
+        partition_id: PartitionId,
+        response_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
     },
 }
 
@@ -168,6 +183,23 @@ impl ClusterControllerHandle {
             .send(ClusterControllerCommand::TrimLog {
                 log_id,
                 trim_point,
+                response_tx: tx,
+            })
+            .await;
+
+        rx.await.map_err(|_| ShutdownError)
+    }
+
+    pub async fn create_partition_snapshot(
+        &self,
+        partition_id: PartitionId,
+    ) -> Result<Result<SnapshotId, anyhow::Error>, ShutdownError> {
+        let (tx, rx) = oneshot::channel();
+
+        let _ = self
+            .tx
+            .send(ClusterControllerCommand::CreateSnapshot {
+                partition_id,
                 response_tx: tx,
             })
             .await;
@@ -318,6 +350,61 @@ impl<T: TransportConnect> Service<T> {
         Ok(())
     }
 
+    /// Triggers a snapshot creation for the given partition by issuing an RPC
+    /// to the node hosting the active leader.
+    async fn create_partition_snapshot(
+        &self,
+        partition_id: PartitionId,
+        response_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
+    ) {
+        let cluster_state = self.cluster_state_refresher.get_cluster_state();
+
+        // For now, we just pick the leader node since we know that every partition is likely to
+        // have one. We'll want to update the algorithm to be smart about scheduling snapshot tasks
+        // in the future to avoid disrupting the leader when there are up-to-date followers.
+        let leader_node = cluster_state
+            .alive_nodes()
+            .filter_map(|node| {
+                node.partitions
+                    .get(&partition_id)
+                    .filter(|status| status.is_effective_leader())
+                    .map(|_| node)
+                    .cloned()
+            })
+            .next();
+
+        match leader_node {
+            Some(node) => {
+                debug!(
+                    node_id = %node.generational_node_id,
+                    ?partition_id,
+                    "Asking node to snapshot partition"
+                );
+
+                let mut node_rpc_client = self.processor_manager_client.clone();
+                let _ = self.task_center.spawn_child(
+                    TaskKind::Disposable,
+                    "create-snapshot-response",
+                    Some(partition_id),
+                    async move {
+                        let _ = response_tx.send(
+                            node_rpc_client
+                                .create_snapshot(node.generational_node_id, partition_id)
+                                .await,
+                        );
+                        Ok(())
+                    },
+                );
+            }
+
+            None => {
+                let _ = response_tx.send(Err(anyhow::anyhow!(
+                    "Can not find a suitable node to take snapshot of partition {partition_id}"
+                )));
+            }
+        };
+    }
+
     async fn on_cluster_cmd(
         &self,
         command: ClusterControllerCommand,
@@ -338,6 +425,14 @@ impl<T: TransportConnect> Service<T> {
                     "Manual trim log command received");
                 let result = bifrost_admin.trim(log_id, trim_point).await;
                 let _ = response_tx.send(result.map_err(Into::into));
+            }
+            ClusterControllerCommand::CreateSnapshot {
+                partition_id,
+                response_tx,
+            } => {
+                info!(?partition_id, "Create snapshot command received");
+                self.create_partition_snapshot(partition_id, response_tx)
+                    .await;
             }
         }
     }
@@ -405,6 +500,50 @@ async fn signal_all_partitions_started(
                 return Ok(());
             }
         }
+    }
+}
+
+#[derive(Clone)]
+struct PartitionProcessorManagerClient<N>
+where
+    N: Clone,
+{
+    network_sender: N,
+    create_snapshot_router: RpcRouter<CreateSnapshotRequest>,
+}
+
+impl<N> PartitionProcessorManagerClient<N>
+where
+    N: NetworkSender + 'static,
+{
+    pub fn new(network_sender: N, router_builder: &mut MessageRouterBuilder) -> Self {
+        let create_snapshot_router = RpcRouter::new(router_builder);
+
+        PartitionProcessorManagerClient {
+            network_sender,
+            create_snapshot_router,
+        }
+    }
+
+    pub async fn create_snapshot(
+        &mut self,
+        node_id: GenerationalNodeId,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<SnapshotId> {
+        // todo(pavel): make snapshot RPC timeout configurable, especially if this includes remote upload in the future
+        let response = tokio::time::timeout(
+            Duration::from_secs(30),
+            self.create_snapshot_router.call(
+                &self.network_sender,
+                node_id,
+                CreateSnapshotRequest { partition_id },
+            ),
+        )
+        .await?;
+        let create_snapshot_response = response?.into_body();
+        create_snapshot_response
+            .result
+            .map_err(|e| anyhow!("Failed to create snapshot: {:?}", e))
     }
 }
 

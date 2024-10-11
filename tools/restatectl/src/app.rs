@@ -21,6 +21,7 @@ use crate::commands::log::Log;
 use crate::commands::metadata::Metadata;
 use crate::commands::node::Node;
 use crate::commands::partitions::Partitions;
+use crate::commands::snapshot::Snapshot;
 
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
@@ -58,6 +59,9 @@ pub enum Command {
     /// Cluster metadata
     #[clap(subcommand)]
     Metadata(Metadata),
+    /// Partition processor snapshots
+    #[clap(subcommand)]
+    Snapshots(Snapshot),
 }
 
 fn init(common_opts: &CommonOpts) {
