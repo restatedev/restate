@@ -8,21 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod describe_log;
-mod dump_log;
-mod list_logs;
-mod trim_log;
+use clap::Subcommand;
+use cling::Run;
 
-use cling::prelude::*;
+mod create;
+mod list;
+
+const KEY_METADATA_LOGS: &str = "bifrost_config";
 
 #[derive(Run, Subcommand, Clone)]
-pub enum Log {
+pub enum Logs {
     /// List the logs by partition
-    List(list_logs::ListLogsOpts),
-    /// Get the details of a specific log
-    Describe(describe_log::DescribeLogIdOpts),
-    /// Dump the contents of a bifrost log
-    Dump(dump_log::DumpLogOpts),
-    /// Trim a log to a particular Log Sequence Number (LSN)
-    Trim(trim_log::TrimLogOpts),
+    List(list::ListLogsOpts),
+    /// Generate/update log chain configurations
+    CreateLogConfig(create::CreateLogConfigOpts),
 }
