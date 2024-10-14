@@ -6,7 +6,7 @@ replicated_loglet_params {
   loglet_id = 1
   sequencer = "N1:1"
   replication {
-    ["node"] = 3
+    ["node"] = 2
   }
   nodeset = new { "N1" "N2" "N3" }
 }
