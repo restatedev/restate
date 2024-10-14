@@ -135,6 +135,9 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
         }
     }
 
+    pub(crate) fn networking(&self) -> &Networking<T> {
+        &self.networking
+    }
     /// Gets a loglet if it's already have been activated
     pub(crate) fn get_active_loglet(
         &self,
