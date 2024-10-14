@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::fmt::Display;
 
+use itertools::sorted;
 use rand::seq::SliceRandom;
 use serde_with::DisplayFromStr;
 
@@ -91,14 +92,7 @@ pub struct NodeSet(#[serde_as(as = "HashSet<DisplayFromStr>")] HashSet<PlainNode
 
 impl Display for NodeSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[")?;
-        for (i, id) in self.0.iter().enumerate() {
-            if i != 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{}", id)?;
-        }
-        write!(f, "]")
+        write_sorted(self.0.iter().copied(), f)
     }
 }
 
@@ -237,7 +231,6 @@ impl<A: Into<PlainNodeId>> FromIterator<A> for NodeSet {
     derive_more::AsRef,
     derive_more::DerefMut,
     derive_more::IntoIterator,
-    derive_more::Display,
     derive_more::Into,
 )]
 pub struct EffectiveNodeSet(NodeSet);
@@ -252,4 +245,28 @@ impl EffectiveNodeSet {
                 .collect(),
         )
     }
+}
+
+impl Display for EffectiveNodeSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match f.alternate() {
+            true => write_sorted(self.0.iter().copied(), f),
+            false => write!(f, "{:?}", self.0),
+        }
+    }
+}
+
+fn write_sorted(
+    nodes: impl Iterator<Item = PlainNodeId>,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    write!(f, "[")?;
+    let mut nodes = sorted(nodes);
+    if let Some(node) = nodes.next() {
+        write!(f, "{}", node)?;
+        for node in nodes {
+            write!(f, ", {}", node)?;
+        }
+    }
+    write!(f, "]")
 }

@@ -60,14 +60,14 @@ async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow:
         logs_table.add_row(vec![
             Cell::new(log_id),
             Cell::new(chain.num_segments()).fg(Color::DarkGrey),
+            Cell::new(format!("{:?}", chain.tail().config.kind)),
             Cell::new(format!("{}", &chain.tail().base_lsn))
                 .fg(Color::Green)
                 .add_attribute(Attribute::Bold),
-            Cell::new(format!("{:?}", chain.tail().config.kind)),
         ]);
     }
 
-    logs_table.set_styled_header(vec!["LOG-ID", "SEGMENTS", "TAIL BASE LSN", "KIND"]);
+    logs_table.set_styled_header(vec!["LOG-ID", "SEGMENTS", "TAIL-SEGMENT-KIND", "FROM-LSN"]);
     c_println!("{}", logs_table);
 
     Ok(())

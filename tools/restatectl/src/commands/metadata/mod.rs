@@ -37,7 +37,12 @@ pub enum Metadata {
 #[clap()]
 pub struct MetadataCommonOpts {
     /// Metadata store server address; for Etcd addresses use comma-separated list
-    #[arg(short, long = "address", default_value = "http://127.0.0.1:5123")]
+    #[arg(
+        short,
+        long = "address",
+        default_value = "http://127.0.0.1:5123",
+        env = "RESTATE_METADATA_ADDRESS"
+    )]
     address: String,
 
     /// Metadata store access mode
