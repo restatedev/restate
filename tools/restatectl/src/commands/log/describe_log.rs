@@ -8,10 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
+use std::str::FromStr;
+use std::string::ParseError;
+
+use anyhow::{anyhow, Context};
+use clap::builder::ValueRange;
 use cling::prelude::*;
 use itertools::Itertools;
 use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::DescribeLogRequest;
@@ -26,13 +31,53 @@ use restate_types::storage::StorageCodec;
 use crate::app::ConnectionInfo;
 use crate::util::grpc_connect;
 
+#[derive(Parser, Collect, Clone, Debug)]
+struct LogIdRange {
+    from: u32,
+    to: u32,
+}
+
+impl LogIdRange {
+    fn new(from: u32, to: u32) -> anyhow::Result<Self> {
+        if from > to {
+            Err(anyhow!("Invalid log id range: {}..{}", from, to))
+        } else {
+            Ok(LogIdRange { from, to })
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = u32> {
+        self.from..=self.to
+    }
+}
+
+impl FromStr for LogIdRange {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split("-").collect();
+        match parts.len() {
+            1 => {
+                let n = parts[0].parse()?;
+                Ok(LogIdRange::new(n, n)?)
+            }
+            2 => {
+                let from = parts[0].parse()?;
+                let to = parts[1].parse()?;
+                Ok(LogIdRange::new(from, to)?)
+            }
+            _ => Err(anyhow!("Invalid log id or log range: {}", s)),
+        }
+    }
+}
+
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
-#[cling(run = "describe_log")]
+#[cling(run = "describe_logs")]
 pub struct DescribeLogIdOpts {
-    /// The log id to describe
-    #[arg(short, long)]
-    log_id: u32,
+    /// The log id(s) to describe
+    #[arg(required = true, value_parser = value_parser!(LogIdRange))]
+    log_id: Vec<LogIdRange>,
 
     /// The first segment id to display
     #[arg(long)]
@@ -42,24 +87,28 @@ pub struct DescribeLogIdOpts {
     #[arg(long, conflicts_with_all = ["from_segment_id"])]
     skip: Option<usize>,
 
-    /// Print the last N segments
-    #[arg(long, default_value = "true", conflicts_with = "head")]
-    tail: bool,
+    /// Print the last N log segments
+    #[arg(
+        long,
+        default_value = "true",
+        conflicts_with = "head",
+        default_value = "25"
+    )]
+    tail: Option<usize>,
 
-    /// Print the first N segments
+    /// Print the first N log segments
     #[arg(long)]
-    head: bool,
-
-    /// Display at most N segments
-    #[arg(long, default_value = "25")]
-    max_results: usize,
+    head: Option<usize>,
 
     /// Display all available segments, ignoring max results
-    #[arg(long, conflicts_with_all = ["head", "tail", "max_results"])]
+    #[arg(long, conflicts_with_all = ["head", "tail"])]
     display_all: bool,
 }
 
-async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> anyhow::Result<()> {
+async fn describe_logs(
+    connection: &ConnectionInfo,
+    opts: &DescribeLogIdOpts,
+) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
         .with_context(|| {
@@ -68,19 +117,32 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
                 connection.cluster_controller
             )
         })?;
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    let req = DescribeLogRequest {
-        log_id: opts.log_id,
-    };
+    let client = ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+
+    for range in &opts.log_id {
+        for log_id in range.iter() {
+            describe_log(log_id, client.clone(), opts).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn describe_log(
+    log_id: u32,
+    mut client: ClusterCtrlSvcClient<Channel>,
+    opts: &DescribeLogIdOpts,
+) -> anyhow::Result<()> {
+    let req = DescribeLogRequest { log_id: log_id };
     let mut response = client.describe_log(req).await?.into_inner();
 
     let mut buf = response.chain.clone();
     let chain = StorageCodec::decode::<Chain, _>(&mut buf)?;
 
+    c_title!("📜", format!("LOG {}", log_id,));
+
     let mut header = Table::new_styled();
-    header.add_row(vec!["Log id", &format!("{}", response.log_id)]);
     header.add_row(vec![
         "Metadata version",
         &format!("v{}", response.logs_version),
@@ -125,10 +187,10 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
 
     let segments: Box<dyn Iterator<Item = Segment>> = if opts.display_all {
         Box::new(segments)
-    } else if opts.head {
-        Box::new(segments.take(opts.max_results))
+    } else if opts.head.is_some() {
+        Box::new(segments.take(opts.head.unwrap()))
     } else {
-        Box::new(segments.tail(opts.max_results))
+        Box::new(segments.tail(opts.tail.unwrap()))
     };
 
     for segment in segments {
@@ -210,6 +272,7 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
         )
     );
     c_println!("{}", chain_table);
+    c_println!();
 
     Ok(())
 }
