@@ -19,8 +19,8 @@ use tonic::transport::Channel;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::DescribeLogRequest;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
+use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::{c_println, c_title};
 use restate_types::logs::metadata::{Chain, ProviderKind, Segment, SegmentIndex};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
@@ -38,7 +38,11 @@ struct LogIdRange {
 impl LogIdRange {
     fn new(from: u32, to: u32) -> anyhow::Result<Self> {
         if from > to {
-            Err(anyhow!("Invalid log id range: {}..{}", from, to))
+            Err(anyhow!(
+                "Invalid log id range: {}..{}, start must be <= end range",
+                from,
+                to
+            ))
         } else {
             Ok(LogIdRange { from, to })
         }
@@ -100,7 +104,7 @@ pub struct DescribeLogIdOpts {
 
     /// Display all available segments, ignoring max results
     #[arg(long, conflicts_with_all = ["head", "tail"])]
-    display_all: bool,
+    all: bool,
 }
 
 async fn describe_logs(
@@ -138,24 +142,15 @@ async fn describe_log(
     let mut buf = response.chain.clone();
     let chain = StorageCodec::decode::<Chain, _>(&mut buf)?;
 
-    c_title!("📜", format!("LOG {}", log_id,));
-
-    let mut header = Table::new_styled();
-    header.add_row(vec![
-        "Metadata version",
-        &format!("v{}", response.logs_version),
-    ]);
-    header.add_row(vec!["Trim point", &format!("{}", response.trim_point)]);
-    c_println!("{}", header);
-    c_println!();
+    c_println!("Log Id: {}: (v{})", log_id, response.logs_version);
 
     let mut chain_table = Table::new_styled();
     chain_table.set_styled_header(vec![
         "", // tail segment marker
         "IDX",
+        "FROM-LSN",
         "KIND",
         "LOGLET-ID",
-        "FROM-LSN",
         "REPLICATION",
         "SEQUENCER",
         "EFF-NODESET",
@@ -183,7 +178,7 @@ async fn describe_log(
         _ => Box::new(chain.iter()),
     };
 
-    let segments: Box<dyn Iterator<Item = Segment>> = if opts.display_all {
+    let segments: Box<dyn Iterator<Item = Segment>> = if opts.all {
         Box::new(segments)
     } else if opts.head.is_some() {
         Box::new(segments.take(opts.head.unwrap()))
@@ -210,9 +205,9 @@ async fn describe_log(
                         chain_table.add_row(vec![
                             render_tail_segment_marker(is_tail_segment),
                             Cell::new(format!("{}", segment.index())),
+                            Cell::new(format!("{}", segment.base_lsn)),
                             Cell::new(format!("{:?}", segment.config.kind)),
                             Cell::new(format!("{}", params.loglet_id)),
-                            Cell::new(format!("{}", segment.base_lsn)),
                             Cell::new(format!("{:#}", params.replication)),
                             render_sequencer(is_tail_segment, &params, &nodes_configuration),
                             render_effective_nodeset(
@@ -223,12 +218,13 @@ async fn describe_log(
                         ]);
                     }
                     None => {
+                        // We couldn't deserialize the params, we should log an error
                         chain_table.add_row(vec![
                             render_tail_segment_marker(is_tail_segment),
                             Cell::new(format!("{}", segment.index())),
+                            Cell::new(format!("{}", segment.base_lsn)),
                             Cell::new(format!("{:?}", segment.config.kind)),
                             Cell::new("N/A"),
-                            Cell::new(format!("{}", segment.base_lsn)),
                             Cell::new("N/A"),
                             Cell::new("N/A"),
                             Cell::new("N/A"),
@@ -240,9 +236,9 @@ async fn describe_log(
                 chain_table.add_row(vec![
                     render_tail_segment_marker(is_tail_segment),
                     Cell::new(format!("{}", segment.index())),
+                    Cell::new(format!("{}", segment.base_lsn)),
                     Cell::new(format!("{:?}", segment.config.kind)),
                     Cell::new(""),
-                    Cell::new(format!("{}", segment.base_lsn)),
                     Cell::new(""),
                     Cell::new(""),
                     Cell::new(""),
@@ -261,15 +257,13 @@ async fn describe_log(
         return Ok(());
     }
 
-    c_title!(
-        "🔗",
-        format!(
-            "LOG SEGMENTS [{}..{}]",
-            first_segment_rendered.unwrap(),
-            last_segment_rendered.unwrap()
-        )
-    );
     c_println!("{}", chain_table);
+    c_println!("---");
+    c_println!(
+        "{}/{} segments shown.",
+        chain_table.row_count(),
+        chain.num_segments()
+    );
     c_println!();
 
     Ok(())
@@ -298,22 +292,11 @@ fn render_effective_nodeset(
     nodes_configuration: &NodesConfiguration,
 ) -> Cell {
     let effective_node_set = params.nodeset.to_effective(nodes_configuration);
-
-    let color = match (is_tail, effective_node_set.len()) {
-        (false, _) => Color::DarkGrey,
-        (_, n) => {
-            // todo: update crude replication health color-coding to use majority check
-            if n >= params.replication.num_copies() as usize {
-                Color::Green
-            } else if n == 0 {
-                Color::Red
-            } else {
-                Color::DarkYellow
-            }
-        }
-    };
-
-    Cell::new(format!("{:#}", effective_node_set)).fg(color)
+    let mut cell = Cell::new(format!("{:#}", effective_node_set));
+    if is_tail && effective_node_set.len() < params.replication.num_copies() as usize {
+        cell = cell.fg(Color::Red);
+    }
+    cell
 }
 
 fn render_sequencer(
