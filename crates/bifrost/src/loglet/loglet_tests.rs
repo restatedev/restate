@@ -492,14 +492,17 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
     let first_observed_seal = tokio::task::spawn({
         let loglet = loglet.clone();
         async move {
-            loop {
-                let res = loglet.find_tail().await.expect("find_tail succeeds");
-                if res.is_sealed() {
-                    return res.offset();
+            tc.run_in_scope("find-tail", None, async move {
+                loop {
+                    let res = loglet.find_tail().await.expect("find_tail succeeds");
+                    if res.is_sealed() {
+                        return res.offset();
+                    }
+                    // give a chance to other tasks to work
+                    tokio::task::yield_now().await;
                 }
-                // give a chance to other tasks to work
-                tokio::task::yield_now().await;
-            }
+            })
+            .await
         }
     });
 
