@@ -25,11 +25,11 @@ use restate_types::net::metadata::MetadataContainer;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
-use restate_types::{GenerationalNodeId, NodeId, Version, Versioned};
+use restate_types::{GenerationalNodeId, Version, Versioned};
 
 use crate::metadata::manager::Command;
 use crate::metadata_store::ReadError;
-use crate::network::TransportConnect;
+use crate::network::WeakConnection;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 
 #[derive(Debug, thiserror::Error)]
@@ -213,12 +213,12 @@ impl Metadata {
     }
 
     /// Notifies the metadata manager about a newly observed metadata version for the given kind.
-    /// If the metadata can be retrieved from a node, then the [`NodeId`] can be included as well.
+    /// If the metadata can be retrieved from a node, then a connection to this node can be included.
     pub fn notify_observed_version(
         &self,
         metadata_kind: MetadataKind,
         version: Version,
-        remote_location: Option<NodeId>,
+        remote_peer: Option<WeakConnection>,
         urgency: Urgency,
     ) {
         // check whether the version is newer than what we know
@@ -240,7 +240,7 @@ impl Metadata {
                         // Create the arc outside of loop to avoid reallocations in case of contention;
                         // maybe this is guarding too much against the contended case.
                         let new_version_information =
-                            Arc::new(VersionInformation::new(version, remote_location));
+                            Arc::new(VersionInformation::new(version, remote_peer));
 
                         // maybe a simple Arc<Mutex<VersionInformation>> works better? Needs a benchmark.
                         loop {
@@ -352,9 +352,9 @@ impl Default for VersionWatch {
     }
 }
 
-pub fn spawn_metadata_manager<T: TransportConnect>(
+pub fn spawn_metadata_manager(
     tc: &TaskCenter,
-    metadata_manager: MetadataManager<T>,
+    metadata_manager: MetadataManager,
 ) -> Result<TaskId, ShutdownError> {
     tc.spawn(
         TaskKind::MetadataBackgroundSync,
@@ -367,23 +367,23 @@ pub fn spawn_metadata_manager<T: TransportConnect>(
 #[derive(Debug, Clone)]
 struct VersionInformation {
     version: Version,
-    remote_node: Option<NodeId>,
+    remote_peer: Option<WeakConnection>,
 }
 
 impl Default for VersionInformation {
     fn default() -> Self {
         Self {
             version: Version::INVALID,
-            remote_node: None,
+            remote_peer: None,
         }
     }
 }
 
 impl VersionInformation {
-    fn new(version: Version, remote_location: Option<NodeId>) -> Self {
+    fn new(version: Version, remote_peer: Option<WeakConnection>) -> Self {
         Self {
             version,
-            remote_node: remote_location,
+            remote_peer,
         }
     }
 }
