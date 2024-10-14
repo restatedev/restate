@@ -26,12 +26,12 @@ use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
 use restate_rocksdb::RocksDbManager;
 use restate_server::build_info;
-use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
 use restate_types::art::render_restate_logo;
 use restate_types::config::CommonOptionCliOverride;
 use restate_types::config::{node_dir, Configuration};
+use restate_types::config_loader::ConfigLoaderBuilder;
 
 mod signal;
 

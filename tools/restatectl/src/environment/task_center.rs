@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use tracing::warn;
 
 use restate_core::{TaskCenter, TaskCenterBuilder};
-use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_types::config::Configuration;
+use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::Pinned;
 
 /// Loads configuration, creates a task center, executes the supplied function body in scope of TC, and shuts down.

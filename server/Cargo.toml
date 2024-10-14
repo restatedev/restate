@@ -46,11 +46,8 @@ clap = { workspace = true, features = ["derive", "env", "color", "help", "wrap_h
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 enumset = { workspace = true }
-figment = { version = "0.10.8", features = ["env", "toml"] }
 futures-util = { workspace = true }
 humantime = { workspace = true }
-notify = { version = "6.0.1" }
-notify-debouncer-mini = { version = "0.4.1" }
 pin-project = { workspace = true }
 rlimit = { workspace = true }
 rocksdb = { workspace = true }
