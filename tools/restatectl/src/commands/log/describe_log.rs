@@ -9,10 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use std::str::FromStr;
-use std::string::ParseError;
 
 use anyhow::{anyhow, Context};
-use clap::builder::ValueRange;
 use cling::prelude::*;
 use itertools::Itertools;
 use tonic::codec::CompressionEncoding;
@@ -134,7 +132,7 @@ async fn describe_log(
     mut client: ClusterCtrlSvcClient<Channel>,
     opts: &DescribeLogIdOpts,
 ) -> anyhow::Result<()> {
-    let req = DescribeLogRequest { log_id: log_id };
+    let req = DescribeLogRequest { log_id };
     let mut response = client.describe_log(req).await?.into_inner();
 
     let mut buf = response.chain.clone();
