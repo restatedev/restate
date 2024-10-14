@@ -28,7 +28,6 @@ use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, Metadata
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
-use restate_types::NodeId;
 use restate_types::{Version, Versioned};
 
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
@@ -37,11 +36,10 @@ use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
 use crate::network::Incoming;
-use crate::network::Networking;
 use crate::network::Outgoing;
 use crate::network::Reciprocal;
-use crate::network::TransportConnect;
-use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError, NetworkSender};
+use crate::network::WeakConnection;
+use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError};
 use crate::task_center;
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
@@ -233,24 +231,21 @@ impl MessageHandler for MetadataMessageHandler {
 /// - Schema metadata
 /// - NodesConfiguration
 /// - Partition table
-pub struct MetadataManager<T> {
+pub struct MetadataManager {
     metadata: Metadata,
     inbound: CommandReceiver,
-    networking: Networking<T>,
     metadata_store_client: MetadataStoreClient,
     update_tasks: EnumMap<MetadataKind, Option<UpdateTask>>,
 }
 
-impl<T: TransportConnect> MetadataManager<T> {
+impl MetadataManager {
     pub fn new(
         metadata_builder: MetadataBuilder,
-        networking: Networking<T>,
         metadata_store_client: MetadataStoreClient,
     ) -> Self {
         Self {
             metadata: metadata_builder.metadata,
             inbound: metadata_builder.receiver,
-            networking,
             metadata_store_client,
             update_tasks: EnumMap::default(),
         }
@@ -281,11 +276,12 @@ impl<T: TransportConnect> MetadataManager<T> {
             .into();
         let mut update_interval = tokio::time::interval(update_interval);
         update_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut cancel = std::pin::pin!(cancellation_watcher());
 
         loop {
             tokio::select! {
                 biased;
-                _ = cancellation_watcher() => {
+                _ = &mut cancel => {
                     info!("Metadata manager stopped");
                     break;
                 }
@@ -493,33 +489,49 @@ impl<T: TransportConnect> MetadataManager<T> {
 
             if let Some(mut task) = update_task {
                 match task.state {
-                    UpdateTaskState::FromRemoteNode(node_id) => {
-                        debug!(
-                            "Send GetMetadataRequest to {} from {}",
-                            node_id,
-                            self.metadata.my_node_id()
+                    UpdateTaskState::FromPeer(connection) => {
+                        trace!(
+                            "Attempting to get '{}' metadata from {}",
+                            metadata_kind,
+                            connection.peer()
                         );
-                        // todo: Move to dedicated task if this is blocking the MetadataManager too much
-                        self.networking
-                            .send(Outgoing::new(
-                                node_id,
-                                MetadataMessage::GetMetadataRequest(GetMetadataRequest {
-                                    metadata_kind,
-                                    min_version: Some(task.version),
-                                }),
-                            ))
-                            .await
-                            .map_err(|e| e.source)?;
-                        // on the next tick try to sync if no update was received
+                        let outgoing = Outgoing::new(
+                            *connection.peer(),
+                            MetadataMessage::GetMetadataRequest(GetMetadataRequest {
+                                metadata_kind,
+                                min_version: Some(task.version),
+                            }),
+                        )
+                        .assign_connection(connection);
+
+                        // Best-effort send. We'll sync from metadata store if we couldn't send or
+                        // if we have not heard a response before the next tick.
+                        let _ = outgoing.try_send();
                         task.state = UpdateTaskState::Sync;
                         update_task = Some(task);
                     }
                     UpdateTaskState::Sync => {
-                        // todo: Move to dedicated task if this is blocking the MetadataManager too much
-                        self.sync_metadata(metadata_kind, TargetVersion::Version(task.version))
-                            .await?;
-                        // syncing will give us >= task.version so let's stop here
-                        update_task = None;
+                        trace!(
+                            "Attempting to update '{}' metadata from metadata store",
+                            metadata_kind,
+                        );
+                        // todo: configuration
+                        if tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            self.sync_metadata(metadata_kind, TargetVersion::Version(task.version)),
+                        )
+                        .await
+                        .is_ok_and(|s| s.is_ok())
+                        {
+                            // syncing will give us >= task.version so let's stop here
+                            update_task = None;
+                        } else {
+                            debug!(
+                                "Could not update '{}' metadata from metadata store. Will retry later",
+                                metadata_kind,
+                            );
+                            update_task = Some(task);
+                        }
                     }
                 }
 
@@ -532,7 +544,7 @@ impl<T: TransportConnect> MetadataManager<T> {
 }
 
 enum UpdateTaskState {
-    FromRemoteNode(NodeId),
+    FromPeer(WeakConnection),
     Sync,
 }
 
@@ -543,8 +555,8 @@ struct UpdateTask {
 
 impl UpdateTask {
     fn from(version_information: VersionInformation) -> Self {
-        let state = if let Some(node_id) = version_information.remote_node {
-            UpdateTaskState::FromRemoteNode(node_id)
+        let state = if let Some(connection) = version_information.remote_peer {
+            UpdateTaskState::FromPeer(connection)
         } else {
             UpdateTaskState::Sync
         };
@@ -563,7 +575,6 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
-    use restate_types::config::NetworkingOptions;
     use test_log::test;
 
     use restate_test_util::assert_eq;
@@ -608,12 +619,9 @@ mod tests {
         let tc = TaskCenterBuilder::default().build()?;
         tc.block_on("test", None, async move {
             let metadata_builder = MetadataBuilder::default();
-            let networking =
-                Networking::new(metadata_builder.to_metadata(), NetworkingOptions::default());
             let metadata_store_client = MetadataStoreClient::new_in_memory();
             let metadata = metadata_builder.to_metadata();
-            let metadata_manager =
-                MetadataManager::new(metadata_builder, networking, metadata_store_client);
+            let metadata_manager = MetadataManager::new(metadata_builder, metadata_store_client);
             let metadata_writer = metadata_manager.writer();
 
             assert_eq!(Version::INVALID, config_version(&metadata));
@@ -682,13 +690,10 @@ mod tests {
         let tc = TaskCenterBuilder::default().build()?;
         tc.block_on("test", None, async move {
             let metadata_builder = MetadataBuilder::default();
-            let networking =
-                Networking::new(metadata_builder.to_metadata(), NetworkingOptions::default());
             let metadata_store_client = MetadataStoreClient::new_in_memory();
 
             let metadata = metadata_builder.to_metadata();
-            let metadata_manager =
-                MetadataManager::new(metadata_builder, networking, metadata_store_client);
+            let metadata_manager = MetadataManager::new(metadata_builder, metadata_store_client);
             let metadata_writer = metadata_manager.writer();
 
             assert_eq!(Version::INVALID, config_version(&metadata));
