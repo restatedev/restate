@@ -26,4 +26,10 @@ define_table!(sys_deployment(
 
     /// Timestamp indicating the deployment registration time.
     created_at: DataType::Date64,
+
+    /// Minimum supported protocol version.
+    min_service_protocol_version: DataType::UInt32,
+
+    /// Maximum supported protocol version.
+    max_service_protocol_version: DataType::UInt32
 ));
