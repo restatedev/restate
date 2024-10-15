@@ -150,3 +150,13 @@ jobs:
     uses: restatedev/sdk-rust/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  restate-ui:
+    name: Validate Restate UI artifact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the committed UI artifact matches the published one in restate-web-ui
+        run: ./tools/scripts/verify-ui-artifact
