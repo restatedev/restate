@@ -60,6 +60,8 @@ message DescribeLogResponse {
   TailState tail_state = 2;
   uint64 tail_offset = 3;
   uint64 trim_point = 4;
+  // Serialized restate_types::nodes_config::NodesConfiguration
+  bytes nodes_configuration = 7;
 }
 
 message ListNodesRequest {}

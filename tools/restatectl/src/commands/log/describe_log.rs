@@ -8,33 +8,113 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
+use std::str::FromStr;
+
+use anyhow::{anyhow, Context};
 use cling::prelude::*;
+use itertools::Itertools;
 use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{
-    DescribeLogRequest, DescribeLogResponse, TailState,
-};
-use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
+use restate_admin::cluster_controller::protobuf::DescribeLogRequest;
+use restate_cli_util::_comfy_table::{Cell, Color, Table};
+use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::{c_println, c_title};
-use restate_types::logs::metadata::{Chain, Segment};
+use restate_types::logs::metadata::{Chain, ProviderKind, Segment, SegmentIndex};
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::storage::StorageCodec;
 
 use crate::app::ConnectionInfo;
 use crate::util::grpc_connect;
 
-#[derive(Run, Parser, Collect, Clone, Debug)]
-#[clap()]
-#[cling(run = "describe_log")]
-pub struct DescribeLogIdOpts {
-    #[arg(short, long)]
-    /// The log id to describe
-    log_id: u32,
+#[derive(Parser, Collect, Clone, Debug)]
+struct LogIdRange {
+    from: u32,
+    to: u32,
 }
 
-async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> anyhow::Result<()> {
+impl LogIdRange {
+    fn new(from: u32, to: u32) -> anyhow::Result<Self> {
+        if from > to {
+            Err(anyhow!(
+                "Invalid log id range: {}..{}, start must be <= end range",
+                from,
+                to
+            ))
+        } else {
+            Ok(LogIdRange { from, to })
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = u32> {
+        self.from..=self.to
+    }
+}
+
+impl FromStr for LogIdRange {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split("-").collect();
+        match parts.len() {
+            1 => {
+                let n = parts[0].parse()?;
+                Ok(LogIdRange::new(n, n)?)
+            }
+            2 => {
+                let from = parts[0].parse()?;
+                let to = parts[1].parse()?;
+                Ok(LogIdRange::new(from, to)?)
+            }
+            _ => Err(anyhow!("Invalid log id or log range: {}", s)),
+        }
+    }
+}
+
+#[derive(Run, Parser, Collect, Clone, Debug)]
+#[clap()]
+#[cling(run = "describe_logs")]
+pub struct DescribeLogIdOpts {
+    /// The log id(s) to describe
+    #[arg(required = true, value_parser = value_parser!(LogIdRange))]
+    log_id: Vec<LogIdRange>,
+
+    /// The first segment id to display
+    #[arg(long)]
+    from_segment_id: Option<u32>,
+
+    /// Skip over the first N segments
+    #[arg(long, conflicts_with_all = ["from_segment_id"])]
+    skip: Option<usize>,
+
+    /// Print the last N log segments
+    #[arg(
+        long,
+        default_value = "true",
+        conflicts_with = "head",
+        default_value = "25"
+    )]
+    tail: Option<usize>,
+
+    /// Print the first N log segments
+    #[arg(long)]
+    head: Option<usize>,
+
+    /// Display all available segments, ignoring max results
+    #[arg(long, conflicts_with_all = ["head", "tail"])]
+    all: bool,
+
+    /// Display additional information such as replicated loglet config
+    #[arg(long)]
+    extra: bool,
+}
+
+async fn describe_logs(
+    connection: &ConnectionInfo,
+    opts: &DescribeLogIdOpts,
+) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
         .with_context(|| {
@@ -43,80 +123,215 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
                 connection.cluster_controller
             )
         })?;
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    let req = DescribeLogRequest {
-        log_id: opts.log_id,
-    };
-    let response = client.describe_log(req).await?.into_inner();
+    let client = ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    c_title!("📋", format!("Log {}", response.log_id));
-
-    let mut table = Table::new_styled();
-    table.add_row(vec![
-        "Metadata version",
-        &format!("v{}", response.logs_version),
-    ]);
-    table.add_row(vec!["Trim point", &format!("{}", response.trim_point)]);
-    c_println!("{}", table);
-
-    let mut chain_table = Table::new_styled();
-    chain_table.set_styled_header(vec!["SEGMENT", "STATE", "BASE LSN", "TAIL LSN", "KIND"]);
-
-    let mut buf = response.chain.clone();
-    let chain = StorageCodec::decode::<Chain, _>(&mut buf)?;
-
-    let tail_base_lsn = chain.tail().base_lsn;
-    for (idx, segment) in chain.iter().enumerate() {
-        let is_tail_segment = segment.base_lsn == tail_base_lsn;
-        chain_table.add_row(vec![
-            Cell::new(idx),
-            render_segment_state(is_tail_segment, &response),
-            render_base_lsn(is_tail_segment, &segment),
-            render_tail_lsn(is_tail_segment, &response),
-            Cell::new(format!("{:?}", segment.config.kind)),
-        ]);
+    for range in &opts.log_id {
+        for log_id in range.iter() {
+            describe_log(log_id, client.clone(), opts).await?;
+        }
     }
-    c_println!();
-    c_println!("Segments");
-    c_println!("{}", chain_table);
 
     Ok(())
 }
 
-fn render_segment_state(is_tail: bool, response: &DescribeLogResponse) -> Cell {
-    if is_tail {
-        render_tail_state(response)
-    } else {
-        // Assuming anything that isn't the tail is sealed
-        Cell::new(TailState::Sealed.as_str_name()).fg(Color::DarkGrey)
+async fn describe_log(
+    log_id: u32,
+    mut client: ClusterCtrlSvcClient<Channel>,
+    opts: &DescribeLogIdOpts,
+) -> anyhow::Result<()> {
+    let req = DescribeLogRequest { log_id };
+    let mut response = client.describe_log(req).await?.into_inner();
+
+    let mut buf = response.chain.clone();
+    let chain = StorageCodec::decode::<Chain, _>(&mut buf).context("Failed to decode log chain")?;
+
+    c_println!("Log Id: {} (v{})", log_id, response.logs_version);
+
+    let mut chain_table = Table::new_styled();
+    let mut header_row = vec![
+        "", // tail segment marker
+        "IDX",
+        "FROM-LSN",
+        "KIND",
+        "LOGLET-ID",
+        "REPLICATION",
+        "SEQUENCER",
+        "EFF-NODESET",
+    ];
+    if opts.extra {
+        header_row.push("PARAMS");
     }
+    chain_table.set_styled_header(header_row);
+
+    let last_segment = chain
+        .iter()
+        .last()
+        .map(|s| s.index())
+        .unwrap_or(SegmentIndex::from(u32::MAX));
+
+    let mut first_segment_rendered = None;
+    let mut last_segment_rendered = None;
+
+    let segments: Box<dyn Iterator<Item = Segment>> = match (opts.skip, opts.from_segment_id) {
+        (Some(n), _) => Box::new(chain.iter().skip(n)),
+        (_, Some(from_segment_id)) => {
+            let starting_segment_id = SegmentIndex::from(from_segment_id);
+            Box::new(
+                chain
+                    .iter()
+                    .skip_while(move |s| s.index() < starting_segment_id),
+            )
+        }
+        _ => Box::new(chain.iter()),
+    };
+
+    let segments: Box<dyn Iterator<Item = Segment>> = if opts.all {
+        Box::new(segments)
+    } else if opts.head.is_some() {
+        Box::new(segments.take(opts.head.unwrap()))
+    } else {
+        Box::new(segments.tail(opts.tail.unwrap()))
+    };
+
+    let nodes_configuration =
+        StorageCodec::decode::<NodesConfiguration, _>(&mut response.nodes_configuration)
+            .context("Failed to decode nodes configuration")?;
+
+    for segment in segments {
+        if first_segment_rendered.is_none() {
+            first_segment_rendered = Some(segment.index());
+        }
+
+        // For the purpose of this display, "is-tail" boils down to simply "is this the last known segment?"
+        let is_tail_segment = segment.index() == last_segment;
+
+        match segment.config.kind {
+            ProviderKind::Replicated => {
+                let params = get_replicated_log_params(&segment);
+                let mut segment_row = vec![
+                    render_tail_segment_marker(is_tail_segment),
+                    Cell::new(format!("{}", segment.index())),
+                    Cell::new(format!("{}", segment.base_lsn)),
+                    Cell::new(format!("{:?}", segment.config.kind)),
+                    render_maybe_params(&params, |p| Cell::new(p.loglet_id)),
+                    render_maybe_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
+                    render_maybe_params(&params, |p| {
+                        render_sequencer(is_tail_segment, p, &nodes_configuration)
+                    }),
+                    render_maybe_params(&params, |p| {
+                        render_effective_nodeset(is_tail_segment, p, &nodes_configuration)
+                    }),
+                ];
+                if opts.extra {
+                    segment_row.push(Cell::new(
+                        params
+                            .as_ref()
+                            .and_then(|p| serde_json::to_string(&p).ok())
+                            .unwrap_or_default(),
+                    ))
+                }
+                chain_table.add_row(segment_row);
+            }
+            _ => {
+                chain_table.add_row(vec![
+                    render_tail_segment_marker(is_tail_segment),
+                    Cell::new(format!("{}", segment.index())),
+                    Cell::new(format!("{}", segment.base_lsn)),
+                    Cell::new(format!("{:?}", segment.config.kind)),
+                    // other loglets types don't have all the columns that replicated loglets do
+                ]);
+            }
+        }
+
+        last_segment_rendered = Some(segment.index());
+    }
+
+    let column = chain_table.column_mut(0).unwrap();
+    column.set_padding((0, 0));
+
+    if last_segment_rendered.is_none() {
+        c_println!("No segments to display.");
+        return Ok(());
+    }
+
+    c_println!("{}", chain_table);
+    c_println!("---");
+    c_println!(
+        "{}/{} segments shown.",
+        chain_table.row_count(),
+        chain.num_segments()
+    );
+    c_println!();
+
+    Ok(())
 }
 
-fn render_tail_state(response: &DescribeLogResponse) -> Cell {
-    let tail_state = TailState::try_from(response.tail_state).unwrap();
-    Cell::new(tail_state.as_str_name())
-        .fg(Color::Green)
-        .add_attribute(Attribute::Bold)
-}
-
-fn render_tail_lsn(is_tail_segment: bool, response: &DescribeLogResponse) -> Cell {
-    if is_tail_segment {
-        Cell::new(format!("{}", response.tail_offset))
-            .fg(Color::Green)
-            .add_attribute(Attribute::Bold)
+fn render_tail_segment_marker(is_tail: bool) -> Cell {
+    if is_tail {
+        Cell::new("▶︎").fg(Color::Green)
     } else {
         Cell::new("")
     }
 }
 
-fn render_base_lsn(is_tail_segment: bool, segment: &Segment) -> Cell {
-    if is_tail_segment {
-        Cell::new(format!("{}", segment.base_lsn))
-            .fg(Color::Green)
-            .add_attribute(Attribute::Bold)
+fn render_effective_nodeset(
+    is_tail: bool,
+    params: &ReplicatedLogletParams,
+    nodes_configuration: &NodesConfiguration,
+) -> Cell {
+    let effective_node_set = params.nodeset.to_effective(nodes_configuration);
+    let mut cell = Cell::new(format!("{:#}", effective_node_set));
+    if is_tail && effective_node_set.len() < params.replication.num_copies() as usize {
+        cell = cell.fg(Color::Red);
+    }
+    cell
+}
+
+fn get_replicated_log_params(segment: &Segment) -> Option<ReplicatedLogletParams> {
+    match segment.config.kind {
+        ProviderKind::Replicated => {
+            ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
+                .inspect_err(|e| {
+                    c_println!(
+                        "⚠️ Failed to deserialize ReplicatedLogletParams for segment {}: {}",
+                        segment.index(),
+                        e
+                    );
+                })
+                .ok()
+        }
+        _ => None,
+    }
+}
+
+fn render_maybe_params<F>(params: &Option<ReplicatedLogletParams>, render_fn: F) -> Cell
+where
+    F: FnOnce(&ReplicatedLogletParams) -> Cell,
+{
+    params
+        .as_ref()
+        .map(render_fn)
+        .unwrap_or_else(|| Cell::new("N/A").fg(Color::Red))
+}
+
+fn render_sequencer(
+    is_tail: bool,
+    params: &ReplicatedLogletParams,
+    nodes_configuration: &NodesConfiguration,
+) -> Cell {
+    if is_tail {
+        let sequencer_generational =
+            nodes_configuration.find_node_by_id(params.sequencer.as_plain());
+        let color = if sequencer_generational
+            .is_ok_and(|node| node.current_generation.generation() == params.sequencer.generation())
+        {
+            Color::Green
+        } else {
+            Color::Red
+        };
+        Cell::new(format!("{:#}", params.sequencer)).fg(color)
     } else {
-        Cell::new(format!("{}", segment.base_lsn))
+        Cell::new("")
     }
 }

@@ -36,8 +36,14 @@ pub struct CliApp {
 
 #[derive(Parser, Collect, Debug, Clone)]
 pub struct ConnectionInfo {
-    /// Cluster Controller host:port (e.g. http://localhost:5122/)
-    #[clap(long, value_hint = clap::ValueHint::Url, default_value_t = AdvertisedAddress::from_str("http://localhost:5122/").unwrap(), global = true)]
+    /// Cluster Controller address
+    #[clap(
+        long,
+        value_hint = clap::ValueHint::Url,
+        default_value_t = AdvertisedAddress::from_str("http://localhost:5122/").unwrap(),
+        env = "RESTATE_CLUSTER_CONTROLLER_ADDRESS",
+        global = true
+    )]
     pub cluster_controller: AdvertisedAddress,
 }
 
