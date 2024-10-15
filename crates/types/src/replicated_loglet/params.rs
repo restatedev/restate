@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::fmt::Display;
 
-use itertools::sorted;
+use itertools::Itertools;
 use rand::seq::SliceRandom;
 use serde_with::DisplayFromStr;
 
@@ -91,8 +91,12 @@ impl ReplicatedLogletId {
 pub struct NodeSet(#[serde_as(as = "HashSet<DisplayFromStr>")] HashSet<PlainNodeId>);
 
 impl Display for NodeSet {
+    /// The alternate format displays a *sorted* list of short-form plain node ids, suitable for human-friendly output.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write_sorted(self.0.iter().copied(), f)
+        match f.alternate() {
+            false => self.write_nodes(f),
+            true => self.write_nodes_sorted(f),
+        }
     }
 }
 
@@ -177,6 +181,30 @@ impl NodeSet {
 
         new_nodeset
     }
+
+    fn write_nodes(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[")?;
+        let mut nodes = self.0.iter();
+        if let Some(node) = nodes.next() {
+            write!(f, "{}", node)?;
+            for node in nodes {
+                write!(f, ", {}", node)?;
+            }
+        }
+        write!(f, "]")
+    }
+
+    fn write_nodes_sorted(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[")?;
+        let mut nodes = self.0.iter().sorted();
+        if let Some(node) = nodes.next() {
+            write!(f, "{}", node)?;
+            for node in nodes {
+                write!(f, ", {}", node)?;
+            }
+        }
+        write!(f, "]")
+    }
 }
 
 impl<'a> IntoIterator for &'a NodeSet {
@@ -227,11 +255,12 @@ impl<A: Into<PlainNodeId>> FromIterator<A> for NodeSet {
     Clone,
     Eq,
     PartialEq,
-    derive_more::Deref,
     derive_more::AsRef,
+    derive_more::Deref,
     derive_more::DerefMut,
-    derive_more::IntoIterator,
+    derive_more::Display,
     derive_more::Into,
+    derive_more::IntoIterator,
 )]
 pub struct EffectiveNodeSet(NodeSet);
 
@@ -245,28 +274,4 @@ impl EffectiveNodeSet {
                 .collect(),
         )
     }
-}
-
-impl Display for EffectiveNodeSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match f.alternate() {
-            true => write_sorted(self.0.iter().copied(), f),
-            false => write!(f, "{:?}", self.0),
-        }
-    }
-}
-
-fn write_sorted(
-    nodes: impl Iterator<Item = PlainNodeId>,
-    f: &mut std::fmt::Formatter<'_>,
-) -> std::fmt::Result {
-    write!(f, "[")?;
-    let mut nodes = sorted(nodes);
-    if let Some(node) = nodes.next() {
-        write!(f, "{}", node)?;
-        for node in nodes {
-            write!(f, ", {}", node)?;
-        }
-    }
-    write!(f, "]")
 }
