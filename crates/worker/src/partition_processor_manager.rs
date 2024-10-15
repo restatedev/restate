@@ -52,6 +52,7 @@ use restate_types::logs::SequenceNumber;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::cluster_controller::AttachRequest;
 use restate_types::net::cluster_controller::{Action, AttachResponse};
+use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, CreateSnapshotResponse, GetProcessorsState,
     ProcessorCommand, SnapshotError,
@@ -587,6 +588,12 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
     ) -> Result<(), Error> {
         let (_, control_processors) = control_processor.split();
 
+        self.metadata
+            .wait_for_version(
+                MetadataKind::Logs,
+                control_processors.min_logs_table_version,
+            )
+            .await?;
         let partition_table = self
             .metadata
             .wait_for_partition_table(control_processors.min_partition_table_version)

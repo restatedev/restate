@@ -101,6 +101,10 @@ impl PartitionTable {
     pub fn get_partition(&self, partition_id: &PartitionId) -> Option<&Partition> {
         self.partitions.get(partition_id)
     }
+
+    pub fn contains_partition(&self, partition_id: &PartitionId) -> bool {
+        self.partitions.contains_key(partition_id)
+    }
 }
 
 impl Versioned for PartitionTable {

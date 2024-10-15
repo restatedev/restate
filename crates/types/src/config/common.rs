@@ -81,7 +81,7 @@ pub struct CommonOptions {
     /// value of this entry is ignored for bootstrapped nodes/clusters.
     ///
     /// Cannot be higher than `65535` (You should almost never need as many partitions anyway)
-    pub(crate) bootstrap_num_partitions: NonZeroU16,
+    pub bootstrap_num_partitions: NonZeroU16,
 
     /// # Shutdown grace timeout
     ///

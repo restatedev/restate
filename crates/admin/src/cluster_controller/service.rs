@@ -22,6 +22,10 @@ use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
+use super::cluster_state_refresher::{ClusterStateRefresher, ClusterStateWatcher};
+use crate::cluster_controller::logs_controller::LogsController;
+use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use crate::cluster_controller::scheduler::Scheduler;
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::rpc_router::RpcRouter;
@@ -41,9 +45,6 @@ use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
 use restate_types::{GenerationalNodeId, Version};
-
-use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
-use crate::cluster_controller::scheduler::Scheduler;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -254,6 +255,22 @@ impl<T: TransportConnect> Service<T> {
         )
         .await?;
 
+        let mut logs_controller = LogsController::init(
+            self.metadata.clone(),
+            bifrost.clone(),
+            self.metadata_store_client.clone(),
+            self.metadata_writer.clone(),
+            self.configuration.live_load().bifrost.default_provider,
+        )
+        .await?;
+
+        let mut observed_cluster_state = ObservedClusterState::default();
+
+        let mut logs_watcher = self.metadata.watch(MetadataKind::Logs);
+        let mut partition_watcher = self.metadata.watch(MetadataKind::PartitionTable);
+        let mut logs = self.metadata.updateable_logs_metadata();
+        let mut partition_table = self.metadata.updateable_partition_table();
+
         loop {
             tokio::select! {
                 _ = self.heartbeat_interval.tick() => {
@@ -268,7 +285,20 @@ impl<T: TransportConnect> Service<T> {
                     }
                 }
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
-                    scheduler.on_cluster_state_update(cluster_state).await?;
+                    observed_cluster_state.update(&cluster_state);
+                    logs_controller.on_observed_cluster_state_update(&observed_cluster_state)?;
+                    scheduler.on_observed_cluster_state(&observed_cluster_state).await?;
+                }
+                result = logs_controller.run_async_operations() => {
+                    result?;
+                }
+                Ok(_) = logs_watcher.changed() => {
+                    logs_controller.on_logs_update(self.metadata.logs_ref())?;
+                    // tell the scheduler about potentially newly provisioned logs
+                    scheduler.on_logs_update(logs.live_load(), partition_table.live_load()).await?
+                }
+                Ok(_) = partition_watcher.changed() => {
+                    logs_controller.on_partition_table_update(partition_table.live_load())
                 }
                 Some(cmd) = self.command_rx.recv() => {
                     self.on_cluster_cmd(cmd, bifrost_admin).await;

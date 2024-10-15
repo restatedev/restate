@@ -1,14 +1,16 @@
+use std::num::NonZeroU16;
 use std::time::Duration;
 
 use enumset::enum_set;
 use futures_util::StreamExt;
-use test_log::test;
-
+use regex::Regex;
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
+use restate_types::logs::metadata::ProviderKind;
 use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
+use test_log::test;
 
 mod common;
 
@@ -99,6 +101,44 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
         .is_some());
 
     assert_eq!(Some(1), mismatch_node.status().await?.code());
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn replicated_loglet() -> googletest::Result<()> {
+    let mut base_config = Configuration::default();
+    base_config.bifrost.default_provider = ProviderKind::Replicated;
+    base_config.common.bootstrap_num_partitions = NonZeroU16::new(1).expect("1 to be non-zero");
+
+    let nodes = Node::new_test_nodes_with_metadata(
+        base_config.clone(),
+        BinarySource::CargoTest,
+        enum_set!(Role::Worker | Role::LogServer),
+        3,
+    );
+
+    let cluster = Cluster::builder()
+        .cluster_name("cluster-1")
+        .nodes(nodes)
+        .temp_base_dir()
+        .build()
+        .start()
+        .await?;
+
+    // there is still a chance for a race condition because we cannot register the regex before we
+    // create the cluster and we only start tracking the log lines once we register the regex.
+    // If this should become an issue, then we need to add this feature.
+    let regex: Regex = "PartitionProcessor starting up".parse()?;
+    let mut partition_processors_starting_up: Vec<_> = (1..=3)
+        .map(|idx| cluster.nodes[idx].lines(regex.clone()))
+        .collect();
+
+    cluster.wait_healthy(Duration::from_secs(30)).await?;
+
+    for partition_processor in &mut partition_processors_starting_up {
+        assert!(partition_processor.next().await.is_some())
+    }
 
     Ok(())
 }

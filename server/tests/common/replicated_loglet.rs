@@ -2,15 +2,20 @@
 use std::{sync::Arc, time::Duration};
 
 use enumset::{enum_set, EnumSet};
+use googletest::internal::test_outcome::TestAssertionFailure;
 use googletest::IntoTestResult;
 
 use restate_bifrost::{loglet::Loglet, Bifrost, BifrostAdmin, FindTailAttributes};
+use restate_core::metadata_store::Precondition;
 use restate_core::{metadata_store::MetadataStoreClient, MetadataWriter, TaskCenterBuilder};
 use restate_local_cluster_runner::{
     cluster::{Cluster, MaybeTempDir, StartedCluster},
     node::{BinarySource, Node},
 };
 use restate_rocksdb::RocksDbManager;
+use restate_types::logs::builder::LogsBuilder;
+use restate_types::logs::metadata::{Chain, LogletParams};
+use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::{
     config::Configuration,
     live::Live,
@@ -76,7 +81,6 @@ pub struct TestEnv {
     metadata_writer: MetadataWriter,
     metadata_store_client: MetadataStoreClient,
     pub cluster: StartedCluster,
-    pub loglet_params: String,
 }
 
 impl TestEnv {
@@ -90,7 +94,7 @@ impl TestEnv {
 }
 
 pub async fn run_in_test_env<F, O>(
-    mut base_config: Configuration,
+    base_config: Configuration,
     sequencer: GenerationalNodeId,
     replication: ReplicationProperty,
     log_server_count: u32,
@@ -100,18 +104,6 @@ where
     F: FnMut(TestEnv) -> O,
     O: std::future::Future<Output = googletest::Result<()>> + Send,
 {
-    let loglet_params = ReplicatedLogletParams {
-        loglet_id: ReplicatedLogletId::new(1),
-        sequencer,
-        replication,
-        // node 1 is the metadata, 2..=count+1 are logservers
-        nodeset: (2..=log_server_count + 1).collect(),
-        write_set: None,
-    };
-    let loglet_params = loglet_params.serialize()?;
-    base_config.bifrost.default_provider = ProviderKind::Replicated;
-    base_config.bifrost.default_provider_config = Some(loglet_params.clone());
-
     let nodes = Node::new_test_nodes_with_metadata(
         base_config,
         BinarySource::CargoTest,
@@ -141,6 +133,32 @@ where
 
         cluster.wait_healthy(Duration::from_secs(30)).await?;
 
+        let loglet_params = ReplicatedLogletParams {
+            loglet_id: ReplicatedLogletId::new(1),
+            sequencer,
+            replication,
+            // node 1 is the metadata, 2..=count+1 are logservers
+            nodeset: (2..=log_server_count + 1).collect(),
+            write_set: None,
+        };
+        let loglet_params = loglet_params.serialize()?;
+
+        let chain = Chain::new(ProviderKind::Replicated, LogletParams::from(loglet_params));
+        let mut logs_builder = LogsBuilder::default();
+        logs_builder.add_log(LogId::MIN, chain)?;
+
+        let metadata_store_client = cluster.nodes[0]
+            .metadata_client()
+            .await
+            .map_err(|err| TestAssertionFailure::create(err.to_string()))?;
+        metadata_store_client
+            .put(
+                BIFROST_CONFIG_KEY.clone(),
+                &logs_builder.build(),
+                Precondition::None,
+            )
+            .await?;
+
         // join a new node to the cluster solely to act as a bifrost client
         // it will have node id log_server_count+2
         let (bifrost, loglet, metadata_writer, metadata_store_client) =
@@ -156,7 +174,6 @@ where
                 cluster,
                 metadata_writer,
                 metadata_store_client,
-                loglet_params,
             }),
         )
         .await

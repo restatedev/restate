@@ -8,10 +8,12 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["replicated-loglet"]
 clients = []
 servers = []
 options_schema = ["restate-service-client/options_schema"]
+memory-loglet = ["restate-bifrost/memory-loglet"]
+replicated-loglet = ["restate-bifrost/replicated-loglet"]
 
 [dependencies]
 restate-admin-rest-model = { workspace = true, features = ["schema"] }
@@ -55,6 +57,7 @@ tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
+xxhash-rust = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

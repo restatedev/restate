@@ -96,7 +96,7 @@ impl<'a> BifrostAdmin<'a> {
                 self.bifrost
                     .inner
                     .metadata
-                    .logs()
+                    .logs_ref()
                     .chain(&log_id)
                     .map(|c| c.tail_index())
             })
@@ -111,11 +111,7 @@ impl<'a> BifrostAdmin<'a> {
     }
 
     #[instrument(level = "debug", skip(self), err)]
-    pub(crate) async fn seal(
-        &self,
-        log_id: LogId,
-        segment_index: SegmentIndex,
-    ) -> Result<TailState> {
+    pub async fn seal(&self, log_id: LogId, segment_index: SegmentIndex) -> Result<TailState> {
         self.bifrost.inner.fail_if_shutting_down()?;
         // first find the tail segment for this log.
         let loglet = self.bifrost.inner.writeable_loglet(log_id).await?;
