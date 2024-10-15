@@ -240,9 +240,6 @@ impl<T: TransportConnect> Sequencer<T> {
             return Ok(LogletCommit::sealed());
         };
 
-        // We are updating the next write offset and we want to make sure that after this call that
-        // we observe if task_center()'s shutdown signal was set or not consistently across
-        // threads.
         let offset = LogletOffset::new(
             self.sequencer_shared_state
                 .next_write_offset
