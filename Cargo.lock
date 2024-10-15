@@ -6453,6 +6453,7 @@ dependencies = [
  "itertools 0.13.0",
  "json-patch",
  "prost-types",
+ "rand",
  "restate-admin",
  "restate-bifrost",
  "restate-cli-util",

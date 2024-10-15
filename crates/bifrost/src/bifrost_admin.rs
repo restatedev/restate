@@ -150,7 +150,6 @@ impl<'a> BifrostAdmin<'a> {
                 }
             }
         }
-
         Ok(loglet.find_tail().await?)
     }
 

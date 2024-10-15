@@ -26,16 +26,18 @@ service ClusterCtrlSvc {
 
   rpc TrimLog(TrimLogRequest) returns (google.protobuf.Empty);
 
-  rpc CreatePartitionSnapshot(CreatePartitionSnapshotRequest) returns (CreatePartitionSnapshotResponse);
+  rpc CreatePartitionSnapshot(CreatePartitionSnapshotRequest)
+      returns (CreatePartitionSnapshotResponse);
+
+  rpc SealAndExtendChain(SealAndExtendChainRequest)
+      returns (SealAndExtendChainResponse);
 }
 
-message ClusterStateRequest { }
+message ClusterStateRequest {}
 
-message ClusterStateResponse {
-  restate.cluster.ClusterState cluster_state = 1;
-}
+message ClusterStateResponse { restate.cluster.ClusterState cluster_state = 1; }
 
-message ListLogsRequest { }
+message ListLogsRequest {}
 
 message ListLogsResponse {
   // Serialized restate_types::logs::metadata::Logs
@@ -48,9 +50,7 @@ enum TailState {
   SEALED = 2;
 }
 
-message DescribeLogRequest {
-  uint32 log_id = 1;
-}
+message DescribeLogRequest { uint32 log_id = 1; }
 
 message DescribeLogResponse {
   uint32 log_id = 5;
@@ -62,7 +62,7 @@ message DescribeLogResponse {
   uint64 trim_point = 4;
 }
 
-message ListNodesRequest { }
+message ListNodesRequest {}
 
 message ListNodesResponse {
   // Serialized restate_types::nodes_config::NodesConfiguration
@@ -74,10 +74,19 @@ message TrimLogRequest {
   uint64 trim_point = 2;
 }
 
-message CreatePartitionSnapshotRequest {
-  uint32 partition_id = 1;
+message CreatePartitionSnapshotRequest { uint32 partition_id = 1; }
+
+message CreatePartitionSnapshotResponse { string snapshot_id = 1; }
+
+message SealAndExtendChainRequest {
+  uint32 log_id = 1;
+  // segment_index will be automatically selected (to the index of last segment)
+  // if not set.
+  optional uint32 segment_index = 2;
+  restate.common.Version min_version = 3;
+  // check `ProviderKind` for possible values.
+  string provider = 4;
+  string params = 5;
 }
 
-message CreatePartitionSnapshotResponse {
-  string snapshot_id = 1;
-}
+message SealAndExtendChainResponse {}

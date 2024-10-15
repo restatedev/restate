@@ -248,6 +248,7 @@ impl Node {
                 AdminDependencies::new(
                     cluster_controller.cluster_controller_handle(),
                     metadata_store_client.clone(),
+                    metadata_manager.writer(),
                     bifrost_svc.handle(),
                 )
             }),
