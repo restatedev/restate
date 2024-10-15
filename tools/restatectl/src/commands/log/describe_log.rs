@@ -105,6 +105,10 @@ pub struct DescribeLogIdOpts {
     /// Display all available segments, ignoring max results
     #[arg(long, conflicts_with_all = ["head", "tail"])]
     all: bool,
+
+    /// Display additional information such as replicated loglet config
+    #[arg(long)]
+    extra: bool,
 }
 
 async fn describe_logs(
@@ -145,7 +149,7 @@ async fn describe_log(
     c_println!("Log Id: {} (v{})", log_id, response.logs_version);
 
     let mut chain_table = Table::new_styled();
-    chain_table.set_styled_header(vec![
+    let mut header_row = vec![
         "", // tail segment marker
         "IDX",
         "FROM-LSN",
@@ -154,7 +158,11 @@ async fn describe_log(
         "REPLICATION",
         "SEQUENCER",
         "EFF-NODESET",
-    ]);
+    ];
+    if opts.extra {
+        header_row.push("PARAMS");
+    }
+    chain_table.set_styled_header(header_row);
 
     let last_segment = chain
         .iter()
@@ -201,7 +209,7 @@ async fn describe_log(
         match segment.config.kind {
             ProviderKind::Replicated => {
                 let params = get_replicated_log_params(&segment);
-                chain_table.add_row(vec![
+                let mut segment_row = vec![
                     render_tail_segment_marker(is_tail_segment),
                     Cell::new(format!("{}", segment.index())),
                     Cell::new(format!("{}", segment.base_lsn)),
@@ -216,7 +224,16 @@ async fn describe_log(
                         .unwrap_or_else(|| Cell::new("N/A").fg(Color::Red)),
                     render_sequencer(is_tail_segment, &params, &nodes_configuration),
                     render_effective_nodeset(is_tail_segment, &params, &nodes_configuration),
-                ]);
+                ];
+                if opts.extra {
+                    segment_row.push(Cell::new(
+                        params
+                            .as_ref()
+                            .and_then(|p| serde_json::to_string(&p).ok())
+                            .unwrap_or_else(|| "".to_string()),
+                    ))
+                }
+                chain_table.add_row(segment_row);
             }
             _ => {
                 chain_table.add_row(vec![
@@ -224,10 +241,7 @@ async fn describe_log(
                     Cell::new(format!("{}", segment.index())),
                     Cell::new(format!("{}", segment.base_lsn)),
                     Cell::new(format!("{:?}", segment.config.kind)),
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
+                    // other loglets types don't have all the columns that replicated loglets do
                 ]);
             }
         }
