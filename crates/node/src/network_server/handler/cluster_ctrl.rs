@@ -21,11 +21,11 @@ use restate_admin::cluster_controller::protobuf::{
     SealAndExtendChainResponse, TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
-use restate_bifrost::{Bifrost, BifrostAdmin, FindTailAttributes};
+use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
-use restate_types::logs::{LogId, Lsn};
+use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::{StorageCodec, StorageEncode};
@@ -103,40 +103,33 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             )))?
             .clone();
 
-        let (tail_state, trim_point) = tokio::join!(
-            self.bifrost_handle
-                .find_tail(log_id, FindTailAttributes::default()),
-            self.bifrost_handle.get_trim_point(log_id)
+        let (trim_point, nodes_config) = tokio::join!(
+            self.bifrost_handle.get_trim_point(log_id),
+            self.metadata_store_client
+                .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone()),
         );
 
-        let tail_state = tail_state
-            .map_err(|err| Status::internal(format!("Failed to find log tail: {:?}", err)))?;
         let trim_point = trim_point
             .map_err(|err| Status::internal(format!("Failed to find log trim point: {:?}", err)))?;
-        debug!(
-            ?log_id,
-            ?trim_point,
-            ?tail_state,
-            "Retrieved log information"
-        );
+        debug!(?log_id, ?trim_point, "Retrieved log information");
 
-        let mut tail_segment = chain.tail();
-        if tail_segment.tail_lsn.is_none() {
-            tail_segment.tail_lsn = Some(tail_state.offset());
-        }
-
-        chain.iter().last().as_mut().unwrap().tail_lsn = tail_segment.tail_lsn;
+        let nodes_config = nodes_config
+            .map_err(|error| {
+                Status::unknown(format!(
+                    "Failed to get nodes configuration metadata: {:?}",
+                    error
+                ))
+            })?
+            .ok_or(Status::not_found("Missing nodes configuration"))?;
 
         Ok(Response::new(DescribeLogResponse {
             log_id: log_id.into(),
             logs_version: logs.version().into(),
             chain: serialize_value(chain),
-            tail_state: match tail_state {
-                restate_types::logs::TailState::Open(_) => 1,
-                restate_types::logs::TailState::Sealed(_) => 2,
-            },
-            tail_offset: tail_state.offset().as_u64(),
+            tail_state: 0, // TailState_UNKNOWN
+            tail_offset: Lsn::INVALID.as_u64(),
             trim_point: trim_point.as_u64(),
+            nodes_configuration: serialize_value(nodes_config),
         }))
     }
 

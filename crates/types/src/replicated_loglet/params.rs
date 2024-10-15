@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::fmt::Display;
 
+use itertools::Itertools;
 use rand::seq::SliceRandom;
 use serde_with::DisplayFromStr;
 
@@ -88,19 +89,6 @@ impl ReplicatedLogletId {
     derive_more::From,
 )]
 pub struct NodeSet(#[serde_as(as = "HashSet<DisplayFromStr>")] HashSet<PlainNodeId>);
-
-impl Display for NodeSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[")?;
-        for (i, id) in self.0.iter().enumerate() {
-            if i != 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{}", id)?;
-        }
-        write!(f, "]")
-    }
-}
 
 impl NodeSet {
     pub fn empty() -> Self {
@@ -225,6 +213,40 @@ impl<A: Into<PlainNodeId>> FromIterator<A> for NodeSet {
     }
 }
 
+impl Display for NodeSet {
+    /// The alternate format displays a *sorted* list of short-form plain node ids, suitable for human-friendly output.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match f.alternate() {
+            false => write_nodes(self, f),
+            true => write_nodes_sorted(self, f),
+        }
+    }
+}
+
+fn write_nodes(node_set: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "[")?;
+    let mut nodes = node_set.0.iter();
+    if let Some(node) = nodes.next() {
+        write!(f, "{}", node)?;
+        for node in nodes {
+            write!(f, ", {}", node)?;
+        }
+    }
+    write!(f, "]")
+}
+
+fn write_nodes_sorted(node_set: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "[")?;
+    let mut nodes = node_set.0.iter().sorted();
+    if let Some(node) = nodes.next() {
+        write!(f, "{}", node)?;
+        for node in nodes {
+            write!(f, ", {}", node)?;
+        }
+    }
+    write!(f, "]")
+}
+
 #[serde_with::serde_as]
 #[derive(
     serde::Serialize,
@@ -233,12 +255,12 @@ impl<A: Into<PlainNodeId>> FromIterator<A> for NodeSet {
     Clone,
     Eq,
     PartialEq,
-    derive_more::Deref,
     derive_more::AsRef,
+    derive_more::Deref,
     derive_more::DerefMut,
-    derive_more::IntoIterator,
     derive_more::Display,
     derive_more::Into,
+    derive_more::IntoIterator,
 )]
 pub struct EffectiveNodeSet(NodeSet);
 
