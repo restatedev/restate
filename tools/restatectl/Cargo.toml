@@ -7,6 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["replicated-loglet", "memory-loglet"]
+replicated-loglet = [
+    "restate-types/replicated-loglet",
+    "restate-bifrost/replicated-loglet",
+]
+memory-loglet = ["restate-types/memory-loglet", "restate-bifrost/memory-loglet"]
+
 [dependencies]
 restate-admin = { workspace = true, features = ["clients"] }
 restate-bifrost = { workspace = true }
@@ -34,6 +42,7 @@ hyper-util = { workspace = true }
 itertools = { workspace = true }
 json-patch = "2.0.0"
 prost-types = { workspace = true }
+rand = { workspace = true }
 rlimit = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -23,7 +23,7 @@ use restate_bifrost::Bifrost;
 use restate_core::network::net_util::run_hyper_server;
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
 use restate_core::network::{ConnectionManager, GrpcConnector};
-use restate_core::task_center;
+use restate_core::{task_center, MetadataWriter};
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::CommonOptions;
@@ -146,18 +146,21 @@ pub struct AdminDependencies {
     pub cluster_controller_handle: ClusterControllerHandle,
     pub metadata_store_client: MetadataStoreClient,
     pub bifrost_handle: Bifrost,
+    pub metadata_writer: MetadataWriter,
 }
 
 impl AdminDependencies {
     pub fn new(
         cluster_controller_handle: ClusterControllerHandle,
         metadata_store_client: MetadataStoreClient,
+        metadata_writer: MetadataWriter,
         bifrost_handle: Bifrost,
     ) -> Self {
         AdminDependencies {
             cluster_controller_handle,
             metadata_store_client,
             bifrost_handle,
+            metadata_writer,
         }
     }
 }
