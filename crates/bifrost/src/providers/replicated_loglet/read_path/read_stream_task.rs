@@ -11,13 +11,12 @@
 use std::time::Duration;
 
 use metrics::{counter, Counter};
-use rand::seq::SliceRandom;
-use restate_types::config::Configuration;
 use tokio::sync::mpsc;
 use tracing::{info, trace};
 
 use restate_core::network::{NetworkError, Networking, TransportConnect};
 use restate_core::{task_center, ShutdownError, TaskHandle, TaskKind};
+use restate_types::config::Configuration;
 use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetRecords, LogServerRequestHeader, MaybeRecord};
 use restate_types::replicated_loglet::{EffectiveNodeSet, NodeSet, ReplicatedLogletParams};
@@ -253,9 +252,8 @@ impl ReadStreamTask {
             // Read from logservers
             let effective_nodeset =
                 EffectiveNodeSet::new(&self.my_params.nodeset, nodes_config.live_load());
-            // order the nodeset such that our node is the first one to attempt
-            let mut mutable_effective_nodeset =
-                shuffle_nodeset_for_reads(&effective_nodeset, my_node_id.as_plain());
+            // Order the nodeset such that our node is the first one to attempt
+            let mut mutable_effective_nodeset = effective_nodeset.shuffle_for_reads(my_node_id);
 
             if mutable_effective_nodeset.is_empty() {
                 // if nodeset is all disabled, no readable nodes. impossible situation to resolve,
@@ -517,20 +515,4 @@ enum ServerReadResult {
     Records(Vec<(LogletOffset, MaybeRecord)>),
     /// Unreachable or failing node, skip and try another
     Skip,
-}
-
-fn shuffle_nodeset_for_reads(nodeset: &NodeSet, my_node_id: PlainNodeId) -> Vec<PlainNodeId> {
-    let mut new_nodeset: Vec<_> = nodeset.iter().cloned().collect();
-    // Shuffle nodes
-    new_nodeset.shuffle(&mut rand::thread_rng());
-
-    let has_my_node_idx = nodeset.iter().position(|&x| x == my_node_id);
-
-    // put my node at the end if it's there
-    if let Some(idx) = has_my_node_idx {
-        let len = new_nodeset.len();
-        new_nodeset.swap(idx, len - 1);
-    }
-
-    new_nodeset
 }
