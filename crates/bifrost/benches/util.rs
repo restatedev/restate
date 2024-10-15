@@ -10,7 +10,6 @@
 
 use tracing::warn;
 
-use restate_core::network::Networking;
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter, TaskCenterBuilder,
 };
@@ -36,15 +35,10 @@ pub async fn spawn_environment(
 
     restate_types::config::set_current_config(config.clone());
     let metadata_builder = MetadataBuilder::default();
-    let networking = Networking::new(metadata_builder.to_metadata(), config.networking.clone());
 
     let metadata_store_client = MetadataStoreClient::new_in_memory();
     let metadata = metadata_builder.to_metadata();
-    let metadata_manager = MetadataManager::new(
-        metadata_builder,
-        networking.clone(),
-        metadata_store_client.clone(),
-    );
+    let metadata_manager = MetadataManager::new(metadata_builder, metadata_store_client.clone());
 
     let metadata_writer = metadata_manager.writer();
     tc.try_set_global_metadata(metadata.clone());
