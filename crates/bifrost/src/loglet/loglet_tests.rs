@@ -537,10 +537,10 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
         let mut committed = handle??;
         assert!(!committed.is_empty());
         let committed_len = committed.len();
-        assert!(committed_len >= WARMUP_APPENDS);
+        assert_that!(committed_len, ge(WARMUP_APPENDS));
         let tail_record = committed.pop().unwrap();
         // tail must be beyond seal point
-        assert!(tail.offset() > tail_record);
+        assert_that!(tail.offset(), gt(tail_record));
         println!(
             "Committed len={}, last appended={}",
             committed_len, tail_record

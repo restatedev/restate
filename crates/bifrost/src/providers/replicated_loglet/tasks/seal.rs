@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use tokio::sync::mpsc;
-use tracing::trace;
+use tracing::{debug, trace};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Incoming, Networking, TransportConnect};
@@ -18,7 +18,7 @@ use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
 use restate_types::replicated_loglet::{
-    EffectiveNodeSet, ReplicatedLogletId, ReplicatedLogletParams,
+    EffectiveNodeSet, NodeSet, ReplicatedLogletId, ReplicatedLogletParams,
 };
 use restate_types::retries::RetryPolicy;
 use restate_types::{GenerationalNodeId, PlainNodeId};
@@ -33,8 +33,7 @@ use crate::providers::replicated_loglet::replication::NodeSetChecker;
 /// responses before acknowleding the seal.
 ///
 /// The seal operation is idempotent. It's safe to seal a loglet if it's already partially or fully
-/// sealed. Note that the seal task ignores the "seal" state in the input known_global_tail watch,
-/// but it will set it to `true` after the seal.
+/// sealed. Note that the seal task ignores the "seal" state in the input known_global_tail watch.
 pub struct SealTask {
     task_center: TaskCenter,
     my_params: ReplicatedLogletParams,
@@ -100,14 +99,23 @@ impl SealTask {
         drop(tx);
 
         // Max observed local-tail from sealed nodes
-        let mut max_tail = LogletOffset::INVALID;
+        let mut max_tail = LogletOffset::OLDEST;
         while let Some((node_id, local_tail)) = rx.recv().await {
             max_tail = std::cmp::max(max_tail, local_tail);
             nodeset_checker.set_attribute(node_id, true);
 
             // Do we have f-majority responses?
             if nodeset_checker.check_fmajority(|sealed| *sealed).passed() {
-                self.known_global_tail.notify_seal();
+                let sealed_nodes: NodeSet = nodeset_checker
+                    .filter(|sealed| *sealed)
+                    .map(|(n, _)| *n)
+                    .collect();
+
+                debug!(loglet_id = %self.my_params.loglet_id,
+                    max_tail = %max_tail,
+                    "Seal task completed on f-majority of nodes. Sealed log-servers '{}'",
+                    sealed_nodes,
+                );
                 // note that the rest of seal requests will continue in the background
                 return Ok(max_tail);
             }
