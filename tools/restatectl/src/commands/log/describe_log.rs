@@ -142,7 +142,7 @@ async fn describe_log(
     let mut buf = response.chain.clone();
     let chain = StorageCodec::decode::<Chain, _>(&mut buf)?;
 
-    c_println!("Log Id: {}: (v{})", log_id, response.logs_version);
+    c_println!("Log Id: {} (v{})", log_id, response.logs_version);
 
     let mut chain_table = Table::new_styled();
     chain_table.set_styled_header(vec![
