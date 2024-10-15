@@ -14,7 +14,7 @@ use restate_local_cluster_runner::{
 };
 use restate_rocksdb::RocksDbManager;
 use restate_types::logs::builder::LogsBuilder;
-use restate_types::logs::metadata::{Chain, LogletParams};
+use restate_types::logs::metadata::{Chain, LogletParams, SegmentIndex};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::{
     config::Configuration,
@@ -134,7 +134,7 @@ where
         cluster.wait_healthy(Duration::from_secs(30)).await?;
 
         let loglet_params = ReplicatedLogletParams {
-            loglet_id: ReplicatedLogletId::new(1),
+            loglet_id: ReplicatedLogletId::new(LogId::from(1u32), SegmentIndex::OLDEST),
             sequencer,
             replication,
             // node 1 is the metadata, 2..=count+1 are logservers

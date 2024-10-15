@@ -653,7 +653,7 @@ mod tests {
     #[test(tokio::test(start_paused = true))]
     async fn test_simple_store_flow() -> Result<()> {
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new(1);
+        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
 
         let (tc, log_store) = setup().await?;
         let mut loglet_state_map = LogletStateMap::default();
@@ -730,7 +730,7 @@ mod tests {
     #[test(tokio::test(start_paused = true))]
     async fn test_store_and_seal() -> Result<()> {
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new(1);
+        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
 
         let (tc, log_store) = setup().await?;
         let mut loglet_state_map = LogletStateMap::default();
@@ -892,7 +892,7 @@ mod tests {
     async fn test_repair_store() -> Result<()> {
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const PEER: GenerationalNodeId = GenerationalNodeId::new(2, 2);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new(1);
+        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
 
         let (tc, log_store) = setup().await?;
         let mut loglet_state_map = LogletStateMap::default();
@@ -1058,7 +1058,7 @@ mod tests {
     #[test(tokio::test(start_paused = true))]
     async fn test_simple_get_records_flow() -> Result<()> {
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new(1);
+        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
 
         let (tc, log_store) = setup().await?;
         let mut loglet_state_map = LogletStateMap::default();
@@ -1276,7 +1276,7 @@ mod tests {
     #[test(tokio::test(start_paused = true))]
     async fn test_trim_basics() -> Result<()> {
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new(1);
+        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
 
         let (tc, log_store) = setup().await?;
         let mut loglet_state_map = LogletStateMap::default();
