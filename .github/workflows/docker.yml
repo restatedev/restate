@@ -118,7 +118,7 @@ jobs:
             ACTIONS_RUNTIME_TOKEN
             SCCACHE_GHA_ENABLED=true
           cache-from: type=gha,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
-          cache-to: type=gha,mode=max,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
+          cache-to: type=gha,mode=max,scope=${{ github.workflow }},url=http://127.0.0.1:49160/,mode=max
 
       - name: Save docker image as tar
         if: ${{ inputs.uploadImageAsTarball }}
@@ -155,4 +155,4 @@ jobs:
             ACTIONS_RUNTIME_TOKEN
             SCCACHE_GHA_ENABLED=true
           cache-from: type=gha,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
-          cache-to: type=gha,mode=max,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
+          cache-to: type=gha,mode=max,scope=${{ github.workflow }},url=http://127.0.0.1:49160/,mode=max
