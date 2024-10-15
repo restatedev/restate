@@ -310,12 +310,22 @@ impl Node {
         let lines = futures::stream::select(stdout_reader, stderr_reader);
         let searcher = Searcher::new();
 
+        let node_name = base_config.node_name().to_owned();
+
         let lines_fut = {
             let searcher = searcher.clone();
+            let node_name = node_name.clone();
+            let forward_logs = std::env::var("LOCAL_CLUSTER_RUNNER_FORWARD_LOGS")
+                .map(|s| s == "true" || s == "1")
+                .unwrap_or(false);
             async move {
                 let searcher = &searcher;
+                let node_name = node_name.as_str();
                 let mut node_log_file = lines
                     .try_fold(node_log_file, |mut node_log_file, line| async move {
+                        if forward_logs {
+                            eprintln!("{node_name}	| {line}")
+                        }
                         node_log_file.write_all(line.as_bytes()).await?;
                         node_log_file.write_u8(b'\n').await?;
                         searcher.matches(line.as_str()).await;
@@ -328,7 +338,6 @@ impl Node {
             }
         };
 
-        let node_name = base_config.node_name().to_owned();
         let child_handle = tokio::spawn(async move {
             let (status, _) = tokio::join!(child.wait(), lines_fut);
 
