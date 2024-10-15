@@ -104,7 +104,7 @@ pub enum BuildError {
 
 pub struct Node {
     updateable_config: Live<Configuration>,
-    metadata_manager: MetadataManager<GrpcConnector>,
+    metadata_manager: MetadataManager,
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
     metadata_store_role: Option<LocalMetadataStoreService>,
@@ -153,11 +153,8 @@ impl Node {
         let metadata_builder = MetadataBuilder::default();
         let metadata = metadata_builder.to_metadata();
         let networking = Networking::new(metadata_builder.to_metadata(), config.networking.clone());
-        let metadata_manager = MetadataManager::new(
-            metadata_builder,
-            networking.clone(),
-            metadata_store_client.clone(),
-        );
+        let metadata_manager =
+            MetadataManager::new(metadata_builder, metadata_store_client.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
         let updating_schema_information = metadata.updateable_schema();
 

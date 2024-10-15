@@ -17,7 +17,7 @@ use futures_util::StreamExt;
 use tracing::{debug, info};
 
 use restate_bifrost::{BifrostService, FindTailAttributes};
-use restate_core::network::{MessageRouterBuilder, Networking};
+use restate_core::network::MessageRouterBuilder;
 use restate_core::{MetadataBuilder, MetadataManager, TaskKind};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
@@ -85,12 +85,8 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
         .await?;
         debug!("Metadata store client created");
 
-        let networking = Networking::new(metadata_builder.to_metadata(), config.networking.clone());
-        let metadata_manager = MetadataManager::new(
-            metadata_builder,
-            networking.clone(),
-            metadata_store_client.clone(),
-        );
+        let metadata_manager =
+            MetadataManager::new(metadata_builder, metadata_store_client.clone());
         let mut router_builder = MessageRouterBuilder::default();
         metadata_manager.register_in_message_router(&mut router_builder);
 
