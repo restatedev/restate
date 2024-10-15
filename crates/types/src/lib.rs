@@ -21,6 +21,7 @@ pub mod cluster;
 
 pub mod cluster_controller;
 pub mod config;
+pub mod config_loader;
 pub mod deployment;
 pub mod endpoint_manifest;
 pub mod epoch;

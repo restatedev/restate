@@ -48,10 +48,12 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-log-server = { workspace = true }
 restate-metadata-store = { workspace = true }
+restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
 criterion = { workspace = true, features = ["async_tokio"] }
 enumset = { workspace = true }
+googletest = { workspace = true }
 paste = { workspace = true }
 rlimit = { workspace = true }
 tempfile = { workspace = true }

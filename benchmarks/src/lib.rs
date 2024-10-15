@@ -21,10 +21,10 @@ use pprof::flamegraph::Options;
 use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind};
 use restate_node::Node;
 use restate_rocksdb::RocksDbManager;
-use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_types::config::{
     CommonOptionsBuilder, Configuration, ConfigurationBuilder, WorkerOptionsBuilder,
 };
+use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::Constant;
 use restate_types::retries::RetryPolicy;
 use tokio::runtime::Runtime;
