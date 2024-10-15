@@ -16,10 +16,12 @@ use std::sync::{
 };
 
 use tokio::sync::Semaphore;
+use tokio_util::task::TaskTracker;
+use tracing::{debug, trace};
 
 use restate_core::{
     network::{rpc_router::RpcRouter, Networking, TransportConnect},
-    task_center, ShutdownError, TaskKind,
+    task_center, ShutdownError,
 };
 use restate_types::{
     config::Configuration,
@@ -96,6 +98,7 @@ pub struct Sequencer<T> {
     /// Semaphore for the number of records in-flight.
     /// This is an Arc<> to allow sending owned permits
     record_permits: Arc<Semaphore>,
+    in_flight: TaskTracker,
 }
 
 impl<T: TransportConnect> Sequencer<T> {
@@ -145,6 +148,7 @@ impl<T: TransportConnect> Sequencer<T> {
             networking,
             record_permits,
             max_inflight_records_in_config: AtomicUsize::new(max_in_flight_records_in_config),
+            in_flight: TaskTracker::default(),
         }
     }
 
@@ -156,6 +160,45 @@ impl<T: TransportConnect> Sequencer<T> {
     /// capacity
     pub fn available_capacity(&self) -> usize {
         self.record_permits.available_permits()
+    }
+
+    /// wait until all in-flight appends are drained. Note that this will cause the sequencer to
+    /// return AppendError::Sealed for new appends but it won't start the seal process itself. The
+    /// seal process must be started externally and _only_ after the drain is complete, the caller
+    /// can set the seal bit on `known_global_tail` as it's guaranteed that no more work will be
+    /// done by the sequencer.
+    ///
+    /// This method is cancellation safe.
+    pub async fn drain(&self) -> Result<(), ShutdownError> {
+        // stop issuing new permits
+        self.record_permits.close();
+        // required to allow in_flight.wait() to finish.
+        self.in_flight.close();
+        // we are assuming here that seal has been already executed on majority of nodes. This is
+        // important since in_flight.close() doesn't prevent new tasks from being spawned.
+
+        if self
+            .sequencer_shared_state
+            .global_committed_tail()
+            .is_sealed()
+        {
+            return Ok(());
+        }
+
+        // wait for in-flight tasks to complete before returning
+        debug!(
+            loglet_id = %self.sequencer_shared_state.my_params.loglet_id,
+            "Draining sequencer, waiting for {} inflight appends to complete",
+            self.in_flight.len(),
+        );
+        self.in_flight.wait().await;
+
+        trace!(
+            loglet_id = %self.sequencer_shared_state.my_params.loglet_id,
+            "Sequencer drained",
+        );
+
+        Ok(())
     }
 
     pub fn ensure_enough_permits(&self, required: usize) {
@@ -193,12 +236,9 @@ impl<T: TransportConnect> Sequencer<T> {
         self.ensure_enough_permits(payloads.len());
 
         let len = u32::try_from(payloads.len()).expect("batch sizes fit in u32");
-        let permit = self
-            .record_permits
-            .clone()
-            .acquire_many_owned(len)
-            .await
-            .unwrap();
+        let Ok(permit) = self.record_permits.clone().acquire_many_owned(len).await else {
+            return Ok(LogletCommit::sealed());
+        };
 
         // We are updating the next write offset and we want to make sure that after this call that
         // we observe if task_center()'s shutdown signal was set or not consistently across
@@ -222,17 +262,13 @@ impl<T: TransportConnect> Sequencer<T> {
             commit_resolver,
         );
 
-        // We are sure that if task-center is shutting down that all future appends will fail so we
-        // are not so worried about the offset that was updated already above.
-        task_center().spawn_child(
-            TaskKind::ReplicatedLogletAppender,
-            "sequencer-appender",
-            None,
+        self.in_flight.spawn({
+            let tc = task_center();
             async move {
-                appender.run().await;
-                Ok(())
-            },
-        )?;
+                tc.run_in_scope("sequencer-appender", None, appender.run())
+                    .await
+            }
+        });
 
         Ok(loglet_commit)
     }
