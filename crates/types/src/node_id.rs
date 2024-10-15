@@ -245,6 +245,12 @@ impl From<GenerationalNodeId> for crate::protobuf::common::NodeId {
     }
 }
 
+impl From<GenerationalNodeId> for PlainNodeId {
+    fn from(value: GenerationalNodeId) -> Self {
+        value.0
+    }
+}
+
 impl PlainNodeId {
     pub const fn new(id: u32) -> PlainNodeId {
         PlainNodeId(id)
