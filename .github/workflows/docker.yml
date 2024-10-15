@@ -112,11 +112,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
           network: host
-          # add me back when https://github.com/WarpBuilds/warpbuild-agent/pull/22 is deployed
-          # ACTIONS_CACHE_URL=http://127.0.0.1:49160/
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
-            ACTIONS_CACHE_URL
+            ACTIONS_CACHE_URL=http://127.0.0.1:49160/
             ACTIONS_RUNTIME_TOKEN
             SCCACHE_GHA_ENABLED=true
           cache-from: type=gha,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
@@ -151,11 +149,9 @@ jobs:
           # ignore inputs.platforms as we always need to push both arm64 and amd64 docker images
           platforms: 'linux/arm64,linux/amd64'
           network: host
-          # add me back when https://github.com/WarpBuilds/warpbuild-agent/pull/22 is deployed
-          # ACTIONS_CACHE_URL=http://127.0.0.1:49160/
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
-            ACTIONS_CACHE_URL
+            ACTIONS_CACHE_URL=http://127.0.0.1:49160/
             ACTIONS_RUNTIME_TOKEN
             SCCACHE_GHA_ENABLED=true
           cache-from: type=gha,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
