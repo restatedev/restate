@@ -41,8 +41,6 @@ use restate_types::{
 
 use crate::random_socket_address;
 
-const LOCAL_CLUSTER_RUNNER_FORWARD_LOGS: &'static str = "LOCAL_CLUSTER_RUNNER_FORWARD_LOGS";
-
 #[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
 pub struct Node {
     #[builder(mutators(
@@ -317,7 +315,7 @@ impl Node {
         let lines_fut = {
             let searcher = searcher.clone();
             let node_name = node_name.clone();
-            let forward_logs = std::env::var(LOCAL_CLUSTER_RUNNER_FORWARD_LOGS)
+            let forward_logs = std::env::var("LOCAL_CLUSTER_RUNNER_FORWARD_LOGS")
                 .map(|s| s == "true" || s == "1")
                 .unwrap_or(false);
             async move {
