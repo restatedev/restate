@@ -105,7 +105,6 @@ pub enum TaskKind {
     Watchdog,
     NetworkMessageHandler,
     // Replicated loglet tasks
-    ReplicatedLogletAppender,
     ReplicatedLogletReadStream,
     #[strum(props(OnCancel = "abort"))]
     /// Log-server tasks
