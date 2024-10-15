@@ -15,5 +15,7 @@ mod schema_registry;
 pub mod service;
 mod state;
 mod storage_query;
+#[cfg(feature = "serve-web-ui")]
+mod web_ui;
 
 pub use error::Error;
