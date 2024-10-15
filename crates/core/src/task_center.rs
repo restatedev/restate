@@ -1006,11 +1006,9 @@ pub fn with_metadata<F, R>(f: F) -> R
 where
     F: FnOnce(&Metadata) -> R,
 {
-    CONTEXT.with(|ctx| {
-        f(ctx
-            .metadata
-            .as_ref()
-            .expect("metadata() is set in this task. Is global metadata set?"))
+    CURRENT_TASK_CENTER.with(|tc| {
+        f(tc.metadata()
+            .expect("metadata must be set. Is global metadata set?"))
     })
 }
 
