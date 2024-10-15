@@ -90,16 +90,6 @@ impl ReplicatedLogletId {
 )]
 pub struct NodeSet(#[serde_as(as = "HashSet<DisplayFromStr>")] HashSet<PlainNodeId>);
 
-impl Display for NodeSet {
-    /// The alternate format displays a *sorted* list of short-form plain node ids, suitable for human-friendly output.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match f.alternate() {
-            false => self.write_nodes(f),
-            true => self.write_nodes_sorted(f),
-        }
-    }
-}
-
 impl NodeSet {
     pub fn empty() -> Self {
         Self(HashSet::new())
@@ -181,30 +171,6 @@ impl NodeSet {
 
         new_nodeset
     }
-
-    fn write_nodes(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[")?;
-        let mut nodes = self.0.iter();
-        if let Some(node) = nodes.next() {
-            write!(f, "{}", node)?;
-            for node in nodes {
-                write!(f, ", {}", node)?;
-            }
-        }
-        write!(f, "]")
-    }
-
-    fn write_nodes_sorted(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[")?;
-        let mut nodes = self.0.iter().sorted();
-        if let Some(node) = nodes.next() {
-            write!(f, "{}", node)?;
-            for node in nodes {
-                write!(f, ", {}", node)?;
-            }
-        }
-        write!(f, "]")
-    }
 }
 
 impl<'a> IntoIterator for &'a NodeSet {
@@ -245,6 +211,40 @@ impl<A: Into<PlainNodeId>> FromIterator<A> for NodeSet {
     fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         Self(HashSet::from_iter(iter.into_iter().map(Into::into)))
     }
+}
+
+impl Display for NodeSet {
+    /// The alternate format displays a *sorted* list of short-form plain node ids, suitable for human-friendly output.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match f.alternate() {
+            false => write_nodes(self, f),
+            true => write_nodes_sorted(self, f),
+        }
+    }
+}
+
+fn write_nodes(node_set: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "[")?;
+    let mut nodes = node_set.0.iter();
+    if let Some(node) = nodes.next() {
+        write!(f, "{}", node)?;
+        for node in nodes {
+            write!(f, ", {}", node)?;
+        }
+    }
+    write!(f, "]")
+}
+
+fn write_nodes_sorted(node_set: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "[")?;
+    let mut nodes = node_set.0.iter().sorted();
+    if let Some(node) = nodes.next() {
+        write!(f, "{}", node)?;
+        for node in nodes {
+            write!(f, ", {}", node)?;
+        }
+    }
+    write!(f, "]")
 }
 
 #[serde_with::serde_as]
