@@ -206,7 +206,7 @@ impl From<PathBuf> for MaybeTempDir {
 
 impl From<tempfile::TempDir> for MaybeTempDir {
     fn from(value: tempfile::TempDir) -> Self {
-        if let Ok("true") = std::env::var("LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR").as_deref() {
+        if let Ok("true" | "1") = std::env::var("LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR").as_deref() {
             eprintln!(
                 "Will retain local cluster runner tempdir upon cluster drop: {}",
                 value.path().display()
