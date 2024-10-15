@@ -140,7 +140,7 @@ async fn describe_log(
     let mut response = client.describe_log(req).await?.into_inner();
 
     let mut buf = response.chain.clone();
-    let chain = StorageCodec::decode::<Chain, _>(&mut buf)?;
+    let chain = StorageCodec::decode::<Chain, _>(&mut buf).context("Failed to decode log chain")?;
 
     c_println!("Log Id: {} (v{})", log_id, response.logs_version);
 
@@ -186,6 +186,10 @@ async fn describe_log(
         Box::new(segments.tail(opts.tail.unwrap()))
     };
 
+    let nodes_configuration =
+        StorageCodec::decode::<NodesConfiguration, _>(&mut response.nodes_configuration)
+            .context("Failed to decode nodes configuration")?;
+
     for segment in segments {
         if first_segment_rendered.is_none() {
             first_segment_rendered = Some(segment.index());
@@ -196,41 +200,23 @@ async fn describe_log(
 
         match segment.config.kind {
             ProviderKind::Replicated => {
-                let nodes_configuration = StorageCodec::decode::<NodesConfiguration, _>(
-                    &mut response.nodes_configuration,
-                )?;
-                let replicated_log_params = get_replicated_log_params(&segment);
-                match replicated_log_params {
-                    Some(params) => {
-                        chain_table.add_row(vec![
-                            render_tail_segment_marker(is_tail_segment),
-                            Cell::new(format!("{}", segment.index())),
-                            Cell::new(format!("{}", segment.base_lsn)),
-                            Cell::new(format!("{:?}", segment.config.kind)),
-                            Cell::new(format!("{}", params.loglet_id)),
-                            Cell::new(format!("{:#}", params.replication)),
-                            render_sequencer(is_tail_segment, &params, &nodes_configuration),
-                            render_effective_nodeset(
-                                is_tail_segment,
-                                &params,
-                                &nodes_configuration,
-                            ),
-                        ]);
-                    }
-                    None => {
-                        // We couldn't deserialize the params, we should log an error
-                        chain_table.add_row(vec![
-                            render_tail_segment_marker(is_tail_segment),
-                            Cell::new(format!("{}", segment.index())),
-                            Cell::new(format!("{}", segment.base_lsn)),
-                            Cell::new(format!("{:?}", segment.config.kind)),
-                            Cell::new("N/A"),
-                            Cell::new("N/A"),
-                            Cell::new("N/A"),
-                            Cell::new("N/A"),
-                        ]);
-                    }
-                }
+                let params = get_replicated_log_params(&segment);
+                chain_table.add_row(vec![
+                    render_tail_segment_marker(is_tail_segment),
+                    Cell::new(format!("{}", segment.index())),
+                    Cell::new(format!("{}", segment.base_lsn)),
+                    Cell::new(format!("{:?}", segment.config.kind)),
+                    params
+                        .as_ref()
+                        .map(|p| Cell::new(p.loglet_id))
+                        .unwrap_or_else(|| Cell::new("N/A").fg(Color::Red)),
+                    params
+                        .as_ref()
+                        .map(|p| Cell::new(format!("{:#}", p.replication)))
+                        .unwrap_or_else(|| Cell::new("N/A").fg(Color::Red)),
+                    render_sequencer(is_tail_segment, &params, &nodes_configuration),
+                    render_effective_nodeset(is_tail_segment, &params, &nodes_configuration),
+                ]);
             }
             _ => {
                 chain_table.add_row(vec![
@@ -279,43 +265,59 @@ fn render_tail_segment_marker(is_tail: bool) -> Cell {
 
 fn get_replicated_log_params(segment: &Segment) -> Option<ReplicatedLogletParams> {
     match segment.config.kind {
-        ProviderKind::Replicated => Some(
-            ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes()).unwrap(),
-        ),
+        ProviderKind::Replicated => {
+            ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
+                .inspect_err(|e| {
+                    c_println!(
+                        "⚠️ Failed to deserialize ReplicatedLogletParams for segment {}: {}",
+                        segment.index(),
+                        e
+                    );
+                })
+                .ok()
+        }
         _ => None,
     }
 }
 
 fn render_effective_nodeset(
     is_tail: bool,
-    params: &ReplicatedLogletParams,
+    params: &Option<ReplicatedLogletParams>,
     nodes_configuration: &NodesConfiguration,
 ) -> Cell {
-    let effective_node_set = params.nodeset.to_effective(nodes_configuration);
-    let mut cell = Cell::new(format!("{:#}", effective_node_set));
-    if is_tail && effective_node_set.len() < params.replication.num_copies() as usize {
-        cell = cell.fg(Color::Red);
+    if let Some(params) = params {
+        let effective_node_set = params.nodeset.to_effective(nodes_configuration);
+        let mut cell = Cell::new(format!("{:#}", effective_node_set));
+        if is_tail && effective_node_set.len() < params.replication.num_copies() as usize {
+            cell = cell.fg(Color::Red);
+        }
+        cell
+    } else {
+        Cell::new("N/A").fg(Color::Red)
     }
-    cell
 }
 
 fn render_sequencer(
     is_tail: bool,
-    params: &ReplicatedLogletParams,
+    params: &Option<ReplicatedLogletParams>,
     nodes_configuration: &NodesConfiguration,
 ) -> Cell {
-    if is_tail {
-        let sequencer_generational =
-            nodes_configuration.find_node_by_id(params.sequencer.as_plain());
-        let color = if sequencer_generational
-            .is_ok_and(|node| node.current_generation.generation() == params.sequencer.generation())
-        {
-            Color::Green
+    if let Some(params) = params {
+        if is_tail {
+            let sequencer_generational =
+                nodes_configuration.find_node_by_id(params.sequencer.as_plain());
+            let color = if sequencer_generational.is_ok_and(|node| {
+                node.current_generation.generation() == params.sequencer.generation()
+            }) {
+                Color::Green
+            } else {
+                Color::Red
+            };
+            Cell::new(format!("{:#}", params.sequencer)).fg(color)
         } else {
-            Color::Red
-        };
-        Cell::new(format!("{:#}", params.sequencer)).fg(color)
+            Cell::new("")
+        }
     } else {
-        Cell::new("")
+        Cell::new("N/A").fg(Color::Red)
     }
 }
