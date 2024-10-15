@@ -167,41 +167,39 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                     })
                     .expect("to spawn task");
             }
-            while let Some(Ok((node_id, res))) = join_set.join_next().await {
-                // Did the node timeout? consider it dead
-                // Important note: This is a naive mechanism for failure detection, this should be
-                // considered a temporary design until we get to build a more robust detection that
-                // accounts for flaky or bouncy nodes, but we assume that the timeout is large
-                // enough that a single timeout signifies a dead node.
-                //
-                // The node gets the same treatment on other RpcErrors.
-                let Ok(res) = res else {
-                    // determine last seen alive.
-                    let last_seen_alive =
-                        last_state
-                            .nodes
-                            .get(&node_id)
-                            .and_then(|state| match state {
-                                NodeState::Alive(AliveNode {
-                                    last_heartbeat_at, ..
-                                }) => Some(*last_heartbeat_at),
-                                NodeState::Dead(DeadNode { last_seen_alive }) => *last_seen_alive,
-                            });
+            while let Some(Ok((node_id, result))) = join_set.join_next().await {
+                match result {
+                    Ok(response) => {
+                        let (from, msg) = response.split();
+                        nodes.insert(
+                            node_id,
+                            NodeState::Alive(AliveNode {
+                                last_heartbeat_at: MillisSinceEpoch::now(),
+                                generational_node_id: *from.peer(),
+                                partitions: msg.state,
+                            }),
+                        );
+                    }
+                    _ => {
+                        // todo: implement a more robust failure detector
+                        // This is a naive mechanism for failure detection and is just a stop-gap measure.
+                        // A single connection error or timeout will cause a node to be marked as dead.
+                        let last_seen_alive =
+                            last_state
+                                .nodes
+                                .get(&node_id)
+                                .and_then(|state| match state {
+                                    NodeState::Alive(AliveNode {
+                                        last_heartbeat_at, ..
+                                    }) => Some(*last_heartbeat_at),
+                                    NodeState::Dead(DeadNode { last_seen_alive }) => {
+                                        *last_seen_alive
+                                    }
+                                });
 
-                    nodes.insert(node_id, NodeState::Dead(DeadNode { last_seen_alive }));
-                    continue;
+                        nodes.insert(node_id, NodeState::Dead(DeadNode { last_seen_alive }));
+                    }
                 };
-
-                let (from, msg) = res.split();
-
-                nodes.insert(
-                    node_id,
-                    NodeState::Alive(AliveNode {
-                        last_heartbeat_at: MillisSinceEpoch::now(),
-                        generational_node_id: *from.peer(),
-                        partitions: msg.state,
-                    }),
-                );
             }
 
             let state = ClusterState {
