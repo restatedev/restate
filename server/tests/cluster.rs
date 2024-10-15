@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use enumset::enum_set;
 use futures_util::StreamExt;
+use test_log::test;
+
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
 use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
-use test_log::test;
 
 mod common;
 

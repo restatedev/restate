@@ -1,4 +1,4 @@
-// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024-2024 - Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -11,12 +11,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::config::Configuration;
 use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
 use notify_debouncer_mini::{
     new_debouncer, DebounceEventResult, DebouncedEvent, DebouncedEventKind,
 };
-use restate_types::config::{CommonOptionCliOverride, Configuration};
 use tracing::{error, info, warn};
 
 #[derive(thiserror::Error, codederror::CodedError, Debug)]
@@ -33,8 +33,9 @@ pub struct ConfigLoader {
     load_env: bool,
     #[builder(setter(strip_option))]
     custom_default: Option<Configuration>,
+    #[cfg(feature = "clap")]
     #[builder(setter(strip_option))]
-    cli_override: Option<CommonOptionCliOverride>,
+    cli_override: Option<crate::config::CommonOptionCliOverride>,
     disable_watch: bool,
 }
 
@@ -53,6 +54,7 @@ impl ConfigLoader {
             figment = Self::merge_with_env(figment);
         }
 
+        #[cfg(feature = "clap")]
         // Merge with CLI overrides
         if let Some(cli_overrides) = self.cli_override.clone() {
             figment = figment.merge(Figment::from(Serialized::defaults(cli_overrides)))
@@ -153,7 +155,7 @@ impl ConfigLoader {
         if should_update {
             match self.load_once() {
                 Ok(config) => {
-                    restate_types::config::set_current_config(config);
+                    crate::config::set_current_config(config);
                 }
                 Err(e) => {
                     warn!(

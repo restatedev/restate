@@ -25,11 +25,11 @@ use restate_core::{
 use restate_errors::fmt::RestateCode;
 use restate_metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
-use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_types::config::{
     reset_base_temp_dir, reset_base_temp_dir_and_retain, set_base_temp_dir, Configuration,
 };
+use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::Live;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
