@@ -105,7 +105,6 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
     Ok(())
 }
 
-#[ignore = "is currently flaky"]
 #[test(tokio::test)]
 async fn replicated_loglet() -> googletest::Result<()> {
     let mut base_config = Configuration::default();
