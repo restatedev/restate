@@ -551,7 +551,7 @@ where
                     metadata.notify_observed_version(
                         kind,
                         version,
-                        Some(NodeId::from(connection.peer)),
+                        Some(connection.downgrade()),
                         Urgency::Normal,
                     );
                 }
