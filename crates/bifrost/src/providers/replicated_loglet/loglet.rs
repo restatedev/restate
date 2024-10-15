@@ -172,6 +172,9 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, OperationError> {
+        if self.known_global_tail().is_sealed() {
+            return Ok(LogletCommit::sealed());
+        }
         metrics::counter!(BIFROST_RECORDS_ENQUEUED_TOTAL).increment(payloads.len() as u64);
         metrics::counter!(BIFROST_RECORDS_ENQUEUED_BYTES).increment(
             payloads
@@ -205,10 +208,8 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
                 .await?;
                 if result == CheckSealOutcome::Sealing {
                     // We are likely to be sealing...
-                    // let's fire a seal to ensure this seal is complete
-                    if self.seal().await.is_ok() {
-                        self.known_global_tail.notify_seal();
-                    }
+                    // let's fire a seal to ensure this seal is complete.
+                    self.seal().await?;
                 }
                 return Ok(*self.known_global_tail.get());
             }
@@ -251,7 +252,6 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     async fn seal(&self) -> Result<(), OperationError> {
-        // todo(asoli): If we are the sequencer node, let the sequencer know.
         let _ = SealTask::new(
             task_center(),
             self.my_params.clone(),
@@ -260,6 +260,15 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         )
         .run(self.networking.clone())
         .await?;
+        // If we are the sequencer, we need to wait until the sequencer is drained.
+        if let SequencerAccess::Local { handle } = &self.sequencer {
+            handle.drain().await?;
+            self.known_global_tail.notify_seal();
+        };
+        // On remote sequencer, we only set our global tail to sealed when we call find_tail and it
+        // returns Sealed. We should NOT:
+        // - Use AppendError::Sealed to mark our sealed global_tail
+        // - Mark our global tail as sealed on successful seal() call.
         info!(loglet_id=%self.my_params.loglet_id, "Loglet has been sealed successfully");
         Ok(())
     }

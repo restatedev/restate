@@ -112,7 +112,7 @@ impl CheckSealTask {
             if tail_status.is_known_sealed() {
                 // we only need to see a single node sealed to declare that we are probably sealing (or
                 // sealed)
-                return Ok(CheckSealOutcome::ProbablyOpen);
+                return Ok(CheckSealOutcome::Sealing);
             }
             nodeset_checker.merge_attribute(next_node, tail_status);
         }
