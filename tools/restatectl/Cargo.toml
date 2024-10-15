@@ -13,7 +13,7 @@ replicated-loglet = [
     "restate-types/replicated-loglet",
     "restate-bifrost/replicated-loglet",
 ]
-memory-loglet = ["restate-types/memory-loglet", "restate-bifrost/memory-loglet"]
+memory-loglet = ["restate-types/memory-loglet", "restate-bifrost/memory-loglet", "restate-admin/memory-loglet"]
 
 [dependencies]
 restate-admin = { workspace = true, features = ["clients"] }
