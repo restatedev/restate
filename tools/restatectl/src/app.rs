@@ -16,7 +16,6 @@ use restate_cli_util::CliContext;
 use restate_cli_util::CommonOpts;
 use restate_types::net::AdvertisedAddress;
 
-use crate::commands::dump::Dump;
 use crate::commands::log::Log;
 use crate::commands::metadata::Metadata;
 use crate::commands::node::Node;
@@ -44,9 +43,6 @@ pub struct ConnectionInfo {
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Command {
-    /// Dump various metadata from the cluster controller
-    #[clap(subcommand)]
-    Dump(Dump),
     /// Cluster distributed log operations
     #[clap(subcommand)]
     Logs(Log),
