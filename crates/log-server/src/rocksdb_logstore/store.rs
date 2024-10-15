@@ -551,8 +551,8 @@ mod tests {
     async fn test_load_loglet_state() -> Result<()> {
         let (tc, mut log_store) = setup().await?;
         // fresh/unknown loglet
-        let loglet_id_1 = ReplicatedLogletId::new(88);
-        let loglet_id_2 = ReplicatedLogletId::new(89);
+        let loglet_id_1 = ReplicatedLogletId::new_unchecked(88);
+        let loglet_id_2 = ReplicatedLogletId::new_unchecked(89);
         let sequencer_1 = GenerationalNodeId::new(5, 213);
         let sequencer_2 = GenerationalNodeId::new(2, 212);
 
@@ -642,8 +642,8 @@ mod tests {
     #[test(tokio::test(start_paused = true))]
     async fn test_digest() -> Result<()> {
         let (tc, mut log_store) = setup().await?;
-        let loglet_id_1 = ReplicatedLogletId::new(88);
-        let loglet_id_2 = ReplicatedLogletId::new(89);
+        let loglet_id_1 = ReplicatedLogletId::new_unchecked(88);
+        let loglet_id_2 = ReplicatedLogletId::new_unchecked(89);
         let sequencer_1 = GenerationalNodeId::new(5, 213);
         let sequencer_2 = GenerationalNodeId::new(2, 212);
 

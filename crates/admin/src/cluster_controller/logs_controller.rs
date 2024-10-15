@@ -35,7 +35,9 @@ use restate_types::logs::{LogId, Lsn};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::nodes_config::Role;
 use restate_types::partition_table::PartitionTable;
-use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
+use restate_types::replicated_loglet::{
+    NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
+};
 use restate_types::{logs, Version, Versioned};
 
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
@@ -188,7 +190,7 @@ impl LogState {
                 log_id,
             } => {
                 if let Some(loglet_configuration) =
-                    try_provisioning(*provider_kind, observed_cluster_state)
+                    try_provisioning(*log_id, *provider_kind, observed_cluster_state)
                 {
                     let chain =
                         Chain::new(*provider_kind, loglet_configuration.to_loglet_params()?);
@@ -269,6 +271,7 @@ impl LogState {
 /// Try provisioning a new log for the given [`ProviderKind`] based on the observed cluster state.
 /// If this is possible, then this function returns some [`LogletConfiguration`].
 fn try_provisioning(
+    log_id: LogId,
     provider_kind: ProviderKind,
     observed_cluster_state: &ObservedClusterState,
 ) -> Option<LogletConfiguration> {
@@ -283,10 +286,12 @@ fn try_provisioning(
             Some(LogletConfiguration::Memory(log_id))
         }
         #[cfg(feature = "replicated-loglet")]
-        ProviderKind::Replicated => {
-            build_new_replicated_loglet_configuration(observed_cluster_state, None)
-                .map(LogletConfiguration::Replicated)
-        }
+        ProviderKind::Replicated => build_new_replicated_loglet_configuration(
+            ReplicatedLogletId::new(log_id, SegmentIndex::OLDEST),
+            observed_cluster_state,
+            None,
+        )
+        .map(LogletConfiguration::Replicated),
     }
 }
 
@@ -294,6 +299,7 @@ fn try_provisioning(
 /// and the previous configuration.
 #[cfg(feature = "replicated-loglet")]
 fn build_new_replicated_loglet_configuration(
+    loglet_id: ReplicatedLogletId,
     observed_cluster_state: &ObservedClusterState,
     previous_configuration: Option<&ReplicatedLogletParams>,
 ) -> Option<ReplicatedLogletParams> {
@@ -321,7 +327,7 @@ fn build_new_replicated_loglet_configuration(
         }
 
         Some(ReplicatedLogletParams {
-            loglet_id: rng.next_u64().into(),
+            loglet_id,
             sequencer: **log_servers
                 .iter()
                 .choose(&mut rng)
@@ -332,7 +338,7 @@ fn build_new_replicated_loglet_configuration(
         })
     } else if let Some(sequencer) = log_servers.iter().choose(&mut rng) {
         previous_configuration.cloned().map(|mut configuration| {
-            configuration.loglet_id = rng.next_u64().into();
+            configuration.loglet_id = loglet_id;
             configuration.sequencer = **sequencer;
             configuration
         })
@@ -399,6 +405,7 @@ impl LogletConfiguration {
             #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(configuration) => {
                 build_new_replicated_loglet_configuration(
+                    configuration.loglet_id.next(),
                     observed_cluster_state,
                     Some(configuration),
                 )

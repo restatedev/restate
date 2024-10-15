@@ -13,7 +13,7 @@ use std::num::{NonZeroU32, NonZeroU8};
 use cling::prelude::*;
 
 use restate_types::logs::builder::LogsBuilder;
-use restate_types::logs::metadata::{Chain, LogletParams, ProviderKind};
+use restate_types::logs::metadata::{Chain, LogletParams, ProviderKind, SegmentIndex};
 use restate_types::logs::LogId;
 use restate_types::replicated_loglet::{
     NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
@@ -46,22 +46,19 @@ pub struct GenerateLogMetadataOpts {
 async fn generate_log_metadata(opts: &GenerateLogMetadataOpts) -> anyhow::Result<()> {
     let mut builder = LogsBuilder::default();
     for log_id in 0..opts.num_logs {
-        let minor = 1;
-        // format is, log_id in the higher order u32, and 1 in the lower.
-        let loglet_id: u64 = (u64::from(log_id) << (size_of::<LogId>() * 8)) + minor;
+        let log_id = LogId::from(log_id);
+        let segment_index = SegmentIndex::OLDEST;
         let loglet_params = ReplicatedLogletParams {
-            loglet_id: ReplicatedLogletId::new(loglet_id),
+            loglet_id: ReplicatedLogletId::new(log_id, segment_index),
             sequencer: opts.sequencer,
             replication: ReplicationProperty::new(opts.replication_factor),
             nodeset: NodeSet::from_iter(opts.nodeset.clone()),
             write_set: None,
         };
         let params = LogletParams::from(loglet_params.serialize()?);
+
         builder
-            .add_log(
-                LogId::from(log_id),
-                Chain::new(ProviderKind::Replicated, params),
-            )
+            .add_log(log_id, Chain::new(ProviderKind::Replicated, params))
             .unwrap();
     }
 
