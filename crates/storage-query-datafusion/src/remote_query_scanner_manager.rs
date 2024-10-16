@@ -18,7 +18,6 @@ use crate::remote_query_scanner_client::RemoteScannerService;
 use crate::table_providers::ScanPartition;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
-use restate_core::my_node_id;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::NodeId;
 
@@ -107,7 +106,7 @@ impl RemoteScannerManager {
 
     pub fn get_partition_target_node(&self, _partition_id: PartitionId) -> NodeId {
         // TODO: obtain this information somehow
-        my_node_id().into()
+        todo!()
     }
 }
 
