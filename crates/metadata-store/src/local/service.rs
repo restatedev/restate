@@ -8,24 +8,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc_svc;
-use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
-use crate::local::grpc::handler::LocalMetadataStoreHandler;
-use crate::local::store::LocalMetadataStore;
 use http::Request;
 use hyper::body::Incoming;
 use hyper_util::service::TowerToHyperService;
-use restate_core::network::net_util;
-use restate_core::{task_center, ShutdownError, TaskKind};
-use restate_rocksdb::RocksError;
-use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
-use restate_types::live::BoxedLiveLoad;
+use restate_types::health::HealthStatus;
 use tonic::body::boxed;
 use tonic::server::NamedService;
 use tower::ServiceExt;
 use tower_http::classify::{GrpcCode, GrpcErrorsAsFailures, SharedClassifier};
 
+use restate_core::network::net_util;
+use restate_core::{task_center, ShutdownError, TaskKind};
+use restate_rocksdb::RocksError;
+use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::live::BoxedLiveLoad;
+use restate_types::protobuf::common::MetadataServerStatus;
+
+use crate::grpc_svc;
+use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
+use crate::local::grpc::handler::LocalMetadataStoreHandler;
+use crate::local::store::LocalMetadataStore;
+
 pub struct LocalMetadataStoreService {
+    health_status: HealthStatus<MetadataServerStatus>,
     opts: BoxedLiveLoad<MetadataStoreOptions>,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
 }
@@ -44,10 +49,13 @@ pub enum Error {
 
 impl LocalMetadataStoreService {
     pub fn from_options(
+        health_status: HealthStatus<MetadataServerStatus>,
         opts: BoxedLiveLoad<MetadataStoreOptions>,
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     ) -> Self {
+        health_status.update(MetadataServerStatus::StartingUp);
         Self {
+            health_status,
             opts,
             rocksdb_options,
         }
@@ -59,6 +67,7 @@ impl LocalMetadataStoreService {
 
     pub async fn run(self) -> Result<(), Error> {
         let LocalMetadataStoreService {
+            health_status,
             mut opts,
             rocksdb_options,
         } = self;
@@ -102,7 +111,14 @@ impl LocalMetadataStoreService {
             "metadata-store-grpc",
             None,
             async move {
-                net_util::run_hyper_server(&bind_address, service, "metadata-store-grpc").await?;
+                net_util::run_hyper_server(
+                    &bind_address,
+                    service,
+                    "metadata-store-grpc",
+                    || health_status.update(MetadataServerStatus::Ready),
+                    || health_status.update(MetadataServerStatus::Unknown),
+                )
+                .await?;
                 Ok(())
             },
         )?;

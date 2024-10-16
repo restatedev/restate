@@ -12,9 +12,8 @@ mod cluster_marker;
 mod network_server;
 mod roles;
 
-use restate_types::errors::GenericError;
-use restate_types::logs::RecordCache;
 use tokio::sync::oneshot;
+use tracing::{debug, error, info, trace};
 
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
@@ -30,11 +29,17 @@ use restate_log_server::LogServerService;
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::{CommonOptions, Configuration};
+use restate_types::errors::GenericError;
+use restate_types::health::Health;
 use restate_types::live::Live;
+#[cfg(feature = "replicated-loglet")]
+use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
+use restate_types::protobuf::common::{
+    AdminStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
+};
 use restate_types::Version;
-use tracing::{debug, error, info};
 
 use crate::cluster_marker::ClusterValidationError;
 use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
@@ -94,6 +99,7 @@ pub enum BuildError {
 }
 
 pub struct Node {
+    health: Health,
     updateable_config: Live<Configuration>,
     metadata_manager: MetadataManager,
     metadata_store_client: MetadataStoreClient,
@@ -110,6 +116,8 @@ pub struct Node {
 impl Node {
     pub async fn create(updateable_config: Live<Configuration>) -> Result<Self, BuildError> {
         let tc = task_center();
+        let health = Health::default();
+        health.node_status().update(NodeStatus::StartingUp);
         let config = updateable_config.pinned();
         // ensure we have cluster admin role if bootstrapping.
         if config.common.allow_bootstrap {
@@ -125,6 +133,7 @@ impl Node {
 
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(LocalMetadataStoreService::from_options(
+                health.metadata_server_status(),
                 updateable_config.clone().map(|c| &c.metadata_store).boxed(),
                 updateable_config
                     .clone()
@@ -184,6 +193,7 @@ impl Node {
         let log_server = if config.has_role(Role::LogServer) {
             Some(
                 LogServerService::create(
+                    health.log_server_status(),
                     updateable_config.clone(),
                     tc.clone(),
                     metadata.clone(),
@@ -200,6 +210,7 @@ impl Node {
         let admin_role = if config.has_role(Role::Admin) {
             Some(
                 AdminRole::create(
+                    health.admin_status(),
                     tc.clone(),
                     updateable_config.clone(),
                     metadata.clone(),
@@ -217,6 +228,7 @@ impl Node {
         let worker_role = if config.has_role(Role::Worker) {
             Some(
                 WorkerRole::create(
+                    health.worker_status(),
                     metadata,
                     updateable_config.clone(),
                     &mut router_builder,
@@ -232,6 +244,7 @@ impl Node {
         };
 
         let server = NetworkServer::new(
+            health.clone(),
             networking.connection_manager().clone(),
             worker_role
                 .as_ref()
@@ -254,6 +267,7 @@ impl Node {
             .set_message_router(message_router);
 
         Ok(Node {
+            health,
             updateable_config,
             metadata_manager,
             bifrost: bifrost_svc,
@@ -423,6 +437,51 @@ impl Node {
             None,
             self.server.run(config.common.clone()),
         )?;
+
+        let my_roles = my_node_config.roles;
+        // Report that the node is running when all roles are ready
+        let _ = tc.spawn(TaskKind::Disposable, "status-report", None, async move {
+            self.health
+                .node_status()
+                .wait_for_value(NodeStatus::Alive)
+                .await;
+            trace!("Node-to-node networking is ready");
+            for role in my_roles {
+                match role {
+                    Role::Worker => {
+                        self.health
+                            .worker_status()
+                            .wait_for_value(WorkerStatus::Ready)
+                            .await;
+                        trace!("Worker role is reporting ready");
+                    }
+                    Role::Admin => {
+                        self.health
+                            .admin_status()
+                            .wait_for_value(AdminStatus::Ready)
+                            .await;
+                        trace!("Worker role is reporting ready");
+                    }
+                    Role::MetadataStore => {
+                        self.health
+                            .metadata_server_status()
+                            .wait_for_value(MetadataServerStatus::Ready)
+                            .await;
+                        trace!("Metadata role is reporting ready");
+                    }
+
+                    Role::LogServer => {
+                        self.health
+                            .log_server_status()
+                            .wait_for_value(LogServerStatus::Ready)
+                            .await;
+                        trace!("Log-server is reporting ready");
+                    }
+                }
+            }
+            tracing::info!("Restate server is ready");
+            Ok(())
+        });
 
         Ok(())
     }

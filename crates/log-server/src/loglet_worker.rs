@@ -643,7 +643,7 @@ mod tests {
                     RecordCache::new(1_000_000),
                 )
                 .await?;
-                let log_store = builder.start(&tc).await?;
+                let log_store = builder.start(&tc, Default::default()).await?;
                 Result::Ok(log_store)
             })
             .await?;

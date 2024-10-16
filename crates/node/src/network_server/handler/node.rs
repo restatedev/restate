@@ -10,23 +10,29 @@
 
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
+use enumset::EnumSet;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
+use tokio_stream::StreamExt;
+use tonic::{Request, Response, Status, Streaming};
+
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvc;
 use restate_core::network::protobuf::node_svc::IdentResponse;
 use restate_core::network::protobuf::node_svc::{StorageQueryRequest, StorageQueryResponse};
 use restate_core::network::ProtocolError;
 use restate_core::network::{ConnectionManager, GrpcConnector};
 use restate_core::{metadata, TaskCenter};
-use restate_types::protobuf::common::NodeStatus;
+use restate_types::health::Health;
+use restate_types::nodes_config::Role;
 use restate_types::protobuf::node::Message;
-use tokio_stream::StreamExt;
-use tonic::{Request, Response, Status, Streaming};
 
 use crate::network_server::WorkerDependencies;
 
 pub struct NodeSvcHandler {
     task_center: TaskCenter,
+    cluster_name: String,
+    roles: EnumSet<Role>,
+    health: Health,
     worker: Option<WorkerDependencies>,
     connections: ConnectionManager<GrpcConnector>,
 }
@@ -34,11 +40,17 @@ pub struct NodeSvcHandler {
 impl NodeSvcHandler {
     pub fn new(
         task_center: TaskCenter,
+        cluster_name: String,
+        roles: EnumSet<Role>,
+        health: Health,
         worker: Option<WorkerDependencies>,
         connections: ConnectionManager<GrpcConnector>,
     ) -> Self {
         Self {
             task_center,
+            cluster_name,
+            roles,
+            health,
             worker,
             connections,
         }
@@ -48,11 +60,28 @@ impl NodeSvcHandler {
 #[async_trait::async_trait]
 impl NodeSvc for NodeSvcHandler {
     async fn get_ident(&self, _request: Request<()>) -> Result<Response<IdentResponse>, Status> {
-        // STUB IMPLEMENTATION
+        let node_status = self.health.current_node_status();
+        let admin_status = self.health.current_admin_status();
+        let worker_status = self.health.current_worker_status();
+        let metadata_server_status = self.health.current_metadata_server_status();
+        let log_server_status = self.health.current_log_server_status();
+        let age_s = self.task_center.age().as_secs();
         self.task_center.run_in_scope_sync("get_ident", None, || {
+            let metadata = metadata();
             Ok(Response::new(IdentResponse {
-                status: NodeStatus::Alive.into(),
-                node_id: Some(metadata().my_node_id().into()),
+                status: node_status.into(),
+                node_id: Some(metadata.my_node_id().into()),
+                roles: self.roles.iter().map(|r| r.to_string()).collect(),
+                cluster_name: self.cluster_name.clone(),
+                age_s,
+                admin_status: admin_status.into(),
+                worker_status: worker_status.into(),
+                metadata_server_status: metadata_server_status.into(),
+                log_server_status: log_server_status.into(),
+                nodes_config_version: metadata.nodes_config_version().into(),
+                logs_version: metadata.logs_version().into(),
+                schema_version: metadata.schema_version().into(),
+                partition_table_version: metadata.partition_table_version().into(),
             }))
         })
     }

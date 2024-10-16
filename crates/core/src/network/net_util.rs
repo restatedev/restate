@@ -79,6 +79,8 @@ pub async fn run_hyper_server<S, B>(
     bind_address: &BindAddress,
     service: S,
     server_name: &'static str,
+    on_bind: impl Fn(),
+    on_stop: impl Fn(),
 ) -> Result<(), Error>
 where
     S: hyper::service::Service<http::Request<Incoming>, Response = hyper::Response<B>>
@@ -104,6 +106,7 @@ where
 
             Span::current().record("uds.path", uds_path.display().to_string());
             info!("Server listening");
+            on_bind();
 
             run_listener_loop(unix_listener, service, server_name).await?;
         }
@@ -124,10 +127,12 @@ where
             Span::current().record("net.host.addr", local_addr.ip().to_string());
             Span::current().record("net.host.port", local_addr.port());
             info!("Server listening");
+            on_bind();
 
             run_listener_loop(tcp_listener, service, server_name).await?;
         }
     }
+    on_stop();
 
     debug!("Stopped server");
 

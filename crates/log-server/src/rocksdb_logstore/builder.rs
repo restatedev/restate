@@ -10,7 +10,9 @@
 
 use std::sync::Arc;
 
+use restate_types::health::HealthStatus;
 use restate_types::logs::RecordCache;
+use restate_types::protobuf::common::LogServerStatus;
 use rocksdb::{DBCompressionType, SliceTransform};
 use static_assertions::const_assert;
 
@@ -77,18 +79,27 @@ impl RocksDbLogStoreBuilder {
         })
     }
 
-    pub async fn start(self, task_center: &TaskCenter) -> Result<RocksDbLogStore, ShutdownError> {
+    pub async fn start(
+        self,
+        task_center: &TaskCenter,
+        health_status: HealthStatus<LogServerStatus>,
+    ) -> Result<RocksDbLogStore, ShutdownError> {
         let RocksDbLogStoreBuilder {
             rocksdb,
             updateable_options,
             record_cache,
         } = self;
         // todo (asoli) load up our loglet metadata cache.
-        let writer_handle =
-            LogStoreWriter::new(rocksdb.clone(), updateable_options.clone(), record_cache)
-                .start(task_center)?;
+        let writer_handle = LogStoreWriter::new(
+            rocksdb.clone(),
+            updateable_options.clone(),
+            record_cache,
+            health_status.clone(),
+        )
+        .start(task_center)?;
 
         Ok(RocksDbLogStore {
+            health_status,
             _updateable_options: updateable_options,
             rocksdb,
             writer_handle,

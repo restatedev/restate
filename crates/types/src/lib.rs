@@ -18,6 +18,7 @@ mod version;
 
 pub mod art;
 pub mod cluster;
+pub mod health;
 
 pub mod cluster_controller;
 pub mod config;
@@ -53,3 +54,20 @@ pub mod timer;
 pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
 pub use node_id::*;
 pub use version::*;
+
+/// Trait for merging two attributes
+pub trait Merge {
+    /// Return true if the value was mutated as a result of the merge
+    fn merge(&mut self, other: Self) -> bool;
+}
+
+impl Merge for bool {
+    fn merge(&mut self, other: Self) -> bool {
+        if *self != other {
+            *self |= other;
+            true
+        } else {
+            false
+        }
+    }
+}

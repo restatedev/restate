@@ -17,6 +17,8 @@ use anyhow::anyhow;
 use codederror::CodedError;
 use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
+use restate_types::health::HealthStatus;
+use restate_types::protobuf::common::AdminStatus;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
@@ -58,6 +60,7 @@ pub enum Error {
 
 pub struct Service<T> {
     task_center: TaskCenter,
+    health_status: HealthStatus<AdminStatus>,
     metadata: Metadata,
     networking: Networking<T>,
     incoming_messages: Pin<Box<dyn Stream<Item = Incoming<AttachRequest>> + Send + Sync + 'static>>,
@@ -78,8 +81,10 @@ impl<T> Service<T>
 where
     T: TransportConnect,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mut configuration: Live<Configuration>,
+        health_status: HealthStatus<AdminStatus>,
         task_center: TaskCenter,
         metadata: Metadata,
         networking: Networking<T>,
@@ -107,6 +112,7 @@ where
 
         Service {
             configuration,
+            health_status,
             task_center,
             metadata,
             networking,
@@ -281,6 +287,8 @@ impl<T: TransportConnect> Service<T> {
         let mut logs = self.metadata.updateable_logs_metadata();
         let mut partition_table = self.metadata.updateable_partition_table();
 
+        self.health_status.update(AdminStatus::Ready);
+
         loop {
             tokio::select! {
                 _ = self.heartbeat_interval.tick() => {
@@ -328,6 +336,7 @@ impl<T: TransportConnect> Service<T> {
                     (self.log_trim_interval, self.log_trim_threshold) = Self::create_log_trim_interval(options);
                 }
                 _ = &mut shutdown => {
+                    self.health_status.update(AdminStatus::Unknown);
                     return Ok(());
                 }
             }
@@ -668,6 +677,7 @@ mod tests {
     use restate_core::{NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::{AdminOptions, Configuration};
+    use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -685,6 +695,7 @@ mod tests {
 
         let svc = Service::new(
             Live::from_value(Configuration::default()),
+            HealthStatus::default(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.networking.clone(),
@@ -988,6 +999,7 @@ mod tests {
 
         let svc = Service::new(
             Live::from_value(config),
+            HealthStatus::default(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.networking.clone(),
