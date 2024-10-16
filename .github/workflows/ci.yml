@@ -54,6 +54,9 @@ jobs:
       - name: Check Cargo.lock file is updated
         run: cargo update -w --locked
 
+      - name: Setup interactive ssh session
+        uses: Warpbuilds/action-debugger@v1.3
+
       - name: Run verify
         run: just verify
         env:
