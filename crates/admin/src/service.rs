@@ -92,6 +92,8 @@ where
             &BindAddress::Socket(opts.bind_address),
             service,
             "admin-api-server",
+            || (),
+            || (),
         )
         .await
         .map_err(Into::into)

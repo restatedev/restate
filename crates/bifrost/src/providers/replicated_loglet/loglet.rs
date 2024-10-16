@@ -287,6 +287,7 @@ mod tests {
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
+    use restate_types::health::HealthStatus;
     use restate_types::live::Live;
     use restate_types::logs::Keys;
     use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicationProperty};
@@ -317,6 +318,7 @@ mod tests {
         let record_cache = RecordCache::new(1_000_000);
 
         let log_server = LogServerService::create(
+            HealthStatus::default(),
             config.clone(),
             node_env.tc.clone(),
             node_env.metadata.clone(),

@@ -27,6 +27,8 @@ use restate_core::{task_center, MetadataWriter};
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::CommonOptions;
+use restate_types::health::Health;
+use restate_types::protobuf::common::NodeStatus;
 
 use crate::network_server::handler;
 use crate::network_server::handler::cluster_ctrl::ClusterCtrlSvcHandler;
@@ -36,6 +38,7 @@ use crate::network_server::multiplex::MultiplexService;
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 
 pub struct NetworkServer {
+    health: Health,
     connection_manager: ConnectionManager<GrpcConnector>,
     worker_deps: Option<WorkerDependencies>,
     admin_deps: Option<AdminDependencies>,
@@ -43,11 +46,13 @@ pub struct NetworkServer {
 
 impl NetworkServer {
     pub fn new(
+        health: Health,
         connection_manager: ConnectionManager<GrpcConnector>,
         worker_deps: Option<WorkerDependencies>,
         admin_deps: Option<AdminDependencies>,
     ) -> Self {
         Self {
+            health,
             connection_manager,
             worker_deps,
             admin_deps,
@@ -98,11 +103,15 @@ impl NetworkServer {
                 .send_compressed(CompressionEncoding::Gzip)
         });
 
+        let node_status = self.health.node_status();
         let server_builder = tonic::transport::Server::builder()
             .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
             .add_service(
                 NodeSvcServer::new(NodeSvcHandler::new(
                     tc,
+                    options.cluster_name().to_owned(),
+                    options.roles,
+                    self.health,
                     self.worker_deps,
                     self.connection_manager,
                 ))
@@ -118,7 +127,14 @@ impl NetworkServer {
                 .map_request(|req: Request<Incoming>| req.map(boxed)),
         );
 
-        run_hyper_server(&options.bind_address.unwrap(), service, "node-grpc").await?;
+        run_hyper_server(
+            &options.bind_address.unwrap(),
+            service,
+            "node-grpc",
+            || node_status.update(NodeStatus::Alive),
+            || node_status.update(NodeStatus::ShuttingDown),
+        )
+        .await?;
 
         Ok(())
     }

@@ -22,10 +22,9 @@ pub use repair_tail::*;
 pub use seal::*;
 
 use restate_types::logs::LogletOffset;
+use restate_types::Merge;
 
-use super::replication::Merge;
-
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 enum NodeTailStatus {
     #[default]
     Unknown,
@@ -58,11 +57,14 @@ impl NodeTailStatus {
 }
 
 impl Merge for NodeTailStatus {
-    fn merge(&mut self, other: Self) {
+    // we don't care about accuracy of the return boolean as we don't use it for conditional
+    // updates anywhere.
+    fn merge(&mut self, other: Self) -> bool {
         match (self, other) {
-            (_, NodeTailStatus::Unknown) => {}
+            (_, NodeTailStatus::Unknown) => false,
             (this @ NodeTailStatus::Unknown, o) => {
                 *this = o;
+                true
             }
             (
                 NodeTailStatus::Known {
@@ -76,6 +78,7 @@ impl Merge for NodeTailStatus {
             ) => {
                 *my_offset = (*my_offset).max(other_offset);
                 *my_seal |= other_seal;
+                true
             }
         }
     }
