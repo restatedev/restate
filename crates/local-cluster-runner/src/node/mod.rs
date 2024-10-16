@@ -87,6 +87,9 @@ pub struct Node {
     inherit_env: bool,
     #[builder(default)]
     env: Vec<(String, String)>,
+    #[builder(default)]
+    #[serde(skip)]
+    searcher: Searcher,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -225,6 +228,7 @@ impl Node {
             args,
             inherit_env,
             env,
+            searcher,
         } = self;
 
         let node_base_dir = std::path::absolute(
@@ -308,7 +312,6 @@ impl Node {
             });
 
         let lines = futures::stream::select(stdout_reader, stderr_reader);
-        let searcher = Searcher::new();
 
         let node_name = base_config.node_name().to_owned();
 
@@ -365,6 +368,12 @@ impl Node {
             },
             config: base_config,
         })
+    }
+
+    /// Obtain a stream of loglines matching this pattern. The stream will end
+    /// when the stdout and stderr files on the process close.
+    pub fn lines(&self, pattern: Regex) -> impl Stream<Item = String> + 'static {
+        self.searcher.search(pattern)
     }
 }
 
@@ -619,8 +628,7 @@ impl StartedNode {
             StartedNodeStatus::Exited { .. } => futures::stream::empty().left_stream(),
             StartedNodeStatus::Failed { .. } => futures::stream::empty().left_stream(),
             StartedNodeStatus::Running { ref searcher, .. } => {
-                let receiver = searcher.search(pattern);
-                receiver.right_stream()
+                searcher.search(pattern).right_stream()
             }
         }
     }
@@ -794,19 +802,13 @@ impl HealthError {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Searcher {
     inner: Arc<ArcSwapOption<SearcherInner>>,
 }
 
-#[derive(Clone)]
-struct SearcherInner {
-    set: RegexSet,
-    senders: Vec<Arc<Sender<String>>>,
-}
-
-impl Searcher {
-    fn new() -> Self {
+impl Default for Searcher {
+    fn default() -> Self {
         Self {
             inner: Arc::new(ArcSwapOption::from_pointee(SearcherInner {
                 set: RegexSet::empty(),
@@ -814,7 +816,15 @@ impl Searcher {
             })),
         }
     }
+}
 
+#[derive(Debug, Clone)]
+struct SearcherInner {
+    set: RegexSet,
+    senders: Vec<Arc<Sender<String>>>,
+}
+
+impl Searcher {
     fn close(&self) {
         self.inner.rcu(|_| None);
     }
@@ -830,7 +840,7 @@ impl Searcher {
         }
     }
 
-    fn search(&self, regex: Regex) -> Receiver {
+    fn search(&self, regex: Regex) -> impl Stream<Item = String> + 'static {
         let (sender, receiver) = mpsc::channel(1);
         let sender = Arc::new(sender);
         let sender_ptr = Arc::as_ptr(&sender);
