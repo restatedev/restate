@@ -8,27 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
-
 use bytestring::ByteString;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use restate_core::network::FailingConnector;
 use serde::{Deserialize, Serialize};
 use test_log::test;
-use tonic_health::pb::health_client::HealthClient;
-use tonic_health::pb::HealthCheckRequest;
 
-use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
+use restate_core::network::FailingConnector;
 use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
     self, reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
     MetadataStoreClientOptionsBuilder, MetadataStoreOptions, RocksDbOptions,
 };
+use restate_types::health::HealthStatus;
 use restate_types::live::{BoxedLiveLoad, Live};
 use restate_types::net::{AdvertisedAddress, BindAddress};
-use restate_types::retries::RetryPolicy;
+use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
@@ -356,8 +352,12 @@ async fn start_metadata_store(
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     task_center: &TaskCenter,
 ) -> anyhow::Result<MetadataStoreClient> {
-    let service = LocalMetadataStoreService::from_options(opts, updateables_rocksdb_options);
-    let grpc_service_name = service.grpc_service_name().to_owned();
+    let health_status = HealthStatus::default();
+    let service = LocalMetadataStoreService::from_options(
+        health_status.clone(),
+        opts,
+        updateables_rocksdb_options,
+    );
 
     task_center.spawn(
         TaskKind::MetadataStore,
@@ -374,21 +374,9 @@ async fn start_metadata_store(
             metadata_store_client_options.metadata_store_client
     );
 
-    let health_client = HealthClient::new(create_tonic_channel_from_advertised_address(
-        address.clone(),
-    ));
-    let retry_policy = RetryPolicy::exponential(Duration::from_millis(10), 2.0, None, None);
-
-    retry_policy
-        .retry(|| async {
-            health_client
-                .clone()
-                .check(HealthCheckRequest {
-                    service: grpc_service_name.clone(),
-                })
-                .await
-        })
-        .await?;
+    health_status
+        .wait_for_value(MetadataServerStatus::Ready)
+        .await;
 
     let rocksdb_client = LocalMetadataStoreClient::new(address);
     let client = MetadataStoreClient::new(
