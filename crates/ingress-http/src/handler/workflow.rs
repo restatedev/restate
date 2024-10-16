@@ -13,11 +13,11 @@ use http::{Method, Request, Response};
 use http_body_util::Full;
 use tracing::{info, warn};
 
+use restate_core::network::partition_processor_rpc_client::GetInvocationOutputResponse;
 use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_types::identifiers::ServiceId;
 use restate_types::invocation::InvocationQuery;
-use restate_types::net::partition_processor::GetInvocationOutputRpcResponse;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 
 use super::path_parsing::WorkflowRequestType;
@@ -128,10 +128,10 @@ where
             .get_output(InvocationQuery::Workflow(workflow_id.clone()))
             .await
         {
-            Ok(GetInvocationOutputRpcResponse::Ready(out)) => out,
-            Ok(GetInvocationOutputRpcResponse::NotFound) => return Err(HandlerError::NotFound),
-            Ok(GetInvocationOutputRpcResponse::NotReady) => return Err(HandlerError::NotReady),
-            Ok(GetInvocationOutputRpcResponse::NotSupported) => {
+            Ok(GetInvocationOutputResponse::Ready(out)) => out,
+            Ok(GetInvocationOutputResponse::NotFound) => return Err(HandlerError::NotFound),
+            Ok(GetInvocationOutputResponse::NotReady) => return Err(HandlerError::NotReady),
+            Ok(GetInvocationOutputResponse::NotSupported) => {
                 return Err(HandlerError::UnsupportedGetOutput)
             }
             Err(e) => {

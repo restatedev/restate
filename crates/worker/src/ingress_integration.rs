@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::Error;
+use restate_core::network::partition_processor_rpc_client::GetInvocationOutputResponse;
 use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
 use restate_core::network::NetworkSender;
 use restate_ingress_http::InvocationStorageReader;
 use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::InvocationQuery;
-use restate_types::net::partition_processor::GetInvocationOutputRpcResponse;
 
 #[derive(Clone)]
 pub struct InvocationStorageReaderImpl<N> {
@@ -36,7 +36,7 @@ where
     async fn get_output(
         &self,
         query: InvocationQuery,
-    ) -> Result<GetInvocationOutputRpcResponse, Error> {
+    ) -> Result<GetInvocationOutputResponse, Error> {
         self.partition_processor_rpc_client
             .get_invocation_output(PartitionProcessorRpcRequestId::default(), query)
             .await

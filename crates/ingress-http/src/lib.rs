@@ -16,8 +16,8 @@ mod server;
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
+use restate_core::network::partition_processor_rpc_client::GetInvocationOutputResponse;
 use restate_types::invocation::InvocationQuery;
-use restate_types::net::partition_processor::GetInvocationOutputRpcResponse;
 use std::net::{IpAddr, SocketAddr};
 
 /// Client connection information for a given RPC request
@@ -42,7 +42,7 @@ pub trait InvocationStorageReader {
     fn get_output(
         &self,
         query: InvocationQuery,
-    ) -> impl std::future::Future<Output = Result<GetInvocationOutputRpcResponse, anyhow::Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<GetInvocationOutputResponse, anyhow::Error>> + Send;
 }
 
 // Contains some mocks we use in unit tests in this crate
@@ -176,13 +176,13 @@ mod mocks {
         async fn get_output(
             &self,
             query: InvocationQuery,
-        ) -> Result<GetInvocationOutputRpcResponse, Error> {
+        ) -> Result<GetInvocationOutputResponse, Error> {
             Ok(self
                 .0
                 .get(&query)
                 .cloned()
-                .map(GetInvocationOutputRpcResponse::Ready)
-                .unwrap_or(GetInvocationOutputRpcResponse::NotFound))
+                .map(GetInvocationOutputResponse::Ready)
+                .unwrap_or(GetInvocationOutputResponse::NotFound))
         }
     }
 }

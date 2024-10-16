@@ -35,11 +35,11 @@ pub struct PartitionProcessorRpcRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SubmitInvocationReplyOn {
-    /// With this mode, the PP will reply as soon as the log append is done with [`SubmitInvocationRpcResponse::Appended`].
+    /// With this mode, the PP will reply as soon as the log append is done with [`PartitionProcessorRpcResponse::Appended`].
     Appended,
-    /// With this mode, the PP will reply with the [`SubmitInvocationRpcResponse::Submitted`] when available.
+    /// With this mode, the PP will reply with the [`PartitionProcessorRpcResponse::Submitted`] when available.
     Submitted,
-    /// With this mode, the PP will reply with the [`SubmitInvocationRpcResponse::Output`] when available.
+    /// With this mode, the PP will reply with the [`PartitionProcessorRpcResponse::Output`] when available.
     Output,
 }
 
@@ -47,7 +47,7 @@ pub enum SubmitInvocationReplyOn {
 pub enum GetInvocationOutputResponseMode {
     /// With this mode, we block waiting for the output to be ready (also known as _attach_).
     BlockWhenNotReady,
-    /// With this mode, we immediately reply with [`GetInvocationOutputRpcResponse::NotReady`] in case the invocation is in-flight.
+    /// With this mode, we immediately reply with [`PartitionProcessorRpcResponse::NotReady`] in case the invocation is in-flight.
     ReplyIfNotReady,
 }
 
@@ -80,14 +80,10 @@ pub enum PartitionProcessorRpcError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
-    SubmitInvocation(SubmitInvocationRpcResponse),
-    GetInvocationOutput(GetInvocationOutputRpcResponse),
-    SubmitInvocationResponse,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SubmitInvocationRpcResponse {
     Appended,
+    NotFound,
+    NotReady,
+    NotSupported,
     Submitted(SubmittedInvocationNotification),
     Output(InvocationOutput),
 }
@@ -97,14 +93,6 @@ pub struct SubmittedInvocationNotification {
     pub request_id: PartitionProcessorRpcRequestId,
     /// If true, this request_id created a "fresh invocation", otherwise the invocation was previously submitted.
     pub is_new_invocation: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum GetInvocationOutputRpcResponse {
-    NotFound,
-    NotReady,
-    NotSupported,
-    Ready(InvocationOutput),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

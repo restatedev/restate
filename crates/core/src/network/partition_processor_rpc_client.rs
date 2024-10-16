@@ -9,14 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use assert2::let_assert;
-
 use restate_types::identifiers::{PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::{InvocationQuery, InvocationResponse, ServiceInvocation};
 use restate_types::live::Live;
 use restate_types::net::partition_processor::{
-    GetInvocationOutputResponseMode, GetInvocationOutputRpcResponse, InvocationOutput,
-    PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
-    SubmitInvocationReplyOn, SubmitInvocationRpcResponse, SubmittedInvocationNotification,
+    GetInvocationOutputResponseMode, InvocationOutput, PartitionProcessorRpcRequest,
+    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse, SubmitInvocationReplyOn,
+    SubmittedInvocationNotification,
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
 
@@ -43,6 +42,21 @@ impl<T> From<RpcError<T>> for PartitionProcessorRpcClientError {
             RpcError::Shutdown(err) => PartitionProcessorRpcClientError::Shutdown(err),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum AttachInvocationResponse {
+    NotFound,
+    NotSupported,
+    Ready(InvocationOutput),
+}
+
+#[derive(Debug, Clone)]
+pub enum GetInvocationOutputResponse {
+    NotFound,
+    NotReady,
+    NotSupported,
+    Ready(InvocationOutput),
 }
 
 #[derive(Clone)]
@@ -86,10 +100,8 @@ where
             .await?;
 
         let_assert!(
-            PartitionProcessorRpcResponse::SubmitInvocation(
-                SubmitInvocationRpcResponse::Appended
-            ) = response,
-            "Expecting SubmitInvocation :: Appended"
+            PartitionProcessorRpcResponse::Appended = response,
+            "Expecting PartitionProcessorRpcResponse::Appended"
         );
 
         Ok(())
@@ -111,10 +123,8 @@ where
             .await?;
 
         let_assert!(
-            PartitionProcessorRpcResponse::SubmitInvocation(
-                SubmitInvocationRpcResponse::Submitted(submit_notification)
-            ) = response,
-            "Expecting SubmitInvocation :: Appended"
+            PartitionProcessorRpcResponse::Submitted(submit_notification) = response,
+            "Expecting PartitionProcessorRpcResponse::Submitted"
         );
         debug_assert_eq!(
             request_id, submit_notification.request_id,
@@ -140,10 +150,8 @@ where
             .await?;
 
         let_assert!(
-            PartitionProcessorRpcResponse::SubmitInvocation(SubmitInvocationRpcResponse::Output(
-                invocation_output
-            )) = response,
-            "Expecting SubmitInvocation :: Output"
+            PartitionProcessorRpcResponse::Output(invocation_output) = response,
+            "Expecting PartitionProcessorRpcResponse::Output"
         );
         debug_assert_eq!(
             request_id, invocation_output.request_id,
@@ -157,7 +165,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
-    ) -> Result<GetInvocationOutputRpcResponse, PartitionProcessorRpcClientError> {
+    ) -> Result<AttachInvocationResponse, PartitionProcessorRpcClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -168,19 +176,23 @@ where
             )
             .await?;
 
-        let_assert!(
-            PartitionProcessorRpcResponse::GetInvocationOutput(get_output_result) = response,
-            "Expecting GetInvocationOutput"
-        );
-
-        Ok(get_output_result)
+        Ok(match response {
+            PartitionProcessorRpcResponse::NotFound => AttachInvocationResponse::NotFound,
+            PartitionProcessorRpcResponse::NotSupported => AttachInvocationResponse::NotSupported,
+            PartitionProcessorRpcResponse::Output(output) => {
+                AttachInvocationResponse::Ready(output)
+            }
+            _ => {
+                panic!("Expecting either PartitionProcessorRpcResponse::Output or PartitionProcessorRpcResponse::NotFound or PartitionProcessorRpcResponse::NotSupported")
+            }
+        })
     }
 
     pub async fn get_invocation_output(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
-    ) -> Result<GetInvocationOutputRpcResponse, PartitionProcessorRpcClientError> {
+    ) -> Result<GetInvocationOutputResponse, PartitionProcessorRpcClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -191,12 +203,19 @@ where
             )
             .await?;
 
-        let_assert!(
-            PartitionProcessorRpcResponse::GetInvocationOutput(get_output_result) = response,
-            "Expecting GetInvocationOutput"
-        );
-
-        Ok(get_output_result)
+        Ok(match response {
+            PartitionProcessorRpcResponse::NotFound => GetInvocationOutputResponse::NotFound,
+            PartitionProcessorRpcResponse::NotSupported => {
+                GetInvocationOutputResponse::NotSupported
+            }
+            PartitionProcessorRpcResponse::NotReady => GetInvocationOutputResponse::NotReady,
+            PartitionProcessorRpcResponse::Output(output) => {
+                GetInvocationOutputResponse::Ready(output)
+            }
+            _ => {
+                panic!("Expecting either PartitionProcessorRpcResponse::Output or PartitionProcessorRpcResponse::NotFound or PartitionProcessorRpcResponse::NotSupported or PartitionProcessorRpcResponse::NotReady")
+            }
+        })
     }
 
     pub async fn submit_invocation_response(
@@ -212,8 +231,8 @@ where
             .await?;
 
         let_assert!(
-            PartitionProcessorRpcResponse::SubmitInvocationResponse = response,
-            "Expecting SubmitInvocationResponse"
+            PartitionProcessorRpcResponse::Appended = response,
+            "Expecting PartitionProcessorRpcResponse::Appended"
         );
 
         Ok(())

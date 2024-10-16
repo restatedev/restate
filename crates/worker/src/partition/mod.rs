@@ -22,7 +22,7 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, instrument, trace, warn, Instrument, Span};
 
 use restate_bifrost::{Bifrost, FindTailAttributes};
-use restate_core::network::{HasConnection, Incoming, Networking, Outgoing, TransportConnect};
+use restate_core::network::{HasConnection, Incoming, Outgoing};
 use restate_core::{cancellation_watcher, metadata, TaskCenter, TaskHandle, TaskKind};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
@@ -47,16 +47,16 @@ use restate_types::identifiers::{
 };
 use restate_types::ingress::IngressResponseResult;
 use restate_types::invocation::{
-    InvocationQuery, InvocationResponse, InvocationTarget, InvocationTargetType, ResponseResult,
-    WorkflowHandlerType,
+    AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
+    ResponseResult, ServiceInvocationResponseSink, WorkflowHandlerType,
 };
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::live::Live;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::net::partition_processor::{
-    GetInvocationOutputResponseMode, GetInvocationOutputRpcResponse, InvocationOutput,
-    PartitionProcessorRpcError, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
+    GetInvocationOutputResponseMode, InvocationOutput, PartitionProcessorRpcError,
+    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse, SubmitInvocationReplyOn,
 };
 use restate_types::retries::RetryPolicy;
 use restate_types::time::MillisSinceEpoch;
@@ -152,14 +152,13 @@ where
         }
     }
 
-    pub async fn build<Codec: RawEntryCodec + Default + Debug, T: TransportConnect>(
+    pub async fn build<Codec: RawEntryCodec + Default + Debug>(
         self,
         task_center: TaskCenter,
-        networking: Networking<T>,
         bifrost: Bifrost,
         mut partition_store: PartitionStore,
         configuration: Live<Configuration>,
-    ) -> Result<PartitionProcessor<Codec, InvokerInputSender, T>, StorageError> {
+    ) -> Result<PartitionProcessor<Codec, InvokerInputSender>, StorageError> {
         let PartitionProcessorBuilder {
             partition_id,
             partition_key_range,
@@ -205,7 +204,6 @@ where
             channel_size,
             invoker_tx,
             bifrost.clone(),
-            networking,
             last_seen_leader_epoch,
         );
 
@@ -255,10 +253,10 @@ where
     }
 }
 
-pub struct PartitionProcessor<Codec, InvokerSender, T> {
+pub struct PartitionProcessor<Codec, InvokerSender> {
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
-    leadership_state: LeadershipState<InvokerSender, T>,
+    leadership_state: LeadershipState<InvokerSender>,
     state_machine: StateMachine<Codec>,
     bifrost: Bifrost,
     configuration: Live<Configuration>,
@@ -278,11 +276,10 @@ pub struct PartitionProcessor<Codec, InvokerSender, T> {
     inflight_create_snapshot_task: Option<TaskHandle<anyhow::Result<()>>>,
 }
 
-impl<Codec, InvokerSender, T> PartitionProcessor<Codec, InvokerSender, T>
+impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
 where
     Codec: RawEntryCodec + Default + Debug,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
-    T: TransportConnect,
 {
     #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -573,34 +570,121 @@ where
         )>,
         partition_store: &mut PartitionStore,
     ) {
-        let (rx, (request_id, body)) = rpc.split();
+        let (response_tx, (request_id, body)) = rpc.split();
         match body {
+            PartitionProcessorRpcRequestInner::SubmitInvocation(
+                service_invocation,
+                SubmitInvocationReplyOn::Appended,
+            ) => {
+                let res = match self
+                    .leadership_state
+                    .self_propose(
+                        service_invocation.partition_key(),
+                        Command::Invoke(service_invocation),
+                    )
+                    .await
+                {
+                    Ok(()) => Ok(PartitionProcessorRpcResponse::Appended),
+                    Err(Error::NotLeader) => {
+                        Err(PartitionProcessorRpcError::NotLeader(self.partition_id))
+                    }
+                    Err(e) => Err(PartitionProcessorRpcError::Internal(e.to_string())),
+                };
+
+                self.respond_to_rpc(response_tx.prepare(res));
+            }
+            PartitionProcessorRpcRequestInner::SubmitInvocation(
+                service_invocation,
+                SubmitInvocationReplyOn::Submitted,
+            ) => {
+                self.leadership_state
+                    .handle_rpc_proposal_command(
+                        request_id,
+                        response_tx,
+                        service_invocation.partition_key(),
+                        Command::Invoke(service_invocation),
+                    )
+                    .await
+            }
+            PartitionProcessorRpcRequestInner::SubmitInvocation(
+                service_invocation,
+                SubmitInvocationReplyOn::Output,
+            ) => {
+                self.leadership_state
+                    .handle_rpc_proposal_command(
+                        request_id,
+                        response_tx,
+                        service_invocation.partition_key(),
+                        Command::Invoke(service_invocation),
+                    )
+                    .await
+            }
+            PartitionProcessorRpcRequestInner::GetInvocationOutput(
+                invocation_query,
+                GetInvocationOutputResponseMode::BlockWhenNotReady,
+            ) => {
+                // Try to get invocation output now, if it's ready reply immediately with it
+                if let Ok(ready_result @ PartitionProcessorRpcResponse::Output(_)) = self
+                    .handle_rpc_get_invocation_output(
+                        request_id,
+                        invocation_query.clone(),
+                        partition_store,
+                    )
+                    .await
+                {
+                    self.respond_to_rpc(response_tx.prepare(Ok(ready_result)));
+                    return;
+                }
+
+                self.leadership_state
+                    .handle_rpc_proposal_command(
+                        request_id,
+                        response_tx,
+                        invocation_query.partition_key(),
+                        Command::AttachInvocation(AttachInvocationRequest {
+                            invocation_query,
+                            response_sink: ServiceInvocationResponseSink::Ingress {
+                                node_id: metadata().my_node_id(),
+                                request_id,
+                            },
+                        }),
+                    )
+                    .await
+            }
             PartitionProcessorRpcRequestInner::GetInvocationOutput(
                 invocation_query,
                 GetInvocationOutputResponseMode::ReplyIfNotReady,
             ) => {
                 self.respond_to_rpc(
-                    rx.prepare(
+                    response_tx.prepare(
                         self.handle_rpc_get_invocation_output(
                             request_id,
                             invocation_query,
                             partition_store,
                         )
                         .await
-                        .map(PartitionProcessorRpcResponse::GetInvocationOutput)
                         .map_err(|err| PartitionProcessorRpcError::Internal(err.to_string())),
                     ),
                 );
             }
-            PartitionProcessorRpcRequestInner::SubmitInvocationResponse(response) => {
-                let response = self
-                    .handle_rpc_submit_invocation_response(response)
+            PartitionProcessorRpcRequestInner::SubmitInvocationResponse(invocation_response) => {
+                let rpc_response = match self
+                    .leadership_state
+                    .self_propose(
+                        invocation_response.partition_key(),
+                        Command::InvocationResponse(invocation_response),
+                    )
                     .await
-                    .map(|_| PartitionProcessorRpcResponse::SubmitInvocationResponse);
+                {
+                    Ok(()) => Ok(PartitionProcessorRpcResponse::Appended),
+                    Err(Error::NotLeader) => {
+                        Err(PartitionProcessorRpcError::NotLeader(self.partition_id))
+                    }
+                    Err(e) => Err(PartitionProcessorRpcError::Internal(e.to_string())),
+                };
 
-                self.respond_to_rpc(rx.prepare(response));
+                self.respond_to_rpc(response_tx.prepare(rpc_response));
             }
-            _ => unimplemented!(),
         };
     }
 
@@ -625,7 +709,7 @@ where
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
         partition_store: &mut PartitionStore,
-    ) -> Result<GetInvocationOutputRpcResponse, StorageError> {
+    ) -> Result<PartitionProcessorRpcResponse, StorageError> {
         // We can handle this immediately by querying the partition store, no need to go through proposals
         // TODO update this logic when finishing up https://github.com/restatedev/restate/pull/2035
         let invocation_id = match invocation_query {
@@ -634,14 +718,14 @@ where
                 match partition_store.get_virtual_object_status(&sid).await? {
                     VirtualObjectStatus::Locked(iid) => iid,
                     VirtualObjectStatus::Unlocked => {
-                        return Ok(GetInvocationOutputRpcResponse::NotFound)
+                        return Ok(PartitionProcessorRpcResponse::NotFound)
                     }
                 }
             }
             InvocationQuery::IdempotencyId(iid) => {
                 match partition_store.get_idempotency_metadata(&iid).await? {
                     Some(idempotency_metadata) => idempotency_metadata.invocation_id,
-                    None => return Ok(GetInvocationOutputRpcResponse::NotFound),
+                    None => return Ok(PartitionProcessorRpcResponse::NotFound),
                 }
             }
         };
@@ -651,7 +735,7 @@ where
             .await?;
 
         match invocation_status {
-            InvocationStatus::Free => Ok(GetInvocationOutputRpcResponse::NotFound),
+            InvocationStatus::Free => Ok(PartitionProcessorRpcResponse::NotFound),
             is if is.idempotency_key().is_none()
                 && is
                     .invocation_target()
@@ -660,10 +744,10 @@ where
                         WorkflowHandlerType::Workflow,
                     )) =>
             {
-                Ok(GetInvocationOutputRpcResponse::NotSupported)
+                Ok(PartitionProcessorRpcResponse::NotSupported)
             }
             InvocationStatus::Completed(completed) => {
-                Ok(GetInvocationOutputRpcResponse::Ready(InvocationOutput {
+                Ok(PartitionProcessorRpcResponse::Output(InvocationOutput {
                     request_id,
                     response: match completed.response_result.clone() {
                         ResponseResult::Success(res) => {
@@ -674,26 +758,7 @@ where
                     invocation_id: Some(invocation_id),
                 }))
             }
-            _ => Ok(GetInvocationOutputRpcResponse::NotReady),
-        }
-    }
-
-    async fn handle_rpc_submit_invocation_response(
-        &mut self,
-        invocation_response: InvocationResponse,
-    ) -> Result<(), PartitionProcessorRpcError> {
-        // Just propose and be done with it.
-        match self
-            .leadership_state
-            .self_propose(
-                invocation_response.partition_key(),
-                Command::InvocationResponse(invocation_response),
-            )
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(Error::NotLeader) => Err(PartitionProcessorRpcError::NotLeader(self.partition_id)),
-            Err(e) => Err(PartitionProcessorRpcError::Internal(e.to_string())),
+            _ => Ok(PartitionProcessorRpcResponse::NotReady),
         }
     }
 

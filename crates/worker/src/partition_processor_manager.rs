@@ -846,7 +846,6 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         let config = self.updateable_config.pinned();
         let options = &config.worker;
 
-        let networking = self.networking.clone();
         let bifrost = self.bifrost.clone();
         let node_id = self.metadata.my_node_id();
 
@@ -916,9 +915,8 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     )?;
 
                     pp_builder
-                        .build::<ProtobufRawEntryCodec, T>(
+                        .build::<ProtobufRawEntryCodec>(
                             task_center,
-                            networking,
                             bifrost,
                             partition_store,
                             configuration,

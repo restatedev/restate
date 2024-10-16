@@ -14,6 +14,8 @@ use crate::invocation::InvocationTarget;
 use crate::GenerationalNodeId;
 use bytes::Bytes;
 
+// TODO sort out which types here we don't need anymore!
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IngressResponseEnvelope<T> {
     pub target_node: GenerationalNodeId,
