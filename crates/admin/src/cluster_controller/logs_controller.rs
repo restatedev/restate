@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU8;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rand::prelude::IteratorRandom;
 use rand::{thread_rng, RngCore};
@@ -442,6 +443,19 @@ impl TryFrom<&LogletConfig> for LogletConfiguration {
     }
 }
 
+#[derive(
+    Default, Eq, PartialEq, PartialOrd, Ord, Clone, Copy, derive_more::From, derive_more::Into,
+)]
+struct TrialCounter(u8);
+
+impl TrialCounter {
+    const OLDEST: TrialCounter = TrialCounter(0);
+
+    fn next(self) -> TrialCounter {
+        Self(self.0.saturating_add(1))
+    }
+}
+
 /// Effects used by [`LogsControllerInner`] to signal required actions to the [`LogsController`]. Often those
 /// effects require an asynchronous operation whose result is reported back via an [`Event`].
 enum Effect {
@@ -449,11 +463,13 @@ enum Effect {
     WriteLogs {
         logs: Arc<Logs>,
         previous_version: Version,
+        trial: TrialCounter,
     },
     /// Seal the given segment of the given [`LogId`].
     Seal {
         log_id: LogId,
         segment_index: SegmentIndex,
+        trial: TrialCounter,
     },
 }
 
@@ -466,6 +482,7 @@ enum Event {
     WriteLogsFailed {
         logs: Arc<Logs>,
         previous_version: Version,
+        trial: TrialCounter,
     },
     /// Found a newer [`Logs`] version.
     NewLogs,
@@ -479,6 +496,7 @@ enum Event {
     SealFailed {
         log_id: LogId,
         segment_index: SegmentIndex,
+        trial: TrialCounter,
     },
 }
 
@@ -547,6 +565,7 @@ impl LogsControllerInner {
                 effects.push(Effect::WriteLogs {
                     logs: Arc::clone(&logs),
                     previous_version: self.current_logs.version(),
+                    trial: TrialCounter::default(),
                 });
                 // we already update the current logs but will wait until we learn whether the write
                 // was successful or not. If not, then we'll reset our internal state wrt the new
@@ -570,6 +589,7 @@ impl LogsControllerInner {
                     segment_index: log_state
                         .current_segment_index()
                         .expect("expect a valid segment"),
+                    trial: TrialCounter::default(),
                 })
             }
         }
@@ -624,14 +644,15 @@ impl LogsControllerInner {
             Event::WriteLogsFailed {
                 logs,
                 previous_version: expected_version,
+                trial,
             } => {
                 // Filter out out-dated log write attempts
                 if Some(logs.version()) == self.logs_write_in_progress {
-                    // todo debounce to avoid busy loop
                     // todo what if it doesn't work again? Maybe stepping down as the leader
                     effects.push(Effect::WriteLogs {
                         logs,
                         previous_version: expected_version,
+                        trial: trial.next(),
                     });
                 }
             }
@@ -648,14 +669,15 @@ impl LogsControllerInner {
             Event::SealFailed {
                 log_id,
                 segment_index,
+                trial,
             } => {
                 if matches!(self.logs_state.get(&log_id), Some(LogState::Sealing { segment_index: current_segment_index, ..}) if segment_index == *current_segment_index)
                 {
-                    // todo debounce to avoid busy loop
                     // todo what if it doesn't work again? Maybe stepping down as the leader
                     effects.push(Effect::Seal {
                         log_id,
                         segment_index,
+                        trial: trial.next(),
                     })
                 }
             }
@@ -752,6 +774,7 @@ pub struct LogsController {
     metadata: Metadata,
     metadata_writer: MetadataWriter,
     async_operations: JoinSet<Event>,
+    debounce_delay: Duration,
 }
 
 impl LogsController {
@@ -781,6 +804,8 @@ impl LogsController {
             metadata_store_client,
             metadata_writer,
             async_operations: JoinSet::default(),
+            //todo(azmy): get it from configuration
+            debounce_delay: Duration::from_millis(250),
         })
     }
 
@@ -812,14 +837,16 @@ impl LogsController {
                 Effect::WriteLogs {
                     logs,
                     previous_version,
+                    trial,
                 } => {
-                    self.write_logs(previous_version, logs);
+                    self.write_logs(previous_version, logs, trial);
                 }
                 Effect::Seal {
                     log_id,
                     segment_index,
+                    trial,
                 } => {
-                    self.seal_log(log_id, segment_index);
+                    self.seal_log(log_id, segment_index, trial);
                 }
             }
         }
@@ -827,13 +854,19 @@ impl LogsController {
         self.effects = Some(effects);
     }
 
-    fn write_logs(&mut self, previous_version: Version, logs: Arc<Logs>) {
+    fn write_logs(&mut self, previous_version: Version, logs: Arc<Logs>, trial: TrialCounter) {
         let tc = task_center().clone();
         let metadata_store_client = self.metadata_store_client.clone();
         let metadata_writer = self.metadata_writer.clone();
+        let debounce_delay = self.debounce_delay;
 
         self.async_operations.spawn(async move {
             tc.run_in_scope("logs-controller-write-logs", None, async {
+                if trial > TrialCounter::OLDEST {
+                    // add some delay to avoid busy loops
+                    tokio::time::sleep(debounce_delay).await;
+                }
+
                 if let Err(err) = metadata_store_client
                     .put(
                         BIFROST_CONFIG_KEY.clone(),
@@ -861,6 +894,7 @@ impl LogsController {
                                     Event::WriteLogsFailed {
                                         logs,
                                         previous_version,
+                                        trial,
                                     }
                                 }
                             }
@@ -870,6 +904,7 @@ impl LogsController {
                             Event::WriteLogsFailed {
                                 logs,
                                 previous_version,
+                                trial
                             }
                         }
                     };
@@ -885,13 +920,19 @@ impl LogsController {
         });
     }
 
-    fn seal_log(&mut self, log_id: LogId, segment_index: SegmentIndex) {
+    fn seal_log(&mut self, log_id: LogId, segment_index: SegmentIndex, trial: TrialCounter) {
         let tc = task_center().clone();
         let bifrost = self.bifrost.clone();
         let metadata_store_client = self.metadata_store_client.clone();
         let metadata_writer = self.metadata_writer.clone();
+        let debounce_delay = self.debounce_delay;
         self.async_operations.spawn(async move {
             tc.run_in_scope("logs-controller-seal-log", None, async {
+                if trial > TrialCounter::OLDEST {
+                    // add some delay to avoid busy loops
+                    tokio::time::sleep(debounce_delay).await;
+                }
+
                 let bifrost_admin =
                     BifrostAdmin::new(&bifrost, &metadata_writer, &metadata_store_client);
 
@@ -907,6 +948,7 @@ impl LogsController {
                             Event::SealFailed {
                                 log_id,
                                 segment_index,
+                                trial,
                             }
                         }
                     }
@@ -915,6 +957,7 @@ impl LogsController {
                         Event::SealFailed {
                             log_id,
                             segment_index,
+                            trial,
                         }
                     }
                 }
