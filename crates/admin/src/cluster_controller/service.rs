@@ -47,9 +47,11 @@ use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, Version};
 
 use super::cluster_state_refresher::{ClusterStateRefresher, ClusterStateWatcher};
-use crate::cluster_controller::logs_controller::LogsController;
+use crate::cluster_controller::logs_controller::{
+    LogsBasedPartitionProcessorPlacementHints, LogsController,
+};
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler::Scheduler;
+use crate::cluster_controller::scheduler::{Scheduler, SchedulingPlanNodeSetSelectorHints};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -286,6 +288,7 @@ impl<T: TransportConnect> Service<T> {
         let mut partition_table_watcher = self.metadata.watch(MetadataKind::PartitionTable);
         let mut logs = self.metadata.updateable_logs_metadata();
         let mut partition_table = self.metadata.updateable_partition_table();
+        let mut nodes_config = self.metadata.updateable_nodes_config();
 
         self.health_status.update(AdminStatus::Ready);
 
@@ -304,8 +307,8 @@ impl<T: TransportConnect> Service<T> {
                 }
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     observed_cluster_state.update(&cluster_state);
-                    logs_controller.on_observed_cluster_state_update(&observed_cluster_state)?;
-                    scheduler.on_observed_cluster_state(&observed_cluster_state).await?;
+                    logs_controller.on_observed_cluster_state_update(&observed_cluster_state, SchedulingPlanNodeSetSelectorHints::from(&scheduler))?;
+                    scheduler.on_observed_cluster_state(&observed_cluster_state, nodes_config.live_load(), LogsBasedPartitionProcessorPlacementHints::from(&logs_controller)).await?;
                 }
                 result = logs_controller.run_async_operations() => {
                     result?;

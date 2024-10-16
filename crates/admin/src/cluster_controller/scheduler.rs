@@ -8,11 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use rand::seq::IteratorRandom;
-use std::collections::{BTreeMap, BTreeSet};
-use tracing::{debug, trace};
-
+use crate::cluster_controller::logs_controller;
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use rand::seq::IteratorRandom;
 use restate_core::metadata_store::{
     retry_on_network_error, MetadataStoreClient, Precondition, ReadError, ReadWriteError,
     WriteError,
@@ -25,13 +23,20 @@ use restate_types::cluster_controller::{
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::Logs;
+use restate_types::logs::LogId;
 use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
 use restate_types::net::cluster_controller::Action;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
-use restate_types::{GenerationalNodeId, PlainNodeId, Versioned};
+use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Versioned};
+use std::collections::{BTreeMap, BTreeSet};
+use tracing::{debug, trace};
+use xxhash_rust::xxh3::Xxh3Builder;
+
+type HashSet<T> = std::collections::HashSet<T, Xxh3Builder>;
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading scheduling plan from metadata store: {0}")]
@@ -60,6 +65,24 @@ impl<T> UpdateOutcome<T> {
             UpdateOutcome::Written(value) => value,
             UpdateOutcome::NewerVersionFound(value) => value,
         }
+    }
+}
+
+/// Placement hints for the [`Scheduler`]. The hints can specify which nodes should be chosen for
+/// the partition processor placement and on which node the leader should run.
+pub trait PartitionProcessorPlacementHints {
+    fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = &PlainNodeId>;
+
+    fn preferred_leader(&self, partition_id: &PartitionId) -> Option<PlainNodeId>;
+}
+
+impl<T: PartitionProcessorPlacementHints> PartitionProcessorPlacementHints for &T {
+    fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = &PlainNodeId> {
+        (*self).preferred_nodes(partition_id)
+    }
+
+    fn preferred_leader(&self, partition_id: &PartitionId) -> Option<PlainNodeId> {
+        (*self).preferred_leader(partition_id)
     }
 }
 
@@ -111,9 +134,19 @@ impl<T: TransportConnect> Scheduler<T> {
     pub async fn on_observed_cluster_state(
         &mut self,
         observed_cluster_state: &ObservedClusterState,
+        nodes_config: &NodesConfiguration,
+        placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
         // todo: Only update scheduling plan on observed cluster changes?
-        self.update_scheduling_plan(observed_cluster_state).await?;
+        let alive_workers = observed_cluster_state
+            .alive_nodes
+            .keys()
+            .cloned()
+            .filter(|node_id| nodes_config.has_worker_role(node_id))
+            .collect();
+
+        self.update_scheduling_plan(&alive_workers, nodes_config, placement_hints)
+            .await?;
         self.instruct_nodes(observed_cluster_state)?;
 
         Ok(())
@@ -172,12 +205,14 @@ impl<T: TransportConnect> Scheduler<T> {
 
     async fn update_scheduling_plan(
         &mut self,
-        observed_cluster_state: &ObservedClusterState,
+        alive_workers: &HashSet<PlainNodeId>,
+        nodes_config: &NodesConfiguration,
+        placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
         let mut builder = self.scheduling_plan.clone().into_builder();
 
-        self.ensure_replication(&mut builder, observed_cluster_state);
-        self.ensure_leadership(&mut builder);
+        self.ensure_replication(&mut builder, alive_workers, nodes_config, &placement_hints);
+        self.ensure_leadership(&mut builder, placement_hints);
 
         if let Some(scheduling_plan) = builder.build_if_modified() {
             let scheduling_plan = self
@@ -229,11 +264,12 @@ impl<T: TransportConnect> Scheduler<T> {
     fn ensure_replication(
         &self,
         scheduling_plan_builder: &mut SchedulingPlanBuilder,
-        observed_cluster_state: &ObservedClusterState,
+        alive_workers: &HashSet<PlainNodeId>,
+        nodes_config: &NodesConfiguration,
+        placement_hints: impl PartitionProcessorPlacementHints,
     ) {
         let partition_ids: Vec<_> = scheduling_plan_builder.partition_ids().cloned().collect();
 
-        let alive_nodes: BTreeSet<_> = observed_cluster_state.alive_nodes.keys().cloned().collect();
         let mut rng = rand::thread_rng();
 
         for partition_id in &partition_ids {
@@ -242,15 +278,15 @@ impl<T: TransportConnect> Scheduler<T> {
 
                 match target_state.replication_strategy {
                     ReplicationStrategy::OnAllNodes => {
-                        if target_state.node_set != alive_nodes {
-                            target_state.node_set.clone_from(&alive_nodes);
+                        if target_state.node_set != *alive_workers {
+                            target_state.node_set.clone_from(alive_workers);
                             modified = true;
                         }
                     }
                     ReplicationStrategy::Factor(replication_factor) => {
                         // only retain alive nodes => remove dead ones
                         target_state.node_set.retain(|node| {
-                            let result = alive_nodes.contains(node);
+                            let result = alive_workers.contains(node);
                             modified |= !result;
                             result
                         });
@@ -258,16 +294,36 @@ impl<T: TransportConnect> Scheduler<T> {
                         let replication_factor = usize::try_from(replication_factor.get())
                             .expect("u32 should fit into usize");
 
+                        if target_state.node_set.len() == replication_factor {
+                            return modified;
+                        }
+
+                        let preferred_worker_nodes = placement_hints
+                            .preferred_nodes(partition_id)
+                            .filter(|node_id| nodes_config.has_worker_role(node_id));
+                        let preferred_leader = placement_hints
+                            .preferred_leader(partition_id)
+                            .and_then(|node_id| {
+                                if alive_workers.contains(&node_id) {
+                                    Some(node_id)
+                                } else {
+                                    None
+                                }
+                            });
+
                         // if we are under replicated and have other alive nodes available
                         if target_state.node_set.len() < replication_factor
-                            && target_state.node_set.len() < alive_nodes.len()
+                            && target_state.node_set.len() < alive_workers.len()
                         {
-                            // randomly choose from the available set of nodes
+                            if let Some(preferred_leader) = preferred_leader {
+                                modified |= !target_state.node_set.contains(&preferred_leader);
+                                target_state.node_set.insert(preferred_leader);
+                            }
+
                             // todo: Implement cleverer strategies
-                            let new_nodes = alive_nodes
-                                .iter()
-                                .filter(|node| !target_state.node_set.contains(*node))
-                                .cloned()
+                            // randomly choose from the preferred workers nodes first
+                            let new_nodes = preferred_worker_nodes
+                                .filter(|node_id| !target_state.node_set.contains(node_id))
                                 .choose_multiple(
                                     &mut rng,
                                     replication_factor - target_state.node_set.len(),
@@ -275,13 +331,57 @@ impl<T: TransportConnect> Scheduler<T> {
 
                             modified |= !new_nodes.is_empty();
                             target_state.node_set.extend(new_nodes);
+
+                            if target_state.node_set.len() < replication_factor {
+                                // randomly choose from the remaining worker nodes
+                                let new_nodes = alive_workers
+                                    .iter()
+                                    .filter(|node| !target_state.node_set.contains(*node))
+                                    .cloned()
+                                    .choose_multiple(
+                                        &mut rng,
+                                        replication_factor - target_state.node_set.len(),
+                                    );
+
+                                modified |= !new_nodes.is_empty();
+                                target_state.node_set.extend(new_nodes);
+                            }
                         } else if target_state.node_set.len() > replication_factor {
-                            for node_id in target_state.node_set.iter().cloned().choose_multiple(
-                                &mut rng,
-                                replication_factor - target_state.node_set.len(),
-                            ) {
+                            let preferred_worker_nodes: HashSet<PlainNodeId> =
+                                preferred_worker_nodes.cloned().collect();
+
+                            // first remove the not preferred nodes
+                            for node_id in target_state
+                                .node_set
+                                .iter()
+                                .filter(|node_id| {
+                                    !preferred_worker_nodes.contains(node_id)
+                                        && Some(**node_id) != preferred_leader
+                                })
+                                .cloned()
+                                .choose_multiple(
+                                    &mut rng,
+                                    replication_factor - target_state.node_set.len(),
+                                )
+                            {
                                 target_state.node_set.remove(&node_id);
                                 modified = true;
+                            }
+
+                            if target_state.node_set.len() > replication_factor {
+                                for node_id in target_state
+                                    .node_set
+                                    .iter()
+                                    .filter(|node_id| Some(**node_id) != preferred_leader)
+                                    .cloned()
+                                    .choose_multiple(
+                                        &mut rng,
+                                        replication_factor - target_state.node_set.len(),
+                                    )
+                                {
+                                    target_state.node_set.remove(&node_id);
+                                    modified = true;
+                                }
                             }
                         }
                     }
@@ -300,14 +400,26 @@ impl<T: TransportConnect> Scheduler<T> {
         }
     }
 
-    fn ensure_leadership(&self, scheduling_plan_builder: &mut SchedulingPlanBuilder) {
+    fn ensure_leadership(
+        &self,
+        scheduling_plan_builder: &mut SchedulingPlanBuilder,
+        placement_hints: impl PartitionProcessorPlacementHints,
+    ) {
         let partition_ids: Vec<_> = scheduling_plan_builder.partition_ids().cloned().collect();
         for partition_id in partition_ids {
             scheduling_plan_builder.modify_partition(&partition_id, |target_state| {
+                let preferred_leader = placement_hints.preferred_leader(&partition_id);
                 if target_state.leader.is_none() {
-                    target_state.leader = self.select_leader_from(&target_state.node_set);
+                    target_state.leader =
+                        self.select_leader_from(&target_state.node_set, preferred_leader);
                     // check whether we modified the leader
                     return target_state.leader.is_some();
+                } else if preferred_leader.is_some_and(|preferred_leader| {
+                    Some(preferred_leader) != target_state.leader
+                        && target_state.node_set.contains(&preferred_leader)
+                }) {
+                    target_state.leader = preferred_leader;
+                    return true;
                 }
 
                 false
@@ -315,10 +427,18 @@ impl<T: TransportConnect> Scheduler<T> {
         }
     }
 
-    fn select_leader_from(&self, leader_candidates: &BTreeSet<PlainNodeId>) -> Option<PlainNodeId> {
+    fn select_leader_from(
+        &self,
+        leader_candidates: &HashSet<PlainNodeId>,
+        preferred_leader: Option<PlainNodeId>,
+    ) -> Option<PlainNodeId> {
         // todo: Implement leader balancing between nodes
-        let mut rng = rand::thread_rng();
-        leader_candidates.iter().choose(&mut rng).cloned()
+        preferred_leader
+            .filter(|leader| leader_candidates.contains(leader))
+            .or_else(|| {
+                let mut rng = rand::thread_rng();
+                leader_candidates.iter().choose(&mut rng).cloned()
+            })
     }
 
     fn instruct_nodes(&self, observed_cluster_state: &ObservedClusterState) -> Result<(), Error> {
@@ -400,6 +520,30 @@ impl<T: TransportConnect> Scheduler<T> {
     }
 }
 
+/// Placement hints for the [`logs_controller::LogsController`] based on the current
+/// [`SchedulingPlan`].
+pub struct SchedulingPlanNodeSetSelectorHints<'a> {
+    scheduling_plan: &'a SchedulingPlan,
+}
+
+impl<'a, T> From<&'a Scheduler<T>> for SchedulingPlanNodeSetSelectorHints<'a> {
+    fn from(value: &'a Scheduler<T>) -> Self {
+        Self {
+            scheduling_plan: &value.scheduling_plan,
+        }
+    }
+}
+
+impl<'a> logs_controller::NodeSetSelectorHints for SchedulingPlanNodeSetSelectorHints<'a> {
+    fn preferred_sequencer(&self, log_id: &LogId) -> Option<NodeId> {
+        let partition_id = PartitionId::from(*log_id);
+
+        self.scheduling_plan
+            .get(&partition_id)
+            .and_then(|target_state| target_state.leader.map(Into::into))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::StreamExt;
@@ -408,7 +552,8 @@ mod tests {
     use http::Uri;
     use rand::prelude::ThreadRng;
     use rand::Rng;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
+    use std::iter;
     use std::num::NonZero;
     use std::time::Duration;
     use test_log::test;
@@ -416,9 +561,11 @@ mod tests {
     use tokio_stream::wrappers::ReceiverStream;
 
     use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-    use crate::cluster_controller::scheduler::Scheduler;
+    use crate::cluster_controller::scheduler::{
+        HashSet, PartitionProcessorPlacementHints, Scheduler,
+    };
     use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
-    use restate_core::{TaskCenterBuilder, TestCoreEnv, TestCoreEnvBuilder};
+    use restate_core::{metadata, TaskCenterBuilder, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
@@ -433,6 +580,21 @@ mod tests {
     use restate_types::partition_table::PartitionTable;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+
+    struct NoPlacementHints;
+
+    impl PartitionProcessorPlacementHints for NoPlacementHints {
+        fn preferred_nodes(
+            &self,
+            _partition_id: &PartitionId,
+        ) -> impl Iterator<Item = &PlainNodeId> {
+            iter::empty()
+        }
+
+        fn preferred_leader(&self, _partition_id: &PartitionId) -> Option<PlainNodeId> {
+            None
+        }
+    }
 
     #[test(tokio::test)]
     async fn empty_leadership_changes_dont_modify_plan() -> googletest::Result<()> {
@@ -458,7 +620,11 @@ mod tests {
                 let observed_cluster_state = ObservedClusterState::default();
 
                 scheduler
-                    .on_observed_cluster_state(&observed_cluster_state)
+                    .on_observed_cluster_state(
+                        &observed_cluster_state,
+                        &metadata().nodes_config_ref(),
+                        NoPlacementHints,
+                    )
                     .await?;
 
                 let scheduling_plan = metadata_store_client
@@ -574,7 +740,11 @@ mod tests {
 
                     observed_cluster_state.update(&cluster_state);
                     scheduler
-                        .on_observed_cluster_state(&observed_cluster_state)
+                        .on_observed_cluster_state(
+                            &observed_cluster_state,
+                            &metadata().nodes_config_ref(),
+                            NoPlacementHints,
+                        )
                         .await?;
                     // collect all control messages from the network to build up the effective scheduling plan
                     let control_messages = control_recv
@@ -596,7 +766,7 @@ mod tests {
                         matches_scheduling_plan(&target_scheduling_plan)
                     );
 
-                    let alive_nodes: BTreeSet<_> = cluster_state
+                    let alive_nodes: HashSet<_> = cluster_state
                         .alive_nodes()
                         .map(|node| node.generational_node_id.as_plain())
                         .collect();

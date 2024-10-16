@@ -217,6 +217,13 @@ impl NodesConfiguration {
         })
     }
 
+    pub fn has_worker_role(&self, node_id: &PlainNodeId) -> bool {
+        self.nodes.get(node_id).is_some_and(|maybe| match maybe {
+            MaybeNode::Node(node) => node.has_role(Role::Worker),
+            _ => false,
+        })
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (PlainNodeId, &'_ NodeConfig)> {
         self.nodes.iter().filter_map(|(k, v)| {
             if let MaybeNode::Node(node) = v {
