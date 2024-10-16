@@ -1,0 +1,19 @@
+module ReplicatedLogletParams
+
+loglet_id: Int
+
+local const generationalNodeIdRegex = Regex(#"N\d+:\d+"#)
+typealias GenerationalNodeId = String(matches(generationalNodeIdRegex))
+sequencer: GenerationalNodeId
+
+typealias LocationScope = "node" | "zone" | "region"
+typealias ReplicationProperty = Mapping<LocationScope, UInt8>
+replication: ReplicationProperty
+
+local const nodeIdRegex = Regex(#"N\d+"#)
+typealias PlainNodeId = String(matches(nodeIdRegex))
+typealias NodeSet = Listing<PlainNodeId>(isDistinct)
+nodeset: NodeSet
+write_set: NodeSet?
+
+function toString(): String = new JsonRenderer{indent = ""}.renderValue(module)

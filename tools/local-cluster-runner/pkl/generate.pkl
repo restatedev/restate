@@ -1,0 +1,46 @@
+import "package://pkg.pkl-lang.org/pkl-pantry/org.json_schema.contrib@1.1.0#/internal/ModulesGenerator.pkl"
+
+import "pkl:platform"
+import "package://pkg.pkl-lang.org/pkl-pantry/org.json_schema@1.0.4#/Parser.pkl"
+import "package://pkg.pkl-lang.org/pkl-pantry/org.json_schema@1.0.4#/JsonSchema.pkl"
+import "package://pkg.pkl-lang.org/pkl-pantry/pkl.experimental.uri@1.0.3#/URI.pkl"
+
+local schema = read("file:/dev/stdin")
+
+local parsedJsonSchema = Parser.parse(schema)
+
+local modulesGenerator = new ModulesGenerator {
+  rootSchema = toSnakeCase(parsedJsonSchema as JsonSchema)
+  baseUri = URI.parse("file://pkl/configuration.json")
+}
+
+typealias Schema = *JsonSchema|Boolean
+typealias Input = JsonSchema | Mapping<String, Schema> | Listing<String> | Boolean | String | Null
+
+function toSnakeCase(value: Input): Input = if (value is JsonSchema) (value) {
+    required = toSnakeCase(super.required)
+    properties = toSnakeCase(super.properties)
+    definitions = toSnakeCase(super.definitions)
+} else if (value is Mapping<String, Schema>) new Mapping {
+    for (key, schema in value) {
+        [toSnakeCase(key)] = toSnakeCase(schema)
+    }
+} else if (value is Listing<String>) new Listing {
+    for (key in value) {
+        toSnakeCase(key)
+    }
+} else if (value is String) value.replaceAll("-", "_")
+else if (value is Boolean) value
+else if (value is Null) value
+else throw("unexpected value")
+
+output {
+  text = modulesGenerator.modules[0].moduleNode.render("").
+    replaceAll("RetryPolicyAlternate0", "RetryPolicyNone").
+    replaceAll("RetryPolicyAlternate1", "RetryPolicyFixedDelay").
+    replaceAll("RetryPolicyAlternate2", "RetryPolicyExponential").
+    replaceAll("ReplicationStrategyAlternate1", "ReplicationStrategyFactor").
+    replaceAll("MetadataStoreClientAlternate0", "MetadataStoreClientEmbedded").
+    replaceAll("MetadataStoreClientAlternate1", "MetadataStoreClientEtcd").
+    replaceAll("tracing_filter: String", "tracing_filter: String?")
+}

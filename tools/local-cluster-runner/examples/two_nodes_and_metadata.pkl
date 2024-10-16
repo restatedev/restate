@@ -1,0 +1,4 @@
+amends "../pkl/TestCluster.pkl"
+
+roles = new {"worker"}
+size = 2
