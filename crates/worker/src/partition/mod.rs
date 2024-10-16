@@ -43,10 +43,12 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStat
 use restate_types::config::{Configuration, WorkerOptions};
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, SnapshotId,
+    WithPartitionKey,
 };
 use restate_types::ingress::IngressResponseResult;
 use restate_types::invocation::{
-    InvocationQuery, InvocationTarget, InvocationTargetType, ResponseResult, WorkflowHandlerType,
+    InvocationQuery, InvocationResponse, InvocationTarget, InvocationTargetType, ResponseResult,
+    WorkflowHandlerType,
 };
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::live::Live;
@@ -67,11 +69,10 @@ use crate::metric_definitions::{
     PP_APPLY_COMMAND_BATCH_SIZE, PP_APPLY_COMMAND_DURATION,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
+use crate::partition::leadership::{Error, LeadershipState, PartitionProcessorMetadata};
 use crate::partition::snapshot_producer::{SnapshotProducer, SnapshotSource};
 use crate::partition::state_machine::{ActionCollector, StateMachine};
 
-mod action_effect_handler;
 mod cleaner;
 pub mod invoker_storage_reader;
 mod leadership;
@@ -479,7 +480,7 @@ where
                 },
                 Some(action_effects) = self.leadership_state.next_action_effects() => {
                     actuator_effects_handled.increment(action_effects.len() as u64);
-                    self.leadership_state.handle_action_effect(action_effects).await?;
+                    self.leadership_state.handle_action_effects(action_effects).await?;
                 },
             }
             // Allow other tasks on this thread to run, but only if we have exhausted the coop
@@ -572,33 +573,39 @@ where
         )>,
         partition_store: &mut PartitionStore,
     ) {
-        if !self.leadership_state.is_leader() {
-            // TODO for get output we could reply immediately, don't need to fail!
-            self.respond_to_rpc(rpc.into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
-                self.partition_id,
-            ))));
-            return;
-        }
-
         let (rx, (request_id, body)) = rpc.split();
-        let response = match body {
+        match body {
             PartitionProcessorRpcRequestInner::GetInvocationOutput(
                 invocation_query,
                 GetInvocationOutputResponseMode::ReplyIfNotReady,
-            ) => self
-                .handle_get_output(request_id, invocation_query, partition_store)
-                .await
-                .map(PartitionProcessorRpcResponse::GetInvocationOutput),
+            ) => {
+                self.respond_to_rpc(
+                    rx.prepare(
+                        self.handle_rpc_get_invocation_output(
+                            request_id,
+                            invocation_query,
+                            partition_store,
+                        )
+                        .await
+                        .map(PartitionProcessorRpcResponse::GetInvocationOutput)
+                        .map_err(|err| PartitionProcessorRpcError::Internal(err.to_string())),
+                    ),
+                );
+            }
+            PartitionProcessorRpcRequestInner::SubmitInvocationResponse(response) => {
+                let response = self
+                    .handle_rpc_submit_invocation_response(response)
+                    .await
+                    .map(|_| PartitionProcessorRpcResponse::SubmitInvocationResponse);
+
+                self.respond_to_rpc(rx.prepare(response));
+            }
             _ => unimplemented!(),
         };
-
-        self.respond_to_rpc(rx.prepare(
-            response.map_err(|err| PartitionProcessorRpcError::Internal(err.to_string())),
-        ));
     }
 
     fn respond_to_rpc(
-        &mut self,
+        &self,
         outgoing: Outgoing<
             Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
             HasConnection,
@@ -613,12 +620,13 @@ where
         );
     }
 
-    async fn handle_get_output(
+    async fn handle_rpc_get_invocation_output(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
         partition_store: &mut PartitionStore,
     ) -> Result<GetInvocationOutputRpcResponse, StorageError> {
+        // We can handle this immediately by querying the partition store, no need to go through proposals
         // TODO update this logic when finishing up https://github.com/restatedev/restate/pull/2035
         let invocation_id = match invocation_query {
             InvocationQuery::Invocation(iid) => iid,
@@ -667,6 +675,25 @@ where
                 }))
             }
             _ => Ok(GetInvocationOutputRpcResponse::NotReady),
+        }
+    }
+
+    async fn handle_rpc_submit_invocation_response(
+        &mut self,
+        invocation_response: InvocationResponse,
+    ) -> Result<(), PartitionProcessorRpcError> {
+        // Just propose and be done with it.
+        match self
+            .leadership_state
+            .self_propose(
+                invocation_response.partition_key(),
+                Command::InvocationResponse(invocation_response),
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(Error::NotLeader) => Err(PartitionProcessorRpcError::NotLeader(self.partition_id)),
+            Err(e) => Err(PartitionProcessorRpcError::Internal(e.to_string())),
         }
     }
 

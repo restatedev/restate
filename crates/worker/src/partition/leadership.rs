@@ -14,7 +14,7 @@ use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use futures::future::OptionFuture;
 use futures::{future, stream, StreamExt, TryStreamExt};
@@ -26,7 +26,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use restate_bifrost::Bifrost;
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{
-    current_task_partition_id, metadata, task_center, ShutdownError, TaskId, TaskKind,
+    current_task_partition_id, metadata, task_center, Metadata, ShutdownError, TaskId, TaskKind,
 };
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
@@ -36,19 +36,19 @@ use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::timer_table::{TimerKey, TimerTable};
 use restate_timer::TokioClock;
-use restate_types::identifiers::{InvocationId, PartitionKey};
+use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::logs::LogId;
 use restate_types::message::MessageIndex;
 use restate_types::net::ingress;
 use restate_types::storage::StorageEncodeError;
+use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
-use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::cleaner::Cleaner;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::shuffle;
@@ -71,6 +71,10 @@ pub(crate) enum Error {
     Codec(#[from] StorageEncodeError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
+    #[error("the given operation requires to be in leader state")]
+    NotLeader,
+    #[error("error when self proposing")]
+    SelfProposer,
 }
 
 #[derive(Debug)]
@@ -86,7 +90,7 @@ pub(crate) struct LeaderState {
     shuffle_hint_tx: HintSender,
     shuffle_task_id: TaskId,
     timer_service: Pin<Box<TimerService>>,
-    action_effect_handler: ActionEffectHandler,
+    self_proposer: SelfProposer,
     action_effects: VecDeque<ActionEffect>,
 
     invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
@@ -369,15 +373,12 @@ where
                 shuffle.run(),
             )?;
 
-            let action_effect_handler = ActionEffectHandler::new(
+            let self_proposer = SelfProposer::new(
                 self.partition_processor_metadata.partition_id,
                 EpochSequenceNumber::new(leader_epoch),
-                self.partition_processor_metadata
-                    .partition_key_range
-                    .clone(),
-                self.bifrost.clone(),
+                &self.bifrost,
                 metadata(),
-            );
+            )?;
 
             let cleaner = Cleaner::new(
                 self.partition_processor_metadata.partition_id,
@@ -404,7 +405,7 @@ where
                 cleaner_task_id,
                 shuffle_hint_tx,
                 timer_service,
-                action_effect_handler,
+                self_proposer,
                 action_effects: VecDeque::default(),
                 invoker_stream: ReceiverStream::new(invoker_rx),
                 shuffle_stream: ReceiverStream::new(shuffle_rx),
@@ -642,7 +643,7 @@ where
         Ok(())
     }
 
-    pub async fn handle_action_effect(
+    pub async fn handle_action_effects(
         &mut self,
         action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> anyhow::Result<()> {
@@ -651,10 +652,55 @@ where
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state
-                    .action_effect_handler
-                    .handle(action_effects)
-                    .await?
+                for effect in action_effects {
+                    match effect {
+                        ActionEffect::Invoker(invoker_output) => {
+                            leader_state
+                                .self_proposer
+                                .propose(
+                                    invoker_output.invocation_id.partition_key(),
+                                    Command::InvokerEffect(invoker_output),
+                                )
+                                .await?;
+                        }
+                        ActionEffect::Shuffle(outbox_truncation) => {
+                            // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
+                            //  specific destination messages that are identified by a partition_id
+                            leader_state
+                                .self_proposer
+                                .propose(
+                                    *self
+                                        .partition_processor_metadata
+                                        .partition_key_range
+                                        .start(),
+                                    Command::TruncateOutbox(outbox_truncation.index()),
+                                )
+                                .await?;
+                        }
+                        ActionEffect::Timer(timer) => {
+                            leader_state
+                                .self_proposer
+                                .propose(
+                                    timer.invocation_id().partition_key(),
+                                    Command::Timer(timer),
+                                )
+                                .await?;
+                        }
+                        ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
+                            // TODO we can get rid of this action completely once we switch to the neo invocation status
+                            leader_state
+                                .self_proposer
+                                .propose(
+                                    invocation_id.partition_key(),
+                                    Command::ScheduleTimer(TimerKeyValue::clean_invocation_status(
+                                        MillisSinceEpoch::from(SystemTime::now() + duration),
+                                        invocation_id,
+                                    )),
+                                )
+                                .await?;
+                        }
+                    }
+                }
             }
         };
 
@@ -720,6 +766,92 @@ where
         }
 
         Ok(())
+    }
+
+    pub async fn self_propose(
+        &mut self,
+        partition_key: PartitionKey,
+        cmd: Command,
+    ) -> Result<(), Error> {
+        match &mut self.state {
+            State::Follower | State::Candidate(_) => Err(Error::NotLeader),
+            State::Leader(leader_state) => {
+                leader_state.self_proposer.propose(partition_key, cmd).await
+            }
+        }
+    }
+}
+
+// Constants since it's very unlikely that we can derive a meaningful configuration
+// that the user can reason about.
+//
+// The queue size is small to reduce the tail latency. This comes at the cost of throughput but
+// this runs within a single processor and the expected throughput is bound by the overall
+// throughput of the processor itself.
+const BIFROST_QUEUE_SIZE: usize = 20;
+const MAX_BIFROST_APPEND_BATCH: usize = 5000;
+
+struct SelfProposer {
+    partition_id: PartitionId,
+    epoch_sequence_number: EpochSequenceNumber,
+    bifrost_appender: restate_bifrost::AppenderHandle<Envelope>,
+    metadata: Metadata,
+}
+
+impl SelfProposer {
+    fn new(
+        partition_id: PartitionId,
+        epoch_sequence_number: EpochSequenceNumber,
+        bifrost: &Bifrost,
+        metadata: Metadata,
+    ) -> Result<Self, Error> {
+        let bifrost_appender = bifrost
+            .create_background_appender(
+                LogId::from(partition_id),
+                BIFROST_QUEUE_SIZE,
+                MAX_BIFROST_APPEND_BATCH,
+            )?
+            .start(task_center(), "self-appender", Some(partition_id))?;
+
+        Ok(Self {
+            partition_id,
+            epoch_sequence_number,
+            bifrost_appender,
+            metadata,
+        })
+    }
+
+    async fn propose(&mut self, partition_key: PartitionKey, cmd: Command) -> Result<(), Error> {
+        let envelope = Envelope::new(self.create_header(partition_key), cmd);
+
+        // Only blocks if background append is pushing back (queue full)
+        self.bifrost_appender
+            .sender()
+            .enqueue(Arc::new(envelope))
+            .await
+            .map_err(|_| Error::SelfProposer)?;
+
+        Ok(())
+    }
+
+    fn create_header(&mut self, partition_key: PartitionKey) -> Header {
+        let esn = self.epoch_sequence_number.next();
+        self.epoch_sequence_number = esn;
+
+        let my_node_id = self.metadata.my_node_id();
+        Header {
+            dest: Destination::Processor {
+                partition_key,
+                dedup: Some(DedupInformation::self_proposal(esn)),
+            },
+            source: Source::Processor {
+                partition_id: self.partition_id,
+                partition_key: Some(partition_key),
+                leader_epoch: self.epoch_sequence_number.leader_epoch,
+                node_id: my_node_id.as_plain(),
+                generational_node_id: Some(my_node_id),
+            },
+        }
     }
 }
 
