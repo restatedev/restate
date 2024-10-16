@@ -28,11 +28,12 @@ use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_ingress_dispatcher::{IngressInvocationResponse, SubmittedInvocationNotification};
 use restate_test_util::{assert, assert_eq};
 use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId};
-use restate_types::ingress::{IngressResponseResult, InvocationResponse};
+use restate_types::ingress::IngressResponseResult;
 use restate_types::invocation::{
     Header, InvocationQuery, InvocationTarget, InvocationTargetType, VirtualObjectHandlerType,
     WorkflowHandlerType,
 };
+use restate_types::net::partition_processor::InvocationOutput;
 use restate_types::schema::invocation_target::{
     InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
     OutputContentTypeRule, OutputRules,
@@ -706,7 +707,7 @@ async fn get_output_with_invocation_id() {
         mock_schemas,
         MockStorageReader(HashMap::from([(
             InvocationQuery::Invocation(invocation_id),
-            InvocationResponse {
+            InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_id),
                 response: IngressResponseResult::Success(
@@ -758,7 +759,7 @@ async fn get_output_with_workflow_key() {
         mock_schemas,
         MockStorageReader(HashMap::from([(
             InvocationQuery::Workflow(service_id.clone()),
-            InvocationResponse {
+            InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: None,
                 response: IngressResponseResult::Success(

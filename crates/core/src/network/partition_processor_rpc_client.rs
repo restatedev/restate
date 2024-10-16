@@ -10,11 +10,13 @@
 
 use assert2::let_assert;
 
-use restate_types::identifiers::WithPartitionKey;
-use restate_types::invocation::InvocationQuery;
+use restate_types::identifiers::{PartitionProcessorRpcRequestId, WithPartitionKey};
+use restate_types::invocation::{InvocationQuery, InvocationResponse, ServiceInvocation};
 use restate_types::live::Live;
-use restate_types::net::partition_processor_manager::{
-    GetOutputResult, PartitionProcessorRpcRequest, PartitionProcessorRpcResponse,
+use restate_types::net::partition_processor::{
+    GetInvocationOutputResponseMode, GetInvocationOutputRpcResponse, InvocationOutput,
+    PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
+    SubmitInvocationReplyOn, SubmitInvocationRpcResponse, SubmittedInvocationNotification,
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
 
@@ -23,7 +25,7 @@ use crate::network::NetworkSender;
 use crate::{my_node_id, ShutdownError};
 
 #[derive(Debug, thiserror::Error)]
-pub enum GetInvocationOutputError {
+pub enum PartitionProcessorRpcClientError {
     #[error(transparent)]
     UnknownPartition(#[from] PartitionTableError),
     #[error("failed sending request")]
@@ -32,6 +34,15 @@ pub enum GetInvocationOutputError {
     Shutdown(#[from] ShutdownError),
     #[error("operation failed: {0}")]
     Internal(String),
+}
+
+impl<T> From<RpcError<T>> for PartitionProcessorRpcClientError {
+    fn from(value: RpcError<T>) -> Self {
+        match value {
+            RpcError::SendError(_) => PartitionProcessorRpcClientError::SendFailed,
+            RpcError::Shutdown(err) => PartitionProcessorRpcClientError::Shutdown(err),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -59,44 +70,182 @@ impl<N> PartitionProcessorRpcClient<N>
 where
     N: NetworkSender + 'static,
 {
+    pub async fn append_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        service_invocation: ServiceInvocation,
+    ) -> Result<(), PartitionProcessorRpcClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::SubmitInvocation(
+                    service_invocation,
+                    SubmitInvocationReplyOn::Appended,
+                ),
+            )
+            .await?;
+
+        let_assert!(
+            PartitionProcessorRpcResponse::SubmitInvocation(
+                SubmitInvocationRpcResponse::Appended
+            ) = response,
+            "Expecting SubmitInvocation :: Appended"
+        );
+
+        Ok(())
+    }
+
+    pub async fn submit_notification_and_wait_submit_notification(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        service_invocation: ServiceInvocation,
+    ) -> Result<SubmittedInvocationNotification, PartitionProcessorRpcClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::SubmitInvocation(
+                    service_invocation,
+                    SubmitInvocationReplyOn::Submitted,
+                ),
+            )
+            .await?;
+
+        let_assert!(
+            PartitionProcessorRpcResponse::SubmitInvocation(
+                SubmitInvocationRpcResponse::Submitted(submit_notification)
+            ) = response,
+            "Expecting SubmitInvocation :: Appended"
+        );
+        debug_assert_eq!(
+            request_id, submit_notification.request_id,
+            "Conflicting submit notification received"
+        );
+
+        Ok(submit_notification)
+    }
+
+    pub async fn submit_notification_and_wait_output(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        service_invocation: ServiceInvocation,
+    ) -> Result<InvocationOutput, PartitionProcessorRpcClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::SubmitInvocation(
+                    service_invocation,
+                    SubmitInvocationReplyOn::Output,
+                ),
+            )
+            .await?;
+
+        let_assert!(
+            PartitionProcessorRpcResponse::SubmitInvocation(SubmitInvocationRpcResponse::Output(
+                invocation_output
+            )) = response,
+            "Expecting SubmitInvocation :: Output"
+        );
+        debug_assert_eq!(
+            request_id, invocation_output.request_id,
+            "Conflicting invocation output received"
+        );
+
+        Ok(invocation_output)
+    }
+
+    pub async fn attach_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_query: InvocationQuery,
+    ) -> Result<GetInvocationOutputRpcResponse, PartitionProcessorRpcClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::GetInvocationOutput(
+                    invocation_query,
+                    GetInvocationOutputResponseMode::BlockWhenNotReady,
+                ),
+            )
+            .await?;
+
+        let_assert!(
+            PartitionProcessorRpcResponse::GetInvocationOutput(get_output_result) = response,
+            "Expecting GetInvocationOutput"
+        );
+
+        Ok(get_output_result)
+    }
+
     pub async fn get_invocation_output(
         &self,
+        request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
-    ) -> Result<GetOutputResult, GetInvocationOutputError> {
+    ) -> Result<GetInvocationOutputRpcResponse, PartitionProcessorRpcClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::GetInvocationOutput(
+                    invocation_query,
+                    GetInvocationOutputResponseMode::ReplyIfNotReady,
+                ),
+            )
+            .await?;
+
+        let_assert!(
+            PartitionProcessorRpcResponse::GetInvocationOutput(get_output_result) = response,
+            "Expecting GetInvocationOutput"
+        );
+
+        Ok(get_output_result)
+    }
+
+    pub async fn submit_invocation_response(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_response: InvocationResponse,
+    ) -> Result<(), PartitionProcessorRpcClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::SubmitInvocationResponse(invocation_response),
+            )
+            .await?;
+
+        let_assert!(
+            PartitionProcessorRpcResponse::SubmitInvocationResponse = response,
+            "Expecting SubmitInvocationResponse"
+        );
+
+        Ok(())
+    }
+
+    async fn resolve_partition_id_and_send(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        inner_request: PartitionProcessorRpcRequestInner,
+    ) -> Result<PartitionProcessorRpcResponse, PartitionProcessorRpcClientError> {
         let partition_id = self
             .partition_table
             .pinned()
-            .find_partition_id(invocation_query.partition_key())?;
+            .find_partition_id(inner_request.partition_key())?;
 
-        // todo: Find node on which the leader for the given partition runs
+        // TODO Find node on which the leader for the given partition runs
         let node_id = my_node_id();
         let response = self
             .rpc_router
             .call(
                 &self.network_sender,
                 node_id,
-                PartitionProcessorRpcRequest::get_output(partition_id, invocation_query.clone()),
+                PartitionProcessorRpcRequest {
+                    request_id,
+                    partition_id,
+                    inner: inner_request,
+                },
             )
             .await?;
 
-        // todo: Handle retry conditions
-        let response = response
+        response
             .into_body()
-            .map_err(|err| GetInvocationOutputError::Internal(err.to_string()))?;
-        let_assert!(
-            PartitionProcessorRpcResponse::GetOutputResult(get_output_result) = response,
-            "Expecting GetOutputResult"
-        );
-
-        Ok(get_output_result)
-    }
-}
-
-impl<T> From<RpcError<T>> for GetInvocationOutputError {
-    fn from(value: RpcError<T>) -> Self {
-        match value {
-            RpcError::SendError(_) => GetInvocationOutputError::SendFailed,
-            RpcError::Shutdown(err) => GetInvocationOutputError::Shutdown(err),
-        }
+            .map_err(|err| PartitionProcessorRpcClientError::Internal(err.to_string()))
     }
 }

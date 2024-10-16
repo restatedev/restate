@@ -51,7 +51,7 @@ use restate_test_util::matchers::*;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::errors::{codes, InvocationError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::{
-    IngressRequestId, InvocationId, PartitionId, PartitionKey, ServiceId,
+    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
 use restate_types::invocation::{
@@ -714,9 +714,9 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
 
     let node_id_1 = GenerationalNodeId::new(1, 1);
     let node_id_2 = GenerationalNodeId::new(2, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
-    let request_id_3 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
+    let request_id_3 = PartitionProcessorRpcRequestId::default();
 
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {

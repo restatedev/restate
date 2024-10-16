@@ -24,7 +24,7 @@ async fn send_with_delay() {
     let invocation_id = InvocationId::mock_random();
 
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id = IngressRequestId::default();
+    let request_id = PartitionProcessorRpcRequestId::default();
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
@@ -96,7 +96,7 @@ async fn send_with_delay_to_locked_virtual_object() {
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id = IngressRequestId::default();
+    let request_id = PartitionProcessorRpcRequestId::default();
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
@@ -190,7 +190,7 @@ async fn send_with_delay_and_idempotency_key() {
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
 
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
@@ -228,7 +228,7 @@ async fn send_with_delay_and_idempotency_key() {
     );
 
     // Send another invocation which reattaches to the original one
-    let request_id_2 = IngressRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,

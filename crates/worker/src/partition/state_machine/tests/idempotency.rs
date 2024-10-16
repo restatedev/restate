@@ -19,7 +19,7 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
 use restate_types::errors::GONE_INVOCATION_ERROR;
-use restate_types::identifiers::{IdempotencyId, IngressRequestId};
+use restate_types::identifiers::{IdempotencyId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
     SubmitNotificationSink,
@@ -39,7 +39,7 @@ async fn start_and_complete_idempotent_invocation() {
     let idempotency_id =
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id = IngressRequestId::default();
+    let request_id = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -145,7 +145,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
     let idempotency_id =
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id = IngressRequestId::default();
+    let request_id = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -278,7 +278,7 @@ async fn complete_already_completed_invocation() {
     txn.commit().await.unwrap();
 
     // Send a request, should be completed immediately with result
-    let request_id = IngressRequestId::default();
+    let request_id = PartitionProcessorRpcRequestId::default();
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
@@ -330,7 +330,7 @@ async fn known_invocation_id_but_missing_completion() {
     txn.commit().await.unwrap();
 
     // Send a request, should be completed immediately with result
-    let request_id = IngressRequestId::default();
+    let request_id = PartitionProcessorRpcRequestId::default();
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
@@ -379,8 +379,8 @@ async fn attach_with_service_invocation_command_while_executing() {
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -484,8 +484,8 @@ async fn attach_with_send_service_invocation() {
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -596,8 +596,8 @@ async fn attach_inboxed_with_send_service_invocation() {
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Initialize locked virtual object state
     async {
@@ -706,8 +706,8 @@ async fn attach_command() {
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
     let actions = test_env

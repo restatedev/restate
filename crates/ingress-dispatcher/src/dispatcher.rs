@@ -19,7 +19,7 @@ use restate_bifrost::Bifrost;
 use restate_core::metadata;
 use restate_core::network::{Incoming, MessageHandler};
 use restate_storage_api::deduplication_table::DedupInformation;
-use restate_types::identifiers::{IngressRequestId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_types::net::codec::Targeted;
 use restate_types::net::ingress::IngressMessage;
@@ -33,8 +33,8 @@ use tracing::{debug, trace};
 
 /// Dispatches a request from ingress to bifrost
 pub trait DispatchIngressRequest {
-    fn evict_pending_response(&self, req_id: IngressRequestId);
-    fn evict_pending_submit_notification(&self, req_id: IngressRequestId);
+    fn evict_pending_response(&self, req_id: PartitionProcessorRpcRequestId);
+    fn evict_pending_submit_notification(&self, req_id: PartitionProcessorRpcRequestId);
     fn dispatch_ingress_request(
         &self,
         ingress_request: IngressDispatcherRequest,
@@ -49,12 +49,12 @@ struct IngressDispatcherState {
 
     // This map can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
-    waiting_responses: DashMap<IngressRequestId, IngressInvocationResponseSender>,
+    waiting_responses: DashMap<PartitionProcessorRpcRequestId, IngressInvocationResponseSender>,
 
     // This map can be unbounded, because we enforce concurrency limits in the ingress
     // services using the global semaphore
     waiting_submit_notification:
-        DashMap<IngressRequestId, IngressSubmittedInvocationNotificationSender>,
+        DashMap<PartitionProcessorRpcRequestId, IngressSubmittedInvocationNotificationSender>,
 }
 
 impl IngressDispatcherState {
@@ -79,11 +79,11 @@ impl IngressDispatcher {
 }
 
 impl DispatchIngressRequest for IngressDispatcher {
-    fn evict_pending_response(&self, req_id: IngressRequestId) {
+    fn evict_pending_response(&self, req_id: PartitionProcessorRpcRequestId) {
         self.state.waiting_responses.remove(&req_id);
     }
 
-    fn evict_pending_submit_notification(&self, req_id: IngressRequestId) {
+    fn evict_pending_submit_notification(&self, req_id: PartitionProcessorRpcRequestId) {
         self.state.waiting_submit_notification.remove(&req_id);
     }
 

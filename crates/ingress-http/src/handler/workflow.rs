@@ -17,12 +17,13 @@ use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_types::identifiers::ServiceId;
 use restate_types::invocation::InvocationQuery;
+use restate_types::net::partition_processor::GetInvocationOutputRpcResponse;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 
 use super::path_parsing::WorkflowRequestType;
 use super::Handler;
 use super::HandlerError;
-use crate::{GetOutputResult, InvocationStorageReader};
+use crate::InvocationStorageReader;
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
 where
@@ -127,10 +128,12 @@ where
             .get_output(InvocationQuery::Workflow(workflow_id.clone()))
             .await
         {
-            Ok(GetOutputResult::Ready(out)) => out,
-            Ok(GetOutputResult::NotFound) => return Err(HandlerError::NotFound),
-            Ok(GetOutputResult::NotReady) => return Err(HandlerError::NotReady),
-            Ok(GetOutputResult::NotSupported) => return Err(HandlerError::UnsupportedGetOutput),
+            Ok(GetInvocationOutputRpcResponse::Ready(out)) => out,
+            Ok(GetInvocationOutputRpcResponse::NotFound) => return Err(HandlerError::NotFound),
+            Ok(GetInvocationOutputRpcResponse::NotReady) => return Err(HandlerError::NotReady),
+            Ok(GetInvocationOutputRpcResponse::NotSupported) => {
+                return Err(HandlerError::UnsupportedGetOutput)
+            }
             Err(e) => {
                 warn!(
                     restate.workflow.id = %workflow_id,

@@ -17,7 +17,7 @@ pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
 use restate_types::invocation::InvocationQuery;
-use restate_types::net::partition_processor_manager::GetOutputResult;
+use restate_types::net::partition_processor::GetInvocationOutputRpcResponse;
 use std::net::{IpAddr, SocketAddr};
 
 /// Client connection information for a given RPC request
@@ -42,7 +42,7 @@ pub trait InvocationStorageReader {
     fn get_output(
         &self,
         query: InvocationQuery,
-    ) -> impl std::future::Future<Output = Result<GetOutputResult, anyhow::Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<GetInvocationOutputRpcResponse, anyhow::Error>> + Send;
 }
 
 // Contains some mocks we use in unit tests in this crate
@@ -54,10 +54,10 @@ mod mocks {
     use serde::{Deserialize, Serialize};
 
     use restate_types::identifiers::DeploymentId;
-    use restate_types::ingress::InvocationResponse;
     use restate_types::invocation::{
         InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
     };
+    use restate_types::net::partition_processor::InvocationOutput;
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_types::schema::invocation_target::{
         InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
@@ -170,16 +170,19 @@ mod mocks {
     }
 
     #[derive(Debug, Clone, Default)]
-    pub(crate) struct MockStorageReader(pub(crate) HashMap<InvocationQuery, InvocationResponse>);
+    pub(crate) struct MockStorageReader(pub(crate) HashMap<InvocationQuery, InvocationOutput>);
 
     impl InvocationStorageReader for MockStorageReader {
-        async fn get_output(&self, query: InvocationQuery) -> Result<GetOutputResult, Error> {
+        async fn get_output(
+            &self,
+            query: InvocationQuery,
+        ) -> Result<GetInvocationOutputRpcResponse, Error> {
             Ok(self
                 .0
                 .get(&query)
                 .cloned()
-                .map(GetOutputResult::Ready)
-                .unwrap_or(GetOutputResult::NotFound))
+                .map(GetInvocationOutputRpcResponse::Ready)
+                .unwrap_or(GetInvocationOutputRpcResponse::NotFound))
         }
     }
 }

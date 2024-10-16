@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::errors::InvocationError;
-use crate::identifiers::{IngressRequestId, InvocationId};
+use crate::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use crate::invocation::InvocationTarget;
 use crate::GenerationalNodeId;
 use bytes::Bytes;
@@ -22,14 +22,14 @@ pub struct IngressResponseEnvelope<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubmittedInvocationNotification {
-    pub request_id: IngressRequestId,
+    pub request_id: PartitionProcessorRpcRequestId,
     /// If true, this request_id created a "fresh invocation", otherwise the invocation was previously submitted.
     pub is_new_invocation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationResponse {
-    pub request_id: IngressRequestId,
+    pub request_id: PartitionProcessorRpcRequestId,
     pub invocation_id: Option<InvocationId>,
     pub response: IngressResponseResult,
 }

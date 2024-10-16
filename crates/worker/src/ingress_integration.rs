@@ -12,8 +12,9 @@ use anyhow::Error;
 use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
 use restate_core::network::NetworkSender;
 use restate_ingress_http::InvocationStorageReader;
+use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::InvocationQuery;
-use restate_types::net::partition_processor_manager::GetOutputResult;
+use restate_types::net::partition_processor::GetInvocationOutputRpcResponse;
 
 #[derive(Clone)]
 pub struct InvocationStorageReaderImpl<N> {
@@ -32,9 +33,12 @@ impl<N> InvocationStorageReader for InvocationStorageReaderImpl<N>
 where
     N: NetworkSender + 'static,
 {
-    async fn get_output(&self, query: InvocationQuery) -> Result<GetOutputResult, Error> {
+    async fn get_output(
+        &self,
+        query: InvocationQuery,
+    ) -> Result<GetInvocationOutputRpcResponse, Error> {
         self.partition_processor_rpc_client
-            .get_invocation_output(query)
+            .get_invocation_output(PartitionProcessorRpcRequestId::default(), query)
             .await
             .map_err(Into::into)
     }

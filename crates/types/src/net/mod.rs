@@ -15,6 +15,7 @@ pub mod ingress;
 #[cfg(feature = "replicated-loglet")]
 pub mod log_server;
 pub mod metadata;
+pub mod partition_processor;
 pub mod partition_processor_manager;
 #[cfg(feature = "replicated-loglet")]
 pub mod replicated_loglet;

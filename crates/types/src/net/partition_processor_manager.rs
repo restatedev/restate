@@ -14,12 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use crate::identifiers::{InvocationId, PartitionId, SnapshotId};
-use crate::ingress::{InvocationResponse, SubmittedInvocationNotification};
-use crate::invocation::{InvocationQuery, ServiceInvocation};
-use crate::net::{define_message, TargetName};
-
+use crate::identifiers::{PartitionId, SnapshotId};
 use crate::net::define_rpc;
+use crate::net::{define_message, TargetName};
 use crate::Version;
 
 define_rpc! {
@@ -93,60 +90,4 @@ pub struct CreateSnapshotResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SnapshotError {
     SnapshotCreationFailed(String),
-}
-
-define_rpc! {
-    @request = PartitionProcessorRpcRequest,
-    @response = Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
-    @request_target = TargetName::PartitionProcessorRpc,
-    @response_target = TargetName::PartitionProcessorRpcResponse,
-}
-
-/// Requests to individual partition processors. We still need to route them through the PP manager.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PartitionProcessorRpcRequest {
-    pub partition_id: PartitionId,
-    pub request: PartitionProcessorRequestKind,
-}
-
-impl PartitionProcessorRpcRequest {
-    pub fn get_output(partition_id: PartitionId, invocation_query: InvocationQuery) -> Self {
-        Self {
-            partition_id,
-            request: PartitionProcessorRequestKind::GetOutputResult(invocation_query),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PartitionProcessorRequestKind {
-    SubmitInvocation(ServiceInvocation),
-    AttachToInvocation(InvocationId),
-    GetOutputResult(InvocationQuery),
-    SubmitResponse(InvocationResponse),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
-pub enum PartitionProcessorRpcError {
-    #[error("not leader for partition '{0}'")]
-    NotLeader(PartitionId),
-    #[error("rejecting rpc because too busy")]
-    Busy,
-    #[error("internal error: {0}")]
-    Internal(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PartitionProcessorRpcResponse {
-    SubmitInvocationNotification(SubmittedInvocationNotification),
-    GetOutputResult(GetOutputResult),
-    SubmitResponseNotification,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum GetOutputResult {
-    NotFound,
-    NotReady,
-    NotSupported,
-    Ready(InvocationResponse),
 }
