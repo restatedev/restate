@@ -293,6 +293,14 @@ impl Node {
             .map_err(NodeStartError::CreateLog)?;
 
         let binary_path: OsString = binary_source.try_into()?;
+
+        let tokio_console_bind = {
+            let (addr, listener) =
+                random_socket_address().map_err(NodeStartError::BindRandomSocketAddress)?;
+            random_listeners.push(listener);
+            addr
+        };
+
         let mut cmd = Command::new(&binary_path);
 
         if !inherit_env {
@@ -301,7 +309,7 @@ impl Node {
             &mut cmd
         }
         .env("RESTATE_CONFIG", node_config_file)
-        .env("TOKIO_CONSOLE_BIND", "127.0.0.1:0")
+        .env("TOKIO_CONSOLE_BIND", tokio_console_bind.to_string())
         .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
