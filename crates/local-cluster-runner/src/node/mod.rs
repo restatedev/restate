@@ -39,7 +39,7 @@ use restate_types::{
     PlainNodeId,
 };
 
-use crate::random_socket_address;
+use crate::{random_socket_address, RANDOM_SOCKET_ADDRESS};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
 pub struct Node {
@@ -59,12 +59,9 @@ pub struct Node {
             }
 
             pub fn with_random_ports(self) {
-                self.base_config.admin.bind_address =
-                    random_socket_address().expect("to find a random port for the admin server");
-                self.base_config.admin.query_engine.pgsql_bind_address =
-                    random_socket_address().expect("to find a random port for the pgsql server");
-                self.base_config.ingress.bind_address =
-                    random_socket_address().expect("to find a random port for the ingress server");
+                    self.base_config.admin.bind_address = RANDOM_SOCKET_ADDRESS;
+                    self.base_config.admin.query_engine.pgsql_bind_address = RANDOM_SOCKET_ADDRESS;
+                    self.base_config.ingress.bind_address = RANDOM_SOCKET_ADDRESS;
             }
 
             pub fn with_node_name(self, node_name: impl Into<String>) {
@@ -98,6 +95,8 @@ pub enum NodeStartError {
     Absolute(io::Error),
     #[error(transparent)]
     BinarySourceError(#[from] BinarySourceError),
+    #[error("Failed to find a random socket address: {0}")]
+    BindRandomSocketAddress(io::Error),
     #[error("Failed to create node base directory: {0}")]
     CreateDirectory(io::Error),
     #[error("Failed to create or truncate node config file: {0}")]
@@ -223,13 +222,40 @@ impl Node {
     /// spawned to process output logs and watch for exit.
     pub async fn start(self) -> Result<StartedNode, NodeStartError> {
         let Self {
-            base_config,
+            mut base_config,
             binary_source,
             args,
             inherit_env,
             env,
             searcher,
         } = self;
+
+        let mut random_listeners = Vec::new();
+
+        for addr in [
+            &mut base_config.admin.bind_address,
+            &mut base_config.admin.query_engine.pgsql_bind_address,
+            &mut base_config.ingress.bind_address,
+        ] {
+            if *addr == RANDOM_SOCKET_ADDRESS {
+                let (new_addr, listener) =
+                    random_socket_address().map_err(NodeStartError::BindRandomSocketAddress)?;
+                *addr = new_addr;
+                random_listeners.push(listener);
+            }
+        }
+
+        if base_config.common.bind_address == BindAddress::Socket(RANDOM_SOCKET_ADDRESS) {
+            let (addr, listener) =
+                random_socket_address().map_err(NodeStartError::BindRandomSocketAddress)?;
+            random_listeners.push(listener);
+            base_config.common.bind_address = BindAddress::Socket(addr);
+            base_config.common.advertised_address = AdvertisedAddress::Http(
+                format!("http://{}/", base_config.common.bind_address)
+                    .parse()
+                    .expect("random bind address to be a valid http advertise address"),
+            )
+        }
 
         let node_base_dir = std::path::absolute(
             base_config
@@ -283,6 +309,9 @@ impl Node {
         .kill_on_drop(true)
         .process_group(0) // avoid terminal control C being propagated
         .args(&args);
+
+        // release the random tcp ports, if any, as late as possible
+        drop(random_listeners);
 
         let mut child = cmd.spawn().map_err(NodeStartError::SpawnError)?;
         let pid = child.id().expect("child to have a pid");

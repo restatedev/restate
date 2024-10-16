@@ -5843,6 +5843,7 @@ dependencies = [
  "rev_lines",
  "rlimit",
  "serde",
+ "socket2",
  "tempfile",
  "test_bin",
  "thiserror",

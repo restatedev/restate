@@ -27,9 +27,22 @@ pub fn shutdown() -> impl Future<Output = &'static str> {
     }
 }
 
-pub fn random_socket_address() -> io::Result<SocketAddr> {
-    let listener = TcpListener::bind((IpAddr::V4(Ipv4Addr::LOCALHOST), 0))?;
+const RANDOM_SOCKET_ADDRESS: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+
+pub fn random_socket_address() -> io::Result<(SocketAddr, TcpListener)> {
+    let inner = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+
+    #[cfg(not(windows))]
+    inner.set_reuse_address(true)?;
+
+    inner.set_cloexec(true)?;
+
+    let listener = TcpListener::from(inner);
     let socket_addr = listener.local_addr()?;
 
-    Ok(socket_addr)
+    Ok((socket_addr, listener))
 }
