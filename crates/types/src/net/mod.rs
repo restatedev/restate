@@ -64,9 +64,9 @@ impl FromStr for AdvertisedAddress {
         }
 
         if let Some(stripped_address) = s.strip_prefix("unix:") {
-            return parse_uds(stripped_address);
+            parse_uds(stripped_address)
         } else {
-            return parse_http(s);
+            parse_http(s)
         }
     }
 }
