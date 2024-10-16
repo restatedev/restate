@@ -44,6 +44,7 @@ use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::{Configuration, StorageOptions};
 use restate_types::epoch::EpochMetadata;
+use restate_types::health::HealthStatus;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::Live;
 use restate_types::live::LiveLoad;
@@ -61,6 +62,7 @@ use restate_types::net::partition_processor_manager::{
     CreateSnapshotRequest, ProcessorsStateResponse,
 };
 use restate_types::partition_table::PartitionTable;
+use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::Schema;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
@@ -80,6 +82,7 @@ use crate::PartitionProcessorBuilder;
 
 pub struct PartitionProcessorManager<T> {
     task_center: TaskCenter,
+    health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
     running_partition_processors: BTreeMap<PartitionId, ProcessorState>,
     name_cache: BTreeMap<PartitionId, &'static str>,
@@ -358,6 +361,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_center: TaskCenter,
+        health_status: HealthStatus<WorkerStatus>,
         updateable_config: Live<Configuration>,
         metadata: Metadata,
         metadata_store_client: MetadataStoreClient,
@@ -373,6 +377,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
         Self {
             task_center,
+            health_status,
             updateable_config,
             running_partition_processors: BTreeMap::default(),
             name_cache: Default::default(),
@@ -476,6 +481,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             watchdog.run(),
         )?;
 
+        self.health_status.update(WorkerStatus::Ready);
         loop {
             tokio::select! {
                 Some(command) = self.rx.recv() => {
@@ -490,6 +496,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     }
                 }
                 _ = &mut shutdown => {
+                    self.health_status.update(WorkerStatus::Unknown);
                     return Ok(());
                 }
             }

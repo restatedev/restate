@@ -9,18 +9,20 @@
 // by the Apache License, Version 2.0.
 
 use codederror::CodedError;
-use restate_core::network::TransportConnect;
 use tokio::sync::oneshot;
 
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
+use restate_core::network::TransportConnect;
 use restate_core::{cancellation_watcher, task_center, Metadata, MetadataKind};
 use restate_core::{ShutdownError, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::Configuration;
+use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::subscriptions::SubscriptionResolver;
 use restate_types::schema::Schema;
 use restate_types::Version;
@@ -66,7 +68,9 @@ pub struct WorkerRole<T> {
 }
 
 impl<T: TransportConnect> WorkerRole<T> {
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
+        health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
         updateable_config: Live<Configuration>,
         router_builder: &mut MessageRouterBuilder,
@@ -77,6 +81,7 @@ impl<T: TransportConnect> WorkerRole<T> {
     ) -> Result<Self, WorkerRoleBuildError> {
         let worker = Worker::create(
             updateable_config,
+            health_status,
             metadata.clone(),
             networking,
             bifrost,
