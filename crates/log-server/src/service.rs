@@ -9,16 +9,18 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::Context;
-use restate_types::logs::RecordCache;
 use tracing::{debug, info, instrument};
 
 use restate_core::network::MessageRouterBuilder;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::Configuration;
+use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
+use restate_types::protobuf::common::LogServerStatus;
 use restate_types::GenerationalNodeId;
 
 use crate::error::LogServerBuildError;
@@ -29,6 +31,7 @@ use crate::network::RequestPump;
 use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
 
 pub struct LogServerService {
+    health_status: HealthStatus<LogServerStatus>,
     updateable_config: Live<Configuration>,
     task_center: TaskCenter,
     metadata: Metadata,
@@ -39,6 +42,7 @@ pub struct LogServerService {
 
 impl LogServerService {
     pub async fn create(
+        health_status: HealthStatus<LogServerStatus>,
         updateable_config: Live<Configuration>,
         task_center: TaskCenter,
         metadata: Metadata,
@@ -47,6 +51,7 @@ impl LogServerService {
         router_builder: &mut MessageRouterBuilder,
     ) -> Result<Self, LogServerBuildError> {
         describe_metrics();
+        health_status.update(LogServerStatus::StartingUp);
 
         let request_processor = RequestPump::new(
             task_center.clone(),
@@ -56,6 +61,7 @@ impl LogServerService {
         );
 
         Ok(Self {
+            health_status,
             updateable_config,
             task_center,
             metadata,
@@ -67,6 +73,7 @@ impl LogServerService {
 
     pub async fn start(self, mut metadata_writer: MetadataWriter) -> anyhow::Result<()> {
         let LogServerService {
+            health_status,
             updateable_config,
             task_center,
             metadata,
@@ -86,7 +93,7 @@ impl LogServerService {
 
         // 2. Fire up the log store.
         let mut log_store = log_store_builder
-            .start(&task_center)
+            .start(&task_center, health_status.clone())
             .await
             .context("Couldn't start log-server's log store")?;
 
@@ -103,7 +110,7 @@ impl LogServerService {
             TaskKind::SystemService,
             "log-server",
             None,
-            request_pump.run(log_store, storage_state),
+            request_pump.run(health_status, log_store, storage_state),
         )?;
         Ok(())
     }

@@ -40,7 +40,9 @@ use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_types::config::Configuration;
+use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::Schema;
 
 pub use self::error::*;
@@ -101,8 +103,10 @@ pub struct Worker<T> {
 }
 
 impl<T: TransportConnect> Worker<T> {
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         updateable_config: Live<Configuration>,
+        health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
         networking: Networking<T>,
         bifrost: Bifrost,
@@ -111,6 +115,7 @@ impl<T: TransportConnect> Worker<T> {
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
+        health_status.update(WorkerStatus::StartingUp);
 
         let ingress_dispatcher = IngressDispatcher::new(bifrost.clone());
         router_builder.add_message_handler(ingress_dispatcher.clone());
@@ -144,6 +149,7 @@ impl<T: TransportConnect> Worker<T> {
 
         let partition_processor_manager = PartitionProcessorManager::new(
             task_center(),
+            health_status,
             updateable_config.clone(),
             metadata.clone(),
             metadata_store_client,
