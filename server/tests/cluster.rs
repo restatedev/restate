@@ -118,6 +118,10 @@ async fn replicated_loglet() -> googletest::Result<()> {
         3,
     );
 
+    let regex: Regex = "PartitionProcessor starting up".parse()?;
+    let mut partition_processors_starting_up: Vec<_> =
+        (1..=3).map(|idx| nodes[idx].lines(regex.clone())).collect();
+
     let cluster = Cluster::builder()
         .cluster_name("cluster-1")
         .nodes(nodes)
@@ -125,14 +129,6 @@ async fn replicated_loglet() -> googletest::Result<()> {
         .build()
         .start()
         .await?;
-
-    // there is still a chance for a race condition because we cannot register the regex before we
-    // create the cluster and we only start tracking the log lines once we register the regex.
-    // If this should become an issue, then we need to add this feature.
-    let regex: Regex = "PartitionProcessor starting up".parse()?;
-    let mut partition_processors_starting_up: Vec<_> = (1..=3)
-        .map(|idx| cluster.nodes[idx].lines(regex.clone()))
-        .collect();
 
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 
