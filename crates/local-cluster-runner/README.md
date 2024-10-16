@@ -21,8 +21,18 @@ The cluster runner adds some extra files to the base dir:
 `LOCAL_CLUSTER_RUNNER_FORWARD_LOGS=true` will write all logs from the nodes out to stderr.
 
 ## Examples
-The local cluster runner can be used as a library, as shown in [`examples/two_nodes_and_metadata.rs`](./examples/two_nodes_and_metadata.rs).
-You can run this example with
-`cargo run --example two_nodes_and_metadata -- --nocapture`.
+The local cluster runner can be used as a library, as shown in [`examples/three_nodes_and_metadata.rs`](./examples/three_nodes_and_metadata).
+You can run this example with:
+
+```shell
+cargo run --example three_nodes_and_metadata -- --nocapture
+````
 
 You can watch node logs with `tail -f restate-data/*/restate.log`
+
+To interact with the running cluster using `restatectl`, use the following configuration:
+
+```shell
+export RESTATE_CLUSTER_CONTROLLER_ADDRESS=unix:restate-data/metadata-node/node.sock
+export RESTATE_METADATA_ADDRESS=unix:restate-data/metadata.sock
+```
