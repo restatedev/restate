@@ -101,6 +101,7 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_status.remove("invoked_by_id").expect("invoked_by_id should exist"),
         sys_invocation_status.remove("invoked_by_target").expect("invoked_by_target should exist"),
         sys_invocation_status.remove("pinned_deployment_id").expect("pinned_deployment_id should exist"),
+        sys_invocation_status.remove("pinned_service_protocol_version").expect("pinned_service_protocol_version should exist"),
         sys_invocation_status.remove("trace_id").expect("trace_id should exist"),
         sys_invocation_status.remove("journal_size").expect("journal_size should exist"),
         sys_invocation_status.remove("created_at").expect("created_at should exist"),

@@ -67,6 +67,10 @@ define_table!(sys_invocation_status(
     /// this invocation.
     pinned_deployment_id: DataType::LargeUtf8,
 
+    /// The negotiated protocol version used for this invocation.
+    /// This gets set after the first journal entry has been stored for this invocation.
+    pinned_service_protocol_version: DataType::UInt32,
+
     /// The ID of the trace that is assigned to this invocation. Only relevant when tracing is
     /// enabled.
     trace_id: DataType::LargeUtf8,
