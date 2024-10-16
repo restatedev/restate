@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, TransportConnect};
@@ -497,7 +497,7 @@ impl<'a> FindTailOnNode<'a> {
                         }
                         // unexpected statuses
                         Status::SequencerMismatch | Status::OutOfBounds | Status::Malformed => {
-                            error!(
+                            warn!(
                                 loglet_id = %self.loglet_id,
                                 peer = %self.node_id,
                                 "Unexpected status from log-server when calling GetLogletInfo: {:?}",
@@ -508,9 +508,11 @@ impl<'a> FindTailOnNode<'a> {
                     }
                 }
                 Ok(Err(RpcError::SendError(e))) => {
-                    debug!(
+                    trace!(
                         "Failed to get loglet info from node_id={} for loglet_id={}: {:?}",
-                        self.node_id, self.loglet_id, e.original
+                        self.node_id,
+                        self.loglet_id,
+                        e.original
                     );
                 }
                 Ok(Err(RpcError::Shutdown(_))) => {
@@ -518,7 +520,7 @@ impl<'a> FindTailOnNode<'a> {
                     return (self.node_id, NodeTailStatus::Unknown);
                 }
                 Err(_timeout_error) => {
-                    debug!(
+                    trace!(
                         "Timeout when getting loglet info from node_id={} for loglet_id={}. Configured timeout={:?} ",
                         self.node_id, self.loglet_id, request_timeout
                     );
@@ -612,7 +614,7 @@ impl WaitForTailOnNode {
                     }
                 }
                 Ok(Err(RpcError::SendError(e))) => {
-                    debug!(
+                    trace!(
                         "Failed to watch loglet tail updates from node_id={} for loglet_id={}: {:?}",
                         self.node_id, self.loglet_id, e.original
                     );
@@ -622,7 +624,7 @@ impl WaitForTailOnNode {
                     return (self.node_id, NodeTailStatus::Unknown);
                 }
                 Err(_timeout_error) => {
-                    debug!(
+                    trace!(
                         "Timeout when attempting to watch loglet tail updates from node_id={} for loglet_id={}. Configured timeout={:?} ",
                         self.node_id, self.loglet_id, request_timeout
                     );
