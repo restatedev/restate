@@ -31,6 +31,20 @@ service NodeSvc {
 message IdentResponse {
   restate.common.NodeStatus status = 1;
   restate.common.NodeId node_id = 2;
+  string cluster_name = 3;
+  // indicates which roles are enabled on this node
+  repeated string roles = 4;
+  // Age of the running node in seconds (how many seconds since the daemon
+  // started)
+  uint64 age_s = 5;
+  restate.common.AdminStatus admin_status = 6;
+  restate.common.WorkerStatus worker_status = 7;
+  restate.common.LogServerStatus log_server_status = 8;
+  restate.common.MetadataServerStatus metadata_server_status = 9;
+  uint32 nodes_config_version = 10;
+  uint32 logs_version = 11;
+  uint32 schema_version = 12;
+  uint32 partition_table_version = 13;
 }
 
 message StorageQueryRequest { string query = 1; }

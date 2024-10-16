@@ -152,6 +152,7 @@ impl TaskCenterBuilder {
         metric_definitions::describe_metrics();
         Ok(TaskCenter {
             inner: Arc::new(TaskCenterInner {
+                start_time: Instant::now(),
                 default_runtime_handle: self.default_runtime_handle.unwrap(),
                 default_runtime: self.default_runtime,
                 ingress_runtime_handle: self.ingress_runtime_handle.unwrap(),
@@ -199,6 +200,11 @@ impl TaskCenter {
     pub fn managed_runtime_metrics(&self) -> Vec<(&'static str, RuntimeMetrics)> {
         let guard = self.inner.managed_runtimes.lock();
         guard.iter().map(|(k, v)| (*k, v.metrics())).collect()
+    }
+
+    /// How long has the task-center been running?
+    pub fn age(&self) -> Duration {
+        self.inner.start_time.elapsed()
     }
 
     /// Submit telemetry for all runtimes to metrics recorder
@@ -896,6 +902,7 @@ struct TaskCenterInner {
     default_runtime_handle: tokio::runtime::Handle,
     ingress_runtime_handle: tokio::runtime::Handle,
     managed_runtimes: Mutex<HashMap<&'static str, Arc<RuntimeHandle>>>,
+    start_time: Instant,
     /// We hold on to the owned Runtime to ensure it's dropped when task center is dropped. If this
     /// is None, it means that it's the responsibility of the Handle owner to correctly drop
     /// tokio's runtime after dropping the task center.

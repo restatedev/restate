@@ -16,7 +16,9 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use futures::StreamExt as FutureStreamExt;
 use metrics::histogram;
+use restate_types::health::HealthStatus;
 use restate_types::net::log_server::{Seal, Store, Trim};
+use restate_types::protobuf::common::LogServerStatus;
 use restate_types::time::NanosSinceEpoch;
 use restate_types::GenerationalNodeId;
 use rocksdb::{BoundColumnFamily, WriteBatch};
@@ -72,6 +74,7 @@ pub(crate) struct LogStoreWriter {
     buffer: BytesMut,
     updateable_options: BoxedLiveLoad<LogServerOptions>,
     record_cache: RecordCache,
+    health_status: HealthStatus<LogServerStatus>,
 }
 
 impl LogStoreWriter {
@@ -79,6 +82,7 @@ impl LogStoreWriter {
         rocksdb: Arc<RocksDb>,
         updateable_options: BoxedLiveLoad<LogServerOptions>,
         record_cache: RecordCache,
+        health_status: HealthStatus<LogServerStatus>,
     ) -> Self {
         Self {
             rocksdb,
@@ -86,6 +90,7 @@ impl LogStoreWriter {
             buffer: BytesMut::with_capacity(INITIAL_SERDE_BUFFER_SIZE),
             updateable_options,
             record_cache,
+            health_status,
         }
     }
 
@@ -282,6 +287,7 @@ impl LogStoreWriter {
 
         if let Err(e) = result {
             error!("Failed to commit write batch to rocksdb log-store: {}", e);
+            self.health_status.update(LogServerStatus::Failsafe);
             self.send_acks(Err(OperationError::terminal(e)));
             return;
         }

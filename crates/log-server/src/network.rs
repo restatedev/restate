@@ -25,9 +25,11 @@ use xxhash_rust::xxh3::Xxh3Builder;
 use restate_core::network::{Incoming, MessageRouterBuilder};
 use restate_core::{cancellation_watcher, Metadata, TaskCenter};
 use restate_types::config::Configuration;
+use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::net::log_server::*;
 use restate_types::nodes_config::StorageState;
+use restate_types::protobuf::common::LogServerStatus;
 use restate_types::replicated_loglet::ReplicatedLogletId;
 
 use crate::loglet_worker::{LogletWorker, LogletWorkerHandle};
@@ -91,7 +93,12 @@ impl RequestPump {
     }
 
     /// Starts the main processing loop, exits on error or shutdown.
-    pub async fn run<S>(self, log_store: S, _storage_state: StorageState) -> anyhow::Result<()>
+    pub async fn run<S>(
+        self,
+        health_status: HealthStatus<LogServerStatus>,
+        log_store: S,
+        _storage_state: StorageState,
+    ) -> anyhow::Result<()>
     where
         S: LogStore + Clone + Sync + Send + 'static,
     {
@@ -118,6 +125,8 @@ impl RequestPump {
         let mut loglet_workers =
             HashMap::with_capacity_and_hasher(DEFAULT_WRITERS_CAPACITY, Xxh3Builder::default());
 
+        health_status.update(LogServerStatus::Ready);
+
         // We need to dispatch this work to the right loglet worker as quickly as possible
         // to avoid blocking the message handler.
         //
@@ -128,6 +137,7 @@ impl RequestPump {
             tokio::select! {
                 biased;
                 _ = &mut shutdown => {
+                    health_status.update(LogServerStatus::Stopping);
                     // stop accepting messages
                     drop(wait_for_tail_stream);
                     drop(store_stream);
@@ -137,6 +147,7 @@ impl RequestPump {
                     drop(get_records_stream);
                     // shutdown all workers.
                     Self::shutdown(loglet_workers).await;
+                    health_status.update(LogServerStatus::Unknown);
                     return Ok(());
                 }
                 Some(get_digest) = get_digest_stream.next() => {

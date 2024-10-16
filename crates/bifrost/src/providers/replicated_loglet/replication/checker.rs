@@ -12,18 +12,8 @@ use std::collections::{hash_map, HashMap};
 
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::replicated_loglet::{NodeSet, ReplicationProperty};
+use restate_types::Merge;
 use restate_types::PlainNodeId;
-
-/// Trait for merging two attributes
-pub trait Merge {
-    fn merge(&mut self, other: Self);
-}
-
-impl Merge for bool {
-    fn merge(&mut self, other: Self) {
-        *self |= other;
-    }
-}
 
 /// NodeSetChecker maintains a set of nodes that can be tagged with
 /// an attribute, and provides an API for querying the replication properties of
