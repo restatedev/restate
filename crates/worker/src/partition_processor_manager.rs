@@ -625,6 +625,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
 
         match control_processor.command {
             ProcessorCommand::Stop => {
+                debug!("Asked by cluster-controller to stop partition");
                 if let Some(processor) = self.running_partition_processors.remove(&partition_id) {
                     if let Some(handle) = self.task_center.cancel_task(processor.task_id) {
                         if let Err(err) = handle.await {
@@ -636,6 +637,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 }
             }
             ProcessorCommand::Follower => {
+                debug!("Asked by cluster-controller to demote partition to follower");
                 if let Some(state) = self.running_partition_processors.get_mut(&partition_id) {
                     // if we error here, then the system is shutting down
                     state.step_down()?;
@@ -654,6 +656,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 }
             }
             ProcessorCommand::Leader => {
+                debug!("Asked by cluster-controller to promote partition to leader");
                 if let Some(state) = self.running_partition_processors.get_mut(&partition_id) {
                     state
                         .run_for_leader(
