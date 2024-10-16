@@ -1,3 +1,4 @@
+use std::num::NonZeroU16;
 use std::time::Duration;
 
 use enumset::enum_set;
@@ -10,6 +11,7 @@ use restate_local_cluster_runner::{
     node::{BinarySource, Node},
     shutdown,
 };
+use restate_types::logs::metadata::ProviderKind::Replicated;
 use restate_types::{
     config::{Configuration, LogFormat},
     nodes_config::Role,
@@ -21,12 +23,15 @@ async fn main() {
 
     let mut base_config = Configuration::default();
     base_config.common.log_format = LogFormat::Compact;
+    base_config.common.log_filter = "warn,restate=debug".to_string();
+    base_config.common.bootstrap_num_partitions = NonZeroU16::new(2).unwrap();
+    base_config.bifrost.default_provider = Replicated;
 
     let nodes = Node::new_test_nodes_with_metadata(
         base_config,
         BinarySource::CargoTest,
-        enum_set!(Role::Worker),
-        2,
+        enum_set!(Role::Worker | Role::LogServer),
+        3,
     );
 
     let cluster = Cluster::builder()
