@@ -36,8 +36,8 @@ pub fn random_socket_address() -> io::Result<(SocketAddr, TcpListener)> {
         Some(socket2::Protocol::TCP),
     )?;
 
-    #[cfg(not(windows))]
-    inner.set_reuse_address(true)?;
+    // #[cfg(not(windows))]
+    // inner.set_reuse_address(true)?;
 
     inner.set_cloexec(true)?;
     inner.bind(&RANDOM_SOCKET_ADDRESS.into())?;
