@@ -21,7 +21,7 @@ use futures::{future, stream, StreamExt, TryStreamExt};
 use metrics::counter;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
@@ -239,14 +239,37 @@ where
             }),
         );
 
-        self.bifrost
-            .append(
-                LogId::from(self.partition_processor_metadata.partition_id),
-                Arc::new(envelope),
-            )
-            .await?;
+        let envelope = Arc::new(envelope);
+        let log_id = LogId::from(self.partition_processor_metadata.partition_id);
 
-        Ok(())
+        loop {
+            // todo: Retry should happen in the background to avoid blocking us from accepting
+            // further instructions/commands from PP manager.
+            match self.bifrost.append(log_id, Arc::clone(&envelope)).await {
+                // only stop on shutdown.
+                Err(e @ restate_bifrost::Error::Shutdown(_)) => return Err(e.into()),
+                Err(e) => {
+                    info!(
+                        %log_id,
+                        %leader_epoch,
+                        ?e,
+                        "Failed to write the announce leadership message to bifrost. Retrying."
+                    );
+                    // todo: retry with backoff. At the moment, this is very aggressive (intentionally)
+                    // to avoid blocking for too long.
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Ok(lsn) => {
+                    debug!(
+                        %log_id,
+                        %leader_epoch,
+                        %lsn,
+                        "Written announce leadership message to bifrost."
+                    );
+                    return Ok(());
+                }
+            }
+        }
     }
 
     pub async fn step_down(&mut self) -> Result<(), Error> {
@@ -284,7 +307,11 @@ where
             State::Leader(leader_state) => {
                 match leader_state.leader_epoch.cmp(&announce_leader.leader_epoch) {
                     Ordering::Less => {
-                        debug!("Every reign must end. Stepping down and becoming an obedient follower.");
+                        debug!(
+                            my_leadership_epoch = %leader_state.leader_epoch,
+                            new_leader_epoch = %announce_leader.leader_epoch,
+                            "Every reign must end. Stepping down and becoming an obedient follower."
+                        );
                         self.become_follower().await?;
                     }
                     Ordering::Equal => {

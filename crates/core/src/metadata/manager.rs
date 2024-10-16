@@ -152,7 +152,7 @@ impl MetadataMessageHandler {
             );
             return;
         }
-        debug!(
+        trace!(
             kind = metadata_name,
             version = %metadata.version(),
             requested_min_version = ?version,
@@ -184,7 +184,7 @@ impl MessageHandler for MetadataMessageHandler {
         let (reciprocal, msg) = envelope.split();
         match msg {
             MetadataMessage::MetadataUpdate(update) => {
-                info!(
+                debug!(
                     kind  = %update.container.kind(),
                     version = %update.container.version(),
                     peer = %reciprocal.peer(),
@@ -200,7 +200,7 @@ impl MessageHandler for MetadataMessageHandler {
                 }
             }
             MetadataMessage::GetMetadataRequest(request) => {
-                debug!(
+                trace!(
                     kind  = %request.metadata_kind,
                     requested_min_version = ?request.min_version,
                     peer = %reciprocal.peer(),

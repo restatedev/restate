@@ -531,7 +531,12 @@ where
         self.status.last_applied_log_lsn = Some(lsn);
         self.status.last_record_applied_at = Some(MillisSinceEpoch::now());
         match self.status.replay_status {
-            ReplayStatus::CatchingUp if self.status.target_tail_lsn.is_some_and(|v| lsn >= v) => {
+            ReplayStatus::CatchingUp
+                if self
+                    .status
+                    .target_tail_lsn
+                    .is_some_and(|tail| lsn.next() >= tail) =>
+            {
                 // finished catching up
                 self.status.replay_status = ReplayStatus::Active;
             }

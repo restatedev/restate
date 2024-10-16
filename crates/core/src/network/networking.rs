@@ -11,7 +11,7 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use tracing::{info, instrument, trace};
+use tracing::{debug, instrument, trace};
 
 use restate_types::config::NetworkingOptions;
 use restate_types::net::codec::{Targeted, WireEncode};
@@ -132,6 +132,12 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
         let target_is_generational = msg.peer().is_generational();
         let original_peer = *msg.peer();
         let mut attempts = 0;
+        let max_attempts: usize = self
+            .options
+            .connect_retry_policy
+            .max_attempts()
+            .unwrap_or(NonZeroUsize::MAX)
+            .into(); // max_attempts() be Some at this point
         let mut retry_policy = self.options.connect_retry_policy.iter();
         let mut peer_as_generational = msg.peer().as_generational();
         loop {
@@ -150,13 +156,9 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
             };
 
             attempts += 1;
+            let next_attempt = attempts + 1;
             if attempts > 1 {
                 if let Some(next_retry_interval) = retry_policy.next() {
-                    trace!(
-                        attempt = ?attempts,
-                        delay = ?next_retry_interval,
-                        "Delaying retry",
-                    );
                     tokio::time::sleep(next_retry_interval).await;
                 } else {
                     let e = NetworkError::Unavailable(format!(
@@ -181,16 +183,15 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                         | e @ NetworkError::ConnectError(_)
                         | e @ NetworkError::ConnectionClosed,
                     ) => {
-                        info!(
-                            "Connection to node {} failed with {}, next retry is attempt {}/{}",
-                            msg.peer(),
-                            e,
-                            attempts + 1,
-                            self.options
-                                .connect_retry_policy
-                                .max_attempts()
-                                .unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
-                        );
+                        if next_attempt >= max_attempts {
+                            trace!(
+                                "Connection to node {} failed with {}, next retry is attempt {}/{}",
+                                msg.peer(),
+                                e,
+                                next_attempt,
+                                max_attempts,
+                            );
+                        }
                         continue;
                     }
                     // terminal errors
@@ -202,16 +203,15 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                                 NetworkError::OldPeerGeneration(e),
                             ));
                         }
-                        info!(
-                            "Connection to node {} failed with {}, next retry is attempt {}/{}",
-                            msg.peer(),
-                            e,
-                            attempts + 1,
-                            self.options
-                                .connect_retry_policy
-                                .max_attempts()
-                                .unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
-                        );
+                        if next_attempt >= max_attempts {
+                            trace!(
+                                "Connection to node {} failed with {}, next retry is attempt {}/{}",
+                                msg.peer(),
+                                e,
+                                next_attempt,
+                                max_attempts,
+                            );
+                        }
                         continue;
                     }
                     Err(e) => {
@@ -232,12 +232,15 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                     original,
                     source: NetworkError::ConnectionClosed,
                 }) => {
-                    info!(
-                        "Sending message to node {} failed due to connection reset, next retry is attempt {}/{}",
-                        peer_as_generational.unwrap(),
-                        attempts + 1,
-                        self.options.connect_retry_policy.max_attempts().unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
-                    );
+                    if next_attempt >= max_attempts {
+                        debug!(
+                            "Sending message to node {} failed due to connection reset, next retry is attempt {}/{}",
+                            peer_as_generational.unwrap(),
+                            next_attempt,
+                            max_attempts,
+                        );
+                    }
+
                     msg = original.forget_connection();
                     continue;
                 }
