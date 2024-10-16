@@ -177,16 +177,16 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 metrics::counter!(BIFROST_SEQ_RECORDS_COMMITTED_BYTES)
                     .increment(self.records.estimated_encode_size() as u64);
 
-                tracing::debug!("Appender task completed");
+                tracing::trace!("SequencerAppender task completed");
             }
             SequencerAppenderState::Cancelled => {
-                tracing::debug!("Appender task cancelled");
+                tracing::trace!("SequencerAppender task cancelled");
                 if let Some(commit_resolver) = self.commit_resolver.take() {
                     commit_resolver.error(AppendError::Shutdown(ShutdownError));
                 }
             }
             SequencerAppenderState::Sealed => {
-                tracing::debug!("Appender ended because of sealing");
+                tracing::debug!("SequencerAppender ended because of sealing");
                 if let Some(commit_resolver) = self.commit_resolver.take() {
                     commit_resolver.sealed();
                 }
