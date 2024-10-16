@@ -131,6 +131,7 @@ struct ProcessorState {
     _created_at: MillisSinceEpoch,
     _key_range: RangeInclusive<PartitionKey>,
     planned_mode: RunMode,
+    running_for_leadership_with_epoch: Option<LeaderEpoch>,
     handle: PartitionProcessorHandle,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
 }
@@ -149,6 +150,7 @@ impl ProcessorState {
             _created_at: MillisSinceEpoch::now(),
             _key_range: key_range,
             planned_mode: RunMode::Follower,
+            running_for_leadership_with_epoch: None,
             handle,
             watch_rx,
         }
@@ -159,6 +161,7 @@ impl ProcessorState {
             self.handle.step_down()?;
         }
 
+        self.running_for_leadership_with_epoch = None;
         self.planned_mode = RunMode::Follower;
 
         Ok(())
@@ -169,9 +172,24 @@ impl ProcessorState {
         metadata_store_client: MetadataStoreClient,
         node_id: GenerationalNodeId,
     ) -> Result<(), Error> {
-        if self.planned_mode != RunMode::Leader {
+        // run for leadership if there is no ongoing attempt or our current attempt is proven to be
+        // unsuccessful because we have already seen a higher leader epoch.
+        if self.running_for_leadership_with_epoch.is_none()
+            || self
+                .running_for_leadership_with_epoch
+                .is_some_and(|my_leader_epoch| {
+                    my_leader_epoch
+                        < self
+                            .watch_rx
+                            .borrow()
+                            .last_observed_leader_epoch
+                            .unwrap_or(LeaderEpoch::INITIAL)
+                })
+        {
+            // todo alternative could be to let the CC decide the leader epoch
             let leader_epoch =
                 Self::obtain_next_epoch(metadata_store_client, self.partition_id, node_id).await?;
+            self.running_for_leadership_with_epoch = Some(leader_epoch);
             self.handle.run_for_leader(leader_epoch)?;
         }
 
