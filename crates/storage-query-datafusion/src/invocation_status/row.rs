@@ -110,6 +110,12 @@ fn fill_in_flight_invocation_metadata(
     // journal_metadata and stats are filled by other functions
     if let Some(pinned_deployment) = meta.pinned_deployment {
         row.pinned_deployment_id(pinned_deployment.deployment_id.to_string());
+        row.pinned_service_protocol_version(
+            pinned_deployment
+                .service_protocol_version
+                .as_repr()
+                .unsigned_abs(),
+        );
     }
     fill_invoked_by(row, output, meta.source)
 }
