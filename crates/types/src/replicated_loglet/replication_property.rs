@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{btree_map, BTreeMap};
+use std::fmt::{Display, Formatter};
 use std::num::NonZeroU8;
 
 use enum_map::Enum;
@@ -126,6 +127,31 @@ impl ReplicationProperty {
         self.0
             .last_key_value()
             .expect("must have at least one scope")
+    }
+}
+
+impl Display for ReplicationProperty {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{")?;
+        let mut iter = self.0.iter();
+        if let Some((scope, replication_factor)) = iter.next() {
+            write!(
+                f,
+                "{}: {}",
+                format!("{:?}", scope).to_lowercase(),
+                replication_factor
+            )?;
+            for (scope, replication_factor) in iter {
+                write!(
+                    f,
+                    ", {}: {}",
+                    format!("{:?}", scope).to_lowercase(),
+                    replication_factor
+                )?;
+            }
+        }
+        write!(f, "}}")?;
+        Ok(())
     }
 }
 

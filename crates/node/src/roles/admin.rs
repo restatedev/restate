@@ -10,6 +10,9 @@
 
 use std::time::Duration;
 
+use restate_types::health::HealthStatus;
+use tokio::sync::oneshot;
+
 use codederror::CodedError;
 use restate_admin::cluster_controller;
 use restate_admin::cluster_controller::ClusterControllerHandle;
@@ -28,8 +31,8 @@ use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::live::Live;
 use restate_types::net::AdvertisedAddress;
+use restate_types::protobuf::common::AdminStatus;
 use restate_types::retries::RetryPolicy;
-use tokio::sync::oneshot;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {
@@ -51,7 +54,9 @@ pub struct AdminRole<T> {
 }
 
 impl<T: TransportConnect> AdminRole<T> {
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
+        health_status: HealthStatus<AdminStatus>,
         task_center: TaskCenter,
         updateable_config: Live<Configuration>,
         metadata: Metadata,
@@ -60,6 +65,7 @@ impl<T: TransportConnect> AdminRole<T> {
         router_builder: &mut MessageRouterBuilder,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, AdminRoleBuildError> {
+        health_status.update(AdminStatus::StartingUp);
         let config = updateable_config.pinned();
 
         // Total duration roughly 1s
@@ -77,6 +83,7 @@ impl<T: TransportConnect> AdminRole<T> {
 
         let controller = cluster_controller::Service::new(
             updateable_config.clone(),
+            health_status,
             task_center,
             metadata,
             networking,

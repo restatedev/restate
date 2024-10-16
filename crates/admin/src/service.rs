@@ -70,19 +70,21 @@ where
         let query_state = Arc::new(state::QueryServiceState { node_svc_client });
         let router = axum::Router::new().merge(storage_query::create_router(query_state));
 
-        let router = router
-            // Merge meta API router
-            .merge(rest_api::create_router(rest_state))
-            .layer(
-                ServiceBuilder::new()
-                    .layer(HandleErrorLayer::new(|_| async {
-                        StatusCode::TOO_MANY_REQUESTS
-                    }))
-                    .layer(tower::load_shed::LoadShedLayer::new())
-                    .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-                        opts.concurrent_api_requests_limit(),
-                    )),
-            );
+        // Merge Web UI router
+        #[cfg(feature = "serve-web-ui")]
+        let router = router.merge(crate::web_ui::web_ui_router());
+
+        // Merge meta API router
+        let router = router.merge(rest_api::create_router(rest_state)).layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(|_| async {
+                    StatusCode::TOO_MANY_REQUESTS
+                }))
+                .layer(tower::load_shed::LoadShedLayer::new())
+                .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
+                    opts.concurrent_api_requests_limit(),
+                )),
+        );
 
         let service = hyper_util::service::TowerToHyperService::new(router.into_service());
 
@@ -90,6 +92,8 @@ where
             &BindAddress::Socket(opts.bind_address),
             service,
             "admin-api-server",
+            || (),
+            || (),
         )
         .await
         .map_err(Into::into)

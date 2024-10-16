@@ -17,12 +17,14 @@ use tracing::trace;
 use restate_bifrost::loglet::OperationError;
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::config::LogServerOptions;
+use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
     Digest, DigestEntry, Gap, GetDigest, GetRecords, LogServerResponseHeader, MaybeRecord,
     RecordStatus, Records, Seal, Store, Trim,
 };
+use restate_types::protobuf::common::LogServerStatus;
 use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::GenerationalNodeId;
 
@@ -36,6 +38,7 @@ use crate::rocksdb_logstore::keys::DataRecordKey;
 
 #[derive(Clone)]
 pub struct RocksDbLogStore {
+    pub(super) health_status: HealthStatus<LogServerStatus>,
     pub(super) _updateable_options: BoxedLiveLoad<LogServerOptions>,
     pub(super) rocksdb: Arc<RocksDb>,
     pub(super) writer_handle: RocksDbLogWriterHandle,
@@ -337,6 +340,7 @@ impl LogStore for RocksDbLogStore {
         // we reached the end (or an error)
         if let Err(e) = iterator.status() {
             // whoa, we have I/O errors, we should switch into failsafe mode (todo)
+            self.health_status.update(LogServerStatus::Failsafe);
             return Err(RocksDbLogStoreError::Rocksdb(e).into());
         }
 
@@ -464,6 +468,7 @@ impl LogStore for RocksDbLogStore {
         if read_pointer <= read_to {
             if let Err(e) = iterator.status() {
                 // whoa, we have I/O errors, we should switch into failsafe mode (todo)
+                self.health_status.update(LogServerStatus::Failsafe);
                 return Err(RocksDbLogStoreError::Rocksdb(e).into());
             }
         }
@@ -517,7 +522,7 @@ mod tests {
                     RecordCache::new(1_000_000),
                 )
                 .await?;
-                let log_store = builder.start(&tc).await?;
+                let log_store = builder.start(&tc, Default::default()).await?;
                 Result::Ok(log_store)
             })
             .await?;
@@ -551,8 +556,8 @@ mod tests {
     async fn test_load_loglet_state() -> Result<()> {
         let (tc, mut log_store) = setup().await?;
         // fresh/unknown loglet
-        let loglet_id_1 = ReplicatedLogletId::new(88);
-        let loglet_id_2 = ReplicatedLogletId::new(89);
+        let loglet_id_1 = ReplicatedLogletId::new_unchecked(88);
+        let loglet_id_2 = ReplicatedLogletId::new_unchecked(89);
         let sequencer_1 = GenerationalNodeId::new(5, 213);
         let sequencer_2 = GenerationalNodeId::new(2, 212);
 
@@ -642,8 +647,8 @@ mod tests {
     #[test(tokio::test(start_paused = true))]
     async fn test_digest() -> Result<()> {
         let (tc, mut log_store) = setup().await?;
-        let loglet_id_1 = ReplicatedLogletId::new(88);
-        let loglet_id_2 = ReplicatedLogletId::new(89);
+        let loglet_id_1 = ReplicatedLogletId::new_unchecked(88);
+        let loglet_id_2 = ReplicatedLogletId::new_unchecked(89);
         let sequencer_1 = GenerationalNodeId::new(5, 213);
         let sequencer_2 = GenerationalNodeId::new(2, 212);
 

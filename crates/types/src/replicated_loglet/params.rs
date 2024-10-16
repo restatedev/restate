@@ -9,15 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
 
+use itertools::Itertools;
 use rand::seq::SliceRandom;
 use serde_with::DisplayFromStr;
 
+use super::ReplicationProperty;
+use crate::logs::metadata::SegmentIndex;
+use crate::logs::LogId;
 use crate::nodes_config::NodesConfiguration;
 use crate::{GenerationalNodeId, PlainNodeId};
-
-use super::ReplicationProperty;
 
 /// Configuration parameters of a replicated loglet segment
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -63,15 +65,47 @@ impl ReplicatedLogletParams {
     derive_more::From,
     derive_more::Deref,
     derive_more::Into,
-    derive_more::Display,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
 pub struct ReplicatedLogletId(u64);
 
 impl ReplicatedLogletId {
-    pub const fn new(id: u64) -> Self {
+    /// Creates a new [`ReplicatedLogletId`] from a [`LogId`] and a [`SegmentIndex`]. The upper
+    /// 32 bits are the log_id and the lower are the segment_index.
+    pub fn new(log_id: LogId, segment_index: SegmentIndex) -> Self {
+        let id = u64::from(u32::from(log_id)) << 32 | u64::from(u32::from(segment_index));
         Self(id)
+    }
+
+    /// It's your responsibility that the value has the right meaning.
+    pub const fn new_unchecked(v: u64) -> Self {
+        Self(v)
+    }
+
+    /// Creates a new [`ReplicatedLogletId`] by incrementing the lower 32 bits (segment index part).
+    pub fn next(&self) -> Self {
+        assert!(
+            self.0 & 0xFFFFFFFF < u64::from(u32::MAX),
+            "Segment part must not overflow into the LogId part"
+        );
+        Self(self.0 + 1)
+    }
+
+    fn log_id(&self) -> LogId {
+        LogId::new(u32::try_from(self.0 >> 32).expect("upper 32 bits should fit into u32"))
+    }
+
+    fn segment_index(&self) -> SegmentIndex {
+        SegmentIndex::from(
+            u32::try_from(self.0 & 0xFFFFFFFF).expect("lower 32 bits should fit into u32"),
+        )
+    }
+}
+
+impl Display for ReplicatedLogletId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}_{}", self.log_id(), self.segment_index())
     }
 }
 
@@ -88,19 +122,6 @@ impl ReplicatedLogletId {
     derive_more::From,
 )]
 pub struct NodeSet(#[serde_as(as = "HashSet<DisplayFromStr>")] HashSet<PlainNodeId>);
-
-impl Display for NodeSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[")?;
-        for (i, id) in self.0.iter().enumerate() {
-            if i != 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{}", id)?;
-        }
-        write!(f, "]")
-    }
-}
 
 impl NodeSet {
     pub fn empty() -> Self {
@@ -225,6 +246,40 @@ impl<A: Into<PlainNodeId>> FromIterator<A> for NodeSet {
     }
 }
 
+impl Display for NodeSet {
+    /// The alternate format displays a *sorted* list of short-form plain node ids, suitable for human-friendly output.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match f.alternate() {
+            false => write_nodes(self, f),
+            true => write_nodes_sorted(self, f),
+        }
+    }
+}
+
+fn write_nodes(node_set: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "[")?;
+    let mut nodes = node_set.0.iter();
+    if let Some(node) = nodes.next() {
+        write!(f, "{}", node)?;
+        for node in nodes {
+            write!(f, ", {}", node)?;
+        }
+    }
+    write!(f, "]")
+}
+
+fn write_nodes_sorted(node_set: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "[")?;
+    let mut nodes = node_set.0.iter().sorted();
+    if let Some(node) = nodes.next() {
+        write!(f, "{}", node)?;
+        for node in nodes {
+            write!(f, ", {}", node)?;
+        }
+    }
+    write!(f, "]")
+}
+
 #[serde_with::serde_as]
 #[derive(
     serde::Serialize,
@@ -233,12 +288,12 @@ impl<A: Into<PlainNodeId>> FromIterator<A> for NodeSet {
     Clone,
     Eq,
     PartialEq,
-    derive_more::Deref,
     derive_more::AsRef,
+    derive_more::Deref,
     derive_more::DerefMut,
-    derive_more::IntoIterator,
     derive_more::Display,
     derive_more::Into,
+    derive_more::IntoIterator,
 )]
 pub struct EffectiveNodeSet(NodeSet);
 

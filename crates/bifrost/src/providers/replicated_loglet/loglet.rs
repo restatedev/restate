@@ -287,6 +287,7 @@ mod tests {
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
+    use restate_types::health::HealthStatus;
     use restate_types::live::Live;
     use restate_types::logs::Keys;
     use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicationProperty};
@@ -317,6 +318,7 @@ mod tests {
         let record_cache = RecordCache::new(1_000_000);
 
         let log_server = LogServerService::create(
+            HealthStatus::default(),
             config.clone(),
             node_env.tc.clone(),
             node_env.metadata.clone(),
@@ -365,7 +367,7 @@ mod tests {
     // ** Single-node replicated-loglet smoke tests **
     #[test(tokio::test(start_paused = true))]
     async fn test_append_local_sequencer_single_node() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new(122);
+        let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -403,7 +405,7 @@ mod tests {
     // ** Single-node replicated-loglet seal **
     #[test(tokio::test(start_paused = true))]
     async fn test_seal_local_sequencer_single_node() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new(122);
+        let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -445,7 +447,7 @@ mod tests {
     // ** Single-node replicated-loglet read-stream **
     #[test(tokio::test(start_paused = true))]
     async fn replicated_loglet_single_loglet_readstream() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new(122);
+        let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -461,7 +463,7 @@ mod tests {
 
     #[test(tokio::test(start_paused = true))]
     async fn replicated_loglet_single_append_after_seal() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new(122);
+        let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -477,7 +479,7 @@ mod tests {
 
     #[test(tokio::test(start_paused = true))]
     async fn replicated_loglet_single_append_after_seal_concurrent() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new(122);
+        let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -493,7 +495,7 @@ mod tests {
 
     #[test(tokio::test(start_paused = true))]
     async fn replicated_loglet_single_seal_empty() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new(122);
+        let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),

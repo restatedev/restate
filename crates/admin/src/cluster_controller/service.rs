@@ -17,17 +17,15 @@ use anyhow::anyhow;
 use codederror::CodedError;
 use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
+use restate_types::health::HealthStatus;
+use restate_types::protobuf::common::AdminStatus;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
-use super::cluster_state_refresher::{ClusterStateRefresher, ClusterStateWatcher};
-use crate::cluster_controller::logs_controller::LogsController;
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler::Scheduler;
 use restate_bifrost::{Bifrost, BifrostAdmin};
-use restate_core::metadata_store::MetadataStoreClient;
+use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{
     Incoming, MessageRouterBuilder, NetworkSender, Networking, TransportConnect,
@@ -41,10 +39,17 @@ use restate_types::config::{AdminOptions, Configuration};
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
 use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
+use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, Version};
+
+use super::cluster_state_refresher::{ClusterStateRefresher, ClusterStateWatcher};
+use crate::cluster_controller::logs_controller::LogsController;
+use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use crate::cluster_controller::scheduler::Scheduler;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -55,6 +60,7 @@ pub enum Error {
 
 pub struct Service<T> {
     task_center: TaskCenter,
+    health_status: HealthStatus<AdminStatus>,
     metadata: Metadata,
     networking: Networking<T>,
     incoming_messages: Pin<Box<dyn Stream<Item = Incoming<AttachRequest>> + Send + Sync + 'static>>,
@@ -75,8 +81,10 @@ impl<T> Service<T>
 where
     T: TransportConnect,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mut configuration: Live<Configuration>,
+        health_status: HealthStatus<AdminStatus>,
         task_center: TaskCenter,
         metadata: Metadata,
         networking: Networking<T>,
@@ -104,6 +112,7 @@ where
 
         Service {
             configuration,
+            health_status,
             task_center,
             metadata,
             networking,
@@ -221,11 +230,8 @@ impl<T: TransportConnect> Service<T> {
         bifrost: Bifrost,
         all_partitions_started_tx: Option<oneshot::Sender<()>>,
     ) -> anyhow::Result<()> {
-        // Make sure we have partition table before starting
-        let _ = self
-            .metadata
-            .wait_for_version(MetadataKind::PartitionTable, Version::MIN)
-            .await?;
+        self.init_partition_table().await?;
+
         let bifrost_admin =
             BifrostAdmin::new(&bifrost, &self.metadata_writer, &self.metadata_store_client);
 
@@ -248,7 +254,17 @@ impl<T: TransportConnect> Service<T> {
             )?;
         }
 
+        self.task_center.spawn_child(
+            TaskKind::SystemService,
+            "cluster-controller-metadata-sync",
+            None,
+            sync_cluster_controller_metadata(self.metadata.clone()),
+        )?;
+
+        let configuration = self.configuration.live_load();
+
         let mut scheduler = Scheduler::init(
+            configuration,
             self.task_center.clone(),
             self.metadata_store_client.clone(),
             self.networking.clone(),
@@ -256,20 +272,22 @@ impl<T: TransportConnect> Service<T> {
         .await?;
 
         let mut logs_controller = LogsController::init(
+            configuration,
             self.metadata.clone(),
             bifrost.clone(),
             self.metadata_store_client.clone(),
             self.metadata_writer.clone(),
-            self.configuration.live_load().bifrost.default_provider,
         )
         .await?;
 
         let mut observed_cluster_state = ObservedClusterState::default();
 
         let mut logs_watcher = self.metadata.watch(MetadataKind::Logs);
-        let mut partition_watcher = self.metadata.watch(MetadataKind::PartitionTable);
+        let mut partition_table_watcher = self.metadata.watch(MetadataKind::PartitionTable);
         let mut logs = self.metadata.updateable_logs_metadata();
         let mut partition_table = self.metadata.updateable_partition_table();
+
+        self.health_status.update(AdminStatus::Ready);
 
         loop {
             tokio::select! {
@@ -297,8 +315,12 @@ impl<T: TransportConnect> Service<T> {
                     // tell the scheduler about potentially newly provisioned logs
                     scheduler.on_logs_update(logs.live_load(), partition_table.live_load()).await?
                 }
-                Ok(_) = partition_watcher.changed() => {
-                    logs_controller.on_partition_table_update(partition_table.live_load())
+                Ok(_) = partition_table_watcher.changed() => {
+                    let partition_table = partition_table.live_load();
+                    let logs = logs.live_load();
+
+                    logs_controller.on_partition_table_update(partition_table);
+                    scheduler.on_logs_update(logs, partition_table).await?;
                 }
                 Some(cmd) = self.command_rx.recv() => {
                     self.on_cluster_cmd(cmd, bifrost_admin).await;
@@ -314,10 +336,41 @@ impl<T: TransportConnect> Service<T> {
                     (self.log_trim_interval, self.log_trim_threshold) = Self::create_log_trim_interval(options);
                 }
                 _ = &mut shutdown => {
+                    self.health_status.update(AdminStatus::Unknown);
                     return Ok(());
                 }
             }
         }
+    }
+
+    async fn init_partition_table(&mut self) -> anyhow::Result<()> {
+        let configuration = self.configuration.live_load();
+
+        let partition_table = retry_on_network_error(
+            configuration.common.network_error_retry_policy.clone(),
+            || {
+                self.metadata_store_client
+                    .get_or_insert(PARTITION_TABLE_KEY.clone(), || {
+                        let partition_table = if configuration.common.auto_provision_partitions {
+                            PartitionTable::with_equally_sized_partitions(
+                                Version::MIN,
+                                configuration.common.bootstrap_num_partitions(),
+                            )
+                        } else {
+                            PartitionTable::with_equally_sized_partitions(Version::MIN, 0)
+                        };
+
+                        debug!("Initializing the partition table with '{partition_table:?}'");
+
+                        partition_table
+                    })
+            },
+        )
+        .await?;
+
+        self.metadata_writer.update(partition_table).await?;
+
+        Ok(())
     }
 
     async fn trim_logs(
@@ -488,6 +541,35 @@ impl<T: TransportConnect> Service<T> {
     }
 }
 
+async fn sync_cluster_controller_metadata(metadata: Metadata) -> anyhow::Result<()> {
+    // todo make this configurable
+    let mut interval = time::interval(Duration::from_secs(10));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    let mut cancel = std::pin::pin!(cancellation_watcher());
+
+    loop {
+        tokio::select! {
+            _ = &mut cancel => {
+                break;
+            },
+            _ = interval.tick() => {
+                tokio::select! {
+                    _ = &mut cancel => {
+                        break;
+                    },
+                    _ = futures::future::join3(
+                        metadata.sync(MetadataKind::NodesConfiguration, TargetVersion::Latest),
+                        metadata.sync(MetadataKind::PartitionTable, TargetVersion::Latest),
+                        metadata.sync(MetadataKind::Logs, TargetVersion::Latest)) => {}
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn signal_all_partitions_started(
     mut cluster_state_watcher: ClusterStateWatcher,
     metadata: Metadata,
@@ -595,6 +677,7 @@ mod tests {
     use restate_core::{NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::{AdminOptions, Configuration};
+    use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -612,6 +695,7 @@ mod tests {
 
         let svc = Service::new(
             Live::from_value(Configuration::default()),
+            HealthStatus::default(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.networking.clone(),
@@ -915,6 +999,7 @@ mod tests {
 
         let svc = Service::new(
             Live::from_value(config),
+            HealthStatus::default(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.networking.clone(),

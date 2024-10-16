@@ -16,6 +16,10 @@ The cluster runner adds some extra files to the base dir:
 - `$BASE_DIR/$NODE_NAME/node.sock`: The gRPC node service. This is advertised as a absolute unix path.
 - `$BASE_DIR/$NODE_NAME/restate.log`: The stdout and stderr of the server process
 
+# Debugging
+`LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true` will log out the tmpdir on start, and ensure that its not removed on exit
+`LOCAL_CLUSTER_RUNNER_FORWARD_LOGS=true` will write all logs from the nodes out to stderr.
+
 ## Examples
 The local cluster runner can be used as a library, as shown in [`examples/two_nodes_and_metadata.rs`](./examples/two_nodes_and_metadata.rs).
 You can run this example with

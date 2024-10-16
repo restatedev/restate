@@ -56,6 +56,9 @@ jobs:
 
       - name: Run verify
         run: just verify
+        env:
+          LOCAL_CLUSTER_RUNNER_FORWARD_LOGS: "true"
+          LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR: "true"
 
   docker:
     name: Create docker image

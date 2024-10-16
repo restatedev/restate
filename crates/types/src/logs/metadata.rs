@@ -35,12 +35,24 @@ use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
     Serialize,
     Deserialize,
     derive_more::From,
-    derive_more::Display,
     derive_more::Into,
+    derive_more::Display,
 )]
 #[repr(transparent)]
 #[serde(transparent)]
 pub struct SegmentIndex(pub(crate) u32);
+
+impl SegmentIndex {
+    pub const OLDEST: SegmentIndex = SegmentIndex(0);
+
+    pub fn next(&self) -> SegmentIndex {
+        SegmentIndex(
+            self.0
+                .checked_add(1)
+                .expect("we should never create more than 2^32 segments"),
+        )
+    }
+}
 
 /// Log metadata is the map of logs known to the system with the corresponding chain.
 /// Metadata updates are versioned and atomic.

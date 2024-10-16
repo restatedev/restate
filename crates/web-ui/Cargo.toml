@@ -8,3 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+include_dir = "0.7.4"
+
+[build-dependencies]
+zip = "2.2.0"

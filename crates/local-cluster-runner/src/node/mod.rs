@@ -87,6 +87,9 @@ pub struct Node {
     inherit_env: bool,
     #[builder(default)]
     env: Vec<(String, String)>,
+    #[builder(default)]
+    #[serde(skip)]
+    searcher: Searcher,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -225,6 +228,7 @@ impl Node {
             args,
             inherit_env,
             env,
+            searcher,
         } = self;
 
         let node_base_dir = std::path::absolute(
@@ -308,14 +312,23 @@ impl Node {
             });
 
         let lines = futures::stream::select(stdout_reader, stderr_reader);
-        let searcher = Searcher::new();
+
+        let node_name = base_config.node_name().to_owned();
 
         let lines_fut = {
             let searcher = searcher.clone();
+            let node_name = node_name.clone();
+            let forward_logs = std::env::var("LOCAL_CLUSTER_RUNNER_FORWARD_LOGS")
+                .map(|s| s == "true" || s == "1")
+                .unwrap_or(false);
             async move {
                 let searcher = &searcher;
+                let node_name = node_name.as_str();
                 let mut node_log_file = lines
                     .try_fold(node_log_file, |mut node_log_file, line| async move {
+                        if forward_logs {
+                            eprintln!("{node_name}	| {line}")
+                        }
                         node_log_file.write_all(line.as_bytes()).await?;
                         node_log_file.write_u8(b'\n').await?;
                         searcher.matches(line.as_str()).await;
@@ -328,7 +341,6 @@ impl Node {
             }
         };
 
-        let node_name = base_config.node_name().to_owned();
         let child_handle = tokio::spawn(async move {
             let (status, _) = tokio::join!(child.wait(), lines_fut);
 
@@ -356,6 +368,12 @@ impl Node {
             },
             config: base_config,
         })
+    }
+
+    /// Obtain a stream of loglines matching this pattern. The stream will end
+    /// when the stdout and stderr files on the process close.
+    pub fn lines(&self, pattern: Regex) -> impl Stream<Item = String> + 'static {
+        self.searcher.search(pattern)
     }
 }
 
@@ -610,8 +628,7 @@ impl StartedNode {
             StartedNodeStatus::Exited { .. } => futures::stream::empty().left_stream(),
             StartedNodeStatus::Failed { .. } => futures::stream::empty().left_stream(),
             StartedNodeStatus::Running { ref searcher, .. } => {
-                let receiver = searcher.search(pattern);
-                receiver.right_stream()
+                searcher.search(pattern).right_stream()
             }
         }
     }
@@ -785,19 +802,13 @@ impl HealthError {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Searcher {
     inner: Arc<ArcSwapOption<SearcherInner>>,
 }
 
-#[derive(Clone)]
-struct SearcherInner {
-    set: RegexSet,
-    senders: Vec<Arc<Sender<String>>>,
-}
-
-impl Searcher {
-    fn new() -> Self {
+impl Default for Searcher {
+    fn default() -> Self {
         Self {
             inner: Arc::new(ArcSwapOption::from_pointee(SearcherInner {
                 set: RegexSet::empty(),
@@ -805,7 +816,15 @@ impl Searcher {
             })),
         }
     }
+}
 
+#[derive(Debug, Clone)]
+struct SearcherInner {
+    set: RegexSet,
+    senders: Vec<Arc<Sender<String>>>,
+}
+
+impl Searcher {
     fn close(&self) {
         self.inner.rcu(|_| None);
     }
@@ -821,7 +840,7 @@ impl Searcher {
         }
     }
 
-    fn search(&self, regex: Regex) -> Receiver {
+    fn search(&self, regex: Regex) -> impl Stream<Item = String> + 'static {
         let (sender, receiver) = mpsc::channel(1);
         let sender = Arc::new(sender);
         let sender_ptr = Arc::as_ptr(&sender);

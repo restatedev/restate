@@ -73,7 +73,7 @@ impl KeyPrefix {
 
     fn decode<B: Buf>(buf: &mut B) -> KeyPrefix {
         let kind = KeyPrefixKind::try_from(buf.get_u8()).expect("recognized key kind");
-        let loglet_id = ReplicatedLogletId::new(buf.get_u64());
+        let loglet_id = ReplicatedLogletId::from(buf.get_u64());
         Self { kind, loglet_id }
     }
 

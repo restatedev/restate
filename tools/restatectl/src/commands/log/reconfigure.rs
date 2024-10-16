@@ -17,10 +17,12 @@ use tonic::transport::Channel;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{ListLogsRequest, SealAndExtendChainRequest};
-use restate_types::logs::metadata::{Logs, ProviderKind};
+use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::LogId;
 use restate_types::protobuf::common::Version;
-use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
+use restate_types::replicated_loglet::{
+    NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
+};
 use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
@@ -109,15 +111,17 @@ async fn replicated_loglet_params(
         .into_inner();
 
     let logs = StorageCodec::decode::<Logs, _>(&mut logs_resposne.logs)?;
+    let log_id = LogId::from(opts.log_id);
     let chain = logs
-        .chain(&LogId::from(opts.log_id))
-        .with_context(|| format!("Unknown log id '{}'", opts.log_id))?;
+        .chain(&log_id)
+        .with_context(|| format!("Unknown log id '{}'", log_id))?;
 
-    let tail_index = opts.segment_index.unwrap_or(chain.tail_index().into());
+    let tail_index = opts
+        .segment_index
+        .map(SegmentIndex::from)
+        .unwrap_or(chain.tail_index());
 
-    // format is, log_id in the higher order u32, and segment_index in the lower
-    let loglet_id: u64 =
-        (u64::from(opts.log_id) << (size_of::<LogId>() * 8)) + u64::from(tail_index + 1);
+    let loglet_id = ReplicatedLogletId::new(log_id, tail_index.next());
 
     let tail_segment = chain.tail();
 
@@ -127,7 +131,7 @@ async fn replicated_loglet_params(
                 .context("Last segment params in chain is invalid")?;
 
         ReplicatedLogletParams {
-            loglet_id: loglet_id.into(),
+            loglet_id,
             nodeset: if opts.nodeset.is_empty() {
                 last_params.nodeset
             } else {
@@ -142,7 +146,7 @@ async fn replicated_loglet_params(
         }
     } else {
         ReplicatedLogletParams {
-            loglet_id: loglet_id.into(),
+            loglet_id,
             nodeset: if opts.nodeset.is_empty() {
                 anyhow::bail!("Missing nodeset. Nodeset is required if last segment is not of replicated type");
             } else {
