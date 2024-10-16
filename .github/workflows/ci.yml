@@ -60,6 +60,10 @@ jobs:
           LOCAL_CLUSTER_RUNNER_FORWARD_LOGS: "true"
           LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR: "true"
 
+      - name: Setup interactive ssh session
+        if: ${{ failure() }}
+        uses: Warpbuilds/action-debugger@v1.3
+
   docker:
     name: Create docker image
     uses: ./.github/workflows/docker.yml
