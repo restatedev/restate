@@ -28,6 +28,7 @@ reqwest = { workspace = true }
 rev_lines = "0.3.0"
 rlimit = { workspace = true }
 serde = { workspace =  true }
+socket2 = "0.5"
 tempfile = { workspace = true }
 thiserror = { workspace =  true }
 tokio = { workspace = true, features = ["process", "fs"] }
