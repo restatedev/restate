@@ -131,6 +131,7 @@ struct ProcessorState {
     _created_at: MillisSinceEpoch,
     _key_range: RangeInclusive<PartitionKey>,
     planned_mode: RunMode,
+    running_for_leadership_with_epoch: Option<LeaderEpoch>,
     handle: PartitionProcessorHandle,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
 }
@@ -149,6 +150,7 @@ impl ProcessorState {
             _created_at: MillisSinceEpoch::now(),
             _key_range: key_range,
             planned_mode: RunMode::Follower,
+            running_for_leadership_with_epoch: None,
             handle,
             watch_rx,
         }
@@ -156,9 +158,11 @@ impl ProcessorState {
 
     fn step_down(&mut self) -> Result<(), Error> {
         if self.planned_mode != RunMode::Follower {
+            debug!("Asked by cluster-controller to demote partition to follower");
             self.handle.step_down()?;
         }
 
+        self.running_for_leadership_with_epoch = None;
         self.planned_mode = RunMode::Follower;
 
         Ok(())
@@ -169,9 +173,25 @@ impl ProcessorState {
         metadata_store_client: MetadataStoreClient,
         node_id: GenerationalNodeId,
     ) -> Result<(), Error> {
-        if self.planned_mode != RunMode::Leader {
+        // run for leadership if there is no ongoing attempt or our current attempt is proven to be
+        // unsuccessful because we have already seen a higher leader epoch.
+        if self.running_for_leadership_with_epoch.is_none()
+            || self
+                .running_for_leadership_with_epoch
+                .is_some_and(|my_leader_epoch| {
+                    my_leader_epoch
+                        < self
+                            .watch_rx
+                            .borrow()
+                            .last_observed_leader_epoch
+                            .unwrap_or(LeaderEpoch::INITIAL)
+                })
+        {
+            // todo alternative could be to let the CC decide the leader epoch
             let leader_epoch =
                 Self::obtain_next_epoch(metadata_store_client, self.partition_id, node_id).await?;
+            debug!(%leader_epoch, "Asked by cluster-controller to promote partition to leader");
+            self.running_for_leadership_with_epoch = Some(leader_epoch);
             self.handle.run_for_leader(leader_epoch)?;
         }
 
@@ -628,6 +648,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 debug!("Asked by cluster-controller to stop partition");
                 if let Some(processor) = self.running_partition_processors.remove(&partition_id) {
                     if let Some(handle) = self.task_center.cancel_task(processor.task_id) {
+                        debug!(%partition_id, "Asked by cluster-controller to stop partition");
                         if let Err(err) = handle.await {
                             warn!("Partition processor crashed while shutting down: {err}");
                         }
@@ -718,6 +739,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         key_range: &RangeInclusive<PartitionKey>,
         mode: RunMode,
     ) -> Result<(), Error> {
+        debug!("Start new partition processor.");
         let mut state = self.spawn_partition_processor(partition_id, key_range.clone())?;
 
         if RunMode::Leader == mode {

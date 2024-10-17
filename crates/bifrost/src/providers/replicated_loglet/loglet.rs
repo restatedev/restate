@@ -38,11 +38,15 @@ use super::tasks::{CheckSealOutcome, CheckSealTask, FindTailResult};
 
 #[derive(derive_more::Debug)]
 pub(super) struct ReplicatedLoglet<T> {
+    log_id: LogId,
+    segment_index: SegmentIndex,
     my_params: ReplicatedLogletParams,
     #[debug(skip)]
     networking: Networking<T>,
     #[debug(skip)]
     logservers_rpc: LogServersRpc,
+    #[debug(skip)]
+    sequencers_rpc: SequencersRpc,
     #[debug(skip)]
     record_cache: RecordCache,
     /// A shared watch for the last known global tail of the loglet.
@@ -61,7 +65,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         my_params: ReplicatedLogletParams,
         networking: Networking<T>,
         logservers_rpc: LogServersRpc,
-        sequencers_rpc: &SequencersRpc,
+        sequencers_rpc: SequencersRpc,
         record_cache: RecordCache,
     ) -> Self {
         let known_global_tail = TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST));
@@ -101,9 +105,12 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
             }
         };
         Self {
+            log_id,
+            segment_index,
             my_params,
             networking,
             logservers_rpc,
+            sequencers_rpc,
             record_cache,
             known_global_tail,
             sequencer,
@@ -216,9 +223,12 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
             SequencerAccess::Remote { .. } => {
                 let task = FindTailTask::new(
                     task_center(),
+                    self.log_id,
+                    self.segment_index,
                     self.my_params.clone(),
                     self.networking.clone(),
                     self.logservers_rpc.clone(),
+                    self.sequencers_rpc.clone(),
                     self.known_global_tail.clone(),
                     self.record_cache.clone(),
                 );
@@ -347,7 +357,7 @@ mod tests {
                     loglet_params,
                     node_env.networking.clone(),
                     logserver_rpc,
-                    &sequencer_rpc,
+                    sequencer_rpc,
                     record_cache.clone(),
                 ));
 

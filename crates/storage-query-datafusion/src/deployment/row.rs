@@ -32,4 +32,18 @@ pub(crate) fn append_deployment_row(
 
     row.endpoint(format_using(output, &deployment.metadata.address_display()));
     row.created_at(deployment.metadata.created_at.as_u64() as i64);
+    row.min_service_protocol_version(
+        deployment
+            .metadata
+            .supported_protocol_versions
+            .start()
+            .unsigned_abs(),
+    );
+    row.max_service_protocol_version(
+        deployment
+            .metadata
+            .supported_protocol_versions
+            .end()
+            .unsigned_abs(),
+    );
 }

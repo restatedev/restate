@@ -420,8 +420,6 @@ where
 
                             if is_leader {
                                 self.status.effective_mode = RunMode::Leader;
-                            } else {
-                                self.status.effective_mode = RunMode::Follower;
                             }
 
                             transaction = partition_store.transaction();
@@ -469,6 +467,7 @@ where
                     .step_down()
                     .await
                     .context("failed handling StepDown command")?;
+                self.status.effective_mode = RunMode::Follower;
             }
             PartitionProcessorControlCommand::CreateSnapshot(maybe_sender) => {
                 if self
