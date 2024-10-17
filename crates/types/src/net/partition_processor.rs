@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::{Deserialize, Serialize};
-
+use crate::errors::InvocationError;
 use crate::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
-use crate::ingress::IngressResponseResult;
-use crate::invocation::{InvocationQuery, InvocationResponse, ServiceInvocation};
+use crate::invocation::{InvocationQuery, InvocationResponse, InvocationTarget, ServiceInvocation};
 use crate::net::define_rpc;
 use crate::net::TargetName;
+use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 
 define_rpc! {
     @request = PartitionProcessorRpcRequest,
@@ -100,4 +100,10 @@ pub struct InvocationOutput {
     pub request_id: PartitionProcessorRpcRequestId,
     pub invocation_id: Option<InvocationId>,
     pub response: IngressResponseResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum IngressResponseResult {
+    Success(InvocationTarget, Bytes),
+    Failure(InvocationError),
 }

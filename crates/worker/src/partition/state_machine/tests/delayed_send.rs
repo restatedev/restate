@@ -46,15 +46,11 @@ async fn send_with_delay() {
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification(eq(
-                IngressResponseEnvelope {
-                    target_node: node_id,
-                    inner: ingress::SubmittedInvocationNotification {
-                        request_id,
-                        is_new_invocation: true,
-                    },
-                }
-            ))))
+            contains(eq(Action::IngressSubmitNotification {
+                target_node: node_id,
+                request_id,
+                is_new_invocation: true
+            }))
         )
     );
 
@@ -70,15 +66,11 @@ async fn send_with_delay() {
         actions,
         all!(
             contains(matchers::actions::invoke_for_id(invocation_id)),
-            not(contains(pat!(Action::IngressSubmitNotification(eq(
-                IngressResponseEnvelope {
-                    target_node: node_id,
-                    inner: ingress::SubmittedInvocationNotification {
-                        request_id,
-                        is_new_invocation: true,
-                    },
-                }
-            )))))
+            not(contains(eq(Action::IngressSubmitNotification {
+                target_node: node_id,
+                request_id,
+                is_new_invocation: true,
+            })))
         )
     );
     assert_that!(
@@ -118,15 +110,11 @@ async fn send_with_delay_to_locked_virtual_object() {
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification(eq(
-                IngressResponseEnvelope {
-                    target_node: node_id,
-                    inner: ingress::SubmittedInvocationNotification {
-                        request_id,
-                        is_new_invocation: true,
-                    },
-                }
-            ))))
+            contains(eq(Action::IngressSubmitNotification {
+                target_node: node_id,
+                request_id,
+                is_new_invocation: true,
+            }))
         )
     );
 
@@ -151,15 +139,11 @@ async fn send_with_delay_to_locked_virtual_object() {
         actions,
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
-            not(contains(pat!(Action::IngressSubmitNotification(eq(
-                IngressResponseEnvelope {
-                    target_node: node_id,
-                    inner: ingress::SubmittedInvocationNotification {
-                        request_id,
-                        is_new_invocation: true,
-                    },
-                }
-            )))))
+            not(contains(eq(Action::IngressSubmitNotification {
+                target_node: node_id,
+                request_id,
+                is_new_invocation: true,
+            })))
         )
     );
     assert_that!(
@@ -215,15 +199,11 @@ async fn send_with_delay_and_idempotency_key() {
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification(eq(
-                IngressResponseEnvelope {
-                    target_node: node_id,
-                    inner: ingress::SubmittedInvocationNotification {
-                        request_id: request_id_1,
-                        is_new_invocation: true,
-                    },
-                }
-            ))))
+            contains(eq(Action::IngressSubmitNotification {
+                target_node: node_id,
+                request_id: request_id_1,
+                is_new_invocation: true,
+            }))
         )
     );
 
@@ -251,15 +231,11 @@ async fn send_with_delay_and_idempotency_key() {
         actions,
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
-            contains(pat!(Action::IngressSubmitNotification(eq(
-                IngressResponseEnvelope {
-                    target_node: node_id,
-                    inner: ingress::SubmittedInvocationNotification {
-                        request_id: request_id_2,
-                        is_new_invocation: false,
-                    },
-                }
-            ))))
+            contains(eq(Action::IngressSubmitNotification {
+                target_node: node_id,
+                request_id: request_id_2,
+                is_new_invocation: false,
+            }))
         )
     );
     test_env.shutdown().await;

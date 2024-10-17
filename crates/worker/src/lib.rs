@@ -28,7 +28,7 @@ pub use crate::subscription_integration::SubscriptionControllerHandle;
 
 pub use self::error::*;
 pub use self::handle::*;
-use crate::ingress_integration::InvocationStorageReaderImpl;
+use crate::ingress_integration::RpcRequestDispatcher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
 use restate_bifrost::Bifrost;
@@ -56,8 +56,7 @@ type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
 >;
 
-type ExternalClientIngress<T> =
-    HyperServerIngress<Schema, IngressDispatcher, InvocationStorageReaderImpl<Networking<T>>>;
+type ExternalClientIngress<T> = HyperServerIngress<Schema, RpcRequestDispatcher<Networking<T>>>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -118,13 +117,10 @@ impl<T: TransportConnect> Worker<T> {
         metric_definitions::describe_metrics();
         health_status.update(WorkerStatus::StartingUp);
 
-        let ingress_dispatcher = IngressDispatcher::new(bifrost.clone());
-        router_builder.add_message_handler(ingress_dispatcher.clone());
-
         let config = updateable_config.pinned();
 
         // ingress_kafka
-        let ingress_kafka = IngressKafkaService::new(ingress_dispatcher.clone());
+        let ingress_kafka = IngressKafkaService::new(IngressDispatcher::new(bifrost.clone()));
         let subscription_controller_handle = SubscriptionControllerHandle::new(
             config.ingress.clone(),
             ingress_kafka.create_command_sender(),
@@ -145,13 +141,12 @@ impl<T: TransportConnect> Worker<T> {
         // http ingress
         let ingress_http = HyperServerIngress::from_options(
             &config.ingress,
-            ingress_dispatcher.clone(),
-            schema.clone(),
-            InvocationStorageReaderImpl::new(PartitionProcessorRpcClient::new(
+            RpcRequestDispatcher::new(PartitionProcessorRpcClient::new(
                 networking.clone(),
                 rpc_router,
                 partition_table,
             )),
+            schema.clone(),
         );
 
         let partition_processor_manager = PartitionProcessorManager::new(

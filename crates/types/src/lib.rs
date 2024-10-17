@@ -28,7 +28,6 @@ pub mod endpoint_manifest;
 pub mod epoch;
 pub mod errors;
 pub mod identifiers;
-pub mod ingress;
 pub mod invocation;
 pub mod journal;
 pub mod live;

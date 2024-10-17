@@ -107,7 +107,7 @@ where
         Ok(())
     }
 
-    pub async fn submit_notification_and_wait_submit_notification(
+    pub async fn submit_invocation_and_wait_submit_notification(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         service_invocation: ServiceInvocation,
@@ -134,7 +134,7 @@ where
         Ok(submit_notification)
     }
 
-    pub async fn submit_notification_and_wait_output(
+    pub async fn submit_invocation_and_wait_output(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         service_invocation: ServiceInvocation,

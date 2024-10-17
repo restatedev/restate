@@ -18,7 +18,7 @@ use restate_types::time::MillisSinceEpoch;
 use std::future::Future;
 
 /// Metadata associated with a journal
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct JournalMetadata {
     pub length: EntryIndex,
     pub span_context: ServiceInvocationSpanContext,

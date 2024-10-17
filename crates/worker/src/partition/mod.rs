@@ -45,15 +45,18 @@ use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, SnapshotId,
     WithPartitionKey,
 };
-use restate_types::ingress::IngressResponseResult;
-use restate_types::invocation::{AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType, ResponseResult, ServiceInvocationResponseSink, SubmitNotificationSink, WorkflowHandlerType};
+use restate_types::invocation::{
+    AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
+    ResponseResult, ServiceInvocationResponseSink, SubmitNotificationSink, WorkflowHandlerType,
+};
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::live::Live;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::net::partition_processor::{
-    GetInvocationOutputResponseMode, InvocationOutput, PartitionProcessorRpcError,
-    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse, SubmitInvocationReplyOn,
+    GetInvocationOutputResponseMode, IngressResponseResult, InvocationOutput,
+    PartitionProcessorRpcError, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
+    SubmitInvocationReplyOn,
 };
 use restate_types::retries::RetryPolicy;
 use restate_types::time::MillisSinceEpoch;
@@ -595,10 +598,11 @@ where
                 mut service_invocation,
                 SubmitInvocationReplyOn::Submitted,
             ) => {
-                service_invocation.submit_notification_sink = Some(SubmitNotificationSink::Ingress {
-                    node_id: sender_node_id,
-                    request_id,
-                });
+                service_invocation.submit_notification_sink =
+                    Some(SubmitNotificationSink::Ingress {
+                        node_id: sender_node_id,
+                        request_id,
+                    });
 
                 self.leadership_state
                     .handle_rpc_proposal_command(

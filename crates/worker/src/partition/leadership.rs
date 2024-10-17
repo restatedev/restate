@@ -613,26 +613,32 @@ where
                 .abort_invocation(partition_leader_epoch, invocation_id)
                 .await
                 .map_err(Error::Invoker)?,
-            Action::IngressResponse(ingress_response) => {
-                if let Some(response_tx) = awaiting_rpcs.remove(&ingress_response.inner.request_id)
-                {
+            Action::IngressResponse {
+                request_id,
+                invocation_id,
+                response,
+                ..
+            } => {
+                if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
                     Self::respond_to_rpc(response_tx.prepare(Ok(
                         PartitionProcessorRpcResponse::Output(InvocationOutput {
-                            request_id: ingress_response.inner.request_id,
-                            invocation_id: ingress_response.inner.invocation_id,
-                            response: ingress_response.inner.response,
+                            request_id,
+                            invocation_id,
+                            response,
                         }),
                     )));
                 }
             }
-            Action::IngressSubmitNotification(attach_notification) => {
-                if let Some(response_tx) =
-                    awaiting_rpcs.remove(&attach_notification.inner.request_id)
-                {
+            Action::IngressSubmitNotification {
+                request_id,
+                is_new_invocation,
+                ..
+            } => {
+                if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
                     Self::respond_to_rpc(response_tx.prepare(Ok(
                         PartitionProcessorRpcResponse::Submitted(SubmittedInvocationNotification {
-                            request_id: attach_notification.inner.request_id,
-                            is_new_invocation: attach_notification.inner.is_new_invocation,
+                            request_id,
+                            is_new_invocation,
                         }),
                     )));
                 }
