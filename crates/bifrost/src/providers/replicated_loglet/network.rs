@@ -139,36 +139,66 @@ impl RequestPump {
         provider: &ReplicatedLogletProvider<T>,
         incoming: Incoming<GetSequencerState>,
     ) {
+        let req_metadata_version = *incoming.metadata_version();
+        let (reciprocal, msg) = incoming.split();
+
         let loglet = match self
-            .get_loglet(
-                provider,
-                incoming.metadata_version(),
-                &incoming.body().header,
-            )
+            .get_loglet(provider, &req_metadata_version, &msg.header)
             .await
         {
             Ok(loglet) => loglet,
             Err(err) => {
-                return_error_status!(incoming.create_reciprocal(), err);
+                let response = SequencerState {
+                    header: CommonResponseHeader {
+                        known_global_tail: None,
+                        sealed: None,
+                        status: err,
+                    },
+                };
+                let _ = reciprocal.prepare(response).try_send();
+                return;
             }
         };
 
-        let (reciprocal, _) = incoming.split();
-
         if !loglet.is_sequencer_local() {
-            return_error_status!(reciprocal, SequencerStatus::NotSequencer);
+            let response = SequencerState {
+                header: CommonResponseHeader {
+                    known_global_tail: None,
+                    sealed: None,
+                    status: SequencerStatus::NotSequencer,
+                },
+            };
+            let _ = reciprocal.prepare(response).try_send();
+            return;
         }
 
-        let tail = loglet.known_global_tail().get();
-        let sequencer_state = SequencerState {
-            header: CommonResponseHeader {
-                known_global_tail: Some(tail.offset()),
-                sealed: Some(tail.is_sealed()),
-                status: SequencerStatus::Ok,
-            },
-        };
-
-        let _ = reciprocal.prepare(sequencer_state).try_send();
+        match loglet.find_tail().await {
+            Ok(tail) => {
+                let sequencer_state = SequencerState {
+                    header: CommonResponseHeader {
+                        known_global_tail: Some(tail.offset()),
+                        sealed: Some(tail.is_sealed()),
+                        status: SequencerStatus::Ok,
+                    },
+                };
+                let _ = reciprocal.prepare(sequencer_state).try_send();
+            }
+            Err(err) => {
+                // Well, we couldn't finish FindTail. Very likely we failed in CheckSeal. In all
+                // cases we can't fulfill the request.
+                let response = SequencerState {
+                    header: CommonResponseHeader {
+                        known_global_tail: None,
+                        sealed: None,
+                        status: SequencerStatus::Error {
+                            retryable: true,
+                            message: err.to_string(),
+                        },
+                    },
+                };
+                let _ = reciprocal.prepare(response).try_send();
+            }
+        }
     }
 
     /// Infailable handle_append method
