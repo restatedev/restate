@@ -115,14 +115,14 @@ pub async fn list_partitions(
                         .status
                         .last_applied_log_lsn
                         .map(|x| x.to_string())
-                        .unwrap_or("??".to_owned()),
+                        .unwrap_or("-".to_owned()),
                 ),
                 Cell::new(
                     details
                         .status
                         .last_persisted_log_lsn
                         .map(|x| x.to_string())
-                        .unwrap_or("??".to_owned()),
+                        .unwrap_or("-".to_owned()),
                 ),
                 Cell::new(format!(
                     "{} - {}",
@@ -130,12 +130,12 @@ pub async fn list_partitions(
                         .status
                         .last_observed_leader_node
                         .map(|x| x.to_string())
-                        .unwrap_or("??".to_owned()),
+                        .unwrap_or("-".to_owned()),
                     details
                         .status
                         .last_observed_leader_epoch
                         .map(|x| x.to_string())
-                        .unwrap_or("??".to_owned()),
+                        .unwrap_or("-".to_owned()),
                 )),
                 Cell::new(details.status.num_skipped_records),
                 render_as_duration(details.status.updated_at, Tense::Past),
@@ -192,7 +192,7 @@ fn render_replay_status(status: ReplayStatus, target_lsn: Option<Lsn>) -> Cell {
         ReplayStatus::Active => Cell::new("Active").fg(Color::Green),
         ReplayStatus::CatchingUp => Cell::new(format!(
             "Catching Up ({})",
-            target_lsn.map(|x| x.to_string()).unwrap_or("??".to_owned())
+            target_lsn.map(|x| x.to_string()).unwrap_or("-".to_owned())
         ))
         .fg(Color::Magenta),
     }

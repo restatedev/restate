@@ -12,6 +12,6 @@ pub fn render_as_duration(ts: Option<prost_types::Timestamp>, tense: Tense) -> C
         let ts: DateTime<Local> = ts.into();
         Cell::new(timestamp_as_human_duration(ts, tense))
     } else {
-        Cell::new("??").fg(Color::Red)
+        Cell::new("-").fg(Color::Red)
     }
 }
