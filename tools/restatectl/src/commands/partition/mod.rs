@@ -9,14 +9,15 @@
 // by the Apache License, Version 2.0.
 
 mod gen_metadata;
-mod status;
+pub mod list;
 
 use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Partitions {
     /// Print the partitions and their respective processors' status
-    Status(status::PartitionStatusOpts),
+    #[clap(alias = "status")]
+    List(list::ListPartitionsOpts),
     /// Prints a generated partition table in JSON format
     GenerateMetadata(gen_metadata::GeneratePartitionTableOpts),
 }
