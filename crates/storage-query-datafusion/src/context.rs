@@ -18,7 +18,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::context::SQLOptions;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
@@ -225,13 +225,14 @@ impl QueryContext {
         // A far more involved but potentially more robust solution would be wrap the SymmetricHashJoin in a ProjectionExec
         // If this would become an issue for any reason, then we can explore that alternative.
         //
-        let physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
-            vec![Arc::new(physical_optimizer::JoinRewrite::new())];
+        let join_rewrite = Arc::new(physical_optimizer::JoinRewrite::new());
+        let mut default_physical_optimizer_rules = PhysicalOptimizer::default().rules;
+        default_physical_optimizer_rules.insert(0, join_rewrite);
 
-        state_builder = state_builder.with_physical_optimizer_rules(physical_optimizers);
+        state_builder =
+            state_builder.with_physical_optimizer_rules(default_physical_optimizer_rules);
 
         let state = state_builder.build();
-
         let ctx = SessionContext::new_with_state(state);
 
         let sql_options = SQLOptions::new()
