@@ -18,7 +18,7 @@ use bytestring::ByteString;
 use once_cell::sync::Lazy;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, JournalMetadata,
-    SourceTable, StatusTimestamps,
+    StatusTimestamps,
 };
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
@@ -73,10 +73,7 @@ const INVOCATION_TARGET_5: InvocationTarget = InvocationTarget::VirtualObject {
 static INVOCATION_ID_5: Lazy<InvocationId> =
     Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_5));
 
-fn invoked_status(
-    invocation_target: InvocationTarget,
-    source_table: SourceTable,
-) -> InvocationStatus {
+fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Invoked(InFlightInvocationMetadata {
         invocation_target,
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
@@ -86,14 +83,10 @@ fn invoked_status(
         source: Source::Ingress,
         completion_retention_duration: Duration::ZERO,
         idempotency_key: None,
-        source_table,
     })
 }
 
-fn suspended_status(
-    invocation_target: InvocationTarget,
-    source_table: SourceTable,
-) -> InvocationStatus {
+fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Suspended {
         metadata: InFlightInvocationMetadata {
             invocation_target,
@@ -104,7 +97,6 @@ fn suspended_status(
             source: Source::Ingress,
             completion_retention_duration: Duration::ZERO,
             idempotency_key: None,
-            source_table,
         },
         waiting_for_completed_entries: HashSet::default(),
     }
@@ -113,31 +105,31 @@ fn suspended_status(
 async fn populate_data<T: InvocationStatusTable>(txn: &mut T) {
     txn.put_invocation_status(
         &INVOCATION_ID_1,
-        &invoked_status(INVOCATION_TARGET_1.clone(), SourceTable::Old),
+        &invoked_status(INVOCATION_TARGET_1.clone()),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_2,
-        &invoked_status(INVOCATION_TARGET_2.clone(), SourceTable::Old),
+        &invoked_status(INVOCATION_TARGET_2.clone()),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_3,
-        &suspended_status(INVOCATION_TARGET_3.clone(), SourceTable::Old),
+        &suspended_status(INVOCATION_TARGET_3.clone()),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_4,
-        &invoked_status(INVOCATION_TARGET_4.clone(), SourceTable::New),
+        &invoked_status(INVOCATION_TARGET_4.clone()),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_5,
-        &suspended_status(INVOCATION_TARGET_5.clone(), SourceTable::New),
+        &suspended_status(INVOCATION_TARGET_5.clone()),
     )
     .await;
 }
@@ -147,14 +139,14 @@ async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
         txn.get_invocation_status(&INVOCATION_ID_1)
             .await
             .expect("should not fail"),
-        invoked_status(INVOCATION_TARGET_1.clone(), SourceTable::Old)
+        invoked_status(INVOCATION_TARGET_1.clone())
     );
 
     assert_eq!(
         txn.get_invocation_status(&INVOCATION_ID_4)
             .await
             .expect("should not fail"),
-        invoked_status(INVOCATION_TARGET_4.clone(), SourceTable::New)
+        invoked_status(INVOCATION_TARGET_4.clone())
     );
 }
 
