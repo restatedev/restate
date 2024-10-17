@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tracing::{info, trace};
+use tracing::{info, instrument, trace};
 
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Networking, TransportConnect};
@@ -43,6 +43,7 @@ pub enum CheckSealOutcome {
 }
 
 impl CheckSealTask {
+    #[instrument(skip_all)]
     pub async fn run<T: TransportConnect>(
         my_params: &ReplicatedLogletParams,
         get_loglet_info_rpc: &RpcRouter<GetLogletInfo>,
@@ -91,6 +92,7 @@ impl CheckSealTask {
             let Some(next_node) = nodes.pop() else {
                 info!(
                     loglet_id = %my_params.loglet_id,
+                    status = %nodeset_checker,
                     effective_nodeset = %effective_nodeset,
                     "Insufficient nodes responded to GetLogletInfo requests, we cannot determine seal status, we'll assume it's unsealed for now",
                 );

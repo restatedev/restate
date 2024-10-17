@@ -18,8 +18,8 @@ use tonic::codec::CompressionEncoding;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::ListNodesRequest;
 use restate_cli_util::_comfy_table::{Cell, Table};
+use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::{c_println, c_title};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
 
@@ -27,11 +27,15 @@ use crate::app::ConnectionInfo;
 use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[clap(visible_alias = "nodes")]
+#[clap(alias = "ls")]
 #[cling(run = "list_nodes")]
-pub struct ListNodesOpts {}
+pub struct ListNodesOpts {
+    /// Display additional node status information
+    #[arg(long)]
+    pub(crate) extra: bool,
+}
 
-async fn list_nodes(connection: &ConnectionInfo, _opts: &ListNodesOpts) -> anyhow::Result<()> {
+pub async fn list_nodes(connection: &ConnectionInfo, _opts: &ListNodesOpts) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
         .with_context(|| {
@@ -53,10 +57,7 @@ async fn list_nodes(connection: &ConnectionInfo, _opts: &ListNodesOpts) -> anyho
         StorageCodec::decode::<NodesConfiguration, _>(&mut response.nodes_configuration)?;
     let nodes = nodes_configuration.iter().collect::<BTreeMap<_, _>>();
 
-    c_title!(
-        "📋",
-        format!("Node Configuration {}", nodes_configuration.version())
-    );
+    c_println!("Node Configuration ({})", nodes_configuration.version());
 
     let mut nodes_table = Table::new_styled();
     nodes_table.set_styled_header(vec!["NODE", "GEN", "NAME", "ADDRESS", "ROLES"]);

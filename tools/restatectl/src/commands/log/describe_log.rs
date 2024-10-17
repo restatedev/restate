@@ -8,77 +8,33 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::str::FromStr;
-
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use cling::prelude::*;
 use itertools::Itertools;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
+use log::render_loglet_params;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::DescribeLogRequest;
+use restate_admin::cluster_controller::protobuf::{DescribeLogRequest, ListLogsRequest};
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_types::logs::metadata::{Chain, ProviderKind, Segment, SegmentIndex};
+use restate_types::logs::metadata::{Chain, Logs, ProviderKind, Segment, SegmentIndex};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::storage::StorageCodec;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
 
+use super::LogIdRange;
 use crate::app::ConnectionInfo;
+use crate::commands::log;
 use crate::util::grpc_connect;
 
-#[derive(Parser, Collect, Clone, Debug)]
-struct LogIdRange {
-    from: u32,
-    to: u32,
-}
-
-impl LogIdRange {
-    fn new(from: u32, to: u32) -> anyhow::Result<Self> {
-        if from > to {
-            Err(anyhow!(
-                "Invalid log id range: {}..{}, start must be <= end range",
-                from,
-                to
-            ))
-        } else {
-            Ok(LogIdRange { from, to })
-        }
-    }
-
-    fn iter(&self) -> impl Iterator<Item = u32> {
-        self.from..=self.to
-    }
-}
-
-impl FromStr for LogIdRange {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split("-").collect();
-        match parts.len() {
-            1 => {
-                let n = parts[0].parse()?;
-                Ok(LogIdRange::new(n, n)?)
-            }
-            2 => {
-                let from = parts[0].parse()?;
-                let to = parts[1].parse()?;
-                Ok(LogIdRange::new(from, to)?)
-            }
-            _ => Err(anyhow!("Invalid log id or log range: {}", s)),
-        }
-    }
-}
-
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[clap()]
 #[cling(run = "describe_logs")]
 pub struct DescribeLogIdOpts {
-    /// The log id(s) to describe
-    #[arg(required = true, value_parser = value_parser!(LogIdRange))]
+    /// The log id or range to describe, e.g. "0", "1-4"; all logs are shown by default
+    #[arg( value_parser = value_parser!(LogIdRange))]
     log_id: Vec<LogIdRange>,
 
     /// The first segment id to display
@@ -124,11 +80,27 @@ async fn describe_logs(
             )
         })?;
 
-    let client = ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let mut client =
+        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    for range in &opts.log_id {
+    let log_ids = if opts.log_id.is_empty() {
+        let list_response = client
+            .list_logs(ListLogsRequest::default())
+            .await?
+            .into_inner();
+        let mut buf = list_response.logs;
+        let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
+        logs.iter()
+            .sorted_by(|a, b| Ord::cmp(a.0, b.0))
+            .map(|(id, _)| LogIdRange::from(id))
+            .collect::<Vec<_>>()
+    } else {
+        opts.log_id.clone()
+    };
+
+    for range in log_ids {
         for log_id in range.iter() {
-            describe_log(log_id, client.clone(), opts).await?;
+            describe_log(log_id, &mut client, opts).await?;
         }
     }
 
@@ -137,7 +109,7 @@ async fn describe_logs(
 
 async fn describe_log(
     log_id: u32,
-    mut client: ClusterCtrlSvcClient<Channel>,
+    client: &mut ClusterCtrlSvcClient<Channel>,
     opts: &DescribeLogIdOpts,
 ) -> anyhow::Result<()> {
     let req = DescribeLogRequest { log_id };
@@ -208,18 +180,18 @@ async fn describe_log(
 
         match segment.config.kind {
             ProviderKind::Replicated => {
-                let params = get_replicated_log_params(&segment);
+                let params = log::deserialize_replicated_log_params(&segment);
                 let mut segment_row = vec![
                     render_tail_segment_marker(is_tail_segment),
                     Cell::new(format!("{}", segment.index())),
                     Cell::new(format!("{}", segment.base_lsn)),
                     Cell::new(format!("{:?}", segment.config.kind)),
-                    render_maybe_params(&params, |p| Cell::new(p.loglet_id)),
-                    render_maybe_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
-                    render_maybe_params(&params, |p| {
+                    render_loglet_params(&params, |p| Cell::new(p.loglet_id)),
+                    render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
+                    render_loglet_params(&params, |p| {
                         render_sequencer(is_tail_segment, p, &nodes_configuration)
                     }),
-                    render_maybe_params(&params, |p| {
+                    render_loglet_params(&params, |p| {
                         render_effective_nodeset(is_tail_segment, p, &nodes_configuration)
                     }),
                 ];
@@ -288,38 +260,12 @@ fn render_effective_nodeset(
     cell
 }
 
-fn get_replicated_log_params(segment: &Segment) -> Option<ReplicatedLogletParams> {
-    match segment.config.kind {
-        ProviderKind::Replicated => {
-            ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
-                .inspect_err(|e| {
-                    c_println!(
-                        "⚠️ Failed to deserialize ReplicatedLogletParams for segment {}: {}",
-                        segment.index(),
-                        e
-                    );
-                })
-                .ok()
-        }
-        _ => None,
-    }
-}
-
-fn render_maybe_params<F>(params: &Option<ReplicatedLogletParams>, render_fn: F) -> Cell
-where
-    F: FnOnce(&ReplicatedLogletParams) -> Cell,
-{
-    params
-        .as_ref()
-        .map(render_fn)
-        .unwrap_or_else(|| Cell::new("N/A").fg(Color::Red))
-}
-
 fn render_sequencer(
     is_tail: bool,
     params: &ReplicatedLogletParams,
     nodes_configuration: &NodesConfiguration,
 ) -> Cell {
+    let cell = Cell::new(format!("{:#}", params.sequencer));
     if is_tail {
         let sequencer_generational =
             nodes_configuration.find_node_by_id(params.sequencer.as_plain());
@@ -330,8 +276,8 @@ fn render_sequencer(
         } else {
             Color::Red
         };
-        Cell::new(format!("{:#}", params.sequencer)).fg(color)
+        cell.fg(color)
     } else {
-        Cell::new("")
+        cell
     }
 }

@@ -31,17 +31,18 @@ use crate::commands::display_util::render_as_duration;
 use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[cling(run = "list_partitions_status")]
-pub struct PartitionStatusOpts {}
+#[cling(run = "list_partitions")]
+#[clap(alias = "ls")]
+pub struct ListPartitionsOpts {}
 
-struct PartitionDetails {
+struct PartitionListEntry {
     host_node: GenerationalNodeId,
     status: PartitionProcessorStatus,
 }
 
-async fn list_partitions_status(
+pub async fn list_partitions(
     connection: &ConnectionInfo,
-    _opts: &PartitionStatusOpts,
+    _opts: &ListPartitionsOpts,
 ) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
@@ -62,7 +63,7 @@ async fn list_partitions_status(
         .cluster_state
         .ok_or_else(|| anyhow::anyhow!("no cluster state returned"))?;
 
-    let mut partitions: BTreeMap<u32, Vec<PartitionDetails>> = BTreeMap::new();
+    let mut partitions: BTreeMap<u32, Vec<PartitionListEntry>> = BTreeMap::new();
     let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
     for (node_id, node_state) in state.nodes {
         match node_state.state.expect("node state is set") {
@@ -77,7 +78,7 @@ async fn list_partitions_status(
                         .expect("alive partition has a node id");
                     let host_node =
                         GenerationalNodeId::new(host.id, host.generation.expect("generation"));
-                    let details = PartitionDetails { host_node, status };
+                    let details = PartitionListEntry { host_node, status };
                     partitions.entry(partition_id).or_default().push(details);
                 }
             }
@@ -88,56 +89,58 @@ async fn list_partitions_status(
     partitions_table.set_styled_header(vec![
         "P-ID",
         "NODE",
-        "RUN-MODE",
-        "REPLAY",
-        "APPLIED-LSN",
-        "PERSISTED-LSN",
-        "OBSERVED-LEADER",
-        "#-SKIPS",
-        "LAST-SEEN",
+        "MODE",
+        "STATUS",
+        "APPLIED",
+        "PERSISTED",
+        "LEADER",
+        "EPOCH",
+        "SKIPPED",
+        "LAST-UPDATE",
     ]);
     for (partition_id, processors) in partitions {
-        for details in processors {
+        for processor in processors {
             partitions_table.add_row(vec![
                 Cell::new(partition_id),
-                Cell::new(details.host_node),
+                Cell::new(processor.host_node),
                 render_mode(
-                    details.status.planned_mode(),
-                    details.status.effective_mode(),
+                    processor.status.planned_mode(),
+                    processor.status.effective_mode(),
                 ),
                 render_replay_status(
-                    details.status.replay_status(),
-                    details.status.target_tail_lsn.map(Into::into),
+                    processor.status.replay_status(),
+                    processor.status.target_tail_lsn.map(Into::into),
                 ),
                 Cell::new(
-                    details
+                    processor
                         .status
                         .last_applied_log_lsn
                         .map(|x| x.to_string())
-                        .unwrap_or("??".to_owned()),
+                        .unwrap_or("-".to_owned()),
                 ),
                 Cell::new(
-                    details
+                    processor
                         .status
                         .last_persisted_log_lsn
                         .map(|x| x.to_string())
-                        .unwrap_or("??".to_owned()),
+                        .unwrap_or("-".to_owned()),
                 ),
-                Cell::new(format!(
-                    "{} - {}",
-                    details
+                Cell::new(
+                    processor
                         .status
                         .last_observed_leader_node
                         .map(|x| x.to_string())
-                        .unwrap_or("??".to_owned()),
-                    details
+                        .unwrap_or("-".to_owned()),
+                ),
+                Cell::new(
+                    processor
                         .status
                         .last_observed_leader_epoch
                         .map(|x| x.to_string())
-                        .unwrap_or("??".to_owned()),
-                )),
-                Cell::new(details.status.num_skipped_records),
-                render_as_duration(details.status.updated_at, Tense::Past),
+                        .unwrap_or("-".to_owned()),
+                ),
+                Cell::new(processor.status.num_skipped_records),
+                render_as_duration(processor.status.updated_at, Tense::Past),
             ]);
         }
     }
@@ -191,7 +194,7 @@ fn render_replay_status(status: ReplayStatus, target_lsn: Option<Lsn>) -> Cell {
         ReplayStatus::Active => Cell::new("Active").fg(Color::Green),
         ReplayStatus::CatchingUp => Cell::new(format!(
             "Catching Up ({})",
-            target_lsn.map(|x| x.to_string()).unwrap_or("??".to_owned())
+            target_lsn.map(|x| x.to_string()).unwrap_or("-".to_owned())
         ))
         .fg(Color::Magenta),
     }

@@ -22,6 +22,7 @@ use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::Version;
 
 use crate::error::AdminError;
+use crate::loglet_wrapper::LogletWrapper;
 use crate::{Bifrost, Error, Result};
 
 /// Bifrost's Admin API
@@ -108,6 +109,10 @@ impl<'a> BifrostAdmin<'a> {
         self.add_segment_with_params(log_id, segment_index, tail.offset(), provider, params)
             .await?;
         Ok(())
+    }
+
+    pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
+        self.inner.writeable_loglet(log_id).await
     }
 
     #[instrument(level = "debug", skip(self), err)]

@@ -30,10 +30,10 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 chrono = { workspace = true }
-clap = { version = "4.1", features = ["derive", "env", "wrap_help", "color"] }
-clap-verbosity-flag = { version = "2.0.1" }
+clap = { workspace = true, features = ["derive", "env", "wrap_help", "color"] }
+clap-verbosity-flag = { workspace = true }
 clap-stdin = "0.5.1"
-cling = { version = "0.1.0", default-features = false, features = ["derive"] }
+cling = { workspace = true }
 crossterm = { version = "0.27.0" }
 ctrlc = { version = "3.4" }
 derive_more = { workspace = true }
