@@ -53,16 +53,16 @@ use tracing::instrument;
 use tracing::{debug, trace};
 
 use crate::invocation_task::InvocationTaskError;
+use crate::metric_definitions::{
+    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
+    TASK_OP_SUSPENDED,
+};
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::invocation::InvocationTarget;
-
-use crate::metric_definitions::{
-    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
-    TASK_OP_SUSPENDED,
-};
+use restate_types::schema::service::ServiceMetadataResolver;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -89,19 +89,19 @@ trait InvocationTaskRunner<SR> {
     ) -> AbortHandle;
 }
 
-struct DefaultInvocationTaskRunner<EE, DMR> {
+struct DefaultInvocationTaskRunner<EE, Schemas> {
     client: ServiceClient,
     entry_enricher: EE,
-    deployment_metadata_resolver: Live<DMR>,
+    schemas: Live<Schemas>,
 }
 
-impl<SR, EE, DMR> InvocationTaskRunner<SR> for DefaultInvocationTaskRunner<EE, DMR>
+impl<SR, EE, Schemas> InvocationTaskRunner<SR> for DefaultInvocationTaskRunner<EE, Schemas>
 where
     SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
     <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
-    DMR: DeploymentResolver + Clone + Send + Sync + 'static,
+    Schemas: DeploymentResolver + ServiceMetadataResolver + Clone + Send + Sync + 'static,
 {
     fn start_invocation_task(
         &self,
@@ -131,7 +131,7 @@ where
                 storage_reader.clone(),
                 storage_reader,
                 self.entry_enricher.clone(),
-                self.deployment_metadata_resolver.clone(),
+                self.schemas.clone(),
                 invoker_tx,
                 invoker_rx,
             )
@@ -157,19 +157,19 @@ pub struct Service<SR, EntryEnricher, DeploymentRegistry> {
     inner: ServiceInner<DefaultInvocationTaskRunner<EntryEnricher, DeploymentRegistry>, SR>,
 }
 
-impl<SR, EE, DMR> Service<SR, EE, DMR> {
+impl<SR, EE, Schemas> Service<SR, EE, Schemas> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new<JS>(
         options: &InvokerOptions,
-        deployment_metadata_resolver: Live<DMR>,
+        deployment_metadata_resolver: Live<Schemas>,
         client: ServiceClient,
         entry_enricher: EE,
-    ) -> Service<SR, EE, DMR>
+    ) -> Service<SR, EE, Schemas>
     where
         SR: JournalReader<JournalStream = JS> + StateReader + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
         EE: EntryEnricher,
-        DMR: DeploymentResolver,
+        Schemas: DeploymentResolver + ServiceMetadataResolver,
     {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = mpsc::unbounded_channel();
@@ -187,7 +187,7 @@ impl<SR, EE, DMR> Service<SR, EE, DMR> {
                 invocation_task_runner: DefaultInvocationTaskRunner {
                     client,
                     entry_enricher,
-                    deployment_metadata_resolver,
+                    schemas: deployment_metadata_resolver,
                 },
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
@@ -202,13 +202,13 @@ impl<SR, EE, DMR> Service<SR, EE, DMR> {
         service_client_options: &ServiceClientOptions,
         invoker_options: &InvokerOptions,
         entry_enricher: EE,
-        deployment_registry: Live<DMR>,
-    ) -> Result<Service<SR, EE, DMR>, BuildError>
+        schemas: Live<Schemas>,
+    ) -> Result<Service<SR, EE, Schemas>, BuildError>
     where
         SR: JournalReader<JournalStream = JS> + StateReader + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
         EE: EntryEnricher,
-        DMR: DeploymentResolver,
+        Schemas: DeploymentResolver + ServiceMetadataResolver,
     {
         metric_definitions::describe_metrics();
         let client =
@@ -216,7 +216,7 @@ impl<SR, EE, DMR> Service<SR, EE, DMR> {
 
         Ok(Service::new(
             invoker_options,
-            deployment_registry,
+            schemas,
             client,
             entry_enricher,
         ))
@@ -229,13 +229,13 @@ pub enum BuildError {
     ServiceClient(#[from] restate_service_client::BuildError),
 }
 
-impl<SR, EE, EMR> Service<SR, EE, EMR>
+impl<SR, EE, Schemas> Service<SR, EE, Schemas>
 where
     SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
     <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
-    EMR: DeploymentResolver + Clone + Send + Sync + 'static,
+    Schemas: DeploymentResolver + ServiceMetadataResolver + Clone + Send + Sync + 'static,
 {
     pub fn handle(&self) -> InvokerHandle<SR> {
         InvokerHandle {
@@ -1033,16 +1033,18 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use restate_invoker_api::{entry_enricher, InvokerHandle};
+    use crate::invocation_task::InvocationTaskError;
+    use crate::quota::InvokerConcurrencyQuota;
+    use restate_invoker_api::entry_enricher;
+    use restate_invoker_api::InvokerHandle;
     use restate_test_util::{check, let_assert};
-    use restate_types::identifiers::{LeaderEpoch, PartitionId};
+    use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceRevision};
+    use restate_types::invocation::ServiceType;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::retries::RetryPolicy;
-    use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
-
-    use crate::invocation_task::InvocationTaskError;
-    use crate::quota::InvokerConcurrencyQuota;
+    use restate_types::schema::deployment::Deployment;
+    use restate_types::schema::service::ServiceMetadata;
 
     // -- Mocks
 
@@ -1143,6 +1145,44 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Default)]
+    struct MockSchemas;
+
+    impl ServiceMetadataResolver for MockSchemas {
+        fn resolve_latest_service(&self, _: impl AsRef<str>) -> Option<ServiceMetadata> {
+            None
+        }
+
+        fn resolve_latest_service_type(&self, _: impl AsRef<str>) -> Option<ServiceType> {
+            None
+        }
+
+        fn list_services(&self) -> Vec<ServiceMetadata> {
+            vec![]
+        }
+    }
+
+    impl DeploymentResolver for MockSchemas {
+        fn resolve_latest_deployment_for_service(&self, _: impl AsRef<str>) -> Option<Deployment> {
+            None
+        }
+
+        fn get_deployment(&self, _: &DeploymentId) -> Option<Deployment> {
+            None
+        }
+
+        fn get_deployment_and_services(
+            &self,
+            _: &DeploymentId,
+        ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+            None
+        }
+
+        fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
+            vec![]
+        }
+    }
+
     #[test(tokio::test)]
     async fn input_order_is_maintained() {
         let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
@@ -1160,10 +1200,10 @@ mod tests {
         let service = Service::new(
             &invoker_options,
             // all invocations are unknown leading to immediate retries
-            Live::from_value(MockDeploymentMetadataRegistry::default()),
+            Live::from_value(MockSchemas),
             ServiceClient::from_options(
                 &ServiceClientOptions::default(),
-                restate_service_client::AssumeRoleCacheMode::None,
+                AssumeRoleCacheMode::None,
             )
             .unwrap(),
             entry_enricher::test_util::MockEntryEnricher,

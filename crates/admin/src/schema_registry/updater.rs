@@ -207,6 +207,8 @@ impl SchemaUpdater {
                     } else {
                         None
                     },
+                    inactivity_timeout: None,
+                    abort_timeout: None,
                 }
             };
 
@@ -428,6 +430,12 @@ impl SchemaUpdater {
                             h.target_meta.completion_retention =
                                 Some(new_workflow_completion_retention);
                         }
+                    }
+                    ModifyServiceChange::InactivityTimeout(inactivity_timeout) => {
+                        schemas.inactivity_timeout = Some(inactivity_timeout);
+                    }
+                    ModifyServiceChange::AbortTimeout(abort_timeout) => {
+                        schemas.abort_timeout = Some(abort_timeout);
                     }
                 }
             }
