@@ -40,7 +40,7 @@ struct PartitionListEntry {
     status: PartitionProcessorStatus,
 }
 
-async fn list_partitions(
+pub async fn list_partitions(
     connection: &ConnectionInfo,
     _opts: &ListPartitionsOpts,
 ) -> anyhow::Result<()> {
@@ -89,12 +89,12 @@ async fn list_partitions(
     partitions_table.set_styled_header(vec![
         "P-ID",
         "NODE",
-        "RUN-MODE",
-        "REPLAY",
-        "APPLIED-LSN",
-        "PERSISTED-LSN",
-        "OBSERVED-LEADER",
-        "#-SKIPS",
+        "MODE",
+        "STATUS",
+        "APPLIED",
+        "PERSISTED",
+        "LEADER",
+        "SKIPPED",
         "LAST-SEEN",
     ]);
     for (partition_id, processors) in partitions {

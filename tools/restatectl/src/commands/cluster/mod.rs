@@ -8,16 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod gen_metadata;
-pub mod list;
+mod overview;
 
 use cling::prelude::*;
 
+use crate::commands::cluster::overview::ClusterOverviewOpts;
+
 #[derive(Run, Subcommand, Clone)]
-pub enum Partitions {
-    /// Print the partitions and their respective processors' status
-    #[clap(alias = "status")]
-    List(list::ListPartitionsOpts),
-    /// Prints a generated partition table in JSON format
-    GenerateMetadata(gen_metadata::GeneratePartitionTableOpts),
+pub enum Cluster {
+    /// Print a brief overview of the cluster status (nodes, logs, partitions)
+    Overview(ClusterOverviewOpts),
 }

@@ -11,7 +11,7 @@
 mod describe_log;
 mod dump_log;
 mod gen_metadata;
-mod list_logs;
+pub mod list_logs;
 mod reconfigure;
 mod trim_log;
 

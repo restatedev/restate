@@ -16,6 +16,7 @@ use restate_cli_util::CliContext;
 use restate_cli_util::CommonOpts;
 use restate_types::net::AdvertisedAddress;
 
+use crate::commands::cluster::Cluster;
 use crate::commands::log::Logs;
 use crate::commands::metadata::Metadata;
 use crate::commands::node::Nodes;
@@ -49,6 +50,9 @@ pub struct ConnectionInfo {
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Command {
+    /// Cluster overview
+    #[clap(subcommand)]
+    Cluster(Cluster),
     /// Cluster distributed log operations
     #[clap(subcommand)]
     Logs(Logs),

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod display_util;
+pub mod cluster;
 pub mod dump;
 pub mod log;
 pub mod metadata;

@@ -20,7 +20,7 @@ use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::Cluste
 use restate_admin::cluster_controller::protobuf::ListLogsRequest;
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::{c_println, c_title};
+use restate_cli_util::{c_println};
 use restate_types::logs::metadata::{Chain, Logs};
 use restate_types::logs::LogId;
 use restate_types::storage::StorageCodec;
@@ -31,7 +31,7 @@ use restate_types::Versioned;
 #[cling(run = "list_logs")]
 pub struct ListLogsOpts {}
 
-async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow::Result<()> {
+pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
         .with_context(|| {
@@ -51,7 +51,7 @@ async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow:
     let mut buf = response.logs;
     let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
 
-    c_title!("📋", format!("Log Configuration {}", logs.version()));
+    c_println!("Log Configuration ({})", logs.version());
 
     // sort by log-id for display
     let logs: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();

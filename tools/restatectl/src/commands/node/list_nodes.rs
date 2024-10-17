@@ -32,10 +32,10 @@ use crate::util::grpc_connect;
 pub struct ListNodesOpts {
     /// Display additional node status information
     #[arg(long)]
-    extra: bool,
+    pub(crate) extra: bool,
 }
 
-async fn list_nodes(connection: &ConnectionInfo, _opts: &ListNodesOpts) -> anyhow::Result<()> {
+pub async fn list_nodes(connection: &ConnectionInfo, _opts: &ListNodesOpts) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
         .with_context(|| {
