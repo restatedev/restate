@@ -31,17 +31,17 @@ use crate::commands::display_util::render_as_duration;
 use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[cling(run = "list_partitions_status")]
-pub struct PartitionStatusOpts {}
+#[cling(run = "list_partitions")]
+pub struct ListPartitionsOpts {}
 
-struct PartitionDetails {
+struct PartitionListEntry {
     host_node: GenerationalNodeId,
     status: PartitionProcessorStatus,
 }
 
-async fn list_partitions_status(
+async fn list_partitions(
     connection: &ConnectionInfo,
-    _opts: &PartitionStatusOpts,
+    _opts: &ListPartitionsOpts,
 ) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
@@ -62,7 +62,7 @@ async fn list_partitions_status(
         .cluster_state
         .ok_or_else(|| anyhow::anyhow!("no cluster state returned"))?;
 
-    let mut partitions: BTreeMap<u32, Vec<PartitionDetails>> = BTreeMap::new();
+    let mut partitions: BTreeMap<u32, Vec<PartitionListEntry>> = BTreeMap::new();
     let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
     for (node_id, node_state) in state.nodes {
         match node_state.state.expect("node state is set") {
@@ -77,7 +77,7 @@ async fn list_partitions_status(
                         .expect("alive partition has a node id");
                     let host_node =
                         GenerationalNodeId::new(host.id, host.generation.expect("generation"));
-                    let details = PartitionDetails { host_node, status };
+                    let details = PartitionListEntry { host_node, status };
                     partitions.entry(partition_id).or_default().push(details);
                 }
             }
