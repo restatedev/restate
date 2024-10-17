@@ -181,7 +181,7 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                     params,
                     self.networking.clone(),
                     self.logserver_rpc_routers.clone(),
-                    &self.sequencer_rpc_routers,
+                    self.sequencer_rpc_routers.clone(),
                     self.record_cache.clone(),
                 );
                 let key_value = entry.insert(Arc::new(loglet));
