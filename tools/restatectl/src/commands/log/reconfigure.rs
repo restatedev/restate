@@ -33,16 +33,16 @@ use crate::util::grpc_connect;
 #[cling(run = "reconfigure")]
 pub struct ReconfigureOpts {
     /// LogId/Partition to seal and extend
-    #[clap(long)]
+    #[clap(long, short)]
     log_id: u32,
     /// Option segment index to seal. The tail segment is chosen automatically if not provided.
-    #[clap(long)]
+    #[clap(long, short)]
     segment_index: Option<u32>,
     /// The [minimum] expected metadata version
-    #[clap(long, default_value = "1")]
+    #[clap(long, short, default_value = "1")]
     min_version: NonZeroU32,
     /// Provider kind.
-    #[clap(long, default_value = "replicated")]
+    #[clap(long, short, default_value = "replicated")]
     provider: ProviderKind,
 
     /// Replication factor requirement for a new replicated segment; by default reuse

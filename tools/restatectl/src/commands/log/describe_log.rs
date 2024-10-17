@@ -17,11 +17,12 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::DescribeLogRequest;
+use restate_admin::cluster_controller::protobuf::{DescribeLogRequest, ListLogsRequest};
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_types::logs::metadata::{Chain, ProviderKind, Segment, SegmentIndex};
+use restate_types::logs::metadata::{Chain, Logs, ProviderKind, Segment, SegmentIndex};
+use restate_types::logs::LogId;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::storage::StorageCodec;
@@ -53,6 +54,13 @@ impl LogIdRange {
     }
 }
 
+impl From<&LogId> for LogIdRange {
+    fn from(log_id: &LogId) -> Self {
+        let id = (*log_id).into();
+        LogIdRange::new(id, id).unwrap()
+    }
+}
+
 impl FromStr for LogIdRange {
     type Err = anyhow::Error;
 
@@ -74,11 +82,10 @@ impl FromStr for LogIdRange {
 }
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[clap()]
 #[cling(run = "describe_logs")]
 pub struct DescribeLogIdOpts {
-    /// The log id(s) to describe
-    #[arg(required = true, value_parser = value_parser!(LogIdRange))]
+    /// The log id or range to describe, e.g. "0", "1-4"; all logs are shown by default
+    #[arg( value_parser = value_parser!(LogIdRange))]
     log_id: Vec<LogIdRange>,
 
     /// The first segment id to display
@@ -124,11 +131,27 @@ async fn describe_logs(
             )
         })?;
 
-    let client = ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let mut client =
+        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    for range in &opts.log_id {
+    let log_ids = if opts.log_id.is_empty() {
+        let list_response = client
+            .list_logs(ListLogsRequest::default())
+            .await?
+            .into_inner();
+        let mut buf = list_response.logs;
+        let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
+        logs.iter()
+            .sorted_by(|a, b| Ord::cmp(a.0, b.0))
+            .map(|(id, _)| LogIdRange::from(id))
+            .collect::<Vec<_>>()
+    } else {
+        opts.log_id.clone()
+    };
+
+    for range in log_ids {
         for log_id in range.iter() {
-            describe_log(log_id, client.clone(), opts).await?;
+            describe_log(log_id, &mut client, opts).await?;
         }
     }
 
@@ -137,7 +160,7 @@ async fn describe_logs(
 
 async fn describe_log(
     log_id: u32,
-    mut client: ClusterCtrlSvcClient<Channel>,
+    client: &mut ClusterCtrlSvcClient<Channel>,
     opts: &DescribeLogIdOpts,
 ) -> anyhow::Result<()> {
     let req = DescribeLogRequest { log_id };
@@ -320,6 +343,7 @@ fn render_sequencer(
     params: &ReplicatedLogletParams,
     nodes_configuration: &NodesConfiguration,
 ) -> Cell {
+    let cell = Cell::new(format!("{:#}", params.sequencer));
     if is_tail {
         let sequencer_generational =
             nodes_configuration.find_node_by_id(params.sequencer.as_plain());
@@ -330,8 +354,8 @@ fn render_sequencer(
         } else {
             Color::Red
         };
-        Cell::new(format!("{:#}", params.sequencer)).fg(color)
+        cell.fg(color)
     } else {
-        Cell::new("")
+        cell
     }
 }
