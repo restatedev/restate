@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod display_util;
 pub mod cluster;
+mod display_util;
 pub mod dump;
 pub mod log;
 pub mod metadata;
