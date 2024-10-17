@@ -133,6 +133,26 @@ impl fmt::Display for InputRules {
         match self.input_validation_rules.len() {
             0 => write!(f, "<invalid rules>"),
             1 => write!(f, "{}", self.input_validation_rules[0]),
+            2 if self
+                .input_validation_rules
+                .contains(&InputValidationRule::NoBodyAndContentType) =>
+            {
+                // Skip to write none when only 2 rules and one of them is none
+                // see https://github.com/restatedev/restate/issues/2101
+                let (first, second) = (
+                    &self.input_validation_rules[0],
+                    &self.input_validation_rules[1],
+                );
+                write!(
+                    f,
+                    "{}",
+                    if first == &InputValidationRule::NoBodyAndContentType {
+                        second
+                    } else {
+                        first
+                    }
+                )
+            }
             _ => write!(
                 f,
                 "one of [{}]",
@@ -169,10 +189,10 @@ impl fmt::Display for InputValidationRule {
         match self {
             InputValidationRule::NoBodyAndContentType => write!(f, "none"),
             InputValidationRule::ContentType { content_type } => {
-                write!(f, "value of content-type '{}'", content_type)
+                write!(f, "{}", content_type)
             }
             InputValidationRule::JsonValue { content_type } => {
-                write!(f, "JSON value of content-type '{}'", content_type)
+                write!(f, "{}", content_type)
             }
         }
     }
@@ -380,20 +400,13 @@ impl fmt::Display for OutputContentTypeRule {
             OutputContentTypeRule::None => write!(f, "none"),
             OutputContentTypeRule::Set {
                 content_type,
-                has_json_schema,
                 set_content_type_if_empty,
+                ..
             } => {
                 if *set_content_type_if_empty {
                     write!(f, "optional ")?;
                 }
-                if *has_json_schema {
-                    write!(f, "JSON ")?;
-                }
-                write!(
-                    f,
-                    "value of content-type '{}'",
-                    String::from_utf8_lossy(content_type.as_bytes())
-                )
+                write!(f, "{}", String::from_utf8_lossy(content_type.as_bytes()))
             }
         }
     }
