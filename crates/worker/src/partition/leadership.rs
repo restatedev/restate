@@ -242,32 +242,24 @@ where
         let envelope = Arc::new(envelope);
         let log_id = LogId::from(self.partition_processor_metadata.partition_id);
 
-        loop {
-            // todo: Retry should happen in the background to avoid blocking us from accepting
-            // further instructions/commands from PP manager.
-            match self.bifrost.append(log_id, Arc::clone(&envelope)).await {
-                // only stop on shutdown.
-                Err(e @ restate_bifrost::Error::Shutdown(_)) => return Err(e.into()),
-                Err(e) => {
-                    info!(
-                        %log_id,
-                        %leader_epoch,
-                        ?e,
-                        "Failed to write the announce leadership message to bifrost. Retrying."
-                    );
-                    // todo: retry with backoff. At the moment, this is very aggressive (intentionally)
-                    // to avoid blocking for too long.
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-                Ok(lsn) => {
-                    debug!(
-                        %log_id,
-                        %leader_epoch,
-                        %lsn,
-                        "Written announce leadership message to bifrost."
-                    );
-                    return Ok(());
-                }
+        match self.bifrost.append(log_id, Arc::clone(&envelope)).await {
+            Err(e) => {
+                info!(
+                    %log_id,
+                    %leader_epoch,
+                    ?e,
+                    "Failed to write the announce leadership message to bifrost."
+                );
+                Err(e.into())
+            }
+            Ok(lsn) => {
+                debug!(
+                    %log_id,
+                    %leader_epoch,
+                    %lsn,
+                    "Written announce leadership message to bifrost."
+                );
+                Ok(())
             }
         }
     }

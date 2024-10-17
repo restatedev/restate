@@ -13,9 +13,10 @@ use crate::identifiers::{PartitionId, PartitionKey};
 use crate::partition_table::PartitionTable;
 use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
 use serde_with::serde_as;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashSet};
 use std::num::NonZero;
 use std::ops::RangeInclusive;
+use xxhash_rust::xxh3::Xxh3Builder;
 
 /// Replication strategy for partition processors.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -106,7 +107,7 @@ pub struct TargetPartitionState {
     /// Node which is the designated leader
     pub leader: Option<PlainNodeId>,
     /// Set of nodes that should run a partition processor for this partition
-    pub node_set: BTreeSet<PlainNodeId>,
+    pub node_set: HashSet<PlainNodeId, Xxh3Builder>,
     pub replication_strategy: ReplicationStrategy,
 }
 
@@ -119,7 +120,7 @@ impl TargetPartitionState {
             partition_key_range,
             replication_strategy,
             leader: None,
-            node_set: BTreeSet::default(),
+            node_set: HashSet::default(),
         }
     }
 

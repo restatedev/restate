@@ -5365,6 +5365,7 @@ dependencies = [
  "http-body 1.0.1",
  "http-body-util",
  "hyper-util",
+ "itertools 0.13.0",
  "mime_guess",
  "okapi-operation",
  "prost",
