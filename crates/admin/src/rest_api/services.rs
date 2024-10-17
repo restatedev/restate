@@ -84,6 +84,8 @@ pub async fn modify_service<V>(
         public,
         idempotency_retention,
         workflow_completion_retention,
+        inactivity_timeout,
+        abort_timeout,
     }): Json<ModifyServiceRequest>,
 ) -> Result<Json<ServiceMetadata>, MetaApiError> {
     let mut modify_request = vec![];
@@ -99,6 +101,12 @@ pub async fn modify_service<V>(
         modify_request.push(ModifyServiceChange::WorkflowCompletionRetention(
             new_workflow_completion_retention,
         ));
+    }
+    if let Some(inactivity_timeout) = inactivity_timeout {
+        modify_request.push(ModifyServiceChange::InactivityTimeout(inactivity_timeout));
+    }
+    if let Some(abort_timeout) = abort_timeout {
+        modify_request.push(ModifyServiceChange::AbortTimeout(abort_timeout));
     }
 
     if modify_request.is_empty() {
