@@ -27,7 +27,7 @@ use restate_types::storage::StorageCodec;
 use restate_types::Versioned;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[clap()]
+#[clap(visible_alias = "ls")]
 #[cling(run = "list_logs")]
 pub struct ListLogsOpts {}
 

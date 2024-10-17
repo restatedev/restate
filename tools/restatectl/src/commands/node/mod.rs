@@ -13,7 +13,7 @@ mod list_nodes;
 use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
-pub enum Node {
+pub enum Nodes {
     /// Print a summary of active nodes in cluster
     List(list_nodes::ListNodesOpts),
 }

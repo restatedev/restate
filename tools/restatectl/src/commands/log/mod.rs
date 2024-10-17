@@ -18,7 +18,7 @@ mod trim_log;
 use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
-pub enum Log {
+pub enum Logs {
     /// List the logs by partition
     List(list_logs::ListLogsOpts),
     /// Prints a generated log-metadata in JSON format

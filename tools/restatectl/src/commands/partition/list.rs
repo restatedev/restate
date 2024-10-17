@@ -32,6 +32,7 @@ use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "list_partitions")]
+#[clap(alias = "ls")]
 pub struct ListPartitionsOpts {}
 
 struct PartitionListEntry {

@@ -16,10 +16,10 @@ use restate_cli_util::CliContext;
 use restate_cli_util::CommonOpts;
 use restate_types::net::AdvertisedAddress;
 
-use crate::commands::log::Log;
+use crate::commands::log::Logs;
 use crate::commands::metadata::Metadata;
-use crate::commands::node::Node;
-use crate::commands::partitions::Partitions;
+use crate::commands::node::Nodes;
+use crate::commands::partition::Partitions;
 use crate::commands::snapshot::Snapshot;
 
 #[derive(Run, Parser, Clone)]
@@ -51,10 +51,10 @@ pub struct ConnectionInfo {
 pub enum Command {
     /// Cluster distributed log operations
     #[clap(subcommand)]
-    Logs(Log),
+    Logs(Logs),
     /// Cluster node status
     #[clap(subcommand)]
-    Nodes(Node),
+    Nodes(Nodes),
     /// Manage partition table
     #[clap(subcommand)]
     Partitions(Partitions),

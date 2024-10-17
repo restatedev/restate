@@ -13,5 +13,5 @@ pub mod dump;
 pub mod log;
 pub mod metadata;
 pub mod node;
-pub mod partitions;
+pub mod partition;
 pub mod snapshot;

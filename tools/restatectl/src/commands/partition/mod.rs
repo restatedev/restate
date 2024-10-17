@@ -14,7 +14,6 @@ mod list;
 use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
-#[clap(alias = "partition")]
 pub enum Partitions {
     /// Print the partitions and their respective processors' status
     #[clap(alias = "status")]
