@@ -35,9 +35,7 @@ pub(crate) fn register_self(
         Arc::new(ServiceMetadataScanner(resolver)),
     );
 
-    ctx.as_ref()
-        .register_table("sys_service", Arc::new(service_table))
-        .map(|_| ())
+    ctx.register_non_partitioned_table("sys_service", Arc::new(service_table))
 }
 
 #[derive(Clone, derive_more::Debug)]

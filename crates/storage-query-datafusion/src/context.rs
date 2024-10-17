@@ -8,12 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::max;
-use std::fmt::Debug;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use codederror::CodedError;
+use datafusion::catalog::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SQLOptions;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
@@ -21,7 +18,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
-
+use datafusion::sql::TableReference;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
@@ -31,7 +28,13 @@ use restate_types::identifiers::PartitionId;
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
+use std::cmp::max;
+use std::fmt::Debug;
+use std::sync::Arc;
 
+use crate::remote_query_scanner_client::RemoteScannerService;
+use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::table_providers::ScanPartition;
 use crate::{analyzer, physical_optimizer};
 
 const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
@@ -97,6 +100,7 @@ pub trait SelectPartitions: Send + Sync + Debug + 'static {
 pub struct QueryContext {
     sql_options: SQLOptions,
     datafusion_context: SessionContext,
+    remote_scanner_manager: RemoteScannerManager,
 }
 
 impl QueryContext {
@@ -108,16 +112,21 @@ impl QueryContext {
         schemas: Live<
             impl DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
         >,
+        remote_scanner_service: Arc<dyn RemoteScannerService>,
     ) -> Result<QueryContext, BuildError> {
+        let remote_scanner_manager = RemoteScannerManager::new(remote_scanner_service);
+
         let ctx = QueryContext::new(
             options.memory_size.get(),
             options.tmp_dir.clone(),
             options.query_parallelism(),
+            remote_scanner_manager,
         );
+        // ----- non partitioned tables -----
         crate::deployment::register_self(&ctx, schemas.clone())?;
         crate::service::register_self(&ctx, schemas)?;
         crate::invocation_state::register_self(&ctx, status)?;
-        // partition-key-based
+        // ----- partition-key-based -----
         crate::invocation_status::register_self(
             &ctx,
             partition_selector.clone(),
@@ -159,10 +168,47 @@ impl QueryContext {
         Ok(ctx)
     }
 
+    pub(crate) fn register_partitioned_table(
+        &self,
+        name: impl Into<TableReference>,
+        provider: Arc<dyn TableProvider>,
+    ) -> Result<(), DataFusionError> {
+        self.datafusion_context
+            .register_table(name, provider)
+            .map(|_| ())
+    }
+    pub(crate) fn register_non_partitioned_table(
+        &self,
+        name: impl Into<TableReference>,
+        provider: Arc<dyn TableProvider>,
+    ) -> Result<(), DataFusionError> {
+        self.datafusion_context
+            .register_table(name, provider)
+            .map(|_| ())
+    }
+
+    pub(crate) fn create_distributed_scanner(
+        &self,
+        table_name: impl Into<String>,
+        local_partition_scanner: Arc<dyn ScanPartition>,
+    ) -> impl ScanPartition + Clone {
+        self.remote_scanner_manager
+            .create_distributed_scanner(table_name, local_partition_scanner)
+    }
+
+    pub(crate) fn local_partition_scanner(
+        &self,
+        table_name: &str,
+    ) -> Option<Arc<dyn ScanPartition>> {
+        self.remote_scanner_manager
+            .local_partition_scanner(table_name)
+    }
+
     fn new(
         memory_limit: usize,
         temp_folder: Option<String>,
         default_parallelism: Option<usize>,
+        remote_scanner_manager: RemoteScannerManager,
     ) -> Self {
         //
         // build the runtime
@@ -242,6 +288,7 @@ impl QueryContext {
         Self {
             sql_options,
             datafusion_context: ctx,
+            remote_scanner_manager,
         }
     }
 

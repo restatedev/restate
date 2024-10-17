@@ -8,19 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
-use std::ops::RangeInclusive;
-
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use futures::{Stream, StreamExt};
+use std::fmt::Debug;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
 use tracing::warn;
 
+use crate::remote_query_scanner_client::{remote_scan_as_datafusion_stream, RemoteScannerService};
+use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::table_providers::ScanPartition;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_types::identifiers::{PartitionId, PartitionKey};
-
-use crate::table_providers::ScanPartition;
+// ----- local partition scanner -----
 
 pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     type Builder;
@@ -103,5 +105,47 @@ where
         };
         stream_builder.spawn(background_task);
         stream_builder.build()
+    }
+}
+
+// ----- remote partition scanner -----
+
+#[derive(Clone, Debug)]
+pub struct RemotePartitionsScanner {
+    manager: RemoteScannerManager,
+    svc: Arc<dyn RemoteScannerService>,
+    table_name: String,
+}
+
+impl RemotePartitionsScanner {
+    pub fn new(
+        manager: RemoteScannerManager,
+        svc: Arc<dyn RemoteScannerService>,
+        table: impl Into<String>,
+    ) -> Self {
+        Self {
+            manager,
+            svc,
+            table_name: table.into(),
+        }
+    }
+}
+
+impl ScanPartition for RemotePartitionsScanner {
+    fn scan_partition(
+        &self,
+        partition_id: PartitionId,
+        range: RangeInclusive<PartitionKey>,
+        projection: SchemaRef,
+    ) -> SendableRecordBatchStream {
+        let target = self.manager.get_partition_target_node(partition_id);
+        remote_scan_as_datafusion_stream(
+            self.svc.clone(),
+            target,
+            partition_id,
+            range,
+            self.table_name.clone(),
+            projection,
+        )
     }
 }

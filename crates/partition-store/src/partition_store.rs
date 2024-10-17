@@ -114,7 +114,7 @@ pub enum TableScanIterationDecision<R> {
     BreakWith(Result<R>),
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Enum, strum::VariantArray)]
+#[derive(Debug, Ord, PartialOrd, Copy, Clone, Eq, PartialEq, Enum, strum::VariantArray)]
 pub enum TableKind {
     // By Partition ID
     PartitionStateMachine,
@@ -162,6 +162,10 @@ impl TableKind {
             return None;
         };
         self.key_kinds().iter().find(|k| **k == kind).copied()
+    }
+
+    pub fn name(&self) -> &'static str {
+        stringify!(*self)
     }
 }
 

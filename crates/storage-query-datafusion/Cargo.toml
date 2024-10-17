@@ -37,6 +37,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+strum = "0.26.2"
+tokio-stream = "0.1.16"
+anyhow = "1.0.81"
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
