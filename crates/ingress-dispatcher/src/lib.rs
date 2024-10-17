@@ -9,21 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Display;
-use std::future::Future;
 use std::hash::Hash;
 
 use bytes::Bytes;
-use tokio::sync::oneshot;
 
-use restate_core::metadata;
-use restate_types::identifiers::{
-    partitioner, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
-};
-use restate_types::ingress::IngressResponseResult;
+use restate_types::identifiers::{partitioner, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
-    InvocationTargetType, ServiceInvocation, ServiceInvocationResponseSink, SpanRelation,
-    SubmitNotificationSink, VirtualObjectHandlerType, WorkflowHandlerType,
+    InvocationTarget, ServiceInvocation, SpanRelation, VirtualObjectHandlerType,
+    WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
 use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
@@ -34,21 +27,10 @@ pub mod error;
 // -- Types used by the ingress to interact with the dispatcher
 pub use dispatcher::{DispatchIngressRequest, IngressDispatcher};
 
-pub type IngressInvocationResponseSender = oneshot::Sender<IngressInvocationResponse>;
-pub type IngressInvocationResponseReceiver = oneshot::Receiver<IngressInvocationResponse>;
-pub type IngressGetInvocationOutputResponseSender = oneshot::Sender<IngressInvocationResponse>;
-pub type IngressGetInvocationOutputResponseReceiver = oneshot::Receiver<IngressInvocationResponse>;
-pub type IngressSubmittedInvocationNotificationSender =
-    oneshot::Sender<SubmittedInvocationNotification>;
-pub type IngressSubmittedInvocationNotificationReceiver =
-    oneshot::Receiver<SubmittedInvocationNotification>;
-
 #[derive(Debug)]
 enum IngressDispatcherRequestInner {
     Invoke(ServiceInvocation),
     ProxyThrough(ServiceInvocation),
-    InvocationResponse(InvocationResponse),
-    Attach(AttachInvocationRequest),
 }
 
 impl WithPartitionKey for IngressDispatcherRequestInner {
@@ -56,15 +38,8 @@ impl WithPartitionKey for IngressDispatcherRequestInner {
         match self {
             IngressDispatcherRequestInner::Invoke(si) => si.invocation_id.partition_key(),
             IngressDispatcherRequestInner::ProxyThrough(si) => si.invocation_id.partition_key(),
-            IngressDispatcherRequestInner::InvocationResponse(ir) => ir.id.partition_key(),
-            IngressDispatcherRequestInner::Attach(iq) => iq.partition_key(),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct SubmittedInvocationNotification {
-    pub is_new_invocation: bool,
 }
 
 #[derive(Debug)]
@@ -73,29 +48,14 @@ pub struct IngressDispatcherRequest {
     request_mode: IngressRequestMode,
 }
 
-#[derive(Debug, Clone)]
-pub struct IngressInvocationResponse {
-    pub idempotency_expiry_time: Option<String>,
-    pub result: IngressResponseResult,
-    pub invocation_id: Option<InvocationId>,
-}
-
 pub type IngressDeduplicationId = (String, MessageIndex);
 
 #[derive(Debug)]
 enum IngressRequestMode {
-    RequestResponse(
-        PartitionProcessorRpcRequestId,
-        IngressInvocationResponseSender,
-    ),
     DedupFireAndForget {
         deduplication_id: IngressDeduplicationId,
         proxying_partition_key: Option<PartitionKey>,
     },
-    WaitSubmitNotification(
-        PartitionProcessorRpcRequestId,
-        IngressSubmittedInvocationNotificationSender,
-    ),
     FireAndForget,
 }
 
@@ -104,104 +64,6 @@ pub trait DeduplicationId: Display + Hash {
 }
 
 impl IngressDispatcherRequest {
-    pub fn invocation(
-        mut service_invocation: ServiceInvocation,
-    ) -> (
-        Self,
-        PartitionProcessorRpcRequestId,
-        IngressInvocationResponseReceiver,
-    ) {
-        let (result_tx, result_rx) = oneshot::channel();
-
-        let node_id = metadata().my_node_id();
-        let request_id = PartitionProcessorRpcRequestId::default();
-        service_invocation.response_sink = Some(ServiceInvocationResponseSink::Ingress {
-            node_id,
-            request_id,
-        });
-
-        (
-            IngressDispatcherRequest {
-                request_mode: IngressRequestMode::RequestResponse(request_id, result_tx),
-                inner: IngressDispatcherRequestInner::Invoke(service_invocation),
-            },
-            request_id,
-            result_rx,
-        )
-    }
-
-    pub fn attach(
-        invocation_query: InvocationQuery,
-    ) -> (
-        Self,
-        PartitionProcessorRpcRequestId,
-        IngressInvocationResponseReceiver,
-    ) {
-        let (result_tx, result_rx) = oneshot::channel();
-
-        let node_id = metadata().my_node_id();
-        let request_id = PartitionProcessorRpcRequestId::default();
-
-        (
-            IngressDispatcherRequest {
-                request_mode: IngressRequestMode::RequestResponse(request_id, result_tx),
-                inner: IngressDispatcherRequestInner::Attach(AttachInvocationRequest {
-                    invocation_query,
-                    response_sink: ServiceInvocationResponseSink::Ingress {
-                        node_id,
-                        request_id,
-                    },
-                }),
-            },
-            request_id,
-            result_rx,
-        )
-    }
-
-    pub fn one_way_invocation(
-        mut service_invocation: ServiceInvocation,
-    ) -> (
-        Self,
-        PartitionProcessorRpcRequestId,
-        impl Future<Output = Result<SubmittedInvocationNotification, oneshot::error::RecvError>>,
-    ) {
-        if service_invocation.idempotency_key.is_some()
-            || service_invocation.invocation_target.invocation_target_ty()
-                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-        {
-            let node_id = metadata().my_node_id();
-            let request_id = PartitionProcessorRpcRequestId::default();
-            service_invocation.submit_notification_sink = Some(SubmitNotificationSink::Ingress {
-                node_id,
-                request_id,
-            });
-
-            let (tx, rx) = oneshot::channel();
-
-            (
-                IngressDispatcherRequest {
-                    request_mode: IngressRequestMode::WaitSubmitNotification(request_id, tx),
-                    inner: IngressDispatcherRequestInner::Invoke(service_invocation),
-                },
-                request_id,
-                futures::future::Either::Left(rx),
-            )
-        } else {
-            (
-                IngressDispatcherRequest {
-                    request_mode: IngressRequestMode::FireAndForget,
-                    inner: IngressDispatcherRequestInner::Invoke(service_invocation),
-                },
-                PartitionProcessorRpcRequestId::default(),
-                futures::future::Either::Right(std::future::ready(Ok(
-                    SubmittedInvocationNotification {
-                        is_new_invocation: true,
-                    },
-                ))),
-            )
-        }
-    }
-
     pub fn event<D: DeduplicationId>(
         subscription: &Subscription,
         key: Bytes,
@@ -281,13 +143,6 @@ impl IngressDispatcherRequest {
             request_mode,
         })
     }
-
-    pub fn completion(invocation_response: InvocationResponse) -> Self {
-        IngressDispatcherRequest {
-            request_mode: IngressRequestMode::FireAndForget,
-            inner: IngressDispatcherRequestInner::InvocationResponse(invocation_response),
-        }
-    }
 }
 
 #[cfg(feature = "test-util")]
@@ -310,10 +165,6 @@ pub mod test_util {
     }
 
     impl DispatchIngressRequest for MockDispatcher {
-        fn evict_pending_response(&self, _req_id: PartitionProcessorRpcRequestId) {}
-
-        fn evict_pending_submit_notification(&self, _req_id: PartitionProcessorRpcRequestId) {}
-
         async fn dispatch_ingress_request(
             &self,
             ingress_request: IngressDispatcherRequest,
@@ -324,64 +175,6 @@ pub mod test_util {
     }
 
     impl IngressDispatcherRequest {
-        pub fn expect_invocation(
-            self,
-        ) -> (
-            ServiceInvocation,
-            PartitionProcessorRpcRequestId,
-            IngressInvocationResponseSender,
-        ) {
-            let_assert!(
-                IngressDispatcherRequest {
-                    inner: IngressDispatcherRequestInner::Invoke(service_invocation),
-                    request_mode: IngressRequestMode::RequestResponse(
-                        ingress_response_key,
-                        ingress_response_sender
-                    ),
-                } = self
-            );
-            (
-                service_invocation,
-                ingress_response_key,
-                ingress_response_sender,
-            )
-        }
-
-        pub fn expect_one_way_invocation(self) -> ServiceInvocation {
-            let_assert!(
-                IngressDispatcherRequest {
-                    inner: IngressDispatcherRequestInner::Invoke(service_invocation),
-                    request_mode: IngressRequestMode::FireAndForget,
-                } = self
-            );
-            service_invocation
-        }
-
-        pub fn expect_one_way_invocation_with_submit_notification(
-            self,
-        ) -> (
-            ServiceInvocation,
-            IngressSubmittedInvocationNotificationSender,
-        ) {
-            let_assert!(
-                IngressDispatcherRequest {
-                    inner: IngressDispatcherRequestInner::Invoke(service_invocation),
-                    request_mode: IngressRequestMode::WaitSubmitNotification(_, tx),
-                } = self
-            );
-            (service_invocation, tx)
-        }
-
-        pub fn expect_completion(self) -> InvocationResponse {
-            let_assert!(
-                IngressDispatcherRequest {
-                    inner: IngressDispatcherRequestInner::InvocationResponse(ir),
-                    request_mode: IngressRequestMode::FireAndForget,
-                } = self
-            );
-            ir
-        }
-
         pub fn expect_event(self) -> (ServiceInvocation, IngressDeduplicationId) {
             let_assert!(
                 IngressDispatcherRequest {
@@ -410,36 +203,6 @@ pub mod test_util {
                 } = self
             );
             (service_invocation, deduplication_id)
-        }
-
-        pub fn expect_attach(
-            self,
-        ) -> (
-            InvocationQuery,
-            PartitionProcessorRpcRequestId,
-            IngressInvocationResponseSender,
-        ) {
-            let_assert!(
-                IngressDispatcherRequest {
-                    inner: IngressDispatcherRequestInner::Attach(AttachInvocationRequest {
-                        invocation_query,
-                        response_sink
-                    }),
-                    request_mode: IngressRequestMode::RequestResponse(
-                        ingress_response_key,
-                        ingress_response_sender
-                    ),
-                } = self
-            );
-
-            let_assert!(ServiceInvocationResponseSink::Ingress { request_id, .. } = response_sink);
-            assert_eq!(request_id, ingress_response_key);
-
-            (
-                invocation_query,
-                ingress_response_key,
-                ingress_response_sender,
-            )
         }
     }
 }
