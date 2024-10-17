@@ -9,16 +9,24 @@ use crate::commands::node::list_nodes::{list_nodes, ListNodesOpts};
 use crate::commands::partition::list::{list_partitions, ListPartitionsOpts};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[clap(visible_alias = "status")]
-#[cling(run = "cluster_overview")]
-pub struct ClusterOverviewOpts {
+#[cling(run = "cluster_status")]
+pub struct ClusterStatusOpts {
     /// Display additional status information
     #[arg(long)]
     extra: bool,
 }
 
-async fn cluster_overview(connection: &ConnectionInfo) -> anyhow::Result<()> {
-    list_nodes(connection, &ListNodesOpts { extra: false }).await?;
+async fn cluster_status(
+    connection: &ConnectionInfo,
+    status_opts: &ClusterStatusOpts,
+) -> anyhow::Result<()> {
+    list_nodes(
+        connection,
+        &ListNodesOpts {
+            extra: status_opts.extra,
+        },
+    )
+    .await?;
     c_println!();
 
     list_logs(connection, &ListLogsOpts {}).await?;

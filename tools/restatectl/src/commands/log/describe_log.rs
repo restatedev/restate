@@ -13,8 +13,6 @@ use std::str::FromStr;
 use anyhow::{anyhow, Context};
 use cling::prelude::*;
 use itertools::Itertools;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
 use log::render_loglet_params;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{DescribeLogRequest, ListLogsRequest};
@@ -26,6 +24,8 @@ use restate_types::logs::LogId;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::storage::StorageCodec;
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
 
 use crate::app::ConnectionInfo;
 use crate::commands::log;

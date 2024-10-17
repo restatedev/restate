@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod overview;
+pub(crate) mod overview;
 
 use cling::prelude::*;
 
-use crate::commands::cluster::overview::ClusterOverviewOpts;
+use crate::commands::cluster::overview::ClusterStatusOpts;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Cluster {
     /// Print a brief overview of the cluster status (nodes, logs, partitions)
-    Overview(ClusterOverviewOpts),
+    Overview(ClusterStatusOpts),
 }
