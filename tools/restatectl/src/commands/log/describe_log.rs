@@ -8,79 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::str::FromStr;
-
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use cling::prelude::*;
 use itertools::Itertools;
 use log::render_loglet_params;
+
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{DescribeLogRequest, ListLogsRequest};
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::logs::metadata::{Chain, Logs, ProviderKind, Segment, SegmentIndex};
-use restate_types::logs::LogId;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::storage::StorageCodec;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
+use super::LogIdRange;
 use crate::app::ConnectionInfo;
 use crate::commands::log;
 use crate::util::grpc_connect;
-
-#[derive(Parser, Collect, Clone, Debug)]
-struct LogIdRange {
-    from: u32,
-    to: u32,
-}
-
-impl LogIdRange {
-    fn new(from: u32, to: u32) -> anyhow::Result<Self> {
-        if from > to {
-            Err(anyhow!(
-                "Invalid log id range: {}..{}, start must be <= end range",
-                from,
-                to
-            ))
-        } else {
-            Ok(LogIdRange { from, to })
-        }
-    }
-
-    fn iter(&self) -> impl Iterator<Item = u32> {
-        self.from..=self.to
-    }
-}
-
-impl From<&LogId> for LogIdRange {
-    fn from(log_id: &LogId) -> Self {
-        let id = (*log_id).into();
-        LogIdRange::new(id, id).unwrap()
-    }
-}
-
-impl FromStr for LogIdRange {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split("-").collect();
-        match parts.len() {
-            1 => {
-                let n = parts[0].parse()?;
-                Ok(LogIdRange::new(n, n)?)
-            }
-            2 => {
-                let from = parts[0].parse()?;
-                let to = parts[1].parse()?;
-                Ok(LogIdRange::new(from, to)?)
-            }
-            _ => Err(anyhow!("Invalid log id or log range: {}", s)),
-        }
-    }
-}
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "describe_logs")]
