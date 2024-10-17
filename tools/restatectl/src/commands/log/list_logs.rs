@@ -14,17 +14,19 @@ use anyhow::Context;
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 
-use crate::app::ConnectionInfo;
-use crate::util::grpc_connect;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::ListLogsRequest;
-use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
+use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::logs::metadata::{Chain, Logs};
 use restate_types::logs::LogId;
 use restate_types::storage::StorageCodec;
 use restate_types::Versioned;
+
+use crate::app::ConnectionInfo;
+use crate::commands::log::{deserialize_replicated_log_params, render_loglet_params};
+use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "ls")]
@@ -57,17 +59,27 @@ pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> any
     let logs: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
 
     for (log_id, chain) in logs {
+        let params = deserialize_replicated_log_params(&chain.tail());
         logs_table.add_row(vec![
             Cell::new(log_id),
-            Cell::new(chain.num_segments()).fg(Color::DarkGrey),
+            Cell::new(format!("{}", &chain.tail().base_lsn)),
             Cell::new(format!("{:?}", chain.tail().config.kind)),
-            Cell::new(format!("{}", &chain.tail().base_lsn))
-                .fg(Color::Green)
-                .add_attribute(Attribute::Bold),
+            render_loglet_params(&params, |p| Cell::new(p.loglet_id)),
+            render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
+            render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.sequencer))),
+            render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.nodeset))),
         ]);
     }
 
-    logs_table.set_styled_header(vec!["LOG-ID", "SEGMENTS", "TAIL-SEGMENT-KIND", "FROM-LSN"]);
+    logs_table.set_styled_header(vec![
+        "L-ID",
+        "FROM-LSN",
+        "KIND",
+        "LOGLET-ID",
+        "REPLICATION",
+        "SEQUENCER",
+        "NODESET",
+    ]);
     c_println!("{}", logs_table);
 
     Ok(())

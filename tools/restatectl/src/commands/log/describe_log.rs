@@ -15,7 +15,7 @@ use cling::prelude::*;
 use itertools::Itertools;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
-
+use log::render_loglet_params;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{DescribeLogRequest, ListLogsRequest};
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
@@ -28,6 +28,7 @@ use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::storage::StorageCodec;
 
 use crate::app::ConnectionInfo;
+use crate::commands::log;
 use crate::util::grpc_connect;
 
 #[derive(Parser, Collect, Clone, Debug)]
@@ -231,18 +232,18 @@ async fn describe_log(
 
         match segment.config.kind {
             ProviderKind::Replicated => {
-                let params = get_replicated_log_params(&segment);
+                let params = log::deserialize_replicated_log_params(&segment);
                 let mut segment_row = vec![
                     render_tail_segment_marker(is_tail_segment),
                     Cell::new(format!("{}", segment.index())),
                     Cell::new(format!("{}", segment.base_lsn)),
                     Cell::new(format!("{:?}", segment.config.kind)),
-                    render_maybe_params(&params, |p| Cell::new(p.loglet_id)),
-                    render_maybe_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
-                    render_maybe_params(&params, |p| {
+                    render_loglet_params(&params, |p| Cell::new(p.loglet_id)),
+                    render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
+                    render_loglet_params(&params, |p| {
                         render_sequencer(is_tail_segment, p, &nodes_configuration)
                     }),
-                    render_maybe_params(&params, |p| {
+                    render_loglet_params(&params, |p| {
                         render_effective_nodeset(is_tail_segment, p, &nodes_configuration)
                     }),
                 ];
@@ -309,33 +310,6 @@ fn render_effective_nodeset(
         cell = cell.fg(Color::Red);
     }
     cell
-}
-
-fn get_replicated_log_params(segment: &Segment) -> Option<ReplicatedLogletParams> {
-    match segment.config.kind {
-        ProviderKind::Replicated => {
-            ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
-                .inspect_err(|e| {
-                    c_println!(
-                        "⚠️ Failed to deserialize ReplicatedLogletParams for segment {}: {}",
-                        segment.index(),
-                        e
-                    );
-                })
-                .ok()
-        }
-        _ => None,
-    }
-}
-
-fn render_maybe_params<F>(params: &Option<ReplicatedLogletParams>, render_fn: F) -> Cell
-where
-    F: FnOnce(&ReplicatedLogletParams) -> Cell,
-{
-    params
-        .as_ref()
-        .map(render_fn)
-        .unwrap_or_else(|| Cell::new("N/A").fg(Color::Red))
 }
 
 fn render_sequencer(
