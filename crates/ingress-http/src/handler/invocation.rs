@@ -13,23 +13,21 @@ use http::{Method, Request, Response};
 use http_body_util::Full;
 use tracing::warn;
 
-use restate_core::network::partition_processor_rpc_client::GetInvocationOutputResponse;
-use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_ingress_dispatcher::IngressDispatcherRequest;
+use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
+use super::Handler;
+use super::HandlerError;
+use crate::RequestDispatcher;
+use restate_core::network::partition_processor_rpc_client::{
+    AttachInvocationResponse, GetInvocationOutputResponse,
+};
 use restate_types::identifiers::IdempotencyId;
 use restate_types::invocation::InvocationQuery;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 
-use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
-use super::Handler;
-use super::HandlerError;
-use crate::InvocationStorageReader;
-
-impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
-    Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
-    StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
+    Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_invocation<B: http_body::Body>(
         self,
@@ -95,35 +93,27 @@ where
             return Err(HandlerError::MethodNotAllowed);
         }
 
-        let (dispatcher_req, correlation_id, response_rx) =
-            IngressDispatcherRequest::attach(invocation_query.clone());
-
-        if let Err(e) = self
-            .dispatcher
-            .dispatch_ingress_request(dispatcher_req)
-            .await
-        {
-            warn!(
-                restate.invocation.query = ?invocation_query,
-                "Failed to dispatch: {}",
-                e,
-            );
-            return Err(HandlerError::Unavailable);
-        }
-
         // Wait on response
-        let response = if let Ok(response) = response_rx.await {
-            response
-        } else {
-            self.dispatcher.evict_pending_response(correlation_id);
-            warn!("Response channel was closed");
-            return Err(HandlerError::Unavailable);
+        let response = match self
+            .dispatcher
+            .attach_invocation(invocation_query.clone())
+            .await?
+        {
+            AttachInvocationResponse::NotFound => {
+                return Err(HandlerError::NotFound);
+            }
+            AttachInvocationResponse::NotSupported => {
+                return Err(HandlerError::NotImplemented);
+            }
+            AttachInvocationResponse::Ready(response) => response,
         };
 
         Self::reply_with_invocation_response(
-            response.result,
+            response.response,
             response.invocation_id,
-            response.idempotency_expiry_time.as_deref(),
+            // TODO where the heck this was coming from?!?! :'(
+            //response.idempotency_expiry_time.as_deref(),
+            None,
             move |invocation_target| {
                 self.schemas
                     .pinned()
@@ -150,8 +140,8 @@ where
         }
 
         let response = match self
-            .storage_reader
-            .get_output(invocation_query.clone())
+            .dispatcher
+            .get_invocation_output(invocation_query.clone())
             .await
         {
             Ok(GetInvocationOutputResponse::Ready(out)) => out,

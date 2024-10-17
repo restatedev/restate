@@ -14,8 +14,8 @@ use http_body_util::Full;
 use tracing::{info, trace};
 
 use restate_types::identifiers::InvocationId;
-use restate_types::ingress::IngressResponseResult;
 use restate_types::invocation::InvocationTarget;
+use restate_types::net::partition_processor::IngressResponseResult;
 use restate_types::schema::invocation_target::InvocationTargetMetadata;
 
 use crate::handler::error::HandlerError;
@@ -25,7 +25,7 @@ pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idem
 /// Contains the string representation of the invocation id
 pub(crate) const X_RESTATE_ID: HeaderName = HeaderName::from_static("x-restate-id");
 
-impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader> {
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
     pub(crate) fn reply_with_invocation_response(
         response: IngressResponseResult,
         invocation_id: Option<InvocationId>,
