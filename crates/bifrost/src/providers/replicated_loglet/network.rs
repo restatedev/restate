@@ -164,11 +164,7 @@ impl RequestPump {
             header: CommonResponseHeader {
                 known_global_tail: Some(tail.offset()),
                 sealed: Some(tail.is_sealed()),
-                status: if tail.is_sealed() {
-                    SequencerStatus::Sealed
-                } else {
-                    SequencerStatus::Ok
-                },
+                status: SequencerStatus::Ok,
             },
         };
 

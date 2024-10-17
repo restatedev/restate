@@ -37,7 +37,7 @@ define_rpc! {
 }
 
 /// Status of sequencer response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::IsVariant)]
 pub enum SequencerStatus {
     /// Ok is returned when request is accepted and processes
     /// successfully. Hence response body is valid
