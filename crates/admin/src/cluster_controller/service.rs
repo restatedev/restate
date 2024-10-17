@@ -289,6 +289,7 @@ impl<T: TransportConnect> Service<T> {
         let mut logs = self.metadata.updateable_logs_metadata();
         let mut partition_table = self.metadata.updateable_partition_table();
         let mut nodes_config = self.metadata.updateable_nodes_config();
+        let mut tail_udpates_watcher = logs_controller.watch_logs_tail_updates();
 
         self.health_status.update(AdminStatus::Ready);
 
@@ -297,6 +298,7 @@ impl<T: TransportConnect> Service<T> {
                 _ = self.heartbeat_interval.tick() => {
                     // Ignore error if system is shutting down
                     let _ = self.cluster_state_refresher.schedule_refresh();
+                    let _ = logs_controller.schedule_refresh_tails();
                 },
                 _ = OptionFuture::from(self.log_trim_interval.as_mut().map(|interval| interval.tick())) => {
                     let result = self.trim_logs(bifrost_admin).await;
@@ -304,6 +306,14 @@ impl<T: TransportConnect> Service<T> {
                     if let Err(err) = result {
                         warn!("Could not trim the logs. This can lead to increased disk usage: {err}");
                     }
+                }
+                Ok(_) = tail_udpates_watcher.changed() => {
+                    // we clone here to avoid holding the read lock in the watcher
+                    // more than necessary.
+                    // todo(azmy): do we really need to keep the updates inside an Arc?
+                    // the on_logs_tail_updates should return quick enough.
+                    let tail = tail_udpates_watcher.borrow_and_update().clone();
+                    logs_controller.on_logs_tail_updates(&tail);
                 }
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     observed_cluster_state.update(&cluster_state);
