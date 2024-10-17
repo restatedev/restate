@@ -30,8 +30,8 @@ async fn start_workflow_method() {
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation
     let actions = test_env
@@ -84,18 +84,14 @@ async fn start_workflow_method() {
                 invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
             }))),
             // We get back this error due to the fact that we disabled the attach semantics
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_2),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Failure(
-                            WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
-                        ))
-                    })
-                }
-            ))))
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id_2),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(IngressResponseResult::Failure(
+                    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
+                ))
+            }))
         )
     );
 
@@ -123,33 +119,25 @@ async fn start_workflow_method() {
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_1),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id_1),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
             // This is a not() because we currently disabled the attach semantics on request/response
-            not(contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_2),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            ))))),
+            not(contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id_2),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            }))),
             contains(pat!(Action::ScheduleInvocationStatusCleanup {
                 invocation_id: eq(invocation_id)
             }))
@@ -170,7 +158,7 @@ async fn start_workflow_method() {
     );
 
     // Sending a new request will not be completed because we don't support attach semantics
-    let request_id_3 = IngressRequestId::default();
+    let request_id_3 = PartitionProcessorRpcRequestId::default();
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
@@ -184,18 +172,14 @@ async fn start_workflow_method() {
         .await;
     assert_that!(
         actions,
-        contains(pat!(Action::IngressResponse(pat!(
-            IngressResponseEnvelope {
-                target_node: eq(node_id),
-                inner: pat!(ingress::InvocationResponse {
-                    request_id: eq(request_id_3),
-                    invocation_id: some(eq(invocation_id)),
-                    response: eq(IngressResponseResult::Failure(
-                        WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
-                    ))
-                })
-            }
-        ))))
+        contains(pat!(Action::IngressResponse {
+            target_node: eq(node_id),
+            request_id: eq(request_id_3),
+            invocation_id: some(eq(invocation_id)),
+            response: eq(IngressResponseResult::Failure(
+                WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
+            ))
+        }))
     );
     test_env.shutdown().await;
 }
@@ -207,9 +191,9 @@ async fn attach_by_workflow_key() {
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
     let node_id = GenerationalNodeId::new(1, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
-    let request_id_3 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
+    let request_id_3 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation
     let actions = test_env
@@ -276,32 +260,24 @@ async fn attach_by_workflow_key() {
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_1),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_2),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id_1),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id),
+                request_id: eq(request_id_2),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
             contains(pat!(Action::ScheduleInvocationStatusCleanup {
                 invocation_id: eq(invocation_id)
             }))
@@ -335,19 +311,15 @@ async fn attach_by_workflow_key() {
         .await;
     assert_that!(
         actions,
-        contains(pat!(Action::IngressResponse(pat!(
-            IngressResponseEnvelope {
-                target_node: eq(GenerationalNodeId::new(1, 1)),
-                inner: pat!(ingress::InvocationResponse {
-                    request_id: eq(request_id_3),
-                    invocation_id: some(eq(invocation_id)),
-                    response: eq(IngressResponseResult::Success(
-                        invocation_target.clone(),
-                        response_bytes.clone()
-                    ))
-                })
-            }
-        ))))
+        contains(pat!(Action::IngressResponse {
+            target_node: eq(GenerationalNodeId::new(1, 1)),
+            request_id: eq(request_id_3),
+            invocation_id: some(eq(invocation_id)),
+            response: eq(IngressResponseResult::Success(
+                invocation_target.clone(),
+                response_bytes.clone()
+            ))
+        }))
     );
     test_env.shutdown().await;
 }

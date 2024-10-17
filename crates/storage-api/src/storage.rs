@@ -1537,7 +1537,7 @@ pub mod v1 {
 
                         restate_types::invocation::SubmitNotificationSink::Ingress {
                             node_id: GenerationalNodeId::new(proto_id.id, proto_id.generation),
-                            request_id: restate_types::identifiers::IngressRequestId::from_slice(
+                            request_id: restate_types::identifiers::PartitionProcessorRpcRequestId::from_slice(
                                 request_id.as_ref(),
                             )
                             .map_err(ConversionError::invalid_data)?,
@@ -1893,7 +1893,7 @@ pub mod v1 {
                         Some(
                             restate_types::invocation::ServiceInvocationResponseSink::Ingress {
                                 node_id: GenerationalNodeId::new(proto_id.id, proto_id.generation),
-                                request_id: restate_types::identifiers::IngressRequestId::from_slice(ingress.request_id.as_ref())
+                                request_id: restate_types::identifiers::PartitionProcessorRpcRequestId::from_slice(ingress.request_id.as_ref())
                                     .map_err(ConversionError::invalid_data)?
 
                             },
