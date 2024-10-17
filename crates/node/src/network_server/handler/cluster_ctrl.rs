@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use bytes::{Bytes, BytesMut};
 use restate_core::MetadataWriter;
 use tonic::{async_trait, Request, Response, Status};
@@ -16,12 +18,12 @@ use tracing::{debug, info};
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_admin::cluster_controller::protobuf::{
     ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
-    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, ListLogsRequest,
-    ListLogsResponse, ListNodesRequest, ListNodesResponse, SealAndExtendChainRequest,
-    SealAndExtendChainResponse, TrimLogRequest,
+    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
+    FindTailResponse, ListLogsRequest, ListLogsResponse, ListNodesRequest, ListNodesResponse,
+    SealAndExtendChainRequest, SealAndExtendChainResponse, TailState, TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
-use restate_bifrost::{Bifrost, BifrostAdmin};
+use restate_bifrost::{Bifrost, BifrostAdmin, Error as BiforstError};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
@@ -229,6 +231,47 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .await
             .map(|_| Response::new(SealAndExtendChainResponse::default()))
             .map_err(|err| Status::internal(err.to_string()))
+    }
+
+    async fn find_tail(
+        &self,
+        request: Request<FindTailRequest>,
+    ) -> Result<Response<FindTailResponse>, Status> {
+        let request = request.into_inner();
+        let log_id: LogId = request.log_id.into();
+
+        let admin = BifrostAdmin::new(
+            &self.bifrost_handle,
+            &self.metadata_writer,
+            &self.metadata_store_client,
+        );
+
+        let writable_loglet = admin
+            .writeable_loglet(log_id)
+            .await
+            .map_err(|err| match err {
+                BiforstError::UnknownLogId(_) => Status::invalid_argument("Unknown log-id"),
+                err => Status::internal(err.to_string()),
+            })?;
+
+        let tail_state = tokio::time::timeout(Duration::from_secs(2), writable_loglet.find_tail())
+            .await
+            .map_err(|_elapsed| Status::deadline_exceeded("Timedout finding tail"))?
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let response = FindTailResponse {
+            segment_index: writable_loglet.segment_index().into(),
+            tail_state: if tail_state.is_sealed() {
+                TailState::Sealed
+            } else {
+                TailState::Open
+            }
+            .into(),
+            log_id: log_id.into(),
+            tail_lsn: tail_state.offset().into(),
+        };
+
+        Ok(Response::new(response))
     }
 }
 
