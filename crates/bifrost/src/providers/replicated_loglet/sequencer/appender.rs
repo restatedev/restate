@@ -305,6 +305,9 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
             let node_id = server.node_id();
             let response = match status {
+                StoreTaskStatus::Error(NetworkError::Shutdown(_)) => {
+                    return SequencerAppenderState::Cancelled;
+                }
                 StoreTaskStatus::Error(err) => {
                     // couldn't send store command to remote server
                     tracing::debug!(node_id=%server.node_id(), error=%err, "Failed to send batch to node");
