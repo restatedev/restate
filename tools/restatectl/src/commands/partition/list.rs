@@ -94,51 +94,53 @@ pub async fn list_partitions(
         "APPLIED",
         "PERSISTED",
         "LEADER",
+        "EPOCH",
         "SKIPPED",
-        "LAST-SEEN",
+        "LAST-UPDATE",
     ]);
     for (partition_id, processors) in partitions {
-        for details in processors {
+        for processor in processors {
             partitions_table.add_row(vec![
                 Cell::new(partition_id),
-                Cell::new(details.host_node),
+                Cell::new(processor.host_node),
                 render_mode(
-                    details.status.planned_mode(),
-                    details.status.effective_mode(),
+                    processor.status.planned_mode(),
+                    processor.status.effective_mode(),
                 ),
                 render_replay_status(
-                    details.status.replay_status(),
-                    details.status.target_tail_lsn.map(Into::into),
+                    processor.status.replay_status(),
+                    processor.status.target_tail_lsn.map(Into::into),
                 ),
                 Cell::new(
-                    details
+                    processor
                         .status
                         .last_applied_log_lsn
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
                 ),
                 Cell::new(
-                    details
+                    processor
                         .status
                         .last_persisted_log_lsn
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
                 ),
-                Cell::new(format!(
-                    "{} - {}",
-                    details
+                Cell::new(
+                    processor
                         .status
                         .last_observed_leader_node
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
-                    details
+                ),
+                Cell::new(
+                    processor
                         .status
                         .last_observed_leader_epoch
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
-                )),
-                Cell::new(details.status.num_skipped_records),
-                render_as_duration(details.status.updated_at, Tense::Past),
+                ),
+                Cell::new(processor.status.num_skipped_records),
+                render_as_duration(processor.status.updated_at, Tense::Past),
             ]);
         }
     }
