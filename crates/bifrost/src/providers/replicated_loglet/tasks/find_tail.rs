@@ -14,11 +14,13 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, info, trace, warn};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{Networking, TransportConnect};
+use restate_core::network::{Networking, Outgoing, TransportConnect};
 use restate_core::TaskCenter;
 use restate_types::config::Configuration;
-use restate_types::logs::{LogletOffset, RecordCache, SequenceNumber};
+use restate_types::logs::metadata::SegmentIndex;
+use restate_types::logs::{LogId, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail};
+use restate_types::net::replicated_loglet::{CommonRequestHeader, GetSequencerState};
 use restate_types::replicated_loglet::{
     EffectiveNodeSet, ReplicatedLogletId, ReplicatedLogletParams,
 };
@@ -27,7 +29,7 @@ use restate_types::PlainNodeId;
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
 use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
-use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
+use crate::providers::replicated_loglet::rpc_routers::{LogServersRpc, SequencersRpc};
 
 /// Represents a task to determine and repair the tail of the loglet by consulting f-majority
 /// nodes in the nodeset assuming we are not the sequencer node.
@@ -44,10 +46,13 @@ use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 /// Any response from any log-server can update our view of the `known-global-tail` if that
 /// server has observed a newer global tail than us but the calculated global tail will not set it.
 pub struct FindTailTask<T> {
+    log_id: LogId,
+    segment_index: SegmentIndex,
     my_params: ReplicatedLogletParams,
     task_center: TaskCenter,
     networking: Networking<T>,
     logservers_rpc: LogServersRpc,
+    sequencers_rpc: SequencersRpc,
     known_global_tail: TailOffsetWatch,
     record_cache: RecordCache,
 }
@@ -65,19 +70,26 @@ pub enum FindTailResult {
 }
 
 impl<T: TransportConnect> FindTailTask<T> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_center: TaskCenter,
+        log_id: LogId,
+        segment_index: SegmentIndex,
         my_params: ReplicatedLogletParams,
         networking: Networking<T>,
         logservers_rpc: LogServersRpc,
+        sequencers_rpc: SequencersRpc,
         known_global_tail: TailOffsetWatch,
         record_cache: RecordCache,
     ) -> Self {
         Self {
             task_center,
+            log_id,
+            segment_index,
             networking,
             my_params,
             logservers_rpc,
+            sequencers_rpc,
             known_global_tail,
             record_cache,
         }
@@ -96,6 +108,57 @@ impl<T: TransportConnect> FindTailTask<T> {
                 global_tail: LogletOffset::OLDEST,
             };
         }
+
+        // Is the sequencer a potential candidate?
+        //
+        // If the sequencer is dead, let's not wait for too long on its response. But if
+        // it's alive (or a newer generation is running on this node) then this check fails and
+        // we won't spend time here.
+        if let Ok(connection) = self
+            .networking
+            .node_connection(self.my_params.sequencer)
+            .await
+        {
+            // todo: use cluster-state information when this becomes node-level available to avoid
+            // the sequencer node if it's known to be dead.
+            let get_seq_state = Outgoing::new(
+                self.my_params.sequencer,
+                GetSequencerState {
+                    header: CommonRequestHeader {
+                        log_id: self.log_id,
+                        segment_index: self.segment_index,
+                        loglet_id: self.my_params.loglet_id,
+                    },
+                },
+            )
+            .assign_connection(connection);
+            // todo: configure timeout?
+            if let Ok(seq_state) = self
+                .sequencers_rpc
+                .get_seq_state
+                .call_outgoing_timeout(get_seq_state, Duration::from_millis(500))
+                .await
+            {
+                let seq_state = seq_state.into_body();
+                if seq_state.header.status.is_ok() {
+                    let global_tail = seq_state
+                        .header
+                        .known_global_tail
+                        .expect("global tail must be known by sequencer");
+                    return if seq_state
+                        .header
+                        .sealed
+                        .expect("sequencer must set sealed if status=ok")
+                    {
+                        FindTailResult::Sealed { global_tail }
+                    } else {
+                        FindTailResult::Open { global_tail }
+                    };
+                }
+            }
+        }
+        // After this point we don't try the sequencer.
+
         // Be warned, this is a complex state machine.
         //
         // We need two pieces of information
