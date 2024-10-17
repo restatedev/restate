@@ -46,10 +46,7 @@ use restate_types::identifiers::{
     WithPartitionKey,
 };
 use restate_types::ingress::IngressResponseResult;
-use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
-    ResponseResult, ServiceInvocationResponseSink, WorkflowHandlerType,
-};
+use restate_types::invocation::{AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType, ResponseResult, ServiceInvocationResponseSink, SubmitNotificationSink, WorkflowHandlerType};
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::live::Live;
 use restate_types::logs::MatchKeyQuery;
@@ -570,6 +567,7 @@ where
         )>,
         partition_store: &mut PartitionStore,
     ) {
+        let sender_node_id = *rpc.peer();
         let (response_tx, (request_id, body)) = rpc.split();
         match body {
             PartitionProcessorRpcRequestInner::SubmitInvocation(
@@ -594,9 +592,14 @@ where
                 self.respond_to_rpc(response_tx.prepare(res));
             }
             PartitionProcessorRpcRequestInner::SubmitInvocation(
-                service_invocation,
+                mut service_invocation,
                 SubmitInvocationReplyOn::Submitted,
             ) => {
+                service_invocation.submit_notification_sink = Some(SubmitNotificationSink::Ingress {
+                    node_id: sender_node_id,
+                    request_id,
+                });
+
                 self.leadership_state
                     .handle_rpc_proposal_command(
                         request_id,
@@ -607,9 +610,14 @@ where
                     .await
             }
             PartitionProcessorRpcRequestInner::SubmitInvocation(
-                service_invocation,
+                mut service_invocation,
                 SubmitInvocationReplyOn::Output,
             ) => {
+                service_invocation.response_sink = Some(ServiceInvocationResponseSink::Ingress {
+                    node_id: sender_node_id,
+                    request_id,
+                });
+
                 self.leadership_state
                     .handle_rpc_proposal_command(
                         request_id,
@@ -644,7 +652,7 @@ where
                         Command::AttachInvocation(AttachInvocationRequest {
                             invocation_query,
                             response_sink: ServiceInvocationResponseSink::Ingress {
-                                node_id: metadata().my_node_id(),
+                                node_id: sender_node_id,
                                 request_id,
                             },
                         }),
