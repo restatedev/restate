@@ -12,6 +12,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use rocksdb::{BoundColumnFamily, ReadOptions, WriteBatch, WriteOptions, DB};
+use tokio::time::Instant;
 use tracing::trace;
 
 use restate_bifrost::loglet::OperationError;
@@ -103,6 +104,7 @@ impl LogStore for RocksDbLogStore {
         &self,
         loglet_id: ReplicatedLogletId,
     ) -> Result<LogletState, OperationError> {
+        let start = Instant::now();
         let metadata_cf = self.metadata_cf();
         let data_cf = self.data_cf();
         let keys = [
@@ -159,13 +161,18 @@ impl LogStore for RocksDbLogStore {
         let mut local_tail = if iterator.valid() {
             let decoded_key = DataRecordKey::from_slice(iterator.key().unwrap());
             trace!(
+                %loglet_id,
+                elapsed = ?start.elapsed(),
                 "Found last record of loglet {} is {}",
                 decoded_key.loglet_id(),
                 decoded_key.offset(),
             );
             decoded_key.offset().next()
         } else {
-            trace!("No data records for loglet {}", loglet_id);
+            trace!(
+                %loglet_id,
+                elapsed = ?start.elapsed(),
+                "No data records for loglet {}", loglet_id);
             LogletOffset::OLDEST
         };
         // If the loglet is trimmed (all records were removed) and we know the trim_point, then we

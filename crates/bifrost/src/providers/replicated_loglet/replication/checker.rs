@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{hash_map, HashMap};
+use std::fmt::Debug;
+use std::fmt::Display;
 
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::replicated_loglet::{NodeSet, ReplicationProperty};
@@ -265,6 +267,22 @@ impl<'a, Attribute> NodeSetChecker<'a, Attribute> {
             return FMajorityResult::BestEffort;
         }
         FMajorityResult::Success
+    }
+}
+
+impl<'a, Attribute: Debug> Debug for NodeSetChecker<'a, Attribute> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.node_attribute.fmt(f)
+    }
+}
+
+impl<'a, Attribute: Display> Display for NodeSetChecker<'a, Attribute> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[")?;
+        for (node, attr) in self.node_attribute.iter() {
+            write!(f, "{} => {}, ", node, attr)?;
+        }
+        write!(f, "]")
     }
 }
 

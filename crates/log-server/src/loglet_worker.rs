@@ -242,6 +242,8 @@ impl<S: LogStore> LogletWorker<S> {
                     let peer = *msg.peer();
                     if let Err(e) = msg.to_rpc_response(LogletInfo::new(self.loglet_state.local_tail(), self.loglet_state.trim_point(), self.loglet_state.known_global_tail())).try_send() {
                         debug!(?e.source, peer = %peer, "Failed to respond to GetLogletInfo message due to peer channel capacity being full");
+                    } else {
+                        tracing::trace!(%peer, %self.loglet_id, local_tail = ?self.loglet_state.local_tail(), known_global_tail = %self.loglet_state.known_global_tail(), "GetLogletInfo response");
                     }
                 }
                 // GET_RECORDS

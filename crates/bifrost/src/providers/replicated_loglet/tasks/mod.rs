@@ -24,10 +24,12 @@ pub use seal::*;
 use restate_types::logs::LogletOffset;
 use restate_types::Merge;
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, derive_more::Display)]
 enum NodeTailStatus {
     #[default]
+    #[display("Unknown")]
     Unknown,
+    #[display("({local_tail}, sealed={sealed})")]
     Known {
         local_tail: LogletOffset,
         sealed: bool,
