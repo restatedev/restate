@@ -15,6 +15,7 @@ use crate::identifiers::{
 use crate::invocation::{InvocationQuery, InvocationResponse, InvocationTarget, ServiceInvocation};
 use crate::net::define_rpc;
 use crate::net::TargetName;
+use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -91,7 +92,8 @@ pub enum PartitionProcessorRpcResponse {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubmittedInvocationNotification {
     pub request_id: PartitionProcessorRpcRequestId,
-    /// If true, this request_id created a "fresh invocation", otherwise the invocation was previously submitted.
+    /// If true, this request_id created a "fresh invocation",
+    /// otherwise the invocation was previously submitted.
     pub is_new_invocation: bool,
 }
 
@@ -99,6 +101,7 @@ pub struct SubmittedInvocationNotification {
 pub struct InvocationOutput {
     pub request_id: PartitionProcessorRpcRequestId,
     pub invocation_id: Option<InvocationId>,
+    pub completion_expiry_time: Option<MillisSinceEpoch>,
     pub response: IngressResponseResult,
 }
 

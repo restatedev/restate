@@ -5767,6 +5767,7 @@ dependencies = [
  "assert2",
  "bytes",
  "bytestring",
+ "chrono",
  "codederror",
  "derive_builder",
  "futures",

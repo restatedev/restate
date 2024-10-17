@@ -83,22 +83,15 @@ where
             AttachInvocationResponse::Ready(response) => response,
         };
 
-        Self::reply_with_invocation_response(
-            response.response,
-            response.invocation_id,
-            // TODO where the heck this was coming from?!?! :'(
-            //response.idempotency_expiry_time.as_deref(),
-            None,
-            move |invocation_target| {
-                self.schemas
-                    .pinned()
-                    .resolve_latest_invocation_target(
-                        invocation_target.service_name(),
-                        invocation_target.handler_name(),
-                    )
-                    .ok_or(HandlerError::NotFound)
-            },
-        )
+        Self::reply_with_invocation_response(response, move |invocation_target| {
+            self.schemas
+                .pinned()
+                .resolve_latest_invocation_target(
+                    invocation_target.service_name(),
+                    invocation_target.handler_name(),
+                )
+                .ok_or(HandlerError::NotFound)
+        })
     }
 
     pub(crate) async fn handle_workflow_get_output<B: http_body::Body>(
@@ -135,19 +128,14 @@ where
             }
         };
 
-        Self::reply_with_invocation_response(
-            response.response,
-            response.invocation_id,
-            None,
-            move |invocation_target| {
-                self.schemas
-                    .pinned()
-                    .resolve_latest_invocation_target(
-                        invocation_target.service_name(),
-                        invocation_target.handler_name(),
-                    )
-                    .ok_or(HandlerError::NotFound)
-            },
-        )
+        Self::reply_with_invocation_response(response, move |invocation_target| {
+            self.schemas
+                .pinned()
+                .resolve_latest_invocation_target(
+                    invocation_target.service_name(),
+                    invocation_target.handler_name(),
+                )
+                .ok_or(HandlerError::NotFound)
+        })
     }
 }

@@ -542,6 +542,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         iter::once(response_sink),
                         ResponseResult::Failure(WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR),
                         Some(original_invocation_id),
+                        None,
                         Some(&service_invocation.invocation_target),
                     )
                     .await?;
@@ -847,11 +848,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     }
                 }
                 InvocationStatus::Completed(completed) => {
+                    let completion_expiry_time = unsafe { completed.completion_expiry_time() };
                     self.send_response_to_sinks(
                         ctx,
                         response_sink.cloned(),
                         completed.response_result,
                         Some(original_invocation_id),
+                        completion_expiry_time,
                         Some(&completed.invocation_target),
                     )
                     .await?;
@@ -862,6 +865,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         response_sink.cloned(),
                         GONE_INVOCATION_ERROR,
                         Some(*caller_id),
+                        None,
                         None,
                     )
                     .await?
@@ -1060,6 +1064,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             response_sinks,
             &error,
             Some(invocation_id),
+            None,
             Some(&invocation_target),
         )
         .await?;
@@ -1593,6 +1598,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 invocation_metadata.response_sinks.clone(),
                 result.clone(),
                 Some(invocation_id),
+                None,
                 Some(&invocation_metadata.invocation_target),
             )
             .await?;
@@ -1658,6 +1664,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             invocation_metadata.response_sinks.clone(),
             response_result.clone(),
             Some(invocation_id),
+            None,
             Some(&invocation_metadata.invocation_target),
         )
         .await?;
@@ -1695,6 +1702,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         response_sinks: impl IntoIterator<Item = ServiceInvocationResponseSink>,
         res: impl Into<ResponseResult>,
         invocation_id: Option<InvocationId>,
+        completion_expiry_time: Option<MillisSinceEpoch>,
         invocation_target: Option<&InvocationTarget>,
     ) -> Result<(), Error> {
         let result = res.into();
@@ -1722,6 +1730,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     node_id,
                     request_id,
                     invocation_id,
+                    completion_expiry_time,
                     match result.clone() {
                         ResponseResult::Success(res) => IngressResponseResult::Success(
                             invocation_target
@@ -2711,6 +2720,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             NOT_FOUND_INVOCATION_ERROR,
                             None,
                             None,
+                            None,
                         )
                         .await?;
                         return Ok(());
@@ -2727,6 +2737,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             NOT_FOUND_INVOCATION_ERROR,
                             None,
                             None,
+                            None,
                         )
                         .await?;
                         return Ok(());
@@ -2741,6 +2752,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     vec![attach_invocation_request.response_sink],
                     NOT_FOUND_INVOCATION_ERROR,
                     Some(invocation_id),
+                    None,
                     None,
                 )
                 .await?
@@ -2759,6 +2771,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
                     Some(invocation_id),
                     None,
+                    None,
                 )
                 .await?
             }
@@ -2775,11 +2788,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 .await?;
             }
             InvocationStatus::Completed(completed) => {
+                let completion_expiry_time = unsafe { completed.completion_expiry_time() };
                 self.send_response_to_sinks(
                     ctx,
                     vec![attach_invocation_request.response_sink],
                     completed.response_result,
                     Some(invocation_id),
+                    completion_expiry_time,
                     Some(&completed.invocation_target),
                 )
                 .await?;
@@ -2794,6 +2809,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         target_node: GenerationalNodeId,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: Option<InvocationId>,
+        completion_expiry_time: Option<MillisSinceEpoch>,
         response: IngressResponseResult,
     ) {
         match &response {
@@ -2814,6 +2830,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             target_node,
             request_id,
             invocation_id,
+            completion_expiry_time,
             response,
         });
     }

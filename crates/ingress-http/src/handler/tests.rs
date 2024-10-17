@@ -83,6 +83,7 @@ async fn call_service() {
             Box::pin(ready(Ok(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(service_invocation.invocation_id),
+                completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     InvocationTarget::service("greeter.Greeter", "greet"),
                     serde_json::to_vec(&GreetingResponse {
@@ -128,6 +129,7 @@ async fn call_service_with_get() {
             ready(Ok(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(InvocationId::mock_random()),
+                completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     service_invocation.invocation_target,
                     serde_json::to_vec(&GreetingResponse {
@@ -200,6 +202,7 @@ async fn call_virtual_object() {
             Box::pin(ready(Ok(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(InvocationId::mock_random()),
+                completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     service_invocation.invocation_target,
                     serde_json::to_vec(&GreetingResponse {
@@ -404,6 +407,7 @@ async fn idempotency_key_parsing() {
             ready(Ok(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(InvocationId::mock_random()),
+                completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     service_invocation.invocation_target,
                     serde_json::to_vec(&GreetingResponse {
@@ -574,6 +578,7 @@ async fn attach_with_invocation_id() {
             ready(Ok(AttachInvocationResponse::Ready(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_id),
+                completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     InvocationTarget::service("greeter.Greeter", "greet"),
                     serde_json::to_vec(&GreetingResponse {
@@ -629,6 +634,7 @@ async fn attach_with_idempotency_id_to_unkeyed_service() {
             ready(Ok(AttachInvocationResponse::Ready(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_id),
+                completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     InvocationTarget::service("greeter.Greeter", "greet"),
                     serde_json::to_vec(&GreetingResponse {
@@ -686,6 +692,7 @@ async fn attach_with_idempotency_id_to_keyed_service() {
             ready(Ok(AttachInvocationResponse::Ready(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_id),
+                completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     InvocationTarget::virtual_object(
                         "greeter.Greeter",
@@ -745,6 +752,7 @@ async fn get_output_with_invocation_id() {
             ready(Ok(GetInvocationOutputResponse::Ready(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_id),
+                completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     InvocationTarget::service("greeter.Greeter", "greet"),
                     serde_json::to_vec(&GreetingResponse {
@@ -801,6 +809,7 @@ async fn get_output_with_workflow_key() {
             ready(Ok(GetInvocationOutputResponse::Ready(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: None,
+                completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     InvocationTarget::workflow(
                         service_id.service_name,
@@ -1088,6 +1097,7 @@ fn expect_invocation_and_reply_with_empty() -> MockRequestDispatcher {
         .return_once(|service_invocation| {
             ready(Ok(InvocationOutput {
                 request_id: Default::default(),
+                completion_expiry_time: None,
                 invocation_id: Some(service_invocation.invocation_id),
                 response: IngressResponseResult::Success(
                     service_invocation.invocation_target,
@@ -1108,6 +1118,7 @@ fn expect_invocation_and_reply_with_non_empty() -> MockRequestDispatcher {
             ready(Ok(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(service_invocation.invocation_id),
+                completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     service_invocation.invocation_target,
                     Bytes::from_static(b"123"),

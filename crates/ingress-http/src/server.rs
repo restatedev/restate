@@ -279,6 +279,7 @@ mod tests {
                 Box::pin(ready(Ok(InvocationOutput {
                     request_id: Default::default(),
                     invocation_id: Some(service_invocation.invocation_id),
+                    completion_expiry_time: None,
                     response: IngressResponseResult::Success(
                         InvocationTarget::service("greeter.Greeter", "greet"),
                         serde_json::to_vec(&GreetingResponse {

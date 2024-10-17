@@ -234,18 +234,11 @@ where
         invocation_target_metadata: InvocationTargetMetadata,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
-        let invocation_id = service_invocation.invocation_id;
         let response = dispatcher
             .submit_invocation_and_wait_output(service_invocation)
             .await?;
 
-        Self::reply_with_invocation_response(
-            response.response,
-            Some(invocation_id),
-            // TODO where is this supposed to come from?!
-            None,
-            move |_| Ok(invocation_target_metadata),
-        )
+        Self::reply_with_invocation_response(response, move |_| Ok(invocation_target_metadata))
     }
 
     async fn handle_service_send(

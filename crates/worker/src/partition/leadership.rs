@@ -617,6 +617,7 @@ where
                 request_id,
                 invocation_id,
                 response,
+                completion_expiry_time,
                 ..
             } => {
                 if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
@@ -624,6 +625,7 @@ where
                         PartitionProcessorRpcResponse::Output(InvocationOutput {
                             request_id,
                             invocation_id,
+                            completion_expiry_time,
                             response,
                         }),
                     )));

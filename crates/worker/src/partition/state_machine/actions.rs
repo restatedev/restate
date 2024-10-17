@@ -16,6 +16,7 @@ use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
+use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
@@ -52,12 +53,14 @@ pub enum Action {
         target_node: GenerationalNodeId,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: Option<InvocationId>,
+        completion_expiry_time: Option<MillisSinceEpoch>,
         response: IngressResponseResult,
     },
     IngressSubmitNotification {
         target_node: GenerationalNodeId,
         request_id: PartitionProcessorRpcRequestId,
-        /// If true, this request_id created a "fresh invocation", otherwise the invocation was previously submitted.
+        /// If true, this request_id created a "fresh invocation",
+        /// otherwise the invocation was previously submitted.
         is_new_invocation: bool,
     },
     ScheduleInvocationStatusCleanup {

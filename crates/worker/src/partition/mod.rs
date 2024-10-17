@@ -759,6 +759,7 @@ where
                 Ok(PartitionProcessorRpcResponse::NotSupported)
             }
             InvocationStatus::Completed(completed) => {
+                let completion_expiry_time = unsafe { completed.completion_expiry_time() };
                 Ok(PartitionProcessorRpcResponse::Output(InvocationOutput {
                     request_id,
                     response: match completed.response_result.clone() {
@@ -768,6 +769,7 @@ where
                         ResponseResult::Failure(err) => IngressResponseResult::Failure(err),
                     },
                     invocation_id: Some(invocation_id),
+                    completion_expiry_time,
                 }))
             }
             _ => Ok(PartitionProcessorRpcResponse::NotReady),
