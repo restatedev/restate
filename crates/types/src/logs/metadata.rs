@@ -117,6 +117,17 @@ pub struct LogletConfig {
     index: SegmentIndex,
 }
 
+impl LogletConfig {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn for_testing() -> Self {
+        Self {
+            kind: ProviderKind::InMemory,
+            params: LogletParams(ByteString::default()),
+            index: 0.into(),
+        }
+    }
+}
+
 /// The configuration of a single loglet segment. This holds information needed
 /// for a loglet kind to construct a configured loglet instance modulo the log-id
 /// and start-lsn. It's provided by bifrost on loglet creation. This allows the
