@@ -57,7 +57,7 @@ pub(crate) enum HandlerError {
     Body(anyhow::Error),
     #[error("unavailable")]
     Unavailable,
-    #[error("invocation was found, but did not complete yet")]
+    #[error("the invocation exists but has not completed yet")]
     NotReady,
     #[error("method not allowed")]
     MethodNotAllowed,
