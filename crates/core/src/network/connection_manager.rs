@@ -585,6 +585,12 @@ where
 
         match body.try_as_binary_body(connection.protocol_version) {
             Ok(msg) => {
+                trace!(
+                    peer = %connection.peer,
+                    ?header,
+                    target = ?msg.target(),
+                    "Message received"
+                );
                 if let Err(e) = router
                     .call(
                         Incoming::from_parts(
