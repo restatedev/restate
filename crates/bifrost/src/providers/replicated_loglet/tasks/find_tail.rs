@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, Outgoing, TransportConnect};
@@ -95,6 +95,7 @@ impl<T: TransportConnect> FindTailTask<T> {
         }
     }
 
+    #[instrument(skip_all)]
     pub async fn run(self) -> FindTailResult {
         // Special case:
         // If all nodes in the nodeset is in "provisioning", we can confidently short-circuit
@@ -483,8 +484,8 @@ impl<T: TransportConnect> FindTailTask<T> {
                             // Nothing left to wait on. The tail didn't reach expected
                             // target and no more nodes are expected to send us responses.
                             return FindTailResult::Error(format!(
-                                    "Could not determine a safe tail offset for loglet_id={}, perhaps too many nodes down?",
-                                    self.my_params.loglet_id));
+                                    "Could not determine a safe tail offset for loglet_id={}, perhaps too many nodes down? status={}",
+                                    self.my_params.loglet_id, nodeset_checker));
                         }
                     }
                 }
@@ -493,8 +494,8 @@ impl<T: TransportConnect> FindTailTask<T> {
             // We exhausted all retries on all nodes before finding the tail. We have no option but to
             // give up and return an error.
             return FindTailResult::Error(format!(
-            "Insufficient nodes responded to GetLogletInfo requests, we cannot determine tail status of loglet_id={}",
-            self.my_params.loglet_id,
+            "Insufficient nodes responded to GetLogletInfo requests, we cannot determine tail status of loglet_id={}, status={}",
+            self.my_params.loglet_id, nodeset_checker,
         ));
         }
     }

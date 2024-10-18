@@ -148,6 +148,7 @@ impl Appender {
                 return Ok(loglet);
             } else {
                 debug!(
+                    log_version = %bifrost_inner.metadata.logs_version(),
                     "Still waiting for sealing to complete. Elapsed={:?}",
                     start.elapsed(),
                 );
