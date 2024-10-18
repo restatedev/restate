@@ -479,10 +479,11 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             .await
             .context("Timeout waiting to attach to a cluster controller")??;
 
-        let (from, msg) = response.split();
+        let from = *response.peer();
+        let msg = response.into_body();
         self.apply_plan(&msg.actions).await?;
-        self.latest_attach_response = Some((*from.peer(), msg));
-        info!("Plan applied from attaching to controller {}", from.peer());
+        self.latest_attach_response = Some((from, msg));
+        info!("Plan applied from attaching to controller {}", from);
 
         let (persisted_lsns_tx, persisted_lsns_rx) = watch::channel(BTreeMap::default());
         self.persisted_lsns_rx = Some(persisted_lsns_rx);
@@ -613,7 +614,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         &mut self,
         control_processor: Incoming<ControlProcessors>,
     ) -> Result<(), Error> {
-        let (_, control_processors) = control_processor.split();
+        let control_processors = control_processor.into_body();
 
         self.metadata
             .wait_for_version(
