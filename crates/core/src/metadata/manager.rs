@@ -96,7 +96,7 @@ struct MetadataMessageHandler {
 impl MetadataMessageHandler {
     fn send_metadata(
         &self,
-        to: Reciprocal,
+        to: Reciprocal<MetadataMessage>,
         metadata_kind: MetadataKind,
         min_version: Option<Version>,
     ) {
@@ -108,24 +108,24 @@ impl MetadataMessageHandler {
         };
     }
 
-    fn send_nodes_config(&self, to: Reciprocal, version: Option<Version>) {
+    fn send_nodes_config(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
         let config = self.metadata.nodes_config_snapshot();
         self.send_metadata_internal(to, version, config.deref(), "nodes_config");
     }
 
-    fn send_partition_table(&self, to: Reciprocal, version: Option<Version>) {
+    fn send_partition_table(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
         let partition_table = self.metadata.partition_table_snapshot();
         self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
     }
 
-    fn send_logs(&self, to: Reciprocal, version: Option<Version>) {
+    fn send_logs(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
         let logs = self.metadata.logs_ref();
         if logs.version() != Version::INVALID {
             self.send_metadata_internal(to, version, logs.deref(), "logs");
         }
     }
 
-    fn send_schema(&self, to: Reciprocal, version: Option<Version>) {
+    fn send_schema(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
         let schema = self.metadata.schema();
         if schema.version != Version::INVALID {
             self.send_metadata_internal(to, version, schema.deref(), "schema");
@@ -134,7 +134,7 @@ impl MetadataMessageHandler {
 
     fn send_metadata_internal<T>(
         &self,
-        to: Reciprocal,
+        to: Reciprocal<MetadataMessage>,
         version: Option<Version>,
         metadata: &T,
         metadata_name: &str,

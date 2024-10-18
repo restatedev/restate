@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -132,13 +133,6 @@ impl<M> Incoming<M> {
         self.connection.peer()
     }
 
-    /// Dissolve this incoming into [`Reciprocal`] which can be used to prepare responses, and the
-    /// body of this incoming message.
-    pub fn split(self) -> (Reciprocal, M) {
-        let reciprocal = Reciprocal::new(self.connection, self.meta.msg_id);
-        (reciprocal, self.body)
-    }
-
     pub fn into_body(self) -> M {
         self.body
     }
@@ -157,12 +151,6 @@ impl<M> Incoming<M> {
 
     pub fn metadata_version(&self) -> &PeerMetadataVersion {
         &self.metadata_version
-    }
-
-    /// Creates a reciprocal for this incoming message without consuming it. This will internall
-    /// clone the original connection reference.
-    pub fn create_reciprocal(&self) -> Reciprocal {
-        Reciprocal::new(self.connection.clone(), self.meta.msg_id)
     }
 
     pub fn try_map<O, E>(self, f: impl FnOnce(M) -> Result<O, E>) -> Result<Incoming<O>, E> {
@@ -200,21 +188,36 @@ impl<M: RpcRequest> Incoming<M> {
     ) -> Outgoing<M::ResponseMessage, HasConnection> {
         self.into_outgoing(response)
     }
+
+    /// Dissolve this incoming into [`Reciprocal`] which can be used to prepare responses, and the
+    /// body of this incoming message.
+    pub fn split(self) -> (Reciprocal<M::ResponseMessage>, M) {
+        let reciprocal = Reciprocal::<M::ResponseMessage>::new(self.connection, self.meta.msg_id);
+        (reciprocal, self.body)
+    }
+
+    /// Creates a reciprocal for this incoming message without consuming it. This will internally
+    /// clone the original connection reference.
+    pub fn create_reciprocal(&self) -> Reciprocal<M::ResponseMessage> {
+        Reciprocal::<M::ResponseMessage>::new(self.connection.clone(), self.meta.msg_id)
+    }
 }
 
 /// A type that represents a potential response (reciprocal to a request) that can be converted
 /// into `Outgoing` once a message is ready. An [`Outgoing`] can be created with `prepare(body)`
 #[derive(Debug)]
-pub struct Reciprocal {
+pub struct Reciprocal<O> {
     connection: WeakConnection,
     in_response_to: u64,
+    _phantom: PhantomData<O>,
 }
 
-impl Reciprocal {
+impl<O> Reciprocal<O> {
     pub(crate) fn new(connection: WeakConnection, in_response_to: u64) -> Self {
         Self {
             connection,
             in_response_to,
+            _phantom: PhantomData,
         }
     }
 
@@ -224,7 +227,7 @@ impl Reciprocal {
 
     /// Package this reciprocal as a ready-to-use Outgoing message that holds the connection
     /// reference and the original message_id to response to.
-    pub fn prepare<O>(self, body: O) -> Outgoing<O, HasConnection> {
+    pub fn prepare(self, body: O) -> Outgoing<O, HasConnection> {
         Outgoing {
             connection: HasConnection(self.connection),
             body,

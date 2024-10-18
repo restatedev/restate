@@ -374,19 +374,47 @@ mod test {
 
     use super::*;
     use futures::future::join_all;
+    use restate_types::net::codec::encode_default;
     use restate_types::net::{CodecError, TargetName};
     use restate_types::GenerationalNodeId;
+    use serde::{Deserialize, Serialize};
     use tokio::sync::Barrier;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct TestRequest {
+        text: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestResponse {
         text: String,
+    }
+
+    impl Targeted for TestRequest {
+        const TARGET: TargetName = TargetName::Unknown;
+        fn kind(&self) -> &'static str {
+            "TestRequest"
+        }
+    }
+
+    impl RpcRequest for TestRequest {
+        type ResponseMessage = TestResponse;
     }
 
     impl Targeted for TestResponse {
         const TARGET: TargetName = TargetName::Unknown;
         fn kind(&self) -> &'static str {
             "TestMessage"
+        }
+    }
+
+    impl WireEncode for TestResponse {
+        fn encode<B: bytes::BufMut>(
+            self,
+            buf: &mut B,
+            protocol_version: restate_types::net::ProtocolVersion,
+        ) -> Result<(), CodecError> {
+            encode_default(self, buf, protocol_version)
         }
     }
 
@@ -475,9 +503,8 @@ mod test {
 
         let msg = token.recv().await.unwrap();
         assert_eq!(Some(1), msg.in_response_to());
-        let (reciprocal, msg) = msg.split();
-        assert_eq!(GenerationalNodeId::new(1, 1), *reciprocal.peer());
-        assert_eq!("a very real message", msg.text);
+        assert_eq!(GenerationalNodeId::new(1, 1), *msg.peer());
+        assert_eq!("a very real message", msg.body().text);
     }
 
     #[tokio::test(flavor = "multi_thread")]
