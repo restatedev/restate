@@ -15,16 +15,20 @@ use std::iter;
 use std::num::NonZeroU8;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::watch;
 
 use tokio::task::JoinSet;
-use tracing::debug;
+use tracing::{debug, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_bifrost::{Bifrost, BifrostAdmin};
+use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
 use restate_core::metadata_store::{
     retry_on_network_error, MetadataStoreClient, Precondition, ReadWriteError, WriteError,
 };
-use restate_core::{metadata, task_center, Metadata, MetadataWriter, ShutdownError};
+use restate_core::{
+    metadata, task_center, Metadata, MetadataWriter, ShutdownError, TaskHandle, TaskKind,
+};
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -33,19 +37,22 @@ use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{
     Chain, LogletConfig, LogletParams, Logs, ProviderKind, SegmentIndex,
 };
-use restate_types::logs::{LogId, Lsn};
+use restate_types::logs::{LogId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::nodes_config::Role;
 use restate_types::partition_table::PartitionTable;
 use restate_types::replicated_loglet::{
     NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
 };
+use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::{logs, GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
 
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler;
 
 type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
+
+const FALLBACK_MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
 pub enum LogsControllerError {
@@ -500,11 +507,13 @@ enum Effect {
     WriteLogs {
         logs: Arc<Logs>,
         previous_version: Version,
+        debounce: Option<RetryIter<'static>>,
     },
     /// Seal the given segment of the given [`LogId`].
     Seal {
         log_id: LogId,
         segment_index: SegmentIndex,
+        debounce: Option<RetryIter<'static>>,
     },
 }
 
@@ -517,6 +526,7 @@ enum Event {
     WriteLogsFailed {
         logs: Arc<Logs>,
         previous_version: Version,
+        debounce: Option<RetryIter<'static>>,
     },
     /// Found a newer [`Logs`] version.
     NewLogs,
@@ -530,6 +540,7 @@ enum Event {
     SealFailed {
         log_id: LogId,
         segment_index: SegmentIndex,
+        debounce: Option<RetryIter<'static>>,
     },
 }
 
@@ -559,6 +570,7 @@ struct LogsControllerInner {
     // We are storing the logs explicitly (not relying on metadata()) because we need a fixed
     // snapshot to keep logs_state in sync.
     current_logs: Arc<Logs>,
+    retry_policy: RetryPolicy,
 }
 
 impl LogsControllerInner {
@@ -566,12 +578,14 @@ impl LogsControllerInner {
         logs: Pinned<Logs>,
         partition_table: &PartitionTable,
         default_provider: ProviderKind,
+        retry_policy: RetryPolicy,
     ) -> Result<Self> {
         let mut this = Self {
             default_provider,
             current_logs: Arc::new(Logs::default()),
             logs_state: HashMap::with_hasher(Xxh3Builder::default()),
             logs_write_in_progress: None,
+            retry_policy,
         };
 
         this.on_logs_update(logs)?;
@@ -607,6 +621,7 @@ impl LogsControllerInner {
                 effects.push(Effect::WriteLogs {
                     logs: Arc::clone(&logs),
                     previous_version: self.current_logs.version(),
+                    debounce: None,
                 });
                 // we already update the current logs but will wait until we learn whether the write
                 // was successful or not. If not, then we'll reset our internal state wrt the new
@@ -630,6 +645,7 @@ impl LogsControllerInner {
                     segment_index: log_state
                         .current_segment_index()
                         .expect("expect a valid segment"),
+                    debounce: None,
                 })
             }
         }
@@ -691,14 +707,15 @@ impl LogsControllerInner {
             Event::WriteLogsFailed {
                 logs,
                 previous_version: expected_version,
+                debounce,
             } => {
                 // Filter out out-dated log write attempts
                 if Some(logs.version()) == self.logs_write_in_progress {
-                    // todo debounce to avoid busy loop
                     // todo what if it doesn't work again? Maybe stepping down as the leader
                     effects.push(Effect::WriteLogs {
                         logs,
                         previous_version: expected_version,
+                        debounce: debounce.or_else(|| Some(self.retry_policy.clone().into_iter())),
                     });
                 }
             }
@@ -715,14 +732,15 @@ impl LogsControllerInner {
             Event::SealFailed {
                 log_id,
                 segment_index,
+                debounce,
             } => {
                 if matches!(self.logs_state.get(&log_id), Some(LogState::Sealing { segment_index: current_segment_index, ..}) if segment_index == *current_segment_index)
                 {
-                    // todo debounce to avoid busy loop
                     // todo what if it doesn't work again? Maybe stepping down as the leader
                     effects.push(Effect::Seal {
                         log_id,
                         segment_index,
+                        debounce: debounce.or_else(|| Some(self.retry_policy.clone().into_iter())),
                     })
                 }
             }
@@ -778,13 +796,28 @@ impl LogsControllerInner {
                         },
                     );
                 }
-                // todo how to figure out whether a previous logs controller instance has started
-                //  sealing a loglet? Can we ask the log servers about it? Should we periodically
-                //  check via bifrost?
             }
         }
 
         Ok(())
+    }
+
+    fn on_logs_tail_updates(&mut self, updates: &LogsTailUpdates) {
+        for (log_id, state) in self.logs_state.iter_mut() {
+            let Some(update) = updates.get(log_id) else {
+                // no updates for this log
+                continue;
+            };
+
+            let TailState::Sealed(seal_lsn) = update.tail else {
+                // if tail is open, we don't have to do anything
+                // because in all cases, the `LogState` here is
+                // the one that should remain in effect
+                continue;
+            };
+
+            state.try_transition_to_sealed(update.segment_index, seal_lsn);
+        }
     }
 
     fn on_partition_table_update(&mut self, partition_table: &PartitionTable) {
@@ -810,6 +843,13 @@ impl LogsControllerInner {
     }
 }
 
+pub struct LogTailUpdate {
+    segment_index: SegmentIndex,
+    tail: TailState,
+}
+
+pub type LogsTailUpdates = HashMap<LogId, LogTailUpdate>;
+
 /// Runs the inner logs controller and processes the [`Effect`].
 pub struct LogsController {
     effects: Option<Vec<Effect>>,
@@ -819,6 +859,8 @@ pub struct LogsController {
     metadata: Metadata,
     metadata_writer: MetadataWriter,
     async_operations: JoinSet<Event>,
+    tail_updates_tx: watch::Sender<Arc<LogsTailUpdates>>,
+    in_flight_refresh_tails: Option<TaskHandle<()>>,
 }
 
 impl LogsController {
@@ -836,19 +878,111 @@ impl LogsController {
         )
         .await?;
         metadata_writer.update(logs).await?;
+        let (tail_updates_tx, _) = watch::channel(Arc::new(LogsTailUpdates::default()));
+
+        //todo(azmy): make configurable
+        let retry_policy = RetryPolicy::exponential(
+            Duration::from_millis(10),
+            2.0,
+            Some(15),
+            Some(Duration::from_secs(5)),
+        );
+
         Ok(Self {
             effects: Some(Vec::new()),
             inner: LogsControllerInner::new(
                 metadata.logs_ref(),
                 metadata.partition_table_ref().as_ref(),
                 configuration.bifrost.default_provider,
+                retry_policy,
             )?,
             metadata,
             bifrost,
             metadata_store_client,
             metadata_writer,
             async_operations: JoinSet::default(),
+            tail_updates_tx,
+            in_flight_refresh_tails: None,
         })
+    }
+
+    pub fn watch_logs_tail_updates(&self) -> watch::Receiver<Arc<LogsTailUpdates>> {
+        self.tail_updates_tx.subscribe()
+    }
+
+    pub fn schedule_refresh_tails(&mut self) -> Result<(), ShutdownError> {
+        if let Some(ref task) = self.in_flight_refresh_tails {
+            if !task.is_finished() {
+                // another task is in flight
+                return Ok(());
+            }
+        }
+
+        // none
+        let logs = Arc::clone(&self.inner.current_logs);
+        let bifrost = self.bifrost.clone();
+        let metadata_store_client = self.metadata_store_client.clone();
+        let metadata_writer = self.metadata_writer.clone();
+        let tx = self.tail_updates_tx.clone();
+        let find_tail = async move {
+            let bifrost_admin =
+                BifrostAdmin::new(&bifrost, &metadata_writer, &metadata_store_client);
+
+            let mut updates = LogsTailUpdates::default();
+            for (log_id, chain) in logs.iter() {
+                let tail_segment = chain.tail();
+
+                let writable_loglet = match bifrost_admin.writeable_loglet(*log_id).await {
+                    Ok(loglet) => loglet,
+                    Err(BifrostError::Shutdown(_)) => break,
+                    Err(err) => {
+                        tracing::debug!(error=%err, %log_id, segment_index=%tail_segment.index(), "Failed to find writable loglet");
+                        continue;
+                    }
+                };
+
+                if writable_loglet.segment_index() != tail_segment.index() {
+                    // writable segment in bifrost is probably ahead of our snapshot.
+                    // then there is probably a new metadata update that will gonna fix this
+                    // for now we just ignore this segment
+                    tracing::trace!(%log_id, segment_index=%tail_segment.index(), "Segment is not tail segment, skip finding tail");
+                    continue;
+                }
+
+                let found_tail = match writable_loglet.find_tail().await {
+                    Ok(tail) => tail,
+                    Err(err) => {
+                        tracing::debug!(error=%err, %log_id, segment_index=%tail_segment.index(), "Failed to find tail for loglet");
+                        continue;
+                    }
+                };
+
+                // send message
+                let update = LogTailUpdate {
+                    segment_index: writable_loglet.segment_index(),
+                    tail: found_tail,
+                };
+
+                updates.insert(*log_id, update);
+            }
+
+            let _ = tx.send(Arc::new(updates));
+        };
+
+        let handle = task_center().spawn_unmanaged(
+            TaskKind::Disposable,
+            "log-controller-refresh-tail",
+            None,
+            find_tail.instrument(tracing::trace_span!("scheduled-find-tail")),
+        )?;
+
+        self.in_flight_refresh_tails = Some(handle);
+        Ok(())
+    }
+
+    pub fn on_logs_tail_updates(&mut self, updates: &LogsTailUpdates) {
+        // got tail updates from the schedule refresh tail task
+        self.inner.on_logs_tail_updates(updates);
     }
 
     pub fn on_observed_cluster_state_update(
@@ -881,14 +1015,16 @@ impl LogsController {
                 Effect::WriteLogs {
                     logs,
                     previous_version,
+                    debounce,
                 } => {
-                    self.write_logs(previous_version, logs);
+                    self.write_logs(previous_version, logs, debounce);
                 }
                 Effect::Seal {
                     log_id,
                     segment_index,
+                    debounce,
                 } => {
-                    self.seal_log(log_id, segment_index);
+                    self.seal_log(log_id, segment_index, debounce);
                 }
             }
         }
@@ -896,13 +1032,24 @@ impl LogsController {
         self.effects = Some(effects);
     }
 
-    fn write_logs(&mut self, previous_version: Version, logs: Arc<Logs>) {
+    fn write_logs(
+        &mut self,
+        previous_version: Version,
+        logs: Arc<Logs>,
+        mut debounce: Option<RetryIter<'static>>,
+    ) {
         let tc = task_center().clone();
         let metadata_store_client = self.metadata_store_client.clone();
         let metadata_writer = self.metadata_writer.clone();
 
         self.async_operations.spawn(async move {
             tc.run_in_scope("logs-controller-write-logs", None, async {
+                if let Some(debounce) = &mut debounce {
+                    let delay = debounce.next().unwrap_or(FALLBACK_MAX_RETRY_DELAY);
+                    tracing::debug!(?delay, %previous_version, "Wait before attempting to write logs");
+                    tokio::time::sleep(delay).await;
+                }
+
                 if let Err(err) = metadata_store_client
                     .put(
                         BIFROST_CONFIG_KEY.clone(),
@@ -930,6 +1077,7 @@ impl LogsController {
                                     Event::WriteLogsFailed {
                                         logs,
                                         previous_version,
+                                        debounce,
                                     }
                                 }
                             }
@@ -939,6 +1087,7 @@ impl LogsController {
                             Event::WriteLogsFailed {
                                 logs,
                                 previous_version,
+                                debounce
                             }
                         }
                     };
@@ -954,13 +1103,25 @@ impl LogsController {
         });
     }
 
-    fn seal_log(&mut self, log_id: LogId, segment_index: SegmentIndex) {
+    fn seal_log(
+        &mut self,
+        log_id: LogId,
+        segment_index: SegmentIndex,
+        mut debounce: Option<RetryIter<'static>>,
+    ) {
         let tc = task_center().clone();
         let bifrost = self.bifrost.clone();
         let metadata_store_client = self.metadata_store_client.clone();
         let metadata_writer = self.metadata_writer.clone();
+
         self.async_operations.spawn(async move {
             tc.run_in_scope("logs-controller-seal-log", None, async {
+                if let Some(debounce) = &mut debounce {
+                    let delay = debounce.next().unwrap_or(FALLBACK_MAX_RETRY_DELAY);
+                    tracing::debug!(?delay, %log_id, %segment_index, "Wait before attempting to seal log");
+                    tokio::time::sleep(delay).await;
+                }
+
                 let bifrost_admin =
                     BifrostAdmin::new(&bifrost, &metadata_writer, &metadata_store_client);
 
@@ -976,6 +1137,7 @@ impl LogsController {
                             Event::SealFailed {
                                 log_id,
                                 segment_index,
+                                debounce,
                             }
                         }
                     }
@@ -984,6 +1146,7 @@ impl LogsController {
                         Event::SealFailed {
                             log_id,
                             segment_index,
+                            debounce,
                         }
                     }
                 }

@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["replicated-loglet", "serve-web-ui"]
+default = ["replicated-loglet", "serve-web-ui", "memory-loglet"]
 clients = []
 servers = []
 options_schema = ["restate-service-client/options_schema"]
