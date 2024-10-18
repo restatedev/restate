@@ -233,7 +233,7 @@ pub enum Error {
 /// it needs access to [`metadata()`].
 pub async fn append_envelope_to_bifrost(
     bifrost: &Bifrost,
-    envelope: Envelope,
+    envelope: Arc<Envelope>,
 ) -> Result<(LogId, Lsn), Error> {
     let partition_id = {
         // make sure we drop pinned partition table before awaiting
@@ -244,7 +244,7 @@ pub async fn append_envelope_to_bifrost(
     let log_id = LogId::from(*partition_id);
     // todo: Pass the envelope as `Arc` to `append_envelope_to_bifrost` instead. Possibly use
     // triomphe's UniqueArc for a mutable Arc during construction.
-    let lsn = bifrost.append(log_id, Arc::new(envelope)).await?;
+    let lsn = bifrost.append(log_id, envelope).await?;
 
     Ok((log_id, lsn))
 }

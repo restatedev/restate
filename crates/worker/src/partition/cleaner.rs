@@ -23,6 +23,7 @@ use restate_wal_protocol::{
     append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
 };
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, instrument, warn};
@@ -143,7 +144,7 @@ where
             if SystemTime::now() >= expiration_time {
                 append_envelope_to_bifrost(
                     bifrost,
-                    Envelope {
+                    Arc::new(Envelope {
                         header: Header {
                             source: bifrost_envelope_source.clone(),
                             dest: Destination::Processor {
@@ -152,7 +153,7 @@ where
                             },
                         },
                         command: Command::PurgeInvocation(PurgeInvocationRequest { invocation_id }),
-                    },
+                    }),
                 )
                 .await
                 .context("Cannot append to bifrost")?;
