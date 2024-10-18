@@ -467,10 +467,12 @@ impl BifrostInner {
         let loglet = provider
             .get_loglet(log_id, segment.index(), &segment.config.params)
             .await?;
+
         Ok(LogletWrapper::new(
             segment.index(),
             segment.base_lsn,
             segment.tail_lsn,
+            segment.config.clone(),
             loglet,
         ))
     }
