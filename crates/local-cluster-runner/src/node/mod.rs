@@ -143,9 +143,10 @@ impl Node {
             .build()
     }
 
-    // Creates a group of Nodes with a single metadata node "metadata-node", and a given number
-    // of other nodes ["node-1", ..] each with the provided roles. Node name, roles,
-    // bind/advertise addresses, and the metadata address from the base_config will all be overwritten.
+    // Creates a group of Nodes with a single metadata node "metadata-node" running the
+    // metadata-store and the admin role, and a given number of other nodes ["node-1", ..] each with
+    // the provided roles. Node name, roles, bind/advertise addresses, and the metadata address from
+    // the base_config will all be overwritten.
     pub fn new_test_nodes_with_metadata(
         base_config: Configuration,
         binary_source: BinarySource,
@@ -156,6 +157,7 @@ impl Node {
 
         {
             let mut base_config = base_config.clone();
+            // let any node write the initial NodesConfiguration
             base_config.common.allow_bootstrap = true;
             base_config.common.force_node_id = Some(PlainNodeId::new(1));
             nodes.push(Self::new_test_node(
@@ -168,7 +170,6 @@ impl Node {
 
         for node in 1..=size {
             let mut base_config = base_config.clone();
-            base_config.common.allow_bootstrap = false;
             base_config.common.force_node_id = Some(PlainNodeId::new(node + 1));
             nodes.push(Self::new_test_node(
                 format!("node-{node}"),

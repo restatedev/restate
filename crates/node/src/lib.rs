@@ -42,7 +42,7 @@ use restate_types::protobuf::common::{
 use restate_types::Version;
 
 use crate::cluster_marker::ClusterValidationError;
-use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
+use crate::network_server::{ClusterControllerDependencies, NetworkServer, WorkerDependencies};
 use crate::roles::{AdminRole, WorkerRole};
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -119,15 +119,6 @@ impl Node {
         let health = Health::default();
         health.node_status().update(NodeStatus::StartingUp);
         let config = updateable_config.pinned();
-        // ensure we have cluster admin role if bootstrapping.
-        if config.common.allow_bootstrap {
-            debug!("allow-bootstrap is set to `true`, bootstrapping is allowed!");
-            if !config.has_role(Role::Admin) {
-                return Err(BuildError::Bootstrap(format!(
-                    "Node must include the 'admin' role when starting in bootstrap mode. Currently it has roles {}", config.roles()
-                )));
-            }
-        }
 
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
@@ -249,13 +240,17 @@ impl Node {
             worker_role
                 .as_ref()
                 .map(|worker| WorkerDependencies::new(worker.storage_query_context().clone())),
-            admin_role.as_ref().map(|cluster_controller| {
-                AdminDependencies::new(
-                    cluster_controller.cluster_controller_handle(),
-                    metadata_store_client.clone(),
-                    metadata_manager.writer(),
-                    bifrost_svc.handle(),
-                )
+            admin_role.as_ref().and_then(|admin_role| {
+                admin_role
+                    .cluster_controller_handle()
+                    .map(|cluster_controller_handle| {
+                        ClusterControllerDependencies::new(
+                            cluster_controller_handle,
+                            metadata_store_client.clone(),
+                            metadata_manager.writer(),
+                            bifrost_svc.handle(),
+                        )
+                    })
             }),
         );
 
@@ -494,6 +489,7 @@ impl Node {
             let mut previous_node_generation = None;
             metadata_store_client.read_modify_write(NODES_CONFIG_KEY.clone(), move |nodes_config| {
                 let mut nodes_config = if common_opts.allow_bootstrap {
+                    debug!("allow-bootstrap is set to `true`, allowed to create initial NodesConfiguration!");
                     nodes_config.unwrap_or_else(|| {
                         NodesConfiguration::new(
                             Version::INVALID,

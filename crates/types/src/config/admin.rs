@@ -64,6 +64,9 @@ pub struct AdminOptions {
     /// The default replication strategy to be used by the cluster controller to schedule partition
     /// processors.
     pub default_replication_strategy: ReplicationStrategy,
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub disable_cluster_controller: bool,
 }
 
 impl AdminOptions {
@@ -79,6 +82,13 @@ impl AdminOptions {
             Semaphore::MAX_PERMITS - 1,
         )
     }
+
+    pub fn is_cluster_controller_enabled(&self) -> bool {
+        #[cfg(not(any(test, feature = "test-util")))]
+        return true;
+        #[cfg(any(test, feature = "test-util"))]
+        return !self.disable_cluster_controller;
+    }
 }
 
 impl Default for AdminOptions {
@@ -93,6 +103,8 @@ impl Default for AdminOptions {
             log_trim_interval: Some(Duration::from_secs(60 * 60).into()),
             log_trim_threshold: 1000,
             default_replication_strategy: ReplicationStrategy::OnAllNodes,
+            #[cfg(any(test, feature = "test-util"))]
+            disable_cluster_controller: false,
         }
     }
 }

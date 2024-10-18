@@ -15,4 +15,4 @@ mod prometheus_helpers;
 mod service;
 mod state;
 
-pub use service::{AdminDependencies, NetworkServer, WorkerDependencies};
+pub use service::{ClusterControllerDependencies, NetworkServer, WorkerDependencies};
