@@ -26,7 +26,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use restate_bifrost::Bifrost;
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{
-    current_task_partition_id, metadata, task_center, ShutdownError, TaskId, TaskKind,
+    current_task_partition_id, metadata, task_center, ShutdownError, TaskHandle, TaskId, TaskKind,
 };
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
@@ -96,7 +96,10 @@ pub(crate) struct LeaderState {
 
 pub enum State {
     Follower,
-    Candidate(LeaderEpoch),
+    Candidate {
+        leader_epoch: LeaderEpoch,
+        appender_task: TaskHandle<Result<(), ShutdownError>>,
+    },
     Leader(LeaderState),
 }
 
@@ -104,7 +107,7 @@ impl State {
     fn leader_epoch(&self) -> Option<LeaderEpoch> {
         match self {
             State::Follower => None,
-            State::Candidate(leader_epoch) => Some(*leader_epoch),
+            State::Candidate { leader_epoch, .. } => Some(*leader_epoch),
             State::Leader(leader_state) => Some(leader_state.leader_epoch),
         }
     }
@@ -188,7 +191,6 @@ where
     pub async fn run_for_leader(&mut self, leader_epoch: LeaderEpoch) -> Result<(), Error> {
         if self.is_new_leader_epoch(leader_epoch) {
             self.become_follower().await?;
-            self.state = State::Candidate(leader_epoch);
             self.announce_leadership(leader_epoch).await?;
             debug!("Running for leadership.");
         } else {
@@ -198,7 +200,10 @@ where
         Ok(())
     }
 
-    async fn announce_leadership(&mut self, leader_epoch: LeaderEpoch) -> Result<(), Error> {
+    async fn announce_leadership(
+        &mut self,
+        leader_epoch: LeaderEpoch,
+    ) -> Result<(), ShutdownError> {
         let header = Header {
             dest: Destination::Processor {
                 partition_key: *self
@@ -241,35 +246,45 @@ where
 
         let envelope = Arc::new(envelope);
         let log_id = LogId::from(self.partition_processor_metadata.partition_id);
+        let bifrost = self.bifrost.clone();
 
-        loop {
-            // todo: Retry should happen in the background to avoid blocking us from accepting
-            // further instructions/commands from PP manager.
-            match self.bifrost.append(log_id, Arc::clone(&envelope)).await {
-                // only stop on shutdown.
-                Err(e @ restate_bifrost::Error::Shutdown(_)) => return Err(e.into()),
-                Err(e) => {
-                    info!(
+        // todo replace with background appender and allowing PP to gracefully fail w/o stopping the process
+        let appender_task = task_center().spawn_unmanaged(TaskKind::Background, "announce-leadership", Some(self.partition_processor_metadata.partition_id), async move {
+            loop {
+                // further instructions/commands from PP manager.
+                match bifrost.append(log_id, Arc::clone(&envelope)).await {
+                    // only stop on shutdown
+                    Err(restate_bifrost::Error::Shutdown(_)) => return Err(ShutdownError),
+                    Err(e) => {
+                        info!(
                         %log_id,
                         %leader_epoch,
                         ?e,
                         "Failed to write the announce leadership message to bifrost. Retrying."
                     );
-                    // todo: retry with backoff. At the moment, this is very aggressive (intentionally)
-                    // to avoid blocking for too long.
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-                Ok(lsn) => {
-                    debug!(
+                        // todo: retry with backoff. At the moment, this is very aggressive (intentionally)
+                        // to avoid blocking for too long.
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    Ok(lsn) => {
+                        debug!(
                         %log_id,
                         %leader_epoch,
                         %lsn,
                         "Written announce leadership message to bifrost."
                     );
-                    return Ok(());
+                        return Ok(());
+                    }
                 }
             }
-        }
+        })?;
+
+        self.state = State::Candidate {
+            leader_epoch,
+            appender_task,
+        };
+
+        Ok(())
     }
 
     pub async fn step_down(&mut self) -> Result<(), Error> {
@@ -289,8 +304,8 @@ where
             State::Follower => {
                 debug!("Observed new leader. Staying an obedient follower.");
             }
-            State::Candidate(candidacy_epoch) => {
-                match candidacy_epoch.cmp(&announce_leader.leader_epoch) {
+            State::Candidate { leader_epoch, .. } => {
+                match leader_epoch.cmp(&announce_leader.leader_epoch) {
                     Ordering::Less => {
                         debug!("Lost leadership campaign. Becoming an obedient follower.");
                         self.become_follower().await?;
@@ -328,7 +343,7 @@ where
     }
 
     async fn become_leader(&mut self, partition_store: &mut PartitionStore) -> Result<(), Error> {
-        if let State::Candidate(leader_epoch) = self.state {
+        if let State::Candidate { leader_epoch, .. } = self.state {
             let invoker_rx = Self::resume_invoked_invocations(
                 &mut self.invoker_tx,
                 (self.partition_processor_metadata.partition_id, leader_epoch),
@@ -460,32 +475,39 @@ where
     }
 
     async fn become_follower(&mut self) -> Result<(), Error> {
-        if let State::Leader(LeaderState {
-            leader_epoch,
-            shuffle_task_id,
-            cleaner_task_id,
-            ..
-        }) = self.state
-        {
-            let shuffle_handle = OptionFuture::from(task_center().cancel_task(shuffle_task_id));
-            let cleaner_handle = OptionFuture::from(task_center().cancel_task(cleaner_task_id));
-
-            let (shuffle_result, cleaner_result, abort_result) = tokio::join!(
-                shuffle_handle,
-                cleaner_handle,
-                self.invoker_tx.abort_all_partition((
-                    self.partition_processor_metadata.partition_id,
-                    leader_epoch
-                )),
-            );
-
-            abort_result.map_err(Error::Invoker)?;
-
-            if let Some(shuffle_result) = shuffle_result {
-                shuffle_result.expect("graceful termination of shuffle task");
+        match &self.state {
+            State::Follower => {}
+            State::Candidate { appender_task, .. } => {
+                appender_task.abort();
             }
-            if let Some(cleaner_result) = cleaner_result {
-                cleaner_result.expect("graceful termination of cleaner task");
+            State::Leader(LeaderState {
+                leader_epoch,
+                shuffle_task_id,
+                cleaner_task_id,
+                ..
+            }) => {
+                let shuffle_handle =
+                    OptionFuture::from(task_center().cancel_task(*shuffle_task_id));
+                let cleaner_handle =
+                    OptionFuture::from(task_center().cancel_task(*cleaner_task_id));
+
+                let (shuffle_result, cleaner_result, abort_result) = tokio::join!(
+                    shuffle_handle,
+                    cleaner_handle,
+                    self.invoker_tx.abort_all_partition((
+                        self.partition_processor_metadata.partition_id,
+                        *leader_epoch
+                    )),
+                );
+
+                abort_result.map_err(Error::Invoker)?;
+
+                if let Some(shuffle_result) = shuffle_result {
+                    shuffle_result.expect("graceful termination of shuffle task");
+                }
+                if let Some(cleaner_result) = cleaner_result {
+                    cleaner_result.expect("graceful termination of cleaner task");
+                }
             }
         }
 
@@ -495,7 +517,7 @@ where
 
     pub async fn next_action_effects(&mut self) -> Option<Vec<ActionEffect>> {
         match &mut self.state {
-            State::Follower | State::Candidate(_) => None,
+            State::Follower | State::Candidate { .. } => None,
             State::Leader(leader_state) => {
                 let timer_stream = std::pin::pin!(stream::unfold(
                     &mut leader_state.timer_service,
@@ -531,7 +553,7 @@ where
         actions: impl Iterator<Item = Action>,
     ) -> Result<(), Error> {
         match &mut self.state {
-            State::Follower | State::Candidate(_) => {
+            State::Follower | State::Candidate { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
@@ -647,7 +669,7 @@ where
         action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> anyhow::Result<()> {
         match &mut self.state {
-            State::Follower | State::Candidate(_) => {
+            State::Follower | State::Candidate { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
@@ -782,13 +804,14 @@ mod tests {
     use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
     use restate_types::live::Constant;
-    use restate_types::logs::{Lsn, SequenceNumber};
+    use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_types::GenerationalNodeId;
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
     use std::ops::RangeInclusive;
     use std::time::Duration;
     use test_log::test;
+    use tokio_stream::StreamExt;
 
     const PARTITION_ID: PartitionId = PartitionId::MIN;
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
@@ -840,12 +863,14 @@ mod tests {
             let leader_epoch = LeaderEpoch::from(1);
             state.run_for_leader(leader_epoch).await?;
 
-            assert!(matches!(state.state, State::Candidate(_)));
+            assert!(matches!(state.state, State::Candidate { .. }));
 
             let record = bifrost
-                .read(PARTITION_ID.into(), Lsn::OLDEST)
-                .await?
-                .unwrap();
+                .create_reader(PARTITION_ID.into(), KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)
+                .expect("valid reader")
+                .next()
+                .await
+                .unwrap()?;
 
             let envelope = record.try_decode::<Envelope>().unwrap()?;
 
