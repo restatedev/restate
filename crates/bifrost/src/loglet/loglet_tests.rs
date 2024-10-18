@@ -21,7 +21,7 @@ use tracing::info;
 
 use restate_core::{task_center, TaskHandle, TaskKind};
 use restate_test_util::let_assert;
-use restate_types::logs::metadata::SegmentIndex;
+use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber, TailState};
 
 use super::Loglet;
@@ -55,7 +55,13 @@ async fn wait_for_trim(loglet: &LogletWrapper, required_trim_point: Lsn) -> anyh
 /// provide contiguous offsets that start from Lsn::OLDEST.
 pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     setup_panic_handler();
-    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
+    let loglet = LogletWrapper::new(
+        SegmentIndex::from(1),
+        Lsn::OLDEST,
+        None,
+        LogletConfig::for_testing(),
+        loglet,
+    );
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
@@ -221,7 +227,13 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
 /// starts from Lsn::OLDEST.
 pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     setup_panic_handler();
-    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
+    let loglet = LogletWrapper::new(
+        SegmentIndex::from(1),
+        Lsn::OLDEST,
+        None,
+        LogletConfig::for_testing(),
+        loglet,
+    );
 
     let read_from_offset = Lsn::new(6);
     let mut reader = loglet
@@ -294,7 +306,13 @@ pub async fn single_loglet_readstream_with_trims(
     loglet: Arc<dyn Loglet>,
 ) -> googletest::Result<()> {
     setup_panic_handler();
-    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
+    let loglet = LogletWrapper::new(
+        SegmentIndex::from(1),
+        Lsn::OLDEST,
+        None,
+        LogletConfig::for_testing(),
+        loglet,
+    );
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
@@ -395,7 +413,13 @@ pub async fn single_loglet_readstream_with_trims(
 /// Validates that appends fail after find_tail() returned Sealed()
 pub async fn append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     setup_panic_handler();
-    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
+    let loglet = LogletWrapper::new(
+        SegmentIndex::from(1),
+        Lsn::OLDEST,
+        None,
+        LogletConfig::for_testing(),
+        loglet,
+    );
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
@@ -432,7 +456,13 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
     const CONCURRENT_APPENDERS: usize = 20;
 
     setup_panic_handler();
-    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
+    let loglet = LogletWrapper::new(
+        SegmentIndex::from(1),
+        Lsn::OLDEST,
+        None,
+        LogletConfig::for_testing(),
+        loglet,
+    );
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
@@ -577,7 +607,13 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
 /// Validates that an empty loglet can be sealed
 pub async fn seal_empty(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     setup_panic_handler();
-    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
+    let loglet = LogletWrapper::new(
+        SegmentIndex::from(1),
+        Lsn::OLDEST,
+        None,
+        LogletConfig::for_testing(),
+        loglet,
+    );
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {

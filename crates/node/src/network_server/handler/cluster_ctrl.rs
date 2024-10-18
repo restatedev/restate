@@ -20,7 +20,8 @@ use restate_admin::cluster_controller::protobuf::{
     ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
     CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
     FindTailResponse, ListLogsRequest, ListLogsResponse, ListNodesRequest, ListNodesResponse,
-    SealAndExtendChainRequest, SealAndExtendChainResponse, TailState, TrimLogRequest,
+    SealAndExtendChainRequest, SealAndExtendChainResponse, SealedSegment, TailState,
+    TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_bifrost::{Bifrost, BifrostAdmin, Error as BiforstError};
@@ -217,7 +218,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .parse()
             .map_err(|_| Status::invalid_argument("Provider type is not supported"))?;
 
-        admin
+        let sealed_segment = admin
             .seal_and_extend_chain(
                 request.log_id.into(),
                 request.segment_index.map(SegmentIndex::from),
@@ -229,8 +230,16 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 request.params.into(),
             )
             .await
-            .map(|_| Response::new(SealAndExtendChainResponse::default()))
-            .map_err(|err| Status::internal(err.to_string()))
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(SealAndExtendChainResponse {
+            new_segment_index: sealed_segment.segment_index.next().into(),
+            sealed_segment: Some(SealedSegment {
+                provider: sealed_segment.provider.to_string(),
+                tail_offset: sealed_segment.tail.offset().into(),
+                params: sealed_segment.params.to_string(),
+            }),
+        }))
     }
 
     async fn find_tail(

@@ -46,6 +46,13 @@ impl<'a> Deref for BifrostAdmin<'a> {
     }
 }
 
+pub struct SealedSegment {
+    pub segment_index: SegmentIndex,
+    pub provider: ProviderKind,
+    pub params: LogletParams,
+    pub tail: TailState,
+}
+
 impl<'a> BifrostAdmin<'a> {
     pub fn new(
         bifrost: &'a Bifrost,
@@ -83,7 +90,7 @@ impl<'a> BifrostAdmin<'a> {
         min_version: Version,
         provider: ProviderKind,
         params: LogletParams,
-    ) -> Result<()> {
+    ) -> Result<SealedSegment> {
         self.bifrost.inner.fail_if_shutting_down()?;
         let _ = self
             .bifrost
@@ -103,12 +110,18 @@ impl<'a> BifrostAdmin<'a> {
             })
             .ok_or(Error::UnknownLogId(log_id))?;
 
-        let tail = self.seal(log_id, segment_index).await?;
-        assert!(tail.is_sealed());
+        let sealed_segment = self.seal(log_id, segment_index).await?;
+        assert!(sealed_segment.tail.is_sealed());
 
-        self.add_segment_with_params(log_id, segment_index, tail.offset(), provider, params)
-            .await?;
-        Ok(())
+        self.add_segment_with_params(
+            log_id,
+            segment_index,
+            sealed_segment.tail.offset(),
+            provider,
+            params,
+        )
+        .await?;
+        Ok(sealed_segment)
     }
 
     pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
@@ -116,7 +129,7 @@ impl<'a> BifrostAdmin<'a> {
     }
 
     #[instrument(level = "debug", skip(self), err)]
-    pub async fn seal(&self, log_id: LogId, segment_index: SegmentIndex) -> Result<TailState> {
+    pub async fn seal(&self, log_id: LogId, segment_index: SegmentIndex) -> Result<SealedSegment> {
         self.bifrost.inner.fail_if_shutting_down()?;
         // first find the tail segment for this log.
         let loglet = self.bifrost.inner.writeable_loglet(log_id).await?;
@@ -151,7 +164,14 @@ impl<'a> BifrostAdmin<'a> {
                 }
             }
         }
-        Ok(loglet.find_tail().await?)
+        let tail = loglet.find_tail().await?;
+
+        Ok(SealedSegment {
+            segment_index: loglet.segment_index(),
+            provider: loglet.config.kind,
+            params: loglet.config.params,
+            tail,
+        })
     }
 
     /// Adds a segment to the end of the chain

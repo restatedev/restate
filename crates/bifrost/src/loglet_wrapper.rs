@@ -16,7 +16,7 @@ use std::sync::Arc;
 use futures::{Stream, StreamExt};
 use tracing::instrument;
 
-use restate_types::logs::metadata::SegmentIndex;
+use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
 use restate_types::logs::{KeyFilter, LogletOffset, Lsn, SequenceNumber};
 use restate_types::logs::{Record, TailState};
 
@@ -42,6 +42,7 @@ pub struct LogletWrapper {
     pub(crate) base_lsn: Lsn,
     /// If set, it points to the first first LSN outside the boundary of this loglet (bifrost's tail semantics)
     pub(crate) tail_lsn: Option<Lsn>,
+    pub(crate) config: LogletConfig,
     loglet: Arc<dyn Loglet>,
 }
 
@@ -50,12 +51,14 @@ impl LogletWrapper {
         segment_index: SegmentIndex,
         base_lsn: Lsn,
         tail_lsn: Option<Lsn>,
+        config: LogletConfig,
         loglet: Arc<dyn Loglet>,
     ) -> Self {
         Self {
             segment_index,
             base_lsn,
             tail_lsn,
+            config,
             loglet,
         }
     }
