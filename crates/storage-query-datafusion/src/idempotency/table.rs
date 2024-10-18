@@ -24,20 +24,23 @@ use crate::context::{QueryContext, SelectPartitions};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::PartitionedTableProvider;
 
+const NAME: &str = "sys_idempotency";
+
 pub(crate) fn register_self(
     ctx: &QueryContext,
     partition_selector: impl SelectPartitions,
     partition_store_manager: PartitionStoreManager,
 ) -> datafusion::common::Result<()> {
+    let local_scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        IdempotencyScanner,
+    ));
     let table = PartitionedTableProvider::new(
         partition_selector,
         SysIdempotencyBuilder::schema(),
-        LocalPartitionsScanner::new(partition_store_manager, IdempotencyScanner),
+        ctx.create_distributed_scanner(NAME, local_scanner),
     );
-
-    ctx.as_ref()
-        .register_table("sys_idempotency", Arc::new(table))
-        .map(|_| ())
+    ctx.register_partitioned_table(NAME, Arc::new(table))
 }
 
 #[derive(Clone, Debug)]
