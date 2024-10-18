@@ -147,10 +147,7 @@ async fn start_workflow_method() {
                         ))
                     })
                 }
-            ))))),
-            contains(pat!(Action::ScheduleInvocationStatusCleanup {
-                invocation_id: eq(invocation_id)
-            }))
+            )))))
         )
     );
 
@@ -299,10 +296,7 @@ async fn attach_by_workflow_key() {
                         ))
                     })
                 }
-            )))),
-            contains(pat!(Action::ScheduleInvocationStatusCleanup {
-                invocation_id: eq(invocation_id)
-            }))
+            ))))
         )
     );
 
