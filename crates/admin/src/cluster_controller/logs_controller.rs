@@ -1017,12 +1017,12 @@ impl LogsController {
                     BifrostAdmin::new(&bifrost, &metadata_writer, &metadata_store_client);
 
                 match bifrost_admin.seal(log_id, segment_index).await {
-                    Ok(tail_state) => {
-                        if tail_state.is_sealed() {
+                    Ok(sealed_segment) => {
+                        if sealed_segment.tail.is_sealed() {
                             Event::SealSucceeded {
                                 log_id,
                                 segment_index,
-                                seal_lsn: tail_state.offset(),
+                                seal_lsn: sealed_segment.tail.offset(),
                             }
                         } else {
                             Event::SealFailed {
