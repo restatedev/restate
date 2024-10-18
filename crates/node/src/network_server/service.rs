@@ -41,7 +41,7 @@ pub struct NetworkServer {
     health: Health,
     connection_manager: ConnectionManager<GrpcConnector>,
     worker_deps: Option<WorkerDependencies>,
-    admin_deps: Option<AdminDependencies>,
+    cluster_controller_deps: Option<ClusterControllerDependencies>,
 }
 
 impl NetworkServer {
@@ -49,13 +49,13 @@ impl NetworkServer {
         health: Health,
         connection_manager: ConnectionManager<GrpcConnector>,
         worker_deps: Option<WorkerDependencies>,
-        admin_deps: Option<AdminDependencies>,
+        cluster_controller_deps: Option<ClusterControllerDependencies>,
     ) -> Self {
         Self {
             health,
             connection_manager,
             worker_deps,
-            admin_deps,
+            cluster_controller_deps,
         }
     }
 
@@ -90,18 +90,19 @@ impl NetworkServer {
             )
             .register_encoded_file_descriptor_set(restate_types::protobuf::FILE_DESCRIPTOR_SET);
 
-        if self.admin_deps.is_some() {
+        if self.cluster_controller_deps.is_some() {
             reflection_service_builder = reflection_service_builder
                 .register_encoded_file_descriptor_set(
                     restate_admin::cluster_controller::protobuf::FILE_DESCRIPTOR_SET,
                 );
         }
 
-        let cluster_controller_service = self.admin_deps.map(|admin_deps| {
-            ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(admin_deps))
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip)
-        });
+        let cluster_controller_service =
+            self.cluster_controller_deps.map(|cluster_controller_deps| {
+                ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(cluster_controller_deps))
+                    .accept_compressed(CompressionEncoding::Gzip)
+                    .send_compressed(CompressionEncoding::Gzip)
+            });
 
         let node_status = self.health.node_status();
         let server_builder = tonic::transport::Server::builder()
@@ -158,21 +159,21 @@ impl WorkerDependencies {
     }
 }
 
-pub struct AdminDependencies {
+pub struct ClusterControllerDependencies {
     pub cluster_controller_handle: ClusterControllerHandle,
     pub metadata_store_client: MetadataStoreClient,
     pub bifrost_handle: Bifrost,
     pub metadata_writer: MetadataWriter,
 }
 
-impl AdminDependencies {
+impl ClusterControllerDependencies {
     pub fn new(
         cluster_controller_handle: ClusterControllerHandle,
         metadata_store_client: MetadataStoreClient,
         metadata_writer: MetadataWriter,
         bifrost_handle: Bifrost,
     ) -> Self {
-        AdminDependencies {
+        ClusterControllerDependencies {
             cluster_controller_handle,
             metadata_store_client,
             bifrost_handle,

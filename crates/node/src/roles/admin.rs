@@ -49,7 +49,7 @@ pub enum AdminRoleBuildError {
 
 pub struct AdminRole<T> {
     updateable_config: Live<Configuration>,
-    controller: cluster_controller::Service<T>,
+    controller: Option<cluster_controller::Service<T>>,
     admin: AdminService<IngressOptions>,
 }
 
@@ -81,16 +81,20 @@ impl<T: TransportConnect> AdminRole<T> {
             service_discovery,
         );
 
-        let controller = cluster_controller::Service::new(
-            updateable_config.clone(),
-            health_status,
-            task_center,
-            metadata,
-            networking,
-            router_builder,
-            metadata_writer,
-            metadata_store_client,
-        );
+        let controller = if config.admin.is_cluster_controller_enabled() {
+            Some(cluster_controller::Service::new(
+                updateable_config.clone(),
+                health_status,
+                task_center,
+                metadata,
+                networking,
+                router_builder,
+                metadata_writer,
+                metadata_store_client,
+            ))
+        } else {
+            None
+        };
 
         Ok(AdminRole {
             updateable_config,
@@ -99,8 +103,10 @@ impl<T: TransportConnect> AdminRole<T> {
         })
     }
 
-    pub fn cluster_controller_handle(&self) -> ClusterControllerHandle {
-        self.controller.handle()
+    pub fn cluster_controller_handle(&self) -> Option<ClusterControllerHandle> {
+        self.controller
+            .as_ref()
+            .map(|controller| controller.handle())
     }
 
     pub async fn start(
@@ -111,13 +117,14 @@ impl<T: TransportConnect> AdminRole<T> {
     ) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
-        tc.spawn_child(
-            TaskKind::SystemService,
-            "cluster-controller-service",
-            None,
-            self.controller
-                .run(bifrost.clone(), Some(all_partitions_started_tx)),
-        )?;
+        if let Some(cluster_controller) = self.controller {
+            tc.spawn_child(
+                TaskKind::SystemService,
+                "cluster-controller-service",
+                None,
+                cluster_controller.run(bifrost.clone(), Some(all_partitions_started_tx)),
+            )?;
+        }
 
         tc.spawn_child(
             TaskKind::RpcServer,

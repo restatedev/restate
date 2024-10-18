@@ -613,6 +613,7 @@ impl LogsControllerInner {
             )?;
 
             if let Some(logs) = builder.build_if_modified() {
+                debug!("Proposing new logs configuration: {logs:?}");
                 self.logs_write_in_progress = Some(logs.version());
                 let logs = Arc::new(logs);
                 effects.push(Effect::WriteLogs {

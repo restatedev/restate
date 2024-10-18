@@ -94,7 +94,7 @@ impl TestEnv {
 }
 
 pub async fn run_in_test_env<F, O>(
-    base_config: Configuration,
+    mut base_config: Configuration,
     sequencer: GenerationalNodeId,
     replication: ReplicationProperty,
     log_server_count: u32,
@@ -104,6 +104,8 @@ where
     F: FnMut(TestEnv) -> O,
     O: std::future::Future<Output = googletest::Result<()>> + Send,
 {
+    // disable the cluster controller to allow us to manually set the logs configuration
+    base_config.admin.disable_cluster_controller = true;
     let nodes = Node::new_test_nodes_with_metadata(
         base_config,
         BinarySource::CargoTest,
