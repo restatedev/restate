@@ -183,9 +183,10 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
     async fn bifrost_append_and_seal_concurrent() -> googletest::Result<()> {
-        const TEST_DURATION: Duration = Duration::from_secs(60);
+        const TEST_DURATION: Duration = Duration::from_secs(10);
+        const SEAL_PERIOD: Duration = Duration::from_secs(1);
         const CONCURRENT_APPENDERS: usize = 20;
 
         run_in_test_env(
@@ -252,14 +253,13 @@ mod tests {
                             let mut last_loglet_id = None;
 
                             while !cancellation_token.is_cancelled() {
-                                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                                tokio::time::sleep(SEAL_PERIOD).await;
 
                                 let mut params = ReplicatedLogletParams::deserialize_from(
                                     chain.live_load().tail().config.params.as_ref(),
                                 )?;
                                 if last_loglet_id == Some(params.loglet_id) {
-                                    eprintln!("Skipping seal as metadata has not caught up from the last seal (version={})", metadata.logs_version());
-                                    continue;
+                                    fail!("Could not seal as metadata has not caught up from the last seal (version={})", metadata.logs_version())?;
                                 }
                                 last_loglet_id = Some(params.loglet_id);
                                 eprintln!("Sealing loglet {} and creating new loglet {}", params.loglet_id, params.loglet_id.next());
