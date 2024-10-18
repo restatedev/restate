@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use std::cmp::Ordering;
-use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use futures::future::OptionFuture;
 use futures::{future, stream, StreamExt, TryStreamExt};
@@ -24,10 +25,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
-use restate_core::{
-    current_task_partition_id, metadata, task_center, ShutdownError, TaskId, TaskKind,
-};
+use restate_core::network::{HasConnection, Outgoing, Reciprocal};
+use restate_core::{metadata, task_center, Metadata, ShutdownError, TaskId, TaskKind};
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
@@ -36,19 +35,24 @@ use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::timer_table::{TimerKey, TimerTable};
 use restate_timer::TokioClock;
-use restate_types::identifiers::{InvocationId, PartitionKey};
+use restate_types::identifiers::{
+    InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
+};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::logs::LogId;
 use restate_types::message::MessageIndex;
-use restate_types::net::ingress;
+use restate_types::net::partition_processor::{
+    InvocationOutput, PartitionProcessorRpcError, PartitionProcessorRpcResponse,
+    SubmittedInvocationNotification,
+};
 use restate_types::storage::StorageEncodeError;
+use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
-use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::cleaner::Cleaner;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::shuffle;
@@ -71,6 +75,10 @@ pub(crate) enum Error {
     Codec(#[from] StorageEncodeError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
+    #[error("the given operation requires to be in leader state")]
+    NotLeader,
+    #[error("error when self proposing")]
+    SelfProposer,
 }
 
 #[derive(Debug)]
@@ -86,8 +94,9 @@ pub(crate) struct LeaderState {
     shuffle_hint_tx: HintSender,
     shuffle_task_id: TaskId,
     timer_service: Pin<Box<TimerService>>,
-    action_effect_handler: ActionEffectHandler,
+    self_proposer: SelfProposer,
     action_effects: VecDeque<ActionEffect>,
+    awaiting_rpcs: HashMap<PartitionProcessorRpcRequestId, Reciprocal>,
 
     invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
@@ -130,7 +139,7 @@ impl PartitionProcessorMetadata {
     }
 }
 
-pub(crate) struct LeadershipState<I, T> {
+pub(crate) struct LeadershipState<I> {
     state: State,
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
@@ -139,14 +148,12 @@ pub(crate) struct LeadershipState<I, T> {
     cleanup_interval: Duration,
     channel_size: usize,
     invoker_tx: I,
-    network_tx: Networking<T>,
     bifrost: Bifrost,
 }
 
-impl<I, T> LeadershipState<I, T>
+impl<I> LeadershipState<I>
 where
     I: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
-    T: TransportConnect,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -156,7 +163,6 @@ where
         channel_size: usize,
         invoker_tx: I,
         bifrost: Bifrost,
-        network_tx: Networking<T>,
         last_seen_leader_epoch: Option<LeaderEpoch>,
     ) -> Self {
         Self {
@@ -167,7 +173,6 @@ where
             channel_size,
             invoker_tx,
             bifrost,
-            network_tx,
             last_seen_leader_epoch,
         }
     }
@@ -369,15 +374,12 @@ where
                 shuffle.run(),
             )?;
 
-            let action_effect_handler = ActionEffectHandler::new(
+            let self_proposer = SelfProposer::new(
                 self.partition_processor_metadata.partition_id,
                 EpochSequenceNumber::new(leader_epoch),
-                self.partition_processor_metadata
-                    .partition_key_range
-                    .clone(),
-                self.bifrost.clone(),
+                &self.bifrost,
                 metadata(),
-            );
+            )?;
 
             let cleaner = Cleaner::new(
                 self.partition_processor_metadata.partition_id,
@@ -404,8 +406,9 @@ where
                 cleaner_task_id,
                 shuffle_hint_tx,
                 timer_service,
-                action_effect_handler,
+                self_proposer,
                 action_effects: VecDeque::default(),
+                awaiting_rpcs: Default::default(),
                 invoker_stream: ReceiverStream::new(invoker_rx),
                 shuffle_stream: ReceiverStream::new(shuffle_rx),
             });
@@ -550,7 +553,7 @@ where
                         &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
                         &mut leader_state.action_effects,
-                        &self.network_tx,
+                        &mut leader_state.awaiting_rpcs,
                     )
                     .await?;
                 }
@@ -568,7 +571,7 @@ where
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
         actions_effects: &mut VecDeque<ActionEffect>,
-        network_tx: &Networking<T>,
+        awaiting_rpcs: &mut HashMap<PartitionProcessorRpcRequestId, Reciprocal>,
     ) -> Result<(), Error> {
         match action {
             Action::Invoke {
@@ -610,25 +613,37 @@ where
                 .abort_invocation(partition_leader_epoch, invocation_id)
                 .await
                 .map_err(Error::Invoker)?,
-            Action::IngressResponse(ingress_response) => {
-                Self::send_ingress_message(
-                    network_tx.clone(),
-                    ingress_response.inner.invocation_id,
-                    ingress_response.target_node,
-                    ingress::IngressMessage::InvocationResponse(ingress_response.inner),
-                )
-                .await?;
+            Action::IngressResponse {
+                request_id,
+                invocation_id,
+                response,
+                completion_expiry_time,
+                ..
+            } => {
+                if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
+                    Self::respond_to_rpc(response_tx.prepare(Ok(
+                        PartitionProcessorRpcResponse::Output(InvocationOutput {
+                            request_id,
+                            invocation_id,
+                            completion_expiry_time,
+                            response,
+                        }),
+                    )));
+                }
             }
-            Action::IngressSubmitNotification(attach_notification) => {
-                Self::send_ingress_message(
-                    network_tx.clone(),
-                    None,
-                    attach_notification.target_node,
-                    ingress::IngressMessage::SubmittedInvocationNotification(
-                        attach_notification.inner,
-                    ),
-                )
-                .await?;
+            Action::IngressSubmitNotification {
+                request_id,
+                is_new_invocation,
+                ..
+            } => {
+                if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
+                    Self::respond_to_rpc(response_tx.prepare(Ok(
+                        PartitionProcessorRpcResponse::Submitted(SubmittedInvocationNotification {
+                            request_id,
+                            is_new_invocation,
+                        }),
+                    )));
+                }
             }
             Action::ScheduleInvocationStatusCleanup {
                 invocation_id,
@@ -642,7 +657,7 @@ where
         Ok(())
     }
 
-    pub async fn handle_action_effect(
+    pub async fn handle_action_effects(
         &mut self,
         action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> anyhow::Result<()> {
@@ -651,75 +666,205 @@ where
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state
-                    .action_effect_handler
-                    .handle(action_effects)
-                    .await?
+                for effect in action_effects {
+                    match effect {
+                        ActionEffect::Invoker(invoker_output) => {
+                            leader_state
+                                .self_proposer
+                                .propose(
+                                    invoker_output.invocation_id.partition_key(),
+                                    Command::InvokerEffect(invoker_output),
+                                )
+                                .await?;
+                        }
+                        ActionEffect::Shuffle(outbox_truncation) => {
+                            // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
+                            //  specific destination messages that are identified by a partition_id
+                            leader_state
+                                .self_proposer
+                                .propose(
+                                    *self
+                                        .partition_processor_metadata
+                                        .partition_key_range
+                                        .start(),
+                                    Command::TruncateOutbox(outbox_truncation.index()),
+                                )
+                                .await?;
+                        }
+                        ActionEffect::Timer(timer) => {
+                            leader_state
+                                .self_proposer
+                                .propose(
+                                    timer.invocation_id().partition_key(),
+                                    Command::Timer(timer),
+                                )
+                                .await?;
+                        }
+                        ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
+                            // TODO we can get rid of this action completely once we switch to the neo invocation status
+                            leader_state
+                                .self_proposer
+                                .propose(
+                                    invocation_id.partition_key(),
+                                    Command::ScheduleTimer(TimerKeyValue::clean_invocation_status(
+                                        MillisSinceEpoch::from(SystemTime::now() + duration),
+                                        invocation_id,
+                                    )),
+                                )
+                                .await?;
+                        }
+                    }
+                }
             }
         };
 
         Ok(())
     }
 
-    async fn send_ingress_message(
-        network_tx: Networking<T>,
-        invocation_id: Option<InvocationId>,
-        target_node: GenerationalNodeId,
-        ingress_message: ingress::IngressMessage,
-    ) -> Result<(), Error> {
-        // NOTE: We dispatch the response in a non-blocking task-center task to avoid
-        // blocking partition processor. This comes with the risk of overwhelming the
-        // runtime. This should be a temporary solution until we have a better way to
-        // handle this case. Options are split into two categories:
-        //
-        // Category A) Do not block PP's loop if ingress is slow/unavailable
-        //   - Add timeout to the disposable task to drop old/stale responses in congestion
-        //   scenarios.
-        //   - Limit the number of inflight ingress responses (per ingress node) by
-        //   mapping node_id -> Vec<TaskId>
-        // Category B) Enforce Back-pressure on PP if ingress is slow
-        //   - Either directly or through a channel/buffer, block this loop if ingress node
-        //   cannot keep up with the responses.
-        //
-        //  todo: Decide.
-        let maybe_task = task_center().spawn_child(
-            TaskKind::Disposable,
-            "respond-to-ingress",
-            current_task_partition_id(),
-            {
-                async move {
-                    if let Err(e) = network_tx
-                        .send(Outgoing::new(target_node, ingress_message))
-                        .await
-                    {
-                        let invocation_id_str = invocation_id
-                            .as_ref()
-                            .map(|i| i.to_string())
-                            .unwrap_or_default();
-                        warn!(
-                            ?e,
-                            ingress.node_id = %target_node,
-                            restate.invocation.id = %invocation_id_str,
-                            "Failed to send ingress message, will drop the message on the floor"
-                        );
+    pub async fn handle_rpc_proposal_command(
+        &mut self,
+        request_id: PartitionProcessorRpcRequestId,
+        reciprocal: Reciprocal,
+        partition_key: PartitionKey,
+        cmd: Command,
+    ) {
+        match &mut self.state {
+            State::Follower | State::Candidate(_) => {
+                // Just fail the rpc
+                Self::respond_to_rpc(reciprocal.prepare(Err(
+                    PartitionProcessorRpcError::NotLeader(
+                        self.partition_processor_metadata.partition_id,
+                    ),
+                )));
+            }
+            State::Leader(leader_state) => {
+                match leader_state.awaiting_rpcs.entry(request_id) {
+                    Entry::Occupied(o) => {
+                        // In this case, someone already proposed this command,
+                        // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
+                        let old_reciprocal = o.remove();
+                        Self::respond_to_rpc(old_reciprocal.prepare(Err(
+                            PartitionProcessorRpcError::Internal("expired".to_string()),
+                        )));
+                        leader_state.awaiting_rpcs.insert(request_id, reciprocal);
                     }
-                    Ok(())
+                    Entry::Vacant(v) => {
+                        // In this case, no one proposed this command yet, let's try to propose it
+                        if let Err(e) = leader_state.self_proposer.propose(partition_key, cmd).await
+                        {
+                            Self::respond_to_rpc(
+                                reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
+                                    e.to_string(),
+                                ))),
+                            );
+                        } else {
+                            v.insert(reciprocal);
+                        }
+                    }
                 }
-            },
-        );
-
-        if maybe_task.is_err() {
-            let invocation_id_str = invocation_id
-                .as_ref()
-                .map(|i| i.to_string())
-                .unwrap_or_default();
-            trace!(
-                restate.invocation.id = %invocation_id_str,
-                "Partition processor is shutting down, we are not sending the message to ingress",
-            );
+            }
         }
+    }
+
+    pub async fn self_propose(
+        &mut self,
+        partition_key: PartitionKey,
+        cmd: Command,
+    ) -> Result<(), Error> {
+        match &mut self.state {
+            State::Follower | State::Candidate(_) => Err(Error::NotLeader),
+            State::Leader(leader_state) => {
+                leader_state.self_proposer.propose(partition_key, cmd).await
+            }
+        }
+    }
+
+    fn respond_to_rpc(
+        outgoing: Outgoing<
+            Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
+            HasConnection,
+        >,
+    ) {
+        // ignore shutdown errors
+        let _ = task_center().spawn(
+            TaskKind::Disposable,
+            "partition-processor-rpc-response",
+            None,
+            async move { outgoing.send().await.map_err(Into::into) },
+        );
+    }
+}
+
+// Constants since it's very unlikely that we can derive a meaningful configuration
+// that the user can reason about.
+//
+// The queue size is small to reduce the tail latency. This comes at the cost of throughput but
+// this runs within a single processor and the expected throughput is bound by the overall
+// throughput of the processor itself.
+const BIFROST_QUEUE_SIZE: usize = 20;
+const MAX_BIFROST_APPEND_BATCH: usize = 5000;
+
+struct SelfProposer {
+    partition_id: PartitionId,
+    epoch_sequence_number: EpochSequenceNumber,
+    bifrost_appender: restate_bifrost::AppenderHandle<Envelope>,
+    metadata: Metadata,
+}
+
+impl SelfProposer {
+    fn new(
+        partition_id: PartitionId,
+        epoch_sequence_number: EpochSequenceNumber,
+        bifrost: &Bifrost,
+        metadata: Metadata,
+    ) -> Result<Self, Error> {
+        let bifrost_appender = bifrost
+            .create_background_appender(
+                LogId::from(partition_id),
+                BIFROST_QUEUE_SIZE,
+                MAX_BIFROST_APPEND_BATCH,
+            )?
+            .start(task_center(), "self-appender", Some(partition_id))?;
+
+        Ok(Self {
+            partition_id,
+            epoch_sequence_number,
+            bifrost_appender,
+            metadata,
+        })
+    }
+
+    async fn propose(&mut self, partition_key: PartitionKey, cmd: Command) -> Result<(), Error> {
+        let envelope = Envelope::new(self.create_header(partition_key), cmd);
+
+        // Only blocks if background append is pushing back (queue full)
+        self.bifrost_appender
+            .sender()
+            .enqueue(Arc::new(envelope))
+            .await
+            .map_err(|_| Error::SelfProposer)?;
 
         Ok(())
+    }
+
+    fn create_header(&mut self, partition_key: PartitionKey) -> Header {
+        let esn = self.epoch_sequence_number.next();
+        self.epoch_sequence_number = esn;
+
+        let my_node_id = self.metadata.my_node_id();
+        Header {
+            dest: Destination::Processor {
+                partition_key,
+                dedup: Some(DedupInformation::self_proposal(esn)),
+            },
+            source: Source::Processor {
+                partition_id: self.partition_id,
+                partition_key: Some(partition_key),
+                leader_epoch: self.epoch_sequence_number.leader_epoch,
+                node_id: my_node_id.as_plain(),
+                generational_node_id: Some(my_node_id),
+            },
+        }
     }
 }
 
@@ -831,7 +976,6 @@ mod tests {
                 42,
                 invoker_tx,
                 bifrost.clone(),
-                env.networking.clone(),
                 None,
             );
 

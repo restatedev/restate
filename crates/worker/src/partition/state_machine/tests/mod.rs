@@ -51,9 +51,8 @@ use restate_test_util::matchers::*;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::errors::{codes, InvocationError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::{
-    IngressRequestId, InvocationId, PartitionId, PartitionKey, ServiceId,
+    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
-use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
 use restate_types::invocation::{
     Header, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
     ServiceInvocation, ServiceInvocationResponseSink, Source, VirtualObjectHandlerType,
@@ -65,7 +64,7 @@ use restate_types::journal::{
 use restate_types::journal::{Entry, EntryType};
 use restate_types::live::{Constant, Live};
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::{ingress, GenerationalNodeId};
+use restate_types::GenerationalNodeId;
 use std::collections::{HashMap, HashSet};
 use test_log::test;
 
@@ -714,9 +713,9 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
 
     let node_id_1 = GenerationalNodeId::new(1, 1);
     let node_id_2 = GenerationalNodeId::new(2, 1);
-    let request_id_1 = IngressRequestId::default();
-    let request_id_2 = IngressRequestId::default();
-    let request_id_3 = IngressRequestId::default();
+    let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = PartitionProcessorRpcRequestId::default();
+    let request_id_3 = PartitionProcessorRpcRequestId::default();
 
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
@@ -777,7 +776,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         }))
         .await;
     // No ingress response is expected at this point because the invocation did not end yet
-    assert_that!(actions, not(contains(pat!(Action::IngressResponse(_)))));
+    assert_that!(actions, not(contains(pat!(Action::IngressResponse { .. }))));
 
     // Send the End Effect
     let actions = test_env
@@ -790,42 +789,30 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id_1),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_1),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id_2),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_2),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id_2),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id_3),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id_1),
+                request_id: eq(request_id_1),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id_2),
+                request_id: eq(request_id_2),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
+            contains(pat!(Action::IngressResponse {
+                target_node: eq(node_id_2),
+                request_id: eq(request_id_3),
+                response: eq(IngressResponseResult::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })),
         )
     );
 

@@ -15,9 +15,8 @@ use serde_with::serde_as;
 
 use crate::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use crate::identifiers::{PartitionId, SnapshotId};
-use crate::net::{define_message, TargetName};
-
 use crate::net::define_rpc;
+use crate::net::{define_message, TargetName};
 use crate::Version;
 
 define_rpc! {
