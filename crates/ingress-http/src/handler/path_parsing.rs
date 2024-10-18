@@ -79,7 +79,7 @@ impl InvocationRequestType {
             // We need to query the service type before continuing to parse
             let service_type = schemas
                 .resolve_latest_service_type(&service_name)
-                .ok_or(HandlerError::NotFound)?;
+                .ok_or_else(|| HandlerError::ServiceNotFound(service_name.clone()))?;
 
             let (target, next_chunk, next_next_chunk) = if service_type.is_keyed() {
                 (
@@ -176,7 +176,7 @@ impl ServiceRequestType {
         // We need to query the service type before continuing to parse
         let service_type = schemas
             .resolve_latest_service_type(&service_name)
-            .ok_or(HandlerError::NotFound)?;
+            .ok_or_else(|| HandlerError::ServiceNotFound(service_name.clone()))?;
 
         let target_type = if service_type.is_keyed() {
             TargetType::Keyed {

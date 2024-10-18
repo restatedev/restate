@@ -21,6 +21,12 @@ use std::string;
 pub(crate) enum HandlerError {
     #[error("not found")]
     NotFound,
+    #[error("service '{0}' not found")]
+    ServiceNotFound(String),
+    #[error("service '{0}' handler '{1}' not found")]
+    ServiceHandlerNotFound(String, String),
+    #[error("invocation not found")]
+    InvocationNotFound,
     #[error(
         "bad path, expected either /:service-name/:handler or /:object-name/:object-key/:handler"
     )]
@@ -51,7 +57,7 @@ pub(crate) enum HandlerError {
     Body(anyhow::Error),
     #[error("unavailable")]
     Unavailable,
-    #[error("not ready")]
+    #[error("the invocation exists but has not completed yet")]
     NotReady,
     #[error("method not allowed")]
     MethodNotAllowed,
@@ -97,7 +103,10 @@ impl HandlerError {
         res_builder: http::response::Builder,
     ) -> Response<B> {
         let status_code = match &self {
-            HandlerError::NotFound => StatusCode::NOT_FOUND,
+            HandlerError::NotFound
+            | HandlerError::ServiceNotFound(_)
+            | HandlerError::ServiceHandlerNotFound(_, _)
+            | HandlerError::InvocationNotFound => StatusCode::NOT_FOUND,
             HandlerError::BadServicePath
             | HandlerError::PrivateService
             | HandlerError::UrlDecodingError(_)
