@@ -8,26 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
+use std::cmp::PartialOrd;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Context;
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::ClusterStateRequest;
+use restate_admin::cluster_controller::protobuf::{ClusterStateRequest, ListLogsRequest};
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::Tense;
-use restate_types::logs::Lsn;
+use restate_types::logs::metadata::{Chain, Logs};
+use restate_types::logs::{LogId, Lsn};
 use restate_types::protobuf::cluster::{
     node_state, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode,
 };
+use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
 use crate::app::ConnectionInfo;
 use crate::commands::display_util::render_as_duration;
+use crate::commands::log::deserialize_replicated_log_params;
 use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -55,17 +59,24 @@ pub async fn list_partitions(
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    let req = ClusterStateRequest::default();
-    let state = client
-        .get_cluster_state(req)
+    let cluster_state_request = ClusterStateRequest::default();
+    let cluster_state = client
+        .get_cluster_state(cluster_state_request)
         .await?
         .into_inner()
         .cluster_state
         .ok_or_else(|| anyhow::anyhow!("no cluster state returned"))?;
 
+    // we need the logs to show the current sequencer for each partition's log
+    let list_logs_request = ListLogsRequest::default();
+    let list_logs_response = client.list_logs(list_logs_request).await?.into_inner();
+    let mut buf = list_logs_response.logs;
+    let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
+    let logs: HashMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
+
     let mut partitions: BTreeMap<u32, Vec<PartitionListEntry>> = BTreeMap::new();
     let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
-    for (node_id, node_state) in state.nodes {
+    for (node_id, node_state) in cluster_state.nodes {
         match node_state.state.expect("node state is set") {
             node_state::State::Dead(dead_node) => {
                 dead_nodes.insert(PlainNodeId::from(node_id), dead_node);
@@ -91,15 +102,46 @@ pub async fn list_partitions(
         "NODE",
         "MODE",
         "STATUS",
-        "APPLIED",
-        "PERSISTED",
         "LEADER",
         "EPOCH",
+        "SEQUENCER",
+        "APPLIED",
+        "PERSISTED",
         "SKIPPED",
         "LAST-UPDATE",
     ]);
     for (partition_id, processors) in partitions {
         for processor in processors {
+            let is_leader = processor
+                .status
+                .last_observed_leader_node
+                .map(|n| {
+                    n.generation.is_some_and(|g| {
+                        PlainNodeId::from(n.id).with_generation(g) == processor.host_node
+                    })
+                })
+                .unwrap_or_default();
+
+            let (in_tail_segment, maybe_sequencer) = logs
+                .get(&LogId::from(partition_id))
+                .map(|chain| {
+                    let tail = chain.tail();
+                    let in_tail = processor
+                        .status
+                        .last_applied_log_lsn
+                        .map(|lsn| Lsn::from(lsn))
+                        .is_some_and(|applied_lsn| applied_lsn.ge(&tail.base_lsn));
+                    (
+                        in_tail,
+                        deserialize_replicated_log_params(&tail).map(|p| p.sequencer),
+                    )
+                })
+                .unwrap_or((false, None));
+
+            let leader_local_sequencer = is_leader
+                && maybe_sequencer
+                    .is_some_and(|s| s == processor.host_node);
+
             partitions_table.add_row(vec![
                 Cell::new(partition_id),
                 Cell::new(processor.host_node),
@@ -108,9 +150,39 @@ pub async fn list_partitions(
                     processor.status.effective_mode(),
                 ),
                 render_replay_status(
+                    processor.status.effective_mode(),
                     processor.status.replay_status(),
                     processor.status.target_tail_lsn.map(Into::into),
                 ),
+                Cell::new(
+                    processor
+                        .status
+                        .last_observed_leader_node
+                        .map(|n| n.to_string())
+                        .unwrap_or("-".to_owned()),
+                )
+                .fg(if is_leader {
+                    Color::Green
+                } else {
+                    Color::Reset
+                }),
+                Cell::new(
+                    processor
+                        .status
+                        .last_observed_leader_epoch
+                        .map(|x| x.to_string())
+                        .unwrap_or("-".to_owned()),
+                ),
+                Cell::new(match (in_tail_segment, maybe_sequencer) {
+                    (true, Some(sequencer)) => sequencer.to_string(),
+                    (false, _) => "-".to_owned(), // todo: render stragglers better
+                    _ => "".to_owned(),
+                })
+                .fg(if leader_local_sequencer {
+                    Color::Green
+                } else {
+                    Color::Reset
+                }),
                 Cell::new(
                     processor
                         .status
@@ -125,20 +197,6 @@ pub async fn list_partitions(
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
                 ),
-                Cell::new(
-                    processor
-                        .status
-                        .last_observed_leader_node
-                        .map(|x| x.to_string())
-                        .unwrap_or("-".to_owned()),
-                ),
-                Cell::new(
-                    processor
-                        .status
-                        .last_observed_leader_epoch
-                        .map(|x| x.to_string())
-                        .unwrap_or("-".to_owned()),
-                ),
                 Cell::new(processor.status.num_skipped_records),
                 render_as_duration(processor.status.updated_at, Tense::Past),
             ]);
@@ -146,11 +204,11 @@ pub async fn list_partitions(
     }
     c_println!(
         "Alive partition processors (nodes config {:#}, partition table {:#})",
-        state
+        cluster_state
             .nodes_config_version
             .map(Version::from)
             .unwrap_or(Version::INVALID),
-        state
+        cluster_state
             .partition_table_version
             .map(Version::from)
             .unwrap_or(Version::INVALID)
@@ -175,24 +233,25 @@ pub async fn list_partitions(
 }
 
 fn render_mode(planned: RunMode, effective: RunMode) -> Cell {
-    if planned == RunMode::Unknown {
-        return Cell::new("UNKNOWN").fg(Color::Red);
+    match (planned, planned == effective) {
+        (RunMode::Unknown, _) => Cell::new("UNKNOWN").fg(Color::Red),
+        (RunMode::Leader, true) => Cell::new("Leader")
+            .fg(Color::Green)
+            .add_attribute(Attribute::Bold),
+        (RunMode::Follower, true) => Cell::new("Follower"),
+        // We are in a transitional state
+        (_, false) => Cell::new(format!("{}->{}", effective, planned)).fg(Color::Magenta),
     }
-    if planned == effective {
-        return Cell::new(planned)
-            .add_attribute(Attribute::Bold)
-            .fg(Color::Green);
-    }
-    // We are in a transitional state
-    Cell::new(format!("{}->{}", effective, planned)).fg(Color::Magenta)
 }
 
-fn render_replay_status(status: ReplayStatus, target_lsn: Option<Lsn>) -> Cell {
-    match status {
-        ReplayStatus::Unknown => Cell::new("UNKNOWN").fg(Color::Red),
-        ReplayStatus::Starting => Cell::new("Starting").fg(Color::Yellow),
-        ReplayStatus::Active => Cell::new("Active").fg(Color::Green),
-        ReplayStatus::CatchingUp => Cell::new(format!(
+fn render_replay_status(effective: RunMode, status: ReplayStatus, target_lsn: Option<Lsn>) -> Cell {
+    match (status, effective) {
+        (ReplayStatus::Unknown, _) => Cell::new("UNKNOWN").fg(Color::Red),
+        (ReplayStatus::Starting, _) => Cell::new("Starting").fg(Color::Yellow),
+        (ReplayStatus::Active, RunMode::Leader) => Cell::new("Active").fg(Color::Green),
+        (ReplayStatus::Active, RunMode::Follower) => Cell::new("Active"),
+        (ReplayStatus::Active, RunMode::Unknown) => Cell::new("Active?").fg(Color::Red),
+        (ReplayStatus::CatchingUp, _) => Cell::new(format!(
             "Catching Up ({})",
             target_lsn.map(|x| x.to_string()).unwrap_or("-".to_owned())
         ))
