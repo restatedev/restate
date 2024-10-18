@@ -13,8 +13,13 @@ use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Context;
 use cling::prelude::*;
+use itertools::Itertools;
 use tonic::codec::CompressionEncoding;
 
+use crate::app::ConnectionInfo;
+use crate::commands::display_util::render_as_duration;
+use crate::commands::log::deserialize_replicated_log_params;
+use crate::util::grpc_connect;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{ClusterStateRequest, ListLogsRequest};
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
@@ -29,15 +34,26 @@ use restate_types::protobuf::cluster::{
 use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
-use crate::app::ConnectionInfo;
-use crate::commands::display_util::render_as_duration;
-use crate::commands::log::deserialize_replicated_log_params;
-use crate::util::grpc_connect;
-
-#[derive(Run, Parser, Collect, Clone, Debug)]
+#[derive(Run, Parser, Collect, Clone, Debug, Default)]
 #[cling(run = "list_partitions")]
 #[clap(alias = "ls")]
-pub struct ListPartitionsOpts {}
+pub struct ListPartitionsOpts {
+    /// Sort order
+    #[arg(long, short, default_value = "partition")]
+    sort: SortMode,
+}
+
+#[derive(ValueEnum, Collect, Clone, Debug, Default)]
+#[clap(rename_all = "kebab-case")]
+enum SortMode {
+    /// Order list by partition id
+    #[default]
+    Partition,
+    /// Order list by node id
+    Node,
+    /// Order list by processor leadership state
+    Active,
+}
 
 struct PartitionListEntry {
     host_node: GenerationalNodeId,
@@ -46,7 +62,7 @@ struct PartitionListEntry {
 
 pub async fn list_partitions(
     connection: &ConnectionInfo,
-    _opts: &ListPartitionsOpts,
+    opts: &ListPartitionsOpts,
 ) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
@@ -74,7 +90,7 @@ pub async fn list_partitions(
     let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
     let logs: HashMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
 
-    let mut partitions: BTreeMap<u32, Vec<PartitionListEntry>> = BTreeMap::new();
+    let mut partitions: Vec<(u32, PartitionListEntry)> = vec![];
     let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
     for (node_id, node_state) in cluster_state.nodes {
         match node_state.state.expect("node state is set") {
@@ -90,11 +106,12 @@ pub async fn list_partitions(
                     let host_node =
                         GenerationalNodeId::new(host.id, host.generation.expect("generation"));
                     let details = PartitionListEntry { host_node, status };
-                    partitions.entry(partition_id).or_default().push(details);
+                    partitions.push((partition_id, details));
                 }
             }
         }
     }
+
     // Show information organized by partition and node
     let mut partitions_table = Table::new_styled();
     partitions_table.set_styled_header(vec![
@@ -110,8 +127,24 @@ pub async fn list_partitions(
         "SKIPPED",
         "LAST-UPDATE",
     ]);
-    for (partition_id, processors) in partitions {
-        for processor in processors {
+
+    partitions
+        .into_iter()
+        .sorted_by(|a, b| match opts.sort {
+            SortMode::Partition => a.0.cmp(&b.0),
+            SortMode::Node => {
+                a.1.host_node
+                    .cmp(&b.1.host_node)
+                    .then_with(|| a.0.cmp(&b.0))
+            }
+            SortMode::Active => {
+                a.1.status
+                    .effective_mode
+                    .cmp(&b.1.status.effective_mode)
+                    .then_with(|| a.1.host_node.cmp(&b.1.host_node))
+            }
+        })
+        .for_each(|(partition_id, processor)| {
             let is_leader = processor
                 .status
                 .last_observed_leader_node
@@ -138,9 +171,19 @@ pub async fn list_partitions(
                 })
                 .unwrap_or((false, None));
 
-            let leader_local_sequencer = is_leader
-                && maybe_sequencer
-                    .is_some_and(|s| s == processor.host_node);
+            let leader_local_sequencer =
+                is_leader && maybe_sequencer.is_some_and(|s| s == processor.host_node);
+
+            let observed_leader_color = if is_leader {
+                Color::Green
+            } else {
+                Color::Reset
+            };
+            let sequencer_color = if leader_local_sequencer {
+                Color::Green
+            } else {
+                Color::Reset
+            };
 
             partitions_table.add_row(vec![
                 Cell::new(partition_id),
@@ -161,11 +204,7 @@ pub async fn list_partitions(
                         .map(|n| n.to_string())
                         .unwrap_or("-".to_owned()),
                 )
-                .fg(if is_leader {
-                    Color::Green
-                } else {
-                    Color::Reset
-                }),
+                .fg(observed_leader_color),
                 Cell::new(
                     processor
                         .status
@@ -178,11 +217,7 @@ pub async fn list_partitions(
                     (false, _) => "-".to_owned(), // todo: render stragglers better
                     _ => "".to_owned(),
                 })
-                .fg(if leader_local_sequencer {
-                    Color::Green
-                } else {
-                    Color::Reset
-                }),
+                .fg(sequencer_color),
                 Cell::new(
                     processor
                         .status
@@ -200,8 +235,8 @@ pub async fn list_partitions(
                 Cell::new(processor.status.num_skipped_records),
                 render_as_duration(processor.status.updated_at, Tense::Past),
             ]);
-        }
-    }
+        });
+
     c_println!(
         "Alive partition processors (nodes config {:#}, partition table {:#})",
         cluster_state
