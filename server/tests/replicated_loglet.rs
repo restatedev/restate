@@ -2,20 +2,27 @@ mod common;
 
 #[cfg(feature = "replicated-loglet")]
 mod tests {
-    use std::{num::NonZeroU8, sync::Arc};
+    use std::{collections::BTreeSet, num::NonZeroU8, sync::Arc, time::Duration};
 
+    use futures_util::StreamExt;
     use googletest::prelude::*;
     use restate_bifrost::loglet::AppendError;
+    use restate_core::{cancellation_token, metadata, task_center};
     use test_log::test;
 
     use restate_types::{
         config::Configuration,
-        logs::{Keys, LogletOffset, Record, TailState},
-        replicated_loglet::ReplicationProperty,
+        logs::{
+            metadata::{LogletParams, ProviderKind},
+            KeyFilter, Keys, LogId, LogletOffset, Lsn, Record, SequenceNumber, TailState,
+        },
+        replicated_loglet::{ReplicatedLogletParams, ReplicationProperty},
         storage::PolyBytes,
         time::NanosSinceEpoch,
-        GenerationalNodeId,
+        GenerationalNodeId, Version,
     };
+    use tokio::task::{JoinHandle, JoinSet};
+    use tokio_util::sync::CancellationToken;
 
     use super::common::replicated_loglet::run_in_test_env;
 
@@ -172,6 +179,170 @@ mod tests {
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
             |test_env| restate_bifrost::loglet::loglet_tests::seal_empty(test_env.loglet),
+        )
+        .await
+    }
+
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+    async fn bifrost_append_and_seal_concurrent() -> googletest::Result<()> {
+        const TEST_DURATION: Duration = Duration::from_secs(10);
+        const SEAL_PERIOD: Duration = Duration::from_secs(1);
+        const CONCURRENT_APPENDERS: usize = 20;
+
+        run_in_test_env(
+            Configuration::default(),
+            GenerationalNodeId::new(5, 1), // local sequencer
+            ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            3,
+            |test_env| async move {
+                let log_id = LogId::new(0);
+
+                let tc = task_center();
+                let metadata = metadata();
+
+
+                let mut appenders: JoinSet<googletest::Result<_>> = JoinSet::new();
+                let cancel_appenders = CancellationToken::new();
+
+                for appender_id in 0..CONCURRENT_APPENDERS {
+                    appenders.spawn({
+                        let bifrost = test_env.bifrost.clone();
+                        let cancel_appenders = cancel_appenders.clone();
+                        let tc = tc.clone();
+                        async move {
+                            tc.run_in_scope("append", None, async move {
+                                let mut i = 1;
+                                let mut committed = Vec::new();
+                                while !cancel_appenders.is_cancelled() {
+                                    let offset = bifrost
+                                        .append(
+                                            log_id,
+                                            format!("appender-{}-record{}", appender_id, i),
+                                        )
+                                        .await?;
+                                    i += 1;
+                                    committed.push(offset);
+                                }
+                                Ok(committed)
+                            })
+                            .await
+                        }
+                    });
+                }
+
+                let mut sealer_handle: JoinHandle<googletest::Result<()>> = tokio::task::spawn({
+                    let tc = tc.clone();
+                    let (bifrost, metadata_writer, metadata_store_client) = (
+                        test_env.bifrost.clone(),
+                        test_env.metadata_writer.clone(),
+                        test_env.metadata_store_client.clone()
+                    );
+
+                    async move {
+                        let cancellation_token = cancellation_token();
+
+                        let mut chain = metadata.updateable_logs_metadata().map(|logs| logs.chain(&log_id).expect("a chain to exist"));
+
+                        let bifrost_admin = restate_bifrost::BifrostAdmin::new(
+                            &bifrost,
+                            &metadata_writer,
+                            &metadata_store_client,
+                        );
+
+                        tc.run_in_scope("sealer", None, async move {
+                            let mut last_loglet_id = None;
+
+                            while !cancellation_token.is_cancelled() {
+                                tokio::time::sleep(SEAL_PERIOD).await;
+
+                                let mut params = ReplicatedLogletParams::deserialize_from(
+                                    chain.live_load().tail().config.params.as_ref(),
+                                )?;
+                                if last_loglet_id == Some(params.loglet_id) {
+                                    fail!("Could not seal as metadata has not caught up from the last seal (version={})", metadata.logs_version())?;
+                                }
+                                last_loglet_id = Some(params.loglet_id);
+                                eprintln!("Sealing loglet {} and creating new loglet {}", params.loglet_id, params.loglet_id.next());
+                                params.loglet_id = params.loglet_id.next();
+
+                                bifrost_admin
+                                    .seal_and_extend_chain(
+                                        log_id,
+                                        None,
+                                        Version::MIN,
+                                        ProviderKind::Replicated,
+                                        LogletParams::from(params.serialize()?),
+                                    )
+                                    .await?;
+                            }
+
+                            Ok(())
+                        })
+                        .await
+                    }
+                });
+
+                tokio::select! {
+                    res = appenders.join_next() => {
+                        fail!("an appender exited early: {res:?}")?;
+                    }
+                    res = &mut sealer_handle => {
+                        fail!("sealer exited early: {res:?}")?;
+                    }
+                    _ = tokio::time::sleep(TEST_DURATION) => {
+                        eprintln!("cancelling appenders and running validation")
+                    }
+                }
+
+                // stop appending
+                cancel_appenders.cancel();
+                // stop sealing
+                sealer_handle.abort();
+
+                match sealer_handle.await {
+                    Err(err) if err.is_cancelled() => {}
+                    res => fail!("unexpected error from sealer handle: {res:?}")?,
+                }
+
+                let mut all_committed = BTreeSet::new();
+                while let Some(handle) = appenders.join_next().await {
+                    let committed = handle??;
+                    let committed_len = committed.len();
+                    assert_that!(committed_len, ge(0));
+                    let tail_record = committed.last().unwrap();
+                    println!(
+                        "Committed len={}, last appended={}",
+                        committed_len, tail_record
+                    );
+                    // ensure that all committed records are unique
+                    for offset in committed {
+                        if !all_committed.insert(offset) {
+                            fail!("Committed duplicate sequence number {}", offset)?
+                        }
+                    }
+                }
+                let last_lsn = *all_committed
+                    .last()
+                    .expect("to have committed some records");
+
+                let mut reader =
+                    test_env.bifrost.create_reader(log_id, KeyFilter::Any, Lsn::OLDEST, last_lsn)?;
+
+                let mut records = BTreeSet::new();
+
+                while let Some(record) = reader.next().await {
+                    let record = record?;
+                    if !records.insert(record.sequence_number()) {
+                        fail!("Read duplicate sequence number {}", record.sequence_number())?
+                    }
+                }
+
+                // every record committed must be observed exactly once in readstream
+                assert!(all_committed.eq(&records));
+                eprintln!("Validated {} committed records", all_committed.len());
+
+                Ok(())
+            },
         )
         .await
     }
