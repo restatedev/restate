@@ -146,12 +146,9 @@ impl MessageHandler for IngressDispatcher {
     type MessageType = IngressMessage;
 
     async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-        let (reciprocal, msg) = msg.split();
-        trace!(
-            "Processing message '{}' from '{}'",
-            msg.kind(),
-            reciprocal.peer()
-        );
+        let peer = *msg.peer();
+        let msg = msg.into_body();
+        trace!("Processing message '{}' from '{}'", msg.kind(), peer);
 
         match msg {
             IngressMessage::InvocationResponse(invocation_response) => {
@@ -174,7 +171,7 @@ impl MessageHandler for IngressDispatcher {
                         );
                     } else {
                         trace!(
-                            partition_processor_peer = %reciprocal.peer(),
+                            partition_processor_peer = %peer,
                             "Sent response of invocation {:?} out",
                             invocation_response.invocation_id
                         );
@@ -202,7 +199,7 @@ impl MessageHandler for IngressDispatcher {
                         );
                     } else {
                         trace!(
-                            partition_processor_peer = %reciprocal.peer(),
+                            partition_processor_peer = %peer,
                             "Sent response of invocation out"
                         );
                     }

@@ -407,7 +407,7 @@ impl<S: LogStore> LogletWorker<S> {
             .await
         {
             Ok(store_token) => {
-                *staging_local_tail = last_offset.next();
+                *staging_local_tail = std::cmp::max(*staging_local_tail, last_offset.next());
                 (Status::Ok, Some(store_token))
             }
             Err(_) => {

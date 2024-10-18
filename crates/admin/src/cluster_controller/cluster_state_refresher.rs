@@ -170,12 +170,13 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             while let Some(Ok((node_id, result))) = join_set.join_next().await {
                 match result {
                     Ok(response) => {
-                        let (from, msg) = response.split();
+                        let peer = *response.peer();
+                        let msg = response.into_body();
                         nodes.insert(
                             node_id,
                             NodeState::Alive(AliveNode {
                                 last_heartbeat_at: MillisSinceEpoch::now(),
-                                generational_node_id: *from.peer(),
+                                generational_node_id: peer,
                                 partitions: msg.state,
                             }),
                         );

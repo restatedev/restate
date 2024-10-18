@@ -33,7 +33,7 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::{StorageCodec, StorageEncode};
 use restate_types::{Version, Versioned};
 
-use crate::network_server::AdminDependencies;
+use crate::network_server::ClusterControllerDependencies;
 
 pub struct ClusterCtrlSvcHandler {
     metadata_store_client: MetadataStoreClient,
@@ -43,7 +43,7 @@ pub struct ClusterCtrlSvcHandler {
 }
 
 impl ClusterCtrlSvcHandler {
-    pub fn new(admin_deps: AdminDependencies) -> Self {
+    pub fn new(admin_deps: ClusterControllerDependencies) -> Self {
         Self {
             controller_handle: admin_deps.cluster_controller_handle,
             metadata_store_client: admin_deps.metadata_store_client,

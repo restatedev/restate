@@ -93,7 +93,10 @@ where
             }
             invocation_target
         } else {
-            return Err(HandlerError::NotFound);
+            return Err(HandlerError::ServiceHandlerNotFound(
+                service_name.clone(),
+                handler_name.clone(),
+            ));
         };
 
         // Check if Idempotency-Key is available
