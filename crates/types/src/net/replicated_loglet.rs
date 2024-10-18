@@ -116,7 +116,7 @@ pub struct Appended {
     #[serde(flatten)]
     pub header: CommonResponseHeader,
     // INVALID if Status indicates that the append failed
-    pub first_offset: LogletOffset,
+    pub last_offset: LogletOffset,
 }
 
 impl Deref for Appended {
@@ -137,14 +137,14 @@ impl Appended {
     pub fn empty() -> Self {
         Self {
             header: CommonResponseHeader::empty(),
-            first_offset: LogletOffset::INVALID,
+            last_offset: LogletOffset::INVALID,
         }
     }
 
-    pub fn new(tail_state: TailState<LogletOffset>, first_offset: LogletOffset) -> Self {
+    pub fn new(tail_state: TailState<LogletOffset>, last_offset: LogletOffset) -> Self {
         Self {
             header: CommonResponseHeader::new(Some(tail_state)),
-            first_offset,
+            last_offset,
         }
     }
 
