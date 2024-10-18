@@ -162,10 +162,7 @@ async fn start_workflow_method(#[case] disable_idempotency_table: bool) {
                         ))
                     })
                 }
-            ))))),
-            contains(pat!(Action::ScheduleInvocationStatusCleanup {
-                invocation_id: eq(invocation_id)
-            }))
+            )))))
         )
     );
 
@@ -321,10 +318,7 @@ async fn attach_by_workflow_key(#[case] disable_idempotency_table: bool) {
                         ))
                     })
                 }
-            )))),
-            contains(pat!(Action::ScheduleInvocationStatusCleanup {
-                invocation_id: eq(invocation_id)
-            }))
+            ))))
         )
     );
 

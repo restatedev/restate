@@ -454,6 +454,7 @@ impl PartitionStore {
     }
 
     /// Run migrations from Restate 1.1 to Restate 1.2
+    /// TODO figure out where this should run!!!
     pub async fn run_1_1_to_1_2_migrations(&mut self) -> Result<()> {
         let mut tx = self.transaction();
 

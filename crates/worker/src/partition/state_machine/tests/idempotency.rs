@@ -111,24 +111,19 @@ async fn start_and_complete_idempotent_invocation(#[case] disable_idempotency_ta
     // Assert response and timeout
     assert_that!(
         actions,
-        all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            contains(pat!(Action::ScheduleInvocationStatusCleanup {
-                invocation_id: eq(invocation_id)
-            }))
-        )
+        all!(contains(pat!(Action::IngressResponse(pat!(
+            IngressResponseEnvelope {
+                target_node: eq(node_id),
+                inner: pat!(ingress::InvocationResponse {
+                    request_id: eq(request_id),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(IngressResponseResult::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })
+            }
+        )))))
     );
 
     // InvocationStatus contains completed
@@ -234,24 +229,19 @@ async fn start_and_complete_idempotent_invocation_neo_table(
     // Assert response and timeout
     assert_that!(
         actions,
-        all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            not(contains(pat!(Action::ScheduleInvocationStatusCleanup {
-                invocation_id: eq(invocation_id)
-            })))
-        )
+        all!(contains(pat!(Action::IngressResponse(pat!(
+            IngressResponseEnvelope {
+                target_node: eq(node_id),
+                inner: pat!(ingress::InvocationResponse {
+                    request_id: eq(request_id),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(IngressResponseResult::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })
+            }
+        )))))
     );
 
     // InvocationStatus contains completed

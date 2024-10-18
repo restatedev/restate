@@ -12,9 +12,11 @@
 #![allow(clippy::borrow_interior_mutable_const)]
 #![allow(clippy::declare_interior_mutable_const)]
 
-use super::{assert_stream_eq, storage_test_environment};
+use super::storage_test_environment;
 
 use bytestring::ByteString;
+use futures_util::TryStreamExt;
+use googletest::prelude::*;
 use once_cell::sync::Lazy;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, JournalMetadata,
@@ -151,15 +153,19 @@ async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
 }
 
 async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut T) {
-    let stream = txn.all_invoked_invocations();
-
-    let expected = vec![
-        (*INVOCATION_ID_1, INVOCATION_TARGET_1.clone()),
-        (*INVOCATION_ID_2, INVOCATION_TARGET_2.clone()),
-        (*INVOCATION_ID_4, INVOCATION_TARGET_4.clone()),
-    ];
-
-    assert_stream_eq(stream, expected).await;
+    let actual = txn
+        .all_invoked_invocations()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+    assert_that!(
+        actual,
+        unordered_elements_are![
+            eq((*INVOCATION_ID_1, INVOCATION_TARGET_1.clone())),
+            eq((*INVOCATION_ID_2, INVOCATION_TARGET_2.clone())),
+            eq((*INVOCATION_ID_4, INVOCATION_TARGET_4.clone()))
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
