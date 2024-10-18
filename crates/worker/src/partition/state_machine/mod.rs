@@ -26,14 +26,11 @@ use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
-use restate_storage_api::invocation_status_table;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatusTable,
     PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
 };
-use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ScheduledInvocation, SourceTable,
-};
+use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_table::ReadOnlyJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
@@ -87,7 +84,6 @@ use std::fmt::{Debug, Formatter};
 use std::iter;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
-use std::time::Duration;
 use std::time::Instant;
 use tracing::error;
 use utils::SpanExt;
@@ -101,10 +97,6 @@ pub struct StateMachine<Codec> {
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
     latency: Histogram,
-
-    /// This is used to establish whether for new invocations we should use the NeoInvocationStatus or not.
-    /// The neo table is enabled via [restate_types::config::WorkerOptions::experimental_feature_new_invocation_status_table].
-    default_invocation_status_source_table: SourceTable,
 
     _codec: PhantomData<Codec>,
 }
@@ -162,7 +154,6 @@ impl<Codec> StateMachine<Codec> {
         outbox_seq_number: MessageIndex,
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
-        default_invocation_status_source_table: invocation_status_table::SourceTable,
     ) -> Self {
         let latency =
             histogram!(crate::metric_definitions::PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
@@ -172,7 +163,6 @@ impl<Codec> StateMachine<Codec> {
             outbox_head_seq_number,
             partition_key_range,
             latency,
-            default_invocation_status_source_table,
             _codec: PhantomData,
         }
     }
@@ -363,10 +353,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
-        let pre_flight_invocation_metadata = PreFlightInvocationMetadata::from_service_invocation(
-            service_invocation,
-            self.default_invocation_status_source_table,
-        );
+        let pre_flight_invocation_metadata =
+            PreFlightInvocationMetadata::from_service_invocation(service_invocation);
 
         // 2. Check if we need to schedule it
         let Some(pre_flight_invocation_metadata) = self
@@ -583,53 +571,23 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     ) -> Result<Option<PreFlightInvocationMetadata>, Error> {
         if let Some(execution_time) = metadata.execution_time {
             let span_context = metadata.span_context.clone();
-            match self.default_invocation_status_source_table {
-                SourceTable::Old => {
-                    // TODO remove this code once we remove the Old table
-                    Self::register_timer(
-                        ctx,
-                        TimerKeyValue::invoke(
-                            execution_time,
-                            ServiceInvocation {
-                                invocation_id,
-                                invocation_target: metadata.invocation_target,
-                                argument: metadata.argument,
-                                source: metadata.source,
-                                span_context: span_context.clone(),
-                                headers: metadata.headers,
-                                execution_time: metadata.execution_time,
-                                completion_retention_duration: Some(
-                                    metadata.completion_retention_duration,
-                                ),
-                                idempotency_key: metadata.idempotency_key,
-                                response_sink: metadata.response_sinks.into_iter().next(),
-                                submit_notification_sink: None,
-                            },
-                        ),
-                        span_context,
-                    )
-                    .await?;
-                }
-                SourceTable::New => {
-                    debug_if_leader!(ctx.is_leader, "Store scheduled invocation");
+            debug_if_leader!(ctx.is_leader, "Store scheduled invocation");
 
-                    Self::register_timer(
-                        ctx,
-                        TimerKeyValue::neo_invoke(execution_time, invocation_id),
-                        span_context,
-                    )
-                    .await?;
+            Self::register_timer(
+                ctx,
+                TimerKeyValue::neo_invoke(execution_time, invocation_id),
+                span_context,
+            )
+            .await?;
 
-                    ctx.storage
-                        .put_invocation_status(
-                            &invocation_id.clone(),
-                            &InvocationStatus::Scheduled(
-                                ScheduledInvocation::from_pre_flight_invocation_metadata(metadata),
-                            ),
-                        )
-                        .await;
-                }
-            }
+            ctx.storage
+                .put_invocation_status(
+                    &invocation_id.clone(),
+                    &InvocationStatus::Scheduled(
+                        ScheduledInvocation::from_pre_flight_invocation_metadata(metadata),
+                    ),
+                )
+                .await;
             // The span will be created later on invocation
             return Ok(None);
         }
@@ -1597,18 +1555,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
             // Store the completed status, if needed
             if !completion_retention_time.is_zero() {
-                let (completed_invocation, completion_retention_time) =
-                    CompletedInvocation::from_in_flight_invocation_metadata(
-                        invocation_metadata,
-                        result,
-                    );
-                Self::do_store_completed_invocation(
-                    ctx,
-                    invocation_id,
-                    completion_retention_time,
-                    completed_invocation,
-                )
-                .await;
+                let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
+                    invocation_metadata,
+                    result,
+                );
+                Self::do_store_completed_invocation(ctx, invocation_id, completed_invocation).await;
             }
         }
 
@@ -1665,18 +1616,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         // Store the completed status or free it
         if !invocation_metadata.completion_retention_duration.is_zero() {
-            let (completed_invocation, completion_retention_time) =
-                CompletedInvocation::from_in_flight_invocation_metadata(
-                    invocation_metadata,
-                    response_result,
-                );
-            Self::do_store_completed_invocation(
-                ctx,
-                invocation_id,
-                completion_retention_time,
-                completed_invocation,
-            )
-            .await;
+            let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
+                invocation_metadata,
+                response_result,
+            );
+            Self::do_store_completed_invocation(ctx, invocation_id, completed_invocation).await;
         } else {
             Self::do_free_invocation(ctx, invocation_id).await;
         }
@@ -2897,7 +2841,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     async fn do_store_completed_invocation<State: InvocationStatusTable>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
-        retention: Duration,
         completed_invocation: CompletedInvocation,
     ) {
         debug_if_leader!(
@@ -2905,15 +2848,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             restate.invocation.id = %invocation_id,
             "Effect: Store completed invocation"
         );
-
-        // New table invocations are cleaned using the Cleaner task.
-        if let SourceTable::Old = completed_invocation.source_table {
-            ctx.action_collector
-                .push(Action::ScheduleInvocationStatusCleanup {
-                    invocation_id,
-                    retention,
-                });
-        }
 
         ctx.storage
             .put_invocation_status(

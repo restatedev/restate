@@ -14,9 +14,7 @@ use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
 use restate_storage_api::inbox_table::{InboxEntry, ReadOnlyInboxTable, SequenceNumberInboxEntry};
-use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, SourceTable, StatusTimestamps,
-};
+use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
 use restate_types::errors::GONE_INVOCATION_ERROR;
 use restate_types::identifiers::{IdempotencyId, IngressRequestId};
@@ -99,24 +97,19 @@ async fn start_and_complete_idempotent_invocation() {
     // Assert response and timeout
     assert_that!(
         actions,
-        all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            contains(pat!(Action::ScheduleInvocationStatusCleanup {
-                invocation_id: eq(invocation_id)
-            }))
-        )
+        all!(contains(pat!(Action::IngressResponse(pat!(
+            IngressResponseEnvelope {
+                target_node: eq(node_id),
+                inner: pat!(ingress::InvocationResponse {
+                    request_id: eq(request_id),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(IngressResponseResult::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })
+            }
+        )))))
     );
 
     // InvocationStatus contains completed
@@ -205,24 +198,19 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
     // Assert response and timeout
     assert_that!(
         actions,
-        all!(
-            contains(pat!(Action::IngressResponse(pat!(
-                IngressResponseEnvelope {
-                    target_node: eq(node_id),
-                    inner: pat!(ingress::InvocationResponse {
-                        request_id: eq(request_id),
-                        invocation_id: some(eq(invocation_id)),
-                        response: eq(IngressResponseResult::Success(
-                            invocation_target.clone(),
-                            response_bytes.clone()
-                        ))
-                    })
-                }
-            )))),
-            not(contains(pat!(Action::ScheduleInvocationStatusCleanup {
-                invocation_id: eq(invocation_id)
-            })))
-        )
+        all!(contains(pat!(Action::IngressResponse(pat!(
+            IngressResponseEnvelope {
+                target_node: eq(node_id),
+                inner: pat!(ingress::InvocationResponse {
+                    request_id: eq(request_id),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(IngressResponseResult::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })
+            }
+        )))))
     );
 
     // InvocationStatus contains completed
@@ -271,7 +259,6 @@ async fn complete_already_completed_invocation() {
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(response_bytes.clone()),
             completion_retention_duration: Default::default(),
-            source_table: SourceTable::New,
         }),
     )
     .await;
@@ -826,7 +813,6 @@ async fn timer_cleanup() {
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(Bytes::from_static(b"123")),
             completion_retention_duration: Duration::MAX,
-            source_table: SourceTable::Old,
         }),
     )
     .await;
