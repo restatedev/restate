@@ -109,6 +109,8 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort"))]
     /// Log-server tasks
     LogletWriter,
+    /// Background task which should not fail
+    Background,
 }
 
 impl TaskKind {
