@@ -346,7 +346,7 @@ impl RemoteSequencerConnection {
             // handle status of the response.
             match appended.header.status {
                 SequencerStatus::Ok => {
-                    commit_resolver.offset(appended.first_offset);
+                    commit_resolver.offset(appended.last_offset);
                 }
 
                 SequencerStatus::Sealed => {
@@ -525,12 +525,12 @@ mod test {
     impl MessageHandler for SequencerMockHandler {
         type MessageType = Append;
         async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-            let first_offset = self
+            let last_offset = self
                 .offset
                 .fetch_add(msg.body().payloads.len() as u32, Ordering::Relaxed);
 
             let outgoing = msg.into_outgoing(Appended {
-                first_offset: LogletOffset::from(first_offset),
+                last_offset: LogletOffset::from(last_offset),
                 header: CommonResponseHeader {
                     known_global_tail: None,
                     sealed: Some(false),

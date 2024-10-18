@@ -140,6 +140,12 @@ pub enum SequencerAccess<T> {
     Local { handle: Sequencer<T> },
 }
 
+impl<T: TransportConnect> ReplicatedLoglet<T> {
+    pub fn last_known_global_tail(&self) -> TailState<LogletOffset> {
+        *self.known_global_tail.get()
+    }
+}
+
 #[async_trait]
 impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     async fn create_read_stream(
