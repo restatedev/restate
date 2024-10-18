@@ -12,6 +12,7 @@ use super::create_envelope_header;
 use super::error::*;
 use crate::schema_registry::ModifyServiceChange;
 use crate::state::AdminServiceState;
+use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::Json;
@@ -175,10 +176,10 @@ pub async fn modify_service_state<V>(
 
     let result = append_envelope_to_bifrost(
         &state.bifrost,
-        Envelope::new(
+        Arc::new(Envelope::new(
             create_envelope_header(partition_key),
             Command::PatchState(patch_state),
-        ),
+        )),
     )
     .await;
 
