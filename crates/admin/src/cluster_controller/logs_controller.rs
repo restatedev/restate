@@ -408,9 +408,7 @@ impl LogletConfiguration {
             #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(configuration) => {
                 // todo check also whether we can improve the nodeset based on the observed cluster state
-                observed_cluster_state
-                    .dead_nodes
-                    .contains(&configuration.sequencer.as_plain())
+                !observed_cluster_state.is_node_alive(configuration.sequencer)
             }
             LogletConfiguration::Local(_) => false,
             #[cfg(any(test, feature = "memory-loglet"))]

@@ -10,7 +10,7 @@
 
 use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
 use restate_types::identifiers::PartitionId;
-use restate_types::{GenerationalNodeId, PlainNodeId};
+use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 use std::collections::{HashMap, HashSet};
 use xxhash_rust::xxh3::Xxh3Builder;
 
@@ -25,6 +25,18 @@ pub struct ObservedClusterState {
 }
 
 impl ObservedClusterState {
+    pub fn is_node_alive(&self, node_id: impl Into<NodeId>) -> bool {
+        let node_id = node_id.into();
+
+        match node_id {
+            NodeId::Plain(plain_node_id) => self.alive_nodes.contains_key(&plain_node_id),
+            NodeId::Generational(generational_node_id) => self
+                .alive_nodes
+                .get(&generational_node_id.as_plain())
+                .is_some_and(|node_id| *node_id == generational_node_id),
+        }
+    }
+
     pub fn update(&mut self, cluster_state: &ClusterState) {
         self.update_nodes(cluster_state);
         self.update_partitions(cluster_state);
