@@ -34,6 +34,7 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::EntryType;
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
+use restate_types::schema::service::ServiceMetadataResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::service_protocol::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
 use std::collections::HashSet;
@@ -48,7 +49,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -309,14 +310,14 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<SR, JR, EE, DMR> InvocationTask<SR, JR, EE, DMR>
+impl<SR, JR, EE, Schemas> InvocationTask<SR, JR, EE, Schemas>
 where
     SR: StateReader + StateReader + Clone + Send + Sync + 'static,
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher,
-    DMR: DeploymentResolver,
+    Schemas: DeploymentResolver + ServiceMetadataResolver,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -324,8 +325,8 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        inactivity_timeout: Duration,
-        abort_timeout: Duration,
+        default_inactivity_timeout: Duration,
+        default_abort_timeout: Duration,
         disable_eager_state: bool,
         message_size_warning: usize,
         message_size_limit: Option<usize>,
@@ -333,7 +334,7 @@ where
         state_reader: SR,
         journal_reader: JR,
         entry_enricher: EE,
-        deployment_metadata_resolver: Live<DMR>,
+        deployment_metadata_resolver: Live<Schemas>,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
     ) -> Self {
@@ -342,8 +343,8 @@ where
             partition,
             invocation_id,
             invocation_target,
-            inactivity_timeout,
-            abort_timeout,
+            inactivity_timeout: default_inactivity_timeout,
+            abort_timeout: default_abort_timeout,
             disable_eager_state,
             state_reader,
             journal_reader,
@@ -429,13 +430,12 @@ where
             shortcircuit!(tokio::try_join!(read_journal_future, read_state_future));
 
         // Resolve the deployment metadata
+        let schemas = self.deployment_metadata_resolver.live_load();
         let (deployment, chosen_service_protocol_version, deployment_changed) =
             if let Some(pinned_deployment) = &journal_metadata.pinned_deployment {
                 // We have a pinned deployment that we can't change even if newer
                 // deployments have been registered for the same service.
-                let deployment_metadata = shortcircuit!(self
-                    .deployment_metadata_resolver
-                    .live_load()
+                let deployment_metadata = shortcircuit!(schemas
                     .get_deployment(&pinned_deployment.deployment_id)
                     .ok_or_else(|| InvocationTaskError::UnknownDeployment(
                         pinned_deployment.deployment_id
@@ -457,9 +457,7 @@ where
             } else {
                 // We can choose the freshest deployment for the latest revision
                 // of the registered service.
-                let deployment = shortcircuit!(self
-                    .deployment_metadata_resolver
-                    .live_load()
+                let deployment = shortcircuit!(schemas
                     .resolve_latest_deployment_for_service(self.invocation_target.service_name())
                     .ok_or(InvocationTaskError::NoDeploymentForService));
 
@@ -480,6 +478,19 @@ where
                     /* has_changed= */ true,
                 )
             };
+        if let Some(service_metadata) =
+            schemas.resolve_latest_service(self.invocation_target.service_name())
+        {
+            // Override the inactivity timeout and abort timeout, if available
+            if let Some(inactivity_timeout) = service_metadata.inactivity_timeout {
+                self.inactivity_timeout = inactivity_timeout.into();
+            }
+            if let Some(abort_timeout) = service_metadata.abort_timeout {
+                self.abort_timeout = abort_timeout.into();
+            }
+        } else {
+            warn!("Unexpected service not found, after resolving correctly the deployment.");
+        }
 
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
             PinnedDeployment::new(deployment.id, chosen_service_protocol_version),

@@ -69,6 +69,47 @@ pub struct ServiceMetadata {
     )]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub workflow_completion_retention: Option<humantime::Duration>,
+
+    /// # Inactivity timeout
+    ///
+    /// This timer guards against stalled service/handler invocations. Once it expires,
+    /// Restate triggers a graceful termination by asking the service invocation to
+    /// suspend (which preserves intermediate progress).
+    ///
+    /// The 'abort timeout' is used to abort the invocation, in case it doesn't react to
+    /// the request to suspend.
+    ///
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+    ///
+    /// This overrides the default inactivity timeout set in invoker options.
+    #[serde(
+        with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    pub inactivity_timeout: Option<humantime::Duration>,
+
+    /// # Abort timeout
+    ///
+    /// This timer guards against stalled service/handler invocations that are supposed to
+    /// terminate. The abort timeout is started after the 'inactivity timeout' has expired
+    /// and the service/handler invocation has been asked to gracefully terminate. Once the
+    /// timer expires, it will abort the service/handler invocation.
+    ///
+    /// This timer potentially **interrupts** user code. If the user code needs longer to
+    /// gracefully terminate, then this value needs to be set accordingly.
+    ///
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+    ///
+    /// This overrides the default abort timeout set in invoker options.
+    #[serde(
+        with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    pub abort_timeout: Option<humantime::Duration>,
 }
 
 // This type is used only for exposing the handler metadata, and not internally. See [ServiceAndHandlerType].
@@ -136,6 +177,8 @@ pub struct ServiceSchemas {
     pub location: ServiceLocation,
     pub idempotency_retention: Duration,
     pub workflow_completion_retention: Option<Duration>,
+    pub inactivity_timeout: Option<Duration>,
+    pub abort_timeout: Option<Duration>,
 }
 
 impl ServiceSchemas {
@@ -158,6 +201,8 @@ impl ServiceSchemas {
             public: self.location.public,
             idempotency_retention: self.idempotency_retention.into(),
             workflow_completion_retention: self.workflow_completion_retention.map(Into::into),
+            inactivity_timeout: self.inactivity_timeout.map(Into::into),
+            abort_timeout: self.abort_timeout.map(Into::into),
         }
     }
 }
@@ -244,8 +289,10 @@ pub mod test_util {
                 deployment_id: Default::default(),
                 revision: 0,
                 public: true,
-                idempotency_retention: std::time::Duration::from_secs(60).into(),
+                idempotency_retention: Duration::from_secs(60).into(),
                 workflow_completion_retention: None,
+                inactivity_timeout: None,
+                abort_timeout: None,
             }
         }
 
@@ -268,8 +315,10 @@ pub mod test_util {
                 deployment_id: Default::default(),
                 revision: 0,
                 public: true,
-                idempotency_retention: std::time::Duration::from_secs(60).into(),
+                idempotency_retention: Duration::from_secs(60).into(),
                 workflow_completion_retention: None,
+                inactivity_timeout: None,
+                abort_timeout: None,
             }
         }
     }

@@ -54,6 +54,45 @@ pub struct ModifyServiceRequest {
     )]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
     pub workflow_completion_retention: Option<Duration>,
+
+    /// # Inactivity timeout
+    ///
+    /// This timer guards against stalled service/handler invocations. Once it expires,
+    /// Restate triggers a graceful termination by asking the service invocation to
+    /// suspend (which preserves intermediate progress).
+    ///
+    /// The 'abort timeout' is used to abort the invocation, in case it doesn't react to
+    /// the request to suspend.
+    ///
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format or the ISO8601.
+    ///
+    /// This overrides the default inactivity timeout set in invoker options.
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    pub inactivity_timeout: Option<Duration>,
+
+    /// # Abort timeout
+    ///
+    /// This timer guards against stalled service/handler invocations that are supposed to
+    /// terminate. The abort timeout is started after the 'inactivity timeout' has expired
+    /// and the service/handler invocation has been asked to gracefully terminate. Once the
+    /// timer expires, it will abort the service/handler invocation.
+    ///
+    /// This timer potentially **interrupts** user code. If the user code needs longer to
+    /// gracefully terminate, then this value needs to be set accordingly.
+    ///
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format or the ISO8601.
+    ///
+    /// This overrides the default abort timeout set in invoker options.
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    pub abort_timeout: Option<Duration>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
