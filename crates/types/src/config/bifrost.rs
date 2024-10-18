@@ -247,12 +247,12 @@ impl Default for ReplicatedLogletOptions {
             maximum_inflight_records: NonZeroUsize::new(1000).unwrap(),
 
             sequencer_backoff_strategy: RetryPolicy::exponential(
-                Duration::from_millis(100),
+                Duration::from_millis(250),
                 2.0,
                 None,
-                Some(Duration::from_millis(2000)),
+                Some(Duration::from_millis(5000)),
             ),
-            log_server_rpc_timeout: Duration::from_millis(2000),
+            log_server_rpc_timeout: Duration::from_millis(5000),
             log_server_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,

@@ -43,7 +43,7 @@ type MessageStream<T> = Pin<Box<dyn Stream<Item = Incoming<T>> + Send + Sync + '
 macro_rules! return_error_status {
     ($reciprocal:expr, $status:expr, $tail:expr) => {{
         let msg = Appended {
-            first_offset: LogletOffset::INVALID,
+            last_offset: LogletOffset::INVALID,
             header: CommonResponseHeader {
                 known_global_tail: Some($tail.latest_offset()),
                 sealed: Some($tail.is_sealed()),
@@ -65,7 +65,7 @@ macro_rules! return_error_status {
     }};
     ($reciprocal:expr, $status:expr) => {{
         let msg = Appended {
-            first_offset: LogletOffset::INVALID,
+            last_offset: LogletOffset::INVALID,
             header: CommonResponseHeader {
                 known_global_tail: None,
                 sealed: None,
@@ -172,33 +172,15 @@ impl RequestPump {
             return;
         }
 
-        match loglet.find_tail().await {
-            Ok(tail) => {
-                let sequencer_state = SequencerState {
-                    header: CommonResponseHeader {
-                        known_global_tail: Some(tail.offset()),
-                        sealed: Some(tail.is_sealed()),
-                        status: SequencerStatus::Ok,
-                    },
-                };
-                let _ = reciprocal.prepare(sequencer_state).try_send();
-            }
-            Err(err) => {
-                // Well, we couldn't finish FindTail. Very likely we failed in CheckSeal. In all
-                // cases we can't fulfill the request.
-                let response = SequencerState {
-                    header: CommonResponseHeader {
-                        known_global_tail: None,
-                        sealed: None,
-                        status: SequencerStatus::Error {
-                            retryable: true,
-                            message: err.to_string(),
-                        },
-                    },
-                };
-                let _ = reciprocal.prepare(response).try_send();
-            }
-        }
+        let tail = loglet.last_known_global_tail();
+        let sequencer_state = SequencerState {
+            header: CommonResponseHeader {
+                known_global_tail: Some(tail.offset()),
+                sealed: Some(tail.is_sealed()),
+                status: SequencerStatus::Ok,
+            },
+        };
+        let _ = reciprocal.prepare(sequencer_state).try_send();
     }
 
     /// Infailable handle_append method
@@ -371,7 +353,7 @@ impl WaitForCommitTask {
                     sealed: Some(self.global_tail.is_sealed()),
                     status: SequencerStatus::Ok,
                 },
-                first_offset: offset,
+                last_offset: offset,
             },
             Err(AppendError::Sealed) => Appended {
                 header: CommonResponseHeader {
@@ -379,7 +361,7 @@ impl WaitForCommitTask {
                     sealed: Some(self.global_tail.is_sealed()), // this must be true
                     status: SequencerStatus::Sealed,
                 },
-                first_offset: LogletOffset::INVALID,
+                last_offset: LogletOffset::INVALID,
             },
             Err(AppendError::Shutdown(_)) => Appended {
                 header: CommonResponseHeader {
@@ -387,7 +369,7 @@ impl WaitForCommitTask {
                     sealed: Some(self.global_tail.is_sealed()),
                     status: SequencerStatus::Shutdown,
                 },
-                first_offset: LogletOffset::INVALID,
+                last_offset: LogletOffset::INVALID,
             },
             Err(AppendError::Other(err)) => Appended {
                 header: CommonResponseHeader {
@@ -398,7 +380,7 @@ impl WaitForCommitTask {
                         message: err.to_string(),
                     },
                 },
-                first_offset: LogletOffset::INVALID,
+                last_offset: LogletOffset::INVALID,
             },
         };
 
