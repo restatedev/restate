@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::error::*;
+use std::sync::Arc;
 
 use crate::rest_api::create_envelope_header;
 use crate::state::AdminServiceState;
@@ -95,7 +96,7 @@ pub async fn delete_invocation<V>(
 
     let result = append_envelope_to_bifrost(
         &state.bifrost,
-        Envelope::new(create_envelope_header(partition_key), cmd),
+        Arc::new(Envelope::new(create_envelope_header(partition_key), cmd)),
     )
     .await;
 
