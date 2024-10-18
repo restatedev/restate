@@ -525,7 +525,9 @@ impl<'a> FindTailOnNode<'a> {
             .clone();
 
         let mut retry_iter = retry_policy.into_iter();
+        let mut attempt = 0;
         loop {
+            attempt += 1;
             let request = GetLogletInfo {
                 header: LogServerRequestHeader::new(
                     self.loglet_id,
@@ -562,6 +564,7 @@ impl<'a> FindTailOnNode<'a> {
                         // unexpected statuses
                         Status::SequencerMismatch | Status::OutOfBounds | Status::Malformed => {
                             warn!(
+                                %attempt,
                                 loglet_id = %self.loglet_id,
                                 peer = %self.node_id,
                                 "Unexpected status from log-server when calling GetLogletInfo: {:?}",
@@ -573,6 +576,7 @@ impl<'a> FindTailOnNode<'a> {
                 }
                 Ok(Err(RpcError::SendError(e))) => {
                     trace!(
+                        %attempt,
                         "Failed to get loglet info from node_id={} for loglet_id={}: {:?}",
                         self.node_id,
                         self.loglet_id,
@@ -585,6 +589,7 @@ impl<'a> FindTailOnNode<'a> {
                 }
                 Err(_timeout_error) => {
                     trace!(
+                        %attempt,
                         "Timeout when getting loglet info from node_id={} for loglet_id={}. Configured timeout={:?} ",
                         self.node_id, self.loglet_id, request_timeout
                     );
@@ -594,6 +599,7 @@ impl<'a> FindTailOnNode<'a> {
             // Should we retry?
             if let Some(pause) = retry_iter.next() {
                 trace!(
+                    %attempt,
                     "Retrying to get loglet info from node_id={} and loglet_id={} after {:?}",
                     self.node_id,
                     self.loglet_id,
@@ -601,7 +607,12 @@ impl<'a> FindTailOnNode<'a> {
                 );
                 tokio::time::sleep(pause).await;
             } else {
-                trace!("Exhausted retries while attempting to get loglet-info from node_id={} and loglet_id={}", self.node_id, self.loglet_id);
+                trace!(
+                    %attempt,
+                    "Exhausted retries while attempting to get loglet-info from node_id={} and loglet_id={}",
+                    self.node_id,
+                    self.loglet_id,
+                );
                 return (self.node_id, NodeTailStatus::Unknown);
             }
         }
