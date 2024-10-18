@@ -21,6 +21,8 @@ use crate::schema::Schema;
 use crate::Version;
 use crate::Versioned;
 
+use super::RpcRequest;
+
 #[derive(
     Debug,
     Clone,
@@ -35,6 +37,9 @@ pub enum MetadataMessage {
     MetadataUpdate(MetadataUpdate),
 }
 
+impl RpcRequest for MetadataMessage {
+    type ResponseMessage = MetadataMessage;
+}
 define_message! {
     @message = MetadataMessage,
     @target = TargetName::MetadataManager,
