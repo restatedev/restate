@@ -16,10 +16,6 @@ use cling::prelude::*;
 use itertools::Itertools;
 use tonic::codec::CompressionEncoding;
 
-use crate::app::ConnectionInfo;
-use crate::commands::display_util::render_as_duration;
-use crate::commands::log::deserialize_replicated_log_params;
-use crate::util::grpc_connect;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{ClusterStateRequest, ListLogsRequest};
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
@@ -33,6 +29,11 @@ use restate_types::protobuf::cluster::{
 };
 use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+
+use crate::app::ConnectionInfo;
+use crate::commands::display_util::render_as_duration;
+use crate::commands::log::deserialize_replicated_log_params;
+use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug, Default)]
 #[cling(run = "list_partitions")]
@@ -162,7 +163,7 @@ pub async fn list_partitions(
                     let in_tail = processor
                         .status
                         .last_applied_log_lsn
-                        .map(|lsn| Lsn::from(lsn))
+                        .map(Lsn::from)
                         .is_some_and(|applied_lsn| applied_lsn.ge(&tail.base_lsn));
                     (
                         in_tail,
