@@ -795,7 +795,7 @@ struct InvocationRowResult {
     trace_id: Option<String>,
     completion_result: Option<String>,
     completion_failure: Option<String>,
-    full_count: Option<i64>,
+    full_count: i64,
 }
 
 pub async fn find_active_invocations(
@@ -905,7 +905,7 @@ pub async fn find_active_invocations(
             ),
         });
 
-        full_count = row.full_count.expect("full_count") as usize;
+        full_count = row.full_count as usize;
     }
     Ok((active, full_count))
 }
