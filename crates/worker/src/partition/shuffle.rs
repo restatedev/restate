@@ -423,7 +423,7 @@ mod state_machine {
                             let envelope = Arc::clone(envelope);
                             this.state.set(State::Sending(send_future, envelope));
 
-                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            tokio::time::sleep(Duration::from_secs(1)).await;
                         } else {
                             let successfully_shuffled_sequence_number =
                                 *this.current_sequence_number;
