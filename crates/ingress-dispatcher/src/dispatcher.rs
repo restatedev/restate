@@ -131,7 +131,7 @@ impl DispatchIngressRequest for IngressDispatcher {
             dedup_source,
             msg_index,
         );
-        let (log_id, lsn) = append_envelope_to_bifrost(&self.bifrost, envelope).await?;
+        let (log_id, lsn) = append_envelope_to_bifrost(&self.bifrost, Arc::new(envelope)).await?;
 
         debug!(
             log_id = %log_id,
