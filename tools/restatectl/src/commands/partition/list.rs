@@ -38,6 +38,16 @@ use crate::util::grpc_connect;
 #[derive(Run, Parser, Collect, Clone, Debug, Default)]
 #[cling(run = "list_partitions")]
 #[clap(alias = "ls")]
+#[command(
+    after_long_help = "In addition to partition processors, this command will \
+    display and highlight the current sequencer for each partition's log when \
+    the reported applied LSN is within the tail segment of a replicated loglet.\
+    \
+    When ANSI color is enabled, the this command will also highlight when the \
+    partition processor sees itself as the leader, when the observed leadership \
+    epoch is not the latest, and when the partition leader and the loglet \
+    sequencer are on the same node (for replicated loglets)."
+)]
 pub struct ListPartitionsOpts {
     /// Sort order
     #[arg(long, short, default_value = "partition")]
@@ -93,6 +103,7 @@ pub async fn list_partitions(
 
     let mut partitions: Vec<(u32, PartitionListEntry)> = vec![];
     let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
+    let mut max_epoch_per_partition: HashMap<u32, u64> = HashMap::new();
     for (node_id, node_state) in cluster_state.nodes {
         match node_state.state.expect("node state is set") {
             node_state::State::Dead(dead_node) => {
@@ -108,6 +119,15 @@ pub async fn list_partitions(
                         GenerationalNodeId::new(host.id, host.generation.expect("generation"));
                     let details = PartitionListEntry { host_node, status };
                     partitions.push((partition_id, details));
+
+                    let leadership_epoch =
+                        status.last_observed_leader_epoch.unwrap_or_default().value;
+                    max_epoch_per_partition
+                        .entry(partition_id)
+                        .and_modify(|existing| {
+                            *existing = std::cmp::max(*existing, leadership_epoch);
+                        })
+                        .or_insert(leadership_epoch);
                 }
             }
         }
@@ -122,7 +142,7 @@ pub async fn list_partitions(
         "STATUS",
         "LEADER",
         "EPOCH",
-        "SEQUENCER",
+        "LL-SEQ",
         "APPLIED",
         "PERSISTED",
         "SKIPPED",
@@ -142,11 +162,11 @@ pub async fn list_partitions(
                 a.1.status
                     .effective_mode
                     .cmp(&b.1.status.effective_mode)
-                    .then_with(|| a.1.host_node.cmp(&b.1.host_node))
+                    .then_with(|| a.0.cmp(&b.0))
             }
         })
         .for_each(|(partition_id, processor)| {
-            let is_leader = processor
+            let pp_sees_itself_as_leader = processor
                 .status
                 .last_observed_leader_node
                 .map(|n| {
@@ -156,32 +176,51 @@ pub async fn list_partitions(
                 })
                 .unwrap_or_default();
 
-            let (in_tail_segment, maybe_sequencer) = logs
-                .get(&LogId::from(partition_id))
-                .map(|chain| {
+            let maybe_sequencer = if pp_sees_itself_as_leader {
+                logs.get(&LogId::from(partition_id)).and_then(|chain| {
                     let tail = chain.tail();
                     let in_tail = processor
                         .status
                         .last_applied_log_lsn
                         .map(Lsn::from)
                         .is_some_and(|applied_lsn| applied_lsn.ge(&tail.base_lsn));
-                    (
-                        in_tail,
-                        deserialize_replicated_log_params(&tail).map(|p| p.sequencer),
-                    )
+                    if in_tail {
+                        deserialize_replicated_log_params(&tail).map(|p| p.sequencer)
+                    } else {
+                        None
+                    }
                 })
-                .unwrap_or((false, None));
-
-            let leader_local_sequencer =
-                is_leader && maybe_sequencer.is_some_and(|s| s == processor.host_node);
-
-            let observed_leader_color = if is_leader {
-                Color::Green
             } else {
-                Color::Reset
+                None
+            };
+
+            let leader_local_sequencer = pp_sees_itself_as_leader
+                && maybe_sequencer.is_some_and(|s| s == processor.host_node);
+
+            let epoch = processor
+                .status
+                .last_observed_leader_epoch
+                .unwrap_or_default()
+                .value;
+            let outdated_leadership_epoch = epoch
+                < max_epoch_per_partition
+                    .get(&partition_id)
+                    .copied()
+                    .unwrap_or_default();
+
+            let observed_leader_color = match (pp_sees_itself_as_leader, outdated_leadership_epoch)
+            {
+                (true, false) => Color::Green,
+                (true, true) => Color::Red,
+                (false, true) => Color::Yellow,
+                (false, false) => Color::Reset,
             };
             let sequencer_color = if leader_local_sequencer {
-                Color::Green
+                if !outdated_leadership_epoch {
+                    Color::Green
+                } else {
+                    Color::Red
+                }
             } else {
                 Color::Reset
             };
@@ -192,6 +231,7 @@ pub async fn list_partitions(
                 render_mode(
                     processor.status.planned_mode(),
                     processor.status.effective_mode(),
+                    outdated_leadership_epoch,
                 ),
                 render_replay_status(
                     processor.status.effective_mode(),
@@ -212,10 +252,10 @@ pub async fn list_partitions(
                         .last_observed_leader_epoch
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
-                ),
-                Cell::new(match (in_tail_segment, maybe_sequencer) {
-                    (true, Some(sequencer)) => sequencer.to_string(),
-                    (false, _) => "-".to_owned(), // todo: render stragglers better
+                )
+                .fg(observed_leader_color),
+                Cell::new(match maybe_sequencer {
+                    Some(sequencer) => sequencer.to_string(),
                     _ => "".to_owned(),
                 })
                 .fg(sequencer_color),
@@ -268,15 +308,16 @@ pub async fn list_partitions(
     Ok(())
 }
 
-fn render_mode(planned: RunMode, effective: RunMode) -> Cell {
-    match (planned, planned == effective) {
-        (RunMode::Unknown, _) => Cell::new("UNKNOWN").fg(Color::Red),
-        (RunMode::Leader, true) => Cell::new("Leader")
-            .fg(Color::Green)
+fn render_mode(planned: RunMode, effective: RunMode, outdated_leadership_epoch: bool) -> Cell {
+    match (planned, planned == effective, outdated_leadership_epoch) {
+        (RunMode::Leader, true, false) => Cell::new("Leader")
+            .fg(Color::Blue)
             .add_attribute(Attribute::Bold),
-        (RunMode::Follower, true) => Cell::new("Follower"),
-        // We are in a transitional state
-        (_, false) => Cell::new(format!("{}->{}", effective, planned)).fg(Color::Magenta),
+        (RunMode::Leader, true, true) => Cell::new("Leader").fg(Color::Red),
+        (RunMode::Follower, true, _) => Cell::new("Follower"),
+        (_, false, false) => Cell::new(format!("{}->{}", effective, planned)).fg(Color::Magenta),
+        (_, false, true) => Cell::new(format!("{}->{}", effective, planned)).fg(Color::Red),
+        (RunMode::Unknown, _, _) => Cell::new("UNKNOWN").fg(Color::Red),
     }
 }
 
