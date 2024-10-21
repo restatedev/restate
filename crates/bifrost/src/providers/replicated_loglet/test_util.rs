@@ -12,21 +12,25 @@ use restate_types::nodes_config::{
     LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-use tempfile::tempdir;
+use std::fs;
+use tempfile::TempDir; // Using `tempdir` to create a temporary directory
 
 pub fn generate_logserver_node(
     id: impl Into<PlainNodeId>,
     storage_state: StorageState,
+    temp_dir: &TempDir, // Accept a reference to the temporary directory
 ) -> NodeConfig {
     let id: PlainNodeId = id.into();
 
-    // Create a temporary directory using `tempfile`, but keep control of the socket filename
-    let temp_dir = tempdir().expect("Failed to create a temporary directory");
-
-    // Construct the full socket path with the desired format
+    // Construct the socket path within the shared temporary directory
     let socket_path = temp_dir.path().join(format!("my_socket-{}", id));
 
-    // Generate the NodeConfig with the desired socket path format
+    // Cleanup: Remove the socket file if it already exists
+    if socket_path.exists() {
+        fs::remove_file(&socket_path).expect("Failed to remove existing socket file");
+    }
+
+    // Create and return the NodeConfig
     NodeConfig::new(
         format!("node-{}", id),
         GenerationalNodeId::new(id.into(), 1),
@@ -40,10 +44,12 @@ pub fn generate_logserver_nodes_config(
     num_nodes: u32,
     storage_state: StorageState,
 ) -> NodesConfiguration {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+
     let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
     // all_authoritative
     for i in 1..=num_nodes {
-        nodes_config.upsert_node(generate_logserver_node(i, storage_state));
+        nodes_config.upsert_node(generate_logserver_node(i, storage_state, &temp_dir));
     }
     nodes_config
 }

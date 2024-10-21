@@ -344,12 +344,38 @@ mod tests {
     #[test]
     fn test_replication_checker_mixed() -> Result<()> {
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
-        nodes_config.upsert_node(generate_logserver_node(1, StorageState::Disabled));
-        nodes_config.upsert_node(generate_logserver_node(2, StorageState::ReadWrite));
-        nodes_config.upsert_node(generate_logserver_node(3, StorageState::ReadOnly));
-        nodes_config.upsert_node(generate_logserver_node(4, StorageState::ReadWrite));
-        nodes_config.upsert_node(generate_logserver_node(5, StorageState::DataLoss));
-        nodes_config.upsert_node(generate_logserver_node(6, StorageState::DataLoss));
+        let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+
+        nodes_config.upsert_node(generate_logserver_node(
+            1,
+            StorageState::Disabled,
+            &temp_dir,
+        ));
+        nodes_config.upsert_node(generate_logserver_node(
+            2,
+            StorageState::ReadWrite,
+            &temp_dir,
+        ));
+        nodes_config.upsert_node(generate_logserver_node(
+            3,
+            StorageState::ReadOnly,
+            &temp_dir,
+        ));
+        nodes_config.upsert_node(generate_logserver_node(
+            4,
+            StorageState::ReadWrite,
+            &temp_dir,
+        ));
+        nodes_config.upsert_node(generate_logserver_node(
+            5,
+            StorageState::DataLoss,
+            &temp_dir,
+        ));
+        nodes_config.upsert_node(generate_logserver_node(
+            6,
+            StorageState::DataLoss,
+            &temp_dir,
+        ));
 
         // effective will be [2-6] because 1 is disabled (authoritatively drained)
         let nodeset: NodeSet = (1..=6).collect();
