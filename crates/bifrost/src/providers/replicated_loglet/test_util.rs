@@ -14,7 +14,6 @@ use restate_types::nodes_config::{
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 use tempfile::tempdir;
 
-
 pub fn generate_logserver_node(
     id: impl Into<PlainNodeId>,
     storage_state: StorageState,
