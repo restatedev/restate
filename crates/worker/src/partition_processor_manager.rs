@@ -390,11 +390,13 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         networking: Networking<T>,
         bifrost: Bifrost,
     ) -> Self {
-        let attach_router = RpcRouter::new(router_builder);
-        let incoming_get_state = router_builder.subscribe_to_stream(2);
-        let incoming_update_processors = router_builder.subscribe_to_stream(2);
+        let queue_length = updateable_config.pinned().worker.internal_queue_length();
 
-        let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
+        let attach_router = RpcRouter::new(router_builder);
+        let incoming_get_state = router_builder.subscribe_to_stream(queue_length);
+        let incoming_update_processors = router_builder.subscribe_to_stream(queue_length);
+
+        let (tx, rx) = mpsc::channel(queue_length);
         Self {
             task_center,
             health_status,
