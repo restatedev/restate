@@ -131,6 +131,7 @@ impl FixedSpreadSelector {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     use googletest::prelude::*;
@@ -142,7 +143,9 @@ mod tests {
 
     #[test]
     fn test_with_fixed_spread_selector() -> Result<()> {
-        let nodes_config = generate_logserver_nodes_config(10, StorageState::ReadWrite);
+        let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+
+        let nodes_config = generate_logserver_nodes_config(10, StorageState::ReadWrite, &temp_dir);
         let replication = ReplicationProperty::new(3.try_into().unwrap());
         let nodeset: NodeSet = (1..=5).collect();
 
@@ -173,7 +176,9 @@ mod tests {
             err(pat!(SpreadSelectorError::InsufficientWriteableNodes))
         );
 
-        let nodes_config = generate_logserver_nodes_config(2, StorageState::ReadWrite);
+        let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+
+        let nodes_config = generate_logserver_nodes_config(2, StorageState::ReadWrite, &temp_dir);
         let replication = ReplicationProperty::new(3.try_into().unwrap());
         let nodeset: NodeSet = (1..=3).collect();
         let selector = SpreadSelector::new(nodeset, SelectorStrategy::Fixed(strategy), replication);
@@ -189,7 +194,9 @@ mod tests {
 
     #[test]
     fn test_flood_spread_selector() -> Result<()> {
-        let nodes_config = generate_logserver_nodes_config(10, StorageState::ReadWrite);
+        let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+
+        let nodes_config = generate_logserver_nodes_config(10, StorageState::ReadWrite, &temp_dir);
         let replication = ReplicationProperty::new(3.try_into().unwrap());
         let nodeset: NodeSet = (1..=5).collect();
 

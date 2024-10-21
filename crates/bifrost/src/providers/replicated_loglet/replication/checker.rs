@@ -301,8 +301,10 @@ mod tests {
 
     #[test]
     fn test_replication_checker_basics() -> Result<()> {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+
         // all_authoritative
-        let nodes_config = generate_logserver_nodes_config(10, StorageState::ReadWrite);
+        let nodes_config = generate_logserver_nodes_config(10, StorageState::ReadWrite, &temp_dir);
 
         let nodeset: NodeSet = (1..=5).collect();
         let replication = ReplicationProperty::new(3.try_into().unwrap());
@@ -428,7 +430,9 @@ mod tests {
 
     #[test]
     fn test_replication_single_copy_single_node() -> Result<()> {
-        let nodes_config = generate_logserver_nodes_config(1, StorageState::ReadWrite);
+        let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+
+        let nodes_config = generate_logserver_nodes_config(1, StorageState::ReadWrite, &temp_dir);
 
         let replication = ReplicationProperty::new(1.try_into().unwrap());
         let mut checker: NodeSetChecker<bool> = NodeSetChecker::new(

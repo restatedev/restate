@@ -13,7 +13,7 @@ use restate_types::nodes_config::{
 };
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 use std::fs;
-use tempfile::TempDir; // Using `tempdir` to create a temporary directory
+use tempfile::TempDir; // Use `TempDir` for sharing the same directory
 
 pub fn generate_logserver_node(
     id: impl Into<PlainNodeId>,
@@ -43,13 +43,13 @@ pub fn generate_logserver_node(
 pub fn generate_logserver_nodes_config(
     num_nodes: u32,
     storage_state: StorageState,
+    temp_dir: &TempDir, // Accept a reference to the temporary directory
 ) -> NodesConfiguration {
-    let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
-
     let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
-    // all_authoritative
+
+    // Insert each node into the nodes configuration, sharing the same temp directory
     for i in 1..=num_nodes {
-        nodes_config.upsert_node(generate_logserver_node(i, storage_state, &temp_dir));
+        nodes_config.upsert_node(generate_logserver_node(i, storage_state, temp_dir));
     }
     nodes_config
 }
