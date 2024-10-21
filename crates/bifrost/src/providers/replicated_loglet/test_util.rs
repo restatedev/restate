@@ -12,7 +12,6 @@ use restate_types::nodes_config::{
     LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-use std::fs;
 use tempfile::TempDir; // Use `TempDir` for sharing the same directory
 
 pub fn generate_logserver_node(
@@ -26,11 +25,6 @@ pub fn generate_logserver_node(
     let socket_path = temp_dir.path().join(format!("my_socket-{}", id));
 
     // Cleanup: Remove the socket file if it already exists
-    if socket_path.exists() {
-        fs::remove_file(&socket_path).expect("Failed to remove existing socket file");
-    }
-
-    // Create and return the NodeConfig
     NodeConfig::new(
         format!("node-{}", id),
         GenerationalNodeId::new(id.into(), 1),
