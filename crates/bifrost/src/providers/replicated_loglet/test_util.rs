@@ -12,7 +12,7 @@ use restate_types::nodes_config::{
     LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-use tempfile::tempdir;
+use tempfile::NamedTempFile;
 
 pub fn generate_logserver_node(
     id: impl Into<PlainNodeId>,
@@ -20,13 +20,11 @@ pub fn generate_logserver_node(
 ) -> NodeConfig {
     let id: PlainNodeId = id.into();
 
-    // Create a temporary directory using `tempfile`, but keep control of the socket filename
-    let temp_dir = tempdir().expect("Failed to create a temporary directory");
+    // Create a temporary socket file using `tempfile`
+    let socket_file = NamedTempFile::new().expect("Failed to create temporary socket file");
+    let socket_path = socket_file.path().to_path_buf();
 
-    // Construct the full socket path with the desired format
-    let socket_path = temp_dir.path().join(format!("my_socket-{}", id));
-
-    // Generate the NodeConfig with the desired socket path format
+    // Proceed with NodeConfig generation
     NodeConfig::new(
         format!("node-{}", id),
         GenerationalNodeId::new(id.into(), 1),
