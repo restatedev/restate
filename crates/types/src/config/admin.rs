@@ -100,7 +100,7 @@ impl Default for AdminOptions {
             query_engine: Default::default(),
             heartbeat_interval: Duration::from_millis(1500).into(),
             // try to trim the log every hour
-            log_trim_interval: Some(Duration::from_secs(60 * 60).into()),
+            log_trim_interval: None,
             log_trim_threshold: 1000,
             default_replication_strategy: ReplicationStrategy::OnAllNodes,
             #[cfg(any(test, feature = "test-util"))]
