@@ -12,16 +12,32 @@ use restate_types::nodes_config::{
     LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+use tempfile::tempdir;
+
+use std::fs;
 
 pub fn generate_logserver_node(
     id: impl Into<PlainNodeId>,
     storage_state: StorageState,
 ) -> NodeConfig {
     let id: PlainNodeId = id.into();
+
+    // Create a temporary directory using `tempfile`, but keep control of the socket filename
+    let temp_dir = tempdir().expect("Failed to create a temporary directory");
+
+    // Construct the full socket path with the desired format
+    let socket_path = temp_dir.path().join(format!("my_socket-{}", id));
+
+    // Ensure any existing socket file is cleaned up (if needed)
+    if socket_path.exists() {
+        fs::remove_file(&socket_path).expect("Failed to remove existing socket file");
+    }
+
+    // Generate the NodeConfig with the desired socket path format
     NodeConfig::new(
         format!("node-{}", id),
         GenerationalNodeId::new(id.into(), 1),
-        format!("unix:/tmp/my_socket-{}", id).parse().unwrap(),
+        format!("unix:{}", socket_path.display()).parse().unwrap(),
         Role::LogServer.into(),
         LogServerConfig { storage_state },
     )
