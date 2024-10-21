@@ -19,13 +19,15 @@ use arc_swap::{ArcSwap, AsRaw};
 use enum_map::EnumMap;
 use tokio::sync::{mpsc, oneshot, watch};
 
+use restate_types::cluster_controller::SchedulingPlan;
+use restate_types::identifiers::PartitionId;
 use restate_types::live::{Live, Pinned};
 use restate_types::logs::metadata::Logs;
 use restate_types::net::metadata::MetadataContainer;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
-use restate_types::{GenerationalNodeId, Version, Versioned};
+use restate_types::{GenerationalNodeId, PlainNodeId, Version, Versioned};
 
 use crate::metadata::manager::Command;
 use crate::metadata_store::ReadError;
@@ -96,6 +98,15 @@ impl Metadata {
         self.inner.nodes_config.load().version()
     }
 
+    #[inline(always)]
+    pub fn scheduling_plan_ref(&self) -> Pinned<SchedulingPlan> {
+        Pinned::new(&self.inner.scheduling_plan)
+    }
+
+    pub fn scheduling_plan_snapshot(&self) -> Arc<SchedulingPlan> {
+        self.inner.scheduling_plan.load_full()
+    }
+
     pub fn partition_table_snapshot(&self) -> Arc<PartitionTable> {
         self.inner.partition_table.load_full()
     }
@@ -139,6 +150,13 @@ impl Metadata {
         self.wait_for_version(MetadataKind::PartitionTable, min_version)
             .await?;
         Ok(self.partition_table_ref())
+    }
+
+    /// Finds the effective leader node for a given partition.
+    pub fn get_partition_processor_node(&self, partition_id: PartitionId) -> Option<PlainNodeId> {
+        self.scheduling_plan_ref()
+            .get(&partition_id)
+            .and_then(|target_partition_state| target_partition_state.leader)
     }
 
     pub fn logs_ref(&self) -> Pinned<Logs> {
@@ -286,6 +304,7 @@ struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
     nodes_config: Arc<ArcSwap<NodesConfiguration>>,
     partition_table: Arc<ArcSwap<PartitionTable>>,
+    scheduling_plan: Arc<ArcSwap<SchedulingPlan>>,
     logs: Arc<ArcSwap<Logs>>,
     schema: Arc<ArcSwap<Schema>>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
