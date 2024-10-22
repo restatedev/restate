@@ -39,14 +39,11 @@ use crate::util::grpc_connect;
 #[cling(run = "list_partitions")]
 #[clap(alias = "ls")]
 #[command(
-    after_long_help = "In addition to partition processors, this command will \
-    display and highlight the current sequencer for each partition's log when \
-    the reported applied LSN is within the tail segment of a replicated loglet.\
-    \
-    When ANSI color is enabled, the this command will also highlight when the \
-    partition processor sees itself as the leader, when the observed leadership \
-    epoch is not the latest, and when the partition leader and the loglet \
-    sequencer are on the same node (for replicated loglets)."
+    after_long_help = "In addition to partition processors, the command displays the current \
+    sequencer for the partition's log when the reported applied LSN falls within the tail a \
+    replicated segment, under the heading SEQNCR. If ANSI color is enabled, the leadership epoch \
+    and the active sequencer will be highlighted in green they are the most recent and co-located \
+    with the leader processor, respectively."
 )]
 pub struct ListPartitionsOpts {
     /// Sort order
@@ -142,7 +139,7 @@ pub async fn list_partitions(
         "STATUS",
         "LEADER",
         "EPOCH",
-        "LL-SEQ",
+        "SEQNCR",
         "APPLIED",
         "PERSISTED",
         "SKIPPED",
