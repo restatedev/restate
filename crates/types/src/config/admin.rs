@@ -59,6 +59,14 @@ pub struct AdminOptions {
     /// operations.
     pub log_trim_threshold: u64,
 
+    /// # Log Tail Update interval
+    ///
+    /// Controls the interval at which cluster controller tries to refind the tails of logs. This
+    /// is a safety-net check in case of a concurrent cluster controller crash.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub log_tail_update_interval: humantime::Duration,
+
     /// # Default replication strategy
     ///
     /// The default replication strategy to be used by the cluster controller to schedule partition
@@ -105,6 +113,7 @@ impl Default for AdminOptions {
             default_replication_strategy: ReplicationStrategy::OnAllNodes,
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
+            log_tail_update_interval: Duration::from_secs(5 * 60).into(),
         }
     }
 }

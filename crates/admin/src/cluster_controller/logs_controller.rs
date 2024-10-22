@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use rand::prelude::IteratorRandom;
+use rand::{thread_rng, RngCore};
 use std::collections::HashMap;
 use std::iter;
 use std::num::NonZeroU8;
@@ -15,13 +17,12 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rand::prelude::IteratorRandom;
-use rand::{thread_rng, RngCore};
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tracing::debug;
+use tracing::{debug, trace, trace_span, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_bifrost::{Bifrost, BifrostAdmin};
+use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
 use restate_core::metadata_store::{
     retry_on_network_error, MetadataStoreClient, Precondition, ReadWriteError, WriteError,
 };
@@ -34,7 +35,7 @@ use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{
     Chain, LogletConfig, LogletParams, Logs, ProviderKind, SegmentIndex,
 };
-use restate_types::logs::{LogId, Lsn};
+use restate_types::logs::{LogId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::nodes_config::Role;
 use restate_types::partition_table::PartitionTable;
@@ -510,6 +511,7 @@ enum Effect {
         segment_index: SegmentIndex,
         debounce: Option<RetryIter<'static>>,
     },
+    FindLogsTail,
 }
 
 /// Events that the [`LogsControllerInner`] needs to react to. The events can originate from previous [`Effect`]
@@ -536,6 +538,9 @@ enum Event {
         log_id: LogId,
         segment_index: SegmentIndex,
         debounce: Option<RetryIter<'static>>,
+    },
+    LogsTailUpdates {
+        updates: LogsTailUpdates,
     },
 }
 
@@ -717,6 +722,7 @@ impl LogsControllerInner {
             }
             Event::NewLogs => {
                 self.on_logs_update(metadata.logs_ref())?;
+                effects.push(Effect::FindLogsTail);
             }
             Event::SealSucceeded {
                 log_id,
@@ -739,6 +745,9 @@ impl LogsControllerInner {
                         debounce: debounce.or_else(|| Some(self.retry_policy.clone().into_iter())),
                     })
                 }
+            }
+            Event::LogsTailUpdates { updates } => {
+                self.on_logs_tail_updates(&updates);
             }
         }
 
@@ -792,13 +801,27 @@ impl LogsControllerInner {
                         },
                     );
                 }
-                // todo how to figure out whether a previous logs controller instance has started
-                //  sealing a loglet? Can we ask the log servers about it? Should we periodically
-                //  check via bifrost?
             }
         }
 
         Ok(())
+    }
+
+    fn on_logs_tail_updates(&mut self, updates: &LogsTailUpdates) {
+        for (log_id, update) in updates {
+            let TailState::Sealed(seal_lsn) = update.tail else {
+                // if tail is open, we don't have to do anything
+                // because in all cases, the `LogState` here is
+                // the one that should remain in effect
+                continue;
+            };
+
+            let Some(state) = self.logs_state.get_mut(log_id) else {
+                continue;
+            };
+
+            state.try_transition_to_sealed(update.segment_index, seal_lsn);
+        }
     }
 
     fn on_partition_table_update(&mut self, partition_table: &PartitionTable) {
@@ -824,6 +847,13 @@ impl LogsControllerInner {
     }
 }
 
+pub struct LogTailUpdate {
+    segment_index: SegmentIndex,
+    tail: TailState,
+}
+
+pub type LogsTailUpdates = HashMap<LogId, LogTailUpdate>;
+
 /// Runs the inner logs controller and processes the [`Effect`].
 pub struct LogsController {
     effects: Option<Vec<Effect>>,
@@ -833,6 +863,7 @@ pub struct LogsController {
     metadata: Metadata,
     metadata_writer: MetadataWriter,
     async_operations: JoinSet<Event>,
+    find_logs_tail_semaphore: Arc<Semaphore>,
 }
 
 impl LogsController {
@@ -859,7 +890,7 @@ impl LogsController {
             Some(Duration::from_secs(5)),
         );
 
-        Ok(Self {
+        let mut this = Self {
             effects: Some(Vec::new()),
             inner: LogsControllerInner::new(
                 metadata.logs_ref(),
@@ -872,7 +903,80 @@ impl LogsController {
             metadata_store_client,
             metadata_writer,
             async_operations: JoinSet::default(),
-        })
+            find_logs_tail_semaphore: Arc::new(Semaphore::new(1)),
+        };
+
+        this.find_logs_tail();
+        Ok(this)
+    }
+
+    pub fn find_logs_tail(&mut self) {
+        // none
+        let Ok(permit) = self.find_logs_tail_semaphore.clone().try_acquire_owned() else {
+            // already a find tail job is running
+            return;
+        };
+
+        let logs = Arc::clone(&self.inner.current_logs);
+        let bifrost = self.bifrost.clone();
+        let metadata_store_client = self.metadata_store_client.clone();
+        let metadata_writer = self.metadata_writer.clone();
+        let find_tail = async move {
+            let bifrost_admin =
+                BifrostAdmin::new(&bifrost, &metadata_writer, &metadata_store_client);
+
+            let mut updates = LogsTailUpdates::default();
+            for (log_id, chain) in logs.iter() {
+                let tail_segment = chain.tail();
+
+                let writable_loglet = match bifrost_admin.writeable_loglet(*log_id).await {
+                    Ok(loglet) => loglet,
+                    Err(BifrostError::Shutdown(_)) => break,
+                    Err(err) => {
+                        debug!(error=%err, %log_id, segment_index=%tail_segment.index(), "Failed to find writable loglet");
+                        continue;
+                    }
+                };
+
+                if writable_loglet.segment_index() != tail_segment.index() {
+                    // writable segment in bifrost is probably ahead of our snapshot.
+                    // then there is probably a new metadata update that will gonna fix this
+                    // for now we just ignore this segment
+                    trace!(%log_id, segment_index=%tail_segment.index(), "Segment is not tail segment, skip finding tail");
+                    continue;
+                }
+
+                let found_tail = match writable_loglet.find_tail().await {
+                    Ok(tail) => tail,
+                    Err(err) => {
+                        debug!(error=%err, %log_id, segment_index=%tail_segment.index(), "Failed to find tail for loglet");
+                        continue;
+                    }
+                };
+
+                // send message
+                let update = LogTailUpdate {
+                    segment_index: writable_loglet.segment_index(),
+                    tail: found_tail,
+                };
+
+                updates.insert(*log_id, update);
+            }
+            // we explicity drop the permit here to make sure
+            // it's moved to the future closure
+            drop(permit);
+            Event::LogsTailUpdates { updates }
+        };
+
+        let tc = task_center();
+        self.async_operations.spawn(async move {
+            tc.run_in_scope(
+                "log-controller-refresh-tail",
+                None,
+                find_tail.instrument(trace_span!("scheduled-find-tail")),
+            )
+            .await
+        });
     }
 
     pub fn on_observed_cluster_state_update(
@@ -916,6 +1020,9 @@ impl LogsController {
                 } => {
                     self.seal_log(log_id, segment_index, debounce);
                 }
+                Effect::FindLogsTail => {
+                    self.find_logs_tail();
+                }
             }
         }
 
@@ -936,7 +1043,7 @@ impl LogsController {
             tc.run_in_scope("logs-controller-write-logs", None, async {
                 if let Some(debounce) = &mut debounce {
                     let delay = debounce.next().unwrap_or(FALLBACK_MAX_RETRY_DELAY);
-                    tracing::debug!(?delay, %previous_version, "Wait before attempting to write logs");
+                    debug!(?delay, %previous_version, "Wait before attempting to write logs");
                     tokio::time::sleep(delay).await;
                 }
 
@@ -1008,7 +1115,7 @@ impl LogsController {
             tc.run_in_scope("logs-controller-seal-log", None, async {
                 if let Some(debounce) = &mut debounce {
                     let delay = debounce.next().unwrap_or(FALLBACK_MAX_RETRY_DELAY);
-                    tracing::debug!(?delay, %log_id, %segment_index, "Wait before attempting to seal log");
+                    debug!(?delay, %log_id, %segment_index, "Wait before attempting to seal log");
                     tokio::time::sleep(delay).await;
                 }
 
