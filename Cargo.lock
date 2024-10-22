@@ -5837,6 +5837,7 @@ dependencies = [
  "http 1.1.0",
  "itertools 0.13.0",
  "nix 0.29.0",
+ "rand",
  "regex",
  "reqwest",
  "restate-metadata-store",

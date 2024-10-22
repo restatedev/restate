@@ -23,13 +23,14 @@ enumset = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
 nix = { version = "0.29.0", features = ["signal"] }
+rand = { workspace = true }
 regex = "1.1"
 reqwest = { workspace = true }
 rev_lines = "0.3.0"
 rlimit = { workspace = true }
-serde = { workspace =  true }
+serde = { workspace = true }
 tempfile = { workspace = true }
-thiserror = { workspace =  true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process", "fs"] }
 toml = "0.8"
 tracing = { workspace = true }
