@@ -12,6 +12,7 @@ use enum_map::Enum;
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 
+use crate::cluster_controller::SchedulingPlan;
 use crate::logs::metadata::Logs;
 use crate::net::define_message;
 use crate::net::TargetName;
@@ -65,6 +66,7 @@ pub enum MetadataKind {
     Schema,
     PartitionTable,
     Logs,
+    SchedulingPlan,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::From)]
@@ -73,6 +75,7 @@ pub enum MetadataContainer {
     PartitionTable(PartitionTable),
     Logs(Logs),
     Schema(Schema),
+    SchedulingPlan(SchedulingPlan),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +96,7 @@ impl MetadataContainer {
             MetadataContainer::PartitionTable(p) => p.version(),
             MetadataContainer::Logs(l) => l.version(),
             MetadataContainer::Schema(s) => s.version(),
+            MetadataContainer::SchedulingPlan(sp) => sp.version(),
         }
     }
 
@@ -102,6 +106,7 @@ impl MetadataContainer {
             MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
             MetadataContainer::Logs(_) => MetadataKind::Logs,
             MetadataContainer::Schema(_) => MetadataKind::Schema,
+            MetadataContainer::SchedulingPlan(_) => MetadataKind::SchedulingPlan,
         }
     }
 }

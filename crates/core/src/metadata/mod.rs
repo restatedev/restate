@@ -66,7 +66,8 @@ impl Default for MetadataBuilder {
     }
 }
 
-/// The kind of versioned metadata that can be synchronized across nodes.
+/// Node-local metadata that is automatically updated. This is a view of the metadata needed to perform actions
+/// on the data plane access paths. This is a curated subset intended to be kept up-to-date and fast to maintain.
 #[derive(Clone)]
 pub struct Metadata {
     sender: manager::CommandSender,
@@ -125,12 +126,17 @@ impl Metadata {
         self.inner.partition_table.load().version()
     }
 
+    pub(crate) fn scheduling_plan_version(&self) -> Version {
+        self.inner.scheduling_plan.load().version()
+    }
+
     pub fn version(&self, metadata_kind: MetadataKind) -> Version {
         match metadata_kind {
             MetadataKind::NodesConfiguration => self.nodes_config_version(),
             MetadataKind::Schema => self.schema_version(),
             MetadataKind::PartitionTable => self.partition_table_version(),
             MetadataKind::Logs => self.logs_version(),
+            MetadataKind::SchedulingPlan => self.scheduling_plan_version(),
         }
     }
 

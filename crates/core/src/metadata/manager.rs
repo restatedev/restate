@@ -19,17 +19,6 @@ use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, trace, warn};
 
-use restate_types::config::Configuration;
-use restate_types::logs::metadata::Logs;
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
-};
-use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, MetadataUpdate};
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::PartitionTable;
-use restate_types::schema::Schema;
-use restate_types::{Version, Versioned};
-
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
 use super::{MetadataBuilder, VersionInformation};
 use crate::cancellation_watcher;
@@ -41,6 +30,17 @@ use crate::network::Reciprocal;
 use crate::network::WeakConnection;
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError};
 use crate::task_center;
+use restate_types::cluster_controller::SchedulingPlan;
+use restate_types::config::Configuration;
+use restate_types::logs::metadata::Logs;
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
+};
+use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, MetadataUpdate};
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partition_table::PartitionTable;
+use restate_types::schema::Schema;
+use restate_types::{Version, Versioned};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
@@ -78,7 +78,9 @@ impl From<Option<Version>> for TargetVersion {
 }
 
 pub(super) enum Command {
+    /// Push an updated metadata slice into metadata manager.
     UpdateMetadata(MetadataContainer, Option<oneshot::Sender<()>>),
+    /// Request a refresh of a particular metadata kind from the authoritative source.
     SyncMetadata(
         MetadataKind,
         TargetVersion,
@@ -105,6 +107,7 @@ impl MetadataMessageHandler {
             MetadataKind::PartitionTable => self.send_partition_table(to, min_version),
             MetadataKind::Logs => self.send_logs(to, min_version),
             MetadataKind::Schema => self.send_schema(to, min_version),
+            MetadataKind::SchedulingPlan => self.send_scheduling_plan(to, min_version),
         };
     }
 
@@ -129,6 +132,13 @@ impl MetadataMessageHandler {
         let schema = self.metadata.schema();
         if schema.version != Version::INVALID {
             self.send_metadata_internal(to, version, schema.deref(), "schema");
+        }
+    }
+
+    fn send_scheduling_plan(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
+        let scheduling_plan = self.metadata.scheduling_plan_ref();
+        if scheduling_plan.version != Version::INVALID {
+            self.send_metadata_internal(to, version, scheduling_plan.deref(), "scheduling_plan");
         }
     }
 
@@ -231,6 +241,7 @@ impl MessageHandler for MetadataMessageHandler {
 /// - Schema metadata
 /// - NodesConfiguration
 /// - Partition table
+/// - Partition processor state needed for routing requests
 pub struct MetadataManager {
     metadata: Metadata,
     inbound: CommandReceiver,
@@ -326,6 +337,9 @@ impl MetadataManager {
             MetadataContainer::Schema(schemas) => {
                 self.update_schema(schemas);
             }
+            MetadataContainer::SchedulingPlan(scheduling_plan) => {
+                self.update_scheduling_plan(scheduling_plan);
+            }
         }
 
         if let Some(callback) = callback {
@@ -379,6 +393,15 @@ impl MetadataManager {
                     self.update_schema(schema)
                 }
             }
+            MetadataKind::SchedulingPlan => {
+                if let Some(scheduling_plan) = self
+                    .metadata_store_client
+                    .get::<SchedulingPlan>(SCHEMA_INFORMATION_KEY.clone())
+                    .await?
+                {
+                    self.update_scheduling_plan(scheduling_plan)
+                }
+            }
         }
 
         Ok(())
@@ -397,6 +420,7 @@ impl MetadataManager {
                     MetadataKind::Schema => self.metadata.schema_version(),
                     MetadataKind::PartitionTable => self.metadata.partition_table_version(),
                     MetadataKind::Logs => self.metadata.logs_version(),
+                    MetadataKind::SchedulingPlan => self.metadata.scheduling_plan_version(),
                 };
 
                 version >= target_version
@@ -421,6 +445,13 @@ impl MetadataManager {
         let maybe_new_version = Self::update_internal(&self.metadata.inner.logs, logs);
 
         self.update_task_and_notify_watches(maybe_new_version, MetadataKind::Logs);
+    }
+
+    fn update_scheduling_plan(&mut self, scheduling_plan: SchedulingPlan) {
+        let maybe_new_version =
+            Self::update_internal(&self.metadata.inner.scheduling_plan, scheduling_plan);
+
+        self.update_task_and_notify_watches(maybe_new_version, MetadataKind::SchedulingPlan);
     }
 
     fn update_schema(&mut self, schema: Schema) {

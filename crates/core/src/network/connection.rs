@@ -227,6 +227,7 @@ impl Default for HeaderMetadataVersions {
             MetadataKind::Schema => None,
             MetadataKind::Logs => None,
             MetadataKind::PartitionTable => None,
+            MetadataKind::SchedulingPlan => None,
         };
         Self { versions }
     }
@@ -239,6 +240,7 @@ impl HeaderMetadataVersions {
             MetadataKind::Schema => Some(metadata.schema_version()),
             MetadataKind::Logs => Some(metadata.logs_version()),
             MetadataKind::PartitionTable => Some(metadata.partition_table_version()),
+            MetadataKind::SchedulingPlan => Some(metadata.scheduling_plan_version()),
         };
         Self { versions }
     }
