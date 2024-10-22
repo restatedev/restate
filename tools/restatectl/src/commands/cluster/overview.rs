@@ -32,7 +32,7 @@ async fn cluster_status(
     list_logs(connection, &ListLogsOpts {}).await?;
     c_println!();
 
-    list_partitions(connection, &ListPartitionsOpts {}).await?;
+    list_partitions(connection, &ListPartitionsOpts::default()).await?;
 
     Ok(())
 }
