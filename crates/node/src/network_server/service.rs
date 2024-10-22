@@ -12,6 +12,7 @@ use axum::routing::get;
 use http::Request;
 use hyper::body::Incoming;
 use hyper_util::service::TowerToHyperService;
+use restate_types::protobuf::common::NodeStatus;
 use tonic::body::boxed;
 use tonic::codec::CompressionEncoding;
 use tower::ServiceExt;
@@ -28,7 +29,6 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::CommonOptions;
 use restate_types::health::Health;
-use restate_types::protobuf::common::NodeStatus;
 
 use crate::network_server::handler;
 use crate::network_server::handler::cluster_ctrl::ClusterCtrlSvcHandler;
