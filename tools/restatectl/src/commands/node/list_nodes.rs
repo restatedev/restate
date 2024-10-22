@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{BTreeMap, HashMap};
+use std::time::Duration;
 
 use anyhow::Context;
 use chrono::TimeDelta;
@@ -32,11 +33,15 @@ use restate_types::PlainNodeId;
 use crate::app::ConnectionInfo;
 use crate::util::grpc_connect;
 
+// Default timeout for the [optional] GetIdent call made to all nodes
+const GET_IDENT_TIMEOUT_1S: Duration = Duration::from_secs(1);
+
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(alias = "ls")]
 #[cling(run = "list_nodes")]
 pub struct ListNodesOpts {
-    /// Display additional node status information
+    /// Gather and display additional information such as uptime, role-specific status, and metadata versions for
+    /// various aspects of the cluster configuration, as seen by the nodes themselves
     #[arg(long)]
     pub(crate) extra: bool,
 }
@@ -75,8 +80,8 @@ pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> an
     let mut header = vec!["NODE", "GEN", "NAME", "ADDRESS", "ROLES"];
     if opts.extra {
         header.extend(vec![
-            "UPTIME", "STATUS", "ADMIN", "WORKER", "LOG-SVR", "META", "NODES-V", "LOGS-V",
-            "SCHEMA-V", "PART-V",
+            "UPTIME", "STATUS", "ADMIN", "WORKER", "LOG-SVR", "META", "NODES", "LOGS", "SCHEMA",
+            "PRTNS",
         ]);
     }
     nodes_table.set_styled_header(header);
@@ -114,10 +119,10 @@ pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> an
                         format!("{:?}", ident_response.log_server_status()).replace("Unknown", "-"),
                         format!("{:?}", ident_response.metadata_server_status())
                             .replace("Unknown", "-"),
-                        format!("{}", ident_response.nodes_config_version),
-                        format!("{}", ident_response.logs_version),
-                        format!("{}", ident_response.schema_version),
-                        format!("{}", ident_response.partition_table_version),
+                        format!("v{}", ident_response.nodes_config_version),
+                        format!("v{}", ident_response.logs_version),
+                        format!("v{}", ident_response.schema_version),
+                        format!("v{}", ident_response.partition_table_version),
                     ]
                     .iter()
                     .map(Cell::new)
@@ -164,7 +169,7 @@ async fn fetch_extra_info(
                 .into_inner())
         };
         get_ident_tasks.spawn(async move {
-            match tokio::time::timeout(std::time::Duration::from_secs(1), get_ident).await {
+            match tokio::time::timeout(GET_IDENT_TIMEOUT_1S, get_ident).await {
                 Ok(res) => res,
                 Err(e) => {
                     c_println!("timeout calling GetIdent for node {}", node_id);
