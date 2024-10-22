@@ -118,7 +118,7 @@ impl NetworkServer {
                 .map_request(|req: Request<Incoming>| req.map(boxed)),
         );
 
-        run_hyper_server(&options.bind_address, service, "node-grpc").await?;
+        run_hyper_server(&options.bind_address.unwrap(), service, "node-grpc").await?;
 
         Ok(())
     }

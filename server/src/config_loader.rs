@@ -58,7 +58,8 @@ impl ConfigLoader {
             figment = figment.merge(Figment::from(Serialized::defaults(cli_overrides)))
         }
 
-        let config: Configuration = figment.extract()?;
+        let mut config: Configuration = figment.extract()?;
+        config.common.set_derived_values();
         Ok(config.apply_cascading_values())
     }
 

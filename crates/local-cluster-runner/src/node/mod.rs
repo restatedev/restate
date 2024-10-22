@@ -43,7 +43,7 @@ pub struct Node {
             #[mutator(requires = [base_dir])]
             pub fn with_node_socket(self) {
                 let node_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join("node.sock");
-                self.base_config.common.bind_address = BindAddress::Uds(node_socket.clone());
+                self.base_config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
                 self.base_config.common.advertised_address = AdvertisedAddress::Uds(node_socket);
             }
 
@@ -197,7 +197,7 @@ impl Node {
         if let BindAddress::Uds(file) = &mut self.base_config.metadata_store.bind_address {
             *file = base_dir.join(&*file)
         }
-        if let BindAddress::Uds(file) = &mut self.base_config.common.bind_address {
+        if let BindAddress::Uds(file) = &mut self.base_config.common.bind_address.clone().unwrap() {
             *file = base_dir.join(&*file)
         }
         if let AdvertisedAddress::Uds(file) = &mut self.base_config.common.advertised_address {

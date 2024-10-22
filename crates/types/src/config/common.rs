@@ -66,7 +66,7 @@ pub struct CommonOptions {
 
     /// Address to bind for the Node server. Default is `0.0.0.0:5122`
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub bind_address: BindAddress,
+    pub bind_address: Option<BindAddress>,
 
     /// Address that other nodes will use to connect to this node. Default is `http://127.0.0.1:5122/`
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
@@ -309,12 +309,18 @@ impl CommonOptions {
                 .expect("number of cpu cores fits in u32"),
         )
     }
+
+    /// set derived values if they are not configured to reduce verbose configurations
+    pub fn set_derived_values(&mut self) {
+        // Only derive bind_address if it is not explicitly set
+        if self.bind_address.is_none() {
+            self.bind_address = Some(self.advertised_address.derive_bind_address().unwrap());
+        }
+    }
 }
 
 impl Default for CommonOptions {
     fn default() -> Self {
-        let advertised_address = AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap();
-
         Self {
             // todo (asoli): Remove this when:
             //   a. The safe rollback version supports log-server (at least supports parsing the
@@ -332,8 +338,8 @@ impl Default for CommonOptions {
             allow_bootstrap: true,
             base_dir: None,
             metadata_store_client: MetadataStoreClientOptions::default(),
-            bind_address: advertised_address.derive_bind_address().unwrap(),
-            advertised_address,
+            bind_address: None,
+            advertised_address: AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap(),
             bootstrap_num_partitions: NonZeroU16::new(24).unwrap(),
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
