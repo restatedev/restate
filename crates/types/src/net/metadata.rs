@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use enum_map::Enum;
+use enumset::EnumSetType;
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 
@@ -47,15 +48,13 @@ define_message! {
 }
 
 /// The kind of versioned metadata that can be synchronized across nodes.
+// PartialEq+Eq+Clone+Copy are implemented by EnumSetType
 #[derive(
     Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
     Hash,
     Enum,
     EnumIter,
+    EnumSetType,
     Serialize,
     Deserialize,
     derive_more::Display,

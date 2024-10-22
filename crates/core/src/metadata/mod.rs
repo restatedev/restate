@@ -99,13 +99,20 @@ impl Metadata {
         self.inner.nodes_config.load().version()
     }
 
-    #[inline(always)]
-    pub fn scheduling_plan_ref(&self) -> Pinned<SchedulingPlan> {
-        Pinned::new(&self.inner.scheduling_plan)
+    /// Finds the effective leader node for a given partition. Use this method to discover the appropriate
+    /// worker node when routing requests to a partition.
+    pub fn get_partition_processor_node(&self, partition_id: PartitionId) -> Option<PlainNodeId> {
+        self.scheduling_plan_ref()
+            .get(&partition_id)
+            .and_then(|target_partition_state| target_partition_state.leader)
     }
 
-    pub fn scheduling_plan_snapshot(&self) -> Arc<SchedulingPlan> {
-        self.inner.scheduling_plan.load_full()
+    /// This implementation should be kept private; use `get_partition_processor_node` instead.
+    /// A more efficient future implementation might store a much smaller subset of partition processor data to avoid
+    /// loading the full scheduling plan.
+    #[inline(always)]
+    fn scheduling_plan_ref(&self) -> Pinned<SchedulingPlan> {
+        Pinned::new(&self.inner.scheduling_plan)
     }
 
     pub fn partition_table_snapshot(&self) -> Arc<PartitionTable> {
@@ -156,13 +163,6 @@ impl Metadata {
         self.wait_for_version(MetadataKind::PartitionTable, min_version)
             .await?;
         Ok(self.partition_table_ref())
-    }
-
-    /// Finds the effective leader node for a given partition.
-    pub fn get_partition_processor_node(&self, partition_id: PartitionId) -> Option<PlainNodeId> {
-        self.scheduling_plan_ref()
-            .get(&partition_id)
-            .and_then(|target_partition_state| target_partition_state.leader)
     }
 
     pub fn logs_ref(&self) -> Pinned<Logs> {

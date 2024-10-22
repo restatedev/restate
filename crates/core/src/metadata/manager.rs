@@ -8,16 +8,32 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
+use std::convert::Into;
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arc_swap::ArcSwap;
 use enum_map::EnumMap;
+use enumset::EnumSet;
 use strum::IntoEnumIterator;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, trace, warn};
+
+use restate_types::cluster_controller::SchedulingPlan;
+use restate_types::config::Configuration;
+use restate_types::logs::metadata::Logs;
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
+    SCHEMA_INFORMATION_KEY,
+};
+use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, MetadataUpdate};
+use restate_types::nodes_config::{NodesConfiguration, Role};
+use restate_types::partition_table::PartitionTable;
+use restate_types::schema::Schema;
+use restate_types::{Version, Versioned};
 
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
 use super::{MetadataBuilder, VersionInformation};
@@ -30,20 +46,19 @@ use crate::network::Reciprocal;
 use crate::network::WeakConnection;
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError};
 use crate::task_center;
-use restate_types::cluster_controller::SchedulingPlan;
-use restate_types::config::Configuration;
-use restate_types::logs::metadata::Logs;
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
-};
-use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, MetadataUpdate};
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::PartitionTable;
-use restate_types::schema::Schema;
-use restate_types::{Version, Versioned};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
+
+/// Metadata requirements for each role. Unless a mask is specified, implicitly all metadata will be synced.
+/// This mechanism allows for nodes to opt out of syncing metadata that they don't need.
+pub static ROLE_METADATA_REQUIREMENTS: LazyLock<HashMap<Role, EnumSet<MetadataKind>>> =
+    LazyLock::new(|| {
+        HashMap::from([(
+            Role::LogServer,
+            EnumSet::all() - MetadataKind::SchedulingPlan,
+        )])
+    });
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {}
@@ -247,6 +262,7 @@ pub struct MetadataManager {
     inbound: CommandReceiver,
     metadata_store_client: MetadataStoreClient,
     update_tasks: EnumMap<MetadataKind, Option<UpdateTask>>,
+    metadata_mask: EnumSet<MetadataKind>,
 }
 
 impl MetadataManager {
@@ -259,6 +275,27 @@ impl MetadataManager {
             inbound: metadata_builder.receiver,
             metadata_store_client,
             update_tasks: EnumMap::default(),
+            metadata_mask: EnumSet::all(),
+        }
+    }
+
+    pub fn new_with_roles(
+        metadata_builder: MetadataBuilder,
+        metadata_store_client: MetadataStoreClient,
+        roles: EnumSet<Role>,
+    ) -> Self {
+        let mut metadata_mask = EnumSet::empty();
+        for role in roles {
+            if let Some(mask) = ROLE_METADATA_REQUIREMENTS.get(&role) {
+                metadata_mask |= *mask;
+            }
+        }
+        Self {
+            metadata: metadata_builder.metadata,
+            inbound: metadata_builder.receiver,
+            metadata_store_client,
+            update_tasks: EnumMap::default(),
+            metadata_mask,
         }
     }
 
@@ -356,6 +393,11 @@ impl MetadataManager {
             return Ok(());
         }
 
+        // avoid syncing metadata we don't care about
+        if !self.metadata_mask.contains(metadata_kind) {
+            return Ok(());
+        }
+
         match metadata_kind {
             MetadataKind::NodesConfiguration => {
                 if let Some(nodes_config) = self
@@ -396,7 +438,7 @@ impl MetadataManager {
             MetadataKind::SchedulingPlan => {
                 if let Some(scheduling_plan) = self
                     .metadata_store_client
-                    .get::<SchedulingPlan>(SCHEMA_INFORMATION_KEY.clone())
+                    .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
                     .await?
                 {
                     self.update_scheduling_plan(scheduling_plan)
