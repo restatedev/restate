@@ -80,6 +80,10 @@ pub(crate) enum InvocationTaskError {
     #[error("unexpected http status code: {0}")]
     #[code(restate_errors::RT0012)]
     UnexpectedResponse(http::StatusCode),
+    #[error("cannot start the invocation because the SDK doesn't support the protocol version '{}' negotiated at discovery time", .0.as_repr())]
+    #[code(restate_errors::RT0015)]
+    BadNegotiatedServiceProtocolVersion(ServiceProtocolVersion),
+
     #[error("unexpected content type '{0:?}'; expected content type '{1:?}'")]
     #[code(restate_errors::RT0012)]
     UnexpectedContentType(Option<HeaderValue>, HeaderValue),
@@ -148,7 +152,7 @@ pub(crate) enum InvocationTaskError {
     IncompatibleServiceEndpoint(DeploymentId, RangeInclusive<i32>),
     #[error("cannot resume invocation because it was created with an incompatible service protocol version '{}' and the server does not support upgrading versions yet", .0.as_repr())]
     #[code(restate_errors::RT0014)]
-    UnsupportedServiceProtocolVersion(ServiceProtocolVersion),
+    ResumeWithWrongServiceProtocolVersion(ServiceProtocolVersion),
 
     #[error("service is temporary unavailable '{0}'")]
     #[code(restate_errors::RT0010)]
@@ -444,9 +448,11 @@ where
                 // todo: We should support resuming an invocation with a newer protocol version if
                 //  the endpoint supports it
                 if !pinned_deployment.service_protocol_version.is_supported() {
-                    shortcircuit!(Err(InvocationTaskError::UnsupportedServiceProtocolVersion(
-                        pinned_deployment.service_protocol_version
-                    )));
+                    shortcircuit!(Err(
+                        InvocationTaskError::ResumeWithWrongServiceProtocolVersion(
+                            pinned_deployment.service_protocol_version
+                        )
+                    ));
                 }
 
                 (
