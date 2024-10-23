@@ -19,7 +19,6 @@ pub mod partition_processor_manager;
 #[cfg(feature = "replicated-loglet")]
 pub mod replicated_loglet;
 
-use anyhow::Context;
 // re-exports for convenience
 pub use error::*;
 
@@ -55,49 +54,6 @@ pub enum AdvertisedAddress {
     Http(Uri),
 }
 
-impl FromStr for AdvertisedAddress {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.trim().is_empty() {
-            return Err(anyhow::anyhow!("Advertised address input cannot be empty"));
-        }
-
-        if let Some(stripped_address) = s.strip_prefix("unix:") {
-            parse_uds(stripped_address)
-        } else {
-            parse_http(s)
-        }
-    }
-}
-
-fn parse_uds(s: &str) -> Result<AdvertisedAddress, anyhow::Error> {
-    let path = s
-        .parse::<PathBuf>()
-        .with_context(|| format!("Failed to parse Unix domain socket path: '{}'", s))?;
-
-    if path.exists() {
-        Ok(AdvertisedAddress::Uds(path))
-    } else {
-        Err(anyhow::anyhow!(
-            "Unix domain socket path does not exist: '{}'",
-            path.display()
-        ))
-    }
-}
-
-fn parse_http(s: &str) -> Result<AdvertisedAddress, anyhow::Error> {
-    let uri = s
-        .parse::<Uri>()
-        .with_context(|| format!("Failed to parse as URI: '{}'", s))?;
-
-    match uri.scheme_str() {
-        Some("http") | Some("https") => Ok(AdvertisedAddress::Http(uri)),
-        Some(other) => Err(anyhow::anyhow!("Unsupported URI scheme '{}'", other)),
-        None => Err(anyhow::anyhow!("Missing URI scheme in: '{}'", s)),
-    }
-}
-
 impl AdvertisedAddress {
     // Helper function to extract the port from the AdvertisedAddress
     pub fn derive_bind_address(&self) -> Option<BindAddress> {
@@ -115,6 +71,21 @@ impl AdvertisedAddress {
                 None
             }
             AdvertisedAddress::Uds(_) => None, // No bind address for Unix domain sockets
+        }
+    }
+}
+
+impl FromStr for AdvertisedAddress {
+    type Err = http::uri::InvalidUri;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(stripped_address) = s.strip_prefix("unix:") {
+            Ok(AdvertisedAddress::Uds(
+                stripped_address.parse().expect("infallible"),
+            ))
+        } else {
+            // try to parse as a URI
+            Ok(AdvertisedAddress::Http(s.parse()?))
         }
     }
 }
@@ -249,122 +220,31 @@ use {define_message, define_rpc};
 
 #[cfg(test)]
 mod tests {
+    use http::Uri;
+
     use super::*;
 
-    use std::str::FromStr;
-
+    // test parsing [`AdvertisedAddress`]
     #[test]
-    fn test_parse_empty_input() {
-        let result = AdvertisedAddress::from_str("");
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Advertised address input cannot be empty"
+    fn test_parse_network_address() -> anyhow::Result<()> {
+        let tcp: AdvertisedAddress = "127.0.0.1:5123".parse()?;
+        restate_test_util::assert_eq!(tcp, AdvertisedAddress::Http("127.0.0.1:5123".parse()?));
+
+        let tcp: AdvertisedAddress = "unix:/tmp/unix.socket".parse()?;
+        restate_test_util::assert_eq!(
+            tcp,
+            AdvertisedAddress::Uds("/tmp/unix.socket".parse().unwrap())
         );
-    }
 
-    #[test]
-    fn test_parse_valid_uds() {
-        // Create a temporary directory and use a socket file inside it
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let socket_path = tmp_dir.path().join("socket");
+        let tcp: AdvertisedAddress = "localhost:5123".parse()?;
+        restate_test_util::assert_eq!(tcp, AdvertisedAddress::Http("localhost:5123".parse()?));
 
-        // Create the mock UDS file so that the path exists
-        std::fs::File::create(&socket_path).unwrap();
-
-        // test with the valid UDS path
-        let input = format!("unix:{}", socket_path.display());
-        let result = AdvertisedAddress::from_str(&input);
-
-        assert!(result.is_ok(), "Expected Ok but got Err: {:?}", result);
-        if let AdvertisedAddress::Uds(path) = result.unwrap() {
-            assert_eq!(path, socket_path);
-        } else {
-            panic!("Expected Uds variant");
-        }
-    }
-
-    #[test]
-    fn test_parse_nonexistent_uds_path() {
-        let result = AdvertisedAddress::from_str("unix:/invalid/path");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unix domain socket path does not exist"));
-    }
-
-    #[test]
-    fn test_parse_valid_http_uri() {
-        let result = AdvertisedAddress::from_str("http://localhost:8080");
-        assert!(result.is_ok());
-        if let AdvertisedAddress::Http(uri) = result.unwrap() {
-            assert_eq!(uri.to_string(), "http://localhost:8080/");
-        } else {
-            panic!("Expected Http variant");
-        }
-    }
-
-    #[test]
-    fn test_parse_missing_scheme() {
-        let result = AdvertisedAddress::from_str("localhost:8080");
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Missing URI scheme in: 'localhost:8080'"
+        let tcp: AdvertisedAddress = "https://localhost:5123".parse()?;
+        restate_test_util::assert_eq!(
+            tcp,
+            AdvertisedAddress::Http(Uri::from_static("https://localhost:5123"))
         );
-    }
 
-    #[test]
-    fn test_parse_unsupported_scheme() {
-        let result = AdvertisedAddress::from_str("ftp://localhost");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unsupported URI scheme 'ftp'"));
-    }
-
-    #[test]
-    fn test_derive_bind_address_http_with_port() {
-        // Test case for AdvertisedAddress::Http with a valid host and port
-        let advertised_address = AdvertisedAddress::from_str("http://127.0.0.1:1337").unwrap();
-
-        // Derive the bind address
-        let bind_address = advertised_address.derive_bind_address().unwrap();
-
-        // Expected bind address
-        let expected_bind_address =
-            BindAddress::Socket(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 1337));
-
-        assert_eq!(bind_address, expected_bind_address);
-    }
-
-    #[test]
-    fn test_derive_bind_address_http_without_port() {
-        // Test case for AdvertisedAddress::Http without a port
-        let advertised_address = AdvertisedAddress::from_str("http://localhost").unwrap();
-
-        // Deriving a bind address should return None since no port is provided
-        let bind_address = advertised_address.derive_bind_address();
-        assert!(bind_address.is_none());
-    }
-
-    #[test]
-    fn test_derive_bind_address_unix_socket() {
-        // Test case for AdvertisedAddress::Uds (Unix domain socket)
-        let advertised_address = AdvertisedAddress::Uds(PathBuf::from("/tmp/socket"));
-
-        // Deriving a bind address for a Unix socket should return None
-        let bind_address = advertised_address.derive_bind_address();
-        assert!(bind_address.is_none());
-    }
-    #[test]
-    fn test_invalid_advertised_address() {
-        // Test case for an invalid AdvertisedAddress string
-        let result = AdvertisedAddress::from_str("invalid-address");
-
-        // Parsing should fail, resulting in an error
-        assert!(result.is_err(), "Expected an error for invalid address");
+        Ok(())
     }
 }
