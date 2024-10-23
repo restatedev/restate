@@ -33,6 +33,7 @@ humantime = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 metrics = { workspace = true }
+opentelemetry = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }
@@ -56,6 +57,7 @@ tonic = { workspace = true, features = [
 ] }
 tower = { workspace = true }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

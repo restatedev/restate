@@ -12,18 +12,17 @@
 mod exporter;
 mod pretty;
 
-use crate::exporter::ResourceModifyingSpanExporter;
-use crate::pretty::PrettyFields;
-use opentelemetry::trace::{TraceError, TracerProvider};
-use opentelemetry::KeyValue;
-use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
-use opentelemetry_otlp::{SpanExporterBuilder, WithExportConfig};
-use opentelemetry_sdk::trace::BatchSpanProcessor;
-use pretty::Pretty;
-use restate_types::config::{CommonOptions, LogFormat};
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Display;
+
+use opentelemetry::trace::{TraceError, TracerProvider};
+use opentelemetry::{global, KeyValue};
+use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
+use opentelemetry_otlp::{SpanExporterBuilder, WithExportConfig};
+use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry_sdk::trace::BatchSpanProcessor;
+use pretty::Pretty;
 use tonic::codegen::http::HeaderMap;
 use tonic::metadata::MetadataMap;
 use tracing::{info, warn, Level};
@@ -35,6 +34,11 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::reload::Handle;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, Registry};
+
+use restate_types::config::{CommonOptions, LogFormat};
+
+use crate::exporter::ResourceModifyingSpanExporter;
+use crate::pretty::PrettyFields;
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
@@ -192,6 +196,8 @@ where
         .tracer_builder("opentelemetry-otlp")
         .with_version(env!("CARGO_PKG_VERSION"))
         .build();
+
+    global::set_text_map_propagator(TraceContextPropagator::new());
 
     Ok(Some(
         tracing_opentelemetry::layer()

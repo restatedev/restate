@@ -61,6 +61,11 @@ pub mod cluster {
 }
 
 pub mod node {
+    use opentelemetry::global;
+    use opentelemetry::propagation::{Extractor, Injector};
+    use opentelemetry::trace::TraceContextExt;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
     use crate::GenerationalNodeId;
 
     use crate::net::{ProtocolVersion, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION};
@@ -80,6 +85,22 @@ pub mod node {
         }
     }
 
+    impl Injector for SpanContext {
+        fn set(&mut self, key: &str, value: String) {
+            self.fields.insert(key.to_owned(), value);
+        }
+    }
+
+    impl Extractor for SpanContext {
+        fn get(&self, key: &str) -> Option<&str> {
+            self.fields.get(key).map(|v| v.as_str())
+        }
+
+        fn keys(&self) -> Vec<&str> {
+            self.fields.keys().map(|k| k.as_str()).collect()
+        }
+    }
+
     impl Header {
         pub fn new(
             nodes_config_version: crate::Version,
@@ -89,6 +110,18 @@ pub mod node {
             msg_id: u64,
             in_response_to: Option<u64>,
         ) -> Self {
+            let context = tracing::Span::current().context();
+            let span_context = if context.span().span_context().is_sampled() {
+                let mut span_context = SpanContext::default();
+                global::get_text_map_propagator(|propagator| {
+                    propagator.inject_context(&context, &mut span_context)
+                });
+
+                Some(span_context)
+            } else {
+                None
+            };
+
             Self {
                 my_nodes_config_version: Some(nodes_config_version.into()),
                 my_logs_version: logs_version.map(Into::into),
@@ -96,6 +129,7 @@ pub mod node {
                 my_partition_table_version: partition_table_version.map(Into::into),
                 msg_id,
                 in_response_to,
+                span_context,
             }
         }
     }

@@ -14,6 +14,7 @@ use std::time::Instant;
 
 use enum_map::EnumMap;
 use futures::{Stream, StreamExt};
+use opentelemetry::global;
 use parking_lot::Mutex;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
@@ -214,7 +215,7 @@ impl<T: TransportConnect> ConnectionManager<T> {
             selected_protocol_version
         );
 
-        self.verify_node_id(peer_node_id, header, &nodes_config)?;
+        self.verify_node_id(peer_node_id, &header, &nodes_config)?;
 
         let (tx, output_stream) =
             mpsc::channel(self.networking_options.outbound_queue_length.into());
@@ -370,7 +371,7 @@ impl<T: TransportConnect> ConnectionManager<T> {
     fn verify_node_id(
         &self,
         peer_node_id: GenerationalNodeId,
-        header: Header,
+        header: &Header,
         nodes_config: &NodesConfiguration,
     ) -> Result<(), NetworkError> {
         if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
@@ -591,6 +592,11 @@ where
                     target = ?msg.target(),
                     "Message received"
                 );
+
+                let parent_context = header.span_context.as_ref().map(|span_ctx| {
+                    global::get_text_map_propagator(|propagator| propagator.extract(span_ctx))
+                });
+
                 if let Err(e) = router
                     .call(
                         Incoming::from_parts(
@@ -599,7 +605,8 @@ where
                             header.msg_id,
                             header.in_response_to,
                             PeerMetadataVersion::from(header),
-                        ),
+                        )
+                        .with_parent_context(parent_context),
                         connection.protocol_version,
                     )
                     .await
@@ -640,6 +647,10 @@ where
             // we ignore non-deserializable messages (serde errors, or control signals in drain)
             if let Ok(msg) = body.try_as_binary_body(protocol_version) {
                 drain_counter += 1;
+                let parent_context = header.span_context.as_ref().map(|span_ctx| {
+                    global::get_text_map_propagator(|propagator| propagator.extract(span_ctx))
+                });
+
                 if let Err(e) = router
                     .call(
                         Incoming::from_parts(
@@ -649,7 +660,8 @@ where
                             header.msg_id,
                             header.in_response_to,
                             PeerMetadataVersion::from(header),
-                        ),
+                        )
+                        .with_parent_context(parent_context),
                         protocol_version,
                     )
                     .await

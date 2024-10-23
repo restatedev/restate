@@ -31,7 +31,10 @@ message Header {
   /// the message producer to ensure that the response is sent to the original
   /// producer (generational node id).
   optional uint64 in_response_to = 6;
+  optional SpanContext span_context = 7;
 }
+
+message SpanContext { map<string, string> fields = 1; }
 
 // First message sent to an ingress after starting the connection. The message
 // must be sent before any other message.
