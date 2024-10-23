@@ -8,34 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 
-use crate::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
+use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, SnapshotId};
 use crate::net::{define_message, TargetName};
 
 use crate::net::define_rpc;
 use crate::Version;
-
-define_rpc! {
-    @request = GetProcessorsState,
-    @response = ProcessorsStateResponse,
-    @request_target = TargetName::GetProcessorsStateRequest,
-    @response_target = TargetName::ProcessorsStateResponse,
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct GetProcessorsState {}
-
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessorsStateResponse {
-    #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    pub state: BTreeMap<PartitionId, PartitionProcessorStatus>,
-}
 
 define_message! {
     @message = ControlProcessors,
