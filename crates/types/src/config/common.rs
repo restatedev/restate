@@ -344,7 +344,7 @@ impl Default for CommonOptions {
             allow_bootstrap: true,
             base_dir: None,
             metadata_store_client: MetadataStoreClientOptions::default(),
-            bind_address: None,
+            bind_address: Some("0.0.0.0:5122".parse().unwrap()),
             advertised_address: AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap(),
             bootstrap_num_partitions: NonZeroU16::new(24).unwrap(),
             histogram_inactivity_timeout: None,

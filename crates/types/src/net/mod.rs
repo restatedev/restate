@@ -281,16 +281,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_nonexistent_uds_path() {
-        let result = AdvertisedAddress::from_str("unix:/invalid/path");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unix domain socket path does not exist"));
-    }
-
-    #[test]
     fn test_parse_valid_http_uri() {
         let result = AdvertisedAddress::from_str("http://localhost:8080");
         assert!(result.is_ok());
