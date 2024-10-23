@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context};
 use assert2::let_assert;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
-use metrics::{counter, histogram};
+use metrics::histogram;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, instrument, trace, warn, Instrument, Span};
@@ -54,9 +54,9 @@ use restate_types::live::Live;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::net::partition_processor::{
-    GetInvocationOutputResponseMode, IngressResponseResult, InvocationOutput,
-    PartitionProcessorRpcError, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
-    SubmitInvocationReplyOn,
+    AppendInvocationReplyOn, GetInvocationOutputResponseMode, IngressResponseResult,
+    InvocationOutput, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
+    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::retries::RetryPolicy;
 use restate_types::time::MillisSinceEpoch;
@@ -65,11 +65,11 @@ use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::metric_definitions::{
-    PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
-    PP_APPLY_COMMAND_BATCH_SIZE, PP_APPLY_COMMAND_DURATION,
+    PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION, PP_APPLY_COMMAND_BATCH_SIZE,
+    PP_APPLY_COMMAND_DURATION,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::leadership::{Error, LeadershipState, PartitionProcessorMetadata};
+use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
 use crate::partition::snapshot_producer::{SnapshotProducer, SnapshotSource};
 use crate::partition::state_machine::{ActionCollector, StateMachine};
 
@@ -104,12 +104,7 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     status: PartitionProcessorStatus,
     invoker_tx: InvokerInputSender,
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
-    rpc_rx: mpsc::Receiver<
-        Incoming<(
-            PartitionProcessorRpcRequestId,
-            PartitionProcessorRpcRequestInner,
-        )>,
-    >,
+    rpc_rx: mpsc::Receiver<Incoming<PartitionProcessorRpcRequest>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
 }
 
@@ -126,12 +121,7 @@ where
         status: PartitionProcessorStatus,
         options: &WorkerOptions,
         control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
-        rpc_rx: mpsc::Receiver<
-            Incoming<(
-                PartitionProcessorRpcRequestId,
-                PartitionProcessorRpcRequestInner,
-            )>,
-        >,
+        rpc_rx: mpsc::Receiver<Incoming<PartitionProcessorRpcRequest>>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         invoker_tx: InvokerInputSender,
     ) -> Self {
@@ -267,12 +257,7 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
     bifrost: Bifrost,
     configuration: Live<Configuration>,
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
-    rpc_rx: mpsc::Receiver<
-        Incoming<(
-            PartitionProcessorRpcRequestId,
-            PartitionProcessorRpcRequestInner,
-        )>,
-    >,
+    rpc_rx: mpsc::Receiver<Incoming<PartitionProcessorRpcRequest>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     status: PartitionProcessorStatus,
     task_center: TaskCenter,
@@ -396,7 +381,6 @@ where
         let record_actions_latency = histogram!(PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION);
         let command_batch_size =
             histogram!(PP_APPLY_COMMAND_BATCH_SIZE, PARTITION_LABEL => partition_id_str);
-        let actuator_effects_handled = counter!(PARTITION_ACTUATOR_HANDLED);
 
         let mut action_collector = ActionCollector::default();
         let mut command_buffer = Vec::with_capacity(self.max_command_batch_size);
@@ -481,9 +465,8 @@ where
                     self.leadership_state.handle_actions(action_collector.drain(..)).await?;
                     record_actions_latency.record(actions_start.elapsed());
                 },
-                Some(action_effects) = self.leadership_state.next_action_effects() => {
-                    actuator_effects_handled.increment(action_effects.len() as u64);
-                    self.leadership_state.handle_action_effects(action_effects).await?;
+                res = self.leadership_state.do_progress() => {
+                    res?;
                 },
             }
             // Allow other tasks on this thread to run, but only if we have exhausted the coop
@@ -570,45 +553,34 @@ where
 
     async fn on_rpc(
         &mut self,
-        rpc: Incoming<(
-            PartitionProcessorRpcRequestId,
-            PartitionProcessorRpcRequestInner,
-        )>,
+        rpc: Incoming<PartitionProcessorRpcRequest>,
         partition_store: &mut PartitionStore,
     ) {
-        let sender_node_id = *rpc.peer();
-        let (response_tx, (request_id, body)) = rpc.split();
-        match body {
-            PartitionProcessorRpcRequestInner::SubmitInvocation(
+        let (
+            response_tx,
+            PartitionProcessorRpcRequest {
+                request_id, inner, ..
+            },
+        ) = rpc.split();
+        match inner {
+            PartitionProcessorRpcRequestInner::AppendInvocation(
                 service_invocation,
-                SubmitInvocationReplyOn::Appended,
+                AppendInvocationReplyOn::Appended,
             ) => {
-                let res = match self
-                    .leadership_state
-                    .self_propose(
+                self.leadership_state
+                    .self_propose_and_wait_response(
                         service_invocation.partition_key(),
                         Command::Invoke(service_invocation),
+                        response_tx,
                     )
-                    .await
-                {
-                    Ok(()) => Ok(PartitionProcessorRpcResponse::Appended),
-                    Err(Error::NotLeader) => {
-                        Err(PartitionProcessorRpcError::NotLeader(self.partition_id))
-                    }
-                    Err(e) => Err(PartitionProcessorRpcError::Internal(e.to_string())),
-                };
-
-                self.respond_to_rpc(response_tx.prepare(res));
+                    .await;
             }
-            PartitionProcessorRpcRequestInner::SubmitInvocation(
+            PartitionProcessorRpcRequestInner::AppendInvocation(
                 mut service_invocation,
-                SubmitInvocationReplyOn::Submitted,
+                AppendInvocationReplyOn::Submitted,
             ) => {
                 service_invocation.submit_notification_sink =
-                    Some(SubmitNotificationSink::Ingress {
-                        node_id: sender_node_id,
-                        request_id,
-                    });
+                    Some(SubmitNotificationSink::Ingress { request_id });
 
                 self.leadership_state
                     .handle_rpc_proposal_command(
@@ -619,14 +591,12 @@ where
                     )
                     .await
             }
-            PartitionProcessorRpcRequestInner::SubmitInvocation(
+            PartitionProcessorRpcRequestInner::AppendInvocation(
                 mut service_invocation,
-                SubmitInvocationReplyOn::Output,
+                AppendInvocationReplyOn::Output,
             ) => {
-                service_invocation.response_sink = Some(ServiceInvocationResponseSink::Ingress {
-                    node_id: sender_node_id,
-                    request_id,
-                });
+                service_invocation.response_sink =
+                    Some(ServiceInvocationResponseSink::Ingress { request_id });
 
                 self.leadership_state
                     .handle_rpc_proposal_command(
@@ -661,10 +631,7 @@ where
                         invocation_query.partition_key(),
                         Command::AttachInvocation(AttachInvocationRequest {
                             invocation_query,
-                            response_sink: ServiceInvocationResponseSink::Ingress {
-                                node_id: sender_node_id,
-                                request_id,
-                            },
+                            response_sink: ServiceInvocationResponseSink::Ingress { request_id },
                         }),
                     )
                     .await
@@ -685,23 +652,14 @@ where
                     ),
                 );
             }
-            PartitionProcessorRpcRequestInner::SubmitInvocationResponse(invocation_response) => {
-                let rpc_response = match self
-                    .leadership_state
-                    .self_propose(
+            PartitionProcessorRpcRequestInner::AppendInvocationResponse(invocation_response) => {
+                self.leadership_state
+                    .self_propose_and_wait_response(
                         invocation_response.partition_key(),
                         Command::InvocationResponse(invocation_response),
+                        response_tx,
                     )
-                    .await
-                {
-                    Ok(()) => Ok(PartitionProcessorRpcResponse::Appended),
-                    Err(Error::NotLeader) => {
-                        Err(PartitionProcessorRpcError::NotLeader(self.partition_id))
-                    }
-                    Err(e) => Err(PartitionProcessorRpcError::Internal(e.to_string())),
-                };
-
-                self.respond_to_rpc(response_tx.prepare(rpc_response));
+                    .await;
             }
         };
     }

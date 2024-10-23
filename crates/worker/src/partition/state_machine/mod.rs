@@ -79,7 +79,6 @@ use restate_types::net::partition_processor::IngressResponseResult;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::GenerationalNodeId;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::Command;
@@ -1680,11 +1679,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     .await?
                 }
                 ServiceInvocationResponseSink::Ingress {
-                    node_id,
                     request_id,
                 } => Self::send_ingress_response(
                     ctx,
-                    node_id,
                     request_id,
                     invocation_id,
                     completion_expiry_time,
@@ -2747,7 +2744,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     fn send_ingress_response<State>(
         ctx: &mut StateMachineApplyContext<'_, State>,
-        target_node: GenerationalNodeId,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: Option<InvocationId>,
         completion_expiry_time: Option<MillisSinceEpoch>,
@@ -2768,7 +2764,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         };
 
         ctx.action_collector.push(Action::IngressResponse {
-            target_node,
             request_id,
             invocation_id,
             completion_expiry_time,
@@ -2783,11 +2778,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         submit_notification_sink: Option<SubmitNotificationSink>,
     ) {
         // Notify the ingress, if needed, of the chosen invocation_id
-        if let Some(SubmitNotificationSink::Ingress {
-            node_id,
-            request_id,
-        }) = submit_notification_sink
-        {
+        if let Some(SubmitNotificationSink::Ingress { request_id }) = submit_notification_sink {
             debug_if_leader!(
                 ctx.is_leader,
                 "Sending ingress attach invocation for {}",
@@ -2796,7 +2787,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
             ctx.action_collector
                 .push(Action::IngressSubmitNotification {
-                    target_node: node_id,
                     request_id,
                     is_new_invocation,
                 });

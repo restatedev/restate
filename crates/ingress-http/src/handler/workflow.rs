@@ -113,7 +113,9 @@ where
             .await
         {
             Ok(GetInvocationOutputResponse::Ready(out)) => out,
-            Ok(GetInvocationOutputResponse::NotFound) => return Err(HandlerError::InvocationNotFound),
+            Ok(GetInvocationOutputResponse::NotFound) => {
+                return Err(HandlerError::InvocationNotFound)
+            }
             Ok(GetInvocationOutputResponse::NotReady) => return Err(HandlerError::NotReady),
             Ok(GetInvocationOutputResponse::NotSupported) => {
                 return Err(HandlerError::UnsupportedGetOutput)

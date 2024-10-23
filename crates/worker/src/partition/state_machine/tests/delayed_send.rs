@@ -23,7 +23,6 @@ async fn send_with_delay() {
     let invocation_target = InvocationTarget::mock_service();
     let invocation_id = InvocationId::mock_random();
 
-    let node_id = GenerationalNodeId::new(1, 1);
     let request_id = PartitionProcessorRpcRequestId::default();
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
@@ -32,10 +31,7 @@ async fn send_with_delay() {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
-            submit_notification_sink: Some(SubmitNotificationSink::Ingress {
-                node_id,
-                request_id,
-            }),
+            submit_notification_sink: Some(SubmitNotificationSink::Ingress { request_id }),
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(wake_up_time),
             ..ServiceInvocation::mock()
@@ -47,7 +43,6 @@ async fn send_with_delay() {
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
             contains(eq(Action::IngressSubmitNotification {
-                target_node: node_id,
                 request_id,
                 is_new_invocation: true
             }))
@@ -67,7 +62,6 @@ async fn send_with_delay() {
         all!(
             contains(matchers::actions::invoke_for_id(invocation_id)),
             not(contains(eq(Action::IngressSubmitNotification {
-                target_node: node_id,
                 request_id,
                 is_new_invocation: true,
             })))
@@ -87,7 +81,6 @@ async fn send_with_delay_to_locked_virtual_object() {
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
-    let node_id = GenerationalNodeId::new(1, 1);
     let request_id = PartitionProcessorRpcRequestId::default();
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
@@ -96,10 +89,7 @@ async fn send_with_delay_to_locked_virtual_object() {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
-            submit_notification_sink: Some(SubmitNotificationSink::Ingress {
-                node_id,
-                request_id,
-            }),
+            submit_notification_sink: Some(SubmitNotificationSink::Ingress { request_id }),
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(wake_up_time),
             ..ServiceInvocation::mock()
@@ -111,7 +101,6 @@ async fn send_with_delay_to_locked_virtual_object() {
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
             contains(eq(Action::IngressSubmitNotification {
-                target_node: node_id,
                 request_id,
                 is_new_invocation: true,
             }))
@@ -140,7 +129,6 @@ async fn send_with_delay_to_locked_virtual_object() {
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             not(contains(eq(Action::IngressSubmitNotification {
-                target_node: node_id,
                 request_id,
                 is_new_invocation: true,
             })))
@@ -173,7 +161,6 @@ async fn send_with_delay_and_idempotency_key() {
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
-    let node_id = GenerationalNodeId::new(1, 1);
     let request_id_1 = PartitionProcessorRpcRequestId::default();
 
     let actions = test_env
@@ -183,7 +170,6 @@ async fn send_with_delay_and_idempotency_key() {
             idempotency_key: Some(idempotency_key.clone()),
             response_sink: None,
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
-                node_id,
                 request_id: request_id_1,
             }),
             completion_retention_duration: Some(retention),
@@ -200,7 +186,6 @@ async fn send_with_delay_and_idempotency_key() {
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
             contains(eq(Action::IngressSubmitNotification {
-                target_node: node_id,
                 request_id: request_id_1,
                 is_new_invocation: true,
             }))
@@ -216,7 +201,6 @@ async fn send_with_delay_and_idempotency_key() {
             idempotency_key: Some(idempotency_key),
             response_sink: None,
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
-                node_id,
                 request_id: request_id_2,
             }),
             completion_retention_duration: Some(retention),
@@ -232,7 +216,6 @@ async fn send_with_delay_and_idempotency_key() {
         all!(
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(eq(Action::IngressSubmitNotification {
-                target_node: node_id,
                 request_id: request_id_2,
                 is_new_invocation: false,
             }))

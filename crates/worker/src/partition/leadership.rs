@@ -12,19 +12,22 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
+use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{ready, Context, Poll};
 use std::time::{Duration, SystemTime};
 
 use futures::future::OptionFuture;
-use futures::{future, stream, StreamExt, TryStreamExt};
-use metrics::counter;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt, TryStreamExt};
+use metrics::{counter, Counter};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, instrument, trace, warn};
 
-use restate_bifrost::Bifrost;
+use restate_bifrost::{Bifrost, CommitToken};
 use restate_core::network::{HasConnection, Outgoing, Reciprocal};
 use restate_core::{metadata, task_center, Metadata, ShutdownError, TaskHandle, TaskId, TaskKind};
 use restate_errors::NotRunningError;
@@ -52,14 +55,12 @@ use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
-use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
+use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_HANDLE_LEADER_ACTIONS};
 use crate::partition::cleaner::Cleaner;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::shuffle;
 use crate::partition::shuffle::{HintSender, OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
-
-const BATCH_READY_UP_TO: usize = 10;
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 
@@ -75,18 +76,8 @@ pub(crate) enum Error {
     Codec(#[from] StorageEncodeError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
-    #[error("the given operation requires to be in leader state")]
-    NotLeader,
     #[error("error when self proposing")]
     SelfProposer,
-}
-
-#[derive(Debug)]
-pub(crate) enum ActionEffect {
-    Invoker(restate_invoker_api::Effect),
-    Shuffle(shuffle::OutboxTruncation),
-    Timer(TimerKeyValue),
-    ScheduleCleanupTimer(InvocationId, Duration),
 }
 
 pub(crate) struct LeaderState {
@@ -95,11 +86,16 @@ pub(crate) struct LeaderState {
     shuffle_task_id: TaskId,
     timer_service: Pin<Box<TimerService>>,
     self_proposer: SelfProposer,
-    action_effects: VecDeque<ActionEffect>,
-    awaiting_rpcs: HashMap<PartitionProcessorRpcRequestId, Reciprocal>,
+
+    awaiting_rpc_actions: HashMap<
+        PartitionProcessorRpcRequestId,
+        Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+    >,
+    awaiting_rpc_self_appends: FuturesUnordered<SelfAppendFuture>,
 
     invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
+    pending_cleanup_timers_to_schedule: VecDeque<(InvocationId, Duration)>,
     cleaner_task_id: TaskId,
 }
 
@@ -146,6 +142,8 @@ pub(crate) struct LeadershipState<I> {
     state: State,
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
+    actuators_effect_handled: Counter,
+
     partition_processor_metadata: PartitionProcessorMetadata,
     num_timers_in_memory_limit: Option<usize>,
     cleanup_interval: Duration,
@@ -171,6 +169,7 @@ where
         Self {
             state: State::Follower,
             partition_processor_metadata,
+            actuators_effect_handled: counter!(PARTITION_ACTUATOR_HANDLED),
             num_timers_in_memory_limit,
             cleanup_interval,
             channel_size,
@@ -422,10 +421,11 @@ where
                 shuffle_hint_tx,
                 timer_service,
                 self_proposer,
-                action_effects: VecDeque::default(),
-                awaiting_rpcs: Default::default(),
+                awaiting_rpc_actions: Default::default(),
+                awaiting_rpc_self_appends: Default::default(),
                 invoker_stream: ReceiverStream::new(invoker_rx),
                 shuffle_stream: ReceiverStream::new(shuffle_rx),
+                pending_cleanup_timers_to_schedule: Default::default(),
             });
 
             Ok(())
@@ -478,7 +478,7 @@ where
     }
 
     async fn become_follower(&mut self) -> Result<(), Error> {
-        match &self.state {
+        match &mut self.state {
             State::Follower => {}
             State::Candidate { appender_task, .. } => {
                 appender_task.abort();
@@ -487,6 +487,8 @@ where
                 leader_epoch,
                 shuffle_task_id,
                 cleaner_task_id,
+                ref mut awaiting_rpc_actions,
+                ref mut awaiting_rpc_self_appends,
                 ..
             }) => {
                 let shuffle_handle =
@@ -511,44 +513,24 @@ where
                 if let Some(cleaner_result) = cleaner_result {
                     cleaner_result.expect("graceful termination of cleaner task");
                 }
+
+                // Reply back to all RPCs with not a leader
+                for (_, reciprocal) in awaiting_rpc_actions.drain() {
+                    respond_to_rpc(
+                        reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
+                            self.partition_processor_metadata.partition_id,
+                        ))),
+                    );
+                }
+                for fut in awaiting_rpc_self_appends.iter_mut() {
+                    fut.fail_with_not_leader(self.partition_processor_metadata.partition_id);
+                }
+                awaiting_rpc_self_appends.clear();
             }
         }
 
         self.state = State::Follower;
         Ok(())
-    }
-
-    pub async fn next_action_effects(&mut self) -> Option<Vec<ActionEffect>> {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } => None,
-            State::Leader(leader_state) => {
-                let timer_stream = std::pin::pin!(stream::unfold(
-                    &mut leader_state.timer_service,
-                    |timer_service| async {
-                        let timer_value = timer_service.as_mut().next_timer().await;
-                        Some((ActionEffect::Timer(timer_value), timer_service))
-                    }
-                ));
-
-                let invoker_stream = (&mut leader_state.invoker_stream).map(ActionEffect::Invoker);
-                let shuffle_stream = (&mut leader_state.shuffle_stream).map(ActionEffect::Shuffle);
-                let action_effects_stream =
-                    stream::unfold(&mut leader_state.action_effects, |action_effects| {
-                        let result = action_effects.pop_front();
-                        future::ready(result.map(|r| (r, action_effects)))
-                    })
-                    .fuse();
-
-                let all_streams = futures::stream_select!(
-                    invoker_stream,
-                    shuffle_stream,
-                    timer_stream,
-                    action_effects_stream
-                );
-                let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
-                all_streams.next().await
-            }
-        }
     }
 
     pub async fn handle_actions(
@@ -574,8 +556,8 @@ where
                         &mut self.invoker_tx,
                         &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
-                        &mut leader_state.action_effects,
-                        &mut leader_state.awaiting_rpcs,
+                        &mut leader_state.pending_cleanup_timers_to_schedule,
+                        &mut leader_state.awaiting_rpc_actions,
                     )
                     .await?;
                 }
@@ -592,8 +574,11 @@ where
         invoker_tx: &mut I,
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
-        actions_effects: &mut VecDeque<ActionEffect>,
-        awaiting_rpcs: &mut HashMap<PartitionProcessorRpcRequestId, Reciprocal>,
+        actions_effects: &mut VecDeque<(InvocationId, Duration)>,
+        awaiting_rpcs: &mut HashMap<
+            PartitionProcessorRpcRequestId,
+            Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        >,
     ) -> Result<(), Error> {
         match action {
             Action::Invoke {
@@ -643,14 +628,16 @@ where
                 ..
             } => {
                 if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
-                    Self::respond_to_rpc(response_tx.prepare(Ok(
-                        PartitionProcessorRpcResponse::Output(InvocationOutput {
-                            request_id,
-                            invocation_id,
-                            completion_expiry_time,
-                            response,
-                        }),
-                    )));
+                    respond_to_rpc(
+                        response_tx.prepare(Ok(PartitionProcessorRpcResponse::Output(
+                            InvocationOutput {
+                                request_id,
+                                invocation_id,
+                                completion_expiry_time,
+                                response,
+                            },
+                        ))),
+                    );
                 }
             }
             Action::IngressSubmitNotification {
@@ -659,7 +646,7 @@ where
                 ..
             } => {
                 if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
-                    Self::respond_to_rpc(response_tx.prepare(Ok(
+                    respond_to_rpc(response_tx.prepare(Ok(
                         PartitionProcessorRpcResponse::Submitted(SubmittedInvocationNotification {
                             request_id,
                             is_new_invocation,
@@ -671,71 +658,67 @@ where
                 invocation_id,
                 retention,
             } => {
-                actions_effects
-                    .push_back(ActionEffect::ScheduleCleanupTimer(invocation_id, retention));
+                actions_effects.push_back((invocation_id, retention));
             }
         }
 
         Ok(())
     }
 
-    pub async fn handle_action_effects(
-        &mut self,
-        action_effects: impl IntoIterator<Item = ActionEffect>,
-    ) -> anyhow::Result<()> {
+    pub async fn do_progress(&mut self) -> anyhow::Result<()> {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => {
-                // nothing to do :-)
-            }
+            State::Follower | State::Candidate { .. } => {}
             State::Leader(leader_state) => {
-                for effect in action_effects {
-                    match effect {
-                        ActionEffect::Invoker(invoker_output) => {
-                            leader_state
-                                .self_proposer
-                                .propose(
-                                    invoker_output.invocation_id.partition_key(),
-                                    Command::InvokerEffect(invoker_output),
-                                )
-                                .await?;
-                        }
-                        ActionEffect::Shuffle(outbox_truncation) => {
-                            // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
-                            //  specific destination messages that are identified by a partition_id
-                            leader_state
-                                .self_proposer
-                                .propose(
-                                    *self
-                                        .partition_processor_metadata
-                                        .partition_key_range
-                                        .start(),
-                                    Command::TruncateOutbox(outbox_truncation.index()),
-                                )
-                                .await?;
-                        }
-                        ActionEffect::Timer(timer) => {
-                            leader_state
-                                .self_proposer
-                                .propose(
-                                    timer.invocation_id().partition_key(),
-                                    Command::Timer(timer),
-                                )
-                                .await?;
-                        }
-                        ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
-                            // TODO we can get rid of this action completely once we switch to the neo invocation status
-                            leader_state
-                                .self_proposer
-                                .propose(
-                                    invocation_id.partition_key(),
-                                    Command::ScheduleTimer(TimerKeyValue::clean_invocation_status(
-                                        MillisSinceEpoch::from(SystemTime::now() + duration),
-                                        invocation_id,
-                                    )),
-                                )
-                                .await?;
-                        }
+                tokio::select! {
+                    Some(invoker_effect) = leader_state.invoker_stream.next() => {
+                        self.actuators_effect_handled.increment(1);
+                        leader_state
+                            .self_proposer
+                            .propose(
+                                invoker_effect.invocation_id.partition_key(),
+                                Command::InvokerEffect(invoker_effect),
+                            )
+                            .await?;
+                    },
+                    Some(outbox_truncation) = leader_state.shuffle_stream.next() => {
+                        self.actuators_effect_handled.increment(1);
+                        // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
+                        //  specific destination messages that are identified by a partition_id
+                        leader_state
+                            .self_proposer
+                            .propose(
+                                *self
+                                    .partition_processor_metadata
+                                    .partition_key_range
+                                    .start(),
+                                Command::TruncateOutbox(outbox_truncation.index()),
+                            )
+                            .await?;
+                    },
+                    timer = leader_state.timer_service.as_mut().next_timer() => {
+                        self.actuators_effect_handled.increment(1);
+                        leader_state
+                            .self_proposer
+                            .propose(
+                                timer.invocation_id().partition_key(),
+                                Command::Timer(timer),
+                            )
+                            .await?;
+                    },
+                    Some((invocation_id, duration)) = async { leader_state.pending_cleanup_timers_to_schedule.pop_front() } => {
+                        self.actuators_effect_handled.increment(1);
+                        leader_state
+                            .self_proposer
+                            .propose(
+                                invocation_id.partition_key(),
+                                Command::ScheduleTimer(TimerKeyValue::clean_invocation_status(
+                                    MillisSinceEpoch::from(SystemTime::now() + duration),
+                                    invocation_id,
+                                )),
+                            )
+                            .await?;
                     }
+                    _ = leader_state.awaiting_rpc_self_appends.next() => {}
                 }
             }
         };
@@ -746,35 +729,37 @@ where
     pub async fn handle_rpc_proposal_command(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal,
+        reciprocal: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
         partition_key: PartitionKey,
         cmd: Command,
     ) {
         match &mut self.state {
-            State::Follower | State::Candidate(_) => {
+            State::Follower | State::Candidate { .. } => {
                 // Just fail the rpc
-                Self::respond_to_rpc(reciprocal.prepare(Err(
-                    PartitionProcessorRpcError::NotLeader(
+                respond_to_rpc(
+                    reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
                         self.partition_processor_metadata.partition_id,
-                    ),
-                )));
+                    ))),
+                );
             }
             State::Leader(leader_state) => {
-                match leader_state.awaiting_rpcs.entry(request_id) {
+                match leader_state.awaiting_rpc_actions.entry(request_id) {
                     Entry::Occupied(o) => {
                         // In this case, someone already proposed this command,
                         // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
                         let old_reciprocal = o.remove();
-                        Self::respond_to_rpc(old_reciprocal.prepare(Err(
+                        respond_to_rpc(old_reciprocal.prepare(Err(
                             PartitionProcessorRpcError::Internal("expired".to_string()),
                         )));
-                        leader_state.awaiting_rpcs.insert(request_id, reciprocal);
+                        leader_state
+                            .awaiting_rpc_actions
+                            .insert(request_id, reciprocal);
                     }
                     Entry::Vacant(v) => {
                         // In this case, no one proposed this command yet, let's try to propose it
                         if let Err(e) = leader_state.self_proposer.propose(partition_key, cmd).await
                         {
-                            Self::respond_to_rpc(
+                            respond_to_rpc(
                                 reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
                                     e.to_string(),
                                 ))),
@@ -788,32 +773,99 @@ where
         }
     }
 
-    pub async fn self_propose(
+    pub async fn self_propose_and_wait_response(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
-    ) -> Result<(), Error> {
+        reciprocal: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+    ) {
         match &mut self.state {
-            State::Follower | State::Candidate(_) => Err(Error::NotLeader),
+            State::Follower | State::Candidate { .. } => respond_to_rpc(reciprocal.prepare(Err(
+                PartitionProcessorRpcError::NotLeader(
+                    self.partition_processor_metadata.partition_id,
+                ),
+            ))),
             State::Leader(leader_state) => {
-                leader_state.self_proposer.propose(partition_key, cmd).await
+                match leader_state
+                    .self_proposer
+                    .propose_with_notification(partition_key, cmd)
+                    .await
+                {
+                    Ok(commit_token) => {
+                        leader_state
+                            .awaiting_rpc_self_appends
+                            .push(SelfAppendFuture(commit_token, Some(reciprocal)));
+                    }
+                    Err(e) => {
+                        respond_to_rpc(
+                            reciprocal
+                                .prepare(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
+                        );
+                    }
+                }
             }
         }
     }
+}
 
-    fn respond_to_rpc(
-        outgoing: Outgoing<
-            Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
-            HasConnection,
-        >,
-    ) {
-        // ignore shutdown errors
-        let _ = task_center().spawn(
-            TaskKind::Disposable,
-            "partition-processor-rpc-response",
-            None,
-            async move { outgoing.send().await.map_err(Into::into) },
+fn respond_to_rpc(
+    outgoing: Outgoing<
+        Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
+        HasConnection,
+    >,
+) {
+    // ignore shutdown errors
+    let _ = task_center().spawn(
+        TaskKind::Disposable,
+        "partition-processor-rpc-response",
+        None,
+        async move { outgoing.send().await.map_err(Into::into) },
+    );
+}
+
+struct SelfAppendFuture(
+    CommitToken,
+    Option<Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>,
+);
+
+impl SelfAppendFuture {
+    fn fail_with_internal(&mut self) {
+        if let Some(reciprocal) = self.1.take() {
+            respond_to_rpc(reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
+                "error when proposing to bifrost".to_string(),
+            ))));
+        }
+    }
+
+    fn fail_with_not_leader(&mut self, this_partition_id: PartitionId) {
+        if let Some(reciprocal) = self.1.take() {
+            respond_to_rpc(
+                reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
+                    this_partition_id,
+                ))),
+            );
+        }
+    }
+}
+
+impl Future for SelfAppendFuture {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let append_result = ready!(self.0.poll_unpin(cx));
+
+        if append_result.is_err() {
+            self.get_mut().fail_with_internal();
+            return Poll::Ready(());
+        }
+        respond_to_rpc(
+            self.get_mut()
+                .1
+                .take()
+                .expect("Future should be called once")
+                .prepare(Ok(PartitionProcessorRpcResponse::Appended)),
         );
+        Poll::Ready(())
     }
 }
 
@@ -867,6 +919,23 @@ impl SelfProposer {
             .map_err(|_| Error::SelfProposer)?;
 
         Ok(())
+    }
+
+    async fn propose_with_notification(
+        &mut self,
+        partition_key: PartitionKey,
+        cmd: Command,
+    ) -> Result<CommitToken, Error> {
+        let envelope = Envelope::new(self.create_header(partition_key), cmd);
+
+        let commit_token = self
+            .bifrost_appender
+            .sender()
+            .enqueue_with_notification(Arc::new(envelope))
+            .await
+            .map_err(|_| Error::SelfProposer)?;
+
+        Ok(commit_token)
     }
 
     fn create_header(&mut self, partition_key: PartitionKey) -> Header {

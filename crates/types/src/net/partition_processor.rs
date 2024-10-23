@@ -35,7 +35,7 @@ pub struct PartitionProcessorRpcRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SubmitInvocationReplyOn {
+pub enum AppendInvocationReplyOn {
     /// With this mode, the PP will reply as soon as the log append is done with [`PartitionProcessorRpcResponse::Appended`].
     Appended,
     /// With this mode, the PP will reply with the [`PartitionProcessorRpcResponse::Submitted`] when available.
@@ -54,17 +54,17 @@ pub enum GetInvocationOutputResponseMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcRequestInner {
-    SubmitInvocation(ServiceInvocation, SubmitInvocationReplyOn),
+    AppendInvocation(ServiceInvocation, AppendInvocationReplyOn),
     GetInvocationOutput(InvocationQuery, GetInvocationOutputResponseMode),
-    SubmitInvocationResponse(InvocationResponse),
+    AppendInvocationResponse(InvocationResponse),
 }
 
 impl WithPartitionKey for PartitionProcessorRpcRequestInner {
     fn partition_key(&self) -> PartitionKey {
         match self {
-            PartitionProcessorRpcRequestInner::SubmitInvocation(si, _) => si.partition_key(),
+            PartitionProcessorRpcRequestInner::AppendInvocation(si, _) => si.partition_key(),
             PartitionProcessorRpcRequestInner::GetInvocationOutput(iq, _) => iq.partition_key(),
-            PartitionProcessorRpcRequestInner::SubmitInvocationResponse(ir) => ir.partition_key(),
+            PartitionProcessorRpcRequestInner::AppendInvocationResponse(ir) => ir.partition_key(),
         }
     }
 }

@@ -13,8 +13,8 @@ use restate_types::identifiers::{PartitionProcessorRpcRequestId, WithPartitionKe
 use restate_types::invocation::{InvocationQuery, InvocationResponse, ServiceInvocation};
 use restate_types::live::Live;
 use restate_types::net::partition_processor::{
-    GetInvocationOutputResponseMode, InvocationOutput, PartitionProcessorRpcRequest,
-    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse, SubmitInvocationReplyOn,
+    AppendInvocationReplyOn, GetInvocationOutputResponseMode, InvocationOutput,
+    PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
     SubmittedInvocationNotification,
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
@@ -92,9 +92,9 @@ where
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
-                PartitionProcessorRpcRequestInner::SubmitInvocation(
+                PartitionProcessorRpcRequestInner::AppendInvocation(
                     service_invocation,
-                    SubmitInvocationReplyOn::Appended,
+                    AppendInvocationReplyOn::Appended,
                 ),
             )
             .await?;
@@ -107,7 +107,7 @@ where
         Ok(())
     }
 
-    pub async fn submit_invocation_and_wait_submit_notification(
+    pub async fn append_invocation_and_wait_submit_notification(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         service_invocation: ServiceInvocation,
@@ -115,9 +115,9 @@ where
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
-                PartitionProcessorRpcRequestInner::SubmitInvocation(
+                PartitionProcessorRpcRequestInner::AppendInvocation(
                     service_invocation,
-                    SubmitInvocationReplyOn::Submitted,
+                    AppendInvocationReplyOn::Submitted,
                 ),
             )
             .await?;
@@ -134,7 +134,7 @@ where
         Ok(submit_notification)
     }
 
-    pub async fn submit_invocation_and_wait_output(
+    pub async fn append_invocation_and_wait_output(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         service_invocation: ServiceInvocation,
@@ -142,9 +142,9 @@ where
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
-                PartitionProcessorRpcRequestInner::SubmitInvocation(
+                PartitionProcessorRpcRequestInner::AppendInvocation(
                     service_invocation,
-                    SubmitInvocationReplyOn::Output,
+                    AppendInvocationReplyOn::Output,
                 ),
             )
             .await?;
@@ -218,7 +218,7 @@ where
         })
     }
 
-    pub async fn submit_invocation_response(
+    pub async fn append_invocation_response(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_response: InvocationResponse,
@@ -226,7 +226,7 @@ where
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
-                PartitionProcessorRpcRequestInner::SubmitInvocationResponse(invocation_response),
+                PartitionProcessorRpcRequestInner::AppendInvocationResponse(invocation_response),
             )
             .await?;
 

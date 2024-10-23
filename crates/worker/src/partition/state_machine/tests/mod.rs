@@ -64,7 +64,6 @@ use restate_types::journal::{
 use restate_types::journal::{Entry, EntryType};
 use restate_types::live::{Constant, Live};
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::GenerationalNodeId;
 use std::collections::{HashMap, HashSet};
 use test_log::test;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -752,8 +751,6 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
-    let node_id_1 = GenerationalNodeId::new(1, 1);
-    let node_id_2 = GenerationalNodeId::new(2, 1);
     let request_id_1 = PartitionProcessorRpcRequestId::default();
     let request_id_2 = PartitionProcessorRpcRequestId::default();
     let request_id_3 = PartitionProcessorRpcRequestId::default();
@@ -765,7 +762,6 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
             argument: Default::default(),
             source: Source::Ingress,
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
-                node_id: node_id_1,
                 request_id: request_id_1,
             }),
             span_context: Default::default(),
@@ -789,13 +785,11 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let mut invocation_status = txn.get_invocation_status(&invocation_id).await.unwrap();
     invocation_status.get_response_sinks_mut().unwrap().insert(
         ServiceInvocationResponseSink::Ingress {
-            node_id: node_id_2,
             request_id: request_id_2,
         },
     );
     invocation_status.get_response_sinks_mut().unwrap().insert(
         ServiceInvocationResponseSink::Ingress {
-            node_id: node_id_2,
             request_id: request_id_3,
         },
     );
@@ -831,7 +825,6 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         actions,
         all!(
             contains(pat!(Action::IngressResponse {
-                target_node: eq(node_id_1),
                 request_id: eq(request_id_1),
                 response: eq(IngressResponseResult::Success(
                     invocation_target.clone(),
@@ -839,7 +832,6 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
                 ))
             })),
             contains(pat!(Action::IngressResponse {
-                target_node: eq(node_id_2),
                 request_id: eq(request_id_2),
                 response: eq(IngressResponseResult::Success(
                     invocation_target.clone(),
@@ -847,7 +839,6 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
                 ))
             })),
             contains(pat!(Action::IngressResponse {
-                target_node: eq(node_id_2),
                 request_id: eq(request_id_3),
                 response: eq(IngressResponseResult::Success(
                     invocation_target.clone(),

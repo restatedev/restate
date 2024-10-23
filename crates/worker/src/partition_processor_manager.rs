@@ -45,9 +45,7 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::{Configuration, StorageOptions};
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
-use restate_types::identifiers::{
-    LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, SnapshotId,
-};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::Live;
 use restate_types::live::LiveLoad;
 use restate_types::logs::Lsn;
@@ -57,7 +55,7 @@ use restate_types::net::cluster_controller::AttachRequest;
 use restate_types::net::cluster_controller::{Action, AttachResponse};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner,
+    PartitionProcessorRpcError, PartitionProcessorRpcRequest,
 };
 use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
 use restate_types::net::partition_processor_manager::{
@@ -135,12 +133,7 @@ struct ProcessorState {
     planned_mode: RunMode,
     running_for_leadership_with_epoch: Option<LeaderEpoch>,
     handle: PartitionProcessorHandle,
-    rpc_tx: mpsc::Sender<
-        Incoming<(
-            PartitionProcessorRpcRequestId,
-            PartitionProcessorRpcRequestInner,
-        )>,
-    >,
+    rpc_tx: mpsc::Sender<Incoming<PartitionProcessorRpcRequest>>,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
 }
 
@@ -150,12 +143,7 @@ impl ProcessorState {
         task_id: TaskId,
         key_range: RangeInclusive<PartitionKey>,
         handle: PartitionProcessorHandle,
-        rpc_tx: mpsc::Sender<
-            Incoming<(
-                PartitionProcessorRpcRequestId,
-                PartitionProcessorRpcRequestInner,
-            )>,
-        >,
+        rpc_tx: mpsc::Sender<Incoming<PartitionProcessorRpcRequest>>,
         watch_rx: watch::Receiver<PartitionProcessorStatus>,
     ) -> Self {
         Self {
@@ -545,10 +533,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
     ) {
         let partition_id = partition_processor_rpc.body().partition_id;
         if let Some(partition_processor) = self.running_partition_processors.get(&partition_id) {
-            if let Err(err) = partition_processor
-                .rpc_tx
-                .try_send(partition_processor_rpc.map(|r| (r.request_id, r.inner)))
-            {
+            if let Err(err) = partition_processor.rpc_tx.try_send(partition_processor_rpc) {
                 match err {
                     TrySendError::Full(req) => {
                         let _ = self.task_center.spawn(

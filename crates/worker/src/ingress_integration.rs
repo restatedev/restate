@@ -67,7 +67,7 @@ where
             // In this case we need to wait for the submit notification from the PP
             Ok(self
                 .partition_processor_rpc_client
-                .submit_invocation_and_wait_submit_notification(request_id, service_invocation)
+                .append_invocation_and_wait_submit_notification(request_id, service_invocation)
                 .await
                 .context("error when trying to interact with partition processor")?)
         } else {
@@ -90,7 +90,7 @@ where
         // TODO figure out retry strategy
         Ok(self
             .partition_processor_rpc_client
-            .submit_invocation_and_wait_output(
+            .append_invocation_and_wait_output(
                 PartitionProcessorRpcRequestId::default(),
                 service_invocation,
             )
@@ -128,7 +128,7 @@ where
         // TODO figure out retry strategy
         Ok(self
             .partition_processor_rpc_client
-            .submit_invocation_response(
+            .append_invocation_response(
                 PartitionProcessorRpcRequestId::default(),
                 invocation_response,
             )
