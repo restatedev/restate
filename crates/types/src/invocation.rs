@@ -785,7 +785,9 @@ pub enum InvocationQuery {
 }
 
 impl InvocationQuery {
-    pub fn as_invocation_id(&self) -> InvocationId {
+    pub fn to_invocation_id(&self) -> InvocationId {
+        // The business logic of this function is based on the deterministic invocation id generation.
+        // For more info, please look at InvocationUuid::generate where the magic stuff happens.
         match self {
             InvocationQuery::Invocation(iid) => *iid,
             InvocationQuery::Workflow(wfid) => InvocationId::generate(

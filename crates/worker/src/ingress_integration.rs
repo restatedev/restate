@@ -56,22 +56,28 @@ impl InvocationStorageReader for InvocationStorageReaderImpl {
             })?;
 
         let invocation_id = match query {
-            InvocationQuery::Invocation(iid) => iid,
-            ref q @ InvocationQuery::Workflow(ref sid) => {
-                match partition_storage.get_virtual_object_status(sid).await? {
+            InvocationQuery::Invocation(invocation_id) => invocation_id,
+            ref q @ InvocationQuery::Workflow(ref service_id) => {
+                match partition_storage
+                    .get_virtual_object_status(service_id)
+                    .await?
+                {
                     VirtualObjectStatus::Locked(iid) => iid,
                     VirtualObjectStatus::Unlocked => {
                         // Try the deterministic id
-                        q.as_invocation_id()
+                        q.to_invocation_id()
                     }
                 }
             }
-            ref q @ InvocationQuery::IdempotencyId(ref iid) => {
-                match partition_storage.get_idempotency_metadata(iid).await? {
+            ref q @ InvocationQuery::IdempotencyId(ref idempotency_id) => {
+                match partition_storage
+                    .get_idempotency_metadata(idempotency_id)
+                    .await?
+                {
                     Some(idempotency_metadata) => idempotency_metadata.invocation_id,
                     None => {
                         // Try the deterministic id
-                        q.as_invocation_id()
+                        q.to_invocation_id()
                     }
                 }
             }

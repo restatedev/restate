@@ -104,8 +104,8 @@ pub struct StateMachine<Codec> {
     /// This is used to establish whether for new invocations we should use the NeoInvocationStatus or not.
     /// The neo table is enabled via [restate_types::config::WorkerOptions::experimental_feature_new_invocation_status_table].
     default_invocation_status_source_table: SourceTable,
-    /// This is used to establish whether we should use the idempotency new invocations we should use the NeoInvocationStatus or not.
-    /// The neo table is enabled via [restate_types::config::WorkerOptions::experimental_feature_new_invocation_status_table].
+    /// This is used to disable writing to idempotency table/virtual object status table for idempotent invocations/workflow invocations.
+    /// From Restate 1.2 invocation ids are generated deterministically, so this additional index is not needed.
     disable_idempotency_table: bool,
 
     _codec: PhantomData<Codec>,
@@ -457,22 +457,24 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }
 
         let previous_invocation_status = async {
-            let mut is = ctx.get_invocation_status(&invocation_id).await?;
-            if is != InvocationStatus::Free {
+            let mut invocation_status = ctx.get_invocation_status(&invocation_id).await?;
+            if invocation_status != InvocationStatus::Free {
                 // Deduplicated invocation with the new deterministic invocation id
-              Ok::<_, Error>(is)
+              Ok::<_, Error>(invocation_status)
             } else {
                 // We might still need to deduplicate based on the idempotency table for old invocation ids
+                // TODO get rid of this code when we remove the idempotency table
                 if has_idempotency_key {
                     let idempotency_id = service_invocation
                         .compute_idempotency_id()
                         .expect("Idempotency key must be present");
 
                     if let Some(idempotency_metadata) = ctx.storage.get_idempotency_metadata(&idempotency_id).await? {
-                        is = ctx.get_invocation_status(&idempotency_metadata.invocation_id).await?;
+                        invocation_status = ctx.get_invocation_status(&idempotency_metadata.invocation_id).await?;
                     }
                 }
                 // Or on lock status for workflow runs with old invocation ids
+                // TODO get rid of this code when we remove the usage of the virtual object table for workflows
                 if is_workflow_run {
                     let keyed_service_id = service_invocation
                         .invocation_target
@@ -483,10 +485,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .storage
                         .get_virtual_object_status(&keyed_service_id)
                         .await? {
-                        is = ctx.get_invocation_status(&locked_invocation_id).await?;
+                        invocation_status = ctx.get_invocation_status(&locked_invocation_id).await?;
                     }
                 }
-                Ok(is)
+                Ok(invocation_status)
             }
 
         }.await?;
@@ -499,6 +501,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             );
 
             // Store the invocation id mapping if we have to and continue the processing
+            // TODO get rid of this code when we remove the usage of the virtual object table for workflows
             if is_workflow_run && !self.disable_idempotency_table {
                 ctx.storage
                         .put_virtual_object_status(
@@ -510,6 +513,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         )
                         .await;
             }
+            // TODO get rid of this code when we remove the idempotency table
             if has_idempotency_key && !self.disable_idempotency_table {
                 Self::do_store_idempotency_id(
                     ctx,
@@ -2649,7 +2653,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     VirtualObjectStatus::Locked(iid) => iid,
                     VirtualObjectStatus::Unlocked => {
                         // Try the deterministic id
-                        q.as_invocation_id()
+                        q.to_invocation_id()
                     }
                 }
             }
@@ -2658,7 +2662,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     Some(idempotency_metadata) => idempotency_metadata.invocation_id,
                     None => {
                         // Try the deterministic id
-                        q.as_invocation_id()
+                        q.to_invocation_id()
                     }
                 }
             }
