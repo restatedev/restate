@@ -447,6 +447,7 @@ async fn invoke_with_headers() -> TestResult {
                         parameter: Bytes::default(),
                         headers: vec![Header::new("foo", "bar")],
                         key: service_id.key,
+                        idempotency_key: None,
                     },
                     None,
                 )),

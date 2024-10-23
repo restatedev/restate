@@ -2247,7 +2247,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         headers: request.headers,
                         execution_time: None,
                         completion_retention_duration: *completion_retention_time,
-                        idempotency_key: None,
+                        idempotency_key: request.idempotency_key,
                         submit_notification_sink: None,
                     };
 
@@ -2313,7 +2313,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     headers: request.headers,
                     execution_time: delay,
                     completion_retention_duration: *completion_retention_time,
-                    idempotency_key: None,
+                    idempotency_key: request.idempotency_key,
                     submit_notification_sink: None,
                 };
 
