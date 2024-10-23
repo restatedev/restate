@@ -70,7 +70,10 @@ impl AdvertisedAddress {
                 }
                 None
             }
-            AdvertisedAddress::Uds(_) => None, // No bind address for Unix domain sockets
+            AdvertisedAddress::Uds(path) => {
+                // Return the same path as the BindAddress for Uds
+                Some(BindAddress::Uds(path.clone()))
+            }
         }
     }
 }
