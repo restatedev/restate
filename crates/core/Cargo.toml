@@ -58,6 +58,7 @@ tonic = { workspace = true, features = [
 tower = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+xxhash-rust = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

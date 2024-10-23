@@ -20,6 +20,7 @@ use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{retry_on_network_error, ReadWriteError};
 use restate_core::network::Networking;
 use restate_core::network::{GrpcConnector, MessageRouterBuilder};
+use restate_core::routing_info::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
 };
@@ -102,6 +103,7 @@ pub struct Node {
     health: Health,
     updateable_config: Live<Configuration>,
     metadata_manager: MetadataManager,
+    partition_routing_refresher: PartitionRoutingRefresher,
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
     metadata_store_role: Option<LocalMetadataStoreService>,
@@ -149,6 +151,8 @@ impl Node {
         let metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
+        let partition_routing_refresher =
+            PartitionRoutingRefresher::new(metadata_store_client.clone());
         let updating_schema_information = metadata.updateable_schema();
 
         #[cfg(feature = "replicated-loglet")]
@@ -273,6 +277,7 @@ impl Node {
             health,
             updateable_config,
             metadata_manager,
+            partition_routing_refresher,
             bifrost: bifrost_svc,
             metadata_store_role,
             metadata_store_client,
@@ -310,6 +315,9 @@ impl Node {
 
         // Start metadata manager
         spawn_metadata_manager(&tc, self.metadata_manager)?;
+
+        // Start partition routing information refresher
+        spawn_partition_routing_refresher(&tc, self.partition_routing_refresher)?;
 
         let nodes_config =
             Self::upsert_node_config(&self.metadata_store_client, &config.common).await?;
