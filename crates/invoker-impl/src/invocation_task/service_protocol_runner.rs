@@ -19,7 +19,7 @@ use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{FutureExt, Stream, StreamExt};
 use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderName, HeaderValue};
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
 use restate_errors::warn_it;
@@ -452,6 +452,13 @@ where
 
         // otherwise we return generic UnexpectedResponse
         if !parts.status.is_success() {
+            // Decorate the error in case of UNSUPPORTED_MEDIA_TYPE, as it probably is the incompatible protocol version
+            if parts.status == StatusCode::UNSUPPORTED_MEDIA_TYPE {
+                return Err(InvocationTaskError::BadNegotiatedServiceProtocolVersion(
+                    self.service_protocol_version,
+                ));
+            }
+
             return Err(InvocationTaskError::UnexpectedResponse(parts.status));
         }
 
