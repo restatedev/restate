@@ -29,8 +29,11 @@ mod tests {
 
     #[test(tokio::test)]
     async fn test_append_local_sequencer_three_logserver() -> Result<()> {
+        let mut base_config = Configuration::default();
+        base_config.common.set_derived_values();
+
         run_in_test_env(
-            Configuration::default(),
+            base_config,
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
@@ -56,8 +59,11 @@ mod tests {
 
     #[test(tokio::test)]
     async fn test_seal_local_sequencer_three_logserver() -> Result<()> {
+        let mut base_config = Configuration::default();
+        base_config.common.set_derived_values();
+
         run_in_test_env(
-            Configuration::default(),
+            base_config,
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
@@ -95,8 +101,11 @@ mod tests {
     #[test(tokio::test)]
     #[ignore = "requires trim"]
     async fn three_logserver_gapless_smoke_test() -> googletest::Result<()> {
+        let mut base_config = Configuration::default();
+        base_config.common.set_derived_values();
+
         run_in_test_env(
-            Configuration::default(),
+            base_config,
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
@@ -109,8 +118,11 @@ mod tests {
 
     #[test(tokio::test)]
     async fn three_logserver_readstream() -> googletest::Result<()> {
+        let mut base_config = Configuration::default();
+        base_config.common.set_derived_values();
+
         run_in_test_env(
-            Configuration::default(),
+            base_config,
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
@@ -124,8 +136,11 @@ mod tests {
     #[test(tokio::test)]
     #[ignore = "requires trim"]
     async fn three_logserver_readstream_with_trims() -> googletest::Result<()> {
+        let mut base_config = Configuration::default();
+        base_config.common.set_derived_values();
+
         run_in_test_env(
-            Configuration::default(),
+            base_config,
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
@@ -140,8 +155,11 @@ mod tests {
 
     #[test(tokio::test)]
     async fn three_logserver_append_after_seal() -> googletest::Result<()> {
+        let mut base_config = Configuration::default();
+        base_config.common.set_derived_values();
+
         run_in_test_env(
-            Configuration::default(),
+            base_config,
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
@@ -152,8 +170,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn three_logserver_append_after_seal_concurrent() -> googletest::Result<()> {
+        let mut base_config = Configuration::default();
+        base_config.common.set_derived_values();
+
         run_in_test_env(
-            Configuration::default(),
+            base_config,
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
@@ -166,8 +187,11 @@ mod tests {
 
     #[test(tokio::test)]
     async fn three_logserver_seal_empty() -> googletest::Result<()> {
+        let mut base_config = Configuration::default();
+        base_config.common.set_derived_values();
+
         run_in_test_env(
-            Configuration::default(),
+            base_config,
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,

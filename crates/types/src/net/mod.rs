@@ -354,14 +354,21 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_bind_address_unix_socket() {
-        // Test case for AdvertisedAddress::Uds (Unix domain socket)
-        let advertised_address = AdvertisedAddress::Uds(PathBuf::from("/tmp/socket"));
+    fn test_derive_bind_address_uds() {
+        // Prepare an AdvertisedAddress::Uds
+        let path = PathBuf::from("/tmp/test.sock");
+        let advertised_address = AdvertisedAddress::Uds(path.clone());
 
-        // Deriving a bind address for a Unix socket should return None
+        // Derive the BindAddress
         let bind_address = advertised_address.derive_bind_address();
-        assert!(bind_address.is_none());
+
+        // Expected BindAddress::Uds with the same path
+        let expected_address = BindAddress::Uds(path);
+
+        // Assert the bind address matches the expected one
+        assert_eq!(bind_address, Some(expected_address));
     }
+
     #[test]
     fn test_invalid_advertised_address() {
         // Test case for an invalid AdvertisedAddress string
