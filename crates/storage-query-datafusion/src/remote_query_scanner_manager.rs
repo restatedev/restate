@@ -13,11 +13,12 @@ use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 
+use crate::remote_query_scanner_client::{remote_scan_as_datafusion_stream, RemoteScannerService};
 use crate::table_providers::ScanPartition;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
-
-use crate::remote_query_scanner_client::{remote_scan_as_datafusion_stream, RemoteScannerService};
+use restate_core::metadata;
+use restate_core::routing_info::PartitionRouting;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::NodeId;
 
@@ -51,6 +52,7 @@ impl LocalPartitionScannerRegistry {
 #[derive(Clone)]
 pub struct RemoteScannerManager {
     svc: Arc<dyn RemoteScannerService>,
+    partition_routing: PartitionRouting,
     local_store_scanners: LocalPartitionScannerRegistry,
 }
 
@@ -62,16 +64,16 @@ impl Debug for RemoteScannerManager {
 
 pub enum PartitionLocation {
     Local,
-    #[allow(dead_code)]
     Remote {
         node_id: NodeId,
     },
 }
 
 impl RemoteScannerManager {
-    pub fn new(svc: Arc<dyn RemoteScannerService>) -> Self {
+    pub fn new(partition_routing: PartitionRouting, svc: Arc<dyn RemoteScannerService>) -> Self {
         Self {
             svc,
+            partition_routing,
             local_store_scanners: LocalPartitionScannerRegistry::default(),
         }
     }
@@ -98,9 +100,20 @@ impl RemoteScannerManager {
         self.local_store_scanners.get(table)
     }
 
-    pub fn get_partition_target_node(&self, _partition_id: PartitionId) -> PartitionLocation {
-        // TODO: obtain this information from the metadata, once exposed
-        PartitionLocation::Local
+    pub fn get_partition_target_node(&self, partition_id: PartitionId) -> PartitionLocation {
+        // TODO handle missing node id path gracefully - this should probably bubble up as a 500 to caller
+        let node_id = self
+            .partition_routing
+            .get_node_by_partition(partition_id)
+            .unwrap();
+
+        if node_id == metadata().my_node_id().as_plain() {
+            PartitionLocation::Local
+        } else {
+            PartitionLocation::Remote {
+                node_id: node_id.into(),
+            }
+        }
     }
 }
 

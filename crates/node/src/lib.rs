@@ -226,6 +226,7 @@ impl Node {
                 WorkerRole::create(
                     health.worker_status(),
                     metadata,
+                    partition_routing_refresher.partition_routing(),
                     updateable_config.clone(),
                     &mut router_builder,
                     networking.clone(),
