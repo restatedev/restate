@@ -28,6 +28,7 @@ use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
+use restate_core::routing_info::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
@@ -113,6 +114,7 @@ impl<T: TransportConnect> Worker<T> {
         updateable_config: Live<Configuration>,
         health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
+        partition_routing: PartitionRouting,
         networking: Networking<T>,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
@@ -173,6 +175,7 @@ impl<T: TransportConnect> Worker<T> {
             Some(partition_store_manager.clone()),
             partition_processor_manager.invokers_status_reader(),
             schema.clone(),
+            partition_routing,
             create_remote_scanner_service(networking, task_center(), router_builder),
         )
         .await?;
@@ -208,7 +211,7 @@ impl<T: TransportConnect> Worker<T> {
         &self.storage_query_context
     }
 
-    pub fn parition_processor_manager_handle(&self) -> ProcessorsManagerHandle {
+    pub fn partition_processor_manager_handle(&self) -> ProcessorsManagerHandle {
         self.partition_processor_manager.handle()
     }
 

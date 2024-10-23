@@ -49,7 +49,7 @@ impl Scanner {
             request.partition_id,
             request.range.clone(),
             Arc::new(schema),
-        );
+        )?;
         Ok(Self {
             stream,
             last_accessed: Instant::now(),

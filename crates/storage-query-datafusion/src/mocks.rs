@@ -8,17 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
 
+use restate_core::routing_info::MockPartitionRouting;
 use restate_core::task_center;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::StatusHandle;
@@ -172,6 +174,7 @@ impl MockQueryEngine {
                 Some(manager),
                 status,
                 Live::from_value(schemas),
+                MockPartitionRouting::local_only().to_owned(),
                 Arc::new(NoopSvc),
             )
             .await

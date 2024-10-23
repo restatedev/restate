@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::pin::pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
@@ -22,12 +22,16 @@ use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
-use restate_types::{NodeId, Version, Versioned};
+use restate_types::{GenerationalNodeId, NodeId, Version, Versioned};
 
 use crate::metadata_store::MetadataStoreClient;
 use crate::{
-    cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind,
+    cancellation_watcher, metadata, task_center, ShutdownError, TaskCenter, TaskHandle, TaskId,
+    TaskKind,
 };
+
+#[cfg(any(test, feature = "test-util"))]
+pub use test_util::*;
 
 pub type CommandSender = mpsc::Sender<Command>;
 pub type CommandReceiver = mpsc::Receiver<Command>;
@@ -35,6 +39,13 @@ pub type CommandReceiver = mpsc::Receiver<Command>;
 pub enum Command {
     /// Request an on-demand refresh of routing information from the authoritative source.
     SyncRoutingInformation,
+}
+
+pub enum PartitionAuthoritativeNode {
+    /// The local node is an authoritative source for this partition.
+    Local,
+    /// The partition resides on a remote node.
+    Remote(NodeId),
 }
 
 /// Holds a view of the known partition-to-node mappings. Use it to discover which node(s) to route
@@ -45,28 +56,62 @@ pub struct PartitionRouting {
     sender: CommandSender,
     /// A mapping of partition IDs to node IDs that are believed to be authoritative for that serving requests.
     partition_to_node_mappings: Arc<ArcSwap<PartitionToNodesRoutingTable>>,
+    my_node_id: OnceLock<GenerationalNodeId>,
 }
 
 impl PartitionRouting {
-    /// Look up a suitable node to answer requests for the given partition.
-    pub fn get_node_by_partition(&self, partition_id: PartitionId) -> Option<NodeId> {
-        self.partition_to_node_mappings
-            .load()
-            .inner
-            .get(&partition_id)
-            .copied()
+    /// Look up a suitable node to process requests for a given partition. Answers are authoritative
+    /// though subject to propagation delays through the cluster in distributed deployments.
+    /// Generally, as a consumer of routing information, your options are limited to backing off and
+    /// retrying the request, or returning an error upstream when information is not available.
+    ///
+    /// A `None` response indicates that either we have no knowledge about this partition, or that
+    /// the routing table has not yet been refreshed for the cluster. The latter condition should be
+    /// brief and only on startup, so we can generally treat lack of response as a negative answer.
+    pub fn get_partition_location(
+        &self,
+        partition_id: PartitionId,
+    ) -> Option<PartitionAuthoritativeNode> {
+        let mappings = self.partition_to_node_mappings.load();
+
+        // This check should ideally be strengthened to make sure we're using reasonably fresh lookup data
+        if mappings.version < Version::MIN {
+            debug!("Partition routing information not available - awaiting refresh");
+            self.request_refresh();
+            None
+        } else {
+            let partition_node = mappings.inner.get(&partition_id).cloned();
+            // Note: we defer calling my_node_id() until after we have a version of the routing
+            // table to ensure that we don't panic during server startup. Having loaded the routing
+            // table is an implicit but nonetheless strong signal that node initialization is done.
+            match partition_node {
+                Some(node_id)
+                    if node_id
+                        .as_generational()
+                        .is_some_and(|id| id == *self.my_node_id()) =>
+                {
+                    Some(PartitionAuthoritativeNode::Local)
+                }
+                Some(node_id) => Some(PartitionAuthoritativeNode::Remote(node_id)),
+                None => None,
+            }
+        }
+    }
+
+    #[inline]
+    fn my_node_id(&self) -> &GenerationalNodeId {
+        self.my_node_id.get_or_init(|| metadata().my_node_id())
     }
 
     /// Call this to hint to the background refresher that its view may be outdated. This is useful
-    /// when a caller discovers via some other mechanism that routing infromation may be invalid -
+    /// when a caller discovers via some other mechanism that routing information may be invalid -
     /// for example, when a request to a node previously returned by `get_node_by_partition` fails
-    /// with a response that explicitly indicates that it is no longer serving that partition. The
-    /// call returns as soon as the request is enqueued. A refresh is not guaranteed to happen.
-    pub async fn request_refresh(&self) {
-        self.sender
-            .send(Command::SyncRoutingInformation)
-            .await
-            .expect("Failed to send refresh request");
+    /// with a response that explicitly indicates that it is no longer serving that partition.
+    ///
+    /// This call returns immediately, while the refresh itself is performed asynchronously on a
+    /// best-effort basis. Multiple calls will not result in multiple refresh attempts.
+    pub fn request_refresh(&self) {
+        self.sender.try_send(Command::SyncRoutingInformation).ok();
     }
 }
 
@@ -112,6 +157,7 @@ impl PartitionRoutingRefresher {
         PartitionRouting {
             sender: self.sender.clone(),
             partition_to_node_mappings: self.inner.clone(),
+            my_node_id: OnceLock::new(), // looked on use to only perform the lookup after we observe a version of routing
         }
     }
 
@@ -158,7 +204,7 @@ impl PartitionRoutingRefresher {
             let metadata_store_client = self.metadata_store_client.clone();
 
             let task = task_center().spawn_unmanaged(
-                crate::TaskKind::Disposable,
+                TaskKind::Disposable,
                 "refresh-routing-information",
                 None,
                 {
@@ -227,4 +273,60 @@ async fn sync_routing_information(
             inner: partition_nodes,
         }),
     );
+}
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util {
+    use std::collections::HashMap;
+    use std::ops::Deref;
+    use std::sync::{Arc, OnceLock};
+
+    use arc_swap::ArcSwap;
+    use tokio::sync::mpsc;
+
+    use crate::routing_info::PartitionRouting;
+    use restate_types::identifiers::PartitionId;
+    use restate_types::{GenerationalNodeId, NodeId, Version};
+
+    pub struct MockPartitionRouting {
+        my_node_id: GenerationalNodeId,
+        partition_routing: PartitionRouting,
+    }
+
+    impl MockPartitionRouting {
+        pub fn local_only() -> Self {
+            let (sender, _) = mpsc::channel(1);
+            let mut mappings = HashMap::default();
+
+            // Matches MockPartitionSelector's default
+            let my_node_id = GenerationalNodeId::new(0, 1);
+
+            mappings.insert(PartitionId::MIN, NodeId::Generational(my_node_id));
+            MockPartitionRouting {
+                my_node_id,
+                partition_routing: PartitionRouting {
+                    sender,
+                    partition_to_node_mappings: Arc::new(ArcSwap::new(Arc::new(
+                        super::PartitionToNodesRoutingTable {
+                            version: Version::MIN,
+                            inner: mappings,
+                        },
+                    ))),
+                    my_node_id: OnceLock::from(my_node_id),
+                },
+            }
+        }
+
+        pub fn my_node_id(&self) -> GenerationalNodeId {
+            self.my_node_id
+        }
+    }
+
+    impl Deref for MockPartitionRouting {
+        type Target = PartitionRouting;
+
+        fn deref(&self) -> &Self::Target {
+            &self.partition_routing
+        }
+    }
 }

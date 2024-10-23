@@ -13,13 +13,16 @@ use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 
-use crate::table_providers::ScanPartition;
+use anyhow::bail;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
 
-use crate::remote_query_scanner_client::{remote_scan_as_datafusion_stream, RemoteScannerService};
+use restate_core::routing_info::{PartitionAuthoritativeNode, PartitionRouting};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::NodeId;
+
+use crate::remote_query_scanner_client::{remote_scan_as_datafusion_stream, RemoteScannerService};
+use crate::table_providers::ScanPartition;
 
 /// LocalPartitionScannerRegistry is a mapping between a datafusion registered table name
 /// (i.e. sys_inbox, sys_status, etc.) to an implementation of a ScanPartition.
@@ -51,6 +54,7 @@ impl LocalPartitionScannerRegistry {
 #[derive(Clone)]
 pub struct RemoteScannerManager {
     svc: Arc<dyn RemoteScannerService>,
+    partition_routing: PartitionRouting,
     local_store_scanners: LocalPartitionScannerRegistry,
 }
 
@@ -71,9 +75,10 @@ pub enum PartitionLocation {
 }
 
 impl RemoteScannerManager {
-    pub fn new(svc: Arc<dyn RemoteScannerService>) -> Self {
+    pub fn new(partition_routing: PartitionRouting, svc: Arc<dyn RemoteScannerService>) -> Self {
         Self {
             svc,
+            partition_routing,
             local_store_scanners: LocalPartitionScannerRegistry::default(),
         }
     }
@@ -106,13 +111,20 @@ impl RemoteScannerManager {
     pub fn get_partition_target_node(
         &self,
         table: &str,
-        _partition_id: PartitionId,
-    ) -> PartitionLocation {
-        // TODO: obtain this information from the metadata, once exposed
-        PartitionLocation::Local {
-            scanner: self
-                .local_partition_scanner(table)
-                .expect("should be present"),
+        partition_id: PartitionId,
+    ) -> anyhow::Result<PartitionLocation> {
+        match self.partition_routing.get_partition_location(partition_id) {
+            None => {
+                bail!("node lookup for partition {} failed", partition_id)
+            }
+            Some(PartitionAuthoritativeNode::Local) => Ok(PartitionLocation::Local {
+                scanner: self
+                    .local_partition_scanner(table)
+                    .expect("should be present"),
+            }),
+            Some(PartitionAuthoritativeNode::Remote(node_id)) => {
+                Ok(PartitionLocation::Remote { node_id })
+            }
         }
     }
 }
@@ -140,22 +152,22 @@ impl ScanPartition for RemotePartitionsScanner {
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
-    ) -> SendableRecordBatchStream {
+    ) -> anyhow::Result<SendableRecordBatchStream> {
         match self
             .manager
-            .get_partition_target_node(&self.table_name, partition_id)
+            .get_partition_target_node(&self.table_name, partition_id)?
         {
             PartitionLocation::Local { scanner } => {
-                scanner.scan_partition(partition_id, range, projection)
+                Ok(scanner.scan_partition(partition_id, range, projection)?)
             }
-            PartitionLocation::Remote { node_id } => remote_scan_as_datafusion_stream(
+            PartitionLocation::Remote { node_id } => Ok(remote_scan_as_datafusion_stream(
                 self.manager.svc.clone(),
                 node_id,
                 partition_id,
                 range,
                 self.table_name.clone(),
                 projection,
-            ),
+            )),
         }
     }
 }

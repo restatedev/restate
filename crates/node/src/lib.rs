@@ -213,6 +213,7 @@ impl Node {
                 WorkerRole::create(
                     health.worker_status(),
                     metadata.clone(),
+                    partition_routing_refresher.partition_routing(),
                     updateable_config.clone(),
                     &mut router_builder,
                     networking.clone(),
@@ -234,6 +235,7 @@ impl Node {
                     bifrost.clone(),
                     updateable_config.clone(),
                     metadata,
+                    partition_routing_refresher.partition_routing(),
                     networking.clone(),
                     metadata_manager.writer(),
                     &mut server_builder,
@@ -253,7 +255,7 @@ impl Node {
             &mut router_builder,
             worker_role
                 .as_ref()
-                .map(|role| role.parition_processor_manager_handle()),
+                .map(|role| role.partition_processor_manager_handle()),
         );
 
         // Ensures that message router is updated after all services have registered themselves in
