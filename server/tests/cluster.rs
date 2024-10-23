@@ -16,8 +16,7 @@ mod common;
 
 #[test(tokio::test)]
 async fn node_id_mismatch() -> googletest::Result<()> {
-    let mut base_config = Configuration::default();
-    base_config.common.set_derived_values();
+    let base_config = Configuration::default();
 
     let nodes = Node::new_test_nodes_with_metadata(
         base_config.clone(),
@@ -65,8 +64,7 @@ async fn node_id_mismatch() -> googletest::Result<()> {
 
 #[test(tokio::test)]
 async fn cluster_name_mismatch() -> googletest::Result<()> {
-    let mut base_config = Configuration::default();
-    base_config.common.set_derived_values();
+    let base_config = Configuration::default();
 
     let nodes = Node::new_test_nodes_with_metadata(
         base_config.clone(),
@@ -112,7 +110,6 @@ async fn replicated_loglet() -> googletest::Result<()> {
     let mut base_config = Configuration::default();
     base_config.bifrost.default_provider = ProviderKind::Replicated;
     base_config.common.bootstrap_num_partitions = NonZeroU16::new(1).expect("1 to be non-zero");
-    base_config.common.set_derived_values();
 
     let nodes = Node::new_test_nodes_with_metadata(
         base_config.clone(),

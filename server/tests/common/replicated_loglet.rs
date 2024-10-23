@@ -106,6 +106,8 @@ where
 {
     // disable the cluster controller to allow us to manually set the logs configuration
     base_config.admin.disable_cluster_controller = true;
+    base_config.common.set_derived_values();
+
     let nodes = Node::new_test_nodes_with_metadata(
         base_config,
         BinarySource::CargoTest,

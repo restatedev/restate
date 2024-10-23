@@ -157,6 +157,7 @@ impl Node {
 
         {
             let mut base_config = base_config.clone();
+            base_config.common.set_derived_values();
             // let any node write the initial NodesConfiguration
             base_config.common.allow_bootstrap = true;
             base_config.common.force_node_id = Some(PlainNodeId::new(1));

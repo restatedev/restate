@@ -76,14 +76,7 @@ fn parse_uds(s: &str) -> Result<AdvertisedAddress, anyhow::Error> {
         .parse::<PathBuf>()
         .with_context(|| format!("Failed to parse Unix domain socket path: '{}'", s))?;
 
-    if path.exists() {
-        Ok(AdvertisedAddress::Uds(path))
-    } else {
-        Err(anyhow::anyhow!(
-            "Unix domain socket path does not exist: '{}'",
-            path.display()
-        ))
-    }
+    Ok(AdvertisedAddress::Uds(path))
 }
 
 fn parse_http(s: &str) -> Result<AdvertisedAddress, anyhow::Error> {
