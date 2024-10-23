@@ -12,16 +12,15 @@ use enum_map::Enum;
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 
-use crate::logs::metadata::Logs;
-use crate::net::define_message;
-use crate::net::TargetName;
-use crate::nodes_config::NodesConfiguration;
-use crate::partition_table::PartitionTable;
-use crate::schema::Schema;
-use crate::Version;
-use crate::Versioned;
-
 use super::RpcRequest;
+use crate::{
+    logs::metadata::Logs,
+    net::{define_message, TargetName},
+    nodes_config::NodesConfiguration,
+    partition_table::PartitionTable,
+    schema::Schema,
+    Version, Versioned,
+};
 
 #[derive(
     Debug,

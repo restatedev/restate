@@ -8,12 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{protobuf_storage_encode_decode, Result};
-use futures_util::FutureExt;
-use restate_types::logs::Lsn;
-use restate_types::message::MessageIndex;
-use restate_types::storage::{StorageDecode, StorageEncode};
 use std::future::Future;
+
+use futures_util::FutureExt;
+use restate_types::{
+    logs::Lsn,
+    message::MessageIndex,
+    storage::{StorageDecode, StorageEncode},
+};
+
+use crate::{protobuf_storage_encode_decode, Result};
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]
 pub struct SequenceNumber(u64);

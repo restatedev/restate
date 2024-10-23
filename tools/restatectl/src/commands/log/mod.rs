@@ -19,12 +19,17 @@ mod trim_log;
 use std::{ops::RangeInclusive, str::FromStr};
 
 use cling::prelude::*;
-
-use restate_cli_util::_comfy_table::{Cell, Color};
-use restate_cli_util::c_println;
-use restate_types::logs::metadata::{ProviderKind, Segment};
-use restate_types::logs::LogId;
-use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_cli_util::{
+    _comfy_table::{Cell, Color},
+    c_println,
+};
+use restate_types::{
+    logs::{
+        metadata::{ProviderKind, Segment},
+        LogId,
+    },
+    replicated_loglet::ReplicatedLogletParams,
+};
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Logs {

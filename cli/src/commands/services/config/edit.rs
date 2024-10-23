@@ -8,15 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface};
+use std::{fs::File, io};
+
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use restate_admin_rest_model::services::ModifyServiceRequest;
 use restate_types::invocation::ServiceType;
-use std::fs::File;
-use std::io;
 use tempfile::tempdir;
+
+use crate::{
+    cli_env::CliEnv,
+    clients::{AdminClient, AdminClientInterface},
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_edit")]

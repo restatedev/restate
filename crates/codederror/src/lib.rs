@@ -91,9 +91,11 @@
 //!
 //! [`thiserror`]: https://docs.rs/thiserror
 
-use std::fmt;
-use std::fmt::{Debug, Display};
-use std::ops::Deref;
+use std::{
+    fmt,
+    fmt::{Debug, Display},
+    ops::Deref,
+};
 
 pub use codederror_derive::*;
 

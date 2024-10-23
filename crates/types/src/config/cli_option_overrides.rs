@@ -8,18 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::{num::NonZeroU64, path::PathBuf};
 
 use humantime::Duration;
 use serde::Serialize;
 use serde_with::{serde_as, skip_serializing_none};
 
-use crate::net::{AdvertisedAddress, BindAddress};
-use crate::nodes_config::Role;
-use crate::PlainNodeId;
-
 use super::LogFormat;
+use crate::{
+    net::{AdvertisedAddress, BindAddress},
+    nodes_config::Role,
+    PlainNodeId,
+};
 
 #[serde_as]
 #[skip_serializing_none]

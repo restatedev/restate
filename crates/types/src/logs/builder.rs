@@ -8,13 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU32;
-use std::ops::Deref;
+use std::{num::NonZeroU32, ops::Deref};
 
-use super::metadata::{
-    Chain, LogletConfig, LogletParams, Logs, MaybeSegment, ProviderKind, SegmentIndex,
+use super::{
+    metadata::{Chain, LogletConfig, LogletParams, Logs, MaybeSegment, ProviderKind, SegmentIndex},
+    LogId, Lsn,
 };
-use super::{LogId, Lsn};
 use crate::Version;
 
 #[derive(Debug, Default, Clone)]
@@ -167,12 +166,16 @@ impl Deref for ChainBuilder<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::logs::metadata::{LogletParams, MaybeSegment, ProviderKind, Segment};
-    use crate::logs::SequenceNumber;
-    use crate::{Version, Versioned};
     use googletest::prelude::*;
 
     use super::*;
+    use crate::{
+        logs::{
+            metadata::{LogletParams, MaybeSegment, ProviderKind, Segment},
+            SequenceNumber,
+        },
+        Version, Versioned,
+    };
 
     #[test]
     fn test_default_builder() -> googletest::Result<()> {

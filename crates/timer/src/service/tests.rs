@@ -8,21 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::service::clock::tests::ManualClock;
-use crate::service::clock::TokioClock;
-use crate::{Timer, TimerReader, TimerService};
+use std::{
+    cmp::Ordering,
+    collections::BTreeMap,
+    fmt::Debug,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime},
+};
+
 use futures_util::FutureExt;
 use restate_test_util::let_assert;
-use restate_types::time::MillisSinceEpoch;
-use restate_types::timer::TimerKey;
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
-use std::fmt::Debug;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use restate_types::{time::MillisSinceEpoch, timer::TimerKey};
 use test_log::test;
 use tokio::sync::oneshot;
+
+use crate::{
+    service::clock::{tests::ManualClock, TokioClock},
+    Timer, TimerReader, TimerService,
+};
 
 #[derive(Debug, Clone)]
 struct MockTimerReader<T>

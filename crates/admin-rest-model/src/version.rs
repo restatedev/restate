@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::{Deserialize, Serialize};
 use std::ops::RangeInclusive;
+
+use serde::{Deserialize, Serialize};
 
 /// Version of the admin API to allow CLIs to detect if they are incompatible with a server.
 ///

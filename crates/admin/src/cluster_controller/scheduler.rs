@@ -8,33 +8,38 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cluster_controller::logs_controller;
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use rand::seq::IteratorRandom;
-use restate_core::metadata_store::{
-    retry_on_network_error, MetadataStoreClient, Precondition, ReadError, ReadWriteError,
-    WriteError,
-};
-use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
-use restate_core::{metadata, ShutdownError, SyncError, TaskCenter, TaskKind};
-use restate_types::cluster_controller::{
-    ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
-};
-use restate_types::config::Configuration;
-use restate_types::identifiers::PartitionId;
-use restate_types::logs::metadata::Logs;
-use restate_types::logs::LogId;
-use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
-use restate_types::net::cluster_controller::Action;
-use restate_types::net::partition_processor_manager::{
-    ControlProcessor, ControlProcessors, ProcessorCommand,
-};
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::PartitionTable;
-use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Versioned};
 use std::collections::{BTreeMap, BTreeSet};
+
+use rand::seq::IteratorRandom;
+use restate_core::{
+    metadata,
+    metadata_store::{
+        retry_on_network_error, MetadataStoreClient, Precondition, ReadError, ReadWriteError,
+        WriteError,
+    },
+    network::{NetworkSender, Networking, Outgoing, TransportConnect},
+    ShutdownError, SyncError, TaskCenter, TaskKind,
+};
+use restate_types::{
+    cluster_controller::{
+        ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
+    },
+    config::Configuration,
+    identifiers::PartitionId,
+    logs::{metadata::Logs, LogId},
+    metadata_store::keys::SCHEDULING_PLAN_KEY,
+    net::{
+        cluster_controller::Action,
+        partition_processor_manager::{ControlProcessor, ControlProcessors, ProcessorCommand},
+    },
+    nodes_config::NodesConfiguration,
+    partition_table::PartitionTable,
+    GenerationalNodeId, NodeId, PlainNodeId, Versioned,
+};
 use tracing::{debug, trace};
 use xxhash_rust::xxh3::Xxh3Builder;
+
+use crate::cluster_controller::{logs_controller, observed_cluster_state::ObservedClusterState};
 
 type HashSet<T> = std::collections::HashSet<T, Xxh3Builder>;
 
@@ -546,40 +551,46 @@ impl<'a> logs_controller::NodeSetSelectorHints for SchedulingPlanNodeSetSelector
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, iter, num::NonZero, time::Duration};
+
     use futures::StreamExt;
-    use googletest::assert_that;
-    use googletest::matcher::{Matcher, MatcherResult};
+    use googletest::{
+        assert_that,
+        matcher::{Matcher, MatcherResult},
+    };
     use http::Uri;
-    use rand::prelude::ThreadRng;
-    use rand::Rng;
-    use std::collections::BTreeMap;
-    use std::iter;
-    use std::num::NonZero;
-    use std::time::Duration;
+    use rand::{prelude::ThreadRng, Rng};
+    use restate_core::{
+        metadata,
+        network::{ForwardingHandler, Incoming, MessageCollectorMockConnector},
+        TaskCenterBuilder, TestCoreEnv, TestCoreEnvBuilder,
+    };
+    use restate_types::{
+        cluster::cluster_state::{
+            AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
+        },
+        cluster_controller::{ReplicationStrategy, SchedulingPlan},
+        config::Configuration,
+        identifiers::PartitionId,
+        metadata_store::keys::SCHEDULING_PLAN_KEY,
+        net::{
+            codec::WireDecode,
+            partition_processor_manager::{ControlProcessors, ProcessorCommand},
+            AdvertisedAddress, TargetName,
+        },
+        nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role},
+        partition_table::PartitionTable,
+        time::MillisSinceEpoch,
+        GenerationalNodeId, PlainNodeId, Version,
+    };
     use test_log::test;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
 
-    use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-    use crate::cluster_controller::scheduler::{
-        HashSet, PartitionProcessorPlacementHints, Scheduler,
+    use crate::cluster_controller::{
+        observed_cluster_state::ObservedClusterState,
+        scheduler::{HashSet, PartitionProcessorPlacementHints, Scheduler},
     };
-    use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
-    use restate_core::{metadata, TaskCenterBuilder, TestCoreEnv, TestCoreEnvBuilder};
-    use restate_types::cluster::cluster_state::{
-        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
-    };
-    use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
-    use restate_types::config::Configuration;
-    use restate_types::identifiers::PartitionId;
-    use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
-    use restate_types::net::codec::WireDecode;
-    use restate_types::net::partition_processor_manager::{ControlProcessors, ProcessorCommand};
-    use restate_types::net::{AdvertisedAddress, TargetName};
-    use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
-    use restate_types::partition_table::PartitionTable;
-    use restate_types::time::MillisSinceEpoch;
-    use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
     struct NoPlacementHints;
 

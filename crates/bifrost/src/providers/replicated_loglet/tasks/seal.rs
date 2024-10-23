@@ -8,24 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_core::{
+    network::{
+        rpc_router::{RpcError, RpcRouter},
+        Incoming, Networking, TransportConnect,
+    },
+    TaskCenter, TaskKind,
+};
+use restate_types::{
+    config::Configuration,
+    logs::{LogletOffset, SequenceNumber},
+    net::log_server::{LogServerRequestHeader, Seal, Sealed, Status},
+    replicated_loglet::{EffectiveNodeSet, NodeSet, ReplicatedLogletId, ReplicatedLogletParams},
+    retries::RetryPolicy,
+    GenerationalNodeId, PlainNodeId,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
 
-use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{Incoming, Networking, TransportConnect};
-use restate_core::{TaskCenter, TaskKind};
-use restate_types::config::Configuration;
-use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
-use restate_types::replicated_loglet::{
-    EffectiveNodeSet, NodeSet, ReplicatedLogletId, ReplicatedLogletParams,
+use crate::{
+    loglet::util::TailOffsetWatch,
+    providers::replicated_loglet::{error::ReplicatedLogletError, replication::NodeSetChecker},
 };
-use restate_types::retries::RetryPolicy;
-use restate_types::{GenerationalNodeId, PlainNodeId};
-
-use crate::loglet::util::TailOffsetWatch;
-use crate::providers::replicated_loglet::error::ReplicatedLogletError;
-use crate::providers::replicated_loglet::replication::NodeSetChecker;
 
 /// Sends a seal request to as many log-servers in the nodeset
 ///

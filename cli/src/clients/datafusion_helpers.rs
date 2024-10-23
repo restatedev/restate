@@ -10,23 +10,23 @@
 
 //! A set of common queries needed by the CLI
 
-use std::collections::HashMap;
-use std::fmt::Display;
-use std::str::FromStr;
+use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 use anyhow::Result;
-use arrow::array::{Array, ArrayAccessor, AsArray, StringArray};
-use arrow::datatypes::{ArrowTemporalType, Date64Type};
-use arrow::record_batch::RecordBatch;
+use arrow::{
+    array::{Array, ArrayAccessor, AsArray, StringArray},
+    datatypes::{ArrowTemporalType, Date64Type},
+    record_batch::RecordBatch,
+};
 use arrow_convert::{ArrowDeserialize, ArrowField};
 use bytes::Bytes;
 use chrono::{DateTime, Duration, Local, TimeZone};
 use clap::ValueEnum;
-
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::identifiers::DeploymentId;
-use restate_types::identifiers::{InvocationId, ServiceId};
-use restate_types::invocation::ServiceType;
+use restate_types::{
+    identifiers::{DeploymentId, InvocationId, ServiceId},
+    invocation::ServiceType,
+};
 
 use super::DataFusionHttpClient;
 

@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
 use std::ops::RangeInclusive;
 
 use restate_invoker_api::Effect;
 use restate_types::identifiers::PartitionKey;
+
+use super::*;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
 #[derive(Debug)]

@@ -10,8 +10,11 @@
 
 #![allow(dead_code)]
 
-use crate::identifiers::{LeaderEpoch, PartitionId};
-use crate::{flexbuffers_storage_encode_decode, GenerationalNodeId, Version, Versioned};
+use crate::{
+    flexbuffers_storage_encode_decode,
+    identifiers::{LeaderEpoch, PartitionId},
+    GenerationalNodeId, Version, Versioned,
+};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EpochMetadata {
@@ -71,9 +74,11 @@ flexbuffers_storage_encode_decode!(EpochMetadata);
 
 #[cfg(test)]
 mod tests {
-    use crate::epoch::EpochMetadata;
-    use crate::identifiers::{LeaderEpoch, PartitionId};
-    use crate::GenerationalNodeId;
+    use crate::{
+        epoch::EpochMetadata,
+        identifiers::{LeaderEpoch, PartitionId},
+        GenerationalNodeId,
+    };
 
     #[test]
     fn basic_operations() {

@@ -15,8 +15,6 @@ use std::{
 };
 
 use futures::{stream::FuturesUnordered, StreamExt};
-use tokio::{sync::OwnedSemaphorePermit, time::timeout};
-
 use restate_core::{
     cancellation_token,
     network::{
@@ -33,6 +31,7 @@ use restate_types::{
     replicated_loglet::NodeSet,
     time::MillisSinceEpoch,
 };
+use tokio::{sync::OwnedSemaphorePermit, time::timeout};
 use tracing::trace;
 
 use super::{RecordsExt, SequencerSharedState};

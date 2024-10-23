@@ -8,50 +8,51 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::BTreeMap, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::anyhow;
 use codederror::CodedError;
-use futures::future::OptionFuture;
-use futures::{Stream, StreamExt};
-use tokio::sync::{mpsc, oneshot};
-use tokio::time;
-use tokio::time::{Instant, Interval, MissedTickBehavior};
+use futures::{future::OptionFuture, Stream, StreamExt};
+use restate_bifrost::{Bifrost, BifrostAdmin};
+use restate_core::{
+    cancellation_watcher,
+    metadata_store::{retry_on_network_error, MetadataStoreClient},
+    network::{
+        rpc_router::RpcRouter, Incoming, MessageRouterBuilder, NetworkSender, Networking,
+        TransportConnect,
+    },
+    Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter, TaskKind,
+};
+use restate_types::{
+    cluster::cluster_state::{AliveNode, ClusterState, NodeState},
+    config::{AdminOptions, Configuration},
+    health::HealthStatus,
+    identifiers::{PartitionId, SnapshotId},
+    live::Live,
+    logs::{LogId, Lsn, SequenceNumber},
+    metadata_store::keys::PARTITION_TABLE_KEY,
+    net::{
+        cluster_controller::{AttachRequest, AttachResponse},
+        metadata::MetadataKind,
+        partition_processor_manager::CreateSnapshotRequest,
+    },
+    partition_table::PartitionTable,
+    protobuf::common::AdminStatus,
+    GenerationalNodeId, Version,
+};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time,
+    time::{Instant, Interval, MissedTickBehavior},
+};
 use tracing::{debug, info, warn};
 
-use restate_bifrost::{Bifrost, BifrostAdmin};
-use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
-use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{
-    Incoming, MessageRouterBuilder, NetworkSender, Networking, TransportConnect,
-};
-use restate_core::{
-    cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
-    TaskKind,
-};
-use restate_types::cluster::cluster_state::{AliveNode, ClusterState, NodeState};
-use restate_types::config::{AdminOptions, Configuration};
-use restate_types::health::HealthStatus;
-use restate_types::identifiers::{PartitionId, SnapshotId};
-use restate_types::live::Live;
-use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
-use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
-use restate_types::net::metadata::MetadataKind;
-use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
-use restate_types::partition_table::PartitionTable;
-use restate_types::protobuf::common::AdminStatus;
-use restate_types::{GenerationalNodeId, Version};
-
 use super::cluster_state_refresher::{ClusterStateRefresher, ClusterStateWatcher};
-use crate::cluster_controller::logs_controller::{
-    LogsBasedPartitionProcessorPlacementHints, LogsController,
+use crate::cluster_controller::{
+    logs_controller::{LogsBasedPartitionProcessorPlacementHints, LogsController},
+    observed_cluster_state::ObservedClusterState,
+    scheduler::{Scheduler, SchedulingPlanNodeSetSelectorHints},
 };
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler::{Scheduler, SchedulingPlanNodeSetSelectorHints};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -670,32 +671,40 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::Service;
+    use std::{
+        collections::BTreeSet,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
 
-    use std::collections::BTreeSet;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    use googletest::assert_that;
-    use googletest::matchers::eq;
+    use googletest::{assert_that, matchers::eq};
+    use restate_bifrost::Bifrost;
+    use restate_core::{
+        network::{FailingConnector, Incoming, MessageHandler, MockPeerConnection},
+        NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder,
+    };
+    use restate_types::{
+        cluster::cluster_state::PartitionProcessorStatus,
+        config::{AdminOptions, Configuration},
+        health::HealthStatus,
+        identifiers::PartitionId,
+        live::Live,
+        logs::{LogId, Lsn, SequenceNumber},
+        net::{
+            partition_processor_manager::{
+                ControlProcessors, GetProcessorsState, ProcessorsStateResponse,
+            },
+            AdvertisedAddress,
+        },
+        nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role},
+        GenerationalNodeId, Version,
+    };
     use test_log::test;
 
-    use restate_bifrost::Bifrost;
-    use restate_core::network::{FailingConnector, Incoming, MessageHandler, MockPeerConnection};
-    use restate_core::{NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
-    use restate_types::cluster::cluster_state::PartitionProcessorStatus;
-    use restate_types::config::{AdminOptions, Configuration};
-    use restate_types::health::HealthStatus;
-    use restate_types::identifiers::PartitionId;
-    use restate_types::live::Live;
-    use restate_types::logs::{LogId, Lsn, SequenceNumber};
-    use restate_types::net::partition_processor_manager::{
-        ControlProcessors, GetProcessorsState, ProcessorsStateResponse,
-    };
-    use restate_types::net::AdvertisedAddress;
-    use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
-    use restate_types::{GenerationalNodeId, Version};
+    use super::Service;
 
     #[test(tokio::test)]
     async fn manual_log_trim() -> anyhow::Result<()> {

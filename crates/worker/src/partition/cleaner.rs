@@ -8,6 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{
+    ops::RangeInclusive,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
+
 use anyhow::Context;
 use futures::StreamExt;
 use restate_bifrost::Bifrost;
@@ -15,16 +21,14 @@ use restate_core::cancellation_watcher;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
-use restate_types::identifiers::WithPartitionKey;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
-use restate_types::invocation::PurgeInvocationRequest;
-use restate_types::GenerationalNodeId;
+use restate_types::{
+    identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey},
+    invocation::PurgeInvocationRequest,
+    GenerationalNodeId,
+};
 use restate_wal_protocol::{
     append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
 };
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, instrument, warn};
 
@@ -166,7 +170,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::future::Future;
 
     use futures::{stream, Stream};
     use googletest::prelude::*;
@@ -174,12 +178,15 @@ mod tests {
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
     };
-    use restate_types::identifiers::{InvocationId, InvocationUuid};
-    use restate_types::invocation::InvocationTarget;
-    use restate_types::partition_table::{FindPartition, PartitionTable};
-    use restate_types::Version;
-    use std::future::Future;
+    use restate_types::{
+        identifiers::{InvocationId, InvocationUuid},
+        invocation::InvocationTarget,
+        partition_table::{FindPartition, PartitionTable},
+        Version,
+    };
     use test_log::test;
+
+    use super::*;
 
     #[allow(dead_code)]
     struct MockInvocationStatusReader(Vec<(InvocationId, InvocationStatus)>);

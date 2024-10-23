@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
-use std::ops::RangeInclusive;
+use std::{collections::BTreeMap, ops::RangeInclusive};
 
-use crate::identifiers::{PartitionId, PartitionKey};
-use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
+use crate::{
+    flexbuffers_storage_encode_decode,
+    identifiers::{PartitionId, PartitionKey},
+    Version, Versioned,
+};
 
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot find partition for partition key '{0}'")]
@@ -362,13 +364,16 @@ mod tests {
     use bytes::BytesMut;
     use test_log::test;
 
-    use crate::identifiers::{PartitionId, PartitionKey};
-    use crate::partition_table::{
-        EqualSizedPartitionPartitioner, FindPartition, Partition, PartitionTable,
-        PartitionTableBuilder,
+    use crate::{
+        flexbuffers_storage_encode_decode,
+        identifiers::{PartitionId, PartitionKey},
+        partition_table::{
+            EqualSizedPartitionPartitioner, FindPartition, Partition, PartitionTable,
+            PartitionTableBuilder,
+        },
+        storage::StorageCodec,
+        Version,
     };
-    use crate::storage::StorageCodec;
-    use crate::{flexbuffers_storage_encode_decode, Version};
 
     #[test]
     fn partitioner_produces_consecutive_ranges() {

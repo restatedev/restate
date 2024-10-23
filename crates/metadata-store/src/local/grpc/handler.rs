@@ -8,13 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvc;
-use crate::grpc_svc::{DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest};
-use crate::local::grpc::pb_conversions::ConversionError;
-use crate::local::store::{Error, MetadataStoreRequest, RequestSender};
 use async_trait::async_trait;
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status};
+
+use crate::{
+    grpc_svc::{
+        metadata_store_svc_server::MetadataStoreSvc, DeleteRequest, GetRequest, GetResponse,
+        GetVersionResponse, PutRequest,
+    },
+    local::{
+        grpc::pb_conversions::ConversionError,
+        store::{Error, MetadataStoreRequest, RequestSender},
+    },
+};
 
 /// Grpc svc handler for the [`LocalMetadataStore`].
 #[derive(Debug)]

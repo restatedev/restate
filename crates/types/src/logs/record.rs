@@ -12,12 +12,13 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::storage::{
-    EncodedPolyBytes, PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode,
-};
-use crate::time::NanosSinceEpoch;
-
 use super::{KeyFilter, Keys, MatchKeyQuery};
+use crate::{
+    storage::{
+        EncodedPolyBytes, PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode,
+    },
+    time::NanosSinceEpoch,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {

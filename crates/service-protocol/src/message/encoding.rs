@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::header::UnknownMessageType;
-use super::*;
-
 use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
-use restate_types::journal::raw::{PlainEntryHeader, RawEntry};
-use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::{
+    journal::raw::{PlainEntryHeader, RawEntry},
+    service_protocol::ServiceProtocolVersion,
+};
 use size::Size;
 use tracing::warn;
+
+use super::{header::UnknownMessageType, *};
 
 #[derive(Debug, codederror::CodedError, thiserror::Error)]
 #[code(restate_errors::RT0012)]
@@ -362,11 +363,11 @@ fn raw_header_to_message_type(entry_header: &PlainEntryHeader) -> MessageType {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    use crate::codec::ProtobufRawEntryCodec;
     use restate_test_util::{assert, assert_eq, let_assert};
     use restate_types::journal::raw::RawEntryCodec;
+
+    use super::*;
+    use crate::codec::ProtobufRawEntryCodec;
 
     #[test]
     fn fill_decoder_with_several_messages() {

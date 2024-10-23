@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{btree_map, BTreeMap};
-use std::fmt::{Display, Formatter};
-use std::num::NonZeroU8;
+use std::{
+    collections::{btree_map, BTreeMap},
+    fmt::{Display, Formatter},
+    num::NonZeroU8,
+};
 
 use enum_map::Enum;
 
@@ -157,8 +159,9 @@ impl Display for ReplicationProperty {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use googletest::prelude::*;
+
+    use super::*;
 
     #[test]
     fn test_location_scope() {

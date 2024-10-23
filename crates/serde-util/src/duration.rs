@@ -18,10 +18,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::de::{Error, IntoDeserializer};
-use serde::{Deserialize, Deserializer, Serializer};
-use serde_with::{DeserializeAs, SerializeAs};
 use std::time::Duration;
+
+use serde::{
+    de::{Error, IntoDeserializer},
+    Deserialize, Deserializer, Serializer,
+};
+use serde_with::{DeserializeAs, SerializeAs};
 
 /// Serializable/Deserializable duration to use with serde_with.
 ///
@@ -64,11 +67,10 @@ impl SerializeAs<std::time::Duration> for DurationString {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use serde::{Deserialize, Serialize};
-
     use serde_with::serde_as;
+
+    use super::*;
 
     #[serde_as]
     #[derive(Serialize, Deserialize)]

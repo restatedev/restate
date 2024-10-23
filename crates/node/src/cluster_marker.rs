@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{cmp::Ordering, fs::OpenOptions, path::Path};
+
 use restate_types::config::node_filepath;
 use semver::Version;
-use std::cmp::Ordering;
-use std::fs::OpenOptions;
-use std::path::Path;
 use tracing::info;
 
 const CLUSTER_MARKER_FILE_NAME: &str = ".cluster-marker";
@@ -232,15 +231,15 @@ fn validate_and_update_cluster_marker_inner(
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, fs::OpenOptions, path::Path};
+
+    use semver::Version;
+    use tempfile::tempdir;
+
     use crate::cluster_marker::{
         validate_and_update_cluster_marker_inner, ClusterMarker, ClusterValidationError,
         CompatibilityInformation, CLUSTER_MARKER_FILE_NAME, COMPATIBILITY_INFORMATION,
     };
-    use semver::Version;
-    use std::fs;
-    use std::fs::OpenOptions;
-    use std::path::Path;
-    use tempfile::tempdir;
 
     fn read_cluster_marker(path: impl AsRef<Path>) -> anyhow::Result<ClusterMarker> {
         let bytes = fs::read(path)?;

@@ -12,38 +12,39 @@ mod cluster_marker;
 mod network_server;
 mod roles;
 
+use codederror::CodedError;
+use restate_bifrost::BifrostService;
+use restate_core::{
+    metadata_store::{retry_on_network_error, ReadWriteError},
+    network::{GrpcConnector, MessageRouterBuilder, Networking},
+    spawn_metadata_manager, task_center, MetadataBuilder, MetadataKind, MetadataManager,
+    TargetVersion, TaskKind,
+};
+#[cfg(feature = "replicated-loglet")]
+use restate_log_server::LogServerService;
+use restate_metadata_store::{local::LocalMetadataStoreService, MetadataStoreClient};
+#[cfg(feature = "replicated-loglet")]
+use restate_types::logs::RecordCache;
+use restate_types::{
+    config::{CommonOptions, Configuration},
+    errors::GenericError,
+    health::Health,
+    live::Live,
+    metadata_store::keys::NODES_CONFIG_KEY,
+    nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role},
+    protobuf::common::{
+        AdminStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
+    },
+    Version,
+};
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, trace};
 
-use codederror::CodedError;
-use restate_bifrost::BifrostService;
-use restate_core::metadata_store::{retry_on_network_error, ReadWriteError};
-use restate_core::network::Networking;
-use restate_core::network::{GrpcConnector, MessageRouterBuilder};
-use restate_core::{
-    spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
+use crate::{
+    cluster_marker::ClusterValidationError,
+    network_server::{ClusterControllerDependencies, NetworkServer, WorkerDependencies},
+    roles::{AdminRole, WorkerRole},
 };
-use restate_core::{task_center, TaskKind};
-#[cfg(feature = "replicated-loglet")]
-use restate_log_server::LogServerService;
-use restate_metadata_store::local::LocalMetadataStoreService;
-use restate_metadata_store::MetadataStoreClient;
-use restate_types::config::{CommonOptions, Configuration};
-use restate_types::errors::GenericError;
-use restate_types::health::Health;
-use restate_types::live::Live;
-#[cfg(feature = "replicated-loglet")]
-use restate_types::logs::RecordCache;
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
-use restate_types::protobuf::common::{
-    AdminStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
-};
-use restate_types::Version;
-
-use crate::cluster_marker::ClusterValidationError;
-use crate::network_server::{ClusterControllerDependencies, NetworkServer, WorkerDependencies};
-use crate::roles::{AdminRole, WorkerRole};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {

@@ -8,14 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use async_trait::async_trait;
-use pgwire::api::portal::Portal;
-use pgwire::api::query::ExtendedQueryHandler;
-use pgwire::api::results::{DescribePortalResponse, DescribeStatementResponse, Response};
-use pgwire::api::stmt::{NoopQueryParser, StoredStatement};
-use pgwire::api::ClientInfo;
-use pgwire::error::{PgWireError, PgWireResult};
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use pgwire::{
+    api::{
+        portal::Portal,
+        query::ExtendedQueryHandler,
+        results::{DescribePortalResponse, DescribeStatementResponse, Response},
+        stmt::{NoopQueryParser, StoredStatement},
+        ClientInfo,
+    },
+    error::{PgWireError, PgWireResult},
+};
 
 #[derive(Debug, Clone)]
 pub struct NoopExtendedQueryHandler {

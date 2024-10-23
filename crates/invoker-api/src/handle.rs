@@ -8,18 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Effect;
-use super::JournalMetadata;
+use std::{future::Future, ops::RangeInclusive};
 
 use restate_errors::NotRunningError;
-use restate_types::identifiers::PartitionKey;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch};
-use restate_types::invocation::InvocationTarget;
-use restate_types::journal::raw::PlainRawEntry;
-use restate_types::journal::Completion;
-use std::future::Future;
-use std::ops::RangeInclusive;
+use restate_types::{
+    identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch},
+    invocation::InvocationTarget,
+    journal::{raw::PlainRawEntry, Completion},
+};
 use tokio::sync::mpsc;
+
+use super::{Effect, JournalMetadata};
 
 #[derive(Debug, Default)]
 pub enum InvokeInputJournal {

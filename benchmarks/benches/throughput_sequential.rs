@@ -12,14 +12,11 @@
 //! running on localhost:9080 in order to run.
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use http::header::CONTENT_TYPE;
-use http::Uri;
+use http::{header::CONTENT_TYPE, Uri};
 use pprof::criterion::{Output, PProfProfiler};
 use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 fn throughput_benchmark(criterion: &mut Criterion) {
     tracing_subscriber::registry()

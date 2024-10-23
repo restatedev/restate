@@ -8,25 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Display;
-use std::future::Future;
-use std::hash::Hash;
+use std::{fmt::Display, future::Future, hash::Hash};
 
 use bytes::Bytes;
-use tokio::sync::oneshot;
-
 use restate_core::metadata;
-use restate_types::identifiers::{
-    partitioner, IngressRequestId, InvocationId, PartitionKey, WithPartitionKey,
+use restate_types::{
+    identifiers::{partitioner, IngressRequestId, InvocationId, PartitionKey, WithPartitionKey},
+    ingress::IngressResponseResult,
+    invocation::{
+        AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
+        InvocationTargetType, ServiceInvocation, ServiceInvocationResponseSink, SpanRelation,
+        SubmitNotificationSink, VirtualObjectHandlerType, WorkflowHandlerType,
+    },
+    message::MessageIndex,
+    schema::subscriptions::{EventReceiverServiceType, Sink, Subscription},
 };
-use restate_types::ingress::IngressResponseResult;
-use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
-    InvocationTargetType, ServiceInvocation, ServiceInvocationResponseSink, SpanRelation,
-    SubmitNotificationSink, VirtualObjectHandlerType, WorkflowHandlerType,
-};
-use restate_types::message::MessageIndex;
-use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
+use tokio::sync::oneshot;
 
 mod dispatcher;
 pub mod error;
@@ -281,11 +278,11 @@ impl IngressDispatcherRequest {
 
 #[cfg(feature = "test-util")]
 pub mod test_util {
-    use super::*;
-
-    use crate::error::IngressDispatchError;
     use restate_test_util::let_assert;
     use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::error::IngressDispatchError;
 
     #[derive(Clone)]
     pub struct MockDispatcher {

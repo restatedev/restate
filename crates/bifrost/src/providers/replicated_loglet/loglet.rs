@@ -12,29 +12,38 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use restate_core::{
+    network::{Networking, TransportConnect},
+    task_center,
+};
+use restate_types::{
+    logs::{
+        metadata::SegmentIndex, KeyFilter, LogId, LogletOffset, Record, RecordCache,
+        SequenceNumber, TailState,
+    },
+    replicated_loglet::ReplicatedLogletParams,
+};
 use tracing::{debug, info};
 
-use restate_core::network::{Networking, TransportConnect};
-use restate_core::task_center;
-use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{
-    KeyFilter, LogId, LogletOffset, Record, RecordCache, SequenceNumber, TailState,
+use super::{
+    error::ReplicatedLogletError,
+    log_server_manager::RemoteLogServerManager,
+    metric_definitions::{BIFROST_RECORDS_ENQUEUED_BYTES, BIFROST_RECORDS_ENQUEUED_TOTAL},
+    read_path::{ReadStreamTask, ReplicatedLogletReadStream},
+    remote_sequencer::RemoteSequencer,
+    rpc_routers::{LogServersRpc, SequencersRpc},
+    tasks::{CheckSealOutcome, CheckSealTask, FindTailResult},
 };
-use restate_types::replicated_loglet::ReplicatedLogletParams;
-
-use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
-use crate::providers::replicated_loglet::replication::spread_selector::SelectorStrategy;
-use crate::providers::replicated_loglet::sequencer::Sequencer;
-use crate::providers::replicated_loglet::tasks::{FindTailTask, SealTask};
-
-use super::error::ReplicatedLogletError;
-use super::log_server_manager::RemoteLogServerManager;
-use super::metric_definitions::{BIFROST_RECORDS_ENQUEUED_BYTES, BIFROST_RECORDS_ENQUEUED_TOTAL};
-use super::read_path::{ReadStreamTask, ReplicatedLogletReadStream};
-use super::remote_sequencer::RemoteSequencer;
-use super::rpc_routers::{LogServersRpc, SequencersRpc};
-use super::tasks::{CheckSealOutcome, CheckSealTask, FindTailResult};
+use crate::{
+    loglet::{
+        util::TailOffsetWatch, Loglet, LogletCommit, OperationError, SendableLogletReadStream,
+    },
+    providers::replicated_loglet::{
+        replication::spread_selector::SelectorStrategy,
+        sequencer::Sequencer,
+        tasks::{FindTailTask, SealTask},
+    },
+};
 
 #[derive(derive_more::Debug)]
 pub(super) struct ReplicatedLoglet<T> {
@@ -294,21 +303,21 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
 mod tests {
     use std::num::NonZeroU8;
 
-    use super::*;
-
     use googletest::prelude::*;
-    use test_log::test;
-
     use restate_core::TestCoreEnvBuilder;
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
-    use restate_types::health::HealthStatus;
-    use restate_types::live::Live;
-    use restate_types::logs::Keys;
-    use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicationProperty};
-    use restate_types::{GenerationalNodeId, PlainNodeId};
+    use restate_types::{
+        config::Configuration,
+        health::HealthStatus,
+        live::Live,
+        logs::Keys,
+        replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicationProperty},
+        GenerationalNodeId, PlainNodeId,
+    };
+    use test_log::test;
 
+    use super::*;
     use crate::loglet::{AppendError, Loglet};
 
     struct TestEnv {

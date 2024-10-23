@@ -11,15 +11,13 @@
 use bytes::Bytes;
 use http::{header, HeaderName, Response};
 use http_body_util::Full;
+use restate_types::{
+    identifiers::InvocationId, ingress::IngressResponseResult, invocation::InvocationTarget,
+    schema::invocation_target::InvocationTargetMetadata,
+};
 use tracing::{info, trace};
 
-use restate_types::identifiers::InvocationId;
-use restate_types::ingress::IngressResponseResult;
-use restate_types::invocation::InvocationTarget;
-use restate_types::schema::invocation_target::InvocationTargetMetadata;
-
-use crate::handler::error::HandlerError;
-use crate::handler::Handler;
+use crate::handler::{error::HandlerError, Handler};
 
 pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 /// Contains the string representation of the invocation id

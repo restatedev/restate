@@ -8,24 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::TableKey;
-use crate::keys::{define_table_key, KeyKind};
-use crate::owned_iter::OwnedIterator;
-use crate::scan::TableScan::FullScanPartitionKeyRange;
-use crate::TableKind::Journal;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
-use crate::{TableScan, TableScanIterationDecision};
+use std::{io::Cursor, ops::RangeInclusive};
+
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
-use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::{
-    EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
+use restate_storage_api::{
+    journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable},
+    Result, StorageError,
 };
-use restate_types::storage::StorageCodec;
-use std::io::Cursor;
-use std::ops::RangeInclusive;
+use restate_types::{
+    identifiers::{
+        EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
+    },
+    storage::StorageCodec,
+};
+
+use crate::{
+    keys::{define_table_key, KeyKind, TableKey},
+    owned_iter::OwnedIterator,
+    scan::TableScan::FullScanPartitionKeyRange,
+    PartitionStore, PartitionStoreTransaction, StorageAccess,
+    TableKind::Journal,
+    TableScan, TableScanIterationDecision,
+};
 
 define_table_key!(
     Journal,
@@ -210,10 +216,10 @@ impl<'a> JournalTable for PartitionStoreTransaction<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::journal_table::write_journal_entry_key;
-    use crate::keys::TableKey;
     use bytes::Bytes;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
+
+    use crate::{journal_table::write_journal_entry_key, keys::TableKey};
 
     fn journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> Bytes {
         write_journal_entry_key(invocation_id, journal_index)

@@ -8,29 +8,36 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use restate_core::{
+    network::{MessageRouterBuilder, Networking, TransportConnect},
+    TaskCenter, TaskKind,
+};
+use restate_metadata_store::MetadataStoreClient;
+use restate_types::{
+    config::Configuration,
+    logs::{
+        metadata::{LogletParams, ProviderKind, SegmentIndex},
+        LogId, RecordCache,
+    },
+    replicated_loglet::ReplicatedLogletParams,
+};
 use tracing::trace;
 
-use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
-use restate_core::{TaskCenter, TaskKind};
-use restate_metadata_store::MetadataStoreClient;
-use restate_types::config::Configuration;
-use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::{LogId, RecordCache};
-use restate_types::replicated_loglet::ReplicatedLogletParams;
-
-use super::loglet::ReplicatedLoglet;
-use super::metric_definitions;
-use super::network::RequestPump;
-use super::rpc_routers::{LogServersRpc, SequencersRpc};
-use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
-use crate::providers::replicated_loglet::error::ReplicatedLogletError;
-use crate::providers::replicated_loglet::tasks::PeriodicTailChecker;
-use crate::Error;
+use super::{
+    loglet::ReplicatedLoglet,
+    metric_definitions,
+    network::RequestPump,
+    rpc_routers::{LogServersRpc, SequencersRpc},
+};
+use crate::{
+    loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError},
+    providers::replicated_loglet::{error::ReplicatedLogletError, tasks::PeriodicTailChecker},
+    Error,
+};
 
 pub struct Factory<T> {
     task_center: TaskCenter,

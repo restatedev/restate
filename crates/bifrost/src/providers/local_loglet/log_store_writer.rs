@@ -8,31 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use bytes::BytesMut;
 use futures::StreamExt as FutureStreamExt;
 use metrics::histogram;
-use rocksdb::{BoundColumnFamily, WriteBatch};
-use tokio::sync::{mpsc, oneshot};
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::StreamExt as TokioStreamExt;
-use tracing::{debug, error, trace, warn};
-
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_rocksdb::{IoMode, Priority, RocksDb};
-use restate_types::config::LocalLogletOptions;
-use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::{LogletOffset, Record, SequenceNumber};
-
-use super::keys::{MetadataKey, MetadataKind, RecordKey};
-use super::log_state::LogStateUpdates;
-use super::log_store::{DATA_CF, METADATA_CF};
-use super::metric_definitions::{
-    BIFROST_LOCAL_WRITE_BATCH_COUNT, BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES,
+use restate_types::{
+    config::LocalLogletOptions,
+    live::BoxedLiveLoad,
+    logs::{LogletOffset, Record, SequenceNumber},
 };
-use super::record_format::{encode_record_and_split, FORMAT_FOR_NEW_APPENDS};
+use rocksdb::{BoundColumnFamily, WriteBatch};
+use tokio::sync::{mpsc, oneshot};
+use tokio_stream::{wrappers::ReceiverStream, StreamExt as TokioStreamExt};
+use tracing::{debug, error, trace, warn};
+
+use super::{
+    keys::{MetadataKey, MetadataKind, RecordKey},
+    log_state::LogStateUpdates,
+    log_store::{DATA_CF, METADATA_CF},
+    metric_definitions::{BIFROST_LOCAL_WRITE_BATCH_COUNT, BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES},
+    record_format::{encode_record_and_split, FORMAT_FOR_NEW_APPENDS},
+};
 use crate::loglet::OperationError;
 
 type Ack = oneshot::Sender<Result<(), OperationError>>;

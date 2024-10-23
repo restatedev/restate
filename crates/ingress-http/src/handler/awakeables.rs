@@ -8,21 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::path_parsing::AwakeableRequestType;
-use super::Handler;
-use super::HandlerError;
+use std::str::FromStr;
 
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
-use http_body_util::BodyExt;
-use http_body_util::Full;
-use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_ingress_dispatcher::IngressDispatcherRequest;
+use http_body_util::{BodyExt, Full};
+use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherRequest};
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::errors::{codes, InvocationError};
-use restate_types::invocation::{InvocationResponse, ResponseResult};
-use std::str::FromStr;
+use restate_types::{
+    errors::{codes, InvocationError},
+    invocation::{InvocationResponse, ResponseResult},
+};
 use tracing::{info, trace, warn};
+
+use super::{path_parsing::AwakeableRequestType, Handler, HandlerError};
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
 where

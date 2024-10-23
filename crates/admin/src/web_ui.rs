@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::{
+    response::{IntoResponse, Redirect, Response},
+    routing::get,
+};
 use http::{header, HeaderValue, StatusCode, Uri};
 use http_body_util::Full;
 

@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::invocation_state::schema::SysInvocationStateBuilder;
-use crate::table_util::format_using;
 use restate_invoker_api::InvocationStatusReport;
-use restate_types::identifiers::WithPartitionKey;
-use restate_types::time::MillisSinceEpoch;
+use restate_types::{identifiers::WithPartitionKey, time::MillisSinceEpoch};
+
+use crate::{invocation_state::schema::SysInvocationStateBuilder, table_util::format_using};
 
 #[inline]
 pub(crate) fn append_invocation_state_row(

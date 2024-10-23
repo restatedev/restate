@@ -8,41 +8,42 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use async_trait::async_trait;
-use datafusion::arrow::array::{
-    Array, BinaryArray, BooleanArray, Date32Array, Date64Array, LargeBinaryArray, LargeStringArray,
-    PrimitiveArray, StringArray,
+use datafusion::{
+    arrow::{
+        array::{
+            Array, BinaryArray, BooleanArray, Date32Array, Date64Array, LargeBinaryArray,
+            LargeStringArray, PrimitiveArray, StringArray,
+        },
+        datatypes::{
+            DataType, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
+            UInt32Type, UInt64Type,
+        },
+        record_batch::RecordBatch,
+        temporal_conversions::{date32_to_datetime, date64_to_datetime},
+    },
+    physical_plan::SendableRecordBatchStream,
 };
-use datafusion::arrow::datatypes::DataType;
-use datafusion::arrow::datatypes::Float32Type;
-use datafusion::arrow::datatypes::Float64Type;
-use datafusion::arrow::datatypes::Int16Type;
-use datafusion::arrow::datatypes::Int32Type;
-use datafusion::arrow::datatypes::Int64Type;
-use datafusion::arrow::datatypes::Int8Type;
-use datafusion::arrow::datatypes::UInt32Type;
-use datafusion::arrow::datatypes::UInt64Type;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::arrow::temporal_conversions::{date32_to_datetime, date64_to_datetime};
-use datafusion::physical_plan::SendableRecordBatchStream;
 use futures::{stream, StreamExt};
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use pgwire::{
+    api::{
+        auth::noop::NoopStartupHandler,
+        copy::NoopCopyHandler,
+        query::SimpleQueryHandler,
+        results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response},
+        ClientInfo, PgWireHandlerFactory, Type,
+    },
+    error::{ErrorInfo, PgWireError, PgWireResult},
+    messages::data::DataRow,
+    tokio::process_socket,
+};
+use restate_storage_query_datafusion::context::QueryContext;
+use tokio::{net::TcpStream, sync::Mutex};
+use tracing::warn;
 
 use crate::extended_query::NoopExtendedQueryHandler;
-use pgwire::api::auth::noop::NoopStartupHandler;
-use pgwire::api::copy::NoopCopyHandler;
-use pgwire::api::query::SimpleQueryHandler;
-use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response};
-use pgwire::api::{ClientInfo, PgWireHandlerFactory, Type};
-use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
-use pgwire::messages::data::DataRow;
-use pgwire::tokio::process_socket;
-use restate_storage_query_datafusion::context::QueryContext;
-use tracing::warn;
 
 pub(crate) struct HandlerFactory {
     processor: Arc<DfSessionService>,

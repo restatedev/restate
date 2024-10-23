@@ -11,20 +11,19 @@
 use std::future::Future;
 
 use async_channel::{TryRecvError, TrySendError};
+use restate_bifrost::Bifrost;
+use restate_core::cancellation_watcher;
+use restate_storage_api::{deduplication_table::DedupInformation, outbox_table::OutboxMessage};
+use restate_types::{
+    identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey},
+    message::MessageIndex,
+    GenerationalNodeId,
+};
+use restate_wal_protocol::{append_envelope_to_bifrost, Destination, Envelope, Header, Source};
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use restate_bifrost::Bifrost;
-use restate_core::cancellation_watcher;
-use restate_storage_api::deduplication_table::DedupInformation;
-use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::message::MessageIndex;
-use restate_types::GenerationalNodeId;
-use restate_wal_protocol::{append_envelope_to_bifrost, Destination, Envelope, Header, Source};
-
-use crate::partition::shuffle::state_machine::StateMachine;
-use crate::partition::types::OutboxMessageExt;
+use crate::partition::{shuffle::state_machine::StateMachine, types::OutboxMessageExt};
 
 #[derive(Debug)]
 pub(crate) struct NewOutboxMessage {
@@ -261,22 +260,20 @@ where
 }
 
 mod state_machine {
-    use pin_project::pin_project;
-    use std::cmp::Ordering;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tokio_util::sync::ReusableBoxFuture;
-    use tracing::{debug, trace};
+    use std::{cmp::Ordering, future::Future, pin::Pin, sync::Arc, time::Duration};
 
+    use pin_project::pin_project;
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::message::MessageIndex;
     use restate_wal_protocol::Envelope;
+    use tokio_util::sync::ReusableBoxFuture;
+    use tracing::{debug, trace};
 
-    use crate::partition::shuffle;
-    use crate::partition::shuffle::{
-        wrap_outbox_message_in_envelope, NewOutboxMessage, OutboxReaderError, ShuffleMetadata,
+    use crate::partition::{
+        shuffle,
+        shuffle::{
+            wrap_outbox_message_in_envelope, NewOutboxMessage, OutboxReaderError, ShuffleMetadata,
+        },
     };
 
     type ReadFuture<OutboxReader> = ReusableBoxFuture<
@@ -448,28 +445,31 @@ mod state_machine {
 
 #[cfg(test)]
 mod tests {
-    use std::iter;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::{
+        iter,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
 
     use anyhow::anyhow;
     use assert2::let_assert;
     use futures::{Stream, StreamExt};
+    use restate_bifrost::{Bifrost, LogEntry};
+    use restate_core::{network::FailingConnector, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+    use restate_storage_api::{outbox_table::OutboxMessage, StorageError};
+    use restate_types::{
+        identifiers::{InvocationId, LeaderEpoch, PartitionId},
+        invocation::ServiceInvocation,
+        logs::{KeyFilter, LogId, Lsn, SequenceNumber},
+        message::MessageIndex,
+        partition_table::PartitionTable,
+        GenerationalNodeId, Version,
+    };
+    use restate_wal_protocol::{Command, Envelope};
     use test_log::test;
     use tokio::sync::mpsc;
-
-    use restate_bifrost::{Bifrost, LogEntry};
-    use restate_core::network::FailingConnector;
-    use restate_core::{TaskKind, TestCoreEnv, TestCoreEnvBuilder};
-    use restate_storage_api::outbox_table::OutboxMessage;
-    use restate_storage_api::StorageError;
-    use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
-    use restate_types::invocation::ServiceInvocation;
-    use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
-    use restate_types::message::MessageIndex;
-    use restate_types::partition_table::PartitionTable;
-    use restate_types::{GenerationalNodeId, Version};
-    use restate_wal_protocol::{Command, Envelope};
 
     use crate::partition::shuffle::{OutboxReader, OutboxReaderError, Shuffle, ShuffleMetadata};
 

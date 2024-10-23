@@ -8,20 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
-use std::time::Duration;
-
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use std::{num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use restate_serde_util::{ByteCount, NonZeroByteCount};
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use tracing::warn;
 
-use crate::logs::metadata::ProviderKind;
-use crate::retries::RetryPolicy;
-
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use crate::{logs::metadata::ProviderKind, retries::RetryPolicy};
 
 /// # Bifrost options
 #[serde_as]

@@ -8,21 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::storage_test_environment;
+use std::{pin::pin, time::Duration};
 
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
 use once_cell::sync::Lazy;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable};
-use restate_storage_api::Transaction;
-use restate_types::identifiers::{InvocationId, InvocationUuid};
-use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-use restate_types::journal::enriched::{
-    CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
+use restate_storage_api::{
+    journal_table::{JournalEntry, JournalTable},
+    Transaction,
 };
-use std::pin::pin;
-use std::time::Duration;
+use restate_types::{
+    identifiers::{InvocationId, InvocationUuid},
+    invocation::{InvocationTarget, ServiceInvocationSpanContext},
+    journal::enriched::{CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry},
+};
+
+use crate::storage_test_environment;
 
 // false positive because of Bytes
 #[allow(clippy::declare_interior_mutable_const)]

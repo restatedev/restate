@@ -8,13 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{protobuf_storage_encode_decode, Result};
+use std::{future::Future, ops::RangeInclusive};
+
 use futures_util::Stream;
-use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
-use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::{CompletionResult, EntryType};
-use std::future::Future;
-use std::ops::RangeInclusive;
+use restate_types::{
+    identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey},
+    journal::{enriched::EnrichedRawEntry, CompletionResult, EntryType},
+};
+
+use crate::{protobuf_storage_encode_decode, Result};
 
 /// Different types of journal entries persisted by the runtime
 #[derive(Debug, Clone, PartialEq, Eq)]

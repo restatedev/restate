@@ -8,8 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use enum_map::Enum;
@@ -18,8 +17,7 @@ use restate_types::logs::metadata::ProviderKind;
 use tokio::task::JoinSet;
 use tracing::{debug, trace, warn};
 
-use crate::bifrost::BifrostInner;
-use crate::loglet::LogletProvider;
+use crate::{bifrost::BifrostInner, loglet::LogletProvider};
 
 pub type WatchdogSender = tokio::sync::mpsc::UnboundedSender<WatchdogCommand>;
 type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;

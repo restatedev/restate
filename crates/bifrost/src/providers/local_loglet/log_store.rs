@@ -10,20 +10,23 @@
 
 use std::sync::Arc;
 
-use restate_types::errors::MaybeRetryableError;
-use rocksdb::{BoundColumnFamily, DBCompressionType, SliceTransform, DB};
-use static_assertions::const_assert;
-
 use restate_rocksdb::{
     CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
-use restate_types::config::{LocalLogletOptions, RocksDbOptions};
-use restate_types::live::BoxedLiveLoad;
-use restate_types::storage::{StorageDecodeError, StorageEncodeError};
+use restate_types::{
+    config::{LocalLogletOptions, RocksDbOptions},
+    errors::MaybeRetryableError,
+    live::BoxedLiveLoad,
+    storage::{StorageDecodeError, StorageEncodeError},
+};
+use rocksdb::{BoundColumnFamily, DBCompressionType, SliceTransform, DB};
+use static_assertions::const_assert;
 
-use super::keys::{MetadataKey, MetadataKind, DATA_KEY_PREFIX_LENGTH};
-use super::log_state::{log_state_full_merge, log_state_partial_merge, LogState};
-use super::log_store_writer::LogStoreWriter;
+use super::{
+    keys::{MetadataKey, MetadataKind, DATA_KEY_PREFIX_LENGTH},
+    log_state::{log_state_full_merge, log_state_partial_merge, LogState},
+    log_store_writer::LogStoreWriter,
+};
 
 // matches the default directory name
 pub(crate) const DB_NAME: &str = "local-loglet";

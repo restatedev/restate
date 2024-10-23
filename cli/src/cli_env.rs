@@ -10,16 +10,19 @@
 
 //! Resolves restate's CLI default data/config directory paths
 
-use std::fmt::Display;
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Display,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{anyhow, Result};
-use figment::providers::{Format, Serialized, Toml};
-use figment::{Figment, Profile};
+use figment::{
+    providers::{Format, Serialized, Toml},
+    Figment, Profile,
+};
+use restate_cli_util::OsEnv;
 use serde::{Deserialize, Serialize};
 use url::Url;
-
-use restate_cli_util::OsEnv;
 
 use crate::app::GlobalOpts;
 

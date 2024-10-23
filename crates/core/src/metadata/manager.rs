@@ -8,39 +8,41 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::Deref;
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use arc_swap::ArcSwap;
 use enum_map::EnumMap;
+use restate_types::{
+    config::Configuration,
+    logs::metadata::Logs,
+    metadata_store::keys::{
+        BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
+    },
+    net::metadata::{GetMetadataRequest, MetadataMessage, MetadataUpdate},
+    nodes_config::NodesConfiguration,
+    partition_table::PartitionTable,
+    schema::Schema,
+    Version, Versioned,
+};
 use strum::IntoEnumIterator;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::time::MissedTickBehavior;
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::MissedTickBehavior,
+};
 use tracing::{debug, info, trace, warn};
 
-use restate_types::config::Configuration;
-use restate_types::logs::metadata::Logs;
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
+use super::{
+    Metadata, MetadataBuilder, MetadataContainer, MetadataKind, MetadataWriter, VersionInformation,
 };
-use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, MetadataUpdate};
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::PartitionTable;
-use restate_types::schema::Schema;
-use restate_types::{Version, Versioned};
-
-use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
-use super::{MetadataBuilder, VersionInformation};
-use crate::cancellation_watcher;
-use crate::is_cancellation_requested;
-use crate::metadata_store::{MetadataStoreClient, ReadError};
-use crate::network::Incoming;
-use crate::network::Outgoing;
-use crate::network::Reciprocal;
-use crate::network::WeakConnection;
-use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError};
-use crate::task_center;
+use crate::{
+    cancellation_watcher, is_cancellation_requested,
+    metadata_store::{MetadataStoreClient, ReadError},
+    network::{
+        Incoming, MessageHandler, MessageRouterBuilder, NetworkError, Outgoing, Reciprocal,
+        WeakConnection,
+    },
+    task_center,
+};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
@@ -572,18 +574,17 @@ impl UpdateTask {
 mod tests {
     use std::str::FromStr;
 
-    use super::*;
-
     use googletest::prelude::*;
+    use restate_test_util::assert_eq;
+    use restate_types::{
+        net::AdvertisedAddress,
+        nodes_config::{LogServerConfig, NodeConfig, Role},
+        GenerationalNodeId, Version,
+    };
     use test_log::test;
 
-    use restate_test_util::assert_eq;
-    use restate_types::net::AdvertisedAddress;
-    use restate_types::nodes_config::{LogServerConfig, NodeConfig, Role};
-    use restate_types::{GenerationalNodeId, Version};
-
-    use crate::metadata::spawn_metadata_manager;
-    use crate::TaskCenterBuilder;
+    use super::*;
+    use crate::{metadata::spawn_metadata_manager, TaskCenterBuilder};
 
     #[test]
     fn test_nodes_config_updates() -> Result<()> {

@@ -9,16 +9,20 @@
 // by the Apache License, Version 2.0.
 use anyhow::{bail, Result};
 use cling::prelude::*;
-
-use restate_cli_util::ui::console::{confirm_or_exit, Styled};
-use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::{c_println, c_success};
+use restate_cli_util::{
+    c_println, c_success,
+    ui::{
+        console::{confirm_or_exit, Styled},
+        stylesheet::Style,
+    },
+};
 use restate_types::identifiers::InvocationId;
 
-use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::find_active_invocations_simple;
-use crate::clients::{self, AdminClientInterface};
-use crate::ui::invocations::render_simple_invocation_list;
+use crate::{
+    cli_env::CliEnv,
+    clients::{self, datafusion_helpers::find_active_invocations_simple, AdminClientInterface},
+    ui::invocations::render_simple_invocation_list,
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_cancel")]

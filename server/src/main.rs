@@ -8,30 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::error::Error;
-use std::io::IsTerminal;
-use std::io::Write as _;
-use std::ops::Div;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{
+    error::Error,
+    io::{IsTerminal, Write as _},
+    ops::Div,
+    path::PathBuf,
+    time::Duration,
+};
 
 use clap::Parser;
 use codederror::CodedError;
-use tokio::io;
-use tracing::error;
-use tracing::{info, trace, warn};
-
-use restate_core::TaskCenterBuilder;
-use restate_core::TaskKind;
+use restate_core::{TaskCenterBuilder, TaskKind};
 use restate_errors::fmt::RestateCode;
 use restate_rocksdb::RocksDbManager;
 use restate_server::build_info;
-use restate_tracing_instrumentation::init_tracing_and_logging;
-use restate_tracing_instrumentation::TracingGuard;
-use restate_types::art::render_restate_logo;
-use restate_types::config::CommonOptionCliOverride;
-use restate_types::config::{node_dir, Configuration};
-use restate_types::config_loader::ConfigLoaderBuilder;
+use restate_tracing_instrumentation::{init_tracing_and_logging, TracingGuard};
+use restate_types::{
+    art::render_restate_logo,
+    config::{node_dir, CommonOptionCliOverride, Configuration},
+    config_loader::ConfigLoaderBuilder,
+};
+use tokio::io;
+use tracing::{error, info, trace, warn};
 
 mod signal;
 

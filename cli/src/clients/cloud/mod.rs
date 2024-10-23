@@ -11,8 +11,7 @@
 mod client;
 mod interface;
 
-pub use self::client::CloudClient;
-pub use self::interface::CloudClientInterface;
+pub use self::{client::CloudClient, interface::CloudClientInterface};
 
 pub mod generated {
     #![allow(clippy::to_string_trait_impl)]

@@ -8,29 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::max;
-use std::fmt::Debug;
-use std::sync::Arc;
+use std::{cmp::max, fmt::Debug, sync::Arc};
 
 use async_trait::async_trait;
 use codederror::CodedError;
-use datafusion::error::DataFusionError;
-use datafusion::execution::context::SQLOptions;
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
-use datafusion::physical_plan::SendableRecordBatchStream;
-use datafusion::prelude::{SessionConfig, SessionContext};
-
+use datafusion::{
+    error::DataFusionError,
+    execution::{
+        context::SQLOptions,
+        runtime_env::{RuntimeConfig, RuntimeEnv},
+        SessionStateBuilder,
+    },
+    physical_optimizer::optimizer::PhysicalOptimizer,
+    physical_plan::SendableRecordBatchStream,
+    prelude::{SessionConfig, SessionContext},
+};
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
-use restate_types::config::QueryEngineOptions;
-use restate_types::errors::GenericError;
-use restate_types::identifiers::PartitionId;
-use restate_types::live::Live;
-use restate_types::schema::deployment::DeploymentResolver;
-use restate_types::schema::service::ServiceMetadataResolver;
+use restate_types::{
+    config::QueryEngineOptions,
+    errors::GenericError,
+    identifiers::PartitionId,
+    live::Live,
+    schema::{deployment::DeploymentResolver, service::ServiceMetadataResolver},
+};
 
 use crate::{analyzer, physical_optimizer};
 

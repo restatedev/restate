@@ -15,8 +15,10 @@ use clap_stdin::FileOrStdin;
 use cling::{Collect, Run};
 use serde_json::Value;
 
-use crate::commands::metadata::patch::{patch_value, PatchValueOpts};
-use crate::commands::metadata::MetadataCommonOpts;
+use crate::commands::metadata::{
+    patch::{patch_value, PatchValueOpts},
+    MetadataCommonOpts,
+};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]

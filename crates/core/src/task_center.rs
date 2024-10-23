@@ -8,29 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    panic::AssertUnwindSafe,
+    sync::{
+        atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering},
+        Arc, OnceLock,
+    },
+    time::{Duration, Instant},
+};
 
 use futures::{Future, FutureExt};
 use metrics::{counter, gauge};
 use parking_lot::Mutex;
-use tokio::runtime::RuntimeMetrics;
-use tokio::task::LocalSet;
-use tokio::task_local;
+use restate_types::{config::CommonOptions, identifiers::PartitionId, GenerationalNodeId};
+use tokio::{runtime::RuntimeMetrics, task::LocalSet, task_local};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use restate_types::config::CommonOptions;
-use restate_types::identifiers::PartitionId;
-use restate_types::GenerationalNodeId;
-
-use crate::metric_definitions::{TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED};
 use crate::{
-    metric_definitions, Metadata, RuntimeHandle, ShutdownError, ShutdownSourceErr, TaskHandle,
-    TaskId, TaskKind,
+    metric_definitions,
+    metric_definitions::{TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED},
+    Metadata, RuntimeHandle, ShutdownError, ShutdownSourceErr, TaskHandle, TaskId, TaskKind,
 };
 
 static WORKER_ID: AtomicUsize = const { AtomicUsize::new(0) };
@@ -1078,12 +1077,12 @@ pub fn is_cancellation_requested() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use googletest::prelude::*;
     use restate_test_util::assert_eq;
     use restate_types::config::CommonOptionsBuilder;
     use tracing_test::traced_test;
+
+    use super::*;
 
     #[tokio::test(start_paused = true)]
     #[traced_test]

@@ -11,17 +11,16 @@
 use bytestring::ByteString;
 use clap::Parser;
 use cling::{Collect, Run};
+use restate_rocksdb::RocksDbManager;
+use restate_types::{config::Configuration, live::Live};
 use tracing::debug;
 
-use restate_rocksdb::RocksDbManager;
-use restate_types::config::Configuration;
-use restate_types::live::Live;
-
-use crate::commands::metadata::{
-    create_metadata_store_client, GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts,
+use crate::{
+    commands::metadata::{
+        create_metadata_store_client, GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts,
+    },
+    environment::{metadata_store, task_center::run_in_task_center},
 };
-use crate::environment::metadata_store;
-use crate::environment::task_center::run_in_task_center;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]

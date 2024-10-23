@@ -8,24 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::TableKind::Inbox;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
-use crate::{TableScan, TableScanIterationDecision};
+use std::{future::Future, io::Cursor, ops::RangeInclusive};
+
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::inbox_table::{
-    InboxEntry, InboxTable, ReadOnlyInboxTable, SequenceNumberInboxEntry,
+use restate_storage_api::{
+    inbox_table::{InboxEntry, InboxTable, ReadOnlyInboxTable, SequenceNumberInboxEntry},
+    Result, StorageError,
 };
-use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use restate_types::message::MessageIndex;
-use restate_types::storage::StorageCodec;
-use std::future::Future;
-use std::io::Cursor;
-use std::ops::RangeInclusive;
+use restate_types::{
+    identifiers::{PartitionKey, ServiceId, WithPartitionKey},
+    message::MessageIndex,
+    storage::StorageCodec,
+};
+
+use crate::{
+    keys::{define_table_key, KeyKind, TableKey},
+    PartitionStore, PartitionStoreTransaction, StorageAccess,
+    TableKind::Inbox,
+    TableScan, TableScanIterationDecision,
+};
 
 define_table_key!(
     Inbox,
@@ -205,10 +209,10 @@ fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxE
 
 #[cfg(test)]
 mod tests {
-    use crate::inbox_table::InboxKey;
-    use crate::keys::TableKey;
     use bytes::{Bytes, BytesMut};
     use restate_types::identifiers::{ServiceId, WithPartitionKey};
+
+    use crate::{inbox_table::InboxKey, keys::TableKey};
 
     fn message_key(service_id: &ServiceId, sequence_number: u64) -> Bytes {
         let key = InboxKey {

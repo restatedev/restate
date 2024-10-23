@@ -8,12 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
 use restate_errors::NotRunningError;
 use restate_invoker_api::{Effect, InvocationStatusReport, InvokeInputJournal, StatusHandle};
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
-use restate_types::invocation::InvocationTarget;
-use restate_types::journal::Completion;
-use std::ops::RangeInclusive;
+use restate_types::{
+    identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch},
+    invocation::InvocationTarget,
+    journal::Completion,
+};
 use tokio::sync::mpsc;
 
 // -- Input messages

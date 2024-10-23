@@ -8,45 +8,40 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use rand::prelude::IteratorRandom;
-use rand::{thread_rng, RngCore};
-use std::collections::HashMap;
-use std::iter;
-use std::num::NonZeroU8;
-use std::ops::Deref;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, iter, num::NonZeroU8, ops::Deref, sync::Arc, time::Duration};
 
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
+use rand::{prelude::IteratorRandom, thread_rng, RngCore};
+use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
+use restate_core::{
+    metadata,
+    metadata_store::{
+        retry_on_network_error, MetadataStoreClient, Precondition, ReadWriteError, WriteError,
+    },
+    task_center, Metadata, MetadataWriter, ShutdownError,
+};
+use restate_types::{
+    config::Configuration,
+    errors::GenericError,
+    identifiers::PartitionId,
+    live::Pinned,
+    logs,
+    logs::{
+        builder::LogsBuilder,
+        metadata::{Chain, LogletConfig, LogletParams, Logs, ProviderKind, SegmentIndex},
+        LogId, Lsn, TailState,
+    },
+    metadata_store::keys::BIFROST_CONFIG_KEY,
+    nodes_config::Role,
+    partition_table::PartitionTable,
+    replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty},
+    retries::{RetryIter, RetryPolicy},
+    GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned,
+};
+use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::{debug, trace, trace_span, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
-use restate_core::metadata_store::{
-    retry_on_network_error, MetadataStoreClient, Precondition, ReadWriteError, WriteError,
-};
-use restate_core::{metadata, task_center, Metadata, MetadataWriter, ShutdownError};
-use restate_types::config::Configuration;
-use restate_types::errors::GenericError;
-use restate_types::identifiers::PartitionId;
-use restate_types::live::Pinned;
-use restate_types::logs::builder::LogsBuilder;
-use restate_types::logs::metadata::{
-    Chain, LogletConfig, LogletParams, Logs, ProviderKind, SegmentIndex,
-};
-use restate_types::logs::{LogId, Lsn, TailState};
-use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-use restate_types::nodes_config::Role;
-use restate_types::partition_table::PartitionTable;
-use restate_types::replicated_loglet::{
-    NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
-};
-use restate_types::retries::{RetryIter, RetryPolicy};
-use restate_types::{logs, GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
-
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler;
+use crate::cluster_controller::{observed_cluster_state::ObservedClusterState, scheduler};
 
 type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
 

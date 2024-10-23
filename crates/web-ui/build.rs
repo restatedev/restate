@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::env;
-use std::fs::DirEntry;
-use std::path::{Path, PathBuf};
+use std::{
+    env,
+    fs::DirEntry,
+    path::{Path, PathBuf},
+};
 
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("assets");

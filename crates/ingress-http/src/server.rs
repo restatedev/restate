@@ -8,30 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::{convert::Infallible, future::Future, net::SocketAddr};
 
-use crate::handler::Handler;
 use codederror::CodedError;
 use http::{Request, Response};
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper_util::rt::TokioIo;
-use hyper_util::server::conn::auto;
+use hyper_util::{rt::TokioIo, server::conn::auto};
 use restate_core::{cancellation_watcher, task_center, TaskKind};
 use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcher};
-use restate_types::config::IngressOptions;
-use restate_types::live::Live;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_types::schema::service::ServiceMetadataResolver;
-use std::convert::Infallible;
-use std::future::Future;
-use std::net::SocketAddr;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
+use restate_types::{
+    config::IngressOptions,
+    live::Live,
+    schema::{invocation_target::InvocationTargetResolver, service::ServiceMetadataResolver},
+};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::oneshot,
+};
 use tower::{ServiceBuilder, ServiceExt};
-use tower_http::cors::CorsLayer;
-use tower_http::normalize_path::NormalizePathLayer;
+use tower_http::{cors::CorsLayer, normalize_path::NormalizePathLayer};
 use tracing::{info, warn};
+
+use super::*;
+use crate::handler::Handler;
 
 pub type StartSignal = oneshot::Receiver<SocketAddr>;
 
@@ -238,24 +238,24 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::mocks::*;
-    use super::*;
-
-    use http_body_util::BodyExt;
-    use http_body_util::Full;
-    use hyper_util::client::legacy::Client;
-    use hyper_util::rt::TokioExecutor;
-    use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
-    use restate_ingress_dispatcher::test_util::MockDispatcher;
-    use restate_ingress_dispatcher::{IngressDispatcherRequest, IngressInvocationResponse};
-    use restate_test_util::assert_eq;
-    use restate_types::identifiers::InvocationId;
-    use restate_types::ingress::IngressResponseResult;
-    use serde::{Deserialize, Serialize};
     use std::net::SocketAddr;
-    use tokio::sync::{mpsc, Semaphore};
-    use tokio::task::JoinHandle;
+
+    use http_body_util::{BodyExt, Full};
+    use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
+    use restate_ingress_dispatcher::{
+        test_util::MockDispatcher, IngressDispatcherRequest, IngressInvocationResponse,
+    };
+    use restate_test_util::assert_eq;
+    use restate_types::{identifiers::InvocationId, ingress::IngressResponseResult};
+    use serde::{Deserialize, Serialize};
+    use tokio::{
+        sync::{mpsc, Semaphore},
+        task::JoinHandle,
+    };
     use tracing_test::traced_test;
+
+    use super::{mocks::*, *};
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct GreetingRequest {

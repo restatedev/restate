@@ -11,12 +11,13 @@
 use anyhow::Result;
 use cling::prelude::*;
 use figment::Profile;
+use restate_cli_util::{CliContext, CommonOpts};
 use tracing::info;
 
-use restate_cli_util::{CliContext, CommonOpts};
-
-use crate::cli_env::{CliEnv, EnvironmentSource};
-use crate::commands::*;
+use crate::{
+    cli_env::{CliEnv, EnvironmentSource},
+    commands::*,
+};
 
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]

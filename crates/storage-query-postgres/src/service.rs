@@ -8,19 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::pgwire_server::{spawn_connection, HandlerFactory};
+use std::{io::ErrorKind, net::SocketAddr, sync::Arc};
+
 use codederror::CodedError;
 use restate_core::cancellation_watcher;
 use restate_storage_query_datafusion::context::QueryContext;
-
-use restate_types::config::QueryEngineOptions;
-use restate_types::errors::GenericError;
-use std::io::ErrorKind;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::net::TcpListener;
-use tokio::select;
+use restate_types::{config::QueryEngineOptions, errors::GenericError};
+use tokio::{net::TcpListener, select};
 use tracing::warn;
+
+use crate::pgwire_server::{spawn_connection, HandlerFactory};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {

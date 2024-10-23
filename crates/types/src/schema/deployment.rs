@@ -8,21 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 //
-use std::collections::HashMap;
-use std::fmt;
-use std::fmt::{Display, Formatter};
-use std::ops::RangeInclusive;
+use std::{
+    collections::HashMap,
+    fmt,
+    fmt::{Display, Formatter},
+    ops::RangeInclusive,
+};
 
 use bytestring::ByteString;
-use http::header::{HeaderName, HeaderValue};
-use http::Uri;
+use http::{
+    header::{HeaderName, HeaderValue},
+    Uri,
+};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
-use crate::schema::service::ServiceMetadata;
-use crate::schema::Schema;
-use crate::time::MillisSinceEpoch;
+use crate::{
+    identifiers::{DeploymentId, LambdaARN, ServiceRevision},
+    schema::{service::ServiceMetadata, Schema},
+    time::MillisSinceEpoch,
+};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -132,11 +137,11 @@ impl From<DeploymentTypeShadow> for DeploymentType {
 
 #[cfg(test)]
 mod serde_tests {
-    use crate::{identifiers::LambdaARN, storage::StorageCodec};
     use bytestring::ByteString;
     use http::Uri;
 
     use super::{DeploymentType, ProtocolType};
+    use crate::{identifiers::LambdaARN, storage::StorageCodec};
 
     #[derive(serde::Serialize, serde::Deserialize)]
     enum OldDeploymentType {
@@ -301,10 +306,10 @@ pub trait DeploymentResolver {
 
 #[cfg(feature = "test-util")]
 pub mod test_util {
-    use super::*;
-
-    use crate::service_protocol::MAX_SERVICE_PROTOCOL_VERSION_VALUE;
     use std::collections::HashMap;
+
+    use super::*;
+    use crate::service_protocol::MAX_SERVICE_PROTOCOL_VERSION_VALUE;
 
     impl Deployment {
         pub fn mock() -> Deployment {

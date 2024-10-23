@@ -16,11 +16,22 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
+use std::{
+    cmp,
+    collections::{HashMap, HashSet},
+    future::Future,
+    ops::RangeInclusive,
+    panic,
+    path::PathBuf,
+    pin::Pin,
+    time::SystemTime,
+};
+
 use futures::Stream;
+pub use input_command::{ChannelStatusReader, InvokerHandle};
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
-use invocation_task::InvocationTask;
-use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
+use invocation_task::{InvocationTask, InvocationTaskOutput, InvocationTaskOutputInner};
 use metrics::counter;
 use restate_core::cancellation_watcher;
 use restate_errors::warn_it;
@@ -29,40 +40,35 @@ use restate_invoker_api::{
     InvokeInputJournal, JournalReader, StateReader,
 };
 use restate_queue::SegmentQueue;
-use restate_timer_queue::TimerQueue;
-use restate_types::config::{InvokerOptions, ServiceClientOptions};
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
-use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
-use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::raw::PlainRawEntry;
-use restate_types::journal::Completion;
-use restate_types::live::{Live, LiveLoad};
-use restate_types::retries::RetryPolicy;
-use restate_types::schema::deployment::DeploymentResolver;
-use status_store::InvocationStatusStore;
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::pin::Pin;
-use std::time::SystemTime;
-use std::{cmp, panic};
-use tokio::sync::mpsc;
-use tokio::task::{AbortHandle, JoinSet};
-use tracing::instrument;
-use tracing::{debug, trace};
-
-use crate::invocation_task::InvocationTaskError;
-use crate::metric_definitions::{
-    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
-    TASK_OP_SUSPENDED,
-};
-pub use input_command::ChannelStatusReader;
-pub use input_command::InvokerHandle;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
-use restate_types::deployment::PinnedDeployment;
-use restate_types::invocation::InvocationTarget;
-use restate_types::schema::service::ServiceMetadataResolver;
+use restate_timer_queue::TimerQueue;
+use restate_types::{
+    config::{InvokerOptions, ServiceClientOptions},
+    deployment::PinnedDeployment,
+    identifiers::{
+        DeploymentId, EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch,
+        WithPartitionKey,
+    },
+    invocation::InvocationTarget,
+    journal::{enriched::EnrichedRawEntry, raw::PlainRawEntry, Completion},
+    live::{Live, LiveLoad},
+    retries::RetryPolicy,
+    schema::{deployment::DeploymentResolver, service::ServiceMetadataResolver},
+};
+use status_store::InvocationStatusStore;
+use tokio::{
+    sync::mpsc,
+    task::{AbortHandle, JoinSet},
+};
+use tracing::{debug, instrument, trace};
+
+use crate::{
+    invocation_task::InvocationTaskError,
+    metric_definitions::{
+        INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED,
+        TASK_OP_STARTED, TASK_OP_SUSPENDED,
+    },
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -1016,35 +1022,32 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    use std::future::{pending, ready};
-    use std::num::NonZeroUsize;
-    use std::time::Duration;
+    use std::{
+        future::{pending, ready},
+        num::NonZeroUsize,
+        time::Duration,
+    };
 
     use bytes::Bytes;
-    use restate_core::TaskKind;
-    use restate_core::TestCoreEnv;
-    use restate_invoker_api::test_util::EmptyStorageReader;
-    use restate_types::config::InvokerOptionsBuilder;
-    use restate_types::live::Constant;
+    use restate_core::{TaskKind, TestCoreEnv};
+    use restate_invoker_api::{entry_enricher, test_util::EmptyStorageReader, InvokerHandle};
+    use restate_test_util::{check, let_assert};
+    use restate_types::{
+        config::InvokerOptionsBuilder,
+        identifiers::{LeaderEpoch, PartitionId, ServiceRevision},
+        invocation::ServiceType,
+        journal::{enriched::EnrichedEntryHeader, raw::RawEntry},
+        live::Constant,
+        retries::RetryPolicy,
+        schema::{deployment::Deployment, service::ServiceMetadata},
+    };
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use crate::invocation_task::InvocationTaskError;
-    use crate::quota::InvokerConcurrencyQuota;
-    use restate_invoker_api::entry_enricher;
-    use restate_invoker_api::InvokerHandle;
-    use restate_test_util::{check, let_assert};
-    use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceRevision};
-    use restate_types::invocation::ServiceType;
-    use restate_types::journal::enriched::EnrichedEntryHeader;
-    use restate_types::journal::raw::RawEntry;
-    use restate_types::retries::RetryPolicy;
-    use restate_types::schema::deployment::Deployment;
-    use restate_types::schema::service::ServiceMetadata;
+    use super::*;
+    use crate::{invocation_task::InvocationTaskError, quota::InvokerConcurrencyQuota};
 
     // -- Mocks
 

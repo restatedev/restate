@@ -8,17 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_core::{
+    cancellation_watcher,
+    network::{rpc_router::RpcRouter, Networking, TransportConnect},
+    ShutdownError,
+};
+use restate_types::{
+    net::log_server::GetLogletInfo,
+    replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams},
+};
 use tracing::{info, instrument, trace};
 
-use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{Networking, TransportConnect};
-use restate_core::{cancellation_watcher, ShutdownError};
-use restate_types::net::log_server::GetLogletInfo;
-use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
-
 use super::{FindTailOnNode, NodeTailStatus};
-use crate::loglet::util::TailOffsetWatch;
-use crate::providers::replicated_loglet::replication::NodeSetChecker;
+use crate::{
+    loglet::util::TailOffsetWatch, providers::replicated_loglet::replication::NodeSetChecker,
+};
 
 /// Attempts to detect if the loglet has been sealed or if there is a seal in progress by
 /// consulting nodes until it reaches f-majority, and it stops at the first sealed response

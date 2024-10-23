@@ -11,32 +11,29 @@
 // todo(asoli): remove when fleshed out
 #![allow(dead_code)]
 
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use futures::{Stream, StreamExt};
-use restate_types::errors::MaybeRetryableError;
+use restate_core::{
+    cancellation_watcher,
+    network::{Incoming, MessageRouterBuilder, PeerMetadataVersion, Reciprocal, TransportConnect},
+    task_center, Metadata, MetadataKind, SyncError, TargetVersion, TaskKind,
+};
+use restate_types::{
+    config::ReplicatedLogletOptions,
+    errors::MaybeRetryableError,
+    logs::{LogletOffset, SequenceNumber},
+    net::replicated_loglet::{
+        Append, Appended, CommonRequestHeader, CommonResponseHeader, GetSequencerState,
+        SequencerState, SequencerStatus,
+    },
+};
 use tracing::trace;
 
-use restate_core::network::{
-    Incoming, MessageRouterBuilder, PeerMetadataVersion, Reciprocal, TransportConnect,
+use super::{
+    error::ReplicatedLogletError, loglet::ReplicatedLoglet, provider::ReplicatedLogletProvider,
 };
-use restate_core::{
-    cancellation_watcher, task_center, Metadata, MetadataKind, SyncError, TargetVersion, TaskKind,
-};
-use restate_types::config::ReplicatedLogletOptions;
-use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::net::replicated_loglet::{
-    Append, Appended, CommonRequestHeader, CommonResponseHeader, GetSequencerState, SequencerState,
-    SequencerStatus,
-};
-
-use super::error::ReplicatedLogletError;
-use super::loglet::ReplicatedLoglet;
-use super::provider::ReplicatedLogletProvider;
-use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::{AppendError, Loglet, LogletCommit, OperationError};
+use crate::loglet::{util::TailOffsetWatch, AppendError, Loglet, LogletCommit, OperationError};
 
 type MessageStream<T> = Pin<Box<dyn Stream<Item = Incoming<T>> + Send + Sync + 'static>>;
 

@@ -2,24 +2,26 @@
 use std::{sync::Arc, time::Duration};
 
 use enumset::{enum_set, EnumSet};
-use googletest::internal::test_outcome::TestAssertionFailure;
-use googletest::IntoTestResult;
-
+use googletest::{internal::test_outcome::TestAssertionFailure, IntoTestResult};
 use restate_bifrost::{loglet::Loglet, Bifrost, BifrostAdmin, FindTailAttributes};
-use restate_core::metadata_store::Precondition;
-use restate_core::{metadata_store::MetadataStoreClient, MetadataWriter, TaskCenterBuilder};
+use restate_core::{
+    metadata_store::{MetadataStoreClient, Precondition},
+    MetadataWriter, TaskCenterBuilder,
+};
 use restate_local_cluster_runner::{
     cluster::{Cluster, MaybeTempDir, StartedCluster},
     node::{BinarySource, Node},
 };
 use restate_rocksdb::RocksDbManager;
-use restate_types::logs::builder::LogsBuilder;
-use restate_types::logs::metadata::{Chain, LogletParams, SegmentIndex};
-use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::{
     config::Configuration,
     live::Live,
-    logs::{metadata::ProviderKind, LogId},
+    logs::{
+        builder::LogsBuilder,
+        metadata::{Chain, LogletParams, ProviderKind, SegmentIndex},
+        LogId,
+    },
+    metadata_store::keys::BIFROST_CONFIG_KEY,
     net::{AdvertisedAddress, BindAddress},
     nodes_config::Role,
     replicated_loglet::{ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty},

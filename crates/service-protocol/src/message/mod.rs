@@ -11,13 +11,14 @@
 //! Module containing definitions of Protocol messages,
 //! including encoding and decoding of headers and message payloads.
 
+use std::time::Duration;
+
 use bytes::Bytes;
 use prost::Message;
-use restate_types::journal::raw::PlainRawEntry;
-use restate_types::journal::CompletionResult;
-use restate_types::journal::{Completion, EntryIndex};
-use restate_types::service_protocol;
-use std::time::Duration;
+use restate_types::{
+    journal::{raw::PlainRawEntry, Completion, CompletionResult, EntryIndex},
+    service_protocol,
+};
 
 mod encoding;
 mod header;

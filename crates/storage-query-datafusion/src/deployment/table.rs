@@ -10,22 +10,25 @@
 
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::logical_expr::Expr;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use datafusion::physical_plan::SendableRecordBatchStream;
-use restate_types::live::Live;
+use datafusion::{
+    arrow::{datatypes::SchemaRef, record_batch::RecordBatch},
+    logical_expr::Expr,
+    physical_plan::{stream::RecordBatchReceiverStream, SendableRecordBatchStream},
+};
+use restate_types::{
+    identifiers::ServiceRevision,
+    live::Live,
+    schema::deployment::{Deployment, DeploymentResolver},
+};
 use tokio::sync::mpsc::Sender;
 
-use restate_types::identifiers::ServiceRevision;
-use restate_types::schema::deployment::{Deployment, DeploymentResolver};
-
 use super::schema::SysDeploymentBuilder;
-use crate::context::QueryContext;
-use crate::deployment::row::append_deployment_row;
-use crate::table_providers::{GenericTableProvider, Scan};
-use crate::table_util::Builder;
+use crate::{
+    context::QueryContext,
+    deployment::row::append_deployment_row,
+    table_providers::{GenericTableProvider, Scan},
+    table_util::Builder,
+};
 
 pub(crate) fn register_self(
     ctx: &QueryContext,

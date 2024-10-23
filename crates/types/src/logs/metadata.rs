@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::str::FromStr;
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    str::FromStr,
+};
 
 use bytestring::ByteString;
 use enum_map::Enum;
@@ -18,8 +20,11 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use super::builder::LogsBuilder;
-use crate::logs::{LogId, Lsn, SequenceNumber};
-use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
+use crate::{
+    flexbuffers_storage_encode_decode,
+    logs::{LogId, Lsn, SequenceNumber},
+    Version, Versioned,
+};
 
 // Starts with 0 being the oldest loglet in the chain.
 #[derive(

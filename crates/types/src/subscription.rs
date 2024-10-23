@@ -8,16 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt;
-use std::mem::size_of;
-use std::str::FromStr;
+use std::{fmt, mem::size_of, str::FromStr};
 
-use crate::base62_util::base62_max_length_for_type;
-use crate::errors::IdDecodeError;
-use crate::id_util::{IdDecoder, IdEncoder, IdResourceType};
-use crate::identifiers::{ResourceId, SubscriptionId, TimestampAwareId};
-use crate::time::MillisSinceEpoch;
 use ulid::Ulid;
+
+use crate::{
+    base62_util::base62_max_length_for_type,
+    errors::IdDecodeError,
+    id_util::{IdDecoder, IdEncoder, IdResourceType},
+    identifiers::{ResourceId, SubscriptionId, TimestampAwareId},
+    time::MillisSinceEpoch,
+};
 
 impl ResourceId for SubscriptionId {
     const SIZE_IN_BYTES: usize = size_of::<u128>();

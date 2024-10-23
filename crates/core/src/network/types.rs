@@ -8,21 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::marker::PhantomData;
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    marker::PhantomData,
+    sync::{atomic::AtomicU64, Arc},
+    time::{Duration, Instant},
+};
 
-use restate_types::net::codec::{Targeted, WireEncode};
-use restate_types::net::RpcRequest;
-use restate_types::protobuf::node::Header;
-use restate_types::{GenerationalNodeId, NodeId, Version};
+use restate_types::{
+    net::{
+        codec::{Targeted, WireEncode},
+        RpcRequest,
+    },
+    protobuf::node::Header,
+    GenerationalNodeId, NodeId, Version,
+};
 
+use super::{
+    connection::OwnedConnection, metric_definitions::CONNECTION_SEND_DURATION, NetworkError,
+    NetworkSendError, WeakConnection,
+};
 use crate::with_metadata;
-
-use super::connection::OwnedConnection;
-use super::metric_definitions::CONNECTION_SEND_DURATION;
-use super::{NetworkError, NetworkSendError, WeakConnection};
 
 static NEXT_MSG_ID: AtomicU64 = const { AtomicU64::new(1) };
 

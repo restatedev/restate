@@ -8,32 +8,38 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::PartialOrd;
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    cmp::PartialOrd,
+    collections::{BTreeMap, HashMap},
+};
 
 use anyhow::Context;
 use cling::prelude::*;
 use itertools::Itertools;
+use restate_admin::cluster_controller::protobuf::{
+    cluster_ctrl_svc_client::ClusterCtrlSvcClient, ClusterStateRequest, ListLogsRequest,
+};
+use restate_cli_util::{
+    _comfy_table::{Attribute, Cell, Color, Table},
+    c_println,
+    ui::{console::StyledTable, Tense},
+};
+use restate_types::{
+    logs::{
+        metadata::{Chain, Logs},
+        LogId, Lsn,
+    },
+    protobuf::cluster::{node_state, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode},
+    storage::StorageCodec,
+    GenerationalNodeId, PlainNodeId, Version,
+};
 use tonic::codec::CompressionEncoding;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{ClusterStateRequest, ListLogsRequest};
-use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::Tense;
-use restate_types::logs::metadata::{Chain, Logs};
-use restate_types::logs::{LogId, Lsn};
-use restate_types::protobuf::cluster::{
-    node_state, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode,
+use crate::{
+    app::ConnectionInfo,
+    commands::{display_util::render_as_duration, log::deserialize_replicated_log_params},
+    util::grpc_connect,
 };
-use restate_types::storage::StorageCodec;
-use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-
-use crate::app::ConnectionInfo;
-use crate::commands::display_util::render_as_duration;
-use crate::commands::log::deserialize_replicated_log_params;
-use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug, Default)]
 #[cling(run = "list_partitions")]

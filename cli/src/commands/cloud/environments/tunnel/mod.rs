@@ -8,21 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
 use cling::prelude::*;
 use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
 use remote::RemotePort;
+use restate_cli_util::CliContext;
 use tokio_util::sync::CancellationToken;
 
-use restate_cli_util::CliContext;
-
-use crate::cli_env::EnvironmentType;
-use crate::clients::cloud::{CloudClient, CloudClientInterface};
-use crate::{build_info, cli_env::CliEnv};
+use crate::{
+    build_info,
+    cli_env::{CliEnv, EnvironmentType},
+    clients::cloud::{CloudClient, CloudClientInterface},
+};
 
 mod local;
 mod remote;

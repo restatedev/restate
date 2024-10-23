@@ -14,37 +14,37 @@
 //! this file.
 //! License Apache-2.0
 
-use aws_smithy_async::future::timeout::TimedOutError;
-use aws_smithy_async::rt::sleep::{default_async_sleep, SharedAsyncSleep};
-use aws_smithy_runtime_api::box_error::BoxError;
-use aws_smithy_runtime_api::client::connector_metadata::ConnectorMetadata;
-use aws_smithy_runtime_api::client::http::{
-    HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings, SharedHttpClient,
-    SharedHttpConnector,
+use std::{borrow::Cow, collections::HashMap, error::Error, fmt, sync::RwLock, time::Duration};
+
+use aws_smithy_async::{
+    future::timeout::TimedOutError,
+    rt::sleep::{default_async_sleep, SharedAsyncSleep},
 };
-use aws_smithy_runtime_api::client::orchestrator::{HttpRequest, HttpResponse};
-use aws_smithy_runtime_api::client::result::ConnectorError;
-use aws_smithy_runtime_api::client::runtime_components::{
-    RuntimeComponents, RuntimeComponentsBuilder,
+use aws_smithy_runtime_api::{
+    box_error::BoxError,
+    client::{
+        connector_metadata::ConnectorMetadata,
+        http::{
+            HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings,
+            SharedHttpClient, SharedHttpConnector,
+        },
+        orchestrator::{HttpRequest, HttpResponse},
+        result::ConnectorError,
+        runtime_components::{RuntimeComponents, RuntimeComponentsBuilder},
+    },
 };
-use aws_smithy_types::body::SdkBody;
-use aws_smithy_types::config_bag::ConfigBag;
-use aws_smithy_types::error::display::DisplayErrorContext;
-use aws_smithy_types::retry::ErrorKind;
+use aws_smithy_types::{
+    body::SdkBody, config_bag::ConfigBag, error::display::DisplayErrorContext, retry::ErrorKind,
+};
 use client::connect::Connection;
 use h2::Reason;
 use http::Uri;
 use hyper::rt::{Read, Write};
-use hyper_util::client::legacy as client;
-use hyper_util::client::legacy::connect::Connect;
-use hyper_util::rt::TokioExecutor;
+use hyper_util::{
+    client::{legacy as client, legacy::connect::Connect},
+    rt::TokioExecutor,
+};
 use rustls::crypto::CryptoProvider;
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt;
-use std::sync::RwLock;
-use std::time::Duration;
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 #[non_exhaustive]
@@ -63,11 +63,9 @@ impl CryptoMode {
 #[allow(unused_imports)]
 mod cached_connectors {
     use client::connect::HttpConnector;
-    use hyper_util::client::legacy as client;
-    use hyper_util::client::legacy::connect::dns::GaiResolver;
+    use hyper_util::client::{legacy as client, legacy::connect::dns::GaiResolver};
 
-    use crate::aws_hyper_client::build_connector::make_tls;
-    use crate::aws_hyper_client::{CryptoMode, Inner};
+    use crate::aws_hyper_client::{build_connector::make_tls, CryptoMode, Inner};
 
     pub(crate) static HTTPS_NATIVE_ROOTS_RING: once_cell::sync::Lazy<
         hyper_rustls::HttpsConnector<HttpConnector>,
@@ -81,10 +79,11 @@ mod cached_connectors {
 }
 
 mod build_connector {
+    use std::sync::Arc;
+
     use client::connect::HttpConnector;
     use hyper_util::client::legacy as client;
     use rustls::crypto::CryptoProvider;
-    use std::sync::Arc;
 
     fn restrict_ciphers(base: CryptoProvider) -> CryptoProvider {
         let suites = &[
@@ -550,20 +549,22 @@ where
 }
 
 mod timeout_middleware {
-    use std::error::Error;
-    use std::fmt::Formatter;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
-    use std::time::Duration;
+    use std::{
+        error::Error,
+        fmt::Formatter,
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll},
+        time::Duration,
+    };
 
+    use aws_smithy_async::{
+        future::timeout::{TimedOutError, Timeout},
+        rt::sleep::{AsyncSleep, SharedAsyncSleep, Sleep},
+    };
+    use aws_smithy_runtime_api::box_error::BoxError;
     use http::Uri;
     use pin_project_lite::pin_project;
-
-    use aws_smithy_async::future::timeout::{TimedOutError, Timeout};
-    use aws_smithy_async::rt::sleep::Sleep;
-    use aws_smithy_async::rt::sleep::{AsyncSleep, SharedAsyncSleep};
-    use aws_smithy_runtime_api::box_error::BoxError;
 
     #[derive(Debug)]
     pub(crate) struct HttpTimeoutError {

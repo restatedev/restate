@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::task::{Context, Poll};
+
 use hyper::Uri;
 use restate_types::config::ProxyUri;
-use std::task::{Context, Poll};
 use tower_service::Service;
 
 #[derive(Clone, Debug)]

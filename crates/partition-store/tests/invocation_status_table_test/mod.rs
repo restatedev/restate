@@ -12,7 +12,7 @@
 #![allow(clippy::borrow_interior_mutable_const)]
 #![allow(clippy::declare_interior_mutable_const)]
 
-use super::{assert_stream_eq, storage_test_environment};
+use std::{collections::HashSet, time::Duration};
 
 use bytestring::ByteString;
 use once_cell::sync::Lazy;
@@ -20,13 +20,15 @@ use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, JournalMetadata,
     SourceTable, StatusTimestamps,
 };
-use restate_types::identifiers::InvocationId;
-use restate_types::invocation::{
-    InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
+use restate_types::{
+    identifiers::InvocationId,
+    invocation::{
+        InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
+    },
+    time::MillisSinceEpoch,
 };
-use restate_types::time::MillisSinceEpoch;
-use std::collections::HashSet;
-use std::time::Duration;
+
+use super::{assert_stream_eq, storage_test_environment};
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),

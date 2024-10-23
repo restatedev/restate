@@ -8,18 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::error::Error;
-use std::fmt::{Display, Formatter};
-use std::future::Future;
-
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    error::Error,
+    fmt::{Display, Formatter},
+    future::Future,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::Result;
 use http::{Request, StatusCode, Uri};
 use http_body_util::BodyExt;
-use hyper::body::Incoming;
-use hyper::Response;
+use hyper::{body::Incoming, Response};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use reqwest::Body;
@@ -31,10 +31,8 @@ use tower::Service;
 use tracing::{error, info};
 use url::Url;
 
-use crate::cli_env::CliEnv;
-use crate::clients::cloud::generated::DescribeEnvironmentResponse;
-
 use super::renderer::{LocalRenderer, TunnelRenderer};
+use crate::{cli_env::CliEnv, clients::cloud::generated::DescribeEnvironmentResponse};
 
 pub(crate) async fn run_local(
     env: &CliEnv,

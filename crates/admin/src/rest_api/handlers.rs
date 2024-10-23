@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::error::*;
-
-use crate::state::AdminServiceState;
-use axum::extract::{Path, State};
-use axum::Json;
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use okapi_operation::*;
 use restate_admin_rest_model::handlers::*;
 use restate_types::schema::service::HandlerMetadata;
+
+use super::error::*;
+use crate::state::AdminServiceState;
 
 /// List discovered handlers for service
 #[openapi(

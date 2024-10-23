@@ -6,8 +6,6 @@ mod tests {
 
     use googletest::prelude::*;
     use restate_bifrost::loglet::AppendError;
-    use test_log::test;
-
     use restate_types::{
         config::Configuration,
         logs::{Keys, LogletOffset, Record, TailState},
@@ -16,6 +14,7 @@ mod tests {
         time::NanosSinceEpoch,
         GenerationalNodeId,
     };
+    use test_log::test;
 
     use super::common::replicated_loglet::run_in_test_env;
 

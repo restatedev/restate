@@ -8,18 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashSet;
-use std::fmt::{Display, Formatter};
+use std::{
+    collections::HashSet,
+    fmt::{Display, Formatter},
+};
 
 use itertools::Itertools;
 use rand::seq::SliceRandom;
 use serde_with::DisplayFromStr;
 
 use super::ReplicationProperty;
-use crate::logs::metadata::SegmentIndex;
-use crate::logs::LogId;
-use crate::nodes_config::NodesConfiguration;
-use crate::{GenerationalNodeId, PlainNodeId};
+use crate::{
+    logs::{metadata::SegmentIndex, LogId},
+    nodes_config::NodesConfiguration,
+    GenerationalNodeId, PlainNodeId,
+};
 
 /// Configuration parameters of a replicated loglet segment
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]

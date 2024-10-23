@@ -9,25 +9,24 @@
 // by the Apache License, Version 2.0.
 
 use codederror::CodedError;
-use tokio::sync::oneshot;
-
 use restate_bifrost::Bifrost;
-use restate_core::network::MessageRouterBuilder;
-use restate_core::network::Networking;
-use restate_core::network::TransportConnect;
-use restate_core::{cancellation_watcher, task_center, Metadata, MetadataKind};
-use restate_core::{ShutdownError, TaskKind};
+use restate_core::{
+    cancellation_watcher,
+    network::{MessageRouterBuilder, Networking, TransportConnect},
+    task_center, Metadata, MetadataKind, ShutdownError, TaskKind,
+};
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_types::config::Configuration;
-use restate_types::health::HealthStatus;
-use restate_types::live::Live;
-use restate_types::protobuf::common::WorkerStatus;
-use restate_types::schema::subscriptions::SubscriptionResolver;
-use restate_types::schema::Schema;
-use restate_types::Version;
-use restate_worker::SubscriptionController;
-use restate_worker::Worker;
+use restate_types::{
+    config::Configuration,
+    health::HealthStatus,
+    live::Live,
+    protobuf::common::WorkerStatus,
+    schema::{subscriptions::SubscriptionResolver, Schema},
+    Version,
+};
+use restate_worker::{SubscriptionController, Worker};
+use tokio::sync::oneshot;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum WorkerRoleError {

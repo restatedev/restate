@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::{Ordering, Reverse};
-use std::collections::BinaryHeap;
-use std::time::SystemTime;
+use std::{
+    cmp::{Ordering, Reverse},
+    collections::BinaryHeap,
+    time::SystemTime,
+};
 
 #[derive(Debug)]
 pub struct Timer<T> {
@@ -95,10 +97,12 @@ impl<T> FromIterator<(SystemTime, T)> for TimerQueue<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{
+        ops::Add,
+        time::{Duration, Instant, SystemTime},
+    };
 
-    use std::ops::Add;
-    use std::time::{Duration, Instant, SystemTime};
+    use super::*;
 
     #[tokio::test]
     async fn test_simple_timer() {

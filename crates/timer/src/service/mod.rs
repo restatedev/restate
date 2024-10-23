@@ -10,14 +10,17 @@
 
 #![allow(clippy::enum_variant_names)]
 
+use std::{
+    collections::HashSet,
+    fmt::Debug,
+    future,
+    future::Future,
+    pin::Pin,
+    task::{ready, Context, Poll, Waker},
+};
+
 use pin_project::pin_project;
 use restate_types::timer::TimerKey;
-use std::collections::HashSet;
-use std::fmt::Debug;
-use std::future;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{ready, Context, Poll, Waker};
 use tokio_util::sync::ReusableBoxFuture;
 use tracing::trace;
 

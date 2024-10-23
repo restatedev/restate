@@ -8,8 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt;
-use std::fmt::Debug;
+use std::{fmt, fmt::Debug};
 
 use tokio::sync::oneshot;
 
@@ -167,12 +166,11 @@ impl<T: Send, R: Send> From<Command<T, R>> for (T, CommandResponseSender<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
+    use restate_test_util::assert_eq;
     use test_log::test;
     use tokio::sync::mpsc;
 
-    use restate_test_util::assert_eq;
+    use super::*;
 
     #[test(tokio::test)]
     async fn test_back_and_forth() {

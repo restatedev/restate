@@ -8,23 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::ops::RangeInclusive;
-use std::pin::pin;
+use std::{collections::HashMap, fmt::Debug, ops::RangeInclusive, pin::pin};
 
 use futures::Stream;
-use tokio_stream::StreamExt;
-
 use restate_core::TaskCenterBuilder;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
-use restate_types::config::{CommonOptions, WorkerOptions};
-use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId};
-use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
-use restate_types::live::{Constant, Live};
-use restate_types::state_mut::ExternalStateMutation;
+use restate_types::{
+    config::{CommonOptions, WorkerOptions},
+    identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId},
+    invocation::{InvocationTarget, ServiceInvocation, Source},
+    live::{Constant, Live},
+    state_mut::ExternalStateMutation,
+};
+use tokio_stream::StreamExt;
 
 mod idempotency_table_test;
 mod inbox_table_test;

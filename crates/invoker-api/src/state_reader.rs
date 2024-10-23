@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::future::Future;
+
 use bytes::Bytes;
 use restate_types::identifiers::ServiceId;
-use std::future::Future;
 
 /// Container for the eager state returned by [`StateReader`]
 pub struct EagerState<I> {

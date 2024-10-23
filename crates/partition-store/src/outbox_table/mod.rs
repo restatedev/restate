@@ -8,19 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::io::Cursor;
-use std::ops::RangeInclusive;
+use std::{io::Cursor, ops::RangeInclusive};
 
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
-use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::PartitionId;
-use restate_types::storage::StorageCodec;
+use restate_storage_api::{
+    outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable},
+    Result, StorageError,
+};
+use restate_types::{identifiers::PartitionId, storage::StorageCodec};
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::TableKind::Outbox;
 use crate::{
-    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
+    keys::{define_table_key, KeyKind, TableKey},
+    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess,
+    TableKind::Outbox,
+    TableScan,
 };
 
 define_table_key!(

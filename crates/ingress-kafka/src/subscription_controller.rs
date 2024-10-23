@@ -8,21 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::consumer_task::MessageSender;
-use super::*;
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
 
-use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use rdkafka::error::KafkaError;
 use restate_core::{cancellation_watcher, task_center};
 use restate_ingress_dispatcher::IngressDispatcher;
-use restate_types::config::IngressOptions;
-use restate_types::identifiers::SubscriptionId;
-use restate_types::live::LiveLoad;
-use restate_types::retries::RetryPolicy;
-use restate_types::schema::subscriptions::{Source, Subscription};
-use std::time::Duration;
+use restate_types::{
+    config::IngressOptions,
+    identifiers::SubscriptionId,
+    live::LiveLoad,
+    retries::RetryPolicy,
+    schema::subscriptions::{Source, Subscription},
+};
 use tokio::sync::mpsc;
+
+use super::{consumer_task::MessageSender, *};
+use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 
 #[derive(Debug)]
 pub enum Command {
@@ -174,17 +175,22 @@ impl Service {
 }
 
 mod task_orchestrator {
-    use crate::consumer_task;
+    use std::{collections::HashMap, time::SystemTime};
+
     use restate_core::task_center;
     use restate_timer_queue::TimerQueue;
-    use restate_types::identifiers::SubscriptionId;
-    use restate_types::retries::{RetryIter, RetryPolicy};
-    use std::collections::HashMap;
-    use std::time::SystemTime;
-    use tokio::sync::oneshot;
-    use tokio::task;
-    use tokio::task::{JoinError, JoinSet};
+    use restate_types::{
+        identifiers::SubscriptionId,
+        retries::{RetryIter, RetryPolicy},
+    };
+    use tokio::{
+        sync::oneshot,
+        task,
+        task::{JoinError, JoinSet},
+    };
     use tracing::{debug, warn};
+
+    use crate::consumer_task;
 
     struct TaskState {
         // We use this to restart the consumer task in case of a failure

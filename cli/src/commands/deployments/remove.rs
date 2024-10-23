@@ -14,22 +14,31 @@ use anyhow::{bail, Result};
 use cling::prelude::*;
 use comfy_table::Table;
 use indoc::indoc;
-
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
-use restate_cli_util::ui::console::{confirm_or_exit, Styled, StyledTable};
-use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::{c_eprintln, c_error, c_indentln, c_success};
+use restate_cli_util::{
+    c_eprintln, c_error, c_indentln, c_success,
+    ui::{
+        console::{confirm_or_exit, Styled, StyledTable},
+        stylesheet::Style,
+    },
+};
 use restate_types::schema::service::ServiceMetadata;
 
-use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
-use crate::clients::{AdminClient, AdminClientInterface};
-use crate::console::c_println;
-use crate::ui::deployments::{
-    add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
-    render_deployment_status,
+use crate::{
+    cli_env::CliEnv,
+    clients::{
+        datafusion_helpers::count_deployment_active_inv_by_method, AdminClient,
+        AdminClientInterface,
+    },
+    console::c_println,
+    ui::{
+        deployments::{
+            add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
+            render_deployment_status,
+        },
+        service_handlers::icon_for_service_type,
+    },
 };
-use crate::ui::service_handlers::icon_for_service_type;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "rm")]

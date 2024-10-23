@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::deployment::PinnedDeployment;
-use restate_types::errors::InvocationError;
-use restate_types::identifiers::EntryIndex;
-use restate_types::identifiers::InvocationId;
-use restate_types::journal::enriched::EnrichedRawEntry;
 use std::collections::HashSet;
+
+use restate_types::{
+    deployment::PinnedDeployment,
+    errors::InvocationError,
+    identifiers::{EntryIndex, InvocationId},
+    journal::enriched::EnrichedRawEntry,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

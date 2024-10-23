@@ -6,11 +6,10 @@ use std::{
 };
 
 use futures::future::{self};
+use restate_types::errors::GenericError;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use typed_builder::TypedBuilder;
-
-use restate_types::errors::GenericError;
 
 use crate::node::{HealthCheck, HealthError, Node, NodeStartError, StartedNode};
 

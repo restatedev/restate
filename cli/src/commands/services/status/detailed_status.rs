@@ -10,15 +10,16 @@
 
 use anyhow::Result;
 use indicatif::ProgressBar;
-
 use restate_cli_util::c_title;
 
 use super::{render_locked_keys, render_services_status, Status};
-use crate::clients::datafusion_helpers::{
-    get_locked_keys_status, get_service_invocations, get_service_status,
+use crate::{
+    clients::{
+        datafusion_helpers::{get_locked_keys_status, get_service_invocations, get_service_status},
+        AdminClient, AdminClientInterface, DataFusionHttpClient,
+    },
+    ui::invocations::render_invocation_compact,
 };
-use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
-use crate::ui::invocations::render_invocation_compact;
 
 pub async fn run_detailed_status(
     service_name: &str,

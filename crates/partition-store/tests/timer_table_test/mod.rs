@@ -8,16 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::mock_service_invocation;
-use futures_util::StreamExt;
-use googletest::matchers::eq;
-use googletest::{assert_that, pat};
-use restate_partition_store::PartitionStore;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
-use restate_storage_api::Transaction;
-use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
-use restate_types::invocation::ServiceInvocation;
 use std::pin::pin;
+
+use futures_util::StreamExt;
+use googletest::{assert_that, matchers::eq, pat};
+use restate_partition_store::PartitionStore;
+use restate_storage_api::{
+    timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable},
+    Transaction,
+};
+use restate_types::{
+    identifiers::{InvocationId, InvocationUuid, ServiceId},
+    invocation::ServiceInvocation,
+};
+
+use crate::mock_service_invocation;
 
 const FIXTURE_INVOCATION_UUID: InvocationUuid = InvocationUuid::from_u128(12345678900001);
 const FIXTURE_INVOCATION: InvocationId = InvocationId::from_parts(1337, FIXTURE_INVOCATION_UUID);

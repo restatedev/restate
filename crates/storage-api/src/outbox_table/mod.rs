@@ -7,11 +7,14 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::{future::Future, ops::RangeInclusive};
+
+use restate_types::{
+    identifiers::{PartitionKey, WithPartitionKey},
+    invocation::{InvocationResponse, InvocationTermination, ServiceInvocation},
+};
+
 use crate::{protobuf_storage_encode_decode, Result};
-use restate_types::identifiers::{PartitionKey, WithPartitionKey};
-use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
-use std::future::Future;
-use std::ops::RangeInclusive;
 
 /// Types of outbox messages.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

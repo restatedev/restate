@@ -16,8 +16,6 @@ use std::{
     },
 };
 
-use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
-
 use restate_core::{
     network::{
         rpc_router::{RpcRouter, RpcToken},
@@ -33,6 +31,7 @@ use restate_types::{
     replicated_loglet::ReplicatedLogletParams,
     GenerationalNodeId,
 };
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 
 use super::rpc_routers::SequencersRpc;
 use crate::loglet::{
@@ -481,7 +480,6 @@ mod test {
     };
 
     use rand::Rng;
-
     use restate_core::{
         network::{Incoming, MessageHandler, MockConnector},
         TaskCenterBuilder, TestCoreEnv, TestCoreEnvBuilder,

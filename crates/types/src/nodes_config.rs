@@ -16,9 +16,10 @@ use std::collections::HashMap;
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
 
-use crate::net::AdvertisedAddress;
-use crate::{flexbuffers_storage_encode_decode, GenerationalNodeId, NodeId, PlainNodeId};
-use crate::{Version, Versioned};
+use crate::{
+    flexbuffers_storage_encode_decode, net::AdvertisedAddress, GenerationalNodeId, NodeId,
+    PlainNodeId, Version, Versioned,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NodesConfigError {
@@ -329,9 +330,9 @@ flexbuffers_storage_encode_decode!(NodesConfiguration);
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use restate_test_util::assert_eq;
+
+    use super::*;
 
     #[test]
     fn test_upsert_node() {

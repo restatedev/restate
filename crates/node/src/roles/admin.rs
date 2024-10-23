@@ -10,29 +10,31 @@
 
 use std::time::Duration;
 
-use restate_types::health::HealthStatus;
-use tokio::sync::oneshot;
-
 use codederror::CodedError;
-use restate_admin::cluster_controller;
-use restate_admin::cluster_controller::ClusterControllerHandle;
-use restate_admin::service::AdminService;
+use restate_admin::{
+    cluster_controller, cluster_controller::ClusterControllerHandle, service::AdminService,
+};
 use restate_bifrost::Bifrost;
-use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::network::MessageRouterBuilder;
-use restate_core::network::Networking;
-use restate_core::network::TransportConnect;
-use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
+use restate_core::{
+    metadata_store::MetadataStoreClient,
+    network::{
+        net_util::create_tonic_channel_from_advertised_address,
+        protobuf::node_svc::node_svc_client::NodeSvcClient, MessageRouterBuilder, Networking,
+        TransportConnect,
+    },
+    task_center, Metadata, MetadataWriter, TaskCenter, TaskKind,
+};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
-use restate_types::config::Configuration;
-use restate_types::config::IngressOptions;
-use restate_types::live::Live;
-use restate_types::net::AdvertisedAddress;
-use restate_types::protobuf::common::AdminStatus;
-use restate_types::retries::RetryPolicy;
+use restate_types::{
+    config::{Configuration, IngressOptions},
+    health::HealthStatus,
+    live::Live,
+    net::AdvertisedAddress,
+    protobuf::common::AdminStatus,
+    retries::RetryPolicy,
+};
+use tokio::sync::oneshot;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {

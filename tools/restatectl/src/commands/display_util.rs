@@ -1,7 +1,10 @@
-use chrono::{DateTime, Local};
-use restate_cli_util::_comfy_table::{Cell, Color};
-use restate_cli_util::ui::{timestamp_as_human_duration, Tense};
 use std::time::SystemTime;
+
+use chrono::{DateTime, Local};
+use restate_cli_util::{
+    _comfy_table::{Cell, Color},
+    ui::{timestamp_as_human_duration, Tense},
+};
 
 pub fn render_as_duration(ts: Option<prost_types::Timestamp>, tense: Tense) -> Cell {
     let ts: Option<SystemTime> = ts

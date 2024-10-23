@@ -13,12 +13,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use crate::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use crate::identifiers::{PartitionId, SnapshotId};
-use crate::net::{define_message, TargetName};
-
-use crate::net::define_rpc;
-use crate::Version;
+use crate::{
+    cluster::cluster_state::{PartitionProcessorStatus, RunMode},
+    identifiers::{PartitionId, SnapshotId},
+    net::{define_message, define_rpc, TargetName},
+    Version,
+};
 
 define_rpc! {
     @request = GetProcessorsState,

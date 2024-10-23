@@ -8,10 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
-use restate_types::identifiers::PartitionId;
-use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 use std::collections::{HashMap, HashSet};
+
+use restate_types::{
+    cluster::cluster_state::{ClusterState, NodeState, RunMode},
+    identifiers::PartitionId,
+    GenerationalNodeId, NodeId, PlainNodeId,
+};
 use xxhash_rust::xxh3::Xxh3Builder;
 
 /// Represents the scheduler's observed state of the cluster. The scheduler will use this
@@ -119,18 +122,25 @@ impl ObservedPartitionState {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use googletest::{
+        assert_that, elements_are,
+        prelude::{empty, eq},
+        unordered_elements_are,
+    };
+    use restate_types::{
+        cluster::cluster_state::{
+            AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
+        },
+        identifiers::PartitionId,
+        time::MillisSinceEpoch,
+        GenerationalNodeId, PlainNodeId, Version,
+    };
+
     use crate::cluster_controller::observed_cluster_state::{
         ObservedClusterState, ObservedPartitionState,
     };
-    use googletest::prelude::{empty, eq};
-    use googletest::{assert_that, elements_are, unordered_elements_are};
-    use restate_types::cluster::cluster_state::{
-        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
-    };
-    use restate_types::identifiers::PartitionId;
-    use restate_types::time::MillisSinceEpoch;
-    use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-    use std::collections::{BTreeMap, HashMap};
 
     impl ObservedClusterState {
         pub fn remove_node_from_partition(

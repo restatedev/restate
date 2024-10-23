@@ -8,9 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::client::Envelope;
-
-use super::{generated::*, CloudClient};
+use super::{client::Envelope, generated::*, CloudClient};
 
 pub trait CloudClientInterface {
     async fn list_accounts(&self) -> reqwest::Result<Envelope<ListAccountsResponse>>;

@@ -12,19 +12,20 @@ use anyhow::{anyhow, Error};
 use restate_core::metadata;
 use restate_ingress_http::{GetOutputResult, InvocationStorageReader};
 use restate_partition_store::PartitionStoreManager;
-use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
-use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ReadOnlyInvocationStatusTable,
+use restate_storage_api::{
+    idempotency_table::ReadOnlyIdempotencyTable,
+    invocation_status_table::{InvocationStatus, ReadOnlyInvocationStatusTable},
+    service_status_table::{ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus},
 };
-use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
+use restate_types::{
+    identifiers::WithPartitionKey,
+    ingress::{IngressResponseResult, InvocationResponse},
+    invocation::{
+        InvocationQuery, InvocationTarget, InvocationTargetType, ResponseResult,
+        WorkflowHandlerType,
+    },
+    partition_table::FindPartition,
 };
-use restate_types::identifiers::WithPartitionKey;
-use restate_types::ingress::{IngressResponseResult, InvocationResponse};
-use restate_types::invocation::{
-    InvocationQuery, InvocationTarget, InvocationTargetType, ResponseResult, WorkflowHandlerType,
-};
-use restate_types::partition_table::FindPartition;
 
 #[derive(Debug, Clone)]
 pub struct InvocationStorageReaderImpl {

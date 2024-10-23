@@ -11,14 +11,15 @@
 use std::num::{NonZeroU32, NonZeroU8};
 
 use cling::prelude::*;
-
-use restate_types::logs::builder::LogsBuilder;
-use restate_types::logs::metadata::{Chain, LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::LogId;
-use restate_types::replicated_loglet::{
-    NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
+use restate_types::{
+    logs::{
+        builder::LogsBuilder,
+        metadata::{Chain, LogletParams, ProviderKind, SegmentIndex},
+        LogId,
+    },
+    replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty},
+    GenerationalNodeId, PlainNodeId,
 };
-use restate_types::{GenerationalNodeId, PlainNodeId};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]

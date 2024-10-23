@@ -14,9 +14,10 @@ use std::sync::Arc;
 #[cfg(any(test, feature = "test-util"))]
 use parking_lot::Mutex;
 use rand::prelude::*;
-
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::replicated_loglet::{NodeSet, ReplicationProperty, Spread};
+use restate_types::{
+    nodes_config::NodesConfiguration,
+    replicated_loglet::{NodeSet, ReplicationProperty, Spread},
+};
 
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
 
@@ -187,13 +188,10 @@ impl FixedSpreadSelector {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use googletest::prelude::*;
+    use restate_types::{nodes_config::StorageState, PlainNodeId};
 
-    use restate_types::nodes_config::StorageState;
-    use restate_types::PlainNodeId;
-
+    use super::*;
     use crate::providers::replicated_loglet::test_util::generate_logserver_nodes_config;
 
     #[test]

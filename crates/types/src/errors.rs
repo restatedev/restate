@@ -8,10 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::any::Any;
-use std::borrow::Cow;
-use std::convert::Into;
-use std::fmt;
+use std::{any::Any, borrow::Cow, convert::Into, fmt};
 
 /// Error type which abstracts away the actual [`std::error::Error`] type. Use this type
 /// if you don't know the actual error type or if it is not important.

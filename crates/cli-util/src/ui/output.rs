@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Write;
-use std::sync::{Arc, Mutex};
-
-use std::sync::OnceLock;
+use std::{
+    fmt::Write,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 const BUF_INITIAL_CAPACITY: usize = 2048;
 

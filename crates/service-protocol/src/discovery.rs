@@ -8,36 +8,42 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt::Display,
+    ops::{Deref, RangeInclusive},
+};
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use codederror::CodedError;
-use http::header::{ACCEPT, CONTENT_TYPE};
-use http::response::Parts as ResponseParts;
-use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version};
-use http_body_util::BodyExt;
-use http_body_util::Empty;
+use http::{
+    header::{ACCEPT, CONTENT_TYPE},
+    response::Parts as ResponseParts,
+    uri::PathAndQuery,
+    HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version,
+};
+use http_body_util::{BodyExt, Empty};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use restate_errors::{META0003, META0012, META0013, META0014, META0015};
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
-use restate_types::endpoint_manifest;
-use restate_types::errors::GenericError;
-use restate_types::identifiers::LambdaARN;
-use restate_types::retries::{RetryIter, RetryPolicy};
-use restate_types::schema::deployment::ProtocolType;
-use restate_types::service_discovery::{
-    ServiceDiscoveryProtocolVersion, MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION,
-    MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION,
+use restate_types::{
+    endpoint_manifest,
+    errors::GenericError,
+    identifiers::LambdaARN,
+    retries::{RetryIter, RetryPolicy},
+    schema::deployment::ProtocolType,
+    service_discovery::{
+        ServiceDiscoveryProtocolVersion, MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION,
+        MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION,
+    },
+    service_protocol::{
+        ServiceProtocolVersion, MAX_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE,
+        MIN_SERVICE_PROTOCOL_VERSION,
+    },
 };
-use restate_types::service_protocol::{
-    ServiceProtocolVersion, MAX_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE,
-    MIN_SERVICE_PROTOCOL_VERSION,
-};
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::fmt::Display;
-use std::ops::{Deref, RangeInclusive};
 use strum::IntoEnumIterator;
 use tracing::{debug, warn};
 
@@ -447,17 +453,20 @@ impl ServiceDiscovery {
 
 #[cfg(test)]
 mod tests {
-    use crate::discovery::endpoint_manifest::ProtocolMode;
+    use std::collections::HashMap;
+
+    use http::{Uri, Version};
+    use restate_service_client::Endpoint;
+    use restate_types::{
+        endpoint_manifest, service_discovery::ServiceDiscoveryProtocolVersion,
+        service_protocol::MAX_SERVICE_PROTOCOL_VERSION,
+    };
+
     use crate::discovery::{
+        endpoint_manifest::ProtocolMode,
         parse_service_discovery_protocol_version_from_content_type, DiscoveryError,
         ServiceDiscovery, SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE,
     };
-    use http::{Uri, Version};
-    use restate_service_client::Endpoint;
-    use restate_types::endpoint_manifest;
-    use restate_types::service_discovery::ServiceDiscoveryProtocolVersion;
-    use restate_types::service_protocol::MAX_SERVICE_PROTOCOL_VERSION;
-    use std::collections::HashMap;
 
     #[test]
     fn fail_on_invalid_min_protocol_version_with_bad_response() {

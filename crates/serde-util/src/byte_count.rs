@@ -8,13 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::{self, Display};
-use std::num::{NonZeroU64, NonZeroUsize};
-use std::str::FromStr;
+use std::{
+    fmt::{self, Display},
+    num::{NonZeroU64, NonZeroUsize},
+    str::FromStr,
+};
 
 use bytesize::ByteSize;
-use serde::de::Visitor;
-use serde::{de, de::Deserialize, Deserializer, Serialize, Serializer};
+use serde::{
+    de,
+    de::{Deserialize, Visitor},
+    Deserializer, Serialize, Serializer,
+};
 use serde_with::{DeserializeAs, SerializeAs};
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Copy, Hash)]
@@ -306,9 +311,9 @@ impl<'de> DeserializeAs<'de, NonZeroU64> for ByteCount<false> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use serde::Deserialize;
+
+    use super::*;
 
     #[derive(Serialize, Deserialize)]
     struct Config(ByteCount<true>);

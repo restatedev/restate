@@ -8,16 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
-use std::time::Instant;
+use std::{collections::BTreeMap, time::Instant};
 
 use prost_dto::IntoProto;
 use serde::{Deserialize, Serialize};
 
-use crate::identifiers::{LeaderEpoch, PartitionId};
-use crate::logs::Lsn;
-use crate::time::MillisSinceEpoch;
-use crate::{GenerationalNodeId, PlainNodeId, Version};
+use crate::{
+    identifiers::{LeaderEpoch, PartitionId},
+    logs::Lsn,
+    time::MillisSinceEpoch,
+    GenerationalNodeId, PlainNodeId, Version,
+};
 
 /// A container for health information about every node and partition in the
 /// cluster.

@@ -11,17 +11,13 @@
 use std::str::FromStr;
 
 use cling::prelude::*;
-
-use restate_cli_util::CliContext;
-use restate_cli_util::CommonOpts;
+use restate_cli_util::{CliContext, CommonOpts};
 use restate_types::net::AdvertisedAddress;
 
-use crate::commands::cluster::overview::ClusterStatusOpts;
-use crate::commands::log::Logs;
-use crate::commands::metadata::Metadata;
-use crate::commands::node::Nodes;
-use crate::commands::partition::Partitions;
-use crate::commands::snapshot::Snapshot;
+use crate::commands::{
+    cluster::overview::ClusterStatusOpts, log::Logs, metadata::Metadata, node::Nodes,
+    partition::Partitions, snapshot::Snapshot,
+};
 
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]

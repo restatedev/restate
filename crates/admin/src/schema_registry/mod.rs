@@ -11,27 +11,29 @@
 pub mod error;
 mod updater;
 
-use crate::schema_registry::error::{SchemaError, SchemaRegistryError, ServiceError};
-use crate::schema_registry::updater::SchemaUpdater;
+use std::{borrow::Borrow, collections::HashMap, ops::Deref, time::Duration};
+
 use http::Uri;
-use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::{metadata, MetadataWriter};
+use restate_core::{metadata, metadata_store::MetadataStoreClient, MetadataWriter};
 use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
-use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
-use restate_types::metadata_store::keys::SCHEMA_INFORMATION_KEY;
-use restate_types::schema::deployment::{
-    DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver,
+use restate_types::{
+    identifiers::{DeploymentId, ServiceRevision, SubscriptionId},
+    metadata_store::keys::SCHEMA_INFORMATION_KEY,
+    schema::{
+        deployment::{DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver},
+        service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver},
+        subscriptions::{
+            ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
+        },
+        Schema,
+    },
 };
-use restate_types::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
-use restate_types::schema::subscriptions::{
-    ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
-};
-use restate_types::schema::Schema;
-use std::borrow::Borrow;
-use std::collections::HashMap;
-use std::ops::Deref;
-use std::time::Duration;
 use tracing::subscriber::NoSubscriber;
+
+use crate::schema_registry::{
+    error::{SchemaError, SchemaRegistryError, ServiceError},
+    updater::SchemaUpdater,
+};
 
 /// Whether to force the registration of an existing endpoint or not
 #[derive(Clone, PartialEq, Eq, Debug)]

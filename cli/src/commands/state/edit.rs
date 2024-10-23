@@ -11,15 +11,18 @@
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
+use restate_cli_util::{
+    c_println, c_title,
+    ui::console::{confirm_or_exit, StyledTable},
+};
 use tempfile::tempdir;
 
-use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
-use restate_cli_util::{c_println, c_title};
-
-use crate::cli_env::CliEnv;
-use crate::commands::state::util::{
-    as_json, compute_version, from_json, get_current_state, pretty_print_json, read_json_file,
-    update_state, write_json_file,
+use crate::{
+    cli_env::CliEnv,
+    commands::state::util::{
+        as_json, compute_version, from_json, get_current_state, pretty_print_json, read_json_file,
+        update_state, write_json_file,
+    },
 };
 
 #[derive(Run, Parser, Collect, Clone)]

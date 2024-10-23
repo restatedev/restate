@@ -8,24 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::owned_iter::OwnedIterator;
-use crate::scan::TableScan;
-use crate::{PartitionStore, TableKind, TableScanIterationDecision};
-use crate::{PartitionStoreTransaction, StorageAccess};
+use std::ops::RangeInclusive;
+
 use anyhow::anyhow;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::promise_table::{
-    OwnedPromiseRow, Promise, PromiseTable, ReadOnlyPromiseTable,
+use restate_storage_api::{
+    promise_table::{OwnedPromiseRow, Promise, PromiseTable, ReadOnlyPromiseTable},
+    Result, StorageError,
 };
-use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use restate_types::storage::StorageCodec;
-use std::ops::RangeInclusive;
+use restate_types::{
+    identifiers::{PartitionKey, ServiceId, WithPartitionKey},
+    storage::StorageCodec,
+};
+
+use crate::{
+    keys::{define_table_key, KeyKind, TableKey},
+    owned_iter::OwnedIterator,
+    scan::TableScan,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
+    TableScanIterationDecision,
+};
 
 define_table_key!(
     TableKind::Promise,

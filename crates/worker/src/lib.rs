@@ -21,16 +21,12 @@ mod subscription_controller;
 mod subscription_integration;
 
 use codederror::CodedError;
-use tokio::sync::oneshot;
-
-pub use crate::subscription_controller::SubscriptionController;
-pub use crate::subscription_integration::SubscriptionControllerHandle;
-
 use restate_bifrost::Bifrost;
-use restate_core::network::MessageRouterBuilder;
-use restate_core::network::Networking;
-use restate_core::network::TransportConnect;
-use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
+use restate_core::{
+    cancellation_watcher,
+    network::{MessageRouterBuilder, Networking, TransportConnect},
+    task_center, Metadata, TaskKind,
+};
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
@@ -39,17 +35,22 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
-use restate_types::config::Configuration;
-use restate_types::health::HealthStatus;
-use restate_types::live::Live;
-use restate_types::protobuf::common::WorkerStatus;
-use restate_types::schema::Schema;
+use restate_types::{
+    config::Configuration, health::HealthStatus, live::Live, protobuf::common::WorkerStatus,
+    schema::Schema,
+};
+use tokio::sync::oneshot;
 
-pub use self::error::*;
-pub use self::handle::*;
-use crate::ingress_integration::InvocationStorageReaderImpl;
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition_processor_manager::PartitionProcessorManager;
+pub use self::{error::*, handle::*};
+use crate::{
+    ingress_integration::InvocationStorageReaderImpl,
+    partition::invoker_storage_reader::InvokerStorageReader,
+    partition_processor_manager::PartitionProcessorManager,
+};
+pub use crate::{
+    subscription_controller::SubscriptionController,
+    subscription_integration::SubscriptionControllerHandle,
+};
 
 type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,

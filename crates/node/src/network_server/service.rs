@@ -12,30 +12,31 @@ use axum::routing::get;
 use http::Request;
 use hyper::body::Incoming;
 use hyper_util::service::TowerToHyperService;
-use tonic::body::boxed;
-use tonic::codec::CompressionEncoding;
+use restate_admin::cluster_controller::{
+    protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer, ClusterControllerHandle,
+};
+use restate_bifrost::Bifrost;
+use restate_core::{
+    network::{
+        net_util::run_hyper_server, protobuf::node_svc::node_svc_server::NodeSvcServer,
+        ConnectionManager, GrpcConnector,
+    },
+    task_center, MetadataWriter,
+};
+use restate_metadata_store::MetadataStoreClient;
+use restate_storage_query_datafusion::context::QueryContext;
+use restate_types::{config::CommonOptions, health::Health, protobuf::common::NodeStatus};
+use tonic::{body::boxed, codec::CompressionEncoding};
 use tower::ServiceExt;
 use tower_http::trace::TraceLayer;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
-use restate_admin::cluster_controller::ClusterControllerHandle;
-use restate_bifrost::Bifrost;
-use restate_core::network::net_util::run_hyper_server;
-use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
-use restate_core::network::{ConnectionManager, GrpcConnector};
-use restate_core::{task_center, MetadataWriter};
-use restate_metadata_store::MetadataStoreClient;
-use restate_storage_query_datafusion::context::QueryContext;
-use restate_types::config::CommonOptions;
-use restate_types::health::Health;
-use restate_types::protobuf::common::NodeStatus;
-
-use crate::network_server::handler;
-use crate::network_server::handler::cluster_ctrl::ClusterCtrlSvcHandler;
-use crate::network_server::handler::node::NodeSvcHandler;
-use crate::network_server::metrics::install_global_prometheus_recorder;
-use crate::network_server::multiplex::MultiplexService;
-use crate::network_server::state::NodeCtrlHandlerStateBuilder;
+use crate::network_server::{
+    handler,
+    handler::{cluster_ctrl::ClusterCtrlSvcHandler, node::NodeSvcHandler},
+    metrics::install_global_prometheus_recorder,
+    multiplex::MultiplexService,
+    state::NodeCtrlHandlerStateBuilder,
+};
 
 pub struct NetworkServer {
     health: Health,

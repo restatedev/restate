@@ -8,25 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::max;
-use std::path::PathBuf;
+use std::{cmp::max, path::PathBuf};
 
 use anyhow::{bail, Context};
 use cling::prelude::*;
 use futures_util::StreamExt;
+use restate_bifrost::{BifrostService, FindTailAttributes};
+use restate_core::{network::MessageRouterBuilder, MetadataBuilder, MetadataManager, TaskKind};
+use restate_rocksdb::RocksDbManager;
+use restate_types::{
+    config::Configuration,
+    live::Live,
+    logs::{KeyFilter, LogId, Lsn, SequenceNumber},
+};
+use restate_wal_protocol::Envelope;
 use tracing::{debug, info};
 
-use restate_bifrost::{BifrostService, FindTailAttributes};
-use restate_core::network::MessageRouterBuilder;
-use restate_core::{MetadataBuilder, MetadataManager, TaskKind};
-use restate_rocksdb::RocksDbManager;
-use restate_types::config::Configuration;
-use restate_types::live::Live;
-use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
-use restate_wal_protocol::Envelope;
-
-use crate::environment::metadata_store;
-use crate::environment::task_center::run_in_task_center;
+use crate::environment::{metadata_store, task_center::run_in_task_center};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]

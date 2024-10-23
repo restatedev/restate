@@ -15,12 +15,16 @@ use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use crossterm::style::Stylize;
 use itertools::Itertools;
-use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
-use restate_cli_util::{c_indent_table, c_println};
+use restate_cli_util::{
+    c_indent_table, c_println,
+    ui::console::{confirm_or_exit, StyledTable},
+};
 
-use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::get_state_keys;
-use crate::commands::state::util::{compute_version, update_state};
+use crate::{
+    cli_env::CliEnv,
+    clients::datafusion_helpers::get_state_keys,
+    commands::state::util::{compute_version, update_state},
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_clear")]

@@ -16,8 +16,10 @@ pub mod datafusion_helpers;
 mod datafusion_http_client;
 mod errors;
 
-pub use self::admin_client::AdminClient;
-pub use self::admin_client::Error as MetasClientError;
-pub use self::admin_client::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
-pub use self::admin_interface::AdminClientInterface;
-pub use self::datafusion_http_client::DataFusionHttpClient;
+pub use self::{
+    admin_client::{
+        AdminClient, Error as MetasClientError, MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION,
+    },
+    admin_interface::AdminClientInterface,
+    datafusion_http_client::DataFusionHttpClient,
+};

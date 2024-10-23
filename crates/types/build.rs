@@ -8,10 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{
+    env,
+    fs::File,
+    path::{Path, PathBuf},
+};
+
 use jsonptr::Pointer;
-use std::env;
-use std::fs::File;
-use std::path::{Path, PathBuf};
 use typify::{TypeSpace, TypeSpaceSettings};
 
 fn main() -> std::io::Result<()> {

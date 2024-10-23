@@ -10,10 +10,10 @@
 
 //! Raw entries carry the serialized representation of entries.
 
-use super::*;
-
-use crate::invocation::Header;
 use std::fmt::Debug;
+
+use super::*;
+use crate::invocation::Header;
 
 /// This struct represents headers as they are received from the wire.
 pub type PlainEntryHeader = EntryHeader<(), ()>;

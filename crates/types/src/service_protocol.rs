@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::errors::InvocationError;
 use std::ops::RangeInclusive;
+
+use crate::errors::InvocationError;
 
 // Range of supported service protocol versions by this server
 pub const MIN_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V1;
@@ -77,7 +78,6 @@ impl From<crate::invocation::Header> for Header {
 /// These are used by the [`codec::ProtobufRawEntryCodec`].
 mod pb_into {
     use super::*;
-
     use crate::journal::{
         AwakeableEntry, CancelInvocationEntry, CancelInvocationTarget, ClearStateEntry,
         CompleteAwakeableEntry, CompletePromiseEntry, CompleteResult, CompletionResult, Entry,

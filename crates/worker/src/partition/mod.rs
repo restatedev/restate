@@ -8,51 +8,66 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    fmt::Debug,
+    ops::RangeInclusive,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{anyhow, Context};
 use assert2::let_assert;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
 use metrics::{counter, histogram};
-use tokio::sync::{mpsc, oneshot, watch};
-use tokio::time::MissedTickBehavior;
+use restate_bifrost::{Bifrost, FindTailAttributes};
+use restate_core::{
+    cancellation_watcher, metadata,
+    network::{Networking, TransportConnect},
+    TaskHandle, TaskKind,
+};
+use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
+use restate_storage_api::{
+    deduplication_table::{
+        DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
+        ReadOnlyDeduplicationTable,
+    },
+    fsm_table::{FsmTable, ReadOnlyFsmTable},
+    invocation_status_table,
+    outbox_table::ReadOnlyOutboxTable,
+    StorageError, Transaction,
+};
+use restate_types::{
+    cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode},
+    config::{Configuration, WorkerOptions},
+    identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId},
+    journal::raw::RawEntryCodec,
+    live::Live,
+    logs::{KeyFilter, LogId, Lsn, MatchKeyQuery, SequenceNumber},
+    retries::RetryPolicy,
+    time::MillisSinceEpoch,
+    GenerationalNodeId,
+};
+use restate_wal_protocol::{
+    control::AnnounceLeader, Command, Destination, Envelope, Header, Source,
+};
+use tokio::{
+    sync::{mpsc, oneshot, watch},
+    time::MissedTickBehavior,
+};
 use tracing::{debug, error, info, instrument, trace, warn, Instrument, Span};
 
-use restate_bifrost::{Bifrost, FindTailAttributes};
-use restate_core::network::{Networking, TransportConnect};
-use restate_core::{cancellation_watcher, metadata, TaskHandle, TaskKind};
-use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
-use restate_storage_api::deduplication_table::{
-    DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
-    ReadOnlyDeduplicationTable,
+use crate::{
+    metric_definitions::{
+        PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
+        PP_APPLY_COMMAND_BATCH_SIZE, PP_APPLY_COMMAND_DURATION,
+    },
+    partition::{
+        invoker_storage_reader::InvokerStorageReader,
+        leadership::{LeadershipState, PartitionProcessorMetadata},
+        snapshot_producer::{SnapshotProducer, SnapshotSource},
+        state_machine::{ActionCollector, StateMachine},
+    },
 };
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
-use restate_storage_api::outbox_table::ReadOnlyOutboxTable;
-use restate_storage_api::{invocation_status_table, StorageError, Transaction};
-use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
-use restate_types::config::{Configuration, WorkerOptions};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
-use restate_types::journal::raw::RawEntryCodec;
-use restate_types::live::Live;
-use restate_types::logs::MatchKeyQuery;
-use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
-use restate_types::retries::RetryPolicy;
-use restate_types::time::MillisSinceEpoch;
-use restate_types::GenerationalNodeId;
-use restate_wal_protocol::control::AnnounceLeader;
-use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
-
-use crate::metric_definitions::{
-    PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
-    PP_APPLY_COMMAND_BATCH_SIZE, PP_APPLY_COMMAND_DURATION,
-};
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
-use crate::partition::snapshot_producer::{SnapshotProducer, SnapshotSource};
-use crate::partition::state_machine::{ActionCollector, StateMachine};
 
 mod action_effect_handler;
 mod cleaner;

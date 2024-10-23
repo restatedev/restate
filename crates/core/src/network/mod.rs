@@ -22,17 +22,15 @@ pub mod rpc_router;
 pub mod transport_connector;
 mod types;
 
+#[cfg(any(test, feature = "test-util"))]
+pub use connection::test_util::*;
 pub use connection::{OwnedConnection, WeakConnection};
 pub use connection_manager::ConnectionManager;
 pub use error::*;
 pub use message_router::*;
 pub use network_sender::*;
 pub use networking::Networking;
-pub use transport_connector::{GrpcConnector, TransportConnect};
-pub use types::*;
-
-#[cfg(any(test, feature = "test-util"))]
-pub use connection::test_util::*;
-
 #[cfg(any(test, feature = "test-util"))]
 pub use transport_connector::test_util::*;
+pub use transport_connector::{GrpcConnector, TransportConnect};
+pub use types::*;

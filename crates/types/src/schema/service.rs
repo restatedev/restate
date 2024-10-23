@@ -8,18 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use super::invocation_target::InvocationTargetMetadata;
-use super::Schema;
-use crate::identifiers::{DeploymentId, ServiceRevision};
-use crate::invocation::{
-    InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
+use super::{invocation_target::InvocationTargetMetadata, Schema};
+use crate::{
+    identifiers::{DeploymentId, ServiceRevision},
+    invocation::{
+        InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
+    },
 };
 
 #[serde_as]
@@ -238,9 +237,9 @@ impl ServiceMetadataResolver for Schema {
 #[cfg(feature = "test-util")]
 #[allow(dead_code)]
 pub mod test_util {
-    use super::*;
-
     use std::collections::HashMap;
+
+    use super::*;
 
     #[derive(Debug, Default, Clone)]
     pub struct MockServiceMetadataResolver(HashMap<String, ServiceMetadata>);

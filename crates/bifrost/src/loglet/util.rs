@@ -9,10 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use restate_core::ShutdownError;
+use restate_types::logs::TailState;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
-
-use restate_types::logs::TailState;
 
 use super::LogletOffset;
 

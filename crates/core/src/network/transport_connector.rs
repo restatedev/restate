@@ -12,17 +12,14 @@ use std::future::Future;
 
 use dashmap::DashMap;
 use futures::{Stream, StreamExt};
+use restate_types::{
+    config::NetworkingOptions, net::AdvertisedAddress, nodes_config::NodesConfiguration,
+    protobuf::node::Message, GenerationalNodeId,
+};
 use tonic::transport::Channel;
 use tracing::trace;
 
-use restate_types::config::NetworkingOptions;
-use restate_types::net::AdvertisedAddress;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::protobuf::node::Message;
-use restate_types::GenerationalNodeId;
-
-use super::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use super::{NetworkError, ProtocolError};
+use super::{protobuf::node_svc::node_svc_client::NodeSvcClient, NetworkError, ProtocolError};
 use crate::network::net_util::create_tonic_channel_from_advertised_address;
 
 pub trait TransportConnect: Send + Sync + 'static {
@@ -86,25 +83,24 @@ impl TransportConnect for GrpcConnector {
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
 
-    use super::*;
-
-    use std::sync::Arc;
-    use std::time::Instant;
+    use std::{sync::Arc, time::Instant};
 
     use futures::{Stream, StreamExt};
     use parking_lot::Mutex;
+    use restate_types::{
+        nodes_config::NodesConfiguration,
+        protobuf::node::{message::BinaryMessage, Message},
+        GenerationalNodeId,
+    };
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
     use tracing::info;
 
-    use restate_types::nodes_config::NodesConfiguration;
-    use restate_types::protobuf::node::message::BinaryMessage;
-    use restate_types::protobuf::node::Message;
-    use restate_types::GenerationalNodeId;
-
-    use super::{NetworkError, ProtocolError};
-    use crate::network::{Incoming, MockPeerConnection, PartialPeerConnection, WeakConnection};
-    use crate::{TaskCenter, TaskHandle, TaskKind};
+    use super::{NetworkError, ProtocolError, *};
+    use crate::{
+        network::{Incoming, MockPeerConnection, PartialPeerConnection, WeakConnection},
+        TaskCenter, TaskHandle, TaskKind,
+    };
 
     #[derive(Clone)]
     pub struct MockConnector {

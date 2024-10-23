@@ -8,21 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::future::Future;
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use anyhow::Result;
 use cling::Collect;
-use crossterm::style::ResetColor;
-use crossterm::terminal::{
-    BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate, EnterAlternateScreen,
-    LeaveAlternateScreen,
+use crossterm::{
+    cursor, execute, queue,
+    style::ResetColor,
+    terminal::{
+        BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
 };
-use crossterm::{cursor, execute, queue};
-
-use crate::ui::console::Icon;
 
 use super::output::Console;
+use crate::ui::console::Icon;
 
 #[derive(clap::Args, Clone, Collect, Debug)]
 pub struct Watch {

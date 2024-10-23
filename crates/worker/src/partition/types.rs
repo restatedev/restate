@@ -9,8 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::invocation::{InvocationResponse, ResponseResult};
+use restate_types::{
+    identifiers::{EntryIndex, InvocationId},
+    invocation::{InvocationResponse, ResponseResult},
+};
 use restate_wal_protocol::Command;
 
 pub(crate) type InvokerEffect = restate_invoker_api::Effect;

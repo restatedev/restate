@@ -11,17 +11,17 @@
 use bytes::Bytes;
 use http::{Method, Request, Response};
 use http_body_util::Full;
+use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherRequest};
+use restate_types::{
+    identifiers::IdempotencyId, invocation::InvocationQuery,
+    schema::invocation_target::InvocationTargetResolver,
+};
 use tracing::warn;
 
-use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_ingress_dispatcher::IngressDispatcherRequest;
-use restate_types::identifiers::IdempotencyId;
-use restate_types::invocation::InvocationQuery;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
-
-use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
-use super::Handler;
-use super::HandlerError;
+use super::{
+    path_parsing::{InvocationRequestType, InvocationTargetType, TargetType},
+    Handler, HandlerError,
+};
 use crate::{GetOutputResult, InvocationStorageReader};
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>

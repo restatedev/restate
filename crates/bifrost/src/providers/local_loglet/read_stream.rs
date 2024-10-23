@@ -8,27 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::task::Poll;
+use std::{
+    sync::{atomic::Ordering, Arc},
+    task::Poll,
+};
 
 use bytes::BytesMut;
-use futures::stream::BoxStream;
-use futures::{Stream, StreamExt};
-use rocksdb::{DBRawIteratorWithThreadMode, DB};
-use tracing::{debug, error, warn};
-
+use futures::{stream::BoxStream, Stream, StreamExt};
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_types::logs::{KeyFilter, LogletOffset, SequenceNumber, TailState};
+use rocksdb::{DBRawIteratorWithThreadMode, DB};
+use tracing::{debug, error, warn};
 
-use crate::loglet::{Loglet, LogletReadStream, OperationError};
-use crate::providers::local_loglet::record_format::decode_and_filter_record;
-use crate::providers::local_loglet::LogStoreError;
-use crate::{LogEntry, Result};
-
-use super::keys::RecordKey;
-use super::LocalLoglet;
+use super::{keys::RecordKey, LocalLoglet};
+use crate::{
+    loglet::{Loglet, LogletReadStream, OperationError},
+    providers::local_loglet::{record_format::decode_and_filter_record, LogStoreError},
+    LogEntry, Result,
+};
 
 pub(crate) struct LocalLogletReadStream {
     loglet_id: u64,

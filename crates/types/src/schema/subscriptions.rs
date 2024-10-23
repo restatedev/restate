@@ -8,17 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use super::Schema;
-use crate::config::IngressOptions;
-use crate::errors::GenericError;
-use crate::identifiers::SubscriptionId;
+use crate::{config::IngressOptions, errors::GenericError, identifiers::SubscriptionId};
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

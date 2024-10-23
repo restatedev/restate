@@ -52,8 +52,7 @@ mod test_os_env {
     }
 }
 
-#[cfg(any(test, feature = "test-util"))]
-pub use test_os_env::OsEnv;
-
 #[cfg(not(any(test, feature = "test-util")))]
 pub use os_env::OsEnv;
+#[cfg(any(test, feature = "test-util"))]
+pub use test_os_env::OsEnv;

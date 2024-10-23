@@ -8,15 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::QueryEngineOptions;
-use crate::cluster_controller::ReplicationStrategy;
+use std::{net::SocketAddr, num::NonZeroUsize, path::PathBuf, time::Duration};
+
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::net::SocketAddr;
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
-use std::time::Duration;
 use tokio::sync::Semaphore;
+
+use super::QueryEngineOptions;
+use crate::cluster_controller::ReplicationStrategy;
 
 /// # Admin server options
 #[serde_as]

@@ -13,10 +13,9 @@ mod opts;
 mod os_env;
 pub mod ui;
 
+// Re-export comfy-table for console c_* macros
+pub use comfy_table as _comfy_table;
 pub use context::CliContext;
 pub use opts::CommonOpts;
 pub use os_env::OsEnv;
-
-// Re-export comfy-table for console c_* macros
-pub use comfy_table as _comfy_table;
 pub use unicode_width as _unicode_width;

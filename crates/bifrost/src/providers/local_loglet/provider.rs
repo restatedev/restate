@@ -8,23 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{hash_map, HashMap};
-use std::sync::Arc;
+use std::{
+    collections::{hash_map, HashMap},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use restate_types::{
+    config::{LocalLogletOptions, RocksDbOptions},
+    live::BoxedLiveLoad,
+    logs::{
+        metadata::{LogletParams, ProviderKind, SegmentIndex},
+        LogId,
+    },
+};
 use tracing::debug;
 
-use restate_types::config::{LocalLogletOptions, RocksDbOptions};
-use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::LogId;
-
-use super::log_store::RocksDbLogStore;
-use super::log_store_writer::RocksDbLogWriterHandle;
-use super::{metric_definitions, LocalLoglet};
-use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
-use crate::Error;
+use super::{
+    log_store::RocksDbLogStore, log_store_writer::RocksDbLogWriterHandle, metric_definitions,
+    LocalLoglet,
+};
+use crate::{
+    loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError},
+    Error,
+};
 
 pub struct Factory {
     options: BoxedLiveLoad<LocalLogletOptions>,

@@ -8,23 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use indicatif::ProgressBar;
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_println, c_title};
-
-use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::count_deployment_active_inv;
-use crate::clients::{AdminClient, AdminClientInterface};
-use crate::ui::deployments::{
-    add_deployment_to_kv_table, render_active_invocations, render_deployment_type,
-    render_deployment_url,
+use restate_cli_util::{
+    c_println, c_title,
+    ui::{console::StyledTable, watcher::Watch},
 };
-use crate::ui::service_handlers::create_service_handlers_table;
 
-use anyhow::Result;
+use crate::{
+    cli_env::CliEnv,
+    clients::{datafusion_helpers::count_deployment_active_inv, AdminClient, AdminClientInterface},
+    ui::{
+        deployments::{
+            add_deployment_to_kv_table, render_active_invocations, render_deployment_type,
+            render_deployment_url,
+        },
+        service_handlers::create_service_handlers_table,
+    },
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]

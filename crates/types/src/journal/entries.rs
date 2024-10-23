@@ -10,13 +10,15 @@
 
 //! A Restate journal is represented by Restate entries, each of them recording a specific action taken by the user code.
 
-use super::*;
-
-use crate::errors::{InvocationError, InvocationErrorCode};
-use crate::identifiers::EntryIndex;
-use crate::invocation::Header;
-use crate::time::MillisSinceEpoch;
 use std::fmt;
+
+use super::*;
+use crate::{
+    errors::{InvocationError, InvocationErrorCode},
+    identifiers::EntryIndex,
+    invocation::Header,
+    time::MillisSinceEpoch,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {

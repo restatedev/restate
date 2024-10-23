@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::promise_table::ReadOnlyPromiseTable;
-use crate::{protobuf_storage_encode_decode, Result};
+use std::{future::Future, ops::RangeInclusive};
+
 use futures_util::Stream;
-use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
-use restate_types::message::MessageIndex;
-use restate_types::state_mut::ExternalStateMutation;
-use std::future::Future;
-use std::ops::RangeInclusive;
+use restate_types::{
+    identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey},
+    message::MessageIndex,
+    state_mut::ExternalStateMutation,
+};
+
+use crate::{promise_table::ReadOnlyPromiseTable, protobuf_storage_encode_decode, Result};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InboxEntry {

@@ -8,26 +8,34 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::mocks::*;
-use crate::row;
 use bytes::Bytes;
-use datafusion::arrow::array::{Int64Array, LargeStringArray, UInt32Array};
-use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::{
+    array::{Int64Array, LargeStringArray, UInt32Array},
+    record_batch::RecordBatch,
+};
 use futures::StreamExt;
-use googletest::all;
-use googletest::prelude::{assert_that, eq};
+use googletest::{
+    all,
+    prelude::{assert_that, eq},
+};
 use prost::Message;
 use restate_core::TaskCenterBuilder;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable};
-use restate_storage_api::Transaction;
-use restate_types::identifiers::InvocationId;
-use restate_types::invocation::InvocationTarget;
-use restate_types::journal::enriched::{
-    CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
+use restate_storage_api::{
+    journal_table::{JournalEntry, JournalTable},
+    Transaction,
 };
-use restate_types::journal::{Entry, EntryType, InputEntry};
-use restate_types::service_protocol;
+use restate_types::{
+    identifiers::InvocationId,
+    invocation::InvocationTarget,
+    journal::{
+        enriched::{CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry},
+        Entry, EntryType, InputEntry,
+    },
+    service_protocol,
+};
+
+use crate::{mocks::*, row};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_entries() {

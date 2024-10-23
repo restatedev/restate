@@ -11,28 +11,32 @@
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+use restate_admin::cluster_controller::{
+    protobuf::{
+        cluster_ctrl_svc_server::ClusterCtrlSvc, ClusterStateRequest, ClusterStateResponse,
+        CreatePartitionSnapshotRequest, CreatePartitionSnapshotResponse, DescribeLogRequest,
+        DescribeLogResponse, FindTailRequest, FindTailResponse, ListLogsRequest, ListLogsResponse,
+        ListNodesRequest, ListNodesResponse, SealAndExtendChainRequest, SealAndExtendChainResponse,
+        SealedSegment, TailState, TrimLogRequest,
+    },
+    ClusterControllerHandle,
+};
+use restate_bifrost::{Bifrost, BifrostAdmin, Error as BiforstError};
 use restate_core::MetadataWriter;
+use restate_metadata_store::MetadataStoreClient;
+use restate_types::{
+    identifiers::PartitionId,
+    logs::{
+        metadata::{Logs, ProviderKind, SegmentIndex},
+        LogId, Lsn, SequenceNumber,
+    },
+    metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY},
+    nodes_config::NodesConfiguration,
+    storage::{StorageCodec, StorageEncode},
+    Version, Versioned,
+};
 use tonic::{async_trait, Request, Response, Status};
 use tracing::{debug, info};
-
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
-use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
-    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
-    FindTailResponse, ListLogsRequest, ListLogsResponse, ListNodesRequest, ListNodesResponse,
-    SealAndExtendChainRequest, SealAndExtendChainResponse, SealedSegment, TailState,
-    TrimLogRequest,
-};
-use restate_admin::cluster_controller::ClusterControllerHandle;
-use restate_bifrost::{Bifrost, BifrostAdmin, Error as BiforstError};
-use restate_metadata_store::MetadataStoreClient;
-use restate_types::identifiers::PartitionId;
-use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
-use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY};
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::storage::{StorageCodec, StorageEncode};
-use restate_types::{Version, Versioned};
 
 use crate::network_server::ClusterControllerDependencies;
 

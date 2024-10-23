@@ -8,13 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{protobuf_storage_encode_decode, Result};
+use std::{cmp::Ordering, future::Future};
+
 use bytestring::ByteString;
 use futures_util::Stream;
-use restate_types::identifiers::{LeaderEpoch, PartitionId};
-use restate_types::message::MessageIndex;
-use std::cmp::Ordering;
-use std::future::Future;
+use restate_types::{
+    identifiers::{LeaderEpoch, PartitionId},
+    message::MessageIndex,
+};
+
+use crate::{protobuf_storage_encode_decode, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DedupInformation {

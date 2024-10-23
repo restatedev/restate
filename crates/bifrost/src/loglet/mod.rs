@@ -15,23 +15,21 @@ mod provider;
 pub mod util;
 
 // exports
-pub use error::*;
-use futures::stream::BoxStream;
-pub use provider::{LogletProvider, LogletProviderFactory};
-use tokio::sync::oneshot;
-
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{ready, Poll};
+use std::{
+    pin::Pin,
+    sync::Arc,
+    task::{ready, Poll},
+};
 
 use async_trait::async_trait;
-use futures::{FutureExt, Stream};
-
+pub use error::*;
+use futures::{stream::BoxStream, FutureExt, Stream};
+pub use provider::{LogletProvider, LogletProviderFactory};
 use restate_core::ShutdownError;
 use restate_types::logs::{KeyFilter, LogletOffset, Record, TailState};
+use tokio::sync::oneshot;
 
-use crate::LogEntry;
-use crate::Result;
+use crate::{LogEntry, Result};
 
 /// A loglet represents a logical log stream provided by a provider implementation.
 ///

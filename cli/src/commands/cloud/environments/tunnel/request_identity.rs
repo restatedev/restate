@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashSet;
+
 use http::HeaderMap;
 use serde::Deserialize;
-use std::collections::HashSet;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {

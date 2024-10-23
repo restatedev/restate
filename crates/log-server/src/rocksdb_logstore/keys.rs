@@ -11,9 +11,7 @@
 use std::mem::size_of;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-
-use restate_types::logs::LogletOffset;
-use restate_types::replicated_loglet::ReplicatedLogletId;
+use restate_types::{logs::LogletOffset, replicated_loglet::ReplicatedLogletId};
 
 // log-store marker
 pub(super) const MARKER_KEY: &[u8] = b"storage-marker";

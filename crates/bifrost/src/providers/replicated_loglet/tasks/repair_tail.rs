@@ -10,19 +10,23 @@
 
 use std::time::Duration;
 
-use restate_core::network::{Networking, TransportConnect};
-use restate_core::{ShutdownError, TaskCenter};
-use restate_types::logs::{KeyFilter, LogletOffset, RecordCache, SequenceNumber};
-use restate_types::net::log_server::{GetDigest, LogServerRequestHeader};
-use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
+use restate_core::{
+    network::{Networking, TransportConnect},
+    ShutdownError, TaskCenter,
+};
+use restate_types::{
+    logs::{KeyFilter, LogletOffset, RecordCache, SequenceNumber},
+    net::log_server::{GetDigest, LogServerRequestHeader},
+    replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams},
+};
 use tokio::task::JoinSet;
 use tracing::{trace, warn};
 
-use crate::loglet::util::TailOffsetWatch;
-use crate::providers::replicated_loglet::read_path::ReadStreamTask;
-use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
-
 use super::digests::Digests;
+use crate::{
+    loglet::util::TailOffsetWatch,
+    providers::replicated_loglet::{read_path::ReadStreamTask, rpc_routers::LogServersRpc},
+};
 
 /// # Overview
 ///

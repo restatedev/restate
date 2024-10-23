@@ -8,22 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::owned_iter::OwnedIterator;
-use crate::scan::TableScan;
-use crate::{PartitionStore, TableKind};
-use crate::{PartitionStoreTransaction, StorageAccess};
+use std::ops::RangeInclusive;
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
-use restate_storage_api::idempotency_table::{
-    IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
+use restate_storage_api::{
+    idempotency_table::{IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable},
+    Result, StorageError,
 };
-use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::{IdempotencyId, PartitionKey, WithPartitionKey};
-use restate_types::storage::StorageCodec;
-use std::ops::RangeInclusive;
+use restate_types::{
+    identifiers::{IdempotencyId, PartitionKey, WithPartitionKey},
+    storage::StorageCodec,
+};
+
+use crate::{
+    keys::{define_table_key, KeyKind, TableKey},
+    owned_iter::OwnedIterator,
+    scan::TableScan,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
+};
 
 define_table_key!(
     TableKind::Idempotency,

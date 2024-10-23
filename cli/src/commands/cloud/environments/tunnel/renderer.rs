@@ -8,24 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::hash::Hasher;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
-use std::{io::Write, sync::Arc};
+use std::{
+    hash::Hasher,
+    io::Write,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock,
+    },
+};
 
 use arc_swap::ArcSwapOption;
 use comfy_table::{Cell, Table};
-use crossterm::cursor::MoveTo;
-use crossterm::execute;
 use crossterm::{
-    queue,
+    cursor::MoveTo,
+    execute, queue,
     terminal::{BeginSynchronizedUpdate, Clear, ClearType},
 };
-
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::output::Console;
-use restate_cli_util::ui::stylesheet;
-use restate_cli_util::{c_indent_table, c_println, c_tip, c_warn, CliContext};
+use restate_cli_util::{
+    c_indent_table, c_println, c_tip, c_warn,
+    ui::{console::StyledTable, output::Console, stylesheet},
+    CliContext,
+};
 
 use super::remote::RemotePort;
 

@@ -8,21 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures::future::OptionFuture;
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
+use futures::{future::OptionFuture, stream::FuturesUnordered, StreamExt};
+use restate_core::{
+    cancellation_watcher, network::Incoming, ShutdownError, TaskCenter, TaskHandle, TaskKind,
+};
+use restate_types::{
+    logs::{LogletOffset, SequenceNumber},
+    net::log_server::*,
+    replicated_loglet::ReplicatedLogletId,
+    GenerationalNodeId,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
-use restate_core::network::Incoming;
-use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle, TaskKind};
-use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::net::log_server::*;
-use restate_types::replicated_loglet::ReplicatedLogletId;
-use restate_types::GenerationalNodeId;
-
-use crate::logstore::{AsyncToken, LogStore};
-use crate::metadata::LogletState;
+use crate::{
+    logstore::{AsyncToken, LogStore},
+    metadata::LogletState,
+};
 
 /// A loglet worker
 ///
@@ -608,25 +610,24 @@ impl<S: LogStore> LogletWorker<S> {
 mod tests {
     use std::sync::Arc;
 
-    use super::*;
     use googletest::prelude::*;
+    use restate_core::{network::OwnedConnection, MetadataBuilder, TaskCenter, TaskCenterBuilder};
+    use restate_rocksdb::RocksDbManager;
+    use restate_types::{
+        config::Configuration,
+        live::Live,
+        logs::{KeyFilter, Keys, Record, RecordCache},
+        net::{codec::MessageBodyExt, CURRENT_PROTOCOL_VERSION},
+        replicated_loglet::ReplicatedLogletId,
+    };
     use test_log::test;
 
-    use restate_core::network::OwnedConnection;
-    use restate_core::{MetadataBuilder, TaskCenter, TaskCenterBuilder};
-    use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
-    use restate_types::live::Live;
-    use restate_types::logs::{KeyFilter, Keys, Record, RecordCache};
-    use restate_types::net::codec::MessageBodyExt;
-    use restate_types::net::CURRENT_PROTOCOL_VERSION;
-    use restate_types::replicated_loglet::ReplicatedLogletId;
-
-    use crate::metadata::LogletStateMap;
-    use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};
-    use crate::setup_panic_handler;
-
-    use super::LogletWorker;
+    use super::{LogletWorker, *};
+    use crate::{
+        metadata::LogletStateMap,
+        rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder},
+        setup_panic_handler,
+    };
 
     async fn setup() -> Result<(TaskCenter, RocksDbLogStore)> {
         setup_panic_handler();

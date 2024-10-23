@@ -8,22 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use bytes::BytesMut;
 use bytestring::ByteString;
-use restate_core::cancellation_watcher;
-use restate_core::metadata_store::{Precondition, VersionedValue};
+use restate_core::{
+    cancellation_watcher,
+    metadata_store::{Precondition, VersionedValue},
+};
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
-use restate_types::live::BoxedLiveLoad;
-use restate_types::storage::{
-    StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+use restate_types::{
+    config::{MetadataStoreOptions, RocksDbOptions},
+    live::BoxedLiveLoad,
+    storage::{StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError},
+    Version,
 };
-use restate_types::Version;
 use rocksdb::{BoundColumnFamily, DBCompressionType, WriteBatch, WriteOptions, DB};
-use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace};
 

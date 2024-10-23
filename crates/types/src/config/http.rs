@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt;
-use std::str::FromStr;
-use std::time::Duration;
+use std::{fmt, str::FromStr, time::Duration};
 
-use http::uri::{InvalidUri, Parts, Scheme};
-use http::Uri;
+use http::{
+    uri::{InvalidUri, Parts, Scheme},
+    Uri,
+};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 

@@ -8,9 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use hyper::header::HeaderName;
-
-use hyper::HeaderMap;
+use hyper::{header::HeaderName, HeaderMap};
 
 pub(crate) mod v1;
 

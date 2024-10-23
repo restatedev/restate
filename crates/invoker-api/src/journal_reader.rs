@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures::Stream;
-use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::InvocationId;
-use restate_types::invocation::ServiceInvocationSpanContext;
-use restate_types::journal::raw::PlainRawEntry;
-use restate_types::journal::EntryIndex;
-use restate_types::time::MillisSinceEpoch;
 use std::future::Future;
+
+use futures::Stream;
+use restate_types::{
+    deployment::PinnedDeployment,
+    identifiers::InvocationId,
+    invocation::ServiceInvocationSpanContext,
+    journal::{raw::PlainRawEntry, EntryIndex},
+    time::MillisSinceEpoch,
+};
 
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]

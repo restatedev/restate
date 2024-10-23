@@ -8,30 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::http::HttpClient;
-use crate::lambda::LambdaClient;
+use core::fmt;
+use std::{error::Error, fmt::Formatter, future, future::Future, sync::Arc};
 
-pub use crate::http::HttpError;
-pub use crate::lambda::AssumeRoleCacheMode;
-use crate::request_identity::SignRequest;
 use ::http::Version;
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use bytestring::ByteString;
-use core::fmt;
 use futures::FutureExt;
 use http_body_util::Full;
-use hyper::body::Body;
-use hyper::header::HeaderValue;
-use hyper::http::uri::PathAndQuery;
-use hyper::{HeaderMap, Response, Uri};
-use restate_types::config::ServiceClientOptions;
-use restate_types::identifiers::LambdaARN;
-use std::error::Error;
-use std::fmt::Formatter;
-use std::future;
-use std::future::Future;
-use std::sync::Arc;
+use hyper::{body::Body, header::HeaderValue, http::uri::PathAndQuery, HeaderMap, Response, Uri};
+use restate_types::{config::ServiceClientOptions, identifiers::LambdaARN};
+
+use crate::{http::HttpClient, lambda::LambdaClient, request_identity::SignRequest};
+pub use crate::{http::HttpError, lambda::AssumeRoleCacheMode};
 
 mod aws_hyper_client;
 mod http;

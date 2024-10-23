@@ -12,15 +12,18 @@
 #![allow(clippy::borrow_interior_mutable_const)]
 #![allow(clippy::declare_interior_mutable_const)]
 
-use crate::storage_test_environment;
 use bytes::Bytes;
 use bytestring::ByteString;
-use restate_storage_api::promise_table::{
-    Promise, PromiseState, PromiseTable, ReadOnlyPromiseTable,
+use restate_storage_api::{
+    promise_table::{Promise, PromiseState, PromiseTable, ReadOnlyPromiseTable},
+    Transaction,
 };
-use restate_storage_api::Transaction;
-use restate_types::identifiers::{InvocationId, InvocationUuid, JournalEntryId, ServiceId};
-use restate_types::journal::EntryResult;
+use restate_types::{
+    identifiers::{InvocationId, InvocationUuid, JournalEntryId, ServiceId},
+    journal::EntryResult,
+};
+
+use crate::storage_test_environment;
 
 const SERVICE_ID_1: ServiceId = ServiceId::from_static(10, "MySvc", "a");
 const SERVICE_ID_2: ServiceId = ServiceId::from_static(11, "MySvc", "b");

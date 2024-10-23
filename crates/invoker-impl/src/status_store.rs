@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::time::SystemTime;
 
 use restate_invoker_api::status_handle::{InvocationStatusReport, InvocationStatusReportInner};
 
-use std::time::SystemTime;
+use super::*;
 
 #[derive(Default, Debug)]
 pub(super) struct InvocationStatusStore(

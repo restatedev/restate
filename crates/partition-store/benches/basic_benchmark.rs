@@ -14,13 +14,15 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use restate_core::TaskCenterBuilder;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
-use restate_storage_api::deduplication_table::{
-    DedupSequenceNumber, DeduplicationTable, ProducerId,
+use restate_storage_api::{
+    deduplication_table::{DedupSequenceNumber, DeduplicationTable, ProducerId},
+    Transaction,
 };
-use restate_storage_api::Transaction;
-use restate_types::config::{CommonOptions, WorkerOptions};
-use restate_types::identifiers::{PartitionId, PartitionKey};
-use restate_types::live::Constant;
+use restate_types::{
+    config::{CommonOptions, WorkerOptions},
+    identifiers::{PartitionId, PartitionKey},
+    live::Constant,
+};
 use tokio::runtime::Builder;
 
 async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {

@@ -12,21 +12,21 @@ use std::io::Cursor;
 
 use futures::Stream;
 use futures_util::stream;
-
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::deduplication_table::{
-    DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
-    ReadOnlyDeduplicationTable,
+use restate_storage_api::{
+    deduplication_table::{
+        DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
+        ReadOnlyDeduplicationTable,
+    },
+    Result, StorageError,
 };
-use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::PartitionId;
-use restate_types::storage::StorageCodec;
+use restate_types::{identifiers::PartitionId, storage::StorageCodec};
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::TableKind::Deduplication;
 use crate::{
-    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
-    TableScanIterationDecision,
+    keys::{define_table_key, KeyKind, TableKey},
+    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess,
+    TableKind::Deduplication,
+    TableScan, TableScanIterationDecision,
 };
 
 define_table_key!(

@@ -15,15 +15,16 @@ use std::fmt::Write;
 
 use axum::extract::State;
 use metrics_exporter_prometheus::formatting;
+use restate_rocksdb::{CfName, RocksDbManager};
 use rocksdb::statistics::{Histogram, Ticker};
 
-use restate_rocksdb::{CfName, RocksDbManager};
-
-use crate::network_server::prometheus_helpers::{
-    format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
-    format_rocksdb_stat_ticker_for_prometheus, MetricUnit,
+use crate::network_server::{
+    prometheus_helpers::{
+        format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
+        format_rocksdb_stat_ticker_for_prometheus, MetricUnit,
+    },
+    state::NodeCtrlHandlerState,
 };
-use crate::network_server::state::NodeCtrlHandlerState;
 
 const ROCKSDB_TICKERS: &[Ticker] = &[
     Ticker::BlockCacheBytesRead,

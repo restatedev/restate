@@ -11,7 +11,6 @@
 use std::task::{ready, Poll};
 
 use futures::FutureExt;
-
 use restate_types::logs::{LogletOffset, Lsn, SequenceNumber};
 
 use crate::loglet::AppendError;
@@ -129,8 +128,9 @@ impl std::future::Future for Commit {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::LsnExt;
     use restate_types::logs::{LogletOffset, Lsn, SequenceNumber};
+
+    use crate::types::LsnExt;
 
     #[test]
     fn lsn_to_offset() {

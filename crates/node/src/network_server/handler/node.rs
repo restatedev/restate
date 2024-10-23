@@ -8,23 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use arrow_flight::encode::FlightDataEncoderBuilder;
-use arrow_flight::error::FlightError;
+use arrow_flight::{encode::FlightDataEncoderBuilder, error::FlightError};
 use enumset::EnumSet;
-use futures::stream::BoxStream;
-use futures::TryStreamExt;
+use futures::{stream::BoxStream, TryStreamExt};
+use restate_core::{
+    metadata,
+    network::{
+        protobuf::node_svc::{
+            node_svc_server::NodeSvc, IdentResponse, StorageQueryRequest, StorageQueryResponse,
+        },
+        ConnectionManager, GrpcConnector, ProtocolError,
+    },
+    TaskCenter,
+};
+use restate_types::{health::Health, nodes_config::Role, protobuf::node::Message};
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
-
-use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvc;
-use restate_core::network::protobuf::node_svc::IdentResponse;
-use restate_core::network::protobuf::node_svc::{StorageQueryRequest, StorageQueryResponse};
-use restate_core::network::ProtocolError;
-use restate_core::network::{ConnectionManager, GrpcConnector};
-use restate_core::{metadata, TaskCenter};
-use restate_types::health::Health;
-use restate_types::nodes_config::Role;
-use restate_types::protobuf::node::Message;
 
 use crate::network_server::WorkerDependencies;
 

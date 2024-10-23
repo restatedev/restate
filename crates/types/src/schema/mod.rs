@@ -17,13 +17,15 @@ use std::collections::HashMap;
 
 use serde_with::serde_as;
 
-use self::deployment::DeploymentSchemas;
-use self::deployment::DeploymentType;
-use self::service::ServiceSchemas;
-use self::subscriptions::Subscription;
-use crate::identifiers::{DeploymentId, SubscriptionId};
-use crate::Version;
-use crate::Versioned;
+use self::{
+    deployment::{DeploymentSchemas, DeploymentType},
+    service::ServiceSchemas,
+    subscriptions::Subscription,
+};
+use crate::{
+    identifiers::{DeploymentId, SubscriptionId},
+    Version, Versioned,
+};
 
 /// The schema information
 #[serde_as]
@@ -88,9 +90,8 @@ impl Versioned for Schema {
 }
 
 pub mod storage {
-    use crate::flexbuffers_storage_encode_decode;
-
     use super::Schema;
+    use crate::flexbuffers_storage_encode_decode;
 
     flexbuffers_storage_encode_decode!(Schema);
 }
@@ -98,13 +99,14 @@ pub mod storage {
 #[cfg(feature = "test-util")]
 mod test_util {
 
-    use super::*;
-
-    use super::invocation_target::InvocationTargetResolver;
-    use super::service::ServiceMetadata;
-    use super::service::ServiceMetadataResolver;
-    use crate::identifiers::ServiceRevision;
     use restate_test_util::{assert, assert_eq};
+
+    use super::{
+        invocation_target::InvocationTargetResolver,
+        service::{ServiceMetadata, ServiceMetadataResolver},
+        *,
+    };
+    use crate::identifiers::ServiceRevision;
 
     impl Schema {
         #[track_caller]

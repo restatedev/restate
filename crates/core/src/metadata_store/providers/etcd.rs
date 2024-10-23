@@ -1,11 +1,12 @@
-use crate::metadata_store::{
-    MetadataStore, Precondition, ReadError, Version, VersionedValue, WriteError,
-};
 use anyhow::Context;
 use bytes::Bytes;
 use bytestring::ByteString;
 use etcd_client::{
     Client, Compare, CompareOp, Error as EtcdError, GetOptions, KeyValue, KvClient, Txn, TxnOp,
+};
+
+use crate::metadata_store::{
+    MetadataStore, Precondition, ReadError, Version, VersionedValue, WriteError,
 };
 
 impl From<EtcdError> for ReadError {

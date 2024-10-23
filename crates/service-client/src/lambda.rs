@@ -11,35 +11,37 @@
 //! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-config/src/sts/assume_role.rs
 //! License Apache-2.0
 
-use crate::aws_hyper_client::{CryptoMode, HyperClientBuilder};
-use crate::utils::ErrorExt;
+use std::{collections::HashMap, error::Error, fmt::Debug, future::Future, sync::Arc};
+
 use arc_swap::ArcSwap;
 use assume_role::AssumeRoleProvider;
 use aws_config::BehaviorVersion;
-use aws_sdk_lambda::config::Region;
-use aws_sdk_lambda::error::{DisplayErrorContext, SdkError};
-use aws_sdk_lambda::operation::invoke::InvokeError;
-use aws_sdk_lambda::primitives::Blob;
-use base64::display::Base64Display;
-use base64::Engine;
+use aws_sdk_lambda::{
+    config::Region,
+    error::{DisplayErrorContext, SdkError},
+    operation::invoke::InvokeError,
+    primitives::Blob,
+};
+use base64::{display::Base64Display, Engine};
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::{BoxFuture, Shared};
-use futures::{FutureExt, TryFutureExt};
-use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderValue, Method, Response};
+use futures::{
+    future::{BoxFuture, Shared},
+    FutureExt, TryFutureExt,
+};
+use http::{uri::PathAndQuery, HeaderMap, HeaderValue, Method, Response};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
-use restate_types::config::AwsOptions;
-use restate_types::identifiers::LambdaARN;
-use serde::ser::Error as _;
-use serde::ser::SerializeMap;
-use serde::{Deserialize, Serialize, Serializer};
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::Debug;
-use std::future::Future;
-use std::sync::Arc;
+use restate_types::{config::AwsOptions, identifiers::LambdaARN};
+use serde::{
+    ser::{Error as _, SerializeMap},
+    Deserialize, Serialize, Serializer,
+};
+
+use crate::{
+    aws_hyper_client::{CryptoMode, HyperClientBuilder},
+    utils::ErrorExt,
+};
 
 /// # AssumeRole Cache Mode
 ///
@@ -371,11 +373,11 @@ where
 }
 
 mod assume_role {
-    use aws_credential_types::provider::error::CredentialsError;
-    use aws_credential_types::provider::future::ProvideCredentials;
+    use std::time::SystemTime;
+
+    use aws_credential_types::provider::{error::CredentialsError, future::ProvideCredentials};
     use aws_sdk_lambda::error::SdkError;
     use aws_sdk_sts::operation::assume_role::AssumeRoleError;
-    use std::time::SystemTime;
 
     /// AssumeRoleProvider implements ProvideCredentials by assuming a provided role
     /// It is materially very similar to AssumeRoleProvider in the aws-config crate, except

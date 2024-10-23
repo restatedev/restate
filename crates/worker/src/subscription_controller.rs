@@ -10,8 +10,7 @@
 
 use std::future::Future;
 
-use restate_types::identifiers::SubscriptionId;
-use restate_types::schema::subscriptions::Subscription;
+use restate_types::{identifiers::SubscriptionId, schema::subscriptions::Subscription};
 
 use crate::WorkerHandleError;
 

@@ -10,9 +10,12 @@
 
 //! This crate contains a collection of utils to interact with the filesystem.
 
-use std::env::temp_dir;
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::{
+    env::temp_dir,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
+
 use tokio::io;
 use tracing::{info, trace};
 

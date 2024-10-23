@@ -12,17 +12,18 @@ use cling::prelude::*;
 use comfy_table::Table;
 use figment::Profile;
 use itertools::Itertools;
+use restate_admin_rest_model::version::AdminApiVersion;
+use restate_cli_util::{
+    c_eprintln, c_error, c_println, c_success, ui::duration_to_human_rough, CliContext,
+};
+use restate_types::art::render_restate_logo;
 use strum::IntoEnumIterator;
 
-use restate_admin_rest_model::version::AdminApiVersion;
-use restate_cli_util::ui::duration_to_human_rough;
-use restate_cli_util::{c_eprintln, c_error, c_println, c_success, CliContext};
-use restate_types::art::render_restate_logo;
-
-use crate::build_info;
-use crate::cli_env::{CliEnv, EnvironmentType};
-use crate::clients::AdminClientInterface;
-use crate::clients::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
+use crate::{
+    build_info,
+    cli_env::{CliEnv, EnvironmentType},
+    clients::{AdminClientInterface, MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION},
+};
 
 #[derive(Run, Parser, Clone)]
 #[cling(run = "run")]

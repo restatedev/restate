@@ -13,8 +13,7 @@ use std::ops::{Add, RangeInclusive};
 use bytes::{Buf, BufMut, BytesMut};
 use serde::{Deserialize, Serialize};
 
-use crate::identifiers::PartitionId;
-use crate::storage::StorageEncode;
+use crate::{identifiers::PartitionId, storage::StorageEncode};
 
 pub mod builder;
 pub mod metadata;

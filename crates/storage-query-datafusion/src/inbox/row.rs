@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::schema::SysInboxBuilder;
-use crate::table_util::format_using;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
 use restate_types::identifiers::WithPartitionKey;
+
+use super::schema::SysInboxBuilder;
+use crate::table_util::format_using;
 
 #[inline]
 pub(crate) fn append_inbox_row(

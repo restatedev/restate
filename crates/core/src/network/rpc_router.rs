@@ -8,20 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
-use dashmap::mapref::entry::Entry;
-use dashmap::DashMap;
-use futures::stream::BoxStream;
-use futures::StreamExt;
-use restate_types::NodeId;
-use tokio::sync::oneshot;
-use tokio::time::Instant;
+use dashmap::{mapref::entry::Entry, DashMap};
+use futures::{stream::BoxStream, StreamExt};
+use restate_types::{
+    net::{
+        codec::{Targeted, WireDecode, WireEncode},
+        RpcRequest,
+    },
+    NodeId,
+};
+use tokio::{sync::oneshot, time::Instant};
 use tracing::{error, warn};
-
-use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
-use restate_types::net::RpcRequest;
 
 use super::{
     HasConnection, Incoming, MessageHandler, MessageRouterBuilder, NetworkError, NetworkSendError,
@@ -370,15 +372,16 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::network::{PeerMetadataVersion, WeakConnection};
-
-    use super::*;
     use futures::future::join_all;
-    use restate_types::net::codec::encode_default;
-    use restate_types::net::{CodecError, TargetName};
-    use restate_types::GenerationalNodeId;
+    use restate_types::{
+        net::{codec::encode_default, CodecError, TargetName},
+        GenerationalNodeId,
+    };
     use serde::{Deserialize, Serialize};
     use tokio::sync::Barrier;
+
+    use super::*;
+    use crate::network::{PeerMetadataVersion, WeakConnection};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestRequest {

@@ -15,7 +15,6 @@ use figment::{
     providers::{Format, Serialized, Toml},
     Figment, Profile,
 };
-
 use restate_cli_util::c_println;
 
 use crate::{

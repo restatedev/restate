@@ -8,15 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface};
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::Table;
 use indoc::indoc;
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::{c_println, c_tip};
+use restate_cli_util::{c_println, c_tip, ui::console::StyledTable};
 use restate_types::invocation::ServiceType;
+
+use crate::{
+    cli_env::CliEnv,
+    clients::{AdminClient, AdminClientInterface},
+};
 
 // TODO we could infer this text from the OpenAPI docs!
 pub(super) const PUBLIC_DESCRIPTION: &str = indoc! {

@@ -10,26 +10,34 @@
 
 use std::time::Duration;
 
+use restate_core::{
+    network::{
+        rpc_router::{RpcError, RpcRouter},
+        Networking, Outgoing, TransportConnect,
+    },
+    TaskCenter,
+};
+use restate_types::{
+    config::Configuration,
+    logs::{metadata::SegmentIndex, LogId, LogletOffset, RecordCache, SequenceNumber},
+    net::{
+        log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail},
+        replicated_loglet::{CommonRequestHeader, GetSequencerState},
+    },
+    replicated_loglet::{EffectiveNodeSet, ReplicatedLogletId, ReplicatedLogletParams},
+    PlainNodeId,
+};
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{Networking, Outgoing, TransportConnect};
-use restate_core::TaskCenter;
-use restate_types::config::Configuration;
-use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{LogId, LogletOffset, RecordCache, SequenceNumber};
-use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail};
-use restate_types::net::replicated_loglet::{CommonRequestHeader, GetSequencerState};
-use restate_types::replicated_loglet::{
-    EffectiveNodeSet, ReplicatedLogletId, ReplicatedLogletParams,
-};
-use restate_types::PlainNodeId;
-
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
-use crate::loglet::util::TailOffsetWatch;
-use crate::providers::replicated_loglet::replication::NodeSetChecker;
-use crate::providers::replicated_loglet::rpc_routers::{LogServersRpc, SequencersRpc};
+use crate::{
+    loglet::util::TailOffsetWatch,
+    providers::replicated_loglet::{
+        replication::NodeSetChecker,
+        rpc_routers::{LogServersRpc, SequencersRpc},
+    },
+};
 
 /// Represents a task to determine and repair the tail of the loglet by consulting f-majority
 /// nodes in the nodeset assuming we are not the sequencer node.

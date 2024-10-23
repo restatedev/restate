@@ -8,21 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
+use std::{fmt::Debug, ops::RangeInclusive, sync::Arc};
 
 use futures::Stream;
-
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::idempotency_table::{IdempotencyMetadata, ReadOnlyIdempotencyTable};
 use restate_types::identifiers::{IdempotencyId, PartitionKey};
 
-use super::row::append_idempotency_row;
-use super::schema::SysIdempotencyBuilder;
-use crate::context::{QueryContext, SelectPartitions};
-use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
-use crate::table_providers::PartitionedTableProvider;
+use super::{row::append_idempotency_row, schema::SysIdempotencyBuilder};
+use crate::{
+    context::{QueryContext, SelectPartitions},
+    partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition},
+    table_providers::PartitionedTableProvider,
+};
 
 pub(crate) fn register_self(
     ctx: &QueryContext,

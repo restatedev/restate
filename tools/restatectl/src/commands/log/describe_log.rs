@@ -12,23 +12,24 @@ use anyhow::Context;
 use cling::prelude::*;
 use itertools::Itertools;
 use log::render_loglet_params;
-
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{DescribeLogRequest, ListLogsRequest};
-use restate_cli_util::_comfy_table::{Cell, Color, Table};
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::StyledTable;
-use restate_types::logs::metadata::{Chain, Logs, ProviderKind, Segment, SegmentIndex};
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::replicated_loglet::ReplicatedLogletParams;
-use restate_types::storage::StorageCodec;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
+use restate_admin::cluster_controller::protobuf::{
+    cluster_ctrl_svc_client::ClusterCtrlSvcClient, DescribeLogRequest, ListLogsRequest,
+};
+use restate_cli_util::{
+    _comfy_table::{Cell, Color, Table},
+    c_println,
+    ui::console::StyledTable,
+};
+use restate_types::{
+    logs::metadata::{Chain, Logs, ProviderKind, Segment, SegmentIndex},
+    nodes_config::NodesConfiguration,
+    replicated_loglet::ReplicatedLogletParams,
+    storage::StorageCodec,
+};
+use tonic::{codec::CompressionEncoding, transport::Channel};
 
 use super::LogIdRange;
-use crate::app::ConnectionInfo;
-use crate::commands::log;
-use crate::util::grpc_connect;
+use crate::{app::ConnectionInfo, commands::log, util::grpc_connect};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "describe_logs")]

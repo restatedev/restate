@@ -8,16 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::PathBuf;
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 use cling::prelude::*;
-
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_metadata_store::local::create_client;
-use restate_types::config::MetadataStoreClientOptions;
-use restate_types::net::AdvertisedAddress;
-use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
+use restate_types::{
+    config::MetadataStoreClientOptions, flexbuffers_storage_encode_decode, net::AdvertisedAddress,
+    Version, Versioned,
+};
 
 mod get;
 mod patch;

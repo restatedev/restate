@@ -10,10 +10,9 @@
 
 use std::io::Write;
 
+use restate_types::config::Configuration;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{info, warn};
-
-use restate_types::config::Configuration;
 
 pub(super) async fn shutdown() -> &'static str {
     let signal = tokio::select! {

@@ -8,14 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::error::*;
-use crate::state::AdminServiceState;
-
-use crate::schema_registry::{ApplyMode, Force};
-use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
-use axum::response::IntoResponse;
-use axum::Json;
+use axum::{
+    extract::{Path, Query, State},
+    http::{header, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use http::uri::Scheme;
 use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
@@ -24,6 +22,12 @@ use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN};
 use serde::Deserialize;
+
+use super::error::*;
+use crate::{
+    schema_registry::{ApplyMode, Force},
+    state::AdminServiceState,
+};
 
 /// Create deployment and return discovered services.
 #[openapi(

@@ -8,34 +8,36 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::marker::PhantomData;
-use std::str::FromStr;
-use std::sync::Arc;
+use std::{marker::PhantomData, str::FromStr, sync::Arc};
 
 use futures::Stream;
-
-use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
-use restate_types::config::NetworkingOptions;
-use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
+use restate_types::{
+    cluster_controller::{ReplicationStrategy, SchedulingPlan},
+    config::NetworkingOptions,
+    logs::metadata::{bootstrap_logs_metadata, ProviderKind},
+    metadata_store::keys::{
+        BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
+    },
+    net::{
+        codec::{Targeted, WireDecode},
+        metadata::MetadataKind,
+        AdvertisedAddress,
+    },
+    nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role},
+    partition_table::PartitionTable,
+    protobuf::node::Message,
+    GenerationalNodeId, Version,
 };
-use restate_types::net::codec::{Targeted, WireDecode};
-use restate_types::net::metadata::MetadataKind;
-use restate_types::net::AdvertisedAddress;
-use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
-use restate_types::partition_table::PartitionTable;
-use restate_types::protobuf::node::Message;
-use restate_types::{GenerationalNodeId, Version};
 
-use crate::metadata_store::{MetadataStoreClient, Precondition};
-use crate::network::{
-    ConnectionManager, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder,
-    NetworkError, Networking, ProtocolError, TransportConnect,
+use crate::{
+    metadata_store::{MetadataStoreClient, Precondition},
+    network::{
+        ConnectionManager, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder,
+        NetworkError, Networking, ProtocolError, TransportConnect,
+    },
+    spawn_metadata_manager, Metadata, MetadataBuilder, MetadataManager, MetadataWriter, TaskCenter,
+    TaskCenterBuilder, TaskId,
 };
-use crate::{spawn_metadata_manager, MetadataBuilder, TaskId};
-use crate::{Metadata, MetadataManager, MetadataWriter};
-use crate::{TaskCenter, TaskCenterBuilder};
 
 pub struct TestCoreEnvBuilder<T> {
     pub tc: TaskCenter,

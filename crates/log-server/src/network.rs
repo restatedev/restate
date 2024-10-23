@@ -12,29 +12,32 @@
 //!
 //! We maintain a stream per message type for fine-grain per-message-type control over the queue
 //! depth, head-of-line blocking issues, and priority of consumption.
-use std::collections::{hash_map, HashMap};
-use std::pin::Pin;
+use std::{
+    collections::{hash_map, HashMap},
+    pin::Pin,
+};
 
 use anyhow::Context;
-use futures::stream::FuturesUnordered;
-use futures::Stream;
+use futures::{stream::FuturesUnordered, Stream};
+use restate_core::{
+    cancellation_watcher,
+    network::{Incoming, MessageRouterBuilder},
+    Metadata, TaskCenter,
+};
+use restate_types::{
+    config::Configuration, health::HealthStatus, live::Live, net::log_server::*,
+    nodes_config::StorageState, protobuf::common::LogServerStatus,
+    replicated_loglet::ReplicatedLogletId,
+};
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, trace};
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_core::network::{Incoming, MessageRouterBuilder};
-use restate_core::{cancellation_watcher, Metadata, TaskCenter};
-use restate_types::config::Configuration;
-use restate_types::health::HealthStatus;
-use restate_types::live::Live;
-use restate_types::net::log_server::*;
-use restate_types::nodes_config::StorageState;
-use restate_types::protobuf::common::LogServerStatus;
-use restate_types::replicated_loglet::ReplicatedLogletId;
-
-use crate::loglet_worker::{LogletWorker, LogletWorkerHandle};
-use crate::logstore::LogStore;
-use crate::metadata::LogletStateMap;
+use crate::{
+    loglet_worker::{LogletWorker, LogletWorkerHandle},
+    logstore::LogStore,
+    metadata::LogletStateMap,
+};
 
 const DEFAULT_WRITERS_CAPACITY: usize = 128;
 

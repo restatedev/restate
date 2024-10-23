@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::ast::{Enum, Field, Input, Struct, Variant};
-use crate::attr::Attrs;
 use syn::{Error, Result};
+
+use crate::{
+    ast::{Enum, Field, Input, Struct, Variant},
+    attr::Attrs,
+};
 
 impl Input<'_> {
     pub(crate) fn validate(&self) -> Result<()> {

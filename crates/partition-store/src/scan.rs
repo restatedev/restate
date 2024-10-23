@@ -8,15 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{KeyCodec, KeyKind, TableKey};
-use crate::scan::TableScan::{
-    FullScanPartitionKeyRange, KeyRangeInclusiveInSinglePartition, SinglePartition,
-    SinglePartitionKeyPrefix,
-};
-use crate::{PaddedPartitionId, ScanMode, TableKind};
+use std::ops::RangeInclusive;
+
 use bytes::BytesMut;
 use restate_types::identifiers::{PartitionId, PartitionKey};
-use std::ops::RangeInclusive;
+
+use crate::{
+    keys::{KeyCodec, KeyKind, TableKey},
+    scan::TableScan::{
+        FullScanPartitionKeyRange, KeyRangeInclusiveInSinglePartition, SinglePartition,
+        SinglePartitionKeyPrefix,
+    },
+    PaddedPartitionId, ScanMode, TableKind,
+};
 
 // Note: we take extra arguments like (PartitionId or PartitionKey) only to make sure that
 // call-sites know what they are opting to. Those values might not actually be used to perform the
@@ -139,11 +143,12 @@ fn try_increment(bytes: &mut BytesMut) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::scan::try_increment;
+    use std::{collections::BTreeMap, ops::Add};
+
     use bytes::{BufMut, BytesMut};
     use num_bigint::BigUint;
-    use std::collections::BTreeMap;
-    use std::ops::Add;
+
+    use crate::scan::try_increment;
 
     fn verify_binary_increment(bytes: &mut BytesMut) {
         let as_number = BigUint::from_bytes_be(bytes);

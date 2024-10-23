@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::state::schema::StateBuilder;
 use bytes::Bytes;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
+
+use crate::state::schema::StateBuilder;
 
 #[inline]
 pub(crate) fn append_state_row(

@@ -10,18 +10,23 @@
 
 use futures::Stream;
 use futures_util::stream;
-
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
-use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::{InvocationUuid, PartitionId};
-use restate_types::storage::StorageCodec;
+use restate_storage_api::{
+    timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable},
+    Result, StorageError,
+};
+use restate_types::{
+    identifiers::{InvocationUuid, PartitionId},
+    storage::StorageCodec,
+};
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::TableKind::Timers;
-use crate::TableScanIterationDecision::Emit;
-use crate::{PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess};
-use crate::{TableScan, TableScanIterationDecision};
+use crate::{
+    keys::{define_table_key, KeyKind, TableKey},
+    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess,
+    TableKind::Timers,
+    TableScan, TableScanIterationDecision,
+    TableScanIterationDecision::Emit,
+};
 
 define_table_key!(
     Timers,
@@ -217,13 +222,13 @@ impl<'a> TimerTable for PartitionStoreTransaction<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::timer_table::TimerKey;
     use rand::Rng;
     use restate_storage_api::timer_table::TimerKeyKindDiscriminants;
-    use restate_types::identifiers::InvocationUuid;
-    use restate_types::invocation::InvocationTarget;
+    use restate_types::{identifiers::InvocationUuid, invocation::InvocationTarget};
     use strum::VariantArray;
+
+    use super::*;
+    use crate::timer_table::TimerKey;
 
     const FIXTURE_INVOCATION: InvocationUuid = InvocationUuid::from_u128(12345678900001);
 

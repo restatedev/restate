@@ -13,18 +13,21 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::Table;
-
 use restate_admin_rest_model::deployments::DeploymentResponse;
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_error, c_println};
-use restate_types::identifiers::DeploymentId;
-use restate_types::schema::service::HandlerMetadata;
+use restate_cli_util::{
+    c_error, c_println,
+    ui::{console::StyledTable, watcher::Watch},
+};
+use restate_types::{identifiers::DeploymentId, schema::service::HandlerMetadata};
 
-use crate::cli_env::CliEnv;
-use crate::clients::AdminClientInterface;
-use crate::ui::deployments::{render_deployment_type, render_deployment_url};
-use crate::ui::service_handlers::{icon_for_is_public, icon_for_service_type};
+use crate::{
+    cli_env::CliEnv,
+    clients::AdminClientInterface,
+    ui::{
+        deployments::{render_deployment_type, render_deployment_url},
+        service_handlers::{icon_for_is_public, icon_for_service_type},
+    },
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]

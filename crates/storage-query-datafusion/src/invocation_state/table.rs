@@ -8,24 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::logical_expr::Expr;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use datafusion::physical_plan::SendableRecordBatchStream;
-use tokio::sync::mpsc::Sender;
-
+use datafusion::{
+    arrow::{datatypes::SchemaRef, record_batch::RecordBatch},
+    logical_expr::Expr,
+    physical_plan::{stream::RecordBatchReceiverStream, SendableRecordBatchStream},
+};
 use restate_invoker_api::{InvocationStatusReport, StatusHandle};
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
+use tokio::sync::mpsc::Sender;
 
-use crate::context::QueryContext;
-use crate::invocation_state::row::append_invocation_state_row;
-use crate::invocation_state::schema::SysInvocationStateBuilder;
-use crate::table_providers::{GenericTableProvider, Scan};
-use crate::table_util::Builder;
+use crate::{
+    context::QueryContext,
+    invocation_state::{row::append_invocation_state_row, schema::SysInvocationStateBuilder},
+    table_providers::{GenericTableProvider, Scan},
+    table_util::Builder,
+};
 
 pub(crate) fn register_self(
     ctx: &QueryContext,

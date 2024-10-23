@@ -8,34 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::io::Write;
-use std::time::Duration;
-use std::{env, io};
+use std::{env, io, io::Write, time::Duration};
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
-use schemars::gen::SchemaSettings;
-use tonic::transport::{Channel, Uri};
-
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::TaskKind;
-use restate_core::TestCoreEnv;
+use restate_core::{
+    network::protobuf::node_svc::node_svc_client::NodeSvcClient, TaskKind, TestCoreEnv,
+};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::table_docs;
-use restate_types::config::Configuration;
-use restate_types::identifiers::SubscriptionId;
-use restate_types::invocation::InvocationTermination;
-use restate_types::live::Constant;
-use restate_types::retries::RetryPolicy;
-use restate_types::schema::subscriptions::Subscription;
-use restate_types::schema::subscriptions::SubscriptionValidator;
-use restate_types::state_mut::ExternalStateMutation;
-use restate_worker::SubscriptionController;
-use restate_worker::WorkerHandle;
-use restate_worker::WorkerHandleError;
+use restate_types::{
+    config::Configuration,
+    identifiers::SubscriptionId,
+    invocation::InvocationTermination,
+    live::Constant,
+    retries::RetryPolicy,
+    schema::subscriptions::{Subscription, SubscriptionValidator},
+    state_mut::ExternalStateMutation,
+};
+use restate_worker::{SubscriptionController, WorkerHandle, WorkerHandleError};
+use schemars::gen::SchemaSettings;
+use tonic::transport::{Channel, Uri};
 
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()

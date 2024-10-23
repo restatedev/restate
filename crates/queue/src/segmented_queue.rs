@@ -8,17 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::io;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::mem;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::VecDeque,
+    fmt::Debug,
+    mem,
+    path::{Path, PathBuf},
+};
+
+use serde::{de::DeserializeOwned, Serialize};
 use tokio::task::JoinHandle;
 
-use crate::segmented_queue::Segment::{
-    LoadedFromDisk, LoadingFromDisk, Mutable, OnDisk, StoringToDisk,
+use crate::{
+    io,
+    segmented_queue::Segment::{LoadedFromDisk, LoadingFromDisk, Mutable, OnDisk, StoringToDisk},
 };
 
 ///

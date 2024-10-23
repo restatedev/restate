@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::nodes_config::{
-    LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
+use restate_types::{
+    nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState},
+    GenerationalNodeId, PlainNodeId, Version,
 };
-use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
 pub fn generate_logserver_node(
     id: impl Into<PlainNodeId>,

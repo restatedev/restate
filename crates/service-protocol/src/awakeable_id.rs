@@ -8,14 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{fmt::Display, mem::size_of, str::FromStr};
+
 use base64::Engine as _;
 use bytes::{BufMut, BytesMut};
-use restate_types::errors::IdDecodeError;
-use restate_types::identifiers::{EncodedInvocationId, EntryIndex, InvocationId, ResourceId};
-use restate_types::{IdDecoder, IdEncoder, IdResourceType};
-use std::fmt::Display;
-use std::mem::size_of;
-use std::str::FromStr;
+use restate_types::{
+    errors::IdDecodeError,
+    identifiers::{EncodedInvocationId, EntryIndex, InvocationId, ResourceId},
+    IdDecoder, IdEncoder, IdResourceType,
+};
 
 #[derive(Debug, Clone)]
 pub struct AwakeableIdentifier {

@@ -14,14 +14,15 @@ use anyhow::Result;
 use bytes::BytesMut;
 use futures::StreamExt;
 use hdrhistogram::Histogram;
-use tracing::info;
-
 use restate_bifrost::Bifrost;
 use restate_core::{TaskCenter, TaskHandle, TaskKind};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, WithKeys};
+use tracing::info;
 
-use crate::util::{print_latencies, DummyPayload};
-use crate::Arguments;
+use crate::{
+    util::{print_latencies, DummyPayload},
+    Arguments,
+};
 
 const LOG_ID: LogId = LogId::new(0);
 

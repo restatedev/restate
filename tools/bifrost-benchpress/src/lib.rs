@@ -12,8 +12,7 @@ use std::path::PathBuf;
 
 use restate_types::config::CommonOptionCliOverride;
 
-use self::append_latency::AppendLatencyOpts;
-use self::write_to_read::WriteToReadOpts;
+use self::{append_latency::AppendLatencyOpts, write_to_read::WriteToReadOpts};
 
 pub mod append_latency;
 pub mod util;

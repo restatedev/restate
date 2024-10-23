@@ -10,22 +10,25 @@
 
 use std::sync::Arc;
 
-use restate_types::health::HealthStatus;
-use restate_types::logs::RecordCache;
-use restate_types::protobuf::common::LogServerStatus;
+use restate_core::{ShutdownError, TaskCenter};
+use restate_rocksdb::{CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
+use restate_types::{
+    config::{LogServerOptions, RocksDbOptions},
+    health::HealthStatus,
+    live::BoxedLiveLoad,
+    logs::RecordCache,
+    protobuf::common::LogServerStatus,
+};
 use rocksdb::{DBCompressionType, SliceTransform};
 use static_assertions::const_assert;
 
-use restate_core::{ShutdownError, TaskCenter};
-use restate_rocksdb::{CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
-use restate_types::config::{LogServerOptions, RocksDbOptions};
-use restate_types::live::BoxedLiveLoad;
-
-use super::writer::LogStoreWriter;
-use super::{RocksDbLogStore, RocksDbLogStoreError};
-use super::{DATA_CF, DB_NAME, METADATA_CF};
-use crate::rocksdb_logstore::keys::KeyPrefix;
-use crate::rocksdb_logstore::metadata_merge::{metadata_full_merge, metadata_partial_merge};
+use super::{
+    writer::LogStoreWriter, RocksDbLogStore, RocksDbLogStoreError, DATA_CF, DB_NAME, METADATA_CF,
+};
+use crate::rocksdb_logstore::{
+    keys::KeyPrefix,
+    metadata_merge::{metadata_full_merge, metadata_partial_merge},
+};
 
 const DATA_CF_BUDGET_RATIO: f64 = 0.85;
 const_assert!(DATA_CF_BUDGET_RATIO < 1.0);

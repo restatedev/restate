@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{hash_map, HashMap};
-use std::fmt::Debug;
-use std::fmt::Display;
+use std::{
+    collections::{hash_map, HashMap},
+    fmt::{Debug, Display},
+};
 
-use restate_types::nodes_config::{NodesConfiguration, StorageState};
-use restate_types::replicated_loglet::{NodeSet, ReplicationProperty};
-use restate_types::Merge;
-use restate_types::PlainNodeId;
+use restate_types::{
+    nodes_config::{NodesConfiguration, StorageState},
+    replicated_loglet::{NodeSet, ReplicationProperty},
+    Merge, PlainNodeId,
+};
 
 /// NodeSetChecker maintains a set of nodes that can be tagged with
 /// an attribute, and provides an API for querying the replication properties of
@@ -326,12 +328,10 @@ impl FMajorityResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use googletest::prelude::*;
-
     use restate_types::Version;
 
+    use super::*;
     use crate::providers::replicated_loglet::test_util::{
         generate_logserver_node, generate_logserver_nodes_config,
     };

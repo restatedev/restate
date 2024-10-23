@@ -13,17 +13,14 @@
 use std::time::Duration;
 
 use http::StatusCode;
+use restate_cli_util::CliContext;
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
 
-use restate_cli_util::CliContext;
-
-use crate::build_info;
-use crate::cli_env::CliEnv;
-
 use super::super::errors::ApiError;
+use crate::{build_info, cli_env::CliEnv};
 
 #[derive(Error, Debug)]
 #[error(transparent)]

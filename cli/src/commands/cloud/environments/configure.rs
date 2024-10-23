@@ -14,9 +14,8 @@ use anyhow::{Context, Result};
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use itertools::Itertools;
-use toml_edit::{table, value, DocumentMut};
-
 use restate_cli_util::{c_error, c_success};
+use toml_edit::{table, value, DocumentMut};
 
 use crate::{
     cli_env::CliEnv,

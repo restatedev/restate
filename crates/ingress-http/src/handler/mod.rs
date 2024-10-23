@@ -20,21 +20,21 @@ mod tests;
 mod tracing;
 mod workflow;
 
-use std::convert::Infallible;
-use std::task::{Context, Poll};
+use std::{
+    convert::Infallible,
+    task::{Context, Poll},
+};
 
 use error::HandlerError;
-use futures::future::BoxFuture;
-use futures::FutureExt;
+use futures::{future::BoxFuture, FutureExt};
 use http_body_util::Full;
-use hyper::http::HeaderValue;
-use hyper::{Request, Response};
+use hyper::{http::HeaderValue, Request, Response};
 use path_parsing::RequestType;
-
 use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_types::live::Live;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_types::schema::service::ServiceMetadataResolver;
+use restate_types::{
+    live::Live,
+    schema::{invocation_target::InvocationTargetResolver, service::ServiceMetadataResolver},
+};
 
 use super::*;
 

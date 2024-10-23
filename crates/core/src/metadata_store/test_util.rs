@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metadata_store::{MetadataStore, Precondition, ReadError, VersionedValue, WriteError};
+use std::{collections::HashMap, sync::Mutex};
+
 use bytestring::ByteString;
 use restate_types::Version;
-use std::collections::HashMap;
-use std::sync::Mutex;
+
+use crate::metadata_store::{MetadataStore, Precondition, ReadError, VersionedValue, WriteError};
 
 #[derive(Debug, Default)]
 pub struct InMemoryMetadataStore {

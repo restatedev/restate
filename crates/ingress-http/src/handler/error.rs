@@ -8,14 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::APPLICATION_JSON;
+use std::string;
 
 use bytes::Bytes;
 use http::{header, Response, StatusCode};
-use restate_types::errors::{IdDecodeError, InvocationError};
-use restate_types::schema::invocation_target::InputValidationError;
+use restate_types::{
+    errors::{IdDecodeError, InvocationError},
+    schema::invocation_target::InputValidationError,
+};
 use serde::Serialize;
-use std::string;
+
+use super::APPLICATION_JSON;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum HandlerError {

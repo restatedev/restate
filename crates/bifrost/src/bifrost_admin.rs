@@ -10,20 +10,21 @@
 
 use std::ops::Deref;
 
-use tracing::{info, instrument};
-
 use restate_core::{MetadataKind, MetadataWriter};
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::config::Configuration;
-use restate_types::logs::builder::BuilderError;
-use restate_types::logs::metadata::{LogletParams, Logs, ProviderKind, SegmentIndex};
-use restate_types::logs::{LogId, Lsn, TailState};
-use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-use restate_types::Version;
+use restate_types::{
+    config::Configuration,
+    logs::{
+        builder::BuilderError,
+        metadata::{LogletParams, Logs, ProviderKind, SegmentIndex},
+        LogId, Lsn, TailState,
+    },
+    metadata_store::keys::BIFROST_CONFIG_KEY,
+    Version,
+};
+use tracing::{info, instrument};
 
-use crate::error::AdminError;
-use crate::loglet_wrapper::LogletWrapper;
-use crate::{Bifrost, Error, Result};
+use crate::{error::AdminError, loglet_wrapper::LogletWrapper, Bifrost, Error, Result};
 
 /// Bifrost's Admin API
 #[derive(Clone, Copy)]

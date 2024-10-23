@@ -11,15 +11,14 @@
 //! This module contains a collection of matchers
 
 pub use googletest::matchers::*;
-
 #[cfg(feature = "prost")]
 pub use prost::protobuf_decoded;
 #[cfg(feature = "prost")]
 mod prost {
+    use std::{fmt::Debug, marker::PhantomData};
+
     use googletest::matcher::{Matcher, MatcherResult};
     use prost::bytes;
-    use std::fmt::Debug;
-    use std::marker::PhantomData;
 
     struct ProtobufDecodeMatcher<InnerMatcher, B>(InnerMatcher, PhantomData<B>);
 
@@ -62,11 +61,11 @@ mod prost {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
-
         use googletest::{assert_that, matchers::eq};
         use prost::Message;
         use prost_types::Timestamp;
+
+        use super::*;
 
         #[test]
         fn timestamp() {

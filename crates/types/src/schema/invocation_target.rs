@@ -8,9 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::str::FromStr;
-use std::time::Duration;
-use std::{cmp, fmt};
+use std::{cmp, fmt, str::FromStr, time::Duration};
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -415,9 +413,9 @@ impl fmt::Display for OutputContentTypeRule {
 #[cfg(feature = "test-util")]
 #[allow(dead_code)]
 pub mod test_util {
-    use super::*;
-
     use std::collections::HashMap;
+
+    use super::*;
 
     #[derive(Debug, Clone)]
     pub struct MockService(HashMap<String, InvocationTargetMetadata>);

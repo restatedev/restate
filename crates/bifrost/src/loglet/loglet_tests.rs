@@ -8,26 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeSet;
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    collections::BTreeSet,
+    sync::{atomic::AtomicUsize, Arc},
+    time::Duration,
+};
 
 use googletest::prelude::*;
-use tokio::sync::Barrier;
-use tokio::task::{JoinHandle, JoinSet};
+use restate_core::{task_center, TaskHandle, TaskKind};
+use restate_test_util::let_assert;
+use restate_types::logs::{
+    metadata::{LogletConfig, SegmentIndex},
+    KeyFilter, Lsn, SequenceNumber, TailState,
+};
+use tokio::{
+    sync::Barrier,
+    task::{JoinHandle, JoinSet},
+};
 use tokio_stream::StreamExt;
 use tracing::info;
 
-use restate_core::{task_center, TaskHandle, TaskKind};
-use restate_test_util::let_assert;
-use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
-use restate_types::logs::{KeyFilter, Lsn, SequenceNumber, TailState};
-
 use super::Loglet;
-use crate::loglet::AppendError;
-use crate::loglet_wrapper::LogletWrapper;
-use crate::setup_panic_handler;
+use crate::{loglet::AppendError, loglet_wrapper::LogletWrapper, setup_panic_handler};
 
 async fn wait_for_trim(loglet: &LogletWrapper, required_trim_point: Lsn) -> anyhow::Result<()> {
     for _ in 0..3 {

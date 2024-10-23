@@ -8,22 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashSet;
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
 
 use anyhow::Result;
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use itertools::Itertools;
+use restate_cli_util::{
+    c_eprintln,
+    ui::{console::Styled, stylesheet::Style, watcher::Watch},
+};
 
-use restate_cli_util::c_eprintln;
-use restate_cli_util::ui::console::Styled;
-use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::ui::watcher::Watch;
-
-use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::{find_active_invocations, InvocationState};
-use crate::ui::invocations::render_invocation_compact;
+use crate::{
+    cli_env::CliEnv,
+    clients::datafusion_helpers::{find_active_invocations, InvocationState},
+    ui::invocations::render_invocation_compact,
+};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "ls")]

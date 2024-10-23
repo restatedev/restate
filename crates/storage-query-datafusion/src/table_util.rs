@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::physical_expr::expressions::col;
-use datafusion::physical_expr::PhysicalSortExpr;
 use std::fmt::Write;
+
+use datafusion::{
+    arrow::{datatypes::SchemaRef, record_batch::RecordBatch},
+    physical_expr::{expressions::col, PhysicalSortExpr},
+};
 use tracing::error;
 
 #[macro_export]

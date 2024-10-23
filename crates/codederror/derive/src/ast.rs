@@ -11,12 +11,15 @@
 //! Some parts copied from https://github.com/dtolnay/thiserror/blob/39aaeb00ff270a49e3c254d7b38b10e934d3c7a5/impl/src/ast.rs
 //! License Apache-2.0 or MIT
 
-use crate::attr::{self, Attrs};
-use crate::generics::ParamsInScope;
 use proc_macro2::Span;
 use syn::{
     Data, DataEnum, DataStruct, DeriveInput, Error, Fields, Generics, Ident, Index, Member, Result,
     Type,
+};
+
+use crate::{
+    attr::{self, Attrs},
+    generics::ParamsInScope,
 };
 
 pub enum Input<'a> {

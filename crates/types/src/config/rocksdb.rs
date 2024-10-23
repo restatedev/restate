@@ -10,10 +10,9 @@
 
 use std::num::{NonZeroU32, NonZeroUsize};
 
+use restate_serde_util::NonZeroByteCount;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-
-use restate_serde_util::NonZeroByteCount;
 
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder)]

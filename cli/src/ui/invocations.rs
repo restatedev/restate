@@ -10,19 +10,19 @@
 
 use chrono_humanize::Tense;
 use comfy_table::{Attribute, Cell, Table};
-use dialoguer::console::Style as DStyle;
-use dialoguer::console::StyledObject;
-use dialoguer::console::{style, Style};
-use restate_cli_util::c_indent_table;
-use restate_cli_util::c_indentln;
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::Icon;
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::duration_to_human_precise;
+use dialoguer::console::{style, Style as DStyle, Style, StyledObject};
+use restate_cli_util::{
+    c_indent_table, c_indentln, c_println,
+    ui::{
+        console::{Icon, StyledTable},
+        duration_to_human_precise,
+    },
+};
 
-use crate::clients::datafusion_helpers::{Invocation, InvocationState};
-use crate::clients::datafusion_helpers::{InvocationCompletion, JournalEntryType};
-use crate::clients::datafusion_helpers::{JournalEntry, SimpleInvocation};
+use crate::clients::datafusion_helpers::{
+    Invocation, InvocationCompletion, InvocationState, JournalEntry, JournalEntryType,
+    SimpleInvocation,
+};
 
 pub fn invocation_status_note(invocation: &Invocation) -> String {
     let mut msg = String::new();

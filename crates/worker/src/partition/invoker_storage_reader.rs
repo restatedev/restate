@@ -8,18 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::vec::IntoIter;
+
 use bytes::Bytes;
 use futures::{stream, StreamExt, TryStreamExt};
 use restate_invoker_api::{EagerState, JournalMetadata};
-use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ReadOnlyInvocationStatusTable,
+use restate_storage_api::{
+    invocation_status_table::{InvocationStatus, ReadOnlyInvocationStatusTable},
+    journal_table::{JournalEntry, ReadOnlyJournalTable},
+    state_table::ReadOnlyStateTable,
 };
-use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
-use restate_storage_api::state_table::ReadOnlyStateTable;
-use restate_types::identifiers::InvocationId;
-use restate_types::identifiers::ServiceId;
-use restate_types::journal::raw::PlainRawEntry;
-use std::vec::IntoIter;
+use restate_types::{
+    identifiers::{InvocationId, ServiceId},
+    journal::raw::PlainRawEntry,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InvokerStorageReaderError {

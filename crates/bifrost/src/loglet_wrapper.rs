@@ -8,21 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::task::Poll;
-
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{pin::Pin, sync::Arc, task::Poll};
 
 use futures::{Stream, StreamExt};
+use restate_types::logs::{
+    metadata::{LogletConfig, SegmentIndex},
+    KeyFilter, LogletOffset, Lsn, Record, SequenceNumber, TailState,
+};
 use tracing::instrument;
 
-use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
-use restate_types::logs::{KeyFilter, LogletOffset, Lsn, SequenceNumber};
-use restate_types::logs::{Record, TailState};
-
-use crate::loglet::{AppendError, Loglet, OperationError, SendableLogletReadStream};
-use crate::Result;
-use crate::{Commit, LogEntry, LsnExt};
+use crate::{
+    loglet::{AppendError, Loglet, OperationError, SendableLogletReadStream},
+    Commit, LogEntry, LsnExt, Result,
+};
 
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug, Clone, thiserror::Error)]

@@ -10,24 +10,21 @@
 
 //! Restate uses many identifiers to uniquely identify its services and entities.
 
+use std::{fmt, hash::Hash, mem::size_of, str::FromStr};
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
-use std::fmt;
-use std::hash::Hash;
-use std::mem::size_of;
-use std::str::FromStr;
 use ulid::Ulid;
 
-use crate::base62_util::base62_encode_fixed_width;
-use crate::base62_util::base62_max_length_for_type;
-use crate::errors::IdDecodeError;
-use crate::id_util::IdDecoder;
-use crate::id_util::IdEncoder;
-use crate::id_util::IdResourceType;
-use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
-use crate::time::MillisSinceEpoch;
+use crate::{
+    base62_util::{base62_encode_fixed_width, base62_max_length_for_type},
+    errors::IdDecodeError,
+    id_util::{IdDecoder, IdEncoder, IdResourceType},
+    invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType},
+    time::MillisSinceEpoch,
+};
 
 /// Identifying the leader epoch of a partition processor
 #[derive(
@@ -684,9 +681,9 @@ impl WithPartitionKey for IdempotencyId {
 pub type ServiceRevision = u32;
 
 pub mod partitioner {
-    use super::PartitionKey;
-
     use std::hash::{Hash, Hasher};
+
+    use super::PartitionKey;
 
     /// Computes the [`PartitionKey`] based on xxh3 hashing.
     pub struct HashPartitioner;
@@ -985,10 +982,12 @@ impl From<u128> for SnapshotId {
 
 #[cfg(any(test, feature = "test-util"))]
 mod mocks {
-    use super::*;
+    use rand::{
+        distributions::{Alphanumeric, DistString},
+        Rng,
+    };
 
-    use rand::distributions::{Alphanumeric, DistString};
-    use rand::Rng;
+    use super::*;
 
     impl InvocationUuid {
         pub fn mock_generate(invocation_target: &InvocationTarget) -> Self {
@@ -1054,10 +1053,10 @@ mod mocks {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    use crate::invocation::VirtualObjectHandlerType;
     use rand::distributions::{Alphanumeric, DistString};
+
+    use super::*;
+    use crate::invocation::VirtualObjectHandlerType;
 
     #[test]
     fn service_id_and_invocation_id_partition_key_should_match() {

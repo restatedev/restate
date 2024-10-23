@@ -27,7 +27,10 @@ mod query_engine;
 mod rocksdb;
 mod worker;
 
+use std::{path::PathBuf, sync::Arc};
+
 pub use admin::*;
+use arc_swap::ArcSwap;
 pub use aws::*;
 pub use bifrost::*;
 #[cfg(feature = "clap")]
@@ -39,22 +42,15 @@ pub use kafka::*;
 pub use log_server::*;
 pub use metadata_store::*;
 pub use networking::*;
+use once_cell::sync::Lazy;
 pub use query_engine::*;
 pub use rocksdb::*;
-pub use worker::*;
-
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use arc_swap::ArcSwap;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+pub use worker::*;
 
 use super::live::{LiveLoad, Pinned};
-use crate::errors::GenericError;
-use crate::live::Live;
-use crate::nodes_config::Role;
+use crate::{errors::GenericError, live::Live, nodes_config::Role};
 
 #[cfg(any(test, feature = "test-util"))]
 enum TempOrPath {

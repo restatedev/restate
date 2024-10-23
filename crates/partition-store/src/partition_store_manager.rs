@@ -8,25 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-
-use rocksdb::ExportImportFilesMetaData;
-use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use std::{collections::BTreeMap, ops::RangeInclusive, sync::Arc};
 
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
-use restate_types::config::{RocksDbOptions, StorageOptions};
-use restate_types::identifiers::{PartitionId, PartitionKey};
-use restate_types::live::{BoxedLiveLoad, LiveLoad};
+use restate_types::{
+    config::{RocksDbOptions, StorageOptions},
+    identifiers::{PartitionId, PartitionKey},
+    live::{BoxedLiveLoad, LiveLoad},
+};
+use rocksdb::ExportImportFilesMetaData;
+use tokio::sync::Mutex;
+use tracing::{debug, error, info, warn};
 
-use crate::cf_options;
-use crate::snapshots::LocalPartitionSnapshot;
-use crate::PartitionStore;
-use crate::DB;
+use crate::{cf_options, snapshots::LocalPartitionSnapshot, PartitionStore, DB};
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";

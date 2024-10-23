@@ -8,17 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_invoker_api::InvokeInputJournal;
-use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::timer_table::TimerKey;
-use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::ingress;
-use restate_types::ingress::IngressResponseEnvelope;
-use restate_types::invocation::InvocationTarget;
-use restate_types::journal::Completion;
-use restate_types::message::MessageIndex;
-use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
+
+use restate_invoker_api::InvokeInputJournal;
+use restate_storage_api::{outbox_table::OutboxMessage, timer_table::TimerKey};
+use restate_types::{
+    identifiers::{EntryIndex, InvocationId},
+    ingress,
+    ingress::IngressResponseEnvelope,
+    invocation::InvocationTarget,
+    journal::Completion,
+    message::MessageIndex,
+};
+use restate_wal_protocol::timer::TimerKeyValue;
 
 pub type ActionCollector = Vec<Action>;
 

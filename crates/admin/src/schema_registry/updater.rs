@@ -8,31 +8,35 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::schema_registry::error::{
-    DeploymentError, SchemaError, ServiceError, SubscriptionError,
-};
-use crate::schema_registry::{ModifyServiceChange, ServiceName};
+use std::collections::{hash_map::Entry, HashMap};
+
 use http::{HeaderValue, Uri};
-use restate_types::endpoint_manifest;
-use restate_types::identifiers::{DeploymentId, SubscriptionId};
-use restate_types::invocation::{
-    InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
+use restate_types::{
+    endpoint_manifest,
+    identifiers::{DeploymentId, SubscriptionId},
+    invocation::{
+        InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
+    },
+    schema::{
+        deployment::{DeploymentMetadata, DeploymentSchemas},
+        invocation_target::{
+            InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule,
+            OutputRules, DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
+        },
+        service::{HandlerSchemas, ServiceLocation, ServiceSchemas},
+        subscriptions::{
+            EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
+        },
+        Schema,
+    },
 };
-use restate_types::schema::deployment::DeploymentMetadata;
-use restate_types::schema::deployment::DeploymentSchemas;
-use restate_types::schema::invocation_target::{
-    InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
-    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
-};
-use restate_types::schema::service::{HandlerSchemas, ServiceLocation, ServiceSchemas};
-use restate_types::schema::subscriptions::{
-    EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
-};
-use restate_types::schema::Schema;
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
 use tracing::{info, warn};
+
+use crate::schema_registry::{
+    error::{DeploymentError, SchemaError, ServiceError, SubscriptionError},
+    ModifyServiceChange, ServiceName,
+};
 
 /// Responsible for updating the provided [`Schema`] with new
 /// schema information. It makes sure that the version of schema information
@@ -586,14 +590,17 @@ impl DiscoveredHandlerMetadata {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use restate_test_util::{assert, assert_eq, let_assert};
-    use restate_types::schema::deployment::{Deployment, DeploymentResolver};
-    use restate_types::schema::service::ServiceMetadataResolver;
-
-    use restate_types::Versioned;
+    use restate_types::{
+        schema::{
+            deployment::{Deployment, DeploymentResolver},
+            service::ServiceMetadataResolver,
+        },
+        Versioned,
+    };
     use test_log::test;
+
+    use super::*;
 
     const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
     const ANOTHER_GREETER_SERVICE_NAME: &str = "greeter.AnotherGreeter";
@@ -748,10 +755,10 @@ mod tests {
     }
 
     mod change_instance_type {
-        use super::*;
-
         use restate_test_util::assert;
         use test_log::test;
+
+        use super::*;
 
         #[test]
         fn register_new_deployment_fails_changing_instance_type() {
@@ -922,10 +929,10 @@ mod tests {
     }
 
     mod remove_method {
-        use super::*;
-
         use restate_test_util::{check, let_assert};
         use test_log::test;
+
+        use super::*;
 
         fn greeter_v1_service() -> endpoint_manifest::Service {
             endpoint_manifest::Service {

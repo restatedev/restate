@@ -13,12 +13,11 @@ mod layers;
 mod metric_definitions;
 mod server;
 
-pub use server::{HyperServerIngress, IngressServerError, StartSignal};
+use std::net::{IpAddr, SocketAddr};
 
 use bytes::Bytes;
-use restate_types::ingress::InvocationResponse;
-use restate_types::invocation::InvocationQuery;
-use std::net::{IpAddr, SocketAddr};
+use restate_types::{ingress::InvocationResponse, invocation::InvocationQuery};
+pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 /// Client connection information for a given RPC request
 #[derive(Clone, Copy, Debug)]
@@ -58,21 +57,24 @@ mod mocks {
     use std::collections::HashMap;
 
     use anyhow::Error;
+    use restate_types::{
+        identifiers::DeploymentId,
+        ingress::InvocationResponse,
+        invocation::{
+            InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
+        },
+        schema::{
+            invocation_target::{
+                test_util::MockInvocationTargetResolver, InvocationTargetMetadata,
+                InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
+            },
+            service::{
+                test_util::MockServiceMetadataResolver, HandlerMetadata, ServiceMetadata,
+                ServiceMetadataResolver,
+            },
+        },
+    };
     use serde::{Deserialize, Serialize};
-
-    use restate_types::identifiers::DeploymentId;
-    use restate_types::ingress::InvocationResponse;
-    use restate_types::invocation::{
-        InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
-    };
-    use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
-    use restate_types::schema::invocation_target::{
-        InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
-    };
-    use restate_types::schema::service::test_util::MockServiceMetadataResolver;
-    use restate_types::schema::service::{
-        HandlerMetadata, ServiceMetadata, ServiceMetadataResolver,
-    };
 
     use super::*;
 

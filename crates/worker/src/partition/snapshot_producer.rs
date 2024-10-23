@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::PathBuf;
-use std::time::SystemTime;
+use std::{path::PathBuf, time::SystemTime};
 
 use anyhow::bail;
-use tracing::{info, warn};
-
-use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
-use restate_partition_store::PartitionStore;
+use restate_partition_store::{
+    snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion},
+    PartitionStore,
+};
 use restate_types::identifiers::SnapshotId;
+use tracing::{info, warn};
 
 /// Encapsulates producing a Restate partition snapshot out of a partition store.
 pub struct SnapshotProducer {}

@@ -9,10 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-
-use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery, Record};
-use restate_types::storage::{PolyBytes, StorageEncode};
-use restate_types::time::NanosSinceEpoch;
+use restate_types::{
+    logs::{KeyFilter, Keys, MatchKeyQuery, Record},
+    storage::{PolyBytes, StorageEncode},
+    time::NanosSinceEpoch,
+};
 
 #[derive(Debug, derive_more::TryFrom, Eq, PartialEq, Ord, PartialOrd)]
 #[try_from(repr)]

@@ -10,24 +10,24 @@
 
 //! This module contains all the core types representing a service invocation.
 
-use crate::errors::InvocationError;
-use crate::identifiers::{
-    EntryIndex, IdempotencyId, IngressRequestId, InvocationId, PartitionKey, ServiceId,
-    WithPartitionKey,
-};
-use crate::time::MillisSinceEpoch;
-use crate::GenerationalNodeId;
+use std::{fmt, hash::Hash, str::FromStr, time::Duration};
+
 use bytes::Bytes;
 use bytestring::ByteString;
-use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
-use serde_with::{serde_as, FromInto};
-use std::fmt;
-use std::hash::Hash;
-use std::str::FromStr;
-use std::time::Duration;
-
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry::trace::TraceId;
+use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
+use serde_with::{serde_as, FromInto};
+
+use crate::{
+    errors::InvocationError,
+    identifiers::{
+        EntryIndex, IdempotencyId, IngressRequestId, InvocationId, PartitionKey, ServiceId,
+        WithPartitionKey,
+    },
+    time::MillisSinceEpoch,
+    GenerationalNodeId,
+};
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -808,9 +808,9 @@ impl WithPartitionKey for AttachInvocationRequest {
 
 #[cfg(any(test, feature = "test-util"))]
 mod mocks {
-    use super::*;
-
     use rand::distributions::{Alphanumeric, DistString};
+
+    use super::*;
 
     fn generate_string() -> ByteString {
         Alphanumeric

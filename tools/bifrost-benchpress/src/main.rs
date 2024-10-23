@@ -10,13 +10,14 @@
 
 use std::time::Duration;
 
+use bifrost_benchpress::{
+    append_latency,
+    util::{print_prometheus_stats, print_rocksdb_stats},
+    write_to_read, Arguments, Command,
+};
 use clap::Parser;
 use codederror::CodedError;
 use metrics_exporter_prometheus::PrometheusBuilder;
-use tracing::trace;
-
-use bifrost_benchpress::util::{print_prometheus_stats, print_rocksdb_stats};
-use bifrost_benchpress::{append_latency, write_to_read, Arguments, Command};
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter, TaskCenterBuilder,
@@ -25,16 +26,18 @@ use restate_errors::fmt::RestateCode;
 use restate_metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::init_tracing_and_logging;
-use restate_types::config::{
-    reset_base_temp_dir, reset_base_temp_dir_and_retain, set_base_temp_dir, Configuration,
+use restate_types::{
+    config::{
+        reset_base_temp_dir, reset_base_temp_dir_and_retain, set_base_temp_dir, Configuration,
+    },
+    config_loader::ConfigLoaderBuilder,
+    live::Live,
+    metadata_store::keys::BIFROST_CONFIG_KEY,
 };
-use restate_types::config_loader::ConfigLoaderBuilder;
-use restate_types::live::Live;
-use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-
 // Configure jemalloc similar to mimic restate server
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
+use tracing::trace;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]

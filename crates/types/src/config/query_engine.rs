@@ -8,13 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::net::SocketAddr;
-use std::num::NonZeroUsize;
-
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use std::{net::SocketAddr, num::NonZeroUsize};
 
 use restate_serde_util::NonZeroByteCount;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 /// # Storage query engine options
 #[serde_as]

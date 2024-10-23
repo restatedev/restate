@@ -9,8 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use serde::de::Error;
-use serde::Deserialize;
+use serde::{de::Error, Deserialize};
 use serde_with::{DeserializeAs, SerializeAs};
 
 /// SerializeAs/DeserializeAs to implement ser/de trait for prost types

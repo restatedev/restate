@@ -8,25 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use futures::Stream;
-
-use restate_types::net::codec::{Targeted, WireDecode};
-use restate_types::net::CodecError;
-use restate_types::net::ProtocolVersion;
-use restate_types::net::TargetName;
-use restate_types::protobuf::node::message::BinaryMessage;
+use restate_types::{
+    net::{
+        codec::{Targeted, WireDecode},
+        CodecError, ProtocolVersion, TargetName,
+    },
+    protobuf::node::message::BinaryMessage,
+};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::warn;
 
-use crate::is_cancellation_requested;
-
 use super::{Incoming, RouterError};
+use crate::is_cancellation_requested;
 
 /// Implement this trait to process network messages for a specific target
 /// (e.g. TargetName = METADATA_MANAGER).

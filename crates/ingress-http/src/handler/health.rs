@@ -11,9 +11,8 @@
 use bytes::Bytes;
 use http::{header, Method, Request, Response, StatusCode};
 use http_body_util::Full;
-use serde::Serialize;
-
 use restate_types::schema::service::ServiceMetadataResolver;
+use serde::Serialize;
 
 use super::{Handler, APPLICATION_JSON};
 use crate::handler::error::HandlerError;

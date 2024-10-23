@@ -8,17 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use http::Uri;
-use http::Version;
+use std::time::SystemTime;
+
+use http::{Uri, Version};
 use restate_serde_util::SerdeableHeaderHashMap;
-use restate_types::identifiers::ServiceRevision;
-use restate_types::identifiers::{DeploymentId, LambdaARN};
-use restate_types::schema::deployment::DeploymentType;
-use restate_types::schema::deployment::{DeploymentMetadata, ProtocolType};
-use restate_types::schema::service::ServiceMetadata;
+use restate_types::{
+    identifiers::{DeploymentId, LambdaARN, ServiceRevision},
+    schema::{
+        deployment::{DeploymentMetadata, DeploymentType, ProtocolType},
+        service::ServiceMetadata,
+    },
+};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::time::SystemTime;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]

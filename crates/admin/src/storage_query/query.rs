@@ -8,25 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
-
-use arrow_flight::decode::FlightRecordBatchStream;
-use arrow_flight::error::FlightError;
-use arrow_flight::FlightData;
-use axum::extract::State;
-use axum::response::{IntoResponse, Response};
-use axum::{http, Json};
-use bytes::Bytes;
-use datafusion::arrow::array::{
-    Array, ArrayRef, AsArray, BinaryArray, GenericByteArray, StringArray,
+use std::{
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
 };
-use datafusion::arrow::buffer::{OffsetBuffer, ScalarBuffer};
-use datafusion::arrow::datatypes::{ByteArrayType, DataType, Field, FieldRef, Schema, SchemaRef};
-use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::writer::StreamWriter;
-use datafusion::arrow::record_batch::RecordBatch;
+
+use arrow_flight::{decode::FlightRecordBatchStream, error::FlightError, FlightData};
+use axum::{
+    extract::State,
+    http,
+    response::{IntoResponse, Response},
+    Json,
+};
+use bytes::Bytes;
+use datafusion::arrow::{
+    array::{Array, ArrayRef, AsArray, BinaryArray, GenericByteArray, StringArray},
+    buffer::{OffsetBuffer, ScalarBuffer},
+    datatypes::{ByteArrayType, DataType, Field, FieldRef, Schema, SchemaRef},
+    error::ArrowError,
+    ipc::writer::StreamWriter,
+    record_batch::RecordBatch,
+};
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 use http_body::Frame;
 use http_body_util::StreamBody;

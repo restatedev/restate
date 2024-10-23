@@ -11,15 +11,16 @@
 use std::sync::Arc;
 
 use bytes::{Buf, BufMut, BytesMut};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
 
-use crate::net::CodecError;
-use crate::protobuf::common::ProtocolVersion;
-use crate::protobuf::common::TargetName;
-use crate::protobuf::node::message;
-use crate::protobuf::node::message::BinaryMessage;
-use crate::storage::{decode_from_flexbuffers, encode_as_flexbuffers};
+use crate::{
+    net::CodecError,
+    protobuf::{
+        common::{ProtocolVersion, TargetName},
+        node::{message, message::BinaryMessage},
+    },
+    storage::{decode_from_flexbuffers, encode_as_flexbuffers},
+};
 
 pub trait Targeted {
     const TARGET: TargetName;

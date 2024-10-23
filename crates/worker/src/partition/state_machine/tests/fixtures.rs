@@ -8,20 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::tests::TestEnv;
-use crate::partition::state_machine::Action;
 use bytes::Bytes;
 use googletest::prelude::*;
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::journal_table::JournalEntry;
-use restate_types::identifiers::{InvocationId, ServiceId};
-use restate_types::invocation::{
-    InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext, Source,
-};
-use restate_types::journal::enriched::{
-    CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
+use restate_types::{
+    identifiers::{InvocationId, ServiceId},
+    invocation::{InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext, Source},
+    journal::enriched::{CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry},
 };
 use restate_wal_protocol::Command;
+
+use crate::partition::state_machine::{tests::TestEnv, Action};
 
 pub fn completed_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     JournalEntry::Entry(EnrichedRawEntry::new(

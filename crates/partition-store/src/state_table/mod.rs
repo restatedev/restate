@@ -8,22 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::owned_iter::OwnedIterator;
-use crate::TableKind::State;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
-use crate::{TableScan, TableScanIterationDecision};
+use std::{future, future::Future, ops::RangeInclusive};
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::{
+    state_table::{ReadOnlyStateTable, StateTable},
+    Result, StorageError,
+};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use std::future;
-use std::future::Future;
-use std::ops::RangeInclusive;
+
+use crate::{
+    keys::{define_table_key, KeyKind, TableKey},
+    owned_iter::OwnedIterator,
+    PartitionStore, PartitionStoreTransaction, StorageAccess,
+    TableKind::State,
+    TableScan, TableScanIterationDecision,
+};
 
 define_table_key!(
     State,
@@ -221,10 +225,13 @@ fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::keys::TableKey;
-    use crate::state_table::{user_state_key_from_slice, write_state_entry_key};
     use bytes::{Bytes, BytesMut};
     use restate_types::identifiers::ServiceId;
+
+    use crate::{
+        keys::TableKey,
+        state_table::{user_state_key_from_slice, write_state_entry_key},
+    };
 
     static EMPTY: Bytes = Bytes::from_static(b"");
 

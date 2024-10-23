@@ -13,16 +13,17 @@
 //! Mostly copied from axum example: https://github.com/tokio-rs/axum/blob/791d5038a927add3f8ff1d5c1010cd0b24fdda77/examples/rest-grpc-multiplex/src/multiplex_service.rs
 //! License MIT
 
+use std::{
+    convert::Infallible,
+    task::{Context, Poll},
+};
+
 use axum::{
     http::header::CONTENT_TYPE,
     response::{IntoResponse, Response},
 };
 use futures::{future::BoxFuture, ready};
 use hyper::Request;
-use std::{
-    convert::Infallible,
-    task::{Context, Poll},
-};
 use tower::Service;
 
 pub struct MultiplexService<A, B> {

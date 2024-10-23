@@ -8,18 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-use std::num::{NonZeroU16, NonZeroUsize};
-use std::path::PathBuf;
-use std::time::Duration;
-use tracing::warn;
+use std::{
+    num::{NonZeroU16, NonZeroUsize},
+    path::PathBuf,
+    time::Duration,
+};
 
 use restate_serde_util::NonZeroByteCount;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+use tracing::warn;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
-use crate::identifiers::PartitionId;
-use crate::retries::RetryPolicy;
+use crate::{identifiers::PartitionId, retries::RetryPolicy};
 
 /// # Worker options
 #[serde_as]

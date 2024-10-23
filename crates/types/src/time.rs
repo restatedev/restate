@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt;
-use std::fmt::Display;
-use std::ops::Add;
-use std::time::{Duration, SystemTime};
+use std::{
+    fmt,
+    fmt::Display,
+    ops::Add,
+    time::{Duration, SystemTime},
+};
 
 /// Milliseconds since the unix epoch
 #[derive(
@@ -179,9 +181,9 @@ impl From<prost_types::Timestamp> for NanosSinceEpoch {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use std::time::SystemTime;
+
+    use super::*;
 
     #[test]
     fn millis_should_not_overflow() {

@@ -12,18 +12,14 @@
 //! running on localhost:9080 in order to run.
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use futures_util::stream::FuturesUnordered;
-use futures_util::StreamExt;
-use http::header::CONTENT_TYPE;
-use http::Uri;
+use futures_util::{stream::FuturesUnordered, StreamExt};
+use http::{header::CONTENT_TYPE, Uri};
 use pprof::criterion::{Output, PProfProfiler};
 use rand::distributions::{Alphanumeric, DistString};
 use restate_benchmarks::{parse_benchmark_settings, BenchmarkSettings};
 use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 fn throughput_benchmark(criterion: &mut Criterion) {
     tracing_subscriber::registry()

@@ -8,77 +8,68 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
-use std::ops::RangeInclusive;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::BTreeMap, ops::RangeInclusive, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::Context;
-use futures::future::OptionFuture;
-use futures::stream::StreamExt;
-use futures::Stream;
+use futures::{future::OptionFuture, stream::StreamExt, Stream};
 use metrics::gauge;
-use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{mpsc, oneshot, watch};
-use tokio::time;
-use tokio::time::MissedTickBehavior;
-use tracing::{debug, info, instrument, trace, warn};
-
 use restate_bifrost::Bifrost;
-use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{Incoming, MessageRouterBuilder};
-use restate_core::network::{MessageHandler, Networking, TransportConnect};
-use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
-use restate_core::{cancellation_watcher, task_center, Metadata, ShutdownError, TaskId, TaskKind};
-use restate_core::{RuntimeError, TaskCenter};
+use restate_core::{
+    cancellation_watcher,
+    network::{
+        rpc_router::{RpcError, RpcRouter},
+        Incoming, MessageHandler, MessageRouterBuilder, Networking, TransportConnect,
+    },
+    task_center,
+    worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle},
+    Metadata, RuntimeError, ShutdownError, TaskCenter, TaskId, TaskKind,
+};
 use restate_invoker_api::StatusHandle;
-use restate_invoker_impl::Service as InvokerService;
-use restate_invoker_impl::{BuildError, ChannelStatusReader};
+use restate_invoker_impl::{BuildError, ChannelStatusReader, Service as InvokerService};
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_storage_api::StorageError;
-use restate_types::cluster::cluster_state::ReplayStatus;
-use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use restate_types::config::{Configuration, StorageOptions};
-use restate_types::epoch::EpochMetadata;
-use restate_types::health::HealthStatus;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
-use restate_types::live::Live;
-use restate_types::live::LiveLoad;
-use restate_types::logs::Lsn;
-use restate_types::logs::SequenceNumber;
-use restate_types::metadata_store::keys::partition_processor_epoch_key;
-use restate_types::net::cluster_controller::AttachRequest;
-use restate_types::net::cluster_controller::{Action, AttachResponse};
-use restate_types::net::metadata::MetadataKind;
-use restate_types::net::partition_processor_manager::{
-    ControlProcessor, ControlProcessors, CreateSnapshotResponse, GetProcessorsState,
-    ProcessorCommand, SnapshotError,
+use restate_storage_api::{fsm_table::ReadOnlyFsmTable, StorageError};
+use restate_types::{
+    cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode},
+    config::{Configuration, StorageOptions},
+    epoch::EpochMetadata,
+    health::HealthStatus,
+    identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId},
+    live::{Live, LiveLoad},
+    logs::{Lsn, SequenceNumber},
+    metadata_store::keys::partition_processor_epoch_key,
+    net::{
+        cluster_controller::{Action, AttachRequest, AttachResponse},
+        metadata::MetadataKind,
+        partition_processor_manager::{
+            ControlProcessor, ControlProcessors, CreateSnapshotRequest, CreateSnapshotResponse,
+            GetProcessorsState, ProcessorCommand, ProcessorsStateResponse, SnapshotError,
+        },
+    },
+    partition_table::PartitionTable,
+    protobuf::common::WorkerStatus,
+    schema::Schema,
+    time::MillisSinceEpoch,
+    GenerationalNodeId,
 };
-use restate_types::net::partition_processor_manager::{
-    CreateSnapshotRequest, ProcessorsStateResponse,
+use tokio::{
+    sync::{mpsc, mpsc::error::TrySendError, oneshot, watch},
+    time,
+    time::MissedTickBehavior,
 };
-use restate_types::partition_table::PartitionTable;
-use restate_types::protobuf::common::WorkerStatus;
-use restate_types::schema::Schema;
-use restate_types::time::MillisSinceEpoch;
-use restate_types::GenerationalNodeId;
+use tracing::{debug, info, instrument, trace, warn};
 
-use crate::invoker_integration::EntryEnricher;
-use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
-use crate::metric_definitions::PARTITION_IS_ACTIVE;
-use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
-use crate::metric_definitions::PARTITION_LABEL;
-use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
-use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
-use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
-use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::PartitionProcessorControlCommand;
-use crate::PartitionProcessorBuilder;
+use crate::{
+    invoker_integration::EntryEnricher,
+    metric_definitions::{
+        NUM_ACTIVE_PARTITIONS, PARTITION_IS_ACTIVE, PARTITION_IS_EFFECTIVE_LEADER, PARTITION_LABEL,
+        PARTITION_LAST_APPLIED_LOG_LSN, PARTITION_LAST_PERSISTED_LOG_LSN,
+        PARTITION_TIME_SINCE_LAST_RECORD, PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
+    },
+    partition::{invoker_storage_reader::InvokerStorageReader, PartitionProcessorControlCommand},
+    PartitionProcessorBuilder,
+};
 
 pub struct PartitionProcessorManager<T> {
     task_center: TaskCenter,
@@ -1000,22 +991,22 @@ impl PersistedLogLsnWatchdog {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition_processor_manager::PersistedLogLsnWatchdog;
+    use std::{collections::BTreeMap, ops::RangeInclusive, time::Duration};
+
     use restate_core::{TaskKind, TestCoreEnv};
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
-    use restate_storage_api::fsm_table::FsmTable;
-    use restate_storage_api::Transaction;
-    use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
-    use restate_types::identifiers::{PartitionId, PartitionKey};
-    use restate_types::live::Constant;
-    use restate_types::logs::{Lsn, SequenceNumber};
-    use std::collections::BTreeMap;
-    use std::ops::RangeInclusive;
-    use std::time::Duration;
+    use restate_storage_api::{fsm_table::FsmTable, Transaction};
+    use restate_types::{
+        config::{CommonOptions, RocksDbOptions, StorageOptions},
+        identifiers::{PartitionId, PartitionKey},
+        live::Constant,
+        logs::{Lsn, SequenceNumber},
+    };
     use test_log::test;
-    use tokio::sync::watch;
-    use tokio::time::Instant;
+    use tokio::{sync::watch, time::Instant};
+
+    use crate::partition_processor_manager::PersistedLogLsnWatchdog;
 
     #[test(tokio::test(start_paused = true))]
     async fn persisted_log_lsn_watchdog_detects_applied_lsns() -> anyhow::Result<()> {

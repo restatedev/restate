@@ -10,21 +10,19 @@
 
 //! A wrapper client for admin HTTP service.
 
+use std::time::Duration;
+
 use anyhow::bail;
 use http::StatusCode;
 use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
 use restate_cli_util::{c_warn, CliContext};
 use serde::{de::DeserializeOwned, Serialize};
-use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
 
-use crate::build_info;
-use crate::cli_env::CliEnv;
-use crate::clients::AdminClientInterface;
-
 use super::errors::ApiError;
+use crate::{build_info, cli_env::CliEnv, clients::AdminClientInterface};
 
 /// Min/max supported admin API versions
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;

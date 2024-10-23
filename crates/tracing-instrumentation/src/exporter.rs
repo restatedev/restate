@@ -8,15 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
 use arc_swap::ArcSwap;
 use futures::future::BoxFuture;
-use opentelemetry::trace::TraceError;
-use opentelemetry::{Key, KeyValue, StringValue, Value};
-use opentelemetry_sdk::export::trace::{SpanData, SpanExporter};
-use opentelemetry_sdk::Resource;
+use opentelemetry::{trace::TraceError, Key, KeyValue, StringValue, Value};
+use opentelemetry_sdk::{
+    export::trace::{SpanData, SpanExporter},
+    Resource,
+};
 use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 /// `RPC_SERVICE` is used to override `service.name` on the `SpanBuilder`
 const RPC_SERVICE: Key = Key::from_static_str("rpc.service");

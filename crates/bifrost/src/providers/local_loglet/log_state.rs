@@ -9,18 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use bytes::BytesMut;
+use restate_types::{flexbuffers_storage_encode_decode, logs::LogletOffset, storage::StorageCodec};
 use rocksdb::MergeOperands;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use tracing::{error, trace, warn};
 
-use restate_types::flexbuffers_storage_encode_decode;
-use restate_types::logs::LogletOffset;
-use restate_types::storage::StorageCodec;
-
-use super::keys::{MetadataKey, MetadataKind};
-
-use super::LogStoreError;
+use super::{
+    keys::{MetadataKey, MetadataKind},
+    LogStoreError,
+};
 
 /// Bundles one or more updates to log state. LogState updates are applied via
 /// a rocksdb merge operator

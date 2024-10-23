@@ -9,11 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use mlua::prelude::*;
-use mlua::{Table, Value};
-
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_service_protocol::message::{Decoder, MessageType, ProtocolMessage};
+use mlua::{prelude::*, Table, Value};
+use restate_service_protocol::{
+    codec::ProtobufRawEntryCodec,
+    message::{Decoder, MessageType, ProtocolMessage},
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 #[derive(Debug, thiserror::Error)]

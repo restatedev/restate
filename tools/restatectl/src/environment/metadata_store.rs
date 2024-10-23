@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tracing::info;
-
-use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::{TaskCenter, TaskKind};
+use restate_core::{metadata_store::MetadataStoreClient, TaskCenter, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
-use restate_types::config::{MetadataStoreClientOptions, MetadataStoreOptions, RocksDbOptions};
-use restate_types::health::HealthStatus;
-use restate_types::live::BoxedLiveLoad;
-use restate_types::protobuf::common::MetadataServerStatus;
+use restate_types::{
+    config::{MetadataStoreClientOptions, MetadataStoreOptions, RocksDbOptions},
+    health::HealthStatus,
+    live::BoxedLiveLoad,
+    protobuf::common::MetadataServerStatus,
+};
+use tracing::info;
 
 pub async fn start_metadata_store(
     metadata_store_client_options: MetadataStoreClientOptions,

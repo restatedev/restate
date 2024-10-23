@@ -8,13 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{protobuf_storage_encode_decode, Result};
+use std::{cmp::Ordering, future::Future};
+
 use futures_util::Stream;
-use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
-use restate_types::invocation::ServiceInvocation;
-use restate_types::time::MillisSinceEpoch;
-use std::cmp::Ordering;
-use std::future::Future;
+use restate_types::{
+    identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey},
+    invocation::ServiceInvocation,
+    time::MillisSinceEpoch,
+};
+
+use crate::{protobuf_storage_encode_decode, Result};
 
 /// # Important
 /// We use the [`TimerKey`] to read the timers in an absolute order. The timer service

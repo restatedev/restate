@@ -10,16 +10,19 @@
 
 //! Defines messages between replicated loglet instances
 
-use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
 use super::TargetName;
-use crate::logs::metadata::SegmentIndex;
-use crate::logs::{LogId, LogletOffset, Record, SequenceNumber, TailState};
-use crate::net::define_rpc;
-use crate::replicated_loglet::ReplicatedLogletId;
+use crate::{
+    logs::{metadata::SegmentIndex, LogId, LogletOffset, Record, SequenceNumber, TailState},
+    net::define_rpc,
+    replicated_loglet::ReplicatedLogletId,
+};
 
 // ----- ReplicatedLoglet Sequencer API -----
 define_rpc! {

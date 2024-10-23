@@ -12,10 +12,13 @@ pub mod client;
 pub mod handler;
 
 pub mod pb_conversions {
-    use crate::grpc_svc;
-    use crate::grpc_svc::{GetResponse, GetVersionResponse, PreconditionKind};
     use restate_core::metadata_store::{Precondition, VersionedValue};
     use restate_types::Version;
+
+    use crate::{
+        grpc_svc,
+        grpc_svc::{GetResponse, GetVersionResponse, PreconditionKind},
+    };
 
     #[derive(Debug, thiserror::Error)]
     pub enum ConversionError {

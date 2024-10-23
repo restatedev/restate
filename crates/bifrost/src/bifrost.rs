@@ -8,24 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, OnceLock,
+};
 
 use enum_map::EnumMap;
-
 use restate_core::{Metadata, MetadataKind, TargetVersion};
-use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
-use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
-use restate_types::storage::StorageEncode;
-use restate_types::Version;
+use restate_types::{
+    logs::{
+        metadata::{MaybeSegment, ProviderKind, Segment},
+        KeyFilter, LogId, Lsn, SequenceNumber, TailState,
+    },
+    storage::StorageEncode,
+    Version,
+};
 
-use crate::appender::Appender;
-use crate::background_appender::BackgroundAppender;
-use crate::loglet::LogletProvider;
-use crate::loglet_wrapper::LogletWrapper;
-use crate::watchdog::WatchdogSender;
-use crate::{Error, FindTailAttributes, InputRecord, LogReadStream, Result};
+use crate::{
+    appender::Appender, background_appender::BackgroundAppender, loglet::LogletProvider,
+    loglet_wrapper::LogletWrapper, watchdog::WatchdogSender, Error, FindTailAttributes,
+    InputRecord, LogReadStream, Result,
+};
 
 /// Bifrost is Restate's durable interconnect system
 ///
@@ -506,29 +509,32 @@ impl MaybeLoglet {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use std::sync::atomic::AtomicUsize;
 
     use googletest::prelude::*;
+    use restate_core::{metadata, task_center, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+    use restate_rocksdb::RocksDbManager;
+    use restate_types::{
+        config::CommonOptions,
+        live::Constant,
+        logs::{
+            metadata::{new_single_node_loglet_params, SegmentIndex},
+            SequenceNumber,
+        },
+        metadata_store::keys::BIFROST_CONFIG_KEY,
+        partition_table::PartitionTable,
+        Versioned,
+    };
     use test_log::test;
     use tokio::time::Duration;
     use tracing::info;
     use tracing_test::traced_test;
 
-    use restate_core::{metadata, TaskKind, TestCoreEnv};
-    use restate_core::{task_center, TestCoreEnvBuilder};
-    use restate_rocksdb::RocksDbManager;
-    use restate_types::config::CommonOptions;
-    use restate_types::live::Constant;
-    use restate_types::logs::metadata::{new_single_node_loglet_params, SegmentIndex};
-    use restate_types::logs::SequenceNumber;
-    use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-    use restate_types::partition_table::PartitionTable;
-    use restate_types::Versioned;
-
-    use crate::providers::memory_loglet::{self};
-    use crate::BifrostAdmin;
+    use super::*;
+    use crate::{
+        providers::memory_loglet::{self},
+        BifrostAdmin,
+    };
 
     #[tokio::test]
     #[traced_test]

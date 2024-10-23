@@ -8,18 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::{
+    io::IsTerminal,
+    path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use arc_swap::ArcSwap;
 use dotenvy::dotenv;
 use tracing::info;
 use tracing_log::AsTrace;
 
-use crate::opts::{CommonOpts, ConfirmMode, NetworkOpts, TableStyle, TimeFormat, UiOpts};
-use crate::os_env::OsEnv;
+use crate::{
+    opts::{CommonOpts, ConfirmMode, NetworkOpts, TableStyle, TimeFormat, UiOpts},
+    os_env::OsEnv,
+};
 
 static GLOBAL_CLI_CONTEXT: OnceLock<ArcSwap<CliContext>> = OnceLock::new();
 

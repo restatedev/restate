@@ -20,17 +20,17 @@ pub mod partition_processor_manager;
 pub mod replicated_loglet;
 
 // re-exports for convenience
+use std::{
+    net::{AddrParseError, SocketAddr},
+    path::PathBuf,
+    str::FromStr,
+};
+
 pub use error::*;
-
-use std::net::{AddrParseError, SocketAddr};
-use std::path::PathBuf;
-use std::str::FromStr;
-
 use http::Uri;
 
 use self::codec::{Targeted, WireEncode};
-pub use crate::protobuf::common::ProtocolVersion;
-pub use crate::protobuf::common::TargetName;
+pub use crate::protobuf::common::{ProtocolVersion, TargetName};
 
 pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
 pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;

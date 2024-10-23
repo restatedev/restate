@@ -10,14 +10,13 @@
 
 use anyhow::Context;
 use cling::prelude::*;
+use restate_admin::cluster_controller::protobuf::{
+    cluster_ctrl_svc_client::ClusterCtrlSvcClient, CreatePartitionSnapshotRequest,
+};
+use restate_cli_util::c_println;
 use tonic::codec::CompressionEncoding;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::CreatePartitionSnapshotRequest;
-use restate_cli_util::c_println;
-
-use crate::app::ConnectionInfo;
-use crate::util::grpc_connect;
+use crate::{app::ConnectionInfo, util::grpc_connect};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "create")]

@@ -11,8 +11,7 @@
 use hyper_util::rt::TokioIo;
 use restate_cli_util::CliContext;
 use restate_types::net::AdvertisedAddress;
-use tokio::io;
-use tokio::net::UnixStream;
+use tokio::{io, net::UnixStream};
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 

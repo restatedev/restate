@@ -11,20 +11,26 @@
 pub mod providers;
 mod test_util;
 
-#[cfg(any(test, feature = "test-util"))]
-use crate::metadata_store::test_util::InMemoryMetadataStore;
+use std::{
+    future::Future,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
-use restate_types::errors::GenericError;
-use restate_types::retries::RetryPolicy;
-use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
-use std::future::Future;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tracing::log::trace;
-use tracing::{debug, info};
+use restate_types::{
+    errors::GenericError,
+    flexbuffers_storage_encode_decode,
+    retries::RetryPolicy,
+    storage::{StorageCodec, StorageDecode, StorageEncode},
+    Version, Versioned,
+};
+use tracing::{debug, info, log::trace};
+
+#[cfg(any(test, feature = "test-util"))]
+use crate::metadata_store::test_util::InMemoryMetadataStore;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {

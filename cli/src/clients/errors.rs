@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_cli_util::ui::stylesheet::Style;
 use serde::Deserialize;
 use url::Url;
-
-use restate_cli_util::ui::stylesheet::Style;
 
 use crate::console::Styled;
 

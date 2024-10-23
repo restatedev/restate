@@ -8,28 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Write};
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{Read, Write},
+    path::Path,
+};
 
 use anyhow::{anyhow, bail, Context};
 use arrow_convert::{ArrowDeserialize, ArrowField};
-use base64::alphabet::URL_SAFE;
-use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
+use base64::{
+    alphabet::URL_SAFE,
+    engine::{Engine, GeneralPurpose, GeneralPurposeConfig},
+};
 use bytes::Bytes;
 use comfy_table::{Cell, Table};
 use itertools::Itertools;
-use restate_cli_util::c_warn;
+use restate_admin_rest_model::services::ModifyServiceStateRequest;
+use restate_cli_util::{c_warn, ui::console::StyledTable};
+use restate_types::{invocation::ServiceType, state_mut::StateMutationVersion};
 use serde_json::Value;
 
-use restate_admin_rest_model::services::ModifyServiceStateRequest;
-use restate_cli_util::ui::console::StyledTable;
-use restate_types::invocation::ServiceType;
-use restate_types::state_mut::StateMutationVersion;
-
-use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface, MetasClientError};
+use crate::{
+    cli_env::CliEnv,
+    clients::{AdminClient, AdminClientInterface, MetasClientError},
+};
 
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 pub struct StateEntriesQueryResult {

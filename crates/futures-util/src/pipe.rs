@@ -8,18 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::future::{poll_fn, Future};
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::task::{ready, Context, Poll};
-
-use pin_project::pin_project;
-use tokio::sync::mpsc;
+use std::{
+    future::{poll_fn, Future},
+    marker::PhantomData,
+    pin::Pin,
+    task::{ready, Context, Poll},
+};
 
 pub use input::*;
 pub use multi_input::*;
 pub use multi_target::*;
+use pin_project::pin_project;
 pub use target::*;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Copy, Clone, PartialEq, thiserror::Error)]
 pub enum PipeError {
@@ -488,9 +489,9 @@ mod multi_target {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use futures::future;
+
+    use super::*;
 
     #[tokio::test]
     async fn pipe_bounded_to_bounded() {

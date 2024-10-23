@@ -12,21 +12,29 @@ use std::collections::BTreeMap;
 
 use anyhow::Context;
 use cling::prelude::*;
+use restate_admin::cluster_controller::protobuf::{
+    cluster_ctrl_svc_client::ClusterCtrlSvcClient, ListLogsRequest,
+};
+use restate_cli_util::{
+    _comfy_table::{Cell, Table},
+    c_println,
+    ui::console::StyledTable,
+};
+use restate_types::{
+    logs::{
+        metadata::{Chain, Logs},
+        LogId,
+    },
+    storage::StorageCodec,
+    Versioned,
+};
 use tonic::codec::CompressionEncoding;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::ListLogsRequest;
-use restate_cli_util::_comfy_table::{Cell, Table};
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::StyledTable;
-use restate_types::logs::metadata::{Chain, Logs};
-use restate_types::logs::LogId;
-use restate_types::storage::StorageCodec;
-use restate_types::Versioned;
-
-use crate::app::ConnectionInfo;
-use crate::commands::log::{deserialize_replicated_log_params, render_loglet_params};
-use crate::util::grpc_connect;
+use crate::{
+    app::ConnectionInfo,
+    commands::log::{deserialize_replicated_log_params, render_loglet_params},
+    util::grpc_connect,
+};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "ls")]

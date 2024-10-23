@@ -10,19 +10,19 @@
 
 use async_trait::async_trait;
 use bytestring::ByteString;
-use tonic::transport::Channel;
-use tonic::{Code, Status};
-
-use restate_core::metadata_store::{
-    MetadataStore, Precondition, ReadError, VersionedValue, WriteError,
+use restate_core::{
+    metadata_store::{MetadataStore, Precondition, ReadError, VersionedValue, WriteError},
+    network::net_util::create_tonic_channel_from_advertised_address,
 };
-use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
-use restate_types::net::AdvertisedAddress;
-use restate_types::Version;
+use restate_types::{net::AdvertisedAddress, Version};
+use tonic::{transport::Channel, Code, Status};
 
-use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
-use crate::grpc_svc::{DeleteRequest, GetRequest, PutRequest};
-use crate::local::grpc::pb_conversions::ConversionError;
+use crate::{
+    grpc_svc::{
+        metadata_store_svc_client::MetadataStoreSvcClient, DeleteRequest, GetRequest, PutRequest,
+    },
+    local::grpc::pb_conversions::ConversionError,
+};
 
 /// Client end to interact with the [`LocalMetadataStore`].
 #[derive(Debug, Clone)]

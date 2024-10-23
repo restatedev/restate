@@ -11,8 +11,9 @@
 pub mod keys {
     //! Keys of values stored in the metadata store
 
-    use crate::identifiers::PartitionId;
     use bytestring::ByteString;
+
+    use crate::identifiers::PartitionId;
 
     pub static NODES_CONFIG_KEY: ByteString = ByteString::from_static("nodes_config");
     pub static BIFROST_CONFIG_KEY: ByteString = ByteString::from_static("bifrost_config");

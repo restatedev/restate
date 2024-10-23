@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::time::{Duration, SystemTime};
 
 use restate_storage_api::inbox_table::ReadOnlyInboxTable;
-use restate_types::invocation::SubmitNotificationSink;
-use restate_types::time::MillisSinceEpoch;
-use std::time::{Duration, SystemTime};
+use restate_types::{invocation::SubmitNotificationSink, time::MillisSinceEpoch};
 use test_log::test;
+
+use super::*;
 
 #[test(tokio::test)]
 async fn send_with_delay() {

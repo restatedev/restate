@@ -8,27 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::proxy::ProxyConnector;
-
-use crate::utils::ErrorExt;
+use std::{error::Error, fmt::Debug, future, future::Future};
 
 use bytes::Bytes;
-use futures::future::Either;
-use futures::FutureExt;
-use http::uri::Scheme;
-use http::Version;
+use futures::{future::Either, FutureExt};
+use http::{uri::Scheme, Version};
 use http_body_util::BodyExt;
-use hyper::body::Body;
-use hyper::http::uri::PathAndQuery;
-use hyper::http::HeaderValue;
-use hyper::{HeaderMap, Method, Request, Response, Uri};
+use hyper::{
+    body::Body,
+    http::{uri::PathAndQuery, HeaderValue},
+    HeaderMap, Method, Request, Response, Uri,
+};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use restate_types::config::HttpOptions;
-use std::error::Error;
-use std::fmt::Debug;
-use std::future;
-use std::future::Future;
+
+use super::proxy::ProxyConnector;
+use crate::utils::ErrorExt;
 
 type ProxiedHttpsConnector = ProxyConnector<HttpsConnector<HttpConnector>>;
 type ProxiedHttpConnector = ProxyConnector<HttpConnector>;

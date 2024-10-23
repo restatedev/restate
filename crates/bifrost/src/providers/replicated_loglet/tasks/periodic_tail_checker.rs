@@ -8,17 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Weak;
-use std::time::Duration;
-
-use tokio::time::Instant;
-use tracing::{debug, trace};
+use std::{sync::Weak, time::Duration};
 
 use restate_core::network::TransportConnect;
 use restate_types::replicated_loglet::ReplicatedLogletId;
+use tokio::time::Instant;
+use tracing::{debug, trace};
 
-use crate::loglet::{Loglet, OperationError};
-use crate::providers::replicated_loglet::loglet::ReplicatedLoglet;
+use crate::{
+    loglet::{Loglet, OperationError},
+    providers::replicated_loglet::loglet::ReplicatedLoglet,
+};
 
 pub struct PeriodicTailChecker {}
 

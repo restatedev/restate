@@ -8,13 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{
+    borrow::Borrow,
+    fmt,
+    hash::{Hash, Hasher},
+};
+
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
-use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::invocation::ServiceInvocation;
-use restate_types::time::MillisSinceEpoch;
-use std::borrow::Borrow;
-use std::fmt;
-use std::hash::{Hash, Hasher};
+use restate_types::{
+    identifiers::{EntryIndex, InvocationId},
+    invocation::ServiceInvocation,
+    time::MillisSinceEpoch,
+};
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

@@ -8,15 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cluster::cluster_state::RunMode;
-use crate::identifiers::{PartitionId, PartitionKey};
-use crate::partition_table::PartitionTable;
-use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
+use std::{
+    collections::{BTreeMap, HashSet},
+    num::NonZero,
+    ops::RangeInclusive,
+};
+
 use serde_with::serde_as;
-use std::collections::{BTreeMap, HashSet};
-use std::num::NonZero;
-use std::ops::RangeInclusive;
 use xxhash_rust::xxh3::Xxh3Builder;
+
+use crate::{
+    cluster::cluster_state::RunMode,
+    flexbuffers_storage_encode_decode,
+    identifiers::{PartitionId, PartitionKey},
+    partition_table::PartitionTable,
+    PlainNodeId, Version, Versioned,
+};
 
 /// Replication strategy for partition processors.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

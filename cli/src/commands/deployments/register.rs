@@ -8,29 +8,38 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{HashMap, HashSet};
-use std::fmt::Display;
-use std::str::FromStr;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    str::FromStr,
+};
 
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::Table;
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
 use indicatif::ProgressBar;
-
 use restate_admin_rest_model::deployments::{Deployment, RegisterDeploymentRequest};
-use restate_cli_util::ui::console::{confirm_or_exit, Styled, StyledTable};
-use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
-use restate_types::identifiers::LambdaARN;
-use restate_types::schema::service::ServiceMetadata;
+use restate_cli_util::{
+    c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn,
+    ui::{
+        console::{confirm_or_exit, Styled, StyledTable},
+        stylesheet::Style,
+    },
+};
+use restate_types::{identifiers::LambdaARN, schema::service::ServiceMetadata};
 
-use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface, MetasClientError};
-use crate::console::c_println;
-use crate::ui::deployments::render_deployment_url;
-use crate::ui::service_handlers::{
-    create_service_handlers_table, create_service_handlers_table_diff, icon_for_service_type,
+use crate::{
+    cli_env::CliEnv,
+    clients::{AdminClient, AdminClientInterface, MetasClientError},
+    console::c_println,
+    ui::{
+        deployments::render_deployment_url,
+        service_handlers::{
+            create_service_handlers_table, create_service_handlers_table_diff,
+            icon_for_service_type,
+        },
+    },
 };
 
 #[derive(Run, Parser, Collect, Clone)]

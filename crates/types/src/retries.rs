@@ -10,11 +10,7 @@
 
 //! A core aspect of Restate is its ability to retry invocations. This module contains the types defining retries.
 
-use std::borrow::Cow;
-use std::cmp;
-use std::future::Future;
-use std::num::NonZeroUsize;
-use std::time::Duration;
+use std::{borrow::Cow, cmp, future::Future, num::NonZeroUsize, time::Duration};
 
 use rand::Rng;
 
@@ -314,10 +310,15 @@ impl<'a> ExactSizeIterator for RetryIter<'a> {}
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        future,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
+    };
+
     use super::*;
-    use std::future;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
 
     #[test]
     fn no_retry_policy() {

@@ -19,10 +19,11 @@ mod services;
 mod subscriptions;
 mod version;
 
-use okapi_operation::axum_integration::{delete, get, patch, post};
-use okapi_operation::*;
-use restate_types::identifiers::PartitionKey;
-use restate_types::schema::subscriptions::SubscriptionValidator;
+use okapi_operation::{
+    axum_integration::{delete, get, patch, post},
+    *,
+};
+use restate_types::{identifiers::PartitionKey, schema::subscriptions::SubscriptionValidator};
 use restate_wal_protocol::{Destination, Header, Source};
 
 use crate::state::AdminServiceState;

@@ -8,10 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{
+    future::Future,
+    ops::Add,
+    time::{Duration, SystemTime},
+};
+
 use restate_types::time::MillisSinceEpoch;
-use std::future::Future;
-use std::ops::Add;
-use std::time::{Duration, SystemTime};
 
 pub trait Clock {
     type SleepFuture: Future<Output = ()>;
@@ -42,13 +45,17 @@ impl Clock for TokioClock {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::service::clock::Clock;
+    use std::{
+        cmp::{Ordering, Reverse},
+        collections::BinaryHeap,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
     use futures_util::future::{BoxFuture, FutureExt};
     use restate_types::time::MillisSinceEpoch;
-    use std::cmp::{Ordering, Reverse};
-    use std::collections::BinaryHeap;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+
+    use crate::service::clock::Clock;
 
     #[derive(Debug, Clone)]
     pub struct ManualClock {

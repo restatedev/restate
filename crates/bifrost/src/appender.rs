@@ -8,22 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
-use restate_types::storage::StorageEncode;
+use restate_types::{
+    config::Configuration,
+    live::Live,
+    logs::{metadata::SegmentIndex, LogId, Lsn, Record},
+    retries::RetryIter,
+    storage::StorageEncode,
+};
 use tracing::{debug, info, instrument};
 
-use restate_types::config::Configuration;
-use restate_types::live::Live;
-use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{LogId, Lsn, Record};
-use restate_types::retries::RetryIter;
-
-use crate::bifrost::BifrostInner;
-use crate::loglet::AppendError;
-use crate::loglet_wrapper::LogletWrapper;
-use crate::{Error, InputRecord, Result};
+use crate::{
+    bifrost::BifrostInner, loglet::AppendError, loglet_wrapper::LogletWrapper, Error, InputRecord,
+    Result,
+};
 
 #[derive(Clone, derive_more::Debug)]
 pub struct Appender {

@@ -61,11 +61,11 @@ pub mod cluster {
 }
 
 pub mod node {
-    use crate::GenerationalNodeId;
-
-    use crate::net::{ProtocolVersion, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION};
-
     use self::message::{BinaryMessage, ConnectionControl, Signal};
+    use crate::{
+        net::{ProtocolVersion, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION},
+        GenerationalNodeId,
+    };
 
     include!(concat!(env!("OUT_DIR"), "/restate.node.rs"));
 

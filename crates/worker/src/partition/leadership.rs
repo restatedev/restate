@@ -8,52 +8,55 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::Ordering;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::ops::RangeInclusive;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    cmp::Ordering, collections::VecDeque, fmt::Debug, ops::RangeInclusive, pin::Pin, sync::Arc,
+    time::Duration,
+};
 
-use futures::future::OptionFuture;
-use futures::{future, stream, StreamExt, TryStreamExt};
+use futures::{future, future::OptionFuture, stream, StreamExt, TryStreamExt};
 use metrics::counter;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info, instrument, trace, warn};
-
 use restate_bifrost::Bifrost;
-use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{
-    current_task_partition_id, metadata, task_center, ShutdownError, TaskHandle, TaskId, TaskKind,
+    current_task_partition_id, metadata,
+    network::{NetworkSender, Networking, Outgoing, TransportConnect},
+    task_center, ShutdownError, TaskHandle, TaskId, TaskKind,
 };
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
-use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
-use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::timer_table::{TimerKey, TimerTable};
+use restate_storage_api::{
+    deduplication_table::{DedupInformation, EpochSequenceNumber},
+    invocation_status_table::ReadOnlyInvocationStatusTable,
+    outbox_table::{OutboxMessage, OutboxTable},
+    timer_table::{TimerKey, TimerTable},
+};
 use restate_timer::TokioClock;
-use restate_types::identifiers::{InvocationId, PartitionKey};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
-use restate_types::logs::LogId;
-use restate_types::message::MessageIndex;
-use restate_types::net::ingress;
-use restate_types::storage::StorageEncodeError;
-use restate_types::GenerationalNodeId;
-use restate_wal_protocol::control::AnnounceLeader;
-use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
+use restate_types::{
+    identifiers::{InvocationId, LeaderEpoch, PartitionId, PartitionKey, PartitionLeaderEpoch},
+    logs::LogId,
+    message::MessageIndex,
+    net::ingress,
+    storage::StorageEncodeError,
+    GenerationalNodeId,
+};
+use restate_wal_protocol::{
+    control::AnnounceLeader, timer::TimerKeyValue, Command, Destination, Envelope, Header, Source,
+};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::{debug, info, instrument, trace, warn};
 
-use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
-use crate::partition::action_effect_handler::ActionEffectHandler;
-use crate::partition::cleaner::Cleaner;
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::shuffle;
-use crate::partition::shuffle::{HintSender, OutboxReaderError, Shuffle, ShuffleMetadata};
-use crate::partition::state_machine::Action;
+use crate::{
+    metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS,
+    partition::{
+        action_effect_handler::ActionEffectHandler,
+        cleaner::Cleaner,
+        invoker_storage_reader::InvokerStorageReader,
+        shuffle,
+        shuffle::{HintSender, OutboxReaderError, Shuffle, ShuffleMetadata},
+        state_machine::Action,
+    },
+};
 
 const BATCH_READY_UP_TO: usize = 10;
 
@@ -794,24 +797,26 @@ pub(crate) enum TaskError {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata, State};
+    use std::{ops::RangeInclusive, time::Duration};
+
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
     use restate_core::TestCoreEnv;
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
-    use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
-    use restate_types::live::Constant;
-    use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
-    use restate_types::GenerationalNodeId;
-    use restate_wal_protocol::control::AnnounceLeader;
-    use restate_wal_protocol::{Command, Envelope};
-    use std::ops::RangeInclusive;
-    use std::time::Duration;
+    use restate_types::{
+        config::{CommonOptions, RocksDbOptions, StorageOptions},
+        identifiers::{LeaderEpoch, PartitionId, PartitionKey},
+        live::Constant,
+        logs::{KeyFilter, Lsn, SequenceNumber},
+        GenerationalNodeId,
+    };
+    use restate_wal_protocol::{control::AnnounceLeader, Command, Envelope};
     use test_log::test;
     use tokio_stream::StreamExt;
+
+    use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata, State};
 
     const PARTITION_ID: PartitionId = PartitionId::MIN;
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);

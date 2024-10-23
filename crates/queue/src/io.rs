@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::{collections::VecDeque, path::PathBuf};
+
+use serde::{de::DeserializeOwned, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 const ENCODE_ERR_MSG: &str =

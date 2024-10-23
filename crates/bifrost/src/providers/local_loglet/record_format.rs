@@ -11,11 +11,12 @@
 use std::ops::Deref;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-
-use restate_types::flexbuffers_storage_encode_decode;
-use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery, Record};
-use restate_types::storage::{PolyBytes, StorageCodec, StorageCodecKind, StorageDecodeError};
-use restate_types::time::NanosSinceEpoch;
+use restate_types::{
+    flexbuffers_storage_encode_decode,
+    logs::{KeyFilter, Keys, MatchKeyQuery, Record},
+    storage::{PolyBytes, StorageCodec, StorageCodecKind, StorageDecodeError},
+    time::NanosSinceEpoch,
+};
 
 // use legacy for new appends until enough minor/major versions are released after current (1.0.x)
 // to allow for backwards compatibility.
@@ -254,18 +255,19 @@ fn read_created_at<B: Buf>(buf: &mut B) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
 
     use bytes::BytesMut;
     use googletest::prelude::*;
-
     use restate_types::logs::Keys;
+
+    use super::*;
 
     #[test]
     fn test_record_format() {
-        use super::RecordFormat;
         use std::convert::TryFrom;
+
+        use super::RecordFormat;
         assert_eq!(RecordFormat::try_from(0x02).unwrap(), RecordFormat::Legacy);
         assert_eq!(
             RecordFormat::try_from(0x03).unwrap(),

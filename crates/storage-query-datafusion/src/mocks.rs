@@ -8,30 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::ops::RangeInclusive;
+use std::{fmt::Debug, marker::PhantomData, ops::RangeInclusive};
 
 use async_trait::async_trait;
-use datafusion::arrow::array::ArrayRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::execution::SendableRecordBatchStream;
+use datafusion::{
+    arrow::{array::ArrayRef, record_batch::RecordBatch},
+    execution::SendableRecordBatchStream,
+};
 use googletest::matcher::{Matcher, MatcherResult};
-
 use restate_core::task_center;
-use restate_invoker_api::status_handle::test_util::MockStatusHandle;
-use restate_invoker_api::StatusHandle;
+use restate_invoker_api::{status_handle::test_util::MockStatusHandle, StatusHandle};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
-use restate_types::config::{CommonOptions, QueryEngineOptions, WorkerOptions};
-use restate_types::errors::GenericError;
-use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
-use restate_types::invocation::ServiceType;
-use restate_types::live::{Constant, Live};
-use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
-use restate_types::schema::deployment::{Deployment, DeploymentResolver};
-use restate_types::schema::service::test_util::MockServiceMetadataResolver;
-use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
+use restate_types::{
+    config::{CommonOptions, QueryEngineOptions, WorkerOptions},
+    errors::GenericError,
+    identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision},
+    invocation::ServiceType,
+    live::{Constant, Live},
+    schema::{
+        deployment::{test_util::MockDeploymentMetadataRegistry, Deployment, DeploymentResolver},
+        service::{
+            test_util::MockServiceMetadataResolver, ServiceMetadata, ServiceMetadataResolver,
+        },
+    },
+};
 
 use super::context::QueryContext;
 use crate::context::SelectPartitions;

@@ -8,20 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::time::Duration;
 
-use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, SourceTable, StatusTimestamps,
+use restate_storage_api::{
+    invocation_status_table::{CompletedInvocation, SourceTable, StatusTimestamps},
+    service_status_table::ReadOnlyVirtualObjectStatusTable,
+    timer_table::{Timer, TimerKey, TimerKeyKind},
 };
-use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
-use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
-use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
+use restate_types::{
+    errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    invocation::{
+        AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
+    },
 };
 use restate_wal_protocol::timer::TimerKeyValue;
-use std::time::Duration;
 use test_log::test;
+
+use super::*;
 
 #[test(tokio::test)]
 async fn start_workflow_method() {

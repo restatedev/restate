@@ -314,13 +314,13 @@ macro_rules! define_table_key {
     })
 }
 
-use crate::PaddedPartitionId;
-use crate::TableKind;
 pub(crate) use define_table_key;
-use restate_storage_api::deduplication_table::ProducerId;
-use restate_storage_api::timer_table::TimerKeyKind;
-use restate_storage_api::StorageError;
+use restate_storage_api::{
+    deduplication_table::ProducerId, timer_table::TimerKeyKind, StorageError,
+};
 use restate_types::identifiers::InvocationUuid;
+
+use crate::{PaddedPartitionId, TableKind};
 
 pub(crate) trait KeyCodec: Sized {
     fn encode<B: BufMut>(&self, target: &mut B);
@@ -621,10 +621,11 @@ pub(crate) fn deserialize<T: KeyCodec, B: Buf>(source: &mut B) -> crate::Result<
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-    use super::*;
     use bytes::BytesMut;
     use restate_test_util::let_assert;
     use strum::IntoEnumIterator;
+
+    use super::*;
 
     #[test]
     fn write_read_round_trip() {

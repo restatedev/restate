@@ -12,9 +12,8 @@ mod consumer_task;
 mod metric_definitions;
 mod subscription_controller;
 
-use tokio::sync::mpsc;
-
 pub use subscription_controller::{Command, Error, Service};
+use tokio::sync::mpsc;
 
 pub type SubscriptionCommandSender = mpsc::Sender<Command>;
 pub type SubscriptionCommandReceiver = mpsc::Receiver<Command>;

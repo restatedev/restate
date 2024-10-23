@@ -8,11 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::errors::InvocationError;
-use crate::identifiers::{IngressRequestId, InvocationId};
-use crate::invocation::InvocationTarget;
-use crate::GenerationalNodeId;
 use bytes::Bytes;
+
+use crate::{
+    errors::InvocationError,
+    identifiers::{IngressRequestId, InvocationId},
+    invocation::InvocationTarget,
+    GenerationalNodeId,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IngressResponseEnvelope<T> {

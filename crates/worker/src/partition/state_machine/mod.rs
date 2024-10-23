@@ -11,8 +11,16 @@
 mod actions;
 mod utils;
 
-use crate::metric_definitions::PARTITION_APPLY_COMMAND;
-use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
+use std::{
+    collections::HashSet,
+    fmt,
+    fmt::{Debug, Formatter},
+    iter,
+    marker::PhantomData,
+    ops::RangeInclusive,
+    time::{Duration, Instant},
+};
+
 use ::tracing::{debug, trace, warn, Instrument, Span};
 pub use actions::{Action, ActionCollector};
 use assert2::let_assert;
@@ -22,75 +30,70 @@ use futures::{StreamExt, TryStreamExt};
 use metrics::{histogram, Histogram};
 use restate_invoker_api::InvokeInputJournal;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::idempotency_table::IdempotencyMetadata;
-use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
-use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
-use restate_storage_api::invocation_status_table;
-use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatusTable,
-    PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
+use restate_storage_api::{
+    fsm_table::FsmTable,
+    idempotency_table::{IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable},
+    inbox_table::{InboxEntry, InboxTable},
+    invocation_status_table,
+    invocation_status_table::{
+        CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
+        InvocationStatusTable, PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
+        ScheduledInvocation, SourceTable,
+    },
+    journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable},
+    outbox_table::{OutboxMessage, OutboxTable},
+    promise_table::{Promise, PromiseState, PromiseTable},
+    service_status_table::{
+        ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
+    },
+    state_table::StateTable,
+    timer_table::{Timer, TimerKey, TimerTable},
+    Result as StorageResult,
 };
-use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ScheduledInvocation, SourceTable,
-};
-use restate_storage_api::journal_table::ReadOnlyJournalTable;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable};
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::promise_table::{Promise, PromiseState, PromiseTable};
-use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
-};
-use restate_storage_api::state_table::StateTable;
-use restate_storage_api::timer_table::TimerKey;
-use restate_storage_api::timer_table::{Timer, TimerTable};
-use restate_storage_api::Result as StorageResult;
 use restate_tracing_instrumentation as instrumentation;
-use restate_types::deployment::PinnedDeployment;
-use restate_types::errors::{
-    InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
-    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
-    KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+use restate_types::{
+    deployment::PinnedDeployment,
+    errors::{
+        InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
+        ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
+        KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
+        WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    },
+    identifiers::{
+        EntryIndex, IdempotencyId, InvocationId, JournalEntryId, PartitionKey, ServiceId,
+        WithInvocationId, WithPartitionKey,
+    },
+    ingress,
+    ingress::{IngressResponseEnvelope, IngressResponseResult},
+    invocation::{
+        AttachInvocationRequest, InvocationInput, InvocationQuery, InvocationResponse,
+        InvocationTarget, InvocationTargetType, InvocationTermination, ResponseResult,
+        ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+        SpanRelation, SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType,
+        WorkflowHandlerType,
+    },
+    journal::{
+        enriched::{
+            AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
+        },
+        raw::{EntryHeader, RawEntryCodec, RawEntryCodecError},
+        Completion, CompletionResult, EntryType, *,
+    },
+    message::MessageIndex,
+    state_mut::{ExternalStateMutation, StateMutationVersion},
+    time::MillisSinceEpoch,
 };
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, ServiceId};
-use restate_types::identifiers::{
-    IdempotencyId, JournalEntryId, WithInvocationId, WithPartitionKey,
+use restate_wal_protocol::{
+    timer::{TimerKeyDisplay, TimerKeyValue},
+    Command,
 };
-use restate_types::ingress;
-use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
-use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
-    InvocationTargetType, InvocationTermination, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SubmitNotificationSink,
-    TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
-};
-use restate_types::invocation::{InvocationInput, SpanRelation};
-use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::enriched::{
-    AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
-};
-use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
-use restate_types::journal::Completion;
-use restate_types::journal::CompletionResult;
-use restate_types::journal::EntryType;
-use restate_types::journal::*;
-use restate_types::message::MessageIndex;
-use restate_types::state_mut::ExternalStateMutation;
-use restate_types::state_mut::StateMutationVersion;
-use restate_types::time::MillisSinceEpoch;
-use restate_wal_protocol::timer::TimerKeyDisplay;
-use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::Command;
-use std::collections::HashSet;
-use std::fmt;
-use std::fmt::{Debug, Formatter};
-use std::iter;
-use std::marker::PhantomData;
-use std::ops::RangeInclusive;
-use std::time::Duration;
-use std::time::Instant;
 use tracing::error;
 use utils::SpanExt;
+
+use crate::{
+    metric_definitions::PARTITION_APPLY_COMMAND,
+    partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt},
+};
 
 pub struct StateMachine<Codec> {
     // initialized from persistent storage

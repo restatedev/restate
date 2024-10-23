@@ -8,27 +8,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::any::Any;
-use std::fmt::{Debug, Formatter};
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-
-use async_trait::async_trait;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::DataFusionError;
-use datafusion::datasource::{TableProvider, TableType};
-use datafusion::execution::context::TaskContext;
-use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
-use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream,
+use std::{
+    any::Any,
+    fmt::{Debug, Formatter},
+    ops::RangeInclusive,
+    sync::Arc,
 };
 
+use async_trait::async_trait;
+use datafusion::{
+    arrow::datatypes::SchemaRef,
+    common::DataFusionError,
+    datasource::{TableProvider, TableType},
+    execution::context::TaskContext,
+    logical_expr::{Expr, TableProviderFilterPushDown},
+    physical_expr::EquivalenceProperties,
+    physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties,
+        SendableRecordBatchStream,
+    },
+};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 
-use crate::context::SelectPartitions;
-use crate::table_util::compute_ordering;
+use crate::{context::SelectPartitions, table_util::compute_ordering};
 
 pub(crate) trait ScanPartition: Send + Sync + Debug + 'static {
     fn scan_partition(

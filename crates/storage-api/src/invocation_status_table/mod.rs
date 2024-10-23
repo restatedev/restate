@@ -8,21 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{protobuf_storage_encode_decode, Result};
+use std::{collections::HashSet, future::Future, ops::RangeInclusive, time::Duration};
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::Stream;
-use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
-use restate_types::invocation::{
-    Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+use restate_types::{
+    deployment::PinnedDeployment,
+    identifiers::{EntryIndex, InvocationId, PartitionKey},
+    invocation::{
+        Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
+        ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    },
+    time::MillisSinceEpoch,
 };
-use restate_types::time::MillisSinceEpoch;
-use std::collections::HashSet;
-use std::future::Future;
-use std::ops::RangeInclusive;
-use std::time::Duration;
+
+use crate::{protobuf_storage_encode_decode, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceTable {
@@ -582,9 +583,9 @@ pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
 
 #[cfg(any(test, feature = "test-util"))]
 mod test_util {
-    use super::*;
-
     use restate_types::invocation::VirtualObjectHandlerType;
+
+    use super::*;
 
     impl InFlightInvocationMetadata {
         pub fn mock() -> Self {

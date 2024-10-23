@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{protobuf_storage_encode_decode, Result};
+use std::{future::Future, ops::RangeInclusive};
 
 use futures_util::Stream;
 use restate_types::identifiers::{IdempotencyId, InvocationId, PartitionKey};
-use std::future::Future;
-use std::ops::RangeInclusive;
+
+use super::{protobuf_storage_encode_decode, Result};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdempotencyMetadata {

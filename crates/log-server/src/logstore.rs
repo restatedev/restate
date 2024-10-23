@@ -11,12 +11,13 @@
 use std::future::Future;
 
 use futures::FutureExt;
-use tokio::sync::oneshot;
-
 use restate_bifrost::loglet::OperationError;
 use restate_core::ShutdownError;
-use restate_types::net::log_server::{Digest, GetDigest, GetRecords, Records, Seal, Store, Trim};
-use restate_types::replicated_loglet::ReplicatedLogletId;
+use restate_types::{
+    net::log_server::{Digest, GetDigest, GetRecords, Records, Seal, Store, Trim},
+    replicated_loglet::ReplicatedLogletId,
+};
+use tokio::sync::oneshot;
 
 use crate::metadata::{LogStoreMarker, LogletState};
 

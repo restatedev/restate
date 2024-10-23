@@ -10,18 +10,18 @@
 
 use anyhow::Context;
 use cling::prelude::*;
-use restate_cli_util::_comfy_table::{Cell, Color, Table};
-use restate_cli_util::ui::console::StyledTable;
+use restate_admin::cluster_controller::protobuf::{
+    cluster_ctrl_svc_client::ClusterCtrlSvcClient, FindTailRequest, TailState,
+};
+use restate_cli_util::{
+    _comfy_table::{Cell, Color, Table},
+    c_println,
+    ui::console::StyledTable,
+};
 use tonic::codec::CompressionEncoding;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{FindTailRequest, TailState};
-use restate_cli_util::c_println;
-
-use crate::app::ConnectionInfo;
-use crate::util::grpc_connect;
-
 use super::LogIdRange;
+use crate::{app::ConnectionInfo, util::grpc_connect};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "find_tail")]

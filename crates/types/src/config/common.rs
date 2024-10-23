@@ -8,21 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{
+    num::{NonZeroU16, NonZeroU32, NonZeroUsize},
+    path::PathBuf,
+    str::FromStr,
+    time::Duration,
+};
+
 use enumset::EnumSet;
 use once_cell::sync::Lazy;
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::time::Duration;
 
 use super::{AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions};
-use crate::net::{AdvertisedAddress, BindAddress};
-use crate::nodes_config::Role;
-use crate::retries::RetryPolicy;
-use crate::PlainNodeId;
+use crate::{
+    net::{AdvertisedAddress, BindAddress},
+    nodes_config::Role,
+    retries::RetryPolicy,
+    PlainNodeId,
+};
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
 
@@ -567,9 +572,8 @@ impl Default for TracingOptions {
 }
 #[cfg(test)]
 mod tests {
-    use crate::nodes_config::Role;
-
     use super::CommonOptions;
+    use crate::nodes_config::Role;
 
     #[test]
     fn roles_compat_test() {

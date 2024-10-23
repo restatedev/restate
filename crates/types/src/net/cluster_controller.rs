@@ -10,12 +10,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cluster::cluster_state::RunMode;
-use crate::identifiers::PartitionId;
-use crate::net::TargetName;
-use crate::partition_table::KeyRange;
-
-use crate::net::define_rpc;
+use crate::{
+    cluster::cluster_state::RunMode,
+    identifiers::PartitionId,
+    net::{define_rpc, TargetName},
+    partition_table::KeyRange,
+};
 
 define_rpc! {
     @request = AttachRequest,

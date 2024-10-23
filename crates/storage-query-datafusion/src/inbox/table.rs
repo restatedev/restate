@@ -8,21 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
+use std::{fmt::Debug, ops::RangeInclusive, sync::Arc};
 
 use futures::Stream;
-
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::inbox_table::{ReadOnlyInboxTable, SequenceNumberInboxEntry};
 use restate_types::identifiers::PartitionKey;
 
-use crate::context::{QueryContext, SelectPartitions};
-use crate::inbox::row::append_inbox_row;
-use crate::inbox::schema::SysInboxBuilder;
-use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
-use crate::table_providers::PartitionedTableProvider;
+use crate::{
+    context::{QueryContext, SelectPartitions},
+    inbox::{row::append_inbox_row, schema::SysInboxBuilder},
+    partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition},
+    table_providers::PartitionedTableProvider,
+};
 
 pub(crate) fn register_self(
     ctx: &QueryContext,

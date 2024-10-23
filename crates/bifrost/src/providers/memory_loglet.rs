@@ -8,32 +8,33 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{hash_map, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::task::ready;
-use std::task::Poll;
-use std::time::Duration;
+use std::{
+    collections::{hash_map, HashMap},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex,
+    },
+    task::{ready, Poll},
+    time::Duration,
+};
 
 use async_trait::async_trait;
-use futures::stream::BoxStream;
-use futures::{Stream, StreamExt};
+use futures::{stream::BoxStream, Stream, StreamExt};
+use restate_core::ShutdownError;
+use restate_types::logs::{
+    metadata::{LogletParams, ProviderKind, SegmentIndex},
+    KeyFilter, LogId, LogletOffset, MatchKeyQuery, Record, SequenceNumber, TailState,
+};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, info};
 
-use restate_core::ShutdownError;
-use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::{
-    KeyFilter, LogId, LogletOffset, MatchKeyQuery, Record, SequenceNumber, TailState,
+use crate::{
+    loglet::{
+        util::TailOffsetWatch, Loglet, LogletCommit, LogletProvider, LogletProviderFactory,
+        LogletReadStream, OperationError, SendableLogletReadStream,
+    },
+    LogEntry, Result,
 };
-
-use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::{
-    Loglet, LogletCommit, LogletProvider, LogletProviderFactory, LogletReadStream, OperationError,
-    SendableLogletReadStream,
-};
-use crate::LogEntry;
-use crate::Result;
 
 #[derive(Default)]
 pub struct Factory {
@@ -401,9 +402,9 @@ impl Loglet for MemoryLoglet {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use restate_core::TestCoreEnvBuilder;
+
+    use super::*;
 
     macro_rules! run_test {
         ($test:ident) => {

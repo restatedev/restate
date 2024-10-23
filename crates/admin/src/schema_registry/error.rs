@@ -9,14 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use http::Uri;
-
-use restate_core::metadata_store::ReadModifyWriteError;
-use restate_core::ShutdownError;
-use restate_types::endpoint_manifest;
-use restate_types::errors::GenericError;
-use restate_types::identifiers::DeploymentId;
-use restate_types::invocation::ServiceType;
-use restate_types::schema::invocation_target::BadInputContentType;
+use restate_core::{metadata_store::ReadModifyWriteError, ShutdownError};
+use restate_types::{
+    endpoint_manifest, errors::GenericError, identifiers::DeploymentId, invocation::ServiceType,
+    schema::invocation_target::BadInputContentType,
+};
 
 use crate::schema_registry::ServiceName;
 

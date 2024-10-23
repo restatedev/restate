@@ -8,31 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::marker::PhantomData;
-use std::str::FromStr;
+use std::{marker::PhantomData, str::FromStr};
 
 use anyhow::anyhow;
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
-
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::errors::{codes, InvocationError};
-use restate_types::identifiers::InvocationId;
-use restate_types::invocation::{
-    InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType, SpanRelation,
+use restate_types::{
+    errors::{codes, InvocationError},
+    identifiers::InvocationId,
+    invocation::{
+        InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType,
+        SpanRelation,
+    },
+    journal::{
+        enriched::{
+            AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
+        },
+        raw::{PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec},
+        CancelInvocationEntry, CancelInvocationTarget, CompleteAwakeableEntry, Entry, EntryType,
+        InvokeEntry, InvokeRequest, OneWayCallEntry,
+    },
+    live::Live,
+    schema::invocation_target::InvocationTargetResolver,
 };
-use restate_types::journal::enriched::{
-    AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
-};
-use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec};
-use restate_types::journal::{
-    CancelInvocationEntry, CancelInvocationTarget, CompleteAwakeableEntry, Entry, InvokeEntry,
-    OneWayCallEntry,
-};
-use restate_types::journal::{EntryType, InvokeRequest};
-use restate_types::live::Live;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
 
 #[derive(Clone)]
 pub(super) struct EntryEnricher<Schemas, Codec> {

@@ -15,10 +15,6 @@ use std::sync::{
     Arc,
 };
 
-use tokio::sync::Semaphore;
-use tokio_util::task::TaskTracker;
-use tracing::{debug, trace};
-
 use restate_core::{
     network::{rpc_router::RpcRouter, Networking, TransportConnect},
     task_center, ShutdownError,
@@ -30,6 +26,9 @@ use restate_types::{
     replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty},
     GenerationalNodeId,
 };
+use tokio::sync::Semaphore;
+use tokio_util::task::TaskTracker;
+use tracing::{debug, trace};
 
 use self::appender::SequencerAppender;
 use super::{

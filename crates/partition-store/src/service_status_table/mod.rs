@@ -8,23 +8,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::owned_iter::OwnedIterator;
-use crate::TableScan::FullScanPartitionKeyRange;
-use crate::{PartitionStore, TableKind};
-use crate::{PartitionStoreTransaction, StorageAccess};
+use std::ops::RangeInclusive;
+
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
+use restate_storage_api::{
+    service_status_table::{
+        ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
+    },
+    Result, StorageError,
 };
-use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::WithPartitionKey;
-use restate_types::identifiers::{PartitionKey, ServiceId};
-use restate_types::storage::StorageCodec;
-use std::ops::RangeInclusive;
+use restate_types::{
+    identifiers::{PartitionKey, ServiceId, WithPartitionKey},
+    storage::StorageCodec,
+};
+
+use crate::{
+    keys::{define_table_key, KeyKind, TableKey},
+    owned_iter::OwnedIterator,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
+    TableScan::FullScanPartitionKeyRange,
+};
 
 define_table_key!(
     TableKind::ServiceStatus,

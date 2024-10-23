@@ -16,37 +16,25 @@ mod metric_definitions;
 mod perf;
 mod rock_access;
 
-use metrics::counter;
-use metrics::gauge;
-use metrics::histogram;
+use std::{path::PathBuf, sync::Arc, time::Instant};
+
+use metrics::{counter, gauge, histogram};
 use restate_core::ShutdownError;
 use restate_types::config::RocksDbOptions;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::warn;
-
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Instant;
-
-use rocksdb::checkpoint::Checkpoint;
-use rocksdb::statistics::Histogram;
-use rocksdb::statistics::HistogramData;
-use rocksdb::statistics::Ticker;
-use rocksdb::ExportImportFilesMetaData;
+use rocksdb::{
+    checkpoint::Checkpoint,
+    statistics::{Histogram, HistogramData, Ticker},
+    ExportImportFilesMetaData,
+};
+use tracing::{debug, error, info, warn};
 
 // re-exports
 pub use self::db_manager::RocksDbManager;
-pub use self::db_spec::*;
-pub use self::error::*;
-pub use self::perf::RocksDbPerfGuard;
-pub use self::rock_access::RocksAccess;
-
-use self::background::ReadyStorageTask;
-use self::background::StorageTask;
-use self::background::StorageTaskKind;
-use self::metric_definitions::*;
+use self::{
+    background::{ReadyStorageTask, StorageTask, StorageTaskKind},
+    metric_definitions::*,
+};
+pub use self::{db_spec::*, error::*, perf::RocksDbPerfGuard, rock_access::RocksAccess};
 
 type BoxedCfMatcher = Box<dyn CfNameMatch + Send + Sync>;
 type BoxedCfOptionUpdater = Box<dyn Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync>;

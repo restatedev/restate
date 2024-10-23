@@ -9,25 +9,24 @@
 // by the Apache License, Version 2.0.
 //
 
-use std::io;
-use std::time::Instant;
+use std::{io, time::Instant};
 
 use anyhow::Result;
-use arrow::error::ArrowError;
-use arrow::util::display::ArrayFormatter;
-use arrow::util::display::FormatOptions;
+use arrow::{
+    error::ArrowError,
+    util::display::{ArrayFormatter, FormatOptions},
+};
 use cling::prelude::*;
-use comfy_table::Cell;
-use comfy_table::Table;
-use serde::Deserialize;
-use serde::Serialize;
-
-use restate_cli_util::c_eprintln;
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::Styled;
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::ui::watcher::Watch;
+use comfy_table::{Cell, Table};
+use restate_cli_util::{
+    c_eprintln, c_println,
+    ui::{
+        console::{Styled, StyledTable},
+        stylesheet::Style,
+        watcher::Watch,
+    },
+};
+use serde::{Deserialize, Serialize};
 
 use crate::cli_env::CliEnv;
 

@@ -1,5 +1,4 @@
-use std::num::NonZeroU16;
-use std::time::Duration;
+use std::{num::NonZeroU16, time::Duration};
 
 use enumset::enum_set;
 use futures_util::StreamExt;
@@ -8,8 +7,9 @@ use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
-use restate_types::logs::metadata::ProviderKind;
-use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
+use restate_types::{
+    config::Configuration, logs::metadata::ProviderKind, nodes_config::Role, PlainNodeId,
+};
 use test_log::test;
 
 mod common;

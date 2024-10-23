@@ -9,11 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use http::Uri;
-
 use restate_types::schema::service::ServiceMetadataResolver;
 
-use super::Handler;
-use super::HandlerError;
+use super::{Handler, HandlerError};
 use crate::InvocationStorageReader;
 
 pub(crate) enum WorkflowRequestType {

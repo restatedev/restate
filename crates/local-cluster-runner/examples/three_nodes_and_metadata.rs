@@ -1,21 +1,19 @@
-use std::num::NonZeroU16;
-use std::time::Duration;
+use std::{num::NonZeroU16, time::Duration};
 
 use enumset::enum_set;
 use futures::StreamExt;
 use regex::Regex;
-use tracing::{error, info};
-
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
     shutdown,
 };
-use restate_types::logs::metadata::ProviderKind::Replicated;
 use restate_types::{
     config::{Configuration, LogFormat},
+    logs::metadata::ProviderKind::Replicated,
     nodes_config::Role,
 };
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() {

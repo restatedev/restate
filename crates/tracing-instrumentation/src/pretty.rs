@@ -12,20 +12,22 @@
 // https://github.com/tokio-rs/tracing/blob/8aae1c37b091963aafdd336b1168fe5a24c0b4f0/tracing-subscriber/src/fmt/format/pretty.rs
 // License MIT
 
-use super::*;
+use std::{fmt, fmt::Debug};
 
 use nu_ansi_term::{Color, Style};
-use std::fmt;
-use std::fmt::Debug;
 use tracing::{
     field::{self, Field},
     span, Event, Level, Subscriber,
 };
-use tracing_subscriber::field::{MakeVisitor, RecordFields, VisitFmt, VisitOutput};
-use tracing_subscriber::fmt::format::Writer;
-use tracing_subscriber::fmt::time::FormatTime;
-use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, FormattedFields};
-use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{
+    field::{MakeVisitor, RecordFields, VisitFmt, VisitOutput},
+    fmt::{
+        format::Writer, time::FormatTime, FmtContext, FormatEvent, FormatFields, FormattedFields,
+    },
+    registry::LookupSpan,
+};
+
+use super::*;
 
 struct FmtLevel<'a> {
     level: &'a Level,

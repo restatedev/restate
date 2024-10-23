@@ -12,12 +12,13 @@
 #![allow(clippy::borrow_interior_mutable_const)]
 #![allow(clippy::declare_interior_mutable_const)]
 
-use crate::storage_test_environment;
-use restate_storage_api::idempotency_table::{
-    IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
+use restate_storage_api::{
+    idempotency_table::{IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable},
+    Transaction,
 };
-use restate_storage_api::Transaction;
 use restate_types::identifiers::{IdempotencyId, InvocationId, InvocationUuid};
+
+use crate::storage_test_environment;
 
 const FIXTURE_INVOCATION_1: InvocationUuid = InvocationUuid::from_u128(12345678900001);
 const FIXTURE_INVOCATION_2: InvocationUuid = InvocationUuid::from_u128(12345678900002);

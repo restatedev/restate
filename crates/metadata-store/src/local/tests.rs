@@ -9,27 +9,30 @@
 // by the Apache License, Version 2.0.
 
 use bytestring::ByteString;
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
+use futures::{stream::FuturesUnordered, StreamExt};
+use restate_core::{
+    network::FailingConnector, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder,
+};
+use restate_rocksdb::RocksDbManager;
+use restate_types::{
+    config::{
+        self, reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
+        MetadataStoreClientOptionsBuilder, MetadataStoreOptions, RocksDbOptions,
+    },
+    flexbuffers_storage_encode_decode,
+    health::HealthStatus,
+    live::{BoxedLiveLoad, Live},
+    net::{AdvertisedAddress, BindAddress},
+    protobuf::common::MetadataServerStatus,
+    Version, Versioned,
+};
 use serde::{Deserialize, Serialize};
 use test_log::test;
 
-use restate_core::network::FailingConnector;
-use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
-use restate_rocksdb::RocksDbManager;
-use restate_types::config::{
-    self, reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
-    MetadataStoreClientOptionsBuilder, MetadataStoreOptions, RocksDbOptions,
+use crate::{
+    local::{grpc::client::LocalMetadataStoreClient, service::LocalMetadataStoreService},
+    MetadataStoreClient, Precondition, WriteError,
 };
-use restate_types::health::HealthStatus;
-use restate_types::live::{BoxedLiveLoad, Live};
-use restate_types::net::{AdvertisedAddress, BindAddress};
-use restate_types::protobuf::common::MetadataServerStatus;
-use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
-
-use crate::local::grpc::client::LocalMetadataStoreClient;
-use crate::local::service::LocalMetadataStoreService;
-use crate::{MetadataStoreClient, Precondition, WriteError};
 
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
 struct Value {

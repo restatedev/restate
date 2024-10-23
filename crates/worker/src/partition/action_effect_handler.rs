@@ -8,21 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{btree_map, BTreeMap};
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::{
+    collections::{btree_map, BTreeMap},
+    ops::RangeInclusive,
+    sync::Arc,
+    time::SystemTime,
+};
 
 use restate_bifrost::Bifrost;
 use restate_core::{task_center, Metadata};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
-use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::logs::LogId;
-use restate_types::partition_table::FindPartition;
-use restate_types::time::MillisSinceEpoch;
-use restate_types::Version;
-use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
+use restate_types::{
+    identifiers::{PartitionId, PartitionKey, WithPartitionKey},
+    logs::LogId,
+    partition_table::FindPartition,
+    time::MillisSinceEpoch,
+    Version,
+};
+use restate_wal_protocol::{timer::TimerKeyValue, Command, Destination, Envelope, Header, Source};
 
 use super::leadership::ActionEffect;
 

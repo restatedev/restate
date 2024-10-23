@@ -13,12 +13,13 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned, ToTokens};
-use syn::spanned::Spanned;
-use syn::{Data, DeriveInput, Member, Result, Visibility};
+use syn::{spanned::Spanned, Data, DeriveInput, Member, Result, Visibility};
 
-use crate::ast::{Enum, Field, Input, Struct};
-use crate::attr::Code;
-use crate::generics::InferredBounds;
+use crate::{
+    ast::{Enum, Field, Input, Struct},
+    attr::Code,
+    generics::InferredBounds,
+};
 
 pub fn derive(node: &DeriveInput) -> Result<TokenStream> {
     let input = Input::from_syn(node)?;

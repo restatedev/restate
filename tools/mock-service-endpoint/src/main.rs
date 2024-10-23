@@ -1,32 +1,41 @@
-use std::convert::Infallible;
-use std::fmt::{Display, Formatter};
-use std::net::SocketAddr;
-use std::str::FromStr;
+use std::{
+    convert::Infallible,
+    fmt::{Display, Formatter},
+    net::SocketAddr,
+    str::FromStr,
+};
 
 use assert2::let_assert;
 use async_stream::{stream, try_stream};
 use bytes::Bytes;
 use futures::{pin_mut, Stream, StreamExt};
 use http_body_util::{BodyStream, Either, Empty, Full, StreamBody};
-use hyper::body::{Frame, Incoming};
-use hyper::server::conn::http2;
-use hyper::service::service_fn;
-use hyper::{Request, Response};
+use hyper::{
+    body::{Frame, Incoming},
+    server::conn::http2,
+    service::service_fn,
+    Request, Response,
+};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use prost::Message;
+use restate_service_protocol::{
+    codec::ProtobufRawEntryCodec,
+    message::{Decoder, Encoder, EncodingError, ProtocolMessage},
+};
+use restate_types::{
+    errors::codes,
+    journal::{
+        raw::{EntryHeader, PlainRawEntry, RawEntryCodecError},
+        Entry, EntryType, InputEntry,
+    },
+    service_protocol::{
+        self, get_state_entry_message, output_entry_message, start_message::StateEntry,
+        ServiceProtocolVersion, StartMessage,
+    },
+};
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 use tracing_subscriber::filter::LevelFilter;
-
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_service_protocol::message::{Decoder, Encoder, EncodingError, ProtocolMessage};
-use restate_types::errors::codes;
-use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryCodecError};
-use restate_types::journal::{Entry, EntryType, InputEntry};
-use restate_types::service_protocol::start_message::StateEntry;
-use restate_types::service_protocol::{
-    self, get_state_entry_message, output_entry_message, ServiceProtocolVersion, StartMessage,
-};
 
 #[derive(Debug, thiserror::Error)]
 enum FrameError {

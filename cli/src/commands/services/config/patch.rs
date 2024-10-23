@@ -8,16 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface};
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::Table;
 use const_format::concatcp;
 use restate_admin_rest_model::services::ModifyServiceRequest;
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
+use restate_cli_util::{
+    c_println,
+    ui::console::{confirm_or_exit, StyledTable},
+};
 use restate_serde_util::DurationString;
+
+use crate::{
+    cli_env::CliEnv,
+    clients::{AdminClient, AdminClientInterface},
+};
 
 pub(super) const DURATION_EDIT_DESCRIPTION: &str = "Can be configured using the humantime format (https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) or the ISO8601.";
 pub(super) const IDEMPOTENCY_RETENTION_EDIT_DESCRIPTION: &str = concatcp!(

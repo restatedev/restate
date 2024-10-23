@@ -8,14 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{assert_stream_eq, mock_state_mutation};
 use once_cell::sync::Lazy;
 use restate_partition_store::PartitionStore;
-use restate_storage_api::inbox_table::{
-    InboxEntry, InboxTable, ReadOnlyInboxTable, SequenceNumberInboxEntry,
+use restate_storage_api::{
+    inbox_table::{InboxEntry, InboxTable, ReadOnlyInboxTable, SequenceNumberInboxEntry},
+    Transaction,
 };
-use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, ServiceId};
+
+use crate::{assert_stream_eq, mock_state_mutation};
 
 static INBOX_ENTRIES: Lazy<Vec<SequenceNumberInboxEntry>> = Lazy::new(|| {
     vec![

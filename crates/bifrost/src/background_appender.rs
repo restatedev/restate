@@ -12,16 +12,12 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 use pin_project::pin_project;
-use restate_types::logs::Record;
+use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle};
+use restate_types::{identifiers::PartitionId, logs::Record, storage::StorageEncode};
 use tokio::sync::{mpsc, oneshot, Notify};
 use tracing::{trace, warn};
 
-use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle};
-use restate_types::identifiers::PartitionId;
-use restate_types::storage::StorageEncode;
-
-use crate::error::EnqueueError;
-use crate::{Appender, InputRecord, Result};
+use crate::{error::EnqueueError, Appender, InputRecord, Result};
 
 /// Performs appends in the background concurrently while maintaining the order of records
 /// produced from the same producer. It runs as a background task and batches records whenever

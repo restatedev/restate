@@ -8,20 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
+use restate_core::{
+    network::{
+        rpc_router::RpcRouter, MessageRouterBuilder, Networking, Outgoing, TransportConnect,
+    },
+    Metadata, ShutdownError, TaskCenter, TaskHandle,
+};
+use restate_types::{
+    cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState},
+    net::partition_processor_manager::GetProcessorsState,
+    nodes_config::Role,
+    time::MillisSinceEpoch,
+    Version,
+};
 use tokio::sync::watch;
-
-use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{MessageRouterBuilder, Networking, Outgoing, TransportConnect};
-use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle};
-use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState};
-use restate_types::net::partition_processor_manager::GetProcessorsState;
-use restate_types::nodes_config::Role;
-use restate_types::time::MillisSinceEpoch;
-use restate_types::Version;
 
 pub struct ClusterStateRefresher<T> {
     task_center: TaskCenter,

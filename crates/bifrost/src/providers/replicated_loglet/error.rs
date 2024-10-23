@@ -11,10 +11,11 @@
 use std::sync::Arc;
 
 use restate_core::ShutdownError;
-use restate_types::errors::MaybeRetryableError;
-use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::LogId;
-use restate_types::replicated_loglet::ReplicatedLogletId;
+use restate_types::{
+    errors::MaybeRetryableError,
+    logs::{metadata::SegmentIndex, LogId},
+    replicated_loglet::ReplicatedLogletId,
+};
 
 use crate::loglet::OperationError;
 

@@ -1,18 +1,21 @@
-use std::ops::RangeInclusive;
-use std::time::SystemTime;
-use tempfile::tempdir;
+use std::{ops::RangeInclusive, time::SystemTime};
 
-use restate_partition_store::snapshots::{
-    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
+use restate_partition_store::{
+    snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion},
+    PartitionStore, PartitionStoreManager,
 };
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
-use restate_storage_api::Transaction;
-use restate_types::config::WorkerOptions;
-use restate_types::identifiers::{PartitionKey, SnapshotId};
-use restate_types::live::Live;
-use restate_types::logs::Lsn;
-use restate_types::time::MillisSinceEpoch;
+use restate_storage_api::{
+    fsm_table::{FsmTable, ReadOnlyFsmTable},
+    Transaction,
+};
+use restate_types::{
+    config::WorkerOptions,
+    identifiers::{PartitionKey, SnapshotId},
+    live::Live,
+    logs::Lsn,
+    time::MillisSinceEpoch,
+};
+use tempfile::tempdir;
 
 pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_store: PartitionStore) {
     insert_test_data(&mut partition_store).await;

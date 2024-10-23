@@ -8,19 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use chrono::Utc;
+use restate_bifrost::loglet::{util::TailOffsetWatch, OperationError};
+use restate_core::ShutdownError;
+use restate_types::{
+    logs::{LogletOffset, SequenceNumber, TailState},
+    replicated_loglet::ReplicatedLogletId,
+    GenerationalNodeId, PlainNodeId,
+};
 use tokio::sync::watch;
 use xxhash_rust::xxh3::Xxh3Builder;
-
-use restate_bifrost::loglet::util::TailOffsetWatch;
-use restate_bifrost::loglet::OperationError;
-use restate_core::ShutdownError;
-use restate_types::logs::{LogletOffset, SequenceNumber, TailState};
-use restate_types::replicated_loglet::ReplicatedLogletId;
-use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use crate::logstore::LogStore;
 

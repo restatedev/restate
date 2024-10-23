@@ -8,22 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::fmt;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use cling::prelude::*;
 use convert_case::{Case, Casing};
-use dialoguer::theme::ColorfulTheme;
-use dialoguer::Select;
+use dialoguer::{theme::ColorfulTheme, Select};
 use futures::StreamExt;
-use octocrab::models::repos::Asset;
-use octocrab::repos::RepoHandler;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
-
+use octocrab::{models::repos::Asset, repos::RepoHandler};
 use restate_cli_util::ui::stylesheet::Style;
+use tokio::{fs::File, io::AsyncWriteExt};
 
 use crate::console::{c_println, Styled};
 

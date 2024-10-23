@@ -8,28 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::{atomic::AtomicU64, Arc};
+
+use dashmap::DashMap;
+use restate_bifrost::Bifrost;
+use restate_core::{
+    metadata,
+    network::{Incoming, MessageHandler},
+};
+use restate_storage_api::deduplication_table::DedupInformation;
+use restate_types::{
+    identifiers::{IngressRequestId, PartitionKey, WithPartitionKey},
+    message::MessageIndex,
+    net::{codec::Targeted, ingress::IngressMessage},
+    GenerationalNodeId,
+};
+use restate_wal_protocol::{
+    append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
+};
+use tracing::{debug, trace};
+
 use super::{
     error::IngressDispatchError, IngressDispatcherRequest, IngressDispatcherRequestInner,
     IngressInvocationResponse, IngressInvocationResponseSender, IngressRequestMode,
     IngressSubmittedInvocationNotificationSender, SubmittedInvocationNotification,
 };
-
-use dashmap::DashMap;
-use restate_bifrost::Bifrost;
-use restate_core::metadata;
-use restate_core::network::{Incoming, MessageHandler};
-use restate_storage_api::deduplication_table::DedupInformation;
-use restate_types::identifiers::{IngressRequestId, PartitionKey, WithPartitionKey};
-use restate_types::message::MessageIndex;
-use restate_types::net::codec::Targeted;
-use restate_types::net::ingress::IngressMessage;
-use restate_types::GenerationalNodeId;
-use restate_wal_protocol::{
-    append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
-};
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
-use tracing::{debug, trace};
 
 /// Dispatches a request from ingress to bifrost
 pub trait DispatchIngressRequest {
@@ -246,27 +249,31 @@ fn wrap_service_invocation_in_envelope(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::time::Duration;
 
     use bytes::Bytes;
     use bytestring::ByteString;
     use googletest::{assert_that, pat};
-    use restate_core::network::{NetworkSender, Outgoing};
-    use restate_core::TestCoreEnvBuilder;
-    use restate_test_util::{let_assert, matchers::*};
-    use restate_types::identifiers::{InvocationId, WithPartitionKey};
-    use restate_types::ingress::{IngressResponseResult, InvocationResponse};
-    use restate_types::invocation::{
-        AttachInvocationRequest, InvocationQuery, InvocationTarget, ServiceInvocation,
-        ServiceInvocationResponseSink, VirtualObjectHandlerType,
+    use restate_core::{
+        network::{NetworkSender, Outgoing},
+        TestCoreEnvBuilder,
     };
-    use restate_types::logs::{LogId, Lsn, SequenceNumber};
-    use restate_types::partition_table::{FindPartition, PartitionTable};
-    use restate_types::Version;
-    use restate_wal_protocol::Command;
-    use restate_wal_protocol::Envelope;
-    use std::time::Duration;
+    use restate_test_util::{let_assert, matchers::*};
+    use restate_types::{
+        identifiers::{InvocationId, WithPartitionKey},
+        ingress::{IngressResponseResult, InvocationResponse},
+        invocation::{
+            AttachInvocationRequest, InvocationQuery, InvocationTarget, ServiceInvocation,
+            ServiceInvocationResponseSink, VirtualObjectHandlerType,
+        },
+        logs::{LogId, Lsn, SequenceNumber},
+        partition_table::{FindPartition, PartitionTable},
+        Version,
+    };
+    use restate_wal_protocol::{Command, Envelope};
     use test_log::test;
+
+    use super::*;
 
     #[test(tokio::test)]
     async fn idempotent_invoke() -> anyhow::Result<()> {

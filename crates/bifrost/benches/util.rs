@@ -8,17 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tracing::warn;
-
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter, TaskCenterBuilder,
 };
 use restate_metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
-use restate_types::config::Configuration;
-use restate_types::live::Constant;
-use restate_types::logs::metadata::ProviderKind;
-use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+use restate_types::{
+    config::Configuration, live::Constant, logs::metadata::ProviderKind,
+    metadata_store::keys::BIFROST_CONFIG_KEY,
+};
+use tracing::warn;
 
 pub async fn spawn_environment(
     config: Configuration,

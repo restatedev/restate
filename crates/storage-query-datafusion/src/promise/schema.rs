@@ -10,9 +10,9 @@
 
 #![allow(dead_code)]
 
-use crate::table_macro::*;
-
 use datafusion::arrow::datatypes::DataType;
+
+use crate::table_macro::*;
 
 define_table!(sys_promise(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.

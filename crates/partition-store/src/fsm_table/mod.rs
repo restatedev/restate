@@ -8,17 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::future;
-use std::future::Future;
+use std::{future, future::Future};
 
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
-use restate_storage_api::Result;
-use restate_types::identifiers::PartitionId;
-use restate_types::storage::{StorageDecode, StorageEncode};
+use restate_storage_api::{
+    fsm_table::{FsmTable, ReadOnlyFsmTable},
+    Result,
+};
+use restate_types::{
+    identifiers::PartitionId,
+    storage::{StorageDecode, StorageEncode},
+};
 
-use crate::keys::{define_table_key, KeyKind};
-use crate::TableKind::PartitionStateMachine;
-use crate::{PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess};
+use crate::{
+    keys::{define_table_key, KeyKind},
+    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess,
+    TableKind::PartitionStateMachine,
+};
 
 define_table_key!(
     PartitionStateMachine,

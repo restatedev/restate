@@ -8,23 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::{Arc, OnceLock};
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize},
+        Arc, OnceLock,
+    },
+    time::Instant,
+};
 
 use parking_lot::RwLock;
+use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
+use restate_serde_util::ByteCount;
+use restate_types::{
+    config::{CommonOptions, Configuration, RocksDbOptions, StatisticsLevel},
+    live::{BoxedLiveLoad, LiveLoad},
+};
 use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
-use restate_serde_util::ByteCount;
-use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StatisticsLevel};
-use restate_types::live::{BoxedLiveLoad, LiveLoad};
-
-use crate::background::ReadyStorageTask;
-use crate::{metric_definitions, DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError};
+use crate::{
+    background::ReadyStorageTask, metric_definitions, DbName, DbSpec, Priority, RocksAccess,
+    RocksDb, RocksError,
+};
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 

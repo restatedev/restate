@@ -8,18 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 
 use super::TargetName;
-use crate::logs::{KeyFilter, LogletOffset, Record, SequenceNumber, TailState};
-use crate::net::define_rpc;
-use crate::replicated_loglet::ReplicatedLogletId;
-use crate::time::MillisSinceEpoch;
-use crate::GenerationalNodeId;
+use crate::{
+    logs::{KeyFilter, LogletOffset, Record, SequenceNumber, TailState},
+    net::define_rpc,
+    replicated_loglet::ReplicatedLogletId,
+    time::MillisSinceEpoch,
+    GenerationalNodeId,
+};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 #[repr(u8)]

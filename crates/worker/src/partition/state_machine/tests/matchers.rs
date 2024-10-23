@@ -12,21 +12,22 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use googletest::prelude::*;
 use restate_storage_api::timer_table::{TimerKey, TimerKeyKind};
-use restate_types::errors::codes;
-use restate_types::identifiers::EntryIndex;
-use restate_types::invocation::{InvocationTermination, TerminationFlavor};
-use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::{Completion, CompletionResult};
+use restate_types::{
+    errors::codes,
+    identifiers::EntryIndex,
+    invocation::{InvocationTermination, TerminationFlavor},
+    journal::{enriched::EnrichedRawEntry, Completion, CompletionResult},
+};
 
 pub mod storage {
-    use super::*;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
+    use restate_storage_api::{
+        inbox_table::{InboxEntry, SequenceNumberInboxEntry},
+        journal_table::JournalEntry,
+    };
+    use restate_types::{identifiers::InvocationId, invocation::InvocationTarget, journal::Entry};
 
-    use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
-    use restate_storage_api::journal_table::JournalEntry;
-    use restate_types::identifiers::InvocationId;
-    use restate_types::invocation::InvocationTarget;
-    use restate_types::journal::Entry;
+    use super::*;
 
     pub fn invocation_inbox_entry(
         invocation_id: InvocationId,
@@ -48,10 +49,10 @@ pub mod storage {
 }
 
 pub mod actions {
-    use super::*;
-
-    use crate::partition::state_machine::Action;
     use restate_types::identifiers::InvocationId;
+
+    use super::*;
+    use crate::partition::state_machine::Action;
 
     pub fn invoke_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
         pat!(Action::Invoke {

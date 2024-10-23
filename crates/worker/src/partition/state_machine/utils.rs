@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tracing::{debug_span, event_enabled, trace_span, Level, Span};
-
 use restate_types::{identifiers::InvocationId, invocation::InvocationTarget};
 use restate_wal_protocol::Command;
+use tracing::{debug_span, event_enabled, trace_span, Level, Span};
 
 pub(super) trait SpanExt {
     fn record_invocation_id(&self, id: &InvocationId);

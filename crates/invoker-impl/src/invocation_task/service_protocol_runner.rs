@@ -8,18 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::invocation_task::{
-    invocation_id_to_header_value, service_protocol_version_to_header_value,
-    InvocationErrorRelatedEntry, InvocationTask, InvocationTaskError, InvocationTaskOutputInner,
-    InvokerBodyStream, InvokerRequestStreamSender, ResponseChunk, ResponseStreamState,
-    TerminalLoopState, X_RESTATE_SERVER,
-};
-use crate::Notification;
+use std::{collections::HashSet, future::poll_fn, time::Duration};
+
 use bytes::Bytes;
-use futures::future::FusedFuture;
-use futures::{FutureExt, Stream, StreamExt};
-use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderName, HeaderValue};
+use futures::{future::FusedFuture, FutureExt, Stream, StreamExt};
+use http::{uri::PathAndQuery, HeaderMap, HeaderName, HeaderValue};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
 use restate_errors::warn_it;
@@ -28,21 +21,27 @@ use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::message::{
     Decoder, Encoder, MessageHeader, MessageType, ProtocolMessage,
 };
-use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::invocation::ServiceInvocationSpanContext;
-use restate_types::journal::raw::PlainRawEntry;
-use restate_types::journal::EntryType;
-use restate_types::schema::deployment::{
-    Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
+use restate_types::{
+    errors::InvocationError,
+    identifiers::{EntryIndex, InvocationId},
+    invocation::ServiceInvocationSpanContext,
+    journal::{raw::PlainRawEntry, EntryType},
+    schema::deployment::{Deployment, DeploymentMetadata, DeploymentType, ProtocolType},
+    service_protocol::ServiceProtocolVersion,
 };
-use restate_types::service_protocol::ServiceProtocolVersion;
-use std::collections::HashSet;
-use std::future::poll_fn;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, trace, warn};
+
+use crate::{
+    invocation_task::{
+        invocation_id_to_header_value, service_protocol_version_to_header_value,
+        InvocationErrorRelatedEntry, InvocationTask, InvocationTaskError,
+        InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender, ResponseChunk,
+        ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
+    },
+    Notification,
+};
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");

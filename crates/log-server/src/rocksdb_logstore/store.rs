@@ -8,34 +8,38 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::Ordering;
-use std::sync::Arc;
+use std::{cmp::Ordering, sync::Arc};
 
+use restate_bifrost::loglet::OperationError;
+use restate_rocksdb::{IoMode, Priority, RocksDb};
+use restate_types::{
+    config::LogServerOptions,
+    health::HealthStatus,
+    live::BoxedLiveLoad,
+    logs::{LogletOffset, SequenceNumber},
+    net::log_server::{
+        Digest, DigestEntry, Gap, GetDigest, GetRecords, LogServerResponseHeader, MaybeRecord,
+        RecordStatus, Records, Seal, Store, Trim,
+    },
+    protobuf::common::LogServerStatus,
+    replicated_loglet::ReplicatedLogletId,
+    GenerationalNodeId,
+};
 use rocksdb::{BoundColumnFamily, ReadOptions, WriteBatch, WriteOptions, DB};
 use tokio::time::Instant;
 use tracing::trace;
 
-use restate_bifrost::loglet::OperationError;
-use restate_rocksdb::{IoMode, Priority, RocksDb};
-use restate_types::config::LogServerOptions;
-use restate_types::health::HealthStatus;
-use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::net::log_server::{
-    Digest, DigestEntry, Gap, GetDigest, GetRecords, LogServerResponseHeader, MaybeRecord,
-    RecordStatus, Records, Seal, Store, Trim,
+use super::{
+    keys::{KeyPrefixKind, MetadataKey, MARKER_KEY},
+    record_format::DataRecordDecoder,
+    writer::RocksDbLogWriterHandle,
+    RocksDbLogStoreError, DATA_CF, METADATA_CF,
 };
-use restate_types::protobuf::common::LogServerStatus;
-use restate_types::replicated_loglet::ReplicatedLogletId;
-use restate_types::GenerationalNodeId;
-
-use super::keys::{KeyPrefixKind, MetadataKey, MARKER_KEY};
-use super::record_format::DataRecordDecoder;
-use super::writer::RocksDbLogWriterHandle;
-use super::{RocksDbLogStoreError, DATA_CF, METADATA_CF};
-use crate::logstore::{AsyncToken, LogStore};
-use crate::metadata::{LogStoreMarker, LogletState};
-use crate::rocksdb_logstore::keys::DataRecordKey;
+use crate::{
+    logstore::{AsyncToken, LogStore},
+    metadata::{LogStoreMarker, LogletState},
+    rocksdb_logstore::keys::DataRecordKey,
+};
 
 #[derive(Clone)]
 pub struct RocksDbLogStore {
@@ -495,24 +499,25 @@ impl LogStore for RocksDbLogStore {
 #[cfg(test)]
 mod tests {
     use googletest::prelude::*;
-    use test_log::test;
-
     use restate_core::{TaskCenter, TaskCenterBuilder};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
-    use restate_types::live::Live;
-    use restate_types::logs::{LogletOffset, Record, RecordCache, SequenceNumber};
-    use restate_types::net::log_server::{
-        DigestEntry, GetDigest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
+    use restate_types::{
+        config::Configuration,
+        live::Live,
+        logs::{LogletOffset, Record, RecordCache, SequenceNumber},
+        net::log_server::{
+            DigestEntry, GetDigest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
+        },
+        replicated_loglet::ReplicatedLogletId,
+        GenerationalNodeId, PlainNodeId,
     };
-    use restate_types::replicated_loglet::ReplicatedLogletId;
-    use restate_types::{GenerationalNodeId, PlainNodeId};
+    use test_log::test;
 
     use super::RocksDbLogStore;
-    use crate::logstore::LogStore;
-    use crate::metadata::LogStoreMarker;
-    use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
-    use crate::setup_panic_handler;
+    use crate::{
+        logstore::LogStore, metadata::LogStoreMarker, rocksdb_logstore::RocksDbLogStoreBuilder,
+        setup_panic_handler,
+    };
 
     async fn setup() -> Result<(TaskCenter, RocksDbLogStore)> {
         setup_panic_handler();

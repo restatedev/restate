@@ -18,18 +18,6 @@ use enumset::{enum_set, EnumSet};
 use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
-use rev_lines::RevLines;
-use serde::{Deserialize, Serialize};
-use tokio::{
-    fs::File,
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    sync::mpsc,
-    task::JoinHandle,
-};
-use tokio::{process::Command, sync::mpsc::Sender};
-use tracing::{error, info};
-use typed_builder::TypedBuilder;
-
 use restate_types::{
     config::{Configuration, MetadataStoreClient},
     errors::GenericError,
@@ -38,6 +26,17 @@ use restate_types::{
     nodes_config::{NodesConfiguration, Role},
     PlainNodeId,
 };
+use rev_lines::RevLines;
+use serde::{Deserialize, Serialize};
+use tokio::{
+    fs::File,
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::Command,
+    sync::{mpsc, mpsc::Sender},
+    task::JoinHandle,
+};
+use tracing::{error, info};
+use typed_builder::TypedBuilder;
 
 use crate::random_socket_address;
 

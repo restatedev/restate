@@ -12,23 +12,23 @@ use std::num::{NonZeroU32, NonZeroU8};
 
 use anyhow::Context;
 use cling::prelude::*;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
-
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{ListLogsRequest, SealAndExtendChainRequest};
-use restate_cli_util::{c_eprintln, c_println};
-use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
-use restate_types::logs::LogId;
-use restate_types::protobuf::common::Version;
-use restate_types::replicated_loglet::{
-    NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
+use restate_admin::cluster_controller::protobuf::{
+    cluster_ctrl_svc_client::ClusterCtrlSvcClient, ListLogsRequest, SealAndExtendChainRequest,
 };
-use restate_types::storage::StorageCodec;
-use restate_types::{GenerationalNodeId, PlainNodeId};
+use restate_cli_util::{c_eprintln, c_println};
+use restate_types::{
+    logs::{
+        metadata::{Logs, ProviderKind, SegmentIndex},
+        LogId,
+    },
+    protobuf::common::Version,
+    replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty},
+    storage::StorageCodec,
+    GenerationalNodeId, PlainNodeId,
+};
+use tonic::{codec::CompressionEncoding, transport::Channel};
 
-use crate::app::ConnectionInfo;
-use crate::util::grpc_connect;
+use crate::{app::ConnectionInfo, util::grpc_connect};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "reconfigure")]

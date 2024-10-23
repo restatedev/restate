@@ -14,10 +14,12 @@ use derive_builder::Builder;
 use metrics::{gauge, histogram};
 use tokio::sync::oneshot;
 
-use crate::metric_definitions::{
-    STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_TOTAL_DURATION, STORAGE_BG_TASK_WAIT_DURATION,
+use crate::{
+    metric_definitions::{
+        STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_TOTAL_DURATION, STORAGE_BG_TASK_WAIT_DURATION,
+    },
+    Priority, OP_TYPE, PRIORITY, STORAGE_BG_TASK_IN_FLIGHT,
 };
-use crate::{Priority, OP_TYPE, PRIORITY, STORAGE_BG_TASK_IN_FLIGHT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 #[strum(serialize_all = "kebab-case")]

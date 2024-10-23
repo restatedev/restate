@@ -8,18 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::mocks::*;
-use crate::row;
-use datafusion::arrow::array::{LargeStringArray, UInt64Array};
-use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::{
+    array::{LargeStringArray, UInt64Array},
+    record_batch::RecordBatch,
+};
 use futures::StreamExt;
-use googletest::all;
-use googletest::prelude::{assert_that, eq};
+use googletest::{
+    all,
+    prelude::{assert_that, eq},
+};
 use restate_core::TaskCenterBuilder;
-use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
-use restate_storage_api::Transaction;
-use restate_types::identifiers::InvocationId;
-use restate_types::invocation::InvocationTarget;
+use restate_storage_api::{
+    inbox_table::{InboxEntry, InboxTable},
+    Transaction,
+};
+use restate_types::{identifiers::InvocationId, invocation::InvocationTarget};
+
+use crate::{mocks::*, row};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_inbox() {

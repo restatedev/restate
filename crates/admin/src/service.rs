@@ -13,21 +13,20 @@ use std::sync::Arc;
 use axum::error_handling::HandleErrorLayer;
 use http::StatusCode;
 use restate_bifrost::Bifrost;
-use restate_types::config::AdminOptions;
-use restate_types::live::LiveLoad;
+use restate_core::{
+    metadata_store::MetadataStoreClient,
+    network::{net_util, protobuf::node_svc::node_svc_client::NodeSvcClient},
+    MetadataWriter,
+};
+use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_types::{
+    config::AdminOptions, live::LiveLoad, net::BindAddress,
+    schema::subscriptions::SubscriptionValidator,
+};
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
-use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::network::net_util;
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::MetadataWriter;
-use restate_service_protocol::discovery::ServiceDiscovery;
-use restate_types::net::BindAddress;
-use restate_types::schema::subscriptions::SubscriptionValidator;
-
-use crate::schema_registry::SchemaRegistry;
-use crate::{rest_api, state, storage_query};
+use crate::{rest_api, schema_registry::SchemaRegistry, state, storage_query};
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not create the service client: {0}")]

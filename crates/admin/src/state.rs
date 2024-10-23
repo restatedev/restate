@@ -9,10 +9,11 @@
 // by the Apache License, Version 2.0.
 //
 
-use crate::schema_registry::SchemaRegistry;
 use restate_bifrost::Bifrost;
 use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use tonic::transport::Channel;
+
+use crate::schema_registry::SchemaRegistry;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct AdminServiceState<V> {

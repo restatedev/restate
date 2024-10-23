@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::task::{Context, Poll};
+
 use http::{HeaderMap, Request};
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use std::task::{Context, Poll};
 use tower::{Layer, Service};
 
 pub struct HttpTraceContextExtractorLayer;

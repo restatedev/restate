@@ -10,8 +10,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ingress::{InvocationResponse, SubmittedInvocationNotification};
-use crate::net::{define_message, TargetName};
+use crate::{
+    ingress::{InvocationResponse, SubmittedInvocationNotification},
+    net::{define_message, TargetName},
+};
 
 #[derive(
     Debug,

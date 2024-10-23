@@ -8,14 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt;
-use std::fmt::{Debug, Formatter};
-use std::path::PathBuf;
-use std::time::SystemTime;
+use std::{
+    fmt,
+    fmt::{Debug, Formatter},
+    path::PathBuf,
+    time::SystemTime,
+};
 
-use hyper::header::{HeaderName, HeaderValue};
-use hyper::HeaderMap;
-
+use hyper::{
+    header::{HeaderName, HeaderValue},
+    HeaderMap,
+};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::Serialize;
 use tracing::info;
@@ -145,12 +148,10 @@ impl<'key, 'aud> super::SignRequest for Signer<'key, 'aud> {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashSet, io::Write};
+
     use super::*;
-
     use crate::request_identity::SignRequest;
-
-    use std::collections::HashSet;
-    use std::io::Write;
 
     static PRIVATE_KEY: &[u8] = br#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIPe++4ZTPQDF81otpoU/mOGHC2vOAVp9WbiCblvn3nXO

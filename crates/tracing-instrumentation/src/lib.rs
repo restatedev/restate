@@ -12,29 +12,30 @@
 mod exporter;
 mod pretty;
 
-use crate::exporter::ResourceModifyingSpanExporter;
-use crate::pretty::PrettyFields;
-use opentelemetry::trace::{TraceError, TracerProvider};
-use opentelemetry::KeyValue;
+use std::{collections::HashMap, env, fmt::Display};
+
+use opentelemetry::{
+    trace::{TraceError, TracerProvider},
+    KeyValue,
+};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
 use opentelemetry_otlp::{SpanExporterBuilder, WithExportConfig};
 use opentelemetry_sdk::trace::BatchSpanProcessor;
 use pretty::Pretty;
 use restate_types::config::{CommonOptions, LogFormat};
-use std::collections::HashMap;
-use std::env;
-use std::fmt::Display;
-use tonic::codegen::http::HeaderMap;
-use tonic::metadata::MetadataMap;
+use tonic::{codegen::http::HeaderMap, metadata::MetadataMap};
 use tracing::{info, warn, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::filter::{Filtered, ParseError};
-use tracing_subscriber::fmt::time::SystemTime;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::reload::Handle;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Layer, Registry};
+use tracing_subscriber::{
+    filter::{Filtered, ParseError},
+    fmt::{time::SystemTime, writer::MakeWriterExt},
+    layer::SubscriberExt,
+    reload::Handle,
+    util::SubscriberInitExt,
+    EnvFilter, Layer, Registry,
+};
+
+use crate::{exporter::ResourceModifyingSpanExporter, pretty::PrettyFields};
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]

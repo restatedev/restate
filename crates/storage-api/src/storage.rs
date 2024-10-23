@@ -71,53 +71,63 @@ pub mod v1 {
     ));
 
     pub mod pb_conversion {
-        use std::collections::HashSet;
-        use std::str::FromStr;
+        use std::{collections::HashSet, str::FromStr};
 
         use anyhow::anyhow;
         use bytes::{Buf, Bytes};
         use bytestring::ByteString;
         use opentelemetry::trace::TraceState;
-        use restate_types::deployment::PinnedDeployment;
+        use restate_types::{
+            deployment::PinnedDeployment,
+            errors::{IdDecodeError, InvocationError},
+            identifiers::{WithInvocationId, WithPartitionKey},
+            invocation::{InvocationTermination, TerminationFlavor},
+            journal::enriched::AwakeableEnrichmentResult,
+            service_protocol::ServiceProtocolVersion,
+            storage::{
+                StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode,
+                StorageEncodeError,
+            },
+            time::MillisSinceEpoch,
+            GenerationalNodeId,
+        };
 
-        use crate::storage::v1::dedup_sequence_number::Variant;
-        use crate::storage::v1::enriched_entry_header::{
-            Awakeable, BackgroundCall, CancelInvocation, ClearAllState, ClearState,
-            CompleteAwakeable, CompletePromise, Custom, GetCallInvocationId, GetPromise, GetState,
-            GetStateKeys, Input, Invoke, Output, PeekPromise, SetState, SideEffect, Sleep,
+        use crate::{
+            storage::v1::{
+                dedup_sequence_number::Variant,
+                enriched_entry_header,
+                enriched_entry_header::{
+                    Awakeable, BackgroundCall, CancelInvocation, ClearAllState, ClearState,
+                    CompleteAwakeable, CompletePromise, Custom, GetCallInvocationId, GetPromise,
+                    GetState, GetStateKeys, Input, Invoke, Output, PeekPromise, SetState,
+                    SideEffect, Sleep,
+                },
+                entry_result, inbox_entry, invocation_resolution_result, invocation_status,
+                invocation_status::{Completed, Free, Inboxed, Invoked, Suspended},
+                invocation_status_v2, invocation_target,
+                journal_entry::{
+                    completion_result,
+                    completion_result::{Empty, Failure, Success},
+                    CompletionResult, Entry, Kind,
+                },
+                outbox_message,
+                outbox_message::{
+                    OutboxCancel, OutboxKill, OutboxServiceInvocation,
+                    OutboxServiceInvocationResponse,
+                },
+                promise, response_result,
+                service_invocation_response_sink::{Ingress, PartitionProcessor, ResponseSink},
+                source, span_relation, submit_notification_sink, timer, virtual_object_status,
+                BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
+                EntryResult, EpochSequenceNumber, Header, IdempotencyMetadata, InboxEntry,
+                InvocationId, InvocationResolutionResult, InvocationStatus, InvocationStatusV2,
+                InvocationTarget, JournalEntry, JournalEntryId, JournalMeta, KvPair, OutboxMessage,
+                Promise, ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
+                ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
+                SubmitNotificationSink, Timer, VirtualObjectStatus,
+            },
+            StorageError,
         };
-        use crate::storage::v1::invocation_status::{Completed, Free, Inboxed, Invoked, Suspended};
-        use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
-        use crate::storage::v1::journal_entry::{completion_result, CompletionResult, Entry, Kind};
-        use crate::storage::v1::outbox_message::{
-            OutboxCancel, OutboxKill, OutboxServiceInvocation, OutboxServiceInvocationResponse,
-        };
-        use crate::storage::v1::service_invocation_response_sink::{
-            Ingress, PartitionProcessor, ResponseSink,
-        };
-        use crate::storage::v1::{
-            enriched_entry_header, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status, invocation_status_v2, invocation_target, outbox_message, promise,
-            response_result, source, span_relation, submit_notification_sink, timer,
-            virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
-            EnrichedEntryHeader, EntryResult, EpochSequenceNumber, Header, IdempotencyMetadata,
-            InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
-            InvocationStatusV2, InvocationTarget, JournalEntry, JournalEntryId, JournalMeta,
-            KvPair, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
-            ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext, SpanRelation,
-            StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
-        };
-        use crate::StorageError;
-        use restate_types::errors::{IdDecodeError, InvocationError};
-        use restate_types::identifiers::{WithInvocationId, WithPartitionKey};
-        use restate_types::invocation::{InvocationTermination, TerminationFlavor};
-        use restate_types::journal::enriched::AwakeableEnrichmentResult;
-        use restate_types::service_protocol::ServiceProtocolVersion;
-        use restate_types::storage::{
-            StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
-        };
-        use restate_types::time::MillisSinceEpoch;
-        use restate_types::GenerationalNodeId;
 
         /// Error type for conversion related problems (e.g. Rust <-> Protobuf)
         #[derive(Debug, thiserror::Error)]

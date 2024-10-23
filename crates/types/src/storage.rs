@@ -8,14 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::mem;
-use std::sync::Arc;
+use std::{mem, sync::Arc};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use downcast_rs::{impl_downcast, DowncastSync};
-use serde::de::{DeserializeOwned, Error as DeserializationError};
-use serde::ser::Error as SerializationError;
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{DeserializeOwned, Error as DeserializationError},
+    ser::Error as SerializationError,
+    Deserialize, Serialize,
+};
 use tracing::error;
 
 use crate::errors::GenericError;
@@ -397,10 +398,11 @@ pub fn decode_from_flexbuffers<T: DeserializeOwned, B: Buf>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use bytes::Bytes;
 
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn test_polybytes() {

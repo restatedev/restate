@@ -8,30 +8,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeMap, HashMap};
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Duration,
+};
 
 use anyhow::Context;
 use chrono::TimeDelta;
 use cling::prelude::*;
 use itertools::Itertools;
+use restate_admin::cluster_controller::protobuf::{
+    cluster_ctrl_svc_client::ClusterCtrlSvcClient, ListNodesRequest,
+};
+use restate_cli_util::{
+    _comfy_table::{Cell, Table},
+    c_println,
+    ui::{console::StyledTable, duration_to_human_rough, Tense},
+};
+use restate_core::network::protobuf::node_svc::{node_svc_client::NodeSvcClient, IdentResponse};
+use restate_types::{nodes_config::NodesConfiguration, storage::StorageCodec, PlainNodeId};
 use tokio::task::JoinSet;
 use tonic::codec::CompressionEncoding;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::ListNodesRequest;
-use restate_cli_util::_comfy_table::{Cell, Table};
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::{duration_to_human_rough, Tense};
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::network::protobuf::node_svc::IdentResponse;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::storage::StorageCodec;
-use restate_types::PlainNodeId;
-
-use crate::app::ConnectionInfo;
-use crate::util::grpc_connect;
+use crate::{app::ConnectionInfo, util::grpc_connect};
 
 // Default timeout for the [optional] GetIdent call made to all nodes
 const GET_IDENT_TIMEOUT_1S: Duration = Duration::from_secs(1);

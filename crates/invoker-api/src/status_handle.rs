@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{future::Future, ops::RangeInclusive, time::SystemTime};
+
 use codederror::Code;
-use restate_types::errors::InvocationError;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
-use restate_types::journal::{EntryIndex, EntryType};
-use std::future::Future;
-use std::ops::RangeInclusive;
-use std::time::SystemTime;
+use restate_types::{
+    errors::InvocationError,
+    identifiers::{
+        DeploymentId, InvocationId, LeaderEpoch, PartitionId, PartitionKey, PartitionLeaderEpoch,
+    },
+    journal::{EntryIndex, EntryType},
+};
 
 // -- Status data structure
 

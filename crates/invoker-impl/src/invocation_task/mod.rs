@@ -10,14 +10,20 @@
 
 mod service_protocol_runner;
 
-use super::Notification;
+use std::{
+    collections::HashSet,
+    convert::Infallible,
+    future::Future,
+    iter,
+    ops::RangeInclusive,
+    pin::Pin,
+    task::{ready, Context, Poll},
+    time::{Duration, Instant},
+};
 
-use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
-use crate::metric_definitions::INVOKER_TASK_DURATION;
 use bytes::Bytes;
 use futures::{future, stream, FutureExt};
-use http::response::Parts as ResponseParts;
-use http::{HeaderName, HeaderValue, Response};
+use http::{response::Parts as ResponseParts, HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::histogram;
 use restate_invoker_api::{
@@ -26,30 +32,30 @@ use restate_invoker_api::{
 };
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_service_protocol::message::{EncodingError, MessageType};
-use restate_types::deployment::PinnedDeployment;
-use restate_types::errors::InvocationError;
-use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, PartitionLeaderEpoch};
-use restate_types::invocation::InvocationTarget;
-use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::EntryType;
-use restate_types::live::Live;
-use restate_types::schema::deployment::DeploymentResolver;
-use restate_types::schema::service::ServiceMetadataResolver;
-use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::service_protocol::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
-use std::collections::HashSet;
-use std::convert::Infallible;
-use std::future::Future;
-use std::iter;
-use std::ops::RangeInclusive;
-use std::pin::Pin;
-use std::task::{ready, Context, Poll};
-use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
-use tokio::task::JoinError;
-use tokio::task::JoinHandle;
+use restate_types::{
+    deployment::PinnedDeployment,
+    errors::InvocationError,
+    identifiers::{DeploymentId, EntryIndex, InvocationId, PartitionLeaderEpoch},
+    invocation::InvocationTarget,
+    journal::{enriched::EnrichedRawEntry, EntryType},
+    live::Live,
+    schema::{deployment::DeploymentResolver, service::ServiceMetadataResolver},
+    service_protocol::{
+        ServiceProtocolVersion, MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION,
+    },
+};
+use tokio::{
+    sync::mpsc,
+    task::{JoinError, JoinHandle},
+};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{instrument, warn};
+
+use super::Notification;
+use crate::{
+    invocation_task::service_protocol_runner::ServiceProtocolRunner,
+    metric_definitions::INVOKER_TASK_DURATION,
+};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256

@@ -8,20 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
+use restate_types::{
+    config::NetworkingOptions,
+    net::codec::{Targeted, WireEncode},
+    GenerationalNodeId, NodeId,
+};
 use tracing::{debug, instrument, trace};
 
-use restate_types::config::NetworkingOptions;
-use restate_types::net::codec::{Targeted, WireEncode};
-use restate_types::{GenerationalNodeId, NodeId};
-
 use super::{
-    ConnectionManager, HasConnection, NetworkError, NetworkSendError, NetworkSender, NoConnection,
-    Outgoing, OwnedConnection, WeakConnection,
+    ConnectionManager, GrpcConnector, HasConnection, NetworkError, NetworkSendError, NetworkSender,
+    NoConnection, Outgoing, OwnedConnection, TransportConnect, WeakConnection,
 };
-use super::{GrpcConnector, TransportConnect};
 use crate::Metadata;
 
 /// Access to node-to-node networking infrastructure.

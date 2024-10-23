@@ -8,21 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
+use std::{fmt::Debug, ops::RangeInclusive, sync::Arc};
 
 use futures::Stream;
-
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::promise_table::{OwnedPromiseRow, ReadOnlyPromiseTable};
 use restate_types::identifiers::PartitionKey;
 
-use super::row::append_promise_row;
-use super::schema::SysPromiseBuilder;
-use crate::context::{QueryContext, SelectPartitions};
-use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
-use crate::table_providers::PartitionedTableProvider;
+use super::{row::append_promise_row, schema::SysPromiseBuilder};
+use crate::{
+    context::{QueryContext, SelectPartitions},
+    partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition},
+    table_providers::PartitionedTableProvider,
+};
 
 pub(crate) fn register_self(
     ctx: &QueryContext,

@@ -11,22 +11,20 @@
 #![allow(clippy::async_yields_async)]
 
 //! Utilities for benchmarking the Restate runtime
-use std::num::NonZeroU16;
-use std::time::Duration;
+use std::{num::NonZeroU16, time::Duration};
 
 use futures_util::{future, TryFutureExt};
-use http::header::CONTENT_TYPE;
-use http::Uri;
+use http::{header::CONTENT_TYPE, Uri};
 use pprof::flamegraph::Options;
 use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind};
 use restate_node::Node;
 use restate_rocksdb::RocksDbManager;
-use restate_types::config::{
-    CommonOptionsBuilder, Configuration, ConfigurationBuilder, WorkerOptionsBuilder,
+use restate_types::{
+    config::{CommonOptionsBuilder, Configuration, ConfigurationBuilder, WorkerOptionsBuilder},
+    config_loader::ConfigLoaderBuilder,
+    live::Constant,
+    retries::RetryPolicy,
 };
-use restate_types::config_loader::ConfigLoaderBuilder;
-use restate_types::live::Constant;
-use restate_types::retries::RetryPolicy;
 use tokio::runtime::Runtime;
 use tracing::warn;
 

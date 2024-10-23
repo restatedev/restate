@@ -8,14 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::ConnectInfo;
-
 use http::Request;
-use opentelemetry::global::ObjectSafeSpan;
-use opentelemetry::trace::{SpanContext, TraceContextExt};
+use opentelemetry::{
+    global::ObjectSafeSpan,
+    trace::{SpanContext, TraceContextExt},
+};
 use restate_tracing_instrumentation as instrumentation;
-use restate_types::identifiers::InvocationId;
-use restate_types::invocation::{InvocationTarget, SpanRelation};
+use restate_types::{
+    identifiers::InvocationId,
+    invocation::{InvocationTarget, SpanRelation},
+};
+
+use super::ConnectInfo;
 
 pub(crate) fn prepare_tracing_span<B>(
     invocation_id: &InvocationId,

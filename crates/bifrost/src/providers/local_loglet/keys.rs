@@ -11,7 +11,6 @@
 use std::mem::size_of;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-
 use restate_types::logs::{LogletOffset, SequenceNumber};
 
 pub(crate) const DATA_KEY_PREFIX_LENGTH: usize = size_of::<u8>() + size_of::<u64>();

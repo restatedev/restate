@@ -8,41 +8,37 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use bytes::Bytes;
 use bytestring::ByteString;
 use googletest::prelude::*;
-use http::StatusCode;
-use http::{HeaderValue, Method, Request, Response};
+use http::{HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
-use restate_types::live::Live;
+use restate_core::TestCoreEnv;
+use restate_ingress_dispatcher::{
+    test_util::MockDispatcher, IngressDispatcherRequest, IngressInvocationResponse,
+    SubmittedInvocationNotification,
+};
+use restate_test_util::{assert, assert_eq};
+use restate_types::{
+    identifiers::{IdempotencyId, InvocationId, ServiceId},
+    ingress::{IngressResponseResult, InvocationResponse},
+    invocation::{
+        Header, InvocationQuery, InvocationTarget, InvocationTargetType, VirtualObjectHandlerType,
+        WorkflowHandlerType,
+    },
+    live::Live,
+    schema::invocation_target::{
+        InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
+        OutputContentTypeRule, OutputRules,
+    },
+};
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 use tracing_test::traced_test;
 
-use restate_core::TestCoreEnv;
-use restate_ingress_dispatcher::test_util::MockDispatcher;
-use restate_ingress_dispatcher::IngressDispatcherRequest;
-use restate_ingress_dispatcher::{IngressInvocationResponse, SubmittedInvocationNotification};
-use restate_test_util::{assert, assert_eq};
-use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId};
-use restate_types::ingress::{IngressResponseResult, InvocationResponse};
-use restate_types::invocation::{
-    Header, InvocationQuery, InvocationTarget, InvocationTargetType, VirtualObjectHandlerType,
-    WorkflowHandlerType,
-};
-use restate_types::schema::invocation_target::{
-    InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
-    OutputContentTypeRule, OutputRules,
-};
-
-use super::health::HealthResponse;
-use super::mocks::*;
-use super::service_handler::*;
-use super::ConnectInfo;
-use super::Handler;
+use super::{health::HealthResponse, mocks::*, service_handler::*, ConnectInfo, Handler};
 use crate::handler::responses::X_RESTATE_ID;
 
 #[tokio::test]

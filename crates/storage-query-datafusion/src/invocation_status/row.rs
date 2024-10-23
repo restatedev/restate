@@ -8,14 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
-use crate::table_util::format_using;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, SourceTable, StatusTimestamps,
 };
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::{
-    ResponseResult, ServiceInvocationSpanContext, ServiceType, Source, TraceId,
+use restate_types::{
+    identifiers::{InvocationId, WithPartitionKey},
+    invocation::{ResponseResult, ServiceInvocationSpanContext, ServiceType, Source, TraceId},
+};
+
+use crate::{
+    invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder},
+    table_util::format_using,
 };
 
 #[inline]

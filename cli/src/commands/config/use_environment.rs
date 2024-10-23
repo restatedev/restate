@@ -10,7 +10,6 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-
 use restate_cli_util::c_success;
 
 use crate::cli_env::CliEnv;

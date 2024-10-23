@@ -8,25 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::create_envelope_header;
-use super::error::*;
-use crate::schema_registry::ModifyServiceChange;
-use crate::state::AdminServiceState;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
-use axum::Json;
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use bytes::Bytes;
 use http::StatusCode;
 use okapi_operation::*;
-use restate_admin_rest_model::services::ListServicesResponse;
-use restate_admin_rest_model::services::*;
+use restate_admin_rest_model::services::{ListServicesResponse, *};
 use restate_errors::warn_it;
-use restate_types::identifiers::{ServiceId, WithPartitionKey};
-use restate_types::schema::service::ServiceMetadata;
-use restate_types::state_mut::ExternalStateMutation;
+use restate_types::{
+    identifiers::{ServiceId, WithPartitionKey},
+    schema::service::ServiceMetadata,
+    state_mut::ExternalStateMutation,
+};
 use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
 use tracing::{debug, warn};
+
+use super::{create_envelope_header, error::*};
+use crate::{schema_registry::ModifyServiceChange, state::AdminServiceState};
 
 /// List services
 #[openapi(

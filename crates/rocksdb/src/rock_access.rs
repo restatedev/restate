@@ -8,19 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
-use rocksdb::perf::MemoryUsageBuilder;
-use rocksdb::ExportImportFilesMetaData;
-use rocksdb::{ColumnFamilyDescriptor, ImportColumnFamilyOptions};
+use rocksdb::{
+    perf::MemoryUsageBuilder, ColumnFamilyDescriptor, ExportImportFilesMetaData,
+    ImportColumnFamilyOptions,
+};
 use tracing::trace;
 
-use crate::BoxedCfMatcher;
-use crate::BoxedCfOptionUpdater;
-use crate::CfName;
-use crate::DbSpec;
-use crate::RocksError;
+use crate::{BoxedCfMatcher, BoxedCfOptionUpdater, CfName, DbSpec, RocksError};
 
 /// Operations in this trait can be IO blocking, prefer using `RocksDb` for efficient async access
 /// to the database.

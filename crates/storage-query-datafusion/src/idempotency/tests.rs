@@ -8,18 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::mocks::*;
-use crate::row;
 use bytestring::ByteString;
-use datafusion::arrow::array::LargeStringArray;
-use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::{array::LargeStringArray, record_batch::RecordBatch};
 use futures::StreamExt;
-use googletest::all;
-use googletest::prelude::{assert_that, eq};
+use googletest::{
+    all,
+    prelude::{assert_that, eq},
+};
 use restate_core::TaskCenterBuilder;
-use restate_storage_api::idempotency_table::{IdempotencyMetadata, IdempotencyTable};
-use restate_storage_api::Transaction;
+use restate_storage_api::{
+    idempotency_table::{IdempotencyMetadata, IdempotencyTable},
+    Transaction,
+};
 use restate_types::identifiers::{IdempotencyId, InvocationId};
+
+use crate::{mocks::*, row};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_idempotency_key() {

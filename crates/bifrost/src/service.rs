@@ -8,24 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context;
 use enum_map::EnumMap;
-use restate_types::config::Configuration;
-use restate_types::live::Live;
+use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
+use restate_types::{config::Configuration, live::Live, logs::metadata::ProviderKind};
 use tracing::{debug, error, trace};
 
-use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
-use restate_types::logs::metadata::ProviderKind;
-
-use crate::bifrost::BifrostInner;
-use crate::providers::local_loglet;
 #[cfg(any(test, feature = "memory-loglet"))]
 use crate::providers::memory_loglet;
-use crate::watchdog::{Watchdog, WatchdogCommand};
-use crate::{loglet::LogletProviderFactory, Bifrost};
+use crate::{
+    bifrost::BifrostInner,
+    loglet::LogletProviderFactory,
+    providers::local_loglet,
+    watchdog::{Watchdog, WatchdogCommand},
+    Bifrost,
+};
 
 pub struct BifrostService {
     task_center: TaskCenter,

@@ -8,37 +8,33 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::ready;
-use std::task::Poll;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{ready, Poll},
+};
 
-use futures::future::BoxFuture;
-use futures::stream::BoxStream;
-use futures::stream::FusedStream;
-use futures::Stream;
-use futures::StreamExt;
+use futures::{
+    future::BoxFuture,
+    stream::{BoxStream, FusedStream},
+    Stream, StreamExt,
+};
 use pin_project::pin_project;
+use restate_core::{MetadataKind, ShutdownError};
+use restate_types::{
+    logs::{
+        metadata::MaybeSegment, KeyFilter, LogId, Lsn, MatchKeyQuery, SequenceNumber, TailState,
+    },
+    Version, Versioned,
+};
 
-use restate_core::MetadataKind;
-use restate_core::ShutdownError;
-use restate_types::logs::metadata::MaybeSegment;
-use restate_types::logs::KeyFilter;
-use restate_types::logs::MatchKeyQuery;
-use restate_types::logs::SequenceNumber;
-use restate_types::logs::TailState;
-use restate_types::logs::{LogId, Lsn};
-use restate_types::Version;
-use restate_types::Versioned;
-
-use crate::bifrost::BifrostInner;
-use crate::bifrost::MaybeLoglet;
-use crate::loglet::OperationError;
-use crate::loglet_wrapper::LogletReadStreamWrapper;
-use crate::Error;
-use crate::LogEntry;
-use crate::Result;
+use crate::{
+    bifrost::{BifrostInner, MaybeLoglet},
+    loglet::OperationError,
+    loglet_wrapper::LogletReadStreamWrapper,
+    Error, LogEntry, Result,
+};
 
 /// A read stream reads from the virtual log. The stream provides a unified view over
 /// the virtual log addressing space in the face of seals, reconfiguration, and trims.
@@ -435,26 +431,28 @@ fn deliver_trim_gap(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use std::sync::atomic::AtomicUsize;
 
     use googletest::prelude::*;
-    use tokio_stream::StreamExt;
-    use tracing::info;
-    use tracing_test::traced_test;
-
     use restate_core::{
         metadata, task_center, MetadataKind, TargetVersion, TaskKind, TestCoreEnvBuilder,
     };
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{CommonOptions, Configuration};
-    use restate_types::live::{Constant, Live};
-    use restate_types::logs::metadata::{new_single_node_loglet_params, ProviderKind};
-    use restate_types::logs::{KeyFilter, SequenceNumber};
-    use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-    use restate_types::Versioned;
+    use restate_types::{
+        config::{CommonOptions, Configuration},
+        live::{Constant, Live},
+        logs::{
+            metadata::{new_single_node_loglet_params, ProviderKind},
+            KeyFilter, SequenceNumber,
+        },
+        metadata_store::keys::BIFROST_CONFIG_KEY,
+        Versioned,
+    };
+    use tokio_stream::StreamExt;
+    use tracing::info;
+    use tracing_test::traced_test;
 
+    use super::*;
     use crate::{setup_panic_handler, BifrostAdmin, BifrostService, FindTailAttributes};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

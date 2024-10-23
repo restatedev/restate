@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
+
 use crate::{
     deployment, idempotency, inbox, invocation_state, invocation_status, journal,
     keyed_service_status, promise, service, state,
 };
-use std::borrow::Cow;
 
 /// List of available table docs. Whenever you add aa new table, add its table docs to
 /// this array. This will ensure that the table docs will be included in the automatic

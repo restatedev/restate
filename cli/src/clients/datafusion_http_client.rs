@@ -10,22 +10,25 @@
 
 //! A wrapper client for the datafusion HTTP service.
 
-use super::errors::ApiError;
-
-use crate::cli_env::CliEnv;
-use crate::clients::AdminClient;
-use arrow::array::{AsArray, StructArray};
-use arrow::datatypes::{ArrowPrimitiveType, Int64Type, SchemaRef};
-use arrow::error::ArrowError;
-use arrow::ipc::reader::StreamReader;
-use arrow::record_batch::RecordBatch;
-use arrow_convert::deserialize::{arrow_array_deserialize_iterator, ArrowDeserialize};
-use arrow_convert::field::ArrowField;
+use arrow::{
+    array::{AsArray, StructArray},
+    datatypes::{ArrowPrimitiveType, Int64Type, SchemaRef},
+    error::ArrowError,
+    ipc::reader::StreamReader,
+    record_batch::RecordBatch,
+};
+use arrow_convert::{
+    deserialize::{arrow_array_deserialize_iterator, ArrowDeserialize},
+    field::ArrowField,
+};
 use bytes::Buf;
 use itertools::Itertools;
 use serde::Serialize;
 use thiserror::Error;
 use tracing::{debug, info};
+
+use super::errors::ApiError;
+use crate::{cli_env::CliEnv, clients::AdminClient};
 
 #[derive(Error, Debug)]
 #[error(transparent)]

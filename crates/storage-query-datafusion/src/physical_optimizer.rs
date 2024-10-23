@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
-use datafusion::config::ConfigOptions;
-use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::PhysicalExprRef;
-use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::joins::{
-    HashJoinExec, StreamJoinPartitionMode, SymmetricHashJoinExec,
-};
-use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
+
+use datafusion::{
+    common::tree_node::{Transformed, TransformedResult, TreeNode},
+    config::ConfigOptions,
+    physical_expr::{expressions::Column, PhysicalExprRef},
+    physical_optimizer::PhysicalOptimizerRule,
+    physical_plan::{
+        joins::{HashJoinExec, StreamJoinPartitionMode, SymmetricHashJoinExec},
+        ExecutionPlan,
+    },
+};
 
 pub(crate) struct JoinRewrite;
 

@@ -9,13 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use core::str;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
-use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn, Record};
-use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::storage::{PolyBytes, StorageDecode, StorageDecodeError, StorageEncode};
-use restate_types::time::NanosSinceEpoch;
+use restate_types::{
+    logs::{BodyWithKeys, HasRecordKeys, Keys, LogletOffset, Lsn, Record, SequenceNumber},
+    storage::{PolyBytes, StorageDecode, StorageDecodeError, StorageEncode},
+    time::NanosSinceEpoch,
+};
 
 use crate::LsnExt;
 

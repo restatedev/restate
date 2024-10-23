@@ -9,26 +9,25 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::Context;
+use restate_core::{network::MessageRouterBuilder, Metadata, MetadataWriter, TaskCenter, TaskKind};
+use restate_metadata_store::MetadataStoreClient;
+use restate_types::{
+    config::Configuration,
+    health::HealthStatus,
+    live::Live,
+    logs::RecordCache,
+    metadata_store::keys::NODES_CONFIG_KEY,
+    nodes_config::{NodesConfiguration, StorageState},
+    protobuf::common::LogServerStatus,
+    GenerationalNodeId,
+};
 use tracing::{debug, info, instrument};
 
-use restate_core::network::MessageRouterBuilder;
-use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
-use restate_metadata_store::MetadataStoreClient;
-use restate_types::config::Configuration;
-use restate_types::health::HealthStatus;
-use restate_types::live::Live;
-use restate_types::logs::RecordCache;
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::{NodesConfiguration, StorageState};
-use restate_types::protobuf::common::LogServerStatus;
-use restate_types::GenerationalNodeId;
-
-use crate::error::LogServerBuildError;
-use crate::logstore::LogStore;
-use crate::metadata::LogStoreMarker;
-use crate::metric_definitions::describe_metrics;
-use crate::network::RequestPump;
-use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
+use crate::{
+    error::LogServerBuildError, logstore::LogStore, metadata::LogStoreMarker,
+    metric_definitions::describe_metrics, network::RequestPump,
+    rocksdb_logstore::RocksDbLogStoreBuilder,
+};
 
 pub struct LogServerService {
     health_status: HealthStatus<LogServerStatus>,

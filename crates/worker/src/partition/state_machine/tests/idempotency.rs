@@ -8,25 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::time::Duration;
 
-use restate_storage_api::idempotency_table::{
-    IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
+use restate_storage_api::{
+    idempotency_table::{IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable},
+    inbox_table::{InboxEntry, ReadOnlyInboxTable, SequenceNumberInboxEntry},
+    invocation_status_table::{CompletedInvocation, SourceTable, StatusTimestamps},
+    timer_table::{Timer, TimerKey, TimerKeyKind},
 };
-use restate_storage_api::inbox_table::{InboxEntry, ReadOnlyInboxTable, SequenceNumberInboxEntry};
-use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, SourceTable, StatusTimestamps,
-};
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
-use restate_types::errors::GONE_INVOCATION_ERROR;
-use restate_types::identifiers::{IdempotencyId, IngressRequestId};
-use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
-    SubmitNotificationSink,
+use restate_types::{
+    errors::GONE_INVOCATION_ERROR,
+    identifiers::{IdempotencyId, IngressRequestId},
+    invocation::{
+        AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
+        SubmitNotificationSink,
+    },
 };
 use restate_wal_protocol::timer::TimerKeyValue;
-use std::time::Duration;
 use test_log::test;
+
+use super::*;
 
 #[test(tokio::test)]
 async fn start_and_complete_idempotent_invocation() {

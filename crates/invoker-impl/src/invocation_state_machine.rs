@@ -8,14 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::{fmt, time::Duration};
 
-use restate_types::journal::Completion;
-use restate_types::retries;
-use std::fmt;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::task::AbortHandle;
+use restate_types::{journal::Completion, retries};
+use tokio::{sync::mpsc, task::AbortHandle};
+
+use super::*;
 
 /// Component encapsulating the business logic of the invocation state machine
 #[derive(Debug)]
@@ -328,17 +326,19 @@ impl InvocationStateMachine {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use std::time::Duration;
 
-    use googletest::matchers::{eq, some};
-    use googletest::prelude::err;
-    use googletest::{assert_that, pat};
+    use googletest::{
+        assert_that,
+        matchers::{eq, some},
+        pat,
+        prelude::err,
+    };
+    use restate_test_util::check;
     use test_log::test;
     use tokio::sync::mpsc::error::TryRecvError;
 
-    use restate_test_util::check;
+    use super::*;
 
     #[test]
     fn handle_error_when_waiting_for_retry() {

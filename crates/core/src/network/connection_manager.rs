@@ -8,40 +8,50 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Weak};
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Weak},
+    time::Instant,
+};
 
 use enum_map::EnumMap;
 use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use rand::seq::SliceRandom;
+use restate_types::{
+    config::NetworkingOptions,
+    net::{codec::MessageBodyExt, metadata::MetadataKind},
+    nodes_config::NodesConfiguration,
+    protobuf::node::{
+        message::{self, ConnectionControl},
+        Header, Hello, Message, Welcome,
+    },
+    GenerationalNodeId, NodeId, PlainNodeId, Version,
+};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, trace, warn, Instrument, Span};
 
-use restate_types::config::NetworkingOptions;
-use restate_types::net::codec::MessageBodyExt;
-use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::protobuf::node::message::{self, ConnectionControl};
-use restate_types::protobuf::node::{Header, Hello, Message, Welcome};
-use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version};
-
-use super::connection::{OwnedConnection, WeakConnection};
-use super::error::{NetworkError, ProtocolError};
-use super::handshake::wait_for_welcome;
-use super::metric_definitions::{
-    self, CONNECTION_DROPPED, INCOMING_CONNECTION, MESSAGE_PROCESSING_DURATION, MESSAGE_RECEIVED,
-    ONGOING_DRAIN, OUTGOING_CONNECTION,
+use super::{
+    connection::{OwnedConnection, WeakConnection},
+    error::{NetworkError, ProtocolError},
+    handshake::wait_for_welcome,
+    metric_definitions::{
+        self, CONNECTION_DROPPED, INCOMING_CONNECTION, MESSAGE_PROCESSING_DURATION,
+        MESSAGE_RECEIVED, ONGOING_DRAIN, OUTGOING_CONNECTION,
+    },
+    transport_connector::TransportConnect,
+    Handler, MessageRouter,
 };
-use super::transport_connector::TransportConnect;
-use super::{Handler, MessageRouter};
-use crate::metadata::Urgency;
-use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
-use crate::network::{Incoming, PeerMetadataVersion};
-use crate::Metadata;
-use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
+use crate::{
+    cancellation_watcher, current_task_id,
+    metadata::Urgency,
+    network::{
+        handshake::{negotiate_protocol_version, wait_for_hello},
+        Incoming, PeerMetadataVersion,
+    },
+    task_center, Metadata, TaskId, TaskKind,
+};
 
 struct ConnectionManagerInner {
     router: MessageRouter,
@@ -749,29 +759,25 @@ impl MetadataVersions {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use googletest::prelude::*;
+    use restate_test_util::{assert_eq, let_assert};
+    use restate_types::{
+        net::{
+            codec::WireDecode,
+            metadata::{GetMetadataRequest, MetadataMessage},
+            partition_processor_manager::GetProcessorsState,
+            AdvertisedAddress, ProtocolVersion, CURRENT_PROTOCOL_VERSION,
+            MIN_SUPPORTED_PROTOCOL_VERSION,
+        },
+        nodes_config::{LogServerConfig, NodeConfig, NodesConfigError, NodesConfiguration, Role},
+        protobuf::node::{message::Body, Header, Hello},
+        Version,
+    };
     use test_log::test;
     use tokio::sync::mpsc;
 
-    use restate_test_util::{assert_eq, let_assert};
-    use restate_types::net::codec::WireDecode;
-    use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage};
-    use restate_types::net::partition_processor_manager::GetProcessorsState;
-    use restate_types::net::{
-        AdvertisedAddress, ProtocolVersion, CURRENT_PROTOCOL_VERSION,
-        MIN_SUPPORTED_PROTOCOL_VERSION,
-    };
-    use restate_types::nodes_config::{
-        LogServerConfig, NodeConfig, NodesConfigError, NodesConfiguration, Role,
-    };
-    use restate_types::protobuf::node::message::Body;
-    use restate_types::protobuf::node::{Header, Hello};
-    use restate_types::Version;
-
-    use crate::network::MockPeerConnection;
-    use crate::{TestCoreEnv, TestCoreEnvBuilder};
+    use super::*;
+    use crate::{network::MockPeerConnection, TestCoreEnv, TestCoreEnvBuilder};
 
     // Test handshake with a client
     #[tokio::test]

@@ -11,16 +11,21 @@
 use std::ops::Range;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use futures::stream::{FuturesOrdered, FuturesUnordered};
-use futures::StreamExt;
+use futures::{
+    stream::{FuturesOrdered, FuturesUnordered},
+    StreamExt,
+};
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_core::metadata;
 use restate_rocksdb::{DbName, RocksDbManager};
-use restate_types::config::{
-    BifrostOptionsBuilder, CommonOptionsBuilder, ConfigurationBuilder, LocalLogletOptionsBuilder,
+use restate_types::{
+    config::{
+        BifrostOptionsBuilder, CommonOptionsBuilder, ConfigurationBuilder,
+        LocalLogletOptionsBuilder,
+    },
+    live::Live,
+    logs::LogId,
 };
-use restate_types::live::Live;
-use restate_types::logs::LogId;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 mod util;

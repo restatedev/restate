@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{protobuf_storage_encode_decode, Result};
+use std::{future::Future, ops::RangeInclusive};
 
 use bytestring::ByteString;
 use futures_util::Stream;
-use restate_types::identifiers::{JournalEntryId, PartitionKey, ServiceId};
-use restate_types::journal::EntryResult;
-use std::future::Future;
-use std::ops::RangeInclusive;
+use restate_types::{
+    identifiers::{JournalEntryId, PartitionKey, ServiceId},
+    journal::EntryResult,
+};
+
+use super::{protobuf_storage_encode_decode, Result};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PromiseState {

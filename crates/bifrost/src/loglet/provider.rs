@@ -11,9 +11,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-
-use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::LogId;
+use restate_types::logs::{
+    metadata::{LogletParams, ProviderKind, SegmentIndex},
+    LogId,
+};
 
 use super::{Loglet, OperationError};
 use crate::Result;

@@ -16,9 +16,10 @@ mod entries;
 pub mod raw;
 
 // Re-export all the entries
-use crate::invocation::ResponseResult;
 use bytes::Bytes;
 use bytestring::ByteString;
 pub use entries::*;
+
+use crate::invocation::ResponseResult;
 
 pub type EntryIndex = u32;

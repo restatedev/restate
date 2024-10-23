@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_types::schema::deployment::{Deployment, DeploymentType};
+
 use super::schema::SysDeploymentBuilder;
 use crate::table_util::format_using;
-use restate_types::schema::deployment::{Deployment, DeploymentType};
 
 #[inline]
 pub(crate) fn append_deployment_row(

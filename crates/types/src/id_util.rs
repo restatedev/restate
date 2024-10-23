@@ -10,15 +10,16 @@
 
 //! Resource identifier helpers and core structures
 
-use std::fmt::Write;
-use std::str::FromStr;
+use std::{fmt::Write, str::FromStr};
 
 use num_traits::PrimInt;
 
-use crate::base62_util::{base62_encode_fixed_width, base62_max_length_for_type};
-use crate::errors::IdDecodeError;
-use crate::identifiers::ResourceId;
-use crate::macros::prefixed_ids;
+use crate::{
+    base62_util::{base62_encode_fixed_width, base62_max_length_for_type},
+    errors::IdDecodeError,
+    identifiers::ResourceId,
+    macros::prefixed_ids,
+};
 
 pub const ID_RESOURCE_SEPARATOR: char = '_';
 

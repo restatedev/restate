@@ -10,27 +10,27 @@
 
 mod manager;
 
-pub use manager::{MetadataManager, TargetVersion};
-pub use restate_types::net::metadata::MetadataKind;
-
 use std::sync::{Arc, OnceLock};
 
 use arc_swap::{ArcSwap, AsRaw};
 use enum_map::EnumMap;
+pub use manager::{MetadataManager, TargetVersion};
+pub use restate_types::net::metadata::MetadataKind;
+use restate_types::{
+    live::{Live, Pinned},
+    logs::metadata::Logs,
+    net::metadata::MetadataContainer,
+    nodes_config::NodesConfiguration,
+    partition_table::PartitionTable,
+    schema::Schema,
+    GenerationalNodeId, Version, Versioned,
+};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use restate_types::live::{Live, Pinned};
-use restate_types::logs::metadata::Logs;
-use restate_types::net::metadata::MetadataContainer;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::PartitionTable;
-use restate_types::schema::Schema;
-use restate_types::{GenerationalNodeId, Version, Versioned};
-
-use crate::metadata::manager::Command;
-use crate::metadata_store::ReadError;
-use crate::network::WeakConnection;
-use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
+use crate::{
+    metadata::manager::Command, metadata_store::ReadError, network::WeakConnection, ShutdownError,
+    TaskCenter, TaskId, TaskKind,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {

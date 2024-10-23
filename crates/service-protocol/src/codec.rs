@@ -8,15 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{fmt::Debug, mem};
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
-use restate_types::invocation::Header;
-use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
-use restate_types::journal::raw::*;
-use restate_types::journal::{CompletionResult, Entry, EntryType};
-use restate_types::service_protocol;
-use std::fmt::Debug;
-use std::mem;
+use restate_types::{
+    invocation::Header,
+    journal::{
+        enriched::{EnrichedEntryHeader, EnrichedRawEntry},
+        raw::*,
+        CompletionResult, Entry, EntryType,
+    },
+    service_protocol,
+};
 
 /// This macro generates the pattern matching with arms per entry.
 /// For each entry it first executes `Message#decode` and then `try_into()`.
@@ -167,28 +171,33 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
 mod test_util {
     use std::str::FromStr;
 
-    use super::*;
+    use restate_types::{
+        identifiers::InvocationId,
+        invocation::{InvocationTarget, VirtualObjectHandlerType},
+        journal::{
+            enriched::{
+                AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
+                EnrichedRawEntry,
+            },
+            AwakeableEntry, CancelInvocationEntry, CancelInvocationTarget, CompletableEntry,
+            CompleteAwakeableEntry, EntryResult, GetCallInvocationIdEntry,
+            GetCallInvocationIdResult, GetStateKeysEntry, GetStateKeysResult, InputEntry,
+            OutputEntry,
+        },
+        service_protocol::{
+            awakeable_entry_message, call_entry_message, cancel_invocation_entry_message,
+            complete_awakeable_entry_message, get_call_invocation_id_entry_message,
+            get_state_entry_message, get_state_keys_entry_message, output_entry_message,
+            AwakeableEntryMessage, CallEntryMessage, CancelInvocationEntryMessage,
+            ClearAllStateEntryMessage, ClearStateEntryMessage, CompleteAwakeableEntryMessage,
+            Failure, GetCallInvocationIdEntryMessage, GetStateEntryMessage,
+            GetStateKeysEntryMessage, InputEntryMessage, OneWayCallEntryMessage,
+            OutputEntryMessage, SetStateEntryMessage,
+        },
+    };
 
+    use super::*;
     use crate::awakeable_id::AwakeableIdentifier;
-    use restate_types::identifiers::InvocationId;
-    use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
-    use restate_types::journal::enriched::{
-        AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
-    };
-    use restate_types::journal::{
-        AwakeableEntry, CancelInvocationEntry, CancelInvocationTarget, CompletableEntry,
-        CompleteAwakeableEntry, EntryResult, GetCallInvocationIdEntry, GetCallInvocationIdResult,
-        GetStateKeysEntry, GetStateKeysResult, InputEntry, OutputEntry,
-    };
-    use restate_types::service_protocol::{
-        awakeable_entry_message, call_entry_message, cancel_invocation_entry_message,
-        complete_awakeable_entry_message, get_call_invocation_id_entry_message,
-        get_state_entry_message, get_state_keys_entry_message, output_entry_message,
-        AwakeableEntryMessage, CallEntryMessage, CancelInvocationEntryMessage,
-        ClearAllStateEntryMessage, ClearStateEntryMessage, CompleteAwakeableEntryMessage, Failure,
-        GetCallInvocationIdEntryMessage, GetStateEntryMessage, GetStateKeysEntryMessage,
-        InputEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, SetStateEntryMessage,
-    };
 
     impl ProtobufRawEntryCodec {
         pub fn serialize(entry: Entry) -> PlainRawEntry {
@@ -500,10 +509,10 @@ mod test_util {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use bytes::Bytes;
     use restate_types::journal::EntryResult;
+
+    use super::*;
 
     #[test]
     fn complete_invoke() {

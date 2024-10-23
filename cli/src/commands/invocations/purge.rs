@@ -8,16 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::find_active_invocations_simple;
-use crate::clients::{self, AdminClientInterface};
-use crate::ui::invocations::render_simple_invocation_list;
-
 use anyhow::{bail, Result};
 use cling::prelude::*;
-use restate_cli_util::ui::console::confirm_or_exit;
-use restate_cli_util::{c_println, c_success};
+use restate_cli_util::{c_println, c_success, ui::console::confirm_or_exit};
 use restate_types::identifiers::InvocationId;
+
+use crate::{
+    cli_env::CliEnv,
+    clients::{self, datafusion_helpers::find_active_invocations_simple, AdminClientInterface},
+    ui::invocations::render_simple_invocation_list,
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_purge")]

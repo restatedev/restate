@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
+use std::future::Future;
+
 use bytes::Bytes;
 use futures_util::Stream;
 use restate_types::identifiers::ServiceId;
-use std::future::Future;
+
+use crate::Result;
 
 pub trait ReadOnlyStateTable {
     fn get_user_state(

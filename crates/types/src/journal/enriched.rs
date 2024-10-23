@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::raw::*;
-use super::*;
-
-use crate::identifiers::InvocationId;
-use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use std::time::Duration;
+
+use super::{raw::*, *};
+use crate::{
+    identifiers::InvocationId,
+    invocation::{InvocationTarget, ServiceInvocationSpanContext},
+};
 
 pub type EnrichedEntryHeader = EntryHeader<CallEnrichmentResult, AwakeableEnrichmentResult>;
 pub type EnrichedRawEntry = RawEntry<CallEnrichmentResult, AwakeableEnrichmentResult>;

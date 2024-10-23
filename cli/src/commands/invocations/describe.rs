@@ -13,16 +13,19 @@ use cling::prelude::*;
 use comfy_table::Table;
 use dialoguer::console::style;
 use indoc::indoc;
+use restate_cli_util::{
+    c_println, c_tip, c_title,
+    ui::{console::StyledTable, duration_to_human_rough, watcher::Watch},
+};
 
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::duration_to_human_rough;
-use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_println, c_tip, c_title};
-
-use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::{get_invocation, get_invocation_journal, InvocationState};
-use crate::clients::{self};
-use crate::ui::invocations::{add_invocation_to_kv_table, format_journal_entry, invocation_status};
+use crate::{
+    cli_env::CliEnv,
+    clients::{
+        datafusion_helpers::{get_invocation, get_invocation_journal, InvocationState},
+        {self},
+    },
+    ui::invocations::{add_invocation_to_kv_table, format_journal_entry, invocation_status},
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]

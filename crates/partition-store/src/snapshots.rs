@@ -1,13 +1,12 @@
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
+use std::{ops::RangeInclusive, path::PathBuf};
 
+use restate_types::{
+    identifiers::{PartitionId, PartitionKey, SnapshotId},
+    logs::Lsn,
+};
 use rocksdb::LiveFile;
 use serde::{Deserialize, Serialize};
-use serde_with::hex::Hex;
-use serde_with::{serde_as, DeserializeAs, SerializeAs};
-
-use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
-use restate_types::logs::Lsn;
+use serde_with::{hex::Hex, serde_as, DeserializeAs, SerializeAs};
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SnapshotFormatVersion {

@@ -8,17 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
-use std::ops::RangeInclusive;
+use std::{fmt::Debug, ops::RangeInclusive};
 
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use datafusion::{
+    arrow::datatypes::SchemaRef, execution::SendableRecordBatchStream,
+    physical_plan::stream::RecordBatchReceiverStream,
+};
 use futures::{Stream, StreamExt};
-use tracing::warn;
-
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_types::identifiers::{PartitionId, PartitionKey};
+use tracing::warn;
 
 use crate::table_providers::ScanPartition;
 

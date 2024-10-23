@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::errors::InvocationError;
-use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::raw::PlainRawEntry;
+use restate_types::{
+    errors::InvocationError,
+    invocation::{InvocationTarget, ServiceInvocationSpanContext},
+    journal::{enriched::EnrichedRawEntry, raw::PlainRawEntry},
+};
 
 pub trait EntryEnricher {
     fn enrich_entry(
@@ -24,14 +25,19 @@ pub trait EntryEnricher {
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
-    use super::*;
-
-    use restate_types::identifiers::{InvocationId, InvocationUuid};
-    use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-    use restate_types::journal::enriched::{
-        AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
+    use restate_types::{
+        identifiers::{InvocationId, InvocationUuid},
+        invocation::{InvocationTarget, ServiceInvocationSpanContext},
+        journal::{
+            enriched::{
+                AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
+                EnrichedRawEntry,
+            },
+            raw::{PlainEntryHeader, RawEntry},
+        },
     };
-    use restate_types::journal::raw::{PlainEntryHeader, RawEntry};
+
+    use super::*;
 
     #[derive(Debug, Default, Clone)]
     pub struct MockEntryEnricher;

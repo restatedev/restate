@@ -11,12 +11,11 @@
 // todo(asoli): remove once this is used
 #![allow(dead_code)]
 
-use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::MessageRouterBuilder;
-use restate_types::net::log_server::{
-    GetDigest, GetLogletInfo, GetRecords, Release, Seal, Store, Trim, WaitForTail,
+use restate_core::network::{rpc_router::RpcRouter, MessageRouterBuilder};
+use restate_types::net::{
+    log_server::{GetDigest, GetLogletInfo, GetRecords, Release, Seal, Store, Trim, WaitForTail},
+    replicated_loglet::{Append, GetSequencerState},
 };
-use restate_types::net::replicated_loglet::{Append, GetSequencerState};
 
 /// Used by replicated loglets to send requests and receive responses from log-servers
 /// Cloning this is cheap and all clones will share the same internal trackers.

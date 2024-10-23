@@ -11,8 +11,9 @@
 mod error;
 mod query;
 
-use axum::{routing::post, Router};
 use std::sync::Arc;
+
+use axum::{routing::post, Router};
 
 use crate::state::QueryServiceState;
 

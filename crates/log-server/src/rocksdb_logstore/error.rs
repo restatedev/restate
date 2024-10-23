@@ -12,10 +12,8 @@ use std::sync::Arc;
 
 use restate_bifrost::loglet::OperationError;
 use restate_core::ShutdownError;
-use restate_types::errors::MaybeRetryableError;
-use restate_types::logs::LogletOffset;
-
 use restate_rocksdb::RocksError;
+use restate_types::{errors::MaybeRetryableError, logs::LogletOffset};
 
 use super::record_format::RecordDecodeError;
 

@@ -27,8 +27,9 @@
 //! # }
 //! ```
 
-use codederror::Code;
 use std::fmt;
+
+use codederror::Code;
 
 /// Check module documentation for more details.
 #[macro_export]

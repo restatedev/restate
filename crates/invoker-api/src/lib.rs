@@ -24,21 +24,19 @@ pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHan
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
-    use super::*;
+    use std::{convert::Infallible, iter::empty, marker::PhantomData, ops::RangeInclusive};
+
     use bytes::Bytes;
     use restate_errors::NotRunningError;
-    use restate_types::identifiers::{
-        EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
+    use restate_types::{
+        identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId},
+        invocation::{InvocationTarget, ServiceInvocationSpanContext},
+        journal::{raw::PlainRawEntry, Completion},
+        time::MillisSinceEpoch,
     };
-    use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-    use restate_types::journal::raw::PlainRawEntry;
-    use restate_types::journal::Completion;
-    use restate_types::time::MillisSinceEpoch;
-    use std::convert::Infallible;
-    use std::iter::empty;
-    use std::marker::PhantomData;
-    use std::ops::RangeInclusive;
     use tokio::sync::mpsc::Sender;
+
+    use super::*;
 
     #[derive(Debug, Clone)]
     pub struct EmptyStorageReader;

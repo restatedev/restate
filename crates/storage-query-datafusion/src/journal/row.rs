@@ -8,18 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::journal::schema::SysJournalBuilder;
-
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-
 use restate_storage_api::journal_table::JournalEntry;
-use restate_types::identifiers::{JournalEntryId, WithInvocationId, WithPartitionKey};
-use restate_types::journal::enriched::EnrichedEntryHeader;
-use restate_types::journal::{CompletePromiseEntry, GetPromiseEntry, PeekPromiseEntry};
+use restate_types::{
+    identifiers::{JournalEntryId, WithInvocationId, WithPartitionKey},
+    journal::{
+        enriched::EnrichedEntryHeader, CompletePromiseEntry, Entry, GetPromiseEntry,
+        PeekPromiseEntry,
+    },
+};
 
-use crate::log_data_corruption_error;
-use crate::table_util::format_using;
-use restate_types::journal::Entry;
+use crate::{
+    journal::schema::SysJournalBuilder, log_data_corruption_error, table_util::format_using,
+};
 
 #[inline]
 pub(crate) fn append_journal_row(

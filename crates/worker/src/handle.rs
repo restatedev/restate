@@ -9,8 +9,7 @@
 // by the Apache License, Version 2.0.
 use std::future::Future;
 
-use restate_types::invocation::InvocationTermination;
-use restate_types::state_mut::ExternalStateMutation;
+use restate_types::{invocation::InvocationTermination, state_mut::ExternalStateMutation};
 
 use crate::WorkerHandleError;
 

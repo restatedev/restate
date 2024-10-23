@@ -8,13 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::schema::SysPromiseBuilder;
-
-use crate::table_util::format_using;
 use restate_storage_api::promise_table::{OwnedPromiseRow, PromiseState};
-use restate_types::errors::InvocationError;
-use restate_types::identifiers::WithPartitionKey;
-use restate_types::journal::EntryResult;
+use restate_types::{errors::InvocationError, identifiers::WithPartitionKey, journal::EntryResult};
+
+use super::schema::SysPromiseBuilder;
+use crate::table_util::format_using;
 
 #[inline]
 pub(crate) fn append_promise_row(

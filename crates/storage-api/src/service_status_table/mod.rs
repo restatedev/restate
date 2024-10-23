@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{protobuf_storage_encode_decode, Result};
+use std::{future::Future, ops::RangeInclusive};
+
 use futures_util::Stream;
 use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
-use std::future::Future;
-use std::ops::RangeInclusive;
+
+use crate::{protobuf_storage_encode_decode, Result};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum VirtualObjectStatus {

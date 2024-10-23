@@ -8,40 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::slice;
-use std::sync::Arc;
+use std::{ops::RangeInclusive, path::PathBuf, slice, sync::Arc};
 
-use bytes::Bytes;
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use codederror::CodedError;
-use restate_rocksdb::CfName;
-use restate_rocksdb::IoMode;
-use restate_rocksdb::Priority;
-use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_types::config::Configuration;
-use rocksdb::DBCompressionType;
-use rocksdb::DBPinnableSlice;
-use rocksdb::DBRawIteratorWithThreadMode;
-use rocksdb::PrefixRange;
-use rocksdb::ReadOptions;
-use rocksdb::{BoundColumnFamily, SliceTransform};
-use static_assertions::const_assert_eq;
-
 use enum_map::Enum;
 use restate_core::ShutdownError;
-use restate_rocksdb::{RocksDb, RocksError};
-use restate_storage_api::{Storage, StorageError, Transaction};
+use restate_rocksdb::{CfName, IoMode, Priority, RocksDb, RocksError};
+use restate_storage_api::{fsm_table::ReadOnlyFsmTable, Storage, StorageError, Transaction};
+use restate_types::{
+    config::Configuration,
+    identifiers::{PartitionId, PartitionKey, WithPartitionKey},
+    storage::{StorageCodec, StorageDecode, StorageEncode},
+};
+use rocksdb::{
+    BoundColumnFamily, DBCompressionType, DBPinnableSlice, DBRawIteratorWithThreadMode,
+    PrefixRange, ReadOptions, SliceTransform,
+};
+use static_assertions::const_assert_eq;
 
-use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-
-use crate::keys::KeyKind;
-use crate::keys::TableKey;
-use crate::scan::PhysicalScan;
-use crate::scan::TableScan;
-use crate::snapshots::LocalPartitionSnapshot;
+use crate::{
+    keys::{KeyKind, TableKey},
+    scan::{PhysicalScan, TableScan},
+    snapshots::LocalPartitionSnapshot,
+};
 
 pub type DB = rocksdb::DB;
 
@@ -475,8 +465,9 @@ impl Storage for PartitionStore {
 
 impl StorageAccess for PartitionStore {
     type DBAccess<'a>
-    = DB where
-        Self: 'a,;
+        = DB
+    where
+        Self: 'a;
 
     fn iterator_from<K: TableKey>(
         &self,
@@ -647,7 +638,10 @@ impl<'a> Transaction for PartitionStoreTransaction<'a> {
 }
 
 impl<'a> StorageAccess for PartitionStoreTransaction<'a> {
-    type DBAccess<'b> = DB where Self: 'b;
+    type DBAccess<'b>
+        = DB
+    where
+        Self: 'b;
 
     fn iterator_from<K: TableKey>(
         &self,

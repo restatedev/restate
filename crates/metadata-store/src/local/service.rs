@@ -11,23 +11,23 @@
 use http::Request;
 use hyper::body::Incoming;
 use hyper_util::service::TowerToHyperService;
-use restate_types::health::HealthStatus;
-use tonic::body::boxed;
-use tonic::server::NamedService;
+use restate_core::{network::net_util, task_center, ShutdownError, TaskKind};
+use restate_rocksdb::RocksError;
+use restate_types::{
+    config::{MetadataStoreOptions, RocksDbOptions},
+    health::HealthStatus,
+    live::BoxedLiveLoad,
+    protobuf::common::MetadataServerStatus,
+};
+use tonic::{body::boxed, server::NamedService};
 use tower::ServiceExt;
 use tower_http::classify::{GrpcCode, GrpcErrorsAsFailures, SharedClassifier};
 
-use restate_core::network::net_util;
-use restate_core::{task_center, ShutdownError, TaskKind};
-use restate_rocksdb::RocksError;
-use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
-use restate_types::live::BoxedLiveLoad;
-use restate_types::protobuf::common::MetadataServerStatus;
-
-use crate::grpc_svc;
-use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
-use crate::local::grpc::handler::LocalMetadataStoreHandler;
-use crate::local::store::LocalMetadataStore;
+use crate::{
+    grpc_svc,
+    grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer,
+    local::{grpc::handler::LocalMetadataStoreHandler, store::LocalMetadataStore},
+};
 
 pub struct LocalMetadataStoreService {
     health_status: HealthStatus<MetadataServerStatus>,

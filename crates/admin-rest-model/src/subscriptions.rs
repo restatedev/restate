@@ -11,11 +11,9 @@
 use std::collections::HashMap;
 
 use http::Uri;
+use restate_types::{identifiers::SubscriptionId, schema::subscriptions::Subscription};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-
-use restate_types::identifiers::SubscriptionId;
-use restate_types::schema::subscriptions::Subscription;
 
 #[serde_as]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

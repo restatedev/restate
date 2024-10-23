@@ -19,10 +19,8 @@ pub use check_seal::*;
 pub use find_tail::*;
 pub use periodic_tail_checker::*;
 pub use repair_tail::*;
+use restate_types::{logs::LogletOffset, Merge};
 pub use seal::*;
-
-use restate_types::logs::LogletOffset;
-use restate_types::Merge;
 
 #[derive(Debug, Default, PartialEq, Eq, derive_more::Display)]
 enum NodeTailStatus {

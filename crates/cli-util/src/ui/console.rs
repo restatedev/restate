@@ -24,10 +24,10 @@
 
 use std::fmt::{Display, Formatter};
 
+use dialoguer::console::Style as DStyle;
+
 use super::stylesheet::Style;
 use crate::context::CliContext;
-
-use dialoguer::console::Style as DStyle;
 
 /// Emoji that fallback to a string if colors are disabled.
 #[derive(Copy, Clone)]

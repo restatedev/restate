@@ -9,13 +9,10 @@
 // by the Apache License, Version 2.0.
 use std::fmt::Display;
 
-use super::admin_client::Envelope;
-use super::AdminClient;
-
-use restate_admin_rest_model::deployments::*;
-use restate_admin_rest_model::services::*;
-use restate_admin_rest_model::version::VersionInformation;
+use restate_admin_rest_model::{deployments::*, services::*, version::VersionInformation};
 use restate_types::schema::service::ServiceMetadata;
+
+use super::{admin_client::Envelope, AdminClient};
 
 pub trait AdminClientInterface {
     /// Check if the admin service is healthy by invoking /health

@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
-use crate::config::Configuration;
-use figment::providers::{Env, Format, Serialized, Toml};
-use figment::Figment;
+use figment::{
+    providers::{Env, Format, Serialized, Toml},
+    Figment,
+};
 use notify_debouncer_mini::{
     new_debouncer, DebounceEventResult, DebouncedEvent, DebouncedEventKind,
 };
 use tracing::{error, info, warn};
+
+use crate::config::Configuration;
 
 #[derive(thiserror::Error, codederror::CodedError, Debug)]
 #[code(restate_errors::RT0002)]

@@ -10,14 +10,13 @@
 
 use std::{collections::BTreeMap, ops::Deref, sync::Arc};
 
-use tokio::sync::Mutex;
-
 use restate_core::network::{NetworkError, Networking, TransportConnect, WeakConnection};
 use restate_types::{
     logs::{LogletOffset, SequenceNumber, TailState},
     replicated_loglet::{NodeSet, ReplicatedLogletId},
     PlainNodeId,
 };
+use tokio::sync::Mutex;
 
 use crate::loglet::util::TailOffsetWatch;
 

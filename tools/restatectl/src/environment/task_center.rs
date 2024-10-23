@@ -8,15 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::future::Future;
-use std::path::PathBuf;
-
-use tracing::warn;
+use std::{future::Future, path::PathBuf};
 
 use restate_core::{TaskCenter, TaskCenterBuilder};
-use restate_types::config::Configuration;
-use restate_types::config_loader::ConfigLoaderBuilder;
-use restate_types::live::Pinned;
+use restate_types::{config::Configuration, config_loader::ConfigLoaderBuilder, live::Pinned};
+use tracing::warn;
 
 /// Loads configuration, creates a task center, executes the supplied function body in scope of TC, and shuts down.
 pub async fn run_in_task_center<F, O>(config_file: Option<&PathBuf>, fn_body: F) -> O::Output

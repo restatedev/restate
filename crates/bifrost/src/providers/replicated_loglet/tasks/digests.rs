@@ -11,27 +11,32 @@
 use std::collections::BTreeMap;
 
 use rand::thread_rng;
+use restate_core::{
+    cancellation_watcher,
+    network::{
+        rpc_router::{RpcError, RpcRouter},
+        Networking, TransportConnect,
+    },
+    task_center, ShutdownError,
+};
+use restate_types::{
+    logs::{LogletOffset, SequenceNumber},
+    net::log_server::{Digest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags},
+    nodes_config::NodesConfiguration,
+    replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicatedLogletParams},
+    GenerationalNodeId, PlainNodeId,
+};
 use tokio::task::JoinSet;
 use tracing::{debug, trace, warn};
 
-use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{Networking, TransportConnect};
-use restate_core::{cancellation_watcher, task_center, ShutdownError};
-use restate_types::logs::{LogletOffset, SequenceNumber};
-use restate_types::net::log_server::{
-    Digest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
+use crate::{
+    loglet::{util::TailOffsetWatch, OperationError},
+    providers::replicated_loglet::replication::{
+        spread_selector::{SelectorStrategy, SpreadSelector},
+        NodeSetChecker,
+    },
+    LogEntry,
 };
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicatedLogletParams};
-use restate_types::{GenerationalNodeId, PlainNodeId};
-
-use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::OperationError;
-use crate::providers::replicated_loglet::replication::spread_selector::{
-    SelectorStrategy, SpreadSelector,
-};
-use crate::providers::replicated_loglet::replication::NodeSetChecker;
-use crate::LogEntry;
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not replicate record, exhausted all store attempts")]

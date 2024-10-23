@@ -8,31 +8,36 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::Arc;
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    fmt,
+    sync::Arc,
+};
 
 use base64::Engine;
 use bytes::Bytes;
 use metrics::counter;
 use opentelemetry::trace::TraceContextExt;
-use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
-use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
-use rdkafka::error::KafkaError;
-use rdkafka::message::BorrowedMessage;
-use rdkafka::{ClientConfig, Message};
-use tokio::sync::oneshot;
-use tracing::{debug, info, info_span, Instrument};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
-
+use rdkafka::{
+    consumer::{
+        stream_consumer::StreamPartitionQueue, Consumer, DefaultConsumerContext, StreamConsumer,
+    },
+    error::KafkaError,
+    message::BorrowedMessage,
+    ClientConfig, Message,
+};
 use restate_core::{cancellation_watcher, TaskCenter, TaskId, TaskKind};
 use restate_ingress_dispatcher::{
     DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
 };
-use restate_types::invocation::{Header, SpanRelation};
-use restate_types::message::MessageIndex;
-use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
+use restate_types::{
+    invocation::{Header, SpanRelation},
+    message::MessageIndex,
+    schema::subscriptions::{EventReceiverServiceType, Sink, Subscription},
+};
+use tokio::sync::oneshot;
+use tracing::{debug, info, info_span, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 

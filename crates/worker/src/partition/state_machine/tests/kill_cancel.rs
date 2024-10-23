@@ -8,19 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{fixtures, matchers, *};
-
-use assert2::assert;
-use assert2::let_assert;
+use assert2::{assert, let_assert};
 use googletest::any;
 use prost::Message;
-use restate_storage_api::journal_table::JournalTable;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
-use restate_types::identifiers::EntryIndex;
-use restate_types::invocation::TerminationFlavor;
-use restate_types::journal::enriched::EnrichedEntryHeader;
-use restate_types::service_protocol;
+use restate_storage_api::{
+    journal_table::JournalTable,
+    timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable},
+};
+use restate_types::{
+    identifiers::EntryIndex, invocation::TerminationFlavor, journal::enriched::EnrichedEntryHeader,
+    service_protocol,
+};
 use test_log::test;
+
+use super::{fixtures, matchers, *};
 
 #[test(tokio::test)]
 async fn kill_inboxed_invocation() -> anyhow::Result<()> {

@@ -8,25 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
-use std::future::Future;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{fmt::Debug, future::Future, net::SocketAddr, path::PathBuf, time::Duration};
 
-use crate::{cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskKind};
 use http::Uri;
-use hyper::body::{Body, Incoming};
-use hyper::rt::{Read, Write};
+use hyper::{
+    body::{Body, Incoming},
+    rt::{Read, Write},
+};
 use hyper_util::rt::TokioIo;
-use tokio::io;
-use tokio::net::{TcpListener, UnixListener, UnixStream};
+use restate_types::{
+    errors::GenericError,
+    net::{AdvertisedAddress, BindAddress},
+};
+use tokio::{
+    io,
+    net::{TcpListener, UnixListener, UnixStream},
+};
 use tokio_util::net::Listener;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, info, instrument, Span};
 
-use restate_types::errors::GenericError;
-use restate_types::net::{AdvertisedAddress, BindAddress};
+use crate::{cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskKind};
 
 pub fn create_tonic_channel_from_advertised_address(address: AdvertisedAddress) -> Channel {
     match address {
