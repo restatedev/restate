@@ -77,7 +77,7 @@ check-fmt:
     cargo +nightly fmt --all -- --check
 
 clippy: (_target-installed target)
-    cargo clippy {{ _target-option }} --all-targets --workspace -- -D warnings
+    cargo +stable clippy {{ _target-option }} --all-targets --workspace -- -D warnings
 
 # Runs all lints (fmt, clippy, deny)
 lint: check-fmt clippy check-deny
