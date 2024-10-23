@@ -50,7 +50,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
 
     let mut table = Table::new_styled();
     table.add_kv_row("Name:", &service.name);
-    table.add_kv_row("Service type:", &format!("{:?}", service.ty));
+    table.add_kv_row("Service type:", format!("{:?}", service.ty));
     table.add_kv_row("Revision:", service.revision);
     table.add_kv_row("Public:", service.public);
     table.add_kv_row("Deployment ID:", service.deployment_id);
