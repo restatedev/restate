@@ -5610,6 +5610,7 @@ dependencies = [
  "hyper-util",
  "metrics",
  "once_cell",
+ "opentelemetry",
  "parking_lot",
  "pin-project",
  "prost",
@@ -5631,6 +5632,7 @@ dependencies = [
  "tonic-build",
  "tower",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "tracing-test",
 ]
