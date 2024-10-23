@@ -43,7 +43,7 @@ use restate_types::Version;
 
 use crate::cluster_marker::ClusterValidationError;
 use crate::network_server::{ClusterControllerDependencies, NetworkServer, WorkerDependencies};
-use crate::roles::{AdminRole, WorkerRole};
+use crate::roles::{AdminRole, BaseRole, WorkerRole};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -105,6 +105,7 @@ pub struct Node {
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
     metadata_store_role: Option<LocalMetadataStoreService>,
+    base_role: BaseRole,
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole<GrpcConnector>>,
     #[cfg(feature = "replicated-loglet")]
@@ -234,6 +235,13 @@ impl Node {
             None
         };
 
+        let base_role = BaseRole::create(
+            &mut router_builder,
+            worker_role
+                .as_ref()
+                .map(|role| role.parition_processor_manager_handle()),
+        );
+
         let server = NetworkServer::new(
             health.clone(),
             networking.connection_manager().clone(),
@@ -268,6 +276,7 @@ impl Node {
             bifrost: bifrost_svc,
             metadata_store_role,
             metadata_store_client,
+            base_role,
             admin_role,
             worker_role,
             #[cfg(feature = "replicated-loglet")]
@@ -432,6 +441,8 @@ impl Node {
             None,
             self.server.run(config.common.clone()),
         )?;
+
+        self.base_role.start()?;
 
         let my_roles = my_node_config.roles;
         // Report that the node is running when all roles are ready

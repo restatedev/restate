@@ -679,6 +679,7 @@ mod tests {
 
     use googletest::assert_that;
     use googletest::matchers::eq;
+    use restate_types::net::node::{GetNodeState, NodeStateResponse};
     use test_log::test;
 
     use restate_bifrost::Bifrost;
@@ -690,9 +691,7 @@ mod tests {
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
-    use restate_types::net::partition_processor_manager::{
-        ControlProcessors, GetProcessorsState, ProcessorsStateResponse,
-    };
+    use restate_types::net::partition_processor_manager::ControlProcessors;
     use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
     use restate_types::{GenerationalNodeId, Version};
@@ -749,15 +748,15 @@ mod tests {
         Ok(())
     }
 
-    struct PartitionProcessorStatusHandler {
+    struct NodeStateHandler {
         persisted_lsn: Arc<AtomicU64>,
         // set of node ids for which the handler won't send a response to the caller, this allows to simulate
         // dead nodes
         block_list: BTreeSet<GenerationalNodeId>,
     }
 
-    impl MessageHandler for PartitionProcessorStatusHandler {
-        type MessageType = GetProcessorsState;
+    impl MessageHandler for NodeStateHandler {
+        type MessageType = GetNodeState;
 
         async fn on_message(&self, msg: Incoming<Self::MessageType>) {
             if self.block_list.contains(msg.peer()) {
@@ -770,7 +769,9 @@ mod tests {
             };
 
             let state = [(PartitionId::MIN, partition_processor_status)].into();
-            let response = msg.to_rpc_response(ProcessorsStateResponse { state });
+            let response = msg.to_rpc_response(NodeStateResponse {
+                paritions_processor_state: Some(state),
+            });
 
             // We are not really sending something back to target, we just need to provide a known
             // node_id. The response will be sent to a handler running on the very same node.
@@ -792,14 +793,14 @@ mod tests {
         };
 
         let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let get_processor_state_handler = Arc::new(PartitionProcessorStatusHandler {
+        let get_node_state_handler = Arc::new(NodeStateHandler {
             persisted_lsn: Arc::clone(&persisted_lsn),
             block_list: BTreeSet::new(),
         });
 
         let (node_env, bifrost) = create_test_env(config, |builder| {
             builder
-                .add_message_handler(get_processor_state_handler.clone())
+                .add_message_handler(get_node_state_handler.clone())
                 .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
@@ -823,8 +824,8 @@ mod tests {
                 )
                 .await?;
                 // let node2 receive messages and use the same message handler as node1
-                let (_node_2, _node2_reactor) = node_2
-                    .process_with_message_handler(&node_env.tc, get_processor_state_handler)?;
+                let (_node_2, _node2_reactor) =
+                    node_2.process_with_message_handler(&node_env.tc, get_node_state_handler)?;
 
                 let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=20 {
@@ -875,13 +876,13 @@ mod tests {
         };
 
         let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let get_processor_state_handler = Arc::new(PartitionProcessorStatusHandler {
+        let get_node_state_handler = Arc::new(NodeStateHandler {
             persisted_lsn: Arc::clone(&persisted_lsn),
             block_list: BTreeSet::new(),
         });
         let (node_env, bifrost) = create_test_env(config, |builder| {
             builder
-                .add_message_handler(get_processor_state_handler.clone())
+                .add_message_handler(get_node_state_handler.clone())
                 .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
@@ -905,8 +906,8 @@ mod tests {
                 )
                 .await?;
                 // let node2 receive messages and use the same message handler as node1
-                let (_node_2, _node2_reactor) = node_2
-                    .process_with_message_handler(&node_env.tc, get_processor_state_handler)?;
+                let (_node_2, _node2_reactor) =
+                    node_2.process_with_message_handler(&node_env.tc, get_node_state_handler)?;
 
                 let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=20 {
@@ -964,12 +965,12 @@ mod tests {
                 .into_iter()
                 .collect();
 
-            let get_processor_state_handler = PartitionProcessorStatusHandler {
+            let get_node_state_handler = NodeStateHandler {
                 persisted_lsn: Arc::clone(&persisted_lsn),
                 block_list: black_list,
             };
 
-            builder.add_message_handler(get_processor_state_handler)
+            builder.add_message_handler(get_node_state_handler)
         })
         .await?;
 

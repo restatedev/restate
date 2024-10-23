@@ -69,6 +69,9 @@ enum TargetName {
   // Partition Processor
   PARTITION_CREATE_SNAPSHOT_REQUEST = 50;
   PARTITION_CREATE_SNAPSHOT_RESPONSE = 51;
+  // Node
+  NODE_GET_NODE_STATE_REQUEST = 60;
+  NODE_GET_NODE_STATE_RESPONSE = 61;
 }
 
 // ** Health & Per-role Status

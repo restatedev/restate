@@ -23,13 +23,11 @@ mod subscription_integration;
 use codederror::CodedError;
 use tokio::sync::oneshot;
 
-pub use crate::subscription_controller::SubscriptionController;
-pub use crate::subscription_integration::SubscriptionControllerHandle;
-
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
+use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
@@ -45,11 +43,14 @@ use restate_types::live::Live;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::Schema;
 
-pub use self::error::*;
-pub use self::handle::*;
 use crate::ingress_integration::InvocationStorageReaderImpl;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
+
+pub use self::error::*;
+pub use self::handle::*;
+pub use crate::subscription_controller::SubscriptionController;
+pub use crate::subscription_integration::SubscriptionControllerHandle;
 
 type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
@@ -193,6 +194,10 @@ impl<T: TransportConnect> Worker<T> {
 
     pub fn storage_query_context(&self) -> &QueryContext {
         &self.storage_query_context
+    }
+
+    pub fn parition_processor_manager_handle(&self) -> ProcessorsManagerHandle {
+        self.partition_processor_manager.handle()
     }
 
     pub async fn run(self, all_partitions_started_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {

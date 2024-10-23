@@ -8,9 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeMap;
+
 use tokio::sync::{mpsc, oneshot};
 
-use restate_types::identifiers::{PartitionId, SnapshotId};
+use restate_types::{
+    cluster::cluster_state::PartitionProcessorStatus,
+    identifiers::{PartitionId, SnapshotId},
+};
 
 use crate::ShutdownError;
 
@@ -18,6 +23,7 @@ use crate::ShutdownError;
 pub enum ProcessorsManagerCommand {
     GetLivePartitions(oneshot::Sender<Vec<PartitionId>>),
     CreateSnapshot(PartitionId, oneshot::Sender<anyhow::Result<SnapshotId>>),
+    GetState(oneshot::Sender<BTreeMap<PartitionId, PartitionProcessorStatus>>),
 }
 
 #[derive(Debug, Clone)]
@@ -43,5 +49,16 @@ impl ProcessorsManagerHandle {
             .send(ProcessorsManagerCommand::CreateSnapshot(partition_id, tx))
             .await?;
         rx.await?
+    }
+
+    pub async fn get_state(
+        &self,
+    ) -> Result<BTreeMap<PartitionId, PartitionProcessorStatus>, ShutdownError> {
+        let (tx, rx) = oneshot::channel();
+        self.0
+            .send(ProcessorsManagerCommand::GetState(tx))
+            .await
+            .unwrap();
+        rx.await.map_err(|_| ShutdownError)
     }
 }
