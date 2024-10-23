@@ -524,12 +524,11 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         }
     }
 
-    fn on_get_state(&self, get_state_msg: Incoming<GetProcessorsState>) {
+    fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
         let persisted_lsns = self.persisted_lsns_rx.as_ref().map(|w| w.borrow());
 
         // For all running partitions, collect state, enrich it, and send it back.
-        let state: BTreeMap<PartitionId, PartitionProcessorStatus> = self
-            .running_partition_processors
+        self.running_partition_processors
             .iter()
             .map(|(partition_id, state)| {
                 let mut status = state.watch_rx.borrow().clone();
@@ -579,7 +578,11 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     .and_then(|lsns| lsns.get(partition_id).cloned());
                 (*partition_id, status)
             })
-            .collect();
+            .collect()
+    }
+
+    fn on_get_state(&self, get_state_msg: Incoming<GetProcessorsState>) {
+        let state = self.get_state();
 
         // ignore shutdown errors.
         let _ = self.task_center.spawn(
@@ -606,6 +609,9 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 self.running_partition_processors
                     .get(&partition_id)
                     .map(|store| store.handle.create_snapshot(Some(sender)));
+            }
+            GetState(sender) => {
+                let _ = sender.send(self.get_state());
             }
         }
     }

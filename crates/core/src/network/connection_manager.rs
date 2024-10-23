@@ -758,7 +758,7 @@ mod tests {
     use restate_test_util::{assert_eq, let_assert};
     use restate_types::net::codec::WireDecode;
     use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage};
-    use restate_types::net::partition_processor_manager::GetProcessorsState;
+    use restate_types::net::node::GetNodeState;
     use restate_types::net::{
         AdvertisedAddress, ProtocolVersion, CURRENT_PROTOCOL_VERSION,
         MIN_SUPPORTED_PROTOCOL_VERSION,
@@ -1030,7 +1030,7 @@ mod tests {
                 .await
                 .into_test_result()?;
 
-                let request = GetProcessorsState {};
+                let request = GetNodeState {};
                 let partition_table_version = metadata.partition_table_version().next();
                 let header = Header::new(
                     metadata.nodes_config_version(),

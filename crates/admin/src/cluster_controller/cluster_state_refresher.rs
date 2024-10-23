@@ -18,8 +18,7 @@ use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{MessageRouterBuilder, Networking, Outgoing, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle};
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState};
-use restate_types::net::partition_processor_manager::GetProcessorsState;
-use restate_types::nodes_config::Role;
+use restate_types::net::node::GetNodeState;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::Version;
 
@@ -27,7 +26,7 @@ pub struct ClusterStateRefresher<T> {
     task_center: TaskCenter,
     metadata: Metadata,
     network_sender: Networking<T>,
-    get_state_router: RpcRouter<GetProcessorsState>,
+    get_state_router: RpcRouter<GetNodeState>,
     in_flight_refresh: Option<TaskHandle<anyhow::Result<()>>>,
     cluster_state_update_rx: watch::Receiver<Arc<ClusterState>>,
     cluster_state_update_tx: Arc<watch::Sender<Arc<ClusterState>>>,
@@ -105,7 +104,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
 
     fn start_refresh_task(
         tc: TaskCenter,
-        get_state_router: RpcRouter<GetProcessorsState>,
+        get_state_router: RpcRouter<GetNodeState>,
         network_sender: Networking<T>,
         cluster_state_tx: Arc<watch::Sender<Arc<ClusterState>>>,
         metadata: Metadata,
@@ -130,25 +129,19 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
 
             let mut nodes = BTreeMap::new();
             let mut join_set = tokio::task::JoinSet::new();
-            for (node_id, node) in nodes_config.iter() {
-                // We are only interested in worker nodes.
-                if !node.has_role(Role::Worker) {
-                    continue;
-                }
-
+            for (node_id, _) in nodes_config.iter() {
                 let rpc_router = get_state_router.clone();
                 let tc = tc.clone();
                 let network_sender = network_sender.clone();
                 join_set
                     .build_task()
-                    .name("get-processors-state")
+                    .name("get-nodes-state")
                     .spawn(async move {
-                        tc.run_in_scope("get-processor-state", None, async move {
+                        tc.run_in_scope("get-node-state", None, async move {
                             match network_sender.node_connection(node_id).await {
                                 Ok(connection) => {
-                                    let outgoing =
-                                        Outgoing::new(node_id, GetProcessorsState::default())
-                                            .assign_connection(connection);
+                                    let outgoing = Outgoing::new(node_id, GetNodeState::default())
+                                        .assign_connection(connection);
 
                                     (
                                         node_id,
@@ -177,7 +170,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                             NodeState::Alive(AliveNode {
                                 last_heartbeat_at: MillisSinceEpoch::now(),
                                 generational_node_id: peer,
-                                partitions: msg.state,
+                                partitions: msg.paritions_processor_state.unwrap_or_default(),
                             }),
                         );
                     }
