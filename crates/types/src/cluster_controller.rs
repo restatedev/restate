@@ -34,10 +34,10 @@ pub enum ReplicationStrategy {
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchedulingPlan {
-    pub version: Version,
+    version: Version,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    pub partitions: BTreeMap<PartitionId, TargetPartitionState>,
+    partitions: BTreeMap<PartitionId, TargetPartitionState>,
 }
 
 flexbuffers_storage_encode_decode!(SchedulingPlan);

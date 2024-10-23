@@ -12,23 +12,21 @@ use std::collections::HashMap;
 use std::pin::pin;
 use std::sync::Arc;
 
-use anyhow::Context;
 use arc_swap::ArcSwap;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, info, trace};
+use tracing::{debug, info};
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
-use restate_types::NodeId;
+use restate_types::{NodeId, Version, Versioned};
 
 use crate::metadata_store::MetadataStoreClient;
 use crate::{
-    cancellation_watcher, task_center, ShutdownError, TargetVersion, TaskCenter, TaskHandle,
-    TaskId, TaskKind,
+    cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind,
 };
 
 pub type CommandSender = mpsc::Sender<Command>;
@@ -36,7 +34,7 @@ pub type CommandReceiver = mpsc::Receiver<Command>;
 
 pub enum Command {
     /// Request an on-demand refresh of routing information from the authoritative source.
-    SyncRoutingInformation(TargetVersion),
+    SyncRoutingInformation,
 }
 
 /// Holds a view of the known partition-to-node mappings. Use it to discover which node(s) to route
@@ -59,19 +57,21 @@ impl PartitionRouting {
             .copied()
     }
 
-    /// Request a refresh without waiting for it to complete. This is useful when the caller
-    /// discovers via some other mechanism that the local view might be outdated - for example, when
-    /// a request to a node previously returned by `get_node_by_partition` fails with a response
-    /// that indicates that this routing information is no longer valid.
+    /// Call this to hint to the background refresher that its view may be outdated. This is useful
+    /// when a caller discovers via some other mechanism that routing infromation may be invalid -
+    /// for example, when a request to a node previously returned by `get_node_by_partition` fails
+    /// with a response that explicitly indicates that it is no longer serving that partition. The
+    /// call returns as soon as the request is enqueued. A refresh is not guaranteed to happen.
     pub async fn request_refresh(&self) {
         self.sender
-            .send(Command::SyncRoutingInformation(TargetVersion::Latest))
+            .send(Command::SyncRoutingInformation)
             .await
             .expect("Failed to send refresh request");
     }
 }
 
 struct PartitionToNodesRoutingTable {
+    version: Version,
     /// A mapping of partition IDs to node IDs that are believed to be authoritative for that
     /// serving requests for that partition.
     inner: HashMap<PartitionId, NodeId, Xxh3Builder>,
@@ -101,6 +101,7 @@ impl PartitionRoutingRefresher {
             sender,
             inflight_refresh_task: None,
             inner: Arc::new(ArcSwap::new(Arc::new(PartitionToNodesRoutingTable {
+                version: Version::INVALID,
                 inner: HashMap::default(),
             }))),
         }
@@ -115,7 +116,7 @@ impl PartitionRoutingRefresher {
     }
 
     async fn run(mut self) -> anyhow::Result<()> {
-        debug!("Metadata manager started");
+        debug!("Routing information refresher started");
 
         let update_interval = Configuration::pinned()
             .common
@@ -133,21 +134,21 @@ impl PartitionRoutingRefresher {
                 }
                 Some(cmd) = self.receiver.recv() => {
                     match cmd {
-                        Command::SyncRoutingInformation(target_version) => {
-                            self.spawn_sync_routing_information_task(target_version);
+                        Command::SyncRoutingInformation => {
+                            self.spawn_sync_routing_information_task();
                         }
                     }
                 }
                 _ = update_interval.tick() => {
                     debug!("Refreshing routing information...");
-                    self.spawn_sync_routing_information_task(TargetVersion::Latest);
+                    self.spawn_sync_routing_information_task();
                 }
             }
         }
         Ok(())
     }
 
-    fn spawn_sync_routing_information_task(&mut self, target_version: TargetVersion) {
+    fn spawn_sync_routing_information_task(&mut self) {
         if !self
             .inflight_refresh_task
             .as_ref()
@@ -162,13 +163,8 @@ impl PartitionRoutingRefresher {
                 None,
                 {
                     async move {
-                        sync_routing_information(
-                            partition_to_node_mappings,
-                            metadata_store_client,
-                            target_version,
-                            None,
-                        )
-                        .await
+                        sync_routing_information(partition_to_node_mappings, metadata_store_client)
+                            .await
                     }
                 },
             );
@@ -192,28 +188,38 @@ pub fn spawn_partition_routing_refresher(
 async fn sync_routing_information(
     partition_to_node_mappings: Arc<ArcSwap<PartitionToNodesRoutingTable>>,
     metadata_store_client: MetadataStoreClient,
-    _target_version: TargetVersion,
-    sender: Option<oneshot::Sender<anyhow::Result<()>>>,
 ) -> anyhow::Result<()> {
-    let scheduling_plan: SchedulingPlan = metadata_store_client
+    let scheduling_plan: Option<SchedulingPlan> = metadata_store_client
         .get(SCHEDULING_PLAN_KEY.clone())
-        .await?
-        .context("Scheduling plan not found")?;
+        .await?;
+
+    let scheduling_plan = match scheduling_plan {
+        Some(plan) => plan,
+        None => {
+            debug!("No scheduling plan found in metadata store, unable to refresh partition routing information");
+            return Ok(());
+        }
+    };
+
+    let current_mappings = partition_to_node_mappings.load();
+    if scheduling_plan.version() <= current_mappings.version {
+        return Ok(()); // No need for update
+    }
 
     let mut partition_nodes = HashMap::<PartitionId, NodeId, Xxh3Builder>::default();
-    for (partition_id, target_state) in scheduling_plan.partitions {
+    for (partition_id, target_state) in scheduling_plan.iter() {
         if let Some(leader) = target_state.leader {
-            partition_nodes.insert(partition_id, leader.into());
+            partition_nodes.insert(*partition_id, leader.into());
         }
     }
 
-    // No CAS as this task is the sole writer
-    partition_to_node_mappings.store(Arc::new(PartitionToNodesRoutingTable {
-        inner: partition_nodes,
-    }));
+    let _ = partition_to_node_mappings.compare_and_swap(
+        current_mappings,
+        Arc::new(PartitionToNodesRoutingTable {
+            version: scheduling_plan.version(),
+            inner: partition_nodes,
+        }),
+    );
 
-    if let Some(reply) = sender {
-        let _ = reply.send(Ok(()));
-    }
     Ok(())
 }
