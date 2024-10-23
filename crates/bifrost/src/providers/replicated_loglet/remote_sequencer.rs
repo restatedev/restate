@@ -33,6 +33,7 @@ use restate_types::{
     replicated_loglet::ReplicatedLogletParams,
     GenerationalNodeId,
 };
+use tracing::instrument;
 
 use super::rpc_routers::SequencersRpc;
 use crate::loglet::{
@@ -105,6 +106,13 @@ where
         }
     }
 
+    #[instrument(
+        level="trace",
+        skip_all,
+        fields(
+            otel.name = "replicated_loglet::remote_sequencer: append",
+        )
+    )]
     pub async fn append(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, OperationError> {
         if self.known_global_tail.is_sealed() {
             return Ok(LogletCommit::sealed());

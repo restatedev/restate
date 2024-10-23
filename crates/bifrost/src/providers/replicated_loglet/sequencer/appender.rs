@@ -110,6 +110,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
             first_offset=%self.first_offset,
             to_offset=%self.records.last_offset(self.first_offset).unwrap(),
             length=%self.records.len(),
+            otel.name="replicated_loglet::sequencer::appender: run"
         )
     )]
     pub async fn run(mut self) {

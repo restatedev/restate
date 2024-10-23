@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::task_center;
@@ -184,6 +184,13 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         Box::pin(self.known_global_tail.to_stream())
     }
 
+    #[instrument(
+        level="trace",
+        skip_all,
+        fields(
+            otel.name = "replicated_loglet: enqueue_batch",
+        )
+    )]
     async fn enqueue_batch(&self, payloads: Arc<[Record]>) -> Result<LogletCommit, OperationError> {
         if self.known_global_tail().is_sealed() {
             return Ok(LogletCommit::sealed());

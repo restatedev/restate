@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use futures::{Stream, StreamExt};
 use restate_types::errors::MaybeRetryableError;
-use tracing::trace;
+use tracing::{instrument, trace};
 
 use restate_core::network::{
     Incoming, MessageRouterBuilder, PeerMetadataVersion, Reciprocal, TransportConnect,
@@ -184,11 +184,20 @@ impl RequestPump {
     }
 
     /// Infailable handle_append method
+    #[instrument(
+        level="trace",
+        skip_all,
+        fields(
+            otel.name = "replicatged_loglet::network: handle_append",
+        )
+    )]
     async fn handle_append<T: TransportConnect>(
         &mut self,
         provider: &ReplicatedLogletProvider<T>,
-        incoming: Incoming<Append>,
+        mut incoming: Incoming<Append>,
     ) {
+        incoming.follow_from_sender();
+
         let loglet = match self
             .get_loglet(
                 provider,
