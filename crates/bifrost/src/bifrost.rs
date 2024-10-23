@@ -19,6 +19,7 @@ use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
 use restate_types::storage::StorageEncode;
 use restate_types::Version;
+use tracing::instrument;
 
 use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
@@ -92,6 +93,13 @@ impl Bifrost {
     ///
     /// It's recommended to use the [`Appender`] interface. Use [`Self::create_appender`]
     /// and reuse this appender to create a sequential write stream to the virtual log.
+    #[instrument(
+        level="trace",
+        skip(self, body),
+        fields(
+            otel.name = "Bifrost: append",
+        )
+    )]
     pub async fn append<T: StorageEncode>(
         &self,
         log_id: LogId,
@@ -104,6 +112,13 @@ impl Bifrost {
     /// Appends a batch of records to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]. The returned Lsn is the Lsn of the last
     /// record in this batch. This will only return after all records have been stored.
+    #[instrument(
+        level="trace",
+        skip(self, batch),
+        fields(
+            otel.name = "Bifrost: append_batch",
+        )
+    )]
     pub async fn append_batch<T: StorageEncode>(
         &self,
         log_id: LogId,
