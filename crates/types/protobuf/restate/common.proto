@@ -33,6 +33,7 @@ message Version { uint32 value = 1; }
 // The handle name or type tag of the message. For every target there must be
 // exactly one message handler implementation.
 enum TargetName {
+  reserved 7, 8;
   TargetName_UNKNOWN = 0;
   METADATA_MANAGER = 1;
   INGRESS = 2;
@@ -40,8 +41,6 @@ enum TargetName {
   LOCAL_METADATA_STORE_CLIENT = 4;
   ATTACH_REQUEST = 5;
   ATTACH_RESPONSE = 6;
-  GET_PROCESSORS_STATE_REQUEST = 7;
-  PROCESSORS_STATE_RESPONSE = 8;
   CONTROL_PROCESSORS = 9;
   // LogServer
   LOG_SERVER_STORE = 10;
