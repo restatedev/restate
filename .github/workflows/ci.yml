@@ -98,6 +98,23 @@ jobs:
         RESTATE_WORKER__EXPERIMENTAL_FEATURE_NEW_INVOCATION_STATUS_TABLE=true
       testArtifactOutput: sdk-java-neo-invocation-status-integration-test-report
 
+  sdk-java-disable-idempotency-table:
+    name: Run SDK-Java integration tests with DisableIdempotencyTable
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    secrets: inherit
+    needs: docker
+    uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      envVars: |
+        RESTATE_WORKER__EXPERIMENTAL_FEATURE_DISABLE_IDEMPOTENCY_TABLE=true
+      testArtifactOutput: sdk-java-disable-idempotency-table-integration-test-report
+
   sdk-python:
     name: Run SDK-Python integration tests
     permissions:

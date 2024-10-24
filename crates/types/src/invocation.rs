@@ -23,6 +23,7 @@ use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
 use serde_with::{serde_as, FromInto};
 use std::fmt;
 use std::hash::Hash;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -781,6 +782,48 @@ pub enum InvocationQuery {
     Workflow(ServiceId),
     /// Query an idempotency id.
     IdempotencyId(IdempotencyId),
+}
+
+impl InvocationQuery {
+    pub fn to_invocation_id(&self) -> InvocationId {
+        // The business logic of this function is based on the deterministic invocation id generation.
+        // For more info, please look at InvocationUuid::generate where the magic stuff happens.
+        match self {
+            InvocationQuery::Invocation(iid) => *iid,
+            InvocationQuery::Workflow(wfid) => InvocationId::generate(
+                &InvocationTarget::Workflow {
+                    name: wfid.service_name.clone(),
+                    key: wfid.key.clone(),
+                    // Doesn't matter
+                    handler: Default::default(),
+                    // Must be the workflow handler type
+                    handler_ty: WorkflowHandlerType::Workflow,
+                },
+                None,
+            ),
+            InvocationQuery::IdempotencyId(IdempotencyId {
+                service_name,
+                service_key,
+                service_handler,
+                idempotency_key,
+                ..
+            }) => {
+                let target = match service_key {
+                    None => {
+                        InvocationTarget::service(service_name.clone(), service_handler.clone())
+                    }
+                    Some(k) => InvocationTarget::virtual_object(
+                        service_name.clone(),
+                        k.clone(),
+                        service_handler.clone(),
+                        // Doesn't really matter
+                        VirtualObjectHandlerType::Exclusive,
+                    ),
+                };
+                InvocationId::generate(&target, Some(idempotency_key.deref()))
+            }
+        }
+    }
 }
 
 impl WithPartitionKey for InvocationQuery {

@@ -49,8 +49,8 @@ use restate_tracing_instrumentation as instrumentation;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
-    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
-    KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
+    NOT_FOUND_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, ServiceId};
 use restate_types::identifiers::{
@@ -84,7 +84,6 @@ use restate_wal_protocol::Command;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::iter;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::time::Duration;
@@ -105,6 +104,9 @@ pub struct StateMachine<Codec> {
     /// This is used to establish whether for new invocations we should use the NeoInvocationStatus or not.
     /// The neo table is enabled via [restate_types::config::WorkerOptions::experimental_feature_new_invocation_status_table].
     default_invocation_status_source_table: SourceTable,
+    /// This is used to disable writing to idempotency table/virtual object status table for idempotent invocations/workflow invocations.
+    /// From Restate 1.2 invocation ids are generated deterministically, so this additional index is not needed.
+    disable_idempotency_table: bool,
 
     _codec: PhantomData<Codec>,
 }
@@ -163,6 +165,7 @@ impl<Codec> StateMachine<Codec> {
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
         default_invocation_status_source_table: invocation_status_table::SourceTable,
+        disable_idempotency_table: bool,
     ) -> Self {
         let latency =
             histogram!(crate::metric_definitions::PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
@@ -173,6 +176,7 @@ impl<Codec> StateMachine<Codec> {
             partition_key_range,
             latency,
             default_invocation_status_source_table,
+            disable_idempotency_table,
             _codec: PhantomData,
         }
     }
@@ -337,24 +341,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Span::current().record_invocation_target(&service_invocation.invocation_target);
         // Phases of an invocation
         // 1. Try deduplicate it first
-        // 1.1. Deduplicate using idempotency id
-        // 1.2. Deduplicate for "run once" workflow semantics (only for workflow handlers of workflows services)
         // 2. Check if we need to schedule it
         // 3. Check if we need to inbox it (only for exclusive handlers of virtual objects services)
         // 4. Execute it
 
-        // 1.1. Handle deduplication for idempotency id
-        let Some(service_invocation) = self
-            .handle_service_invocation_idempotency_id(ctx, service_invocation)
-            .await?
-        else {
-            // Invocation was deduplicated, nothing else to do here
-            return Ok(());
-        };
-
-        // 1.2. Handle deduplication for workflows
+        // 1. Try deduplicate it first
         let Some(mut service_invocation) = self
-            .handle_service_invocation_workflow_run(ctx, service_invocation)
+            .handle_duplicated_requests(ctx, service_invocation)
             .await?
         else {
             // Invocation was deduplicated, nothing else to do here
@@ -430,148 +423,181 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     }
 
     /// Returns the invocation in case the invocation is not a duplicate
-    async fn handle_service_invocation_idempotency_id<
-        State: IdempotencyTable + InvocationStatusTable + OutboxTable + FsmTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        service_invocation: ServiceInvocation,
-    ) -> Result<Option<ServiceInvocation>, Error> {
-        if let Some(idempotency_id) = service_invocation.compute_idempotency_id() {
-            if service_invocation.invocation_target.invocation_target_ty()
-                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-            {
-                warn!("The idempotency key for workflow methods is ignored!");
-            } else {
-                if self
-                    .try_resolve_idempotent_request(
-                        ctx,
-                        &idempotency_id,
-                        &service_invocation.invocation_id,
-                        service_invocation.response_sink.as_ref(),
-                    )
-                    .await?
-                    .is_some()
-                {
-                    Self::send_submit_notification_if_needed(
-                        ctx,
-                        service_invocation.invocation_id,
-                        false,
-                        service_invocation.submit_notification_sink,
-                    );
-                    debug_if_leader!(
-                        ctx.is_leader,
-                        restate.idempotency.id = ?idempotency_id,
-                        "Invocation is a duplicate"
-                    );
-
-                    // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
-                    return Ok(None);
-                }
-
-                debug_if_leader!(
-                        ctx.is_leader,
-                        restate.idempotency.id = ?idempotency_id,
-                        "First time we see this idempotency id, invocation will be processed");
-
-                // Idempotent invocation needs to be processed for the first time, let's roll!
-                Self::do_store_idempotency_id(
-                    ctx,
-                    idempotency_id,
-                    service_invocation.invocation_id,
-                )
-                .await?;
-            }
-        }
-        Ok(Some(service_invocation))
-    }
-
-    /// Returns the invocation in case the invocation is not a duplicate
-    async fn handle_service_invocation_workflow_run<
-        State: VirtualObjectStatusTable + OutboxTable + FsmTable,
+    async fn handle_duplicated_requests<
+        State: IdempotencyTable
+            + InvocationStatusTable
+            + VirtualObjectStatusTable
+            + OutboxTable
+            + FsmTable,
     >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         mut service_invocation: ServiceInvocation,
     ) -> Result<Option<ServiceInvocation>, Error> {
-        if service_invocation.invocation_target.invocation_target_ty()
-            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-        {
-            let keyed_service_id = service_invocation
-                .invocation_target
-                .as_keyed_service_id()
-                .expect("When the handler type is Workflow, the invocation target must have a key");
+        let invocation_id = service_invocation.invocation_id;
+        let is_workflow_run = service_invocation.invocation_target.invocation_target_ty()
+            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow);
+        let mut has_idempotency_key = service_invocation.idempotency_key.is_some();
 
-            let service_status = ctx
-                .storage
-                .get_virtual_object_status(&keyed_service_id)
+        if !is_workflow_run && !has_idempotency_key {
+            // No duplicate id should exist
+            debug_assert!(
+                ctx.get_invocation_status(&invocation_id)
+                    .await
+                    .is_ok_and(|status| status == InvocationStatus::Free),
+                "There shouldn't be a duplicate for invocation id {}",
+                invocation_id
+            );
+            return Ok(Some(service_invocation));
+        }
+
+        if is_workflow_run && has_idempotency_key {
+            warn!("The idempotency key for workflow methods is ignored!");
+            has_idempotency_key = false;
+        }
+
+        let previous_invocation_status = async {
+            let mut invocation_status = ctx.get_invocation_status(&invocation_id).await?;
+            if invocation_status != InvocationStatus::Free {
+                // Deduplicated invocation with the new deterministic invocation id
+              Ok::<_, Error>(invocation_status)
+            } else {
+                // We might still need to deduplicate based on the idempotency table for old invocation ids
+                // TODO get rid of this code when we remove the idempotency table
+                if has_idempotency_key {
+                    let idempotency_id = service_invocation
+                        .compute_idempotency_id()
+                        .expect("Idempotency key must be present");
+
+                    if let Some(idempotency_metadata) = ctx.storage.get_idempotency_metadata(&idempotency_id).await? {
+                        invocation_status = ctx.get_invocation_status(&idempotency_metadata.invocation_id).await?;
+                    }
+                }
+                // Or on lock status for workflow runs with old invocation ids
+                // TODO get rid of this code when we remove the usage of the virtual object table for workflows
+                if is_workflow_run {
+                    let keyed_service_id = service_invocation
+                        .invocation_target
+                        .as_keyed_service_id()
+                        .expect("When the handler type is Workflow, the invocation target must have a key");
+
+                    if let VirtualObjectStatus::Locked(locked_invocation_id) = ctx
+                        .storage
+                        .get_virtual_object_status(&keyed_service_id)
+                        .await? {
+                        invocation_status = ctx.get_invocation_status(&locked_invocation_id).await?;
+                    }
+                }
+                Ok(invocation_status)
+            }
+
+        }.await?;
+
+        if previous_invocation_status == InvocationStatus::Free {
+            // --- New invocation
+            debug_if_leader!(
+                ctx.is_leader,
+                "First time we see this invocation id, invocation will be processed"
+            );
+
+            // Store the invocation id mapping if we have to and continue the processing
+            // TODO get rid of this code when we remove the usage of the virtual object table for workflows
+            if is_workflow_run && !self.disable_idempotency_table {
+                ctx.storage
+                        .put_virtual_object_status(
+                            &service_invocation
+                                .invocation_target
+                                .as_keyed_service_id()
+                                .expect("When the handler type is Workflow, the invocation target must have a key"),
+                            &VirtualObjectStatus::Locked(invocation_id),
+                        )
+                        .await;
+            }
+            // TODO get rid of this code when we remove the idempotency table
+            if has_idempotency_key && !self.disable_idempotency_table {
+                Self::do_store_idempotency_id(
+                    ctx,
+                    service_invocation
+                        .compute_idempotency_id()
+                        .expect("Idempotency key must be present"),
+                    service_invocation.invocation_id,
+                )
                 .await?;
+            }
+            return Ok(Some(service_invocation));
+        }
 
-            // If locked, then we check the original invocation
-            if let VirtualObjectStatus::Locked(original_invocation_id) = service_status {
-                if let Some(response_sink) = service_invocation.response_sink {
-                    // --- ATTACH business logic below, this is currently disabled due to the pending discussion about equality check.
-                    //     We instead simply fail the invocation with CONFLICT status code
-                    //
-                    // let invocation_status =
-                    //     ctx.storage.get_invocation_status(&original_invocation_id).await?;
-                    //
-                    // match invocation_status {
-                    //     InvocationStatus::Completed(
-                    //         CompletedInvocation { response_result, .. }) => {
-                    //         self.send_response_to_sinks(
-                    //             effects,
-                    //             iter::once(response_sink),
-                    //             response_result,
-                    //             Some(service_invocation.invocation_id),
-                    //             Some(&service_invocation.invocation_target),
-                    //         );
-                    //     }
-                    //     InvocationStatus::Free => panic!("Unexpected state, the InvocationStatus cannot be Free for invocation {} given it's in locked status", original_invocation_id),
-                    //     is => Self::do_append_response_sink(ctx,
-                    //         original_invocation_id,
-                    //         is,
-                    //         response_sink
-                    //     )
-                    // }
+        // --- Invocation already exists
 
+        // Send submit notification
+        Self::send_submit_notification_if_needed(
+            ctx,
+            service_invocation.invocation_id,
+            false,
+            service_invocation.submit_notification_sink,
+        );
+
+        // For idempotency_key requests, append the response sink or return back the original result
+        if has_idempotency_key {
+            debug_if_leader!(
+                ctx.is_leader,
+                restate.idempotency.key = ?service_invocation.idempotency_key.unwrap(),
+                "Invocation with idempotency key is a duplicate"
+            );
+            match previous_invocation_status {
+                is @ InvocationStatus::Invoked { .. }
+                | is @ InvocationStatus::Suspended { .. }
+                | is @ InvocationStatus::Inboxed { .. }
+                | is @ InvocationStatus::Scheduled { .. } => {
+                    if let Some(ref response_sink) = service_invocation.response_sink {
+                        if !is
+                            .get_response_sinks()
+                            .expect("response sink must be present")
+                            .contains(response_sink)
+                        {
+                            Self::do_append_response_sink(
+                                ctx,
+                                invocation_id,
+                                is,
+                                response_sink.clone(),
+                            )
+                            .await?
+                        }
+                    }
+                }
+                InvocationStatus::Completed(completed) => {
                     self.send_response_to_sinks(
                         ctx,
-                        iter::once(response_sink),
-                        ResponseResult::Failure(WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR),
-                        Some(original_invocation_id),
-                        Some(&service_invocation.invocation_target),
+                        service_invocation.response_sink.take().into_iter(),
+                        completed.response_result,
+                        Some(invocation_id),
+                        Some(&completed.invocation_target),
                     )
                     .await?;
                 }
-
-                Self::send_submit_notification_if_needed(
-                    ctx,
-                    service_invocation.invocation_id,
-                    false,
-                    service_invocation.submit_notification_sink.take(),
-                );
-
-                debug_if_leader!(
-                    ctx.is_leader,
-                    "Invocation to workflow method is a duplicate"
-                );
-
-                return Ok(None);
+                InvocationStatus::Free => {
+                    unreachable!("This was checked before!")
+                }
             }
+            return Ok(None);
+        }
+        // For workflow run, we don't append the response sink, but we send a failure instead.
+        if is_workflow_run {
             debug_if_leader!(
                 ctx.is_leader,
-                "First time we see this workflow id, invocation will be processed"
+                "Invocation to workflow method is a duplicate"
             );
-
-            ctx.storage
-                .put_virtual_object_status(
-                    &keyed_service_id,
-                    &VirtualObjectStatus::Locked(service_invocation.invocation_id),
-                )
-                .await;
+            self.send_response_to_sinks(
+                ctx,
+                service_invocation.response_sink.take().into_iter(),
+                ResponseResult::Failure(WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR),
+                Some(invocation_id),
+                Some(&service_invocation.invocation_target),
+            )
+            .await?;
         }
-        Ok(Some(service_invocation))
+
+        Ok(None)
     }
 
     /// Returns the invocation in case the invocation should run immediately
@@ -804,71 +830,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx.storage.put_inbox_seq_number(seq_number + 1).await;
         self.inbox_seq_number += 1;
         Ok(seq_number)
-    }
-
-    /// If an invocation id is returned, the request has been resolved and no further processing is needed
-    async fn try_resolve_idempotent_request<
-        State: ReadOnlyIdempotencyTable + InvocationStatusTable + OutboxTable + FsmTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        idempotency_id: &IdempotencyId,
-        caller_id: &InvocationId,
-        response_sink: Option<&ServiceInvocationResponseSink>,
-    ) -> Result<Option<InvocationId>, Error> {
-        if let Some(idempotency_meta) = ctx.storage.get_idempotency_metadata(idempotency_id).await?
-        {
-            let original_invocation_id = idempotency_meta.invocation_id;
-            match ctx
-                .storage
-                .get_invocation_status(&original_invocation_id)
-                .await?
-            {
-                is @ InvocationStatus::Invoked { .. }
-                | is @ InvocationStatus::Suspended { .. }
-                | is @ InvocationStatus::Inboxed { .. }
-                | is @ InvocationStatus::Scheduled { .. } => {
-                    if let Some(response_sink) = response_sink {
-                        if !is
-                            .get_response_sinks()
-                            .expect("response sink must be present")
-                            .contains(response_sink)
-                        {
-                            Self::do_append_response_sink(
-                                ctx,
-                                original_invocation_id,
-                                is,
-                                response_sink.clone(),
-                            )
-                            .await?
-                        }
-                    }
-                }
-                InvocationStatus::Completed(completed) => {
-                    self.send_response_to_sinks(
-                        ctx,
-                        response_sink.cloned(),
-                        completed.response_result,
-                        Some(original_invocation_id),
-                        Some(&completed.invocation_target),
-                    )
-                    .await?;
-                }
-                InvocationStatus::Free => {
-                    self.send_response_to_sinks(
-                        ctx,
-                        response_sink.cloned(),
-                        GONE_INVOCATION_ERROR,
-                        Some(*caller_id),
-                        None,
-                    )
-                    .await?
-                }
-            }
-            Ok(Some(original_invocation_id))
-        } else {
-            Ok(None)
-        }
     }
 
     async fn handle_external_state_mutation<
@@ -2687,35 +2648,21 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         let invocation_id = match attach_invocation_request.invocation_query {
             InvocationQuery::Invocation(iid) => iid,
-            InvocationQuery::Workflow(sid) => {
-                match ctx.storage.get_virtual_object_status(&sid).await? {
+            ref q @ InvocationQuery::Workflow(ref sid) => {
+                match ctx.storage.get_virtual_object_status(sid).await? {
                     VirtualObjectStatus::Locked(iid) => iid,
                     VirtualObjectStatus::Unlocked => {
-                        self.send_response_to_sinks(
-                            ctx,
-                            vec![attach_invocation_request.response_sink],
-                            NOT_FOUND_INVOCATION_ERROR,
-                            None,
-                            None,
-                        )
-                        .await?;
-                        return Ok(());
+                        // Try the deterministic id
+                        q.to_invocation_id()
                     }
                 }
             }
-            InvocationQuery::IdempotencyId(iid) => {
-                match ctx.storage.get_idempotency_metadata(&iid).await? {
+            ref q @ InvocationQuery::IdempotencyId(ref iid) => {
+                match ctx.storage.get_idempotency_metadata(iid).await? {
                     Some(idempotency_metadata) => idempotency_metadata.invocation_id,
                     None => {
-                        self.send_response_to_sinks(
-                            ctx,
-                            vec![attach_invocation_request.response_sink],
-                            NOT_FOUND_INVOCATION_ERROR,
-                            None,
-                            None,
-                        )
-                        .await?;
-                        return Ok(());
+                        // Try the deterministic id
+                        q.to_invocation_id()
                     }
                 }
             }
