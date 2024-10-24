@@ -51,17 +51,12 @@ pub enum RequestDispatcherError {
 
 #[cfg_attr(test, mockall::automock)]
 pub trait RequestDispatcher {
-    fn append_invocation(
-        &self,
-        service_invocation: ServiceInvocation,
-    ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send;
-
-    fn submit_invocation_and_wait_submit_notification_if_needed(
+    fn append_invocation_and_wait_submit_notification_if_needed(
         &self,
         service_invocation: ServiceInvocation,
     ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send;
 
-    fn submit_invocation_and_wait_output(
+    fn append_invocation_and_wait_output(
         &self,
         service_invocation: ServiceInvocation,
     ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send;
@@ -76,7 +71,7 @@ pub trait RequestDispatcher {
         invocation_query: InvocationQuery,
     ) -> impl Future<Output = Result<GetInvocationOutputResponse, RequestDispatcherError>> + Send;
 
-    fn submit_invocation_response(
+    fn append_invocation_response(
         &self,
         invocation_response: InvocationResponse,
     ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send;
@@ -207,29 +202,22 @@ mod mocks {
     }
 
     impl RequestDispatcher for Arc<MockRequestDispatcher> {
-        fn append_invocation(
-            &self,
-            service_invocation: ServiceInvocation,
-        ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send {
-            MockRequestDispatcher::append_invocation(self, service_invocation)
-        }
-
-        fn submit_invocation_and_wait_submit_notification_if_needed(
+        fn append_invocation_and_wait_submit_notification_if_needed(
             &self,
             service_invocation: ServiceInvocation,
         ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send
         {
-            MockRequestDispatcher::submit_invocation_and_wait_submit_notification_if_needed(
+            MockRequestDispatcher::append_invocation_and_wait_submit_notification_if_needed(
                 self,
                 service_invocation,
             )
         }
 
-        fn submit_invocation_and_wait_output(
+        fn append_invocation_and_wait_output(
             &self,
             service_invocation: ServiceInvocation,
         ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send {
-            MockRequestDispatcher::submit_invocation_and_wait_output(self, service_invocation)
+            MockRequestDispatcher::append_invocation_and_wait_output(self, service_invocation)
         }
 
         fn attach_invocation(
@@ -248,11 +236,11 @@ mod mocks {
             MockRequestDispatcher::get_invocation_output(self, invocation_query)
         }
 
-        fn submit_invocation_response(
+        fn append_invocation_response(
             &self,
             invocation_response: InvocationResponse,
         ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send {
-            MockRequestDispatcher::submit_invocation_response(self, invocation_response)
+            MockRequestDispatcher::append_invocation_response(self, invocation_response)
         }
     }
 }

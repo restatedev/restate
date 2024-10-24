@@ -238,7 +238,7 @@ where
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         let response = dispatcher
-            .submit_invocation_and_wait_output(service_invocation)
+            .append_invocation_and_wait_output(service_invocation)
             .await?;
 
         Self::reply_with_invocation_response(response, move |_| Ok(invocation_target_metadata))
@@ -253,7 +253,7 @@ where
 
         // Send the service invocation, wait for the submit notification
         let response = dispatcher
-            .submit_invocation_and_wait_submit_notification_if_needed(service_invocation)
+            .append_invocation_and_wait_submit_notification_if_needed(service_invocation)
             .await?;
 
         trace!("Complete external HTTP send request successfully");

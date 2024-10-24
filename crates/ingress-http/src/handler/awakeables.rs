@@ -75,7 +75,7 @@ where
 
         if let Err(e) = self
             .dispatcher
-            .submit_invocation_response(InvocationResponse {
+            .append_invocation_response(InvocationResponse {
                 id: invocation_id,
                 entry_index,
                 result,

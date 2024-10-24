@@ -39,22 +39,7 @@ impl<N> RequestDispatcher for RpcRequestDispatcher<N>
 where
     N: NetworkSender + 'static,
 {
-    async fn append_invocation(
-        &self,
-        service_invocation: ServiceInvocation,
-    ) -> Result<(), RequestDispatcherError> {
-        // TODO figure out retry strategy
-        self.partition_processor_rpc_client
-            .append_invocation(
-                PartitionProcessorRpcRequestId::default(),
-                service_invocation,
-            )
-            .await
-            .context("error when trying to interact with partition processor")?;
-        Ok(())
-    }
-
-    async fn submit_invocation_and_wait_submit_notification_if_needed(
+    async fn append_invocation_and_wait_submit_notification_if_needed(
         &self,
         service_invocation: ServiceInvocation,
     ) -> Result<SubmittedInvocationNotification, RequestDispatcherError> {
@@ -83,7 +68,7 @@ where
         }
     }
 
-    async fn submit_invocation_and_wait_output(
+    async fn append_invocation_and_wait_output(
         &self,
         service_invocation: ServiceInvocation,
     ) -> Result<InvocationOutput, RequestDispatcherError> {
@@ -121,7 +106,7 @@ where
             .context("error when trying to interact with partition processor")?)
     }
 
-    async fn submit_invocation_response(
+    async fn append_invocation_response(
         &self,
         invocation_response: InvocationResponse,
     ) -> Result<(), RequestDispatcherError> {
