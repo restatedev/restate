@@ -10,18 +10,17 @@
 
 use std::time::Duration;
 
-use restate_types::health::HealthStatus;
 use tokio::sync::oneshot;
 
 use codederror::CodedError;
 use restate_admin::cluster_controller;
-use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
 use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_core::network::MessageRouterBuilder;
+use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
@@ -29,6 +28,7 @@ use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
+use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::net::AdvertisedAddress;
 use restate_types::protobuf::common::AdminStatus;
@@ -58,10 +58,12 @@ impl<T: TransportConnect> AdminRole<T> {
     pub async fn create(
         health_status: HealthStatus<AdminStatus>,
         task_center: TaskCenter,
+        bifrost: Bifrost,
         updateable_config: Live<Configuration>,
         metadata: Metadata,
         networking: Networking<T>,
         metadata_writer: MetadataWriter,
+        server_builder: &mut NetworkServerBuilder,
         router_builder: &mut MessageRouterBuilder,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, AdminRoleBuildError> {
@@ -77,6 +79,7 @@ impl<T: TransportConnect> AdminRole<T> {
         let admin = AdminService::new(
             metadata_writer.clone(),
             metadata_store_client.clone(),
+            bifrost.clone(),
             config.ingress.clone(),
             service_discovery,
         );
@@ -85,10 +88,12 @@ impl<T: TransportConnect> AdminRole<T> {
             Some(cluster_controller::Service::new(
                 updateable_config.clone(),
                 health_status,
+                bifrost,
                 task_center,
                 metadata,
                 networking,
                 router_builder,
+                server_builder,
                 metadata_writer,
                 metadata_store_client,
             ))
@@ -103,15 +108,8 @@ impl<T: TransportConnect> AdminRole<T> {
         })
     }
 
-    pub fn cluster_controller_handle(&self) -> Option<ClusterControllerHandle> {
-        self.controller
-            .as_ref()
-            .map(|controller| controller.handle())
-    }
-
     pub async fn start(
         self,
-        bifrost: Bifrost,
         all_partitions_started_tx: oneshot::Sender<()>,
         node_address: AdvertisedAddress,
     ) -> Result<(), anyhow::Error> {
@@ -122,7 +120,7 @@ impl<T: TransportConnect> AdminRole<T> {
                 TaskKind::SystemService,
                 "cluster-controller-service",
                 None,
-                cluster_controller.run(bifrost.clone(), Some(all_partitions_started_tx)),
+                cluster_controller.run(Some(all_partitions_started_tx)),
             )?;
         }
 
@@ -133,7 +131,6 @@ impl<T: TransportConnect> AdminRole<T> {
             self.admin.run(
                 self.updateable_config.map(|c| &c.admin),
                 NodeSvcClient::new(create_tonic_channel_from_advertised_address(node_address)),
-                bifrost,
             ),
         )?;
 

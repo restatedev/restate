@@ -20,13 +20,15 @@ use futures::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
+use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, warn};
 
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{
-    Incoming, MessageRouterBuilder, NetworkSender, Networking, TransportConnect,
+    Incoming, MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking,
+    TransportConnect,
 };
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
@@ -47,6 +49,8 @@ use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, Version};
 
 use super::cluster_state_refresher::{ClusterStateRefresher, ClusterStateWatcher};
+use super::grpc_svc_handler::ClusterCtrlSvcHandler;
+use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use crate::cluster_controller::logs_controller::{
     LogsBasedPartitionProcessorPlacementHints, LogsController,
 };
@@ -65,6 +69,7 @@ pub struct Service<T> {
     health_status: HealthStatus<AdminStatus>,
     metadata: Metadata,
     networking: Networking<T>,
+    bifrost: Bifrost,
     incoming_messages: Pin<Box<dyn Stream<Item = Incoming<AttachRequest>> + Send + Sync + 'static>>,
     cluster_state_refresher: ClusterStateRefresher<T>,
     processor_manager_client: PartitionProcessorManagerClient<Networking<T>>,
@@ -87,10 +92,12 @@ where
     pub fn new(
         mut configuration: Live<Configuration>,
         health_status: HealthStatus<AdminStatus>,
+        bifrost: Bifrost,
         task_center: TaskCenter,
         metadata: Metadata,
         networking: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
+        server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
         metadata_store_client: MetadataStoreClient,
     ) -> Self {
@@ -112,12 +119,28 @@ where
         let (log_trim_interval, log_trim_threshold) =
             Self::create_log_trim_interval(&options.admin);
 
+        // Registering ClusterCtrlSvc grpc service to network server
+        server_builder.register_grpc_service(
+            ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(
+                ClusterControllerHandle {
+                    tx: command_tx.clone(),
+                },
+                metadata_store_client.clone(),
+                bifrost.clone(),
+                metadata_writer.clone(),
+            ))
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip),
+            crate::cluster_controller::protobuf::FILE_DESCRIPTOR_SET,
+        );
+
         Service {
             configuration,
             health_status,
             task_center,
             metadata,
             networking,
+            bifrost,
             incoming_messages,
             cluster_state_refresher,
             metadata_writer,
@@ -229,13 +252,15 @@ impl<T: TransportConnect> Service<T> {
 
     pub async fn run(
         mut self,
-        bifrost: Bifrost,
         all_partitions_started_tx: Option<oneshot::Sender<()>>,
     ) -> anyhow::Result<()> {
         self.init_partition_table().await?;
 
-        let bifrost_admin =
-            BifrostAdmin::new(&bifrost, &self.metadata_writer, &self.metadata_store_client);
+        let bifrost_admin = BifrostAdmin::new(
+            &self.bifrost,
+            &self.metadata_writer,
+            &self.metadata_store_client,
+        );
 
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         let mut config_watcher = Configuration::watcher();
@@ -276,7 +301,7 @@ impl<T: TransportConnect> Service<T> {
         let mut logs_controller = LogsController::init(
             configuration,
             self.metadata.clone(),
-            bifrost.clone(),
+            self.bifrost.clone(),
             self.metadata_store_client.clone(),
             self.metadata_writer.clone(),
         )
