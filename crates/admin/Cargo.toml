@@ -10,7 +10,6 @@ publish = false
 [features]
 default = ["replicated-loglet", "serve-web-ui"]
 clients = []
-servers = []
 options_schema = ["restate-service-client/options_schema"]
 memory-loglet = ["restate-bifrost/memory-loglet"]
 replicated-loglet = ["restate-bifrost/replicated-loglet"]
@@ -23,6 +22,7 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
+restate-metadata-store = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-types = { workspace = true, features = ["schemars"] }
