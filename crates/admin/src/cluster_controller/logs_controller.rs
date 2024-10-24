@@ -378,7 +378,11 @@ fn build_new_replicated_loglet_configuration(
                 ?loglet_id,
                 "Insufficient writeable nodes to place replicated loglet"
             );
-            None
+            previous_configuration.cloned().map(|mut params| {
+                params.loglet_id = loglet_id;
+                params.sequencer = sequencer;
+                params
+            })
         }
     }
 }
