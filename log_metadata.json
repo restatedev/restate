@@ -1,0 +1,1 @@
+{"version":1,"logs":[[0,{"chain":[[1,{"kind":"replicated","params":"{\"loglet_id\":1,\"sequencer\":\"N1:1\",\"replication\":{\"node\":2},\"nodeset\":[\"N1\",\"N2\",\"N3\"]}","index":0}]]}]]}
