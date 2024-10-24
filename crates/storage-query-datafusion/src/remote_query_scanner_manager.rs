@@ -108,9 +108,7 @@ impl RemoteScannerManager {
         if node_id == metadata().my_node_id().as_plain() {
             PartitionLocation::Local
         } else {
-            PartitionLocation::Remote {
-                node_id: node_id.into(),
-            }
+            PartitionLocation::Remote { node_id }
         }
     }
 }

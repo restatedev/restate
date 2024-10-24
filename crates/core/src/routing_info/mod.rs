@@ -29,6 +29,9 @@ use crate::{
     cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind,
 };
 
+#[cfg(any(test, feature = "test-util"))]
+pub use test_util::*;
+
 pub type CommandSender = mpsc::Sender<Command>;
 pub type CommandReceiver = mpsc::Receiver<Command>;
 
@@ -222,4 +225,34 @@ async fn sync_routing_information(
     );
 
     Ok(())
+}
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
+    use tokio::sync::mpsc;
+
+    use restate_types::Version;
+
+    use crate::routing_info::PartitionRouting;
+
+    pub struct MockPartitionRouting();
+
+    impl MockPartitionRouting {
+        pub fn empty() -> PartitionRouting {
+            let (sender, _) = mpsc::channel(1);
+            PartitionRouting {
+                sender,
+                partition_to_node_mappings: Arc::new(ArcSwap::new(Arc::new(
+                    super::PartitionToNodesRoutingTable {
+                        version: Version::MIN,
+                        inner: HashMap::default(),
+                    },
+                ))),
+            }
+        }
+    }
 }
