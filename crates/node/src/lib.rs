@@ -272,7 +272,7 @@ impl Node {
         })
     }
 
-    pub async fn start(self) -> Result<(), anyhow::Error> {
+    pub async fn start(mut self) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
         let config = self.updateable_config.pinned();
@@ -379,12 +379,9 @@ impl Node {
 
         #[cfg(feature = "replicated-loglet")]
         if let Some(log_server) = self.log_server {
-            tc.spawn(
-                TaskKind::SystemBoot,
-                "log-server-init",
-                None,
-                log_server.start(metadata_writer),
-            )?;
+            log_server
+                .start(metadata_writer, &mut self.server_builder)
+                .await?;
         }
 
         let all_partitions_started_rx = if let Some(admin_role) = self.admin_role {

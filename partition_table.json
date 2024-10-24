@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "num_partitions": 1,
+  "partitions": [
+    [
+      0,
+      {
+        "key_range": {
+          "start": 0,
+          "end": 18446744073709551615
+        }
+      }
+    ]
+  ]
+}
