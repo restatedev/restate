@@ -51,7 +51,7 @@ async fn replicated_loglet_client(
         .common
         .set_cluster_name(cluster.cluster_name().to_owned());
     config.common.advertised_address = AdvertisedAddress::Uds(node_socket.clone());
-    config.common.bind_address = BindAddress::Uds(node_socket.clone());
+    config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
     config.common.metadata_store_client = cluster.nodes[0]
         .config()
         .common
@@ -106,6 +106,8 @@ where
 {
     // disable the cluster controller to allow us to manually set the logs configuration
     base_config.admin.disable_cluster_controller = true;
+    base_config.common.set_derived_values();
+
     let nodes = Node::new_test_nodes_with_metadata(
         base_config,
         BinarySource::CargoTest,

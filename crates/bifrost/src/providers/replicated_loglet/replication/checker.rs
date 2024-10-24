@@ -338,8 +338,9 @@ mod tests {
 
     #[test]
     fn test_replication_checker_basics() -> Result<()> {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
         // all_authoritative
-        let nodes_config = generate_logserver_nodes_config(10, StorageState::ReadWrite);
+        let nodes_config = generate_logserver_nodes_config(10, StorageState::ReadWrite, &temp_dir);
 
         let nodeset: NodeSet = (1..=5).collect();
         let replication = ReplicationProperty::new(3.try_into().unwrap());
@@ -381,12 +382,38 @@ mod tests {
     #[test]
     fn test_replication_checker_mixed() -> Result<()> {
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
-        nodes_config.upsert_node(generate_logserver_node(1, StorageState::Disabled));
-        nodes_config.upsert_node(generate_logserver_node(2, StorageState::ReadWrite));
-        nodes_config.upsert_node(generate_logserver_node(3, StorageState::ReadOnly));
-        nodes_config.upsert_node(generate_logserver_node(4, StorageState::ReadWrite));
-        nodes_config.upsert_node(generate_logserver_node(5, StorageState::DataLoss));
-        nodes_config.upsert_node(generate_logserver_node(6, StorageState::DataLoss));
+        let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+
+        nodes_config.upsert_node(generate_logserver_node(
+            1,
+            StorageState::Disabled,
+            &temp_dir,
+        ));
+        nodes_config.upsert_node(generate_logserver_node(
+            2,
+            StorageState::ReadWrite,
+            &temp_dir,
+        ));
+        nodes_config.upsert_node(generate_logserver_node(
+            3,
+            StorageState::ReadOnly,
+            &temp_dir,
+        ));
+        nodes_config.upsert_node(generate_logserver_node(
+            4,
+            StorageState::ReadWrite,
+            &temp_dir,
+        ));
+        nodes_config.upsert_node(generate_logserver_node(
+            5,
+            StorageState::DataLoss,
+            &temp_dir,
+        ));
+        nodes_config.upsert_node(generate_logserver_node(
+            6,
+            StorageState::DataLoss,
+            &temp_dir,
+        ));
 
         // effective will be [2-6] because 1 is disabled (authoritatively drained)
         let nodeset: NodeSet = (1..=6).collect();
@@ -439,7 +466,9 @@ mod tests {
 
     #[test]
     fn test_replication_single_copy_single_node() -> Result<()> {
-        let nodes_config = generate_logserver_nodes_config(1, StorageState::ReadWrite);
+        let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+
+        let nodes_config = generate_logserver_nodes_config(1, StorageState::ReadWrite, &temp_dir);
 
         let replication = ReplicationProperty::new(1.try_into().unwrap());
         let mut checker: NodeSetChecker<bool> = NodeSetChecker::new(
@@ -461,7 +490,9 @@ mod tests {
 
     #[test]
     fn test_dont_panic_on_replication_factor_exceeding_nodeset_size() {
-        let nodes_config = generate_logserver_nodes_config(3, StorageState::ReadWrite);
+        let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+
+        let nodes_config = generate_logserver_nodes_config(3, StorageState::ReadWrite, &temp_dir);
 
         let nodeset: NodeSet = (1..=3).collect();
         let replication = ReplicationProperty::new(5.try_into().unwrap());
