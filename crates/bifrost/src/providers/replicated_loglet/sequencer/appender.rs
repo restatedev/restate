@@ -33,7 +33,7 @@ use restate_types::{
     replicated_loglet::NodeSet,
     time::MillisSinceEpoch,
 };
-use tracing::trace;
+use tracing::{instrument, trace};
 
 use super::{RecordsExt, SequencerSharedState};
 use crate::{
@@ -465,6 +465,15 @@ struct LogServerStoreTask<'a, T> {
 }
 
 impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
+    #[instrument(
+        skip_all,
+        fields(
+            otel.name = "log_server: store",
+            first_offset=%self.first_offset,
+            log_server_id=%self.server.node_id(),
+            loglet_id=%self.server.loglet_id(),
+        )
+    )]
     async fn run(mut self) -> LogServerStoreTaskResult {
         let result = self.send().await;
         match &result {
