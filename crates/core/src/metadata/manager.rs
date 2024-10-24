@@ -46,9 +46,6 @@ pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
 
 #[derive(Debug, thiserror::Error)]
-pub enum SyncError {}
-
-#[derive(Debug, thiserror::Error)]
 enum UpdateError {
     #[error("failed reading metadata from the metadata store: {0}")]
     MetadataStore(#[from] ReadError),

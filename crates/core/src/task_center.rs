@@ -48,6 +48,7 @@ pub struct TaskContext {
     /// Tasks associated with a specific partition ID will have this set. This allows
     /// for cancellation of tasks associated with that partition.
     partition_id: Option<PartitionId>,
+    /// Access to a locally-cached metadata view.
     metadata: Option<Metadata>,
 }
 
