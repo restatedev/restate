@@ -86,19 +86,10 @@ impl TestEnv {
     }
 
     pub async fn create() -> Self {
-        Self::create_with_state_machine(StateMachine::new(
-            0,    /* inbox_seq_number */
-            0,    /* outbox_seq_number */
-            None, /* outbox_head_seq_number */
-            PartitionKey::MIN..=PartitionKey::MAX,
-            false,
-        ))
-        .await
+        Self::create_with_options(false).await
     }
 
-    pub async fn create_with_options(
-        disable_idempotency_table: bool,
-    ) -> Self {
+    pub async fn create_with_options(disable_idempotency_table: bool) -> Self {
         Self::create_with_state_machine(StateMachine::new(
             0,    /* inbox_seq_number */
             0,    /* outbox_seq_number */

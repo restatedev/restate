@@ -10,14 +10,12 @@
 
 use super::*;
 
-use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
+use restate_storage_api::invocation_status_table::CompletedInvocation;
 use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
 };
-use restate_wal_protocol::timer::TimerKeyValue;
 use rstest::*;
 use std::time::Duration;
 
@@ -26,8 +24,7 @@ use std::time::Duration;
 #[case(false)]
 #[tokio::test]
 async fn start_workflow_method(#[case] disable_idempotency_table: bool) {
-    let mut test_env =
-        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
+    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
@@ -215,8 +212,7 @@ async fn start_workflow_method(#[case] disable_idempotency_table: bool) {
 #[case(false)]
 #[tokio::test]
 async fn attach_by_workflow_key(#[case] disable_idempotency_table: bool) {
-    let mut test_env =
-        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
+    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
@@ -366,80 +362,12 @@ async fn attach_by_workflow_key(#[case] disable_idempotency_table: bool) {
     test_env.shutdown().await;
 }
 
-// TODO remove this once we remove the old invocation status table
-#[rstest]
-#[case(true)]
-#[case(false)]
-#[tokio::test]
-async fn timer_cleanup(#[case] disable_idempotency_table: bool) {
-    let mut test_env =
-        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
-
-    let invocation_target = InvocationTarget::mock_workflow();
-    let invocation_id = InvocationId::mock_random();
-
-    // Prepare idempotency metadata and completed status
-    let mut txn = test_env.storage().transaction();
-    txn.put_invocation_status(
-        &invocation_id,
-        &InvocationStatus::Completed(CompletedInvocation {
-            invocation_target: invocation_target.clone(),
-            span_context: Default::default(),
-            source: Source::Ingress,
-            idempotency_key: None,
-            timestamps: StatusTimestamps::now(),
-            response_result: ResponseResult::Success(Bytes::from_static(b"123")),
-            completion_retention_duration: Default::default(),
-        }),
-    )
-    .await;
-    txn.put_virtual_object_status(
-        &invocation_target.as_keyed_service_id().unwrap(),
-        &VirtualObjectStatus::Locked(invocation_id),
-    )
-    .await;
-    txn.commit().await.unwrap();
-
-    // Send timer fired command
-    let _ = test_env
-        .apply(Command::Timer(TimerKeyValue::new(
-            TimerKey {
-                kind: TimerKeyKind::Invoke {
-                    invocation_uuid: invocation_id.invocation_uuid(),
-                },
-                timestamp: 0,
-            },
-            Timer::CleanInvocationStatus(invocation_id),
-        )))
-        .await;
-    assert_that!(
-        test_env
-            .storage()
-            .transaction()
-            .get_invocation_status(&invocation_id)
-            .await
-            .unwrap(),
-        pat!(InvocationStatus::Free)
-    );
-    assert_that!(
-        test_env
-            .storage()
-            .transaction()
-            .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
-            .await
-            .unwrap(),
-        pat!(VirtualObjectStatus::Unlocked)
-    );
-    test_env.shutdown().await;
-}
-
 #[rstest]
 #[case(true)]
 #[case(false)]
 #[tokio::test]
 async fn purge_completed_workflow(#[case] disable_idempotency_table: bool) {
-    let mut test_env =
-        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
+    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
