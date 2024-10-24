@@ -14,11 +14,13 @@ mod error;
 mod handshake;
 mod message_router;
 pub(crate) mod metric_definitions;
+mod multiplex;
 pub mod net_util;
 mod network_sender;
 mod networking;
 pub mod protobuf;
 pub mod rpc_router;
+mod server_builder;
 pub mod transport_connector;
 mod types;
 
@@ -28,6 +30,7 @@ pub use error::*;
 pub use message_router::*;
 pub use network_sender::*;
 pub use networking::Networking;
+pub use server_builder::NetworkServerBuilder;
 pub use transport_connector::{GrpcConnector, TransportConnect};
 pub use types::*;
 

@@ -9,11 +9,13 @@
 // by the Apache License, Version 2.0.
 
 mod error;
+mod grpc_svc_handler;
 mod loglet_worker;
 mod logstore;
 mod metadata;
 mod metric_definitions;
 mod network;
+pub mod protobuf;
 mod rocksdb_logstore;
 mod service;
 

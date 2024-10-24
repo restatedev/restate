@@ -34,6 +34,7 @@ use crate::{rest_api, state, storage_query};
 pub struct BuildError(#[from] restate_service_client::BuildError);
 
 pub struct AdminService<V> {
+    bifrost: Bifrost,
     schema_registry: SchemaRegistry<V>,
 }
 
@@ -44,10 +45,12 @@ where
     pub fn new(
         metadata_writer: MetadataWriter,
         metadata_store_client: MetadataStoreClient,
+        bifrost: Bifrost,
         subscription_validator: V,
         service_discovery: ServiceDiscovery,
     ) -> Self {
         Self {
+            bifrost,
             schema_registry: SchemaRegistry::new(
                 metadata_store_client,
                 metadata_writer,
@@ -61,11 +64,10 @@ where
         self,
         mut updateable_config: impl LiveLoad<AdminOptions> + Send + 'static,
         node_svc_client: NodeSvcClient<Channel>,
-        bifrost: Bifrost,
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
 
-        let rest_state = state::AdminServiceState::new(self.schema_registry, bifrost);
+        let rest_state = state::AdminServiceState::new(self.schema_registry, self.bifrost);
 
         let query_state = Arc::new(state::QueryServiceState { node_svc_client });
         let router = axum::Router::new().merge(storage_query::create_router(query_state));

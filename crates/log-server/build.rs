@@ -16,14 +16,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_build::configure()
         .bytes(["."])
-        .file_descriptor_set_path(out_dir.join("cluster_ctrl_svc_descriptor.bin"))
-        .client_mod_attribute("cluster_ctrl", "#[cfg(feature = \"clients\")]")
+        .file_descriptor_set_path(out_dir.join("log_server_svc_descriptor.bin"))
+        .client_mod_attribute("log_server", "#[cfg(feature = \"clients\")]")
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
         .extern_path(".restate.common", "::restate_types::protobuf::common")
         .extern_path(".restate.cluster", "::restate_types::protobuf::cluster")
         .compile_protos(
-            &["./protobuf/cluster_ctrl_svc.proto"],
+            &["./protobuf/log_server_svc.proto"],
             &["protobuf", "../types/protobuf"],
         )?;
 
