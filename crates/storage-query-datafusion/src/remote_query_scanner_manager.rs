@@ -64,9 +64,7 @@ impl Debug for RemoteScannerManager {
 
 pub enum PartitionLocation {
     Local,
-    Remote {
-        node_id: NodeId,
-    },
+    Remote { node_id: NodeId },
 }
 
 impl RemoteScannerManager {
