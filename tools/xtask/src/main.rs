@@ -117,6 +117,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let admin_service = AdminService::new(
         node_env.metadata_writer.clone(),
         node_env.metadata_store_client.clone(),
+        bifrost,
         Mock,
         ServiceDiscovery::new(
             RetryPolicy::default(),
@@ -132,7 +133,6 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         admin_service.run(
             Constant::new(config.admin),
             NodeSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
-            bifrost,
         ),
     )?;
 
