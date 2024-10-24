@@ -88,7 +88,7 @@ pub struct PartitionRoutingRefresher {
     sender: CommandSender,
     receiver: CommandReceiver,
     metadata_store_client: MetadataStoreClient,
-    inflight_refresh_task: Option<TaskHandle<anyhow::Result<()>>>,
+    inflight_refresh_task: Option<TaskHandle<()>>,
     inner: Arc<ArcSwap<PartitionToNodesRoutingTable>>,
 }
 
@@ -164,7 +164,7 @@ impl PartitionRoutingRefresher {
                 {
                     async move {
                         sync_routing_information(partition_to_node_mappings, metadata_store_client)
-                            .await
+                            .await;
                     }
                 },
             );
@@ -188,22 +188,29 @@ pub fn spawn_partition_routing_refresher(
 async fn sync_routing_information(
     partition_to_node_mappings: Arc<ArcSwap<PartitionToNodesRoutingTable>>,
     metadata_store_client: MetadataStoreClient,
-) -> anyhow::Result<()> {
-    let scheduling_plan: Option<SchedulingPlan> = metadata_store_client
-        .get(SCHEDULING_PLAN_KEY.clone())
-        .await?;
+) {
+    let result: Result<Option<SchedulingPlan>, _> =
+        metadata_store_client.get(SCHEDULING_PLAN_KEY.clone()).await;
+
+    let Ok(scheduling_plan) = result else {
+        debug!(
+            "Failed to fetch scheduling plan from metadata store: {:?}",
+            result
+        );
+        return;
+    };
 
     let scheduling_plan = match scheduling_plan {
         Some(plan) => plan,
         None => {
             debug!("No scheduling plan found in metadata store, unable to refresh partition routing information");
-            return Ok(());
+            return;
         }
     };
 
     let current_mappings = partition_to_node_mappings.load();
     if scheduling_plan.version() <= current_mappings.version {
-        return Ok(()); // No need for update
+        return; // No need for update
     }
 
     let mut partition_nodes = HashMap::<PartitionId, NodeId, Xxh3Builder>::default();
@@ -220,6 +227,4 @@ async fn sync_routing_information(
             inner: partition_nodes,
         }),
     );
-
-    Ok(())
 }
