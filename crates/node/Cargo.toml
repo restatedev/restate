@@ -18,7 +18,7 @@ options_schema = [
     "restate-metadata-store/options_schema"]
 
 [dependencies]
-restate-admin = { workspace = true, features = ["servers"] }
+restate-admin = { workspace = true }
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }

@@ -1,5 +1,6 @@
 export RUST_BACKTRACE := env_var_or_default("RUST_BACKTRACE", "short")
 export DOCKER_PROGRESS := env_var_or_default('DOCKER_PROGRESS', 'auto')
+export RESTATE_TEST_PORTS_POOL := "/tmp/restate_tests_ports_pool"
 
 dev_tools_image := "ghcr.io/restatedev/dev-tools:latest"
 
@@ -119,6 +120,8 @@ run *flags: (_target-installed target)
     cargo run {{ _target-option }} {{ flags }}
 
 test: (_target-installed target)
+    # remove possible old test ports
+    rm -rf {{RESTATE_TEST_PORTS_POOL}}
     cargo nextest run {{ _target-option }} --all-features --target-dir target/tests
 
 test-package package *flags:

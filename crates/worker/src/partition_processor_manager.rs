@@ -54,12 +54,9 @@ use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::cluster_controller::AttachRequest;
 use restate_types::net::cluster_controller::{Action, AttachResponse};
 use restate_types::net::metadata::MetadataKind;
+use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
 use restate_types::net::partition_processor_manager::{
-    ControlProcessor, ControlProcessors, CreateSnapshotResponse, GetProcessorsState,
-    ProcessorCommand, SnapshotError,
-};
-use restate_types::net::partition_processor_manager::{
-    CreateSnapshotRequest, ProcessorsStateResponse,
+    ControlProcessor, ControlProcessors, CreateSnapshotResponse, ProcessorCommand, SnapshotError,
 };
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
@@ -91,8 +88,6 @@ pub struct PartitionProcessorManager<T> {
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
     attach_router: RpcRouter<AttachRequest>,
-    incoming_get_state:
-        Pin<Box<dyn Stream<Item = Incoming<GetProcessorsState>> + Send + Sync + 'static>>,
     incoming_update_processors:
         Pin<Box<dyn Stream<Item = Incoming<ControlProcessors>> + Send + Sync + 'static>>,
     networking: Networking<T>,
@@ -391,7 +386,6 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         bifrost: Bifrost,
     ) -> Self {
         let attach_router = RpcRouter::new(router_builder);
-        let incoming_get_state = router_builder.subscribe_to_stream(2);
         let incoming_update_processors = router_builder.subscribe_to_stream(2);
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
@@ -404,7 +398,6 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             metadata,
             metadata_store_client,
             partition_store_manager,
-            incoming_get_state,
             incoming_update_processors,
             networking,
             bifrost,
@@ -508,9 +501,6 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 Some(command) = self.rx.recv() => {
                     self.on_command(command);
                 }
-                Some(get_state) = self.incoming_get_state.next() => {
-                    self.on_get_state(get_state);
-                }
                 Some(update_processors) = self.incoming_update_processors.next() => {
                     if let Err(err) = self.on_control_processors(update_processors).await {
                         warn!("failed processing control processors command: {err}");
@@ -524,12 +514,11 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         }
     }
 
-    fn on_get_state(&self, get_state_msg: Incoming<GetProcessorsState>) {
+    fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
         let persisted_lsns = self.persisted_lsns_rx.as_ref().map(|w| w.borrow());
 
         // For all running partitions, collect state, enrich it, and send it back.
-        let state: BTreeMap<PartitionId, PartitionProcessorStatus> = self
-            .running_partition_processors
+        self.running_partition_processors
             .iter()
             .map(|(partition_id, state)| {
                 let mut status = state.watch_rx.borrow().clone();
@@ -579,20 +568,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     .and_then(|lsns| lsns.get(partition_id).cloned());
                 (*partition_id, status)
             })
-            .collect();
-
-        // ignore shutdown errors.
-        let _ = self.task_center.spawn(
-            restate_core::TaskKind::Disposable,
-            "get-processors-state-response",
-            None,
-            async move {
-                Ok(get_state_msg
-                    .to_rpc_response(ProcessorsStateResponse { state })
-                    .send()
-                    .await?)
-            },
-        );
+            .collect()
     }
 
     fn on_command(&mut self, command: ProcessorsManagerCommand) {
@@ -606,6 +582,9 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 self.running_partition_processors
                     .get(&partition_id)
                     .map(|store| store.handle.create_snapshot(Some(sender)));
+            }
+            GetState(sender) => {
+                let _ = sender.send(self.get_state());
             }
         }
     }

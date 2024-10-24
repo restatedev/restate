@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::str::FromStr;
 
 use anyhow::anyhow;
@@ -103,7 +104,17 @@ where
             ),
         };
 
-        let invocation_id = InvocationId::generate(&invocation_target, None);
+        let idempotency_key = if let Some(idempotency_key) = &request.idempotency_key {
+            if idempotency_key.is_empty() {
+                return Err(InvocationError::from(anyhow!(
+                    "The provided idempotency key is empty"
+                )));
+            }
+            Some(idempotency_key.deref())
+        } else {
+            None
+        };
+        let invocation_id = InvocationId::generate(&invocation_target, idempotency_key);
 
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(&invocation_id, span_relation);

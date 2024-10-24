@@ -18,19 +18,22 @@ use restate_storage_api::invocation_status_table::{
     CompletedInvocation, SourceTable, StatusTimestamps,
 };
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
-use restate_types::errors::GONE_INVOCATION_ERROR;
 use restate_types::identifiers::{IdempotencyId, IngressRequestId};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
     SubmitNotificationSink,
 };
 use restate_wal_protocol::timer::TimerKeyValue;
+use rstest::*;
 use std::time::Duration;
-use test_log::test;
 
-#[test(tokio::test)]
-async fn start_and_complete_idempotent_invocation() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn start_and_complete_idempotent_invocation(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -63,18 +66,29 @@ async fn start_and_complete_idempotent_invocation() {
         }))
     );
 
-    // Assert idempotency key mapping exists
-    let mut txn = test_env.storage().transaction();
-    assert_that!(
-        txn.get_idempotency_metadata(&idempotency_id)
-            .await
-            .unwrap()
-            .unwrap(),
-        pat!(IdempotencyMetadata {
-            invocation_id: eq(invocation_id),
-        })
-    );
-    txn.commit().await.unwrap();
+    // Assert idempotency key mapping exists only with idempotency table writes enabled
+    if disable_idempotency_table {
+        assert_that!(
+            test_env
+                .storage()
+                .get_idempotency_metadata(&idempotency_id)
+                .await
+                .unwrap(),
+            none()
+        );
+    } else {
+        assert_that!(
+            test_env
+                .storage()
+                .get_idempotency_metadata(&idempotency_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            pat!(IdempotencyMetadata {
+                invocation_id: eq(invocation_id),
+            })
+        );
+    }
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");
@@ -134,9 +148,15 @@ async fn start_and_complete_idempotent_invocation() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
-async fn start_and_complete_idempotent_invocation_neo_table() {
-    let mut test_env = TestEnv::create_with_neo_invocation_status_table().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn start_and_complete_idempotent_invocation_neo_table(
+    #[case] disable_idempotency_table: bool,
+) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::New, disable_idempotency_table).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -169,18 +189,29 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
         }))
     );
 
-    // Assert idempotency key mapping exists
-    assert_that!(
-        test_env
-            .storage()
-            .get_idempotency_metadata(&idempotency_id)
-            .await
-            .unwrap()
-            .unwrap(),
-        pat!(IdempotencyMetadata {
-            invocation_id: eq(invocation_id),
-        })
-    );
+    // Assert idempotency key mapping exists only with idempotency table writes enabled
+    if disable_idempotency_table {
+        assert_that!(
+            test_env
+                .storage()
+                .get_idempotency_metadata(&idempotency_id)
+                .await
+                .unwrap(),
+            none()
+        );
+    } else {
+        assert_that!(
+            test_env
+                .storage()
+                .get_idempotency_metadata(&idempotency_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            pat!(IdempotencyMetadata {
+                invocation_id: eq(invocation_id),
+            })
+        );
+    }
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");
@@ -244,9 +275,13 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
-async fn complete_already_completed_invocation() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn complete_already_completed_invocation(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
@@ -310,68 +345,15 @@ async fn complete_already_completed_invocation() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
-async fn known_invocation_id_but_missing_completion() {
-    let mut test_env = TestEnv::create().await;
-
-    let idempotency_key = ByteString::from_static("my-idempotency-key");
-    let retention = Duration::from_secs(60) * 60 * 24;
-    let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
-    let idempotency_id =
-        IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
-
-    let ingress_id = GenerationalNodeId::new(1, 1);
-
-    // Prepare idempotency metadata
-    let mut txn = test_env.storage.transaction();
-    txn.put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
-        .await;
-    txn.commit().await.unwrap();
-
-    // Send a request, should be completed immediately with result
-    let request_id = IngressRequestId::default();
-    let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
-            invocation_id,
-            invocation_target,
-            response_sink: Some(ServiceInvocationResponseSink::Ingress {
-                node_id: ingress_id,
-                request_id,
-            }),
-            idempotency_key: Some(idempotency_key),
-            completion_retention_duration: Some(retention),
-            ..ServiceInvocation::mock()
-        }))
-        .await;
-    assert_that!(
-        actions,
-        contains(pat!(Action::IngressResponse(pat!(
-            IngressResponseEnvelope {
-                target_node: eq(ingress_id),
-                inner: pat!(ingress::InvocationResponse {
-                    request_id: eq(request_id),
-                    invocation_id: some(eq(invocation_id)),
-                    response: eq(IngressResponseResult::Failure(GONE_INVOCATION_ERROR))
-                })
-            }
-        ))))
-    );
-    assert_that!(
-        test_env
-            .storage()
-            .transaction()
-            .get_invocation_status(&invocation_id)
-            .await
-            .unwrap(),
-        pat!(InvocationStatus::Free)
-    );
-    test_env.shutdown().await;
-}
-
-#[test(tokio::test)]
-async fn attach_with_service_invocation_command_while_executing() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn attach_with_service_invocation_command_while_executing(
+    #[case] disable_idempotency_table: bool,
+) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -474,9 +456,13 @@ async fn attach_with_service_invocation_command_while_executing() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
-async fn attach_with_send_service_invocation() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -590,9 +576,13 @@ async fn attach_with_send_service_invocation() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
-async fn attach_inboxed_with_send_service_invocation() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn attach_inboxed_with_send_service_invocation(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let node_id = GenerationalNodeId::new(1, 1);
@@ -696,9 +686,13 @@ async fn attach_inboxed_with_send_service_invocation() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
-async fn attach_command() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn attach_command(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let completion_retention = Duration::from_secs(60) * 60 * 24;
@@ -802,9 +796,13 @@ async fn attach_command() {
 }
 
 // TODO remove this once we remove the old invocation status table
-#[test(tokio::test)]
-async fn timer_cleanup() {
-    let mut test_env = TestEnv::create().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn timer_cleanup(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::Old, disable_idempotency_table).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
@@ -865,9 +863,13 @@ async fn timer_cleanup() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
-async fn purge_completed_idempotent_invocation() {
-    let mut test_env = TestEnv::create_with_neo_invocation_status_table().await;
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn purge_completed_idempotent_invocation(#[case] disable_idempotency_table: bool) {
+    let mut test_env =
+        TestEnv::create_with_options(SourceTable::New, disable_idempotency_table).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();

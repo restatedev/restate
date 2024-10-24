@@ -17,6 +17,7 @@ use tonic::transport::Channel;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{ListLogsRequest, SealAndExtendChainRequest};
+use restate_cli_util::{c_eprintln, c_println};
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::LogId;
 use restate_types::protobuf::common::Version;
@@ -85,7 +86,7 @@ async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> any
         ProviderKind::Replicated => replicated_loglet_params(&mut client, opts).await?,
     };
 
-    client
+    let response = client
         .seal_and_extend_chain(SealAndExtendChainRequest {
             log_id: opts.log_id,
             min_version: Some(Version {
@@ -95,7 +96,34 @@ async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> any
             segment_index: opts.segment_index,
             params,
         })
-        .await?;
+        .await?
+        .into_inner();
+
+    c_println!("✅ Log reconfiguration");
+    c_println!(" └ Segment Index: {}", response.new_segment_index);
+    let Some(sealed_segment) = response.sealed_segment else {
+        return Ok(());
+    };
+
+    c_println!();
+    c_println!("Sealed segment");
+    c_println!(" ├ Index: {}", response.new_segment_index - 1);
+    c_println!(" ├ Tail LSN: {}", sealed_segment.tail_offset);
+    c_println!(" ├ Provider: {}", sealed_segment.provider);
+    let Ok(provider) = ProviderKind::from_str(&sealed_segment.provider, true) else {
+        c_eprintln!("Unkown provider type '{}'", sealed_segment.provider);
+        return Ok(());
+    };
+
+    if provider == ProviderKind::Replicated {
+        let params = ReplicatedLogletParams::deserialize_from(sealed_segment.params.as_bytes())?;
+        c_println!(" ├ Loglet ID: {}", params.loglet_id);
+        c_println!(" ├ Sequencer: {}", params.sequencer);
+        c_println!(" ├ Replication: {}", params.replication);
+        c_println!(" └ Node Set: {:#}", params.nodeset);
+    } else {
+        c_println!(" └ Params: {}", sealed_segment.params);
+    }
 
     Ok(())
 }

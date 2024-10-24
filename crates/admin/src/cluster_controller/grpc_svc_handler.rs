@@ -11,19 +11,11 @@
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-use restate_core::MetadataWriter;
 use tonic::{async_trait, Request, Response, Status};
 use tracing::{debug, info};
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
-use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
-    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
-    FindTailResponse, ListLogsRequest, ListLogsResponse, ListNodesRequest, ListNodesResponse,
-    SealAndExtendChainRequest, SealAndExtendChainResponse, TailState, TrimLogRequest,
-};
-use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_bifrost::{Bifrost, BifrostAdmin, Error as BiforstError};
+use restate_core::MetadataWriter;
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
@@ -33,22 +25,36 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::{StorageCodec, StorageEncode};
 use restate_types::{Version, Versioned};
 
-use crate::network_server::ClusterControllerDependencies;
+use crate::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
+use crate::cluster_controller::protobuf::{
+    ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
+    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
+    FindTailResponse, ListLogsRequest, ListLogsResponse, ListNodesRequest, ListNodesResponse,
+    SealAndExtendChainRequest, SealAndExtendChainResponse, SealedSegment, TailState,
+    TrimLogRequest,
+};
 
-pub struct ClusterCtrlSvcHandler {
+use super::ClusterControllerHandle;
+
+pub(crate) struct ClusterCtrlSvcHandler {
     metadata_store_client: MetadataStoreClient,
     controller_handle: ClusterControllerHandle,
-    bifrost_handle: Bifrost,
+    bifrost: Bifrost,
     metadata_writer: MetadataWriter,
 }
 
 impl ClusterCtrlSvcHandler {
-    pub fn new(admin_deps: ClusterControllerDependencies) -> Self {
+    pub fn new(
+        controller_handle: ClusterControllerHandle,
+        metadata_store_client: MetadataStoreClient,
+        bifrost: Bifrost,
+        metadata_writer: MetadataWriter,
+    ) -> Self {
         Self {
-            controller_handle: admin_deps.cluster_controller_handle,
-            metadata_store_client: admin_deps.metadata_store_client,
-            bifrost_handle: admin_deps.bifrost_handle,
-            metadata_writer: admin_deps.metadata_writer,
+            controller_handle,
+            metadata_store_client,
+            bifrost,
+            metadata_writer,
         }
     }
 
@@ -106,7 +112,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .clone();
 
         let (trim_point, nodes_config) = tokio::join!(
-            self.bifrost_handle.get_trim_point(log_id),
+            self.bifrost.get_trim_point(log_id),
             self.metadata_store_client
                 .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone()),
         );
@@ -206,7 +212,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         request: Request<SealAndExtendChainRequest>,
     ) -> Result<Response<SealAndExtendChainResponse>, Status> {
         let admin = BifrostAdmin::new(
-            &self.bifrost_handle,
+            &self.bifrost,
             &self.metadata_writer,
             &self.metadata_store_client,
         );
@@ -217,7 +223,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .parse()
             .map_err(|_| Status::invalid_argument("Provider type is not supported"))?;
 
-        admin
+        let sealed_segment = admin
             .seal_and_extend_chain(
                 request.log_id.into(),
                 request.segment_index.map(SegmentIndex::from),
@@ -229,8 +235,16 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 request.params.into(),
             )
             .await
-            .map(|_| Response::new(SealAndExtendChainResponse::default()))
-            .map_err(|err| Status::internal(err.to_string()))
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(SealAndExtendChainResponse {
+            new_segment_index: sealed_segment.segment_index.next().into(),
+            sealed_segment: Some(SealedSegment {
+                provider: sealed_segment.provider.to_string(),
+                tail_offset: sealed_segment.tail.offset().into(),
+                params: sealed_segment.params.to_string(),
+            }),
+        }))
     }
 
     async fn find_tail(
@@ -241,7 +255,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         let log_id: LogId = request.log_id.into();
 
         let admin = BifrostAdmin::new(
-            &self.bifrost_handle,
+            &self.bifrost,
             &self.metadata_writer,
             &self.metadata_store_client,
         );

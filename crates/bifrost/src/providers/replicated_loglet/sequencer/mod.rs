@@ -17,7 +17,7 @@ use std::sync::{
 
 use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
-use tracing::{debug, trace};
+use tracing::{debug, instrument, trace, trace_span, Instrument};
 
 use restate_core::{
     network::{rpc_router::RpcRouter, Networking, TransportConnect},
@@ -222,6 +222,13 @@ impl<T: TransportConnect> Sequencer<T> {
         }
     }
 
+    #[instrument(
+        level="trace",
+        skip_all,
+        fields(
+            otel.name = "replicatged_loglet::sequencer: enqueue_batch",
+        )
+    )]
     pub async fn enqueue_batch(
         &self,
         payloads: Arc<[Record]>,
@@ -266,6 +273,7 @@ impl<T: TransportConnect> Sequencer<T> {
                 tc.run_in_scope("sequencer-appender", None, appender.run())
                     .await
             }
+            .instrument(trace_span!("replicated_loglet::sequencer::appender"))
         });
 
         Ok(loglet_commit)

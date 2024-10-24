@@ -14,5 +14,6 @@ mod observed_cluster_state;
 pub mod protobuf;
 pub mod scheduler;
 pub mod service;
+pub mod grpc_svc_handler;
 
 pub use service::{ClusterControllerHandle, Error, Service};

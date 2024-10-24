@@ -65,6 +65,8 @@ pub enum ModifyServiceChange {
     Public(bool),
     IdempotencyRetention(Duration),
     WorkflowCompletionRetention(Duration),
+    InactivityTimeout(Duration),
+    AbortTimeout(Duration),
 }
 
 /// Responsible for updating the registered schema information. This includes the discovery of

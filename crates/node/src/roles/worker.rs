@@ -15,6 +15,7 @@ use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
+use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{cancellation_watcher, task_center, Metadata, MetadataKind};
 use restate_core::{ShutdownError, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
@@ -92,6 +93,10 @@ impl<T: TransportConnect> WorkerRole<T> {
         .await?;
 
         Ok(WorkerRole { worker, metadata })
+    }
+
+    pub fn parition_processor_manager_handle(&self) -> ProcessorsManagerHandle {
+        self.worker.parition_processor_manager_handle()
     }
 
     pub fn storage_query_context(&self) -> &QueryContext {

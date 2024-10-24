@@ -13,6 +13,10 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use opentelemetry::Context;
+use tracing::Span;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+
 use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::net::RpcRequest;
 use restate_types::protobuf::node::Header;
@@ -96,6 +100,7 @@ pub struct Incoming<M> {
     connection: WeakConnection,
     body: M,
     metadata_version: PeerMetadataVersion,
+    parent_context: Option<Context>,
 }
 
 impl<M> Incoming<M> {
@@ -114,7 +119,13 @@ impl<M> Incoming<M> {
                 in_response_to,
             },
             metadata_version,
+            parent_context: None,
         }
+    }
+
+    pub(crate) fn with_parent_context(mut self, context: Option<Context>) -> Self {
+        self.parent_context = context;
+        self
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -127,6 +138,26 @@ impl<M> Incoming<M> {
             in_response_to,
             PeerMetadataVersion::default(),
         )
+    }
+
+    /// Returns an open telemetry Context which is
+    /// traced over from the sender of the message
+    pub fn parent_context(&self) -> Option<&Context> {
+        self.parent_context.as_ref()
+    }
+
+    /// A shortuct to set current tracing [`Span`] parent
+    /// to remote caller span context
+    ///
+    /// This only works on the first call. Subsequent calls
+    /// has no effect on the current [`Span`].
+    ///
+    /// If you need to create `parallel` spans for the same
+    /// incoming message, use [`Self::parent_context()`] instead
+    pub fn follow_from_sender(&mut self) {
+        if let Some(context) = self.parent_context.take() {
+            Span::current().set_parent(context)
+        }
     }
 
     pub fn peer(&self) -> &GenerationalNodeId {
@@ -159,6 +190,7 @@ impl<M> Incoming<M> {
             body: f(self.body)?,
             meta: self.meta,
             metadata_version: self.metadata_version,
+            parent_context: self.parent_context,
         })
     }
 
@@ -168,6 +200,7 @@ impl<M> Incoming<M> {
             body: f(self.body),
             meta: self.meta,
             metadata_version: self.metadata_version,
+            parent_context: self.parent_context,
         }
     }
 

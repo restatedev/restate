@@ -82,6 +82,7 @@ restate-test-util = { workspace = true, features = ["prost"] }
 restate-types = { workspace = true, features = ["test-util"] }
 prost = { workspace = true }
 
+rstest = { workspace = true }
 googletest = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }

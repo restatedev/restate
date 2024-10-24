@@ -20,13 +20,15 @@ use futures::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
+use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, warn};
 
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{
-    Incoming, MessageRouterBuilder, NetworkSender, Networking, TransportConnect,
+    Incoming, MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking,
+    TransportConnect,
 };
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
@@ -47,6 +49,8 @@ use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, Version};
 
 use super::cluster_state_refresher::{ClusterStateRefresher, ClusterStateWatcher};
+use super::grpc_svc_handler::ClusterCtrlSvcHandler;
+use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use crate::cluster_controller::logs_controller::{
     LogsBasedPartitionProcessorPlacementHints, LogsController,
 };
@@ -65,6 +69,7 @@ pub struct Service<T> {
     health_status: HealthStatus<AdminStatus>,
     metadata: Metadata,
     networking: Networking<T>,
+    bifrost: Bifrost,
     incoming_messages: Pin<Box<dyn Stream<Item = Incoming<AttachRequest>> + Send + Sync + 'static>>,
     cluster_state_refresher: ClusterStateRefresher<T>,
     processor_manager_client: PartitionProcessorManagerClient<Networking<T>>,
@@ -87,10 +92,12 @@ where
     pub fn new(
         mut configuration: Live<Configuration>,
         health_status: HealthStatus<AdminStatus>,
+        bifrost: Bifrost,
         task_center: TaskCenter,
         metadata: Metadata,
         networking: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
+        server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
         metadata_store_client: MetadataStoreClient,
     ) -> Self {
@@ -112,12 +119,28 @@ where
         let (log_trim_interval, log_trim_threshold) =
             Self::create_log_trim_interval(&options.admin);
 
+        // Registering ClusterCtrlSvc grpc service to network server
+        server_builder.register_grpc_service(
+            ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(
+                ClusterControllerHandle {
+                    tx: command_tx.clone(),
+                },
+                metadata_store_client.clone(),
+                bifrost.clone(),
+                metadata_writer.clone(),
+            ))
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip),
+            crate::cluster_controller::protobuf::FILE_DESCRIPTOR_SET,
+        );
+
         Service {
             configuration,
             health_status,
             task_center,
             metadata,
             networking,
+            bifrost,
             incoming_messages,
             cluster_state_refresher,
             metadata_writer,
@@ -229,13 +252,15 @@ impl<T: TransportConnect> Service<T> {
 
     pub async fn run(
         mut self,
-        bifrost: Bifrost,
         all_partitions_started_tx: Option<oneshot::Sender<()>>,
     ) -> anyhow::Result<()> {
         self.init_partition_table().await?;
 
-        let bifrost_admin =
-            BifrostAdmin::new(&bifrost, &self.metadata_writer, &self.metadata_store_client);
+        let bifrost_admin = BifrostAdmin::new(
+            &self.bifrost,
+            &self.metadata_writer,
+            &self.metadata_store_client,
+        );
 
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         let mut config_watcher = Configuration::watcher();
@@ -276,7 +301,7 @@ impl<T: TransportConnect> Service<T> {
         let mut logs_controller = LogsController::init(
             configuration,
             self.metadata.clone(),
-            bifrost.clone(),
+            self.bifrost.clone(),
             self.metadata_store_client.clone(),
             self.metadata_writer.clone(),
         )
@@ -289,6 +314,9 @@ impl<T: TransportConnect> Service<T> {
         let mut logs = self.metadata.updateable_logs_metadata();
         let mut partition_table = self.metadata.updateable_partition_table();
         let mut nodes_config = self.metadata.updateable_nodes_config();
+        let mut find_logs_tail_interval =
+            time::interval(configuration.admin.log_tail_update_interval.into());
+        find_logs_tail_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         self.health_status.update(AdminStatus::Ready);
 
@@ -298,6 +326,9 @@ impl<T: TransportConnect> Service<T> {
                     // Ignore error if system is shutting down
                     let _ = self.cluster_state_refresher.schedule_refresh();
                 },
+                _ = find_logs_tail_interval.tick() => {
+                    logs_controller.find_logs_tail();
+                }
                 _ = OptionFuture::from(self.log_trim_interval.as_mut().map(|interval| interval.tick())) => {
                     let result = self.trim_logs(bifrost_admin).await;
 
@@ -673,6 +704,7 @@ mod tests {
 
     use googletest::assert_that;
     use googletest::matchers::eq;
+    use restate_types::net::node::{GetNodeState, NodeStateResponse};
     use test_log::test;
 
     use restate_bifrost::Bifrost;
@@ -684,9 +716,7 @@ mod tests {
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
-    use restate_types::net::partition_processor_manager::{
-        ControlProcessors, GetProcessorsState, ProcessorsStateResponse,
-    };
+    use restate_types::net::partition_processor_manager::ControlProcessors;
     use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
     use restate_types::{GenerationalNodeId, Version};
@@ -743,15 +773,15 @@ mod tests {
         Ok(())
     }
 
-    struct PartitionProcessorStatusHandler {
+    struct NodeStateHandler {
         persisted_lsn: Arc<AtomicU64>,
         // set of node ids for which the handler won't send a response to the caller, this allows to simulate
         // dead nodes
         block_list: BTreeSet<GenerationalNodeId>,
     }
 
-    impl MessageHandler for PartitionProcessorStatusHandler {
-        type MessageType = GetProcessorsState;
+    impl MessageHandler for NodeStateHandler {
+        type MessageType = GetNodeState;
 
         async fn on_message(&self, msg: Incoming<Self::MessageType>) {
             if self.block_list.contains(msg.peer()) {
@@ -764,7 +794,9 @@ mod tests {
             };
 
             let state = [(PartitionId::MIN, partition_processor_status)].into();
-            let response = msg.to_rpc_response(ProcessorsStateResponse { state });
+            let response = msg.to_rpc_response(NodeStateResponse {
+                paritions_processor_state: Some(state),
+            });
 
             // We are not really sending something back to target, we just need to provide a known
             // node_id. The response will be sent to a handler running on the very same node.
@@ -786,14 +818,14 @@ mod tests {
         };
 
         let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let get_processor_state_handler = Arc::new(PartitionProcessorStatusHandler {
+        let get_node_state_handler = Arc::new(NodeStateHandler {
             persisted_lsn: Arc::clone(&persisted_lsn),
             block_list: BTreeSet::new(),
         });
 
         let (node_env, bifrost) = create_test_env(config, |builder| {
             builder
-                .add_message_handler(get_processor_state_handler.clone())
+                .add_message_handler(get_node_state_handler.clone())
                 .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
@@ -817,8 +849,8 @@ mod tests {
                 )
                 .await?;
                 // let node2 receive messages and use the same message handler as node1
-                let (_node_2, _node2_reactor) = node_2
-                    .process_with_message_handler(&node_env.tc, get_processor_state_handler)?;
+                let (_node_2, _node2_reactor) =
+                    node_2.process_with_message_handler(&node_env.tc, get_node_state_handler)?;
 
                 let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=20 {
@@ -869,13 +901,13 @@ mod tests {
         };
 
         let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let get_processor_state_handler = Arc::new(PartitionProcessorStatusHandler {
+        let get_node_state_handler = Arc::new(NodeStateHandler {
             persisted_lsn: Arc::clone(&persisted_lsn),
             block_list: BTreeSet::new(),
         });
         let (node_env, bifrost) = create_test_env(config, |builder| {
             builder
-                .add_message_handler(get_processor_state_handler.clone())
+                .add_message_handler(get_node_state_handler.clone())
                 .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
@@ -899,8 +931,8 @@ mod tests {
                 )
                 .await?;
                 // let node2 receive messages and use the same message handler as node1
-                let (_node_2, _node2_reactor) = node_2
-                    .process_with_message_handler(&node_env.tc, get_processor_state_handler)?;
+                let (_node_2, _node2_reactor) =
+                    node_2.process_with_message_handler(&node_env.tc, get_node_state_handler)?;
 
                 let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=20 {
@@ -958,12 +990,12 @@ mod tests {
                 .into_iter()
                 .collect();
 
-            let get_processor_state_handler = PartitionProcessorStatusHandler {
+            let get_node_state_handler = NodeStateHandler {
                 persisted_lsn: Arc::clone(&persisted_lsn),
                 block_list: black_list,
             };
 
-            builder.add_message_handler(get_processor_state_handler)
+            builder.add_message_handler(get_node_state_handler)
         })
         .await?;
 

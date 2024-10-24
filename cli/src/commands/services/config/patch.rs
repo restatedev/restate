@@ -30,6 +30,13 @@ pub(super) const WORKFLOW_RETENTION_EDIT_DESCRIPTION: &str = concatcp!(
     "\n",
     DURATION_EDIT_DESCRIPTION
 );
+pub(super) const INACTIVITY_TIMEOUT_EDIT_DESCRIPTION: &str = concatcp!(
+    super::view::INACTIVITY_TIMEOUT,
+    "\n",
+    DURATION_EDIT_DESCRIPTION
+);
+pub(super) const ABORT_TIMEOUT_EDIT_DESCRIPTION: &str =
+    concatcp!(super::view::ABORT_TIMEOUT, "\n", DURATION_EDIT_DESCRIPTION);
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_patch")]
@@ -42,6 +49,12 @@ pub struct Patch {
 
     #[clap(long, alias = "workflow_completion_retention", help = WORKFLOW_RETENTION_EDIT_DESCRIPTION)]
     workflow_completion_retention: Option<String>,
+
+    #[clap(long, alias = "inactivity_retention", help = INACTIVITY_TIMEOUT_EDIT_DESCRIPTION)]
+    inactivity_timeout: Option<String>,
+
+    #[clap(long, alias = "abort_retention", help = ABORT_TIMEOUT_EDIT_DESCRIPTION)]
+    abort_timeout: Option<String>,
 
     /// Service name
     service: String,
@@ -70,6 +83,16 @@ async fn patch(env: &CliEnv, opts: &Patch) -> Result<()> {
                     .context("Cannot parse workflow_completion_retention")
             })
             .transpose()?,
+        inactivity_timeout: opts
+            .inactivity_timeout
+            .as_ref()
+            .map(|s| DurationString::parse_duration(s).context("Cannot parse inactivity_timeout"))
+            .transpose()?,
+        abort_timeout: opts
+            .abort_timeout
+            .as_ref()
+            .map(|s| DurationString::parse_duration(s).context("Cannot parse abort_timeout"))
+            .transpose()?,
     };
 
     apply_service_configuration_patch(opts.service.clone(), admin_client, modify_request).await
@@ -84,6 +107,8 @@ pub(super) async fn apply_service_configuration_patch(
     if modify_request.public.is_none()
         && modify_request.workflow_completion_retention.is_none()
         && modify_request.idempotency_retention.is_none()
+        && modify_request.inactivity_timeout.is_none()
+        && modify_request.abort_timeout.is_none()
     {
         c_println!("No changes requested");
         return Ok(());
@@ -105,6 +130,15 @@ pub(super) async fn apply_service_configuration_patch(
             "Workflow retention time:",
             humantime::Duration::from(*workflow_completion_retention),
         );
+    }
+    if let Some(inactivity_timeout) = &modify_request.inactivity_timeout {
+        table.add_kv_row(
+            "Inactivity timeout:",
+            humantime::Duration::from(*inactivity_timeout),
+        );
+    }
+    if let Some(abort_timeout) = &modify_request.abort_timeout {
+        table.add_kv_row("Abort timeout:", humantime::Duration::from(*abort_timeout));
     }
     c_println!("{table}");
     confirm_or_exit("Are you sure you want to apply these changes?")?;

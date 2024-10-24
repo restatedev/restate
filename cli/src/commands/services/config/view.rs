@@ -34,6 +34,27 @@ pub(super) const WORKFLOW_RETENTION: &str = indoc! {
     The retention period starts once the invocation completes (with either success or failure).
     After the retention period, the invocation response together with the workflow state and promises will be forgotten."
 };
+pub(super) const INACTIVITY_TIMEOUT: &str = indoc! {
+    "This timer guards against stalled service/handler invocations. Once it expires,
+    Restate triggers a graceful termination by asking the service invocation to
+    suspend (which preserves intermediate progress).
+
+    The 'abort timeout' is used to abort the invocation, in case it doesn't react to
+    the request to suspend.
+
+    This overrides the default inactivity timeout set in invoker options."
+};
+pub(super) const ABORT_TIMEOUT: &str = indoc! {
+    "This timer guards against stalled service/handler invocations that are supposed to terminate.
+    The abort timeout is started after the 'inactivity timeout' has expired and the
+    service/handler invocation has been asked to gracefully terminate.
+    Once the timer expires, it will abort the service/handler invocation.
+
+    This timer potentially **interrupts** user code. If the user code needs longer to
+    gracefully terminate, then this value needs to be set accordingly.
+
+    This overrides the default abort timeout set in invoker options."
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_view")]
@@ -83,6 +104,30 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         c_tip!("{}", WORKFLOW_RETENTION);
         c_println!();
     }
+
+    let mut table = Table::new_styled();
+    table.add_kv_row(
+        "Inactivity timeout:",
+        service
+            .inactivity_timeout
+            .map(|d| d.to_string())
+            .unwrap_or("<DEFAULT>".to_string()),
+    );
+    c_println!("{table}");
+    c_tip!("{}", INACTIVITY_TIMEOUT);
+    c_println!();
+
+    let mut table = Table::new_styled();
+    table.add_kv_row(
+        "Abort timeout:",
+        service
+            .abort_timeout
+            .map(|d| d.to_string())
+            .unwrap_or("<DEFAULT>".to_string()),
+    );
+    c_println!("{table}");
+    c_tip!("{}", ABORT_TIMEOUT);
+    c_println!();
 
     Ok(())
 }

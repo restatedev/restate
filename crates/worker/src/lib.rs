@@ -21,15 +21,14 @@ mod subscription_controller;
 mod subscription_integration;
 
 use codederror::CodedError;
+use std::time::Duration;
 use tokio::sync::oneshot;
-
-pub use crate::subscription_controller::SubscriptionController;
-pub use crate::subscription_integration::SubscriptionControllerHandle;
 
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
+use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
@@ -38,6 +37,8 @@ use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
+use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
@@ -45,11 +46,14 @@ use restate_types::live::Live;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::Schema;
 
-pub use self::error::*;
-pub use self::handle::*;
 use crate::ingress_integration::InvocationStorageReaderImpl;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
+
+pub use self::error::*;
+pub use self::handle::*;
+pub use crate::subscription_controller::SubscriptionController;
+pub use crate::subscription_integration::SubscriptionControllerHandle;
 
 type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
@@ -96,6 +100,7 @@ pub struct Worker<T> {
     updateable_config: Live<Configuration>,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
+    datafusion_remote_scanner: RemoteQueryScannerServer,
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
@@ -155,7 +160,7 @@ impl<T: TransportConnect> Worker<T> {
             metadata_store_client,
             partition_store_manager.clone(),
             router_builder,
-            networking,
+            networking.clone(),
             bifrost,
         );
 
@@ -168,6 +173,7 @@ impl<T: TransportConnect> Worker<T> {
             partition_store_manager.clone(),
             partition_processor_manager.invokers_status_reader(),
             schema.clone(),
+            create_remote_scanner_service(networking, task_center(), router_builder),
         )
         .await?;
 
@@ -176,10 +182,17 @@ impl<T: TransportConnect> Worker<T> {
             storage_query_context.clone(),
         );
 
+        let datafusion_remote_scanner = RemoteQueryScannerServer::new(
+            Duration::from_secs(60),
+            storage_query_context.clone(),
+            router_builder,
+        );
+
         Ok(Self {
             updateable_config,
             storage_query_context,
             storage_query_postgres,
+            datafusion_remote_scanner,
             external_client_ingress: ingress_http,
             ingress_kafka,
             subscription_controller_handle,
@@ -193,6 +206,10 @@ impl<T: TransportConnect> Worker<T> {
 
     pub fn storage_query_context(&self) -> &QueryContext {
         &self.storage_query_context
+    }
+
+    pub fn parition_processor_manager_handle(&self) -> ProcessorsManagerHandle {
+        self.partition_processor_manager.handle()
     }
 
     pub async fn run(self, all_partitions_started_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
@@ -221,6 +238,14 @@ impl<T: TransportConnect> Worker<T> {
             "postgres-query-server",
             None,
             self.storage_query_postgres.run(),
+        )?;
+
+        // Datafusion remote scanner
+        tc.spawn_child(
+            TaskKind::SystemService,
+            "datafusion-scan-server",
+            None,
+            self.datafusion_remote_scanner.run(),
         )?;
 
         // Kafka Ingress

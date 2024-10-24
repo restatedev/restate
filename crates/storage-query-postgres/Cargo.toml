@@ -30,7 +30,7 @@ datafusion = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
 paste = { workspace = true}
-pgwire = {version = "0.23", default-features = false, features = ["server-api-ring"]}
+pgwire = {version = "0.25", default-features = false, features = ["server-api-ring"]}
 prost = {workspace = true}
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }

@@ -113,6 +113,8 @@ mod mocks {
                 public: invocation_target_metadata.public,
                 idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
                 workflow_completion_retention: None,
+                inactivity_timeout: None,
+                abort_timeout: None,
             });
             self.1
                 .add(service_name, [(handler_name, invocation_target_metadata)]);

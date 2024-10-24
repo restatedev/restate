@@ -89,7 +89,18 @@ message SealAndExtendChainRequest {
   string params = 5;
 }
 
-message SealAndExtendChainResponse {}
+message SealedSegment {
+  // segment provider
+  string provider = 1;
+  // segment params
+  string params = 2;
+  // tail offset lsn
+  uint64 tail_offset = 3;
+}
+message SealAndExtendChainResponse {
+  uint32 new_segment_index = 1;
+  SealedSegment sealed_segment = 2;
+}
 
 message FindTailRequest { uint32 log_id = 1; }
 

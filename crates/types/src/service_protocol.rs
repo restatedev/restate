@@ -255,6 +255,7 @@ mod pb_into {
                     parameter: msg.parameter,
                     headers: msg.headers.into_iter().map(Into::into).collect(),
                     key: msg.key.into(),
+                    idempotency_key: msg.idempotency_key.map(|k| k.into()),
                 },
                 result: msg.result.map(|v| match v {
                     call_entry_message::Result::Value(r) => EntryResult::Success(r),
@@ -277,6 +278,7 @@ mod pb_into {
                     parameter: msg.parameter,
                     headers: msg.headers.into_iter().map(Into::into).collect(),
                     key: msg.key.into(),
+                    idempotency_key: msg.idempotency_key.map(|k| k.into()),
                 },
                 invoke_time: msg.invoke_time,
             }))

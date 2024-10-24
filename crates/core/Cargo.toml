@@ -16,6 +16,7 @@ options_schema = ["dep:schemars"]
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
+axum = { workspace = true, default-features = false }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
@@ -29,10 +30,13 @@ etcd-client = { workspace = true }
 futures = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
 humantime = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 metrics = { workspace = true }
+opentelemetry = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }
@@ -48,14 +52,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["tracing"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true, features = ["net"] }
-tonic = { workspace = true, features = [
-    "transport",
-    "codegen",
-    "prost",
-    "gzip",
-] }
+tonic = { workspace = true, features = [ "transport", "codegen", "prost", "gzip", ] }
+tonic-reflection = { workspace = true }
 tower = { workspace = true }
+tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

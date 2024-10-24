@@ -9,7 +9,9 @@
 // by the Apache License, Version 2.0.
 
 mod admin;
+mod base;
 mod worker;
 
 pub use admin::{AdminRole, AdminRoleBuildError};
+pub use base::BaseRole;
 pub use worker::{WorkerRole, WorkerRoleBuildError};
