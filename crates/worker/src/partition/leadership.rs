@@ -514,7 +514,7 @@ where
                     cleaner_result.expect("graceful termination of cleaner task");
                 }
 
-                // Reply back to all RPCs with not a leader
+                // Reply to all RPCs with not a leader
                 for (_, reciprocal) in awaiting_rpc_actions.drain() {
                     respond_to_rpc(
                         reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
