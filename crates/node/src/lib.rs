@@ -359,6 +359,8 @@ impl Node {
 
         // My Node ID is set
         metadata_writer.set_my_node_id(my_node_id);
+        restate_tracing_instrumentation::set_global_node_id(my_node_id);
+
         info!(
             roles = %my_node_config.roles,
             address = %my_node_config.address,
