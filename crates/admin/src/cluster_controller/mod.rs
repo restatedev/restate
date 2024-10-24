@@ -10,6 +10,7 @@
 
 pub mod cluster_state_refresher;
 mod logs_controller;
+mod nodeset_selection;
 mod observed_cluster_state;
 pub mod protobuf;
 pub mod scheduler;

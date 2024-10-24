@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use rand::prelude::IteratorRandom;
-use rand::{thread_rng, RngCore};
 use std::collections::HashMap;
 use std::iter;
 use std::num::NonZeroU8;
@@ -17,6 +15,8 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rand::prelude::IteratorRandom;
+use rand::{thread_rng, RngCore};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, trace, trace_span, Instrument};
@@ -37,7 +37,6 @@ use restate_types::logs::metadata::{
 };
 use restate_types::logs::{LogId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-use restate_types::nodes_config::Role;
 use restate_types::partition_table::PartitionTable;
 use restate_types::replicated_loglet::{
     NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
@@ -45,10 +44,13 @@ use restate_types::replicated_loglet::{
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::{logs, GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
 
+use crate::cluster_controller::nodeset_selection::{
+    NodeSelectionError, NodeSetSelectionStrategy, NodeSetSelector,
+};
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler;
 
-type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
+pub type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
 
 const FALLBACK_MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
 
@@ -333,21 +335,20 @@ fn build_new_replicated_loglet_configuration(
     preferred_sequencer: Option<NodeId>,
 ) -> Option<ReplicatedLogletParams> {
     let mut rng = thread_rng();
-    // todo make min nodeset size configurable, respect roles, respect StorageState, etc.
+    // todo: make the default nodeset size configurable
+    let replication = previous_configuration
+        .map(|config| config.replication.clone())
+        .unwrap_or_else(|| ReplicationProperty::new(NonZeroU8::new(2).expect("to be valid")));
+
+    // todo: make nodeset selection strategy configurable
+    let strategy = NodeSetSelectionStrategy::FaultTolerantAdaptive;
+
     let nodes_config = metadata().nodes_config_ref();
+    let preferred_nodes = previous_configuration
+        .map(|config| NodeSet::from_single(config.sequencer.as_plain()))
+        .unwrap_or_default();
 
-    let log_servers: Vec<_> = observed_cluster_state
-        .alive_nodes
-        .values()
-        .filter(|node| {
-            nodes_config
-                .find_node_by_id(**node)
-                .ok()
-                .is_some_and(|config| config.has_role(Role::LogServer))
-        })
-        .collect();
-
-    let sequencer = preferred_sequencer
+    let &sequencer = preferred_sequencer
         .and_then(|node_id| {
             // map to a known alive node
             observed_cluster_state.alive_nodes.get(&node_id.id())
@@ -355,31 +356,34 @@ fn build_new_replicated_loglet_configuration(
         .or_else(|| {
             // we can place the sequencer on any alive node
             observed_cluster_state.alive_nodes.values().choose(&mut rng)
-        });
+        })?;
 
-    if log_servers.len() >= 3 {
-        let replication = ReplicationProperty::new(NonZeroU8::new(2).expect("to be valid"));
-        let mut nodeset = NodeSet::empty();
+    let selection = NodeSetSelector::new(nodes_config.as_ref(), observed_cluster_state).select(
+        strategy,
+        &replication,
+        &mut rng,
+        &preferred_nodes,
+    );
 
-        for node in &log_servers {
-            nodeset.insert(node.as_plain());
-        }
-
-        Some(ReplicatedLogletParams {
+    match selection {
+        Ok(nodeset) => Some(ReplicatedLogletParams {
             loglet_id,
-            sequencer: *sequencer.expect("one node must exist"),
+            sequencer,
             replication,
             nodeset,
             write_set: None,
-        })
-    } else if let Some(sequencer) = sequencer {
-        previous_configuration.cloned().map(|mut configuration| {
-            configuration.loglet_id = loglet_id;
-            configuration.sequencer = *sequencer;
-            configuration
-        })
-    } else {
-        None
+        }),
+        Err(NodeSelectionError::InsufficientWriteableNodes) => {
+            debug!(
+                ?loglet_id,
+                "Insufficient writeable nodes to place replicated loglet"
+            );
+            previous_configuration.cloned().map(|mut params| {
+                params.loglet_id = loglet_id;
+                params.sequencer = sequencer;
+                params
+            })
+        }
     }
 }
 
@@ -408,8 +412,13 @@ impl LogletConfiguration {
         match self {
             #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(configuration) => {
-                // todo check also whether we can improve the nodeset based on the observed cluster state
-                !observed_cluster_state.is_node_alive(configuration.sequencer)
+                // todo: check whether we can improve the nodeset selection even if all nodes are alive
+                let sequencer_alive = observed_cluster_state.is_node_alive(configuration.sequencer);
+                let all_log_servers_alive = configuration
+                    .nodeset
+                    .iter()
+                    .all(|node_id| observed_cluster_state.is_node_alive(*node_id));
+                !sequencer_alive || !all_log_servers_alive
             }
             LogletConfiguration::Local(_) => false,
             #[cfg(any(test, feature = "memory-loglet"))]

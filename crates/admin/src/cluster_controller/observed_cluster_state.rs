@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{HashMap, HashSet};
+
+use xxhash_rust::xxh3::Xxh3Builder;
+
 use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
 use restate_types::identifiers::PartitionId;
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
-use std::collections::{HashMap, HashSet};
-use xxhash_rust::xxh3::Xxh3Builder;
 
 /// Represents the scheduler's observed state of the cluster. The scheduler will use this
 /// information and the target scheduling plan to instruct nodes to start/stop partition processors.
