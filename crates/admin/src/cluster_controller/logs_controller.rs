@@ -341,7 +341,7 @@ fn build_new_replicated_loglet_configuration(
         .unwrap_or_else(|| ReplicationProperty::new(NonZeroU8::new(2).expect("to be valid")));
 
     // todo: make nodeset selection strategy configurable
-    let strategy = NodeSetSelectionStrategy::InferredFaultToleranceStrict;
+    let strategy = NodeSetSelectionStrategy::FaultTolerantAdaptive;
 
     let nodes_config = metadata().nodes_config_ref();
     let preferred_nodes = previous_configuration

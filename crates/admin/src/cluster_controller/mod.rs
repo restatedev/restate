@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 pub mod cluster_state_refresher;
-mod nodeset_selection;
 mod logs_controller;
+mod nodeset_selection;
 mod observed_cluster_state;
 pub mod protobuf;
 pub mod scheduler;

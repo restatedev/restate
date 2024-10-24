@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::min;
 use std::num::NonZeroU8;
 
 use rand::prelude::IteratorRandom;
@@ -87,7 +86,8 @@ impl<'a> NodeSetSelector<'a> {
         // Only consider alive, writable storage nodes.
         let candidates = WritableNodeSet::from(self.cluster_state, self.nodes_config);
 
-        if candidates.len() < replication_property.num_copies().into() {
+        let min_copies = replication_property.num_copies();
+        if candidates.len() < min_copies.into() {
             return Err(NodeSelectionError::InsufficientWriteableNodes);
         }
 
@@ -95,26 +95,34 @@ impl<'a> NodeSetSelector<'a> {
         // calculating the nodeset floor size, the actual size will be determined by the specific
         // strategy in use.
         assert!(
-            replication_property.num_copies() < u8::MAX >> 1,
+            min_copies < u8::MAX >> 1,
             "The replication factor implies a cluster size that exceeds the maximum supported size"
         );
-        let min_fault_tolerant_nodeset_size =
-            (replication_property.num_copies() as usize - 1) * 2 + 1;
+        let optimal_fault_tolerant_nodeset_size = (min_copies as usize - 1) * 2 + 1;
         assert!(
-            min_fault_tolerant_nodeset_size >= replication_property.num_copies() as usize,
+            optimal_fault_tolerant_nodeset_size >= min_copies as usize,
             "The calculated minimum nodeset size can not be less than the replication factor"
         );
 
         let nodeset_target_size = match strategy {
-            NodeSetSelectionStrategy::InferredFaultToleranceStrict
-            | NodeSetSelectionStrategy::AllAvailable => min_fault_tolerant_nodeset_size,
-            NodeSetSelectionStrategy::CappedNodesetSize(size) => {
-                min(min_fault_tolerant_nodeset_size, size.get() as usize)
+            NodeSetSelectionStrategy::FaultTolerantAdaptive
+            | NodeSetSelectionStrategy::FaultTolerantStrict => {
+                optimal_fault_tolerant_nodeset_size
             }
+            NodeSetSelectionStrategy::AllAvailable => candidates.len(),
+            NodeSetSelectionStrategy::CappedNodesetSize(size) => size.get() as usize,
+        };
+
+        let nodeset_min_acceptable_size = match strategy {
+            NodeSetSelectionStrategy::FaultTolerantAdaptive
+            | NodeSetSelectionStrategy::AllAvailable
+            | NodeSetSelectionStrategy::CappedNodesetSize(_) => min_copies as usize,
+            NodeSetSelectionStrategy::FaultTolerantStrict => nodeset_target_size,
         };
 
         let nodeset = match strategy {
-            NodeSetSelectionStrategy::InferredFaultToleranceStrict
+            NodeSetSelectionStrategy::FaultTolerantAdaptive
+            | NodeSetSelectionStrategy::FaultTolerantStrict
             | NodeSetSelectionStrategy::CappedNodesetSize(_) => {
                 let mut nodes = preferred_nodes
                     .iter()
@@ -132,15 +140,22 @@ impl<'a> NodeSetSelector<'a> {
                     );
                 }
 
-                NodeSet::from_iter(nodes)
+                let nodes_len = nodes.len();
+                let nodeset = NodeSet::from_iter(nodes);
+                assert_eq!(
+                    nodeset.len(),
+                    nodes_len,
+                    "We have accidentally chosen duplicate candidates during nodeset selection"
+                );
+                nodeset
             }
 
             // We ignore preferred nodes under AllAvailable as we will select all healthy nodes anyway
             NodeSetSelectionStrategy::AllAvailable => NodeSet::from_iter(candidates),
         };
 
-        // todo: location-aware selection
-        if nodeset.len() < nodeset_target_size {
+        // todo: implement location scope-aware selection
+        if nodeset.len() < nodeset_min_acceptable_size {
             trace!(
                 selected_nodes_count = ?nodeset.len(),
                 ?nodeset_target_size,
@@ -156,12 +171,23 @@ impl<'a> NodeSetSelector<'a> {
 #[cfg(feature = "replicated-loglet")]
 #[derive(Debug, Clone, Default)]
 pub enum NodeSetSelectionStrategy {
-    /// Selects a nodeset size based on the replication factor. The nodeset size is 2f+1, working
-    /// backwards inferred from the assumption that replication factor is f+1. This flavor is strict
-    /// in that it will not configure a nodeset smaller than the inferred 2f+1 size, making it a
-    /// reasonable safe default.
+    /// Selects an optimal nodeset size based on the replication factor. The nodeset size is 2f+1,
+    /// working backwards from a replication factor of f+1.
+    ///
+    /// In this mode we aim to reach the optimal target size, but will settle for less as long as
+    /// the replication factor requirement is met. This strategy maximizes availability as long as
+    /// there are sufficient available storage nodes.
     #[default]
-    InferredFaultToleranceStrict,
+    FaultTolerantAdaptive,
+
+    /// Selects an optimal nodeset size based on the replication factor. The nodeset size is 2f+1,
+    /// working backwards from a replication factor of f+1.
+    ///
+    /// This flavor is strict in that it will never propose a nodeset smaller than the inferred 2f+1
+    /// size, making it a very conservative setting that is suitable for initial bootstrap but will
+    /// limit availability when insufficient storage nodes are available.
+    #[allow(unused)] // currently only used in tests
+    FaultTolerantStrict,
 
     /// Selects at most the specified set of nodes, while respecting the replication factor. To
     /// tolerate failures, this size must be strictly greater than the replication factor. This
@@ -224,7 +250,7 @@ mod tests {
             ..Default::default()
         };
 
-        let strategy = NodeSetSelectionStrategy::InferredFaultToleranceStrict;
+        let strategy = NodeSetSelectionStrategy::FaultTolerantStrict;
         let preferred_nodes = NodeSet::empty();
         let rng = &mut thread_rng();
         NodeSetSelector::new(&nodes_config, &observed_state)
@@ -357,7 +383,7 @@ mod tests {
             nodes_to_partitions: Default::default(),
         };
 
-        let strategy = NodeSetSelectionStrategy::InferredFaultToleranceStrict;
+        let strategy = NodeSetSelectionStrategy::FaultTolerantStrict;
         let preferred_nodes = NodeSet::empty();
         let rng = &mut thread_rng();
         let selection = NodeSetSelector::new(&nodes_config, &observed_state).select(
@@ -476,7 +502,7 @@ mod tests {
             nodes_to_partitions: Default::default(),
         };
 
-        let strategy = NodeSetSelectionStrategy::InferredFaultToleranceStrict;
+        let strategy = NodeSetSelectionStrategy::FaultTolerantStrict;
         let preferred_nodes =
             NodeSet::from_iter::<Vec<PlainNodeId>>(vec![1.into(), 2.into(), 3.into()]);
         let rng = &mut thread_rng();
@@ -545,7 +571,7 @@ mod tests {
         let rng = &mut thread_rng();
 
         let selection = NodeSetSelector::new(&nodes_config, &observed_state).select(
-            NodeSetSelectionStrategy::InferredFaultToleranceStrict,
+            NodeSetSelectionStrategy::FaultTolerantStrict,
             &replication,
             rng,
             &preferred_nodes,
@@ -562,13 +588,93 @@ mod tests {
             .alive_nodes
             .insert(5.into(), PlainNodeId::new(5).with_generation(1));
         let selection = NodeSetSelector::new(&nodes_config, &observed_state).select(
-            NodeSetSelectionStrategy::InferredFaultToleranceStrict,
+            NodeSetSelectionStrategy::FaultTolerantStrict,
             &replication,
             rng,
             &preferred_nodes,
         );
         assert!(selection.is_ok());
         assert_eq!(selection.unwrap().len(), 3);
+    }
+
+    /// In this test we have a cluster with 3 nodes (the nodeset selector doesn't know about sequencers).
+    /// The replication factor is 2 meaning that we tolerate one failure; since this test uses the strict-ft
+    /// strategy, it won't choose a new nodeset in this situation. The assumption is that the previous
+    /// nodeset will continue to be used in a degraded mode.
+    #[test]
+    fn test_select_log_servers_respects_rf_when_availability_is_compromised() {
+        let nodes: Vec<PlainNodeId> = vec![1.into(), 2.into(), 3.into()];
+        let replication =
+            ReplicationProperty::with_scope(LocationScope::Node, 2.try_into().unwrap());
+
+        let mut nodes_config = NodesConfiguration::default();
+        nodes_config.upsert_node(node(
+            1,
+            enum_set!(Role::LogServer | Role::Worker),
+            StorageState::ReadWrite,
+        ));
+        nodes_config.upsert_node(node(
+            2,
+            enum_set!(Role::LogServer | Role::Worker),
+            StorageState::ReadWrite,
+        ));
+        nodes_config.upsert_node(node(
+            3,
+            enum_set!(Role::LogServer | Role::Worker),
+            StorageState::ReadWrite,
+        ));
+
+        let mut observed_state = ObservedClusterState {
+            partitions: Default::default(), // not needed here
+            alive_nodes: nodes
+                .iter()
+                .copied()
+                .map(|id| (id, id.with_generation(1)))
+                .collect(),
+            dead_nodes: Default::default(),
+            nodes_to_partitions: Default::default(),
+        };
+
+        let rng = &mut thread_rng();
+
+        // initial selection - no prior preferences
+        let selection = NodeSetSelector::new(&nodes_config, &observed_state).select(
+            NodeSetSelectionStrategy::FaultTolerantAdaptive,
+            &replication,
+            rng,
+            &NodeSet::empty(),
+        );
+        assert!(selection.is_ok());
+        let nodeset = selection.unwrap();
+        assert_eq!(nodeset.len(), 3);
+
+        // If the previous configuration was [N1*, N2, N3] the preference is to continue using the same set
+        let preferred_nodes = &nodeset;
+        observed_state.alive_nodes.remove(&1.into());
+        observed_state.dead_nodes.insert(1.into());
+
+        let selection = NodeSetSelector::new(&nodes_config, &observed_state).select(
+            NodeSetSelectionStrategy::FaultTolerantAdaptive,
+            &replication,
+            rng,
+            preferred_nodes,
+        );
+        assert!(selection.is_ok());
+        let nodeset = selection.unwrap();
+        assert_eq!(nodeset.len(), 2); // suboptimal but still meets RF requirement!
+
+        // Preference is to stick to [N2*, N3] from before
+        let preferred_nodes = &nodeset;
+        observed_state.alive_nodes.remove(&2.into());
+        observed_state.dead_nodes.insert(2.into());
+
+        let selection = NodeSetSelector::new(&nodes_config, &observed_state).select(
+            NodeSetSelectionStrategy::FaultTolerantAdaptive,
+            &replication,
+            rng,
+            preferred_nodes,
+        );
+        assert!(selection.is_err()); // we can no longer meet the RF requirement
     }
 
     pub fn node(
