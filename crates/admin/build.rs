@@ -17,7 +17,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .bytes(["."])
         .file_descriptor_set_path(out_dir.join("cluster_ctrl_svc_descriptor.bin"))
-        .server_mod_attribute("cluster_ctrl", "#[cfg(feature = \"servers\")]")
         .client_mod_attribute("cluster_ctrl", "#[cfg(feature = \"clients\")]")
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
