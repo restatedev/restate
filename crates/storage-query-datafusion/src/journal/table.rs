@@ -23,20 +23,23 @@ use crate::journal::schema::SysJournalBuilder;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::PartitionedTableProvider;
 
+const NAME: &str = "sys_journal";
+
 pub(crate) fn register_self(
     ctx: &QueryContext,
     partition_selector: impl SelectPartitions,
     partition_store_manager: PartitionStoreManager,
 ) -> datafusion::common::Result<()> {
+    let local_scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        JournalScanner,
+    ));
     let journal_table = PartitionedTableProvider::new(
         partition_selector,
         SysJournalBuilder::schema(),
-        LocalPartitionsScanner::new(partition_store_manager, JournalScanner),
+        ctx.create_distributed_scanner(NAME, local_scanner),
     );
-
-    ctx.as_ref()
-        .register_table("sys_journal", Arc::new(journal_table))
-        .map(|_| ())
+    ctx.register_partitioned_table(NAME, Arc::new(journal_table))
 }
 
 #[derive(Debug, Clone)]

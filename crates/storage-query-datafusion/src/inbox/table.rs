@@ -24,20 +24,23 @@ use crate::inbox::schema::SysInboxBuilder;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::PartitionedTableProvider;
 
+const NAME: &str = "sys_inbox";
+
 pub(crate) fn register_self(
     ctx: &QueryContext,
     partition_selector: impl SelectPartitions,
     partition_store_manager: PartitionStoreManager,
 ) -> datafusion::common::Result<()> {
+    let local_partition_scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        InboxScanner,
+    ));
     let table = PartitionedTableProvider::new(
         partition_selector,
         SysInboxBuilder::schema(),
-        LocalPartitionsScanner::new(partition_store_manager, InboxScanner),
+        ctx.create_distributed_scanner(NAME, local_partition_scanner),
     );
-
-    ctx.as_ref()
-        .register_table("sys_inbox", Arc::new(table))
-        .map(|_| ())
+    ctx.register_partitioned_table(NAME, Arc::new(table))
 }
 
 #[derive(Debug, Clone)]
