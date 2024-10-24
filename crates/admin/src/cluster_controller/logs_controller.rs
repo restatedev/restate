@@ -446,29 +446,32 @@ impl<'a> NodeSetSelector<'a> {
             unimplemented!("only node-scoped replication is currently supported");
         }
 
-        // Only consider alive, writable nodes.
+        // Only consider alive, writable storage nodes.
         let candidates = WritableNodeSet::from(self.cluster_state, self.nodes_config);
 
         if candidates.len() < replication_property.num_copies().into() {
             return Err(NodeSelectionError::InsufficientWriteableNodes);
         }
 
-        // ReplicationFactor(f+1) implies 2f+1 total nodes
+        // ReplicationFactor(f+1) implies a minimum of 2f+1 nodes. At this point we are only
+        // calculating the nodeset floor size, the actual size will be determined by the specific
+        // strategy in use.
         assert!(
             replication_property.num_copies() < u8::MAX >> 1,
-            "The implied nodeset size exceeds the maximum nodeset size"
+            "The replication factor implies a cluster size that exceeds the maximum supported size"
         );
-        let nodeset_target_size = (replication_property.num_copies() as usize - 1) * 2 + 1;
+        let min_fault_tolerant_nodeset_size =
+            (replication_property.num_copies() as usize - 1) * 2 + 1;
         assert!(
-            nodeset_target_size >= replication_property.num_copies() as usize,
-            "The calculated target nodeset size can not be less than the replication factor"
+            min_fault_tolerant_nodeset_size >= replication_property.num_copies() as usize,
+            "The calculated minimum nodeset size can not be less than the replication factor"
         );
 
         let nodeset_target_size = match strategy {
             NodeSetSelectionStrategy::InferredFaultToleranceStrict
-            | NodeSetSelectionStrategy::AllAvailable => nodeset_target_size,
+            | NodeSetSelectionStrategy::AllAvailable => min_fault_tolerant_nodeset_size,
             NodeSetSelectionStrategy::CappedNodesetSize(size) => {
-                min(nodeset_target_size, size.get() as usize)
+                min(min_fault_tolerant_nodeset_size, size.get() as usize)
             }
         };
 
@@ -515,20 +518,21 @@ impl<'a> NodeSetSelector<'a> {
 #[cfg(feature = "replicated-loglet")]
 #[derive(Debug, Clone, Default)]
 pub enum NodeSetSelectionStrategy {
-    /// Selects a nodeset size based on the replication factor. The nodeset size is 2f+1, working backwards
-    /// inferred from the assumption that replication factor is f+1. This flavor is strict in that it will
-    /// not configure a nodeset smaller than the inferred 2f+1 size, making it a reasonable safe default.
+    /// Selects a nodeset size based on the replication factor. The nodeset size is 2f+1, working
+    /// backwards inferred from the assumption that replication factor is f+1. This flavor is strict
+    /// in that it will not configure a nodeset smaller than the inferred 2f+1 size, making it a
+    /// reasonable safe default.
     #[default]
     InferredFaultToleranceStrict,
 
-    /// Selects at most the specified set of nodes. To tolerate failures, this size must be strictly greater
-    /// than the replication factor.
-    #[allow(dead_code)]
+    /// Selects at most the specified set of nodes, while respecting the replication factor. To
+    /// tolerate failures, this size must be strictly greater than the replication factor. This
+    /// strategy allows for advanced operators to explicitly control both the lower bound (via
+    /// replication factor) and upper bound (via the nodeset cap) of loglet nodesets.
     CappedNodesetSize(NonZeroU8),
 
     /// Use all available storage nodes. This will lead to over-replication and excessive resource
-    /// utilisation with large clusters.
-    #[allow(dead_code)]
+    /// utilisation in large clusters.
     AllAvailable,
 }
 
