@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod handler;
+mod grpc_svc_handler;
 mod metrics;
-mod multiplex;
 mod prometheus_helpers;
 mod service;
 mod state;
 
-pub use service::{ClusterControllerDependencies, NetworkServer, WorkerDependencies};
+pub use service::NetworkServer;

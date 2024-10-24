@@ -18,8 +18,8 @@ use tracing::{debug, error, info, trace};
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{retry_on_network_error, ReadWriteError};
-use restate_core::network::Networking;
 use restate_core::network::{GrpcConnector, MessageRouterBuilder};
+use restate_core::network::{NetworkServerBuilder, Networking};
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
 };
@@ -42,7 +42,7 @@ use restate_types::protobuf::common::{
 use restate_types::Version;
 
 use crate::cluster_marker::ClusterValidationError;
-use crate::network_server::{ClusterControllerDependencies, NetworkServer, WorkerDependencies};
+use crate::network_server::NetworkServer;
 use crate::roles::{AdminRole, BaseRole, WorkerRole};
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -100,6 +100,7 @@ pub enum BuildError {
 
 pub struct Node {
     health: Health,
+    server_builder: NetworkServerBuilder,
     updateable_config: Live<Configuration>,
     metadata_manager: MetadataManager,
     metadata_store_client: MetadataStoreClient,
@@ -110,7 +111,6 @@ pub struct Node {
     worker_role: Option<WorkerRole<GrpcConnector>>,
     #[cfg(feature = "replicated-loglet")]
     log_server: Option<LogServerService>,
-    server: NetworkServer,
     networking: Networking<GrpcConnector>,
 }
 
@@ -119,10 +119,12 @@ impl Node {
         let tc = task_center();
         let health = Health::default();
         health.node_status().update(NodeStatus::StartingUp);
+        let mut server_builder = NetworkServerBuilder::default();
         let config = updateable_config.pinned();
 
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
+        // todo(asoli) move local metadata store to use NetworkServer
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(LocalMetadataStoreService::from_options(
                 health.metadata_server_status(),
@@ -181,6 +183,8 @@ impl Node {
         #[cfg(not(feature = "replicated-loglet"))]
         warn_if_log_store_left_artifacts(&config);
 
+        let bifrost = bifrost_svc.handle();
+
         #[cfg(feature = "replicated-loglet")]
         let log_server = if config.has_role(Role::LogServer) {
             Some(
@@ -204,10 +208,12 @@ impl Node {
                 AdminRole::create(
                     health.admin_status(),
                     tc.clone(),
+                    bifrost.clone(),
                     updateable_config.clone(),
                     metadata.clone(),
                     networking.clone(),
                     metadata_manager.writer(),
+                    &mut server_builder,
                     &mut router_builder,
                     metadata_store_client.clone(),
                 )
@@ -242,26 +248,6 @@ impl Node {
                 .map(|role| role.parition_processor_manager_handle()),
         );
 
-        let server = NetworkServer::new(
-            health.clone(),
-            networking.connection_manager().clone(),
-            worker_role
-                .as_ref()
-                .map(|worker| WorkerDependencies::new(worker.storage_query_context().clone())),
-            admin_role.as_ref().and_then(|admin_role| {
-                admin_role
-                    .cluster_controller_handle()
-                    .map(|cluster_controller_handle| {
-                        ClusterControllerDependencies::new(
-                            cluster_controller_handle,
-                            metadata_store_client.clone(),
-                            metadata_manager.writer(),
-                            bifrost_svc.handle(),
-                        )
-                    })
-            }),
-        );
-
         // Ensures that message router is updated after all services have registered themselves in
         // the builder.
         let message_router = router_builder.build();
@@ -281,7 +267,7 @@ impl Node {
             worker_role,
             #[cfg(feature = "replicated-loglet")]
             log_server,
-            server,
+            server_builder,
             networking,
         })
     }
@@ -386,8 +372,6 @@ impl Node {
             }
         }
 
-        let bifrost = self.bifrost.handle();
-
         // Ensures bifrost has initial metadata synced up before starting the worker.
         // Need to run start in new tc scope to have access to metadata()
         tc.run_in_scope("bifrost-init", None, self.bifrost.start())
@@ -411,7 +395,6 @@ impl Node {
                 "admin-init",
                 None,
                 admin_role.start(
-                    bifrost.clone(),
                     all_partitions_started_tx,
                     config.common.advertised_address.clone(),
                 ),
@@ -435,12 +418,21 @@ impl Node {
             )?;
         }
 
-        tc.spawn(
-            TaskKind::RpcServer,
-            "node-rpc-server",
-            None,
-            self.server.run(config.common.clone()),
-        )?;
+        tc.spawn(TaskKind::RpcServer, "node-rpc-server", None, {
+            let health = self.health.clone();
+            let common_options = config.common.clone();
+            let connection_manager = self.networking.connection_manager().clone();
+            async move {
+                NetworkServer::run(
+                    health,
+                    connection_manager,
+                    self.server_builder,
+                    common_options,
+                )
+                .await?;
+                Ok(())
+            }
+        })?;
 
         self.base_role.start()?;
 
