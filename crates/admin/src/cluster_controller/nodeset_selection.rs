@@ -416,7 +416,6 @@ mod tests {
 
         let observed_state = ObservedClusterState {
             alive_nodes: (1..=7)
-                .into_iter()
                 .filter(|id| *id != 2) // N2 is dead
                 .map(|id| (PlainNodeId::new(id), GenerationalNodeId::new(id, 1)))
                 .collect(),
