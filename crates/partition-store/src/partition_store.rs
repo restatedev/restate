@@ -34,14 +34,13 @@ use restate_core::ShutdownError;
 use restate_rocksdb::{RocksDb, RocksError};
 use restate_storage_api::{Storage, StorageError, Transaction};
 
-use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::LocalPartitionSnapshot;
+use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 
 pub type DB = rocksdb::DB;
 
