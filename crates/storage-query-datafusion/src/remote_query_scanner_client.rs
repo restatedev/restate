@@ -68,7 +68,7 @@ pub fn create_remote_scanner_service<T: TransportConnect>(
 // ----- datafusion remote scan -----
 
 /// Given an implementation of a remote ScannerService, this function
-/// creates a Datafusion's [[SendableRecordBatchStream]] that transports
+/// creates a DataFusion [[SendableRecordBatchStream]] that transports
 /// record batches via the RemoteScannerService API.
 pub fn remote_scan_as_datafusion_stream(
     service: Arc<dyn RemoteScannerService>,
