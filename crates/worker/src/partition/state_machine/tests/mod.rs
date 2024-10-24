@@ -1019,3 +1019,38 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     test_env.shutdown().await;
     Ok(())
 }
+
+#[test(tokio::test)]
+async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = InvocationId::mock_random();
+
+    let request_id = PartitionProcessorRpcRequestId::default();
+    let actions = test_env
+        .apply(Command::Invoke(ServiceInvocation {
+            invocation_id,
+            response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
+            ..ServiceInvocation::mock()
+        }))
+        .await;
+
+    assert_that!(
+        actions,
+        contains(pat!(Action::Invoke {
+            invocation_id: eq(invocation_id),
+        }))
+    );
+
+    // Invoking this again won't have any effect
+    let actions = test_env
+        .apply(Command::Invoke(ServiceInvocation {
+            invocation_id,
+            response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
+            ..ServiceInvocation::mock()
+        }))
+        .await;
+    assert_that!(actions, empty());
+
+    test_env.shutdown().await;
+    Ok(())
+}

@@ -440,18 +440,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow);
         let mut has_idempotency_key = service_invocation.idempotency_key.is_some();
 
-        if !is_workflow_run && !has_idempotency_key {
-            // No duplicate id should exist
-            debug_assert!(
-                ctx.get_invocation_status(&invocation_id)
-                    .await
-                    .is_ok_and(|status| status == InvocationStatus::Free),
-                "There shouldn't be a duplicate for invocation id {}",
-                invocation_id
-            );
-            return Ok(Some(service_invocation));
-        }
-
         if is_workflow_run && has_idempotency_key {
             warn!("The idempotency key for workflow methods is ignored!");
             has_idempotency_key = false;
@@ -493,6 +481,43 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
 
         }.await?;
+
+        // Handle duplicate requests from ingress RPCs. These are always deduplicated without further operations.
+        if let Some(ingress_sink @ ServiceInvocationResponseSink::Ingress { .. }) =
+            &service_invocation.response_sink
+        {
+            if let InvocationStatus::Scheduled(ScheduledInvocation {
+                metadata: PreFlightInvocationMetadata { response_sinks, .. },
+            })
+            | InvocationStatus::Inboxed(InboxedInvocation {
+                metadata: PreFlightInvocationMetadata { response_sinks, .. },
+                ..
+            })
+            | InvocationStatus::Invoked(InFlightInvocationMetadata {
+                response_sinks, ..
+            })
+            | InvocationStatus::Suspended {
+                metadata: InFlightInvocationMetadata { response_sinks, .. },
+                ..
+            } = &previous_invocation_status
+            {
+                if response_sinks.contains(ingress_sink) {
+                    return Ok(None);
+                }
+            }
+        }
+
+        if !is_workflow_run && !has_idempotency_key {
+            // No duplicate id should exist
+            debug_assert!(
+                ctx.get_invocation_status(&invocation_id)
+                    .await
+                    .is_ok_and(|status| status == InvocationStatus::Free),
+                "There shouldn't be a duplicate for invocation id {}",
+                invocation_id
+            );
+            return Ok(Some(service_invocation));
+        }
 
         if previous_invocation_status == InvocationStatus::Free {
             // --- New invocation
