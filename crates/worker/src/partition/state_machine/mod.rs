@@ -567,11 +567,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     }
                 }
                 InvocationStatus::Completed(completed) => {
+                    let completion_expiry_time = unsafe { completed.completion_expiry_time() };
                     self.send_response_to_sinks(
                         ctx,
                         service_invocation.response_sink.take().into_iter(),
                         completed.response_result,
                         Some(invocation_id),
+                        completion_expiry_time,
                         Some(&completed.invocation_target),
                     )
                     .await?;
@@ -593,6 +595,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 service_invocation.response_sink.take().into_iter(),
                 ResponseResult::Failure(WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR),
                 Some(invocation_id),
+                None,
                 Some(&service_invocation.invocation_target),
             )
             .await?;

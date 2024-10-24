@@ -687,21 +687,24 @@ where
         partition_store: &mut PartitionStore,
     ) -> Result<PartitionProcessorRpcResponse, StorageError> {
         // We can handle this immediately by querying the partition store, no need to go through proposals
-        // TODO update this logic when finishing up https://github.com/restatedev/restate/pull/2035
         let invocation_id = match invocation_query {
             InvocationQuery::Invocation(iid) => iid,
-            InvocationQuery::Workflow(sid) => {
-                match partition_store.get_virtual_object_status(&sid).await? {
+            ref q @ InvocationQuery::Workflow(ref sid) => {
+                match partition_store.get_virtual_object_status(sid).await? {
                     VirtualObjectStatus::Locked(iid) => iid,
                     VirtualObjectStatus::Unlocked => {
-                        return Ok(PartitionProcessorRpcResponse::NotFound)
+                        // Try the deterministic id
+                        q.to_invocation_id()
                     }
                 }
             }
-            InvocationQuery::IdempotencyId(iid) => {
-                match partition_store.get_idempotency_metadata(&iid).await? {
+            ref q @ InvocationQuery::IdempotencyId(ref iid) => {
+                match partition_store.get_idempotency_metadata(iid).await? {
                     Some(idempotency_metadata) => idempotency_metadata.invocation_id,
-                    None => return Ok(PartitionProcessorRpcResponse::NotFound),
+                    None => {
+                        // Try the deterministic id
+                        q.to_invocation_id()
+                    }
                 }
             }
         };

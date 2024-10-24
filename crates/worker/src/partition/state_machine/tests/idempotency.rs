@@ -18,7 +18,6 @@ use restate_storage_api::invocation_status_table::{
     CompletedInvocation, SourceTable, StatusTimestamps,
 };
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
-use restate_types::errors::GONE_INVOCATION_ERROR;
 use restate_types::identifiers::{IdempotencyId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
