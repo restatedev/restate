@@ -12,21 +12,20 @@ use super::path_parsing::AwakeableRequestType;
 use super::Handler;
 use super::HandlerError;
 
+use crate::RequestDispatcher;
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use http_body_util::Full;
-use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
 use restate_types::invocation::{InvocationResponse, ResponseResult};
 use std::str::FromStr;
 use tracing::{info, trace, warn};
 
-impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
-    Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
+    Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_awakeable<B: http_body::Body>(
         self,
@@ -74,12 +73,15 @@ where
             "Processing awakeables request"
         );
 
-        let req = IngressDispatcherRequest::completion(InvocationResponse {
-            id: invocation_id,
-            entry_index,
-            result,
-        });
-        if let Err(e) = self.dispatcher.dispatch_ingress_request(req).await {
+        if let Err(e) = self
+            .dispatcher
+            .append_invocation_response(InvocationResponse {
+                id: invocation_id,
+                entry_index,
+                result,
+            })
+            .await
+        {
             warn!(
                 restate.invocation.id = %invocation_id,
                 "Failed to dispatch awakeable completion: {}",

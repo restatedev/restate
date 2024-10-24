@@ -10,6 +10,7 @@
 
 use super::APPLICATION_JSON;
 
+use crate::RequestDispatcherError;
 use bytes::Bytes;
 use http::{header, Response, StatusCode};
 use restate_types::errors::{IdDecodeError, InvocationError};
@@ -81,6 +82,8 @@ pub(crate) enum HandlerError {
     BadAwakeableId(String, IdDecodeError),
     #[error("bad invocation id '{0}': {1}")]
     BadInvocationId(String, IdDecodeError),
+    #[error("dispatcher error: {0}")]
+    DispatcherError(#[from] RequestDispatcherError),
 }
 
 #[derive(Debug, Serialize)]
@@ -121,6 +124,10 @@ impl HandlerError {
             | HandlerError::InputValidation(_)
             | HandlerError::UnsupportedIdempotencyKey
             | HandlerError::UnsupportedGetOutput => StatusCode::BAD_REQUEST,
+            HandlerError::DispatcherError(_) => {
+                // TODO add more distinctions between different dispatcher errors (unavailable, etc)
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
             HandlerError::Body(_) => StatusCode::INTERNAL_SERVER_ERROR,
             HandlerError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             HandlerError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,

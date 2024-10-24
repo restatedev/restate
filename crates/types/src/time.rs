@@ -62,6 +62,16 @@ impl MillisSinceEpoch {
     }
 }
 
+impl Add<Duration> for MillisSinceEpoch {
+    type Output = MillisSinceEpoch;
+
+    fn add(self, rhs: Duration) -> Self::Output {
+        MillisSinceEpoch(self.0.saturating_add(
+            u64::try_from(rhs.as_millis()).expect("millis since Unix epoch should fit in u64"),
+        ))
+    }
+}
+
 impl From<u64> for MillisSinceEpoch {
     fn from(value: u64) -> Self {
         Self::new(value)

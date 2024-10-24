@@ -18,7 +18,6 @@ use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
-use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcher};
 use restate_types::config::IngressOptions;
 use restate_types::live::Live;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
@@ -51,55 +50,50 @@ pub enum IngressServerError {
     Running(#[from] hyper::Error),
 }
 
-pub struct HyperServerIngress<Schemas, Dispatcher, StorageReader> {
+pub struct HyperServerIngress<Schemas, Dispatcher> {
     listening_addr: SocketAddr,
     concurrency_limit: usize,
 
     // Parameters to build the layers
     schemas: Live<Schemas>,
     dispatcher: Dispatcher,
-    storage_reader: StorageReader,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
 }
 
-impl<Schemas, StorageReader> HyperServerIngress<Schemas, IngressDispatcher, StorageReader>
+impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
 where
     Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
-    StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
+    Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub fn from_options(
         ingress_options: &IngressOptions,
-        dispatcher: IngressDispatcher,
+        dispatcher: Dispatcher,
         schemas: Live<Schemas>,
-        storage_reader: StorageReader,
-    ) -> HyperServerIngress<Schemas, IngressDispatcher, StorageReader> {
+    ) -> HyperServerIngress<Schemas, Dispatcher> {
         crate::metric_definitions::describe_metrics();
         let (hyper_ingress_server, _) = HyperServerIngress::new(
             ingress_options.bind_address,
             ingress_options.concurrent_api_requests_limit(),
             schemas,
             dispatcher,
-            storage_reader,
         );
 
         hyper_ingress_server
     }
 }
 
-impl<Schemas, Dispatcher, StorageReader> HyperServerIngress<Schemas, Dispatcher, StorageReader>
+impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
 where
     Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
-    Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
-    StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
+    Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
         listening_addr: SocketAddr,
         concurrency_limit: usize,
         schemas: Live<Schemas>,
         dispatcher: Dispatcher,
-        storage_reader: StorageReader,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
 
@@ -108,7 +102,6 @@ where
             concurrency_limit,
             schemas,
             dispatcher,
-            storage_reader,
             start_signal_tx,
         };
 
@@ -121,7 +114,6 @@ where
             concurrency_limit,
             schemas,
             dispatcher,
-            storage_reader,
             start_signal_tx,
         } = self;
 
@@ -146,7 +138,7 @@ where
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
             .layer(CorsLayer::very_permissive())
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
-            .service(Handler::new(schemas, dispatcher, storage_reader));
+            .service(Handler::new(schemas, dispatcher));
 
         info!(
             net.host.addr = %local_addr.ip(),
@@ -246,15 +238,14 @@ mod tests {
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
-    use restate_ingress_dispatcher::test_util::MockDispatcher;
-    use restate_ingress_dispatcher::{IngressDispatcherRequest, IngressInvocationResponse};
     use restate_test_util::assert_eq;
-    use restate_types::identifiers::InvocationId;
-    use restate_types::ingress::IngressResponseResult;
+    use restate_types::invocation::InvocationTarget;
+    use restate_types::net::partition_processor::IngressResponseResult;
     use serde::{Deserialize, Serialize};
+    use std::future::ready;
     use std::net::SocketAddr;
-    use tokio::sync::{mpsc, Semaphore};
-    use tokio::task::JoinHandle;
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
     use tracing_test::traced_test;
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -270,36 +261,37 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_http_post() {
-        let (address, input, handle) = bootstrap_test().await;
-        let process_fut = tokio::task::spawn(async move {
-            // Get the function invocation and assert on it
-            let (service_invocation, _, response_tx) =
-                input.await.unwrap().unwrap().expect_invocation();
-            assert_eq!(
-                service_invocation.invocation_target.service_name(),
-                "greeter.Greeter"
-            );
-            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+        let mut mock_dispatcher = MockRequestDispatcher::default();
+        mock_dispatcher
+            .expect_append_invocation_and_wait_output()
+            .once()
+            .return_once(|service_invocation| {
+                assert_eq!(
+                    service_invocation.invocation_target.service_name(),
+                    "greeter.Greeter"
+                );
+                assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
 
-            let greeting_req: GreetingRequest =
-                serde_json::from_slice(&service_invocation.argument).unwrap();
-            assert_eq!(&greeting_req.person, "Francesco");
+                let greeting_req: GreetingRequest =
+                    serde_json::from_slice(&service_invocation.argument).unwrap();
+                assert_eq!(&greeting_req.person, "Francesco");
 
-            response_tx
-                .send(IngressInvocationResponse {
-                    idempotency_expiry_time: None,
-                    invocation_id: Some(InvocationId::mock_random()),
-                    result: IngressResponseResult::Success(
-                        service_invocation.invocation_target,
-                        serde_json::to_vec(&crate::mocks::GreetingResponse {
+                Box::pin(ready(Ok(InvocationOutput {
+                    request_id: Default::default(),
+                    invocation_id: Some(service_invocation.invocation_id),
+                    completion_expiry_time: None,
+                    response: IngressResponseResult::Success(
+                        InvocationTarget::service("greeter.Greeter", "greet"),
+                        serde_json::to_vec(&GreetingResponse {
                             greeting: "Igal".to_string(),
                         })
                         .unwrap()
                         .into(),
                     ),
-                })
-                .unwrap();
-        });
+                })))
+            });
+
+        let (address, handle) = bootstrap_test(mock_dispatcher).await;
 
         // Send the request
         let client = Client::builder(TokioExecutor::new())
@@ -321,9 +313,6 @@ mod tests {
             .await
             .unwrap();
 
-        // check that the input processing has completed
-        process_fut.await.unwrap();
-
         // Read the http_response_future
         assert_eq!(http_response.status(), http::StatusCode::OK);
         let (_, response_body) = http_response.into_parts();
@@ -334,34 +323,27 @@ mod tests {
         handle.close().await;
     }
 
-    async fn bootstrap_test() -> (
-        SocketAddr,
-        JoinHandle<Option<IngressDispatcherRequest>>,
-        TestHandle,
-    ) {
+    async fn bootstrap_test(
+        mock_request_dispatcher: MockRequestDispatcher,
+    ) -> (SocketAddr, TestHandle) {
         let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
-        let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
 
         // Create the ingress and start it
         let (ingress, start_signal) = HyperServerIngress::new(
             "0.0.0.0:0".parse().unwrap(),
             Semaphore::MAX_PERMITS,
             Live::from_value(mock_schemas()),
-            MockDispatcher::new(ingress_request_tx),
-            MockStorageReader::default(),
+            Arc::new(mock_request_dispatcher),
         );
         node_env
             .tc
             .spawn(TaskKind::SystemService, "ingress", None, ingress.run())
             .unwrap();
 
-        // Mock the service invocation receiver
-        let input = tokio::spawn(async move { ingress_request_rx.recv().await });
-
         // Wait server to start
         let address = start_signal.await.unwrap();
 
-        (address, input, TestHandle(node_env.tc))
+        (address, TestHandle(node_env.tc))
     }
 
     struct TestHandle(TaskCenter);

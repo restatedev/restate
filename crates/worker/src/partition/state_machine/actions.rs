@@ -11,18 +11,18 @@
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
-use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::ingress;
-use restate_types::ingress::IngressResponseEnvelope;
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
 use restate_types::message::MessageIndex;
+use restate_types::net::partition_processor::IngressResponseResult;
+use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
 
 pub type ActionCollector = Vec<Action>;
 
-#[derive(Debug, strum::IntoStaticStr)]
+#[derive(Debug, Eq, PartialEq, strum::IntoStaticStr)]
 pub enum Action {
     Invoke {
         invocation_id: InvocationId,
@@ -48,8 +48,18 @@ pub enum Action {
         completion: Completion,
     },
     AbortInvocation(InvocationId),
-    IngressResponse(IngressResponseEnvelope<ingress::InvocationResponse>),
-    IngressSubmitNotification(IngressResponseEnvelope<ingress::SubmittedInvocationNotification>),
+    IngressResponse {
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: Option<InvocationId>,
+        completion_expiry_time: Option<MillisSinceEpoch>,
+        response: IngressResponseResult,
+    },
+    IngressSubmitNotification {
+        request_id: PartitionProcessorRpcRequestId,
+        /// If true, this request_id created a "fresh invocation",
+        /// otherwise the invocation was previously submitted.
+        is_new_invocation: bool,
+    },
     ScheduleInvocationStatusCleanup {
         invocation_id: InvocationId,
         retention: Duration,

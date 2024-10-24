@@ -865,9 +865,9 @@ impl FromStr for LambdaARN {
     serde_with::SerializeDisplay,
     serde_with::DeserializeFromStr,
 )]
-pub struct IngressRequestId(Ulid);
+pub struct PartitionProcessorRpcRequestId(Ulid);
 
-impl IngressRequestId {
+impl PartitionProcessorRpcRequestId {
     pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
         let ulid = Ulid::from_bytes(b.try_into().map_err(|_| IdDecodeError::Length)?);
         debug_assert!(!ulid.is_nil());
@@ -885,19 +885,19 @@ impl IngressRequestId {
     }
 }
 
-impl Default for IngressRequestId {
+impl Default for PartitionProcessorRpcRequestId {
     fn default() -> Self {
         Self(Ulid::new())
     }
 }
 
-impl fmt::Display for IngressRequestId {
+impl fmt::Display for PartitionProcessorRpcRequestId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl FromStr for IngressRequestId {
+impl FromStr for PartitionProcessorRpcRequestId {
     type Err = ulid::DecodeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

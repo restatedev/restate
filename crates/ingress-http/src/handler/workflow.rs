@@ -13,8 +13,9 @@ use http::{Method, Request, Response};
 use http_body_util::Full;
 use tracing::{info, warn};
 
-use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_ingress_dispatcher::IngressDispatcherRequest;
+use restate_core::network::partition_processor_rpc_client::{
+    AttachInvocationResponse, GetInvocationOutputResponse,
+};
 use restate_types::identifiers::ServiceId;
 use restate_types::invocation::InvocationQuery;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
@@ -22,13 +23,12 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 use super::path_parsing::WorkflowRequestType;
 use super::Handler;
 use super::HandlerError;
-use crate::{GetOutputResult, InvocationStorageReader};
+use crate::RequestDispatcher;
 
-impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
-    Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
-    StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
+    Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_workflow<B: http_body::Body>(
         self,
@@ -63,50 +63,35 @@ where
             return Err(HandlerError::MethodNotAllowed);
         }
 
-        let (dispatcher_req, correlation_id, response_rx) =
-            IngressDispatcherRequest::attach(InvocationQuery::Workflow(workflow_id.clone()));
-
         info!(
             restate.workflow.id = %workflow_id,
             "Processing workflow attach request"
         );
 
-        if let Err(e) = self
-            .dispatcher
-            .dispatch_ingress_request(dispatcher_req)
-            .await
-        {
-            warn!(
-                restate.workflow.id = %workflow_id,
-                "Failed to dispatch: {}",
-                e,
-            );
-            return Err(HandlerError::Unavailable);
-        }
-
         // Wait on response
-        let response = if let Ok(response) = response_rx.await {
-            response
-        } else {
-            self.dispatcher.evict_pending_response(correlation_id);
-            warn!("Response channel was closed");
-            return Err(HandlerError::Unavailable);
+        let response = match self
+            .dispatcher
+            .attach_invocation(InvocationQuery::Workflow(workflow_id.clone()))
+            .await?
+        {
+            AttachInvocationResponse::NotFound => {
+                return Err(HandlerError::NotFound);
+            }
+            AttachInvocationResponse::NotSupported => {
+                return Err(HandlerError::NotImplemented);
+            }
+            AttachInvocationResponse::Ready(response) => response,
         };
 
-        Self::reply_with_invocation_response(
-            response.result,
-            response.invocation_id,
-            response.idempotency_expiry_time.as_deref(),
-            move |invocation_target| {
-                self.schemas
-                    .pinned()
-                    .resolve_latest_invocation_target(
-                        invocation_target.service_name(),
-                        invocation_target.handler_name(),
-                    )
-                    .ok_or(HandlerError::NotFound)
-            },
-        )
+        Self::reply_with_invocation_response(response, move |invocation_target| {
+            self.schemas
+                .pinned()
+                .resolve_latest_invocation_target(
+                    invocation_target.service_name(),
+                    invocation_target.handler_name(),
+                )
+                .ok_or(HandlerError::NotFound)
+        })
     }
 
     pub(crate) async fn handle_workflow_get_output<B: http_body::Body>(
@@ -123,14 +108,18 @@ where
         }
 
         let response = match self
-            .storage_reader
-            .get_output(InvocationQuery::Workflow(workflow_id.clone()))
+            .dispatcher
+            .get_invocation_output(InvocationQuery::Workflow(workflow_id.clone()))
             .await
         {
-            Ok(GetOutputResult::Ready(out)) => out,
-            Ok(GetOutputResult::NotFound) => return Err(HandlerError::InvocationNotFound),
-            Ok(GetOutputResult::NotReady) => return Err(HandlerError::NotReady),
-            Ok(GetOutputResult::NotSupported) => return Err(HandlerError::UnsupportedGetOutput),
+            Ok(GetInvocationOutputResponse::Ready(out)) => out,
+            Ok(GetInvocationOutputResponse::NotFound) => {
+                return Err(HandlerError::InvocationNotFound)
+            }
+            Ok(GetInvocationOutputResponse::NotReady) => return Err(HandlerError::NotReady),
+            Ok(GetInvocationOutputResponse::NotSupported) => {
+                return Err(HandlerError::UnsupportedGetOutput)
+            }
             Err(e) => {
                 warn!(
                     restate.workflow.id = %workflow_id,
@@ -141,19 +130,14 @@ where
             }
         };
 
-        Self::reply_with_invocation_response(
-            response.response,
-            response.invocation_id,
-            None,
-            move |invocation_target| {
-                self.schemas
-                    .pinned()
-                    .resolve_latest_invocation_target(
-                        invocation_target.service_name(),
-                        invocation_target.handler_name(),
-                    )
-                    .ok_or(HandlerError::NotFound)
-            },
-        )
+        Self::reply_with_invocation_response(response, move |invocation_target| {
+            self.schemas
+                .pinned()
+                .resolve_latest_invocation_target(
+                    invocation_target.service_name(),
+                    invocation_target.handler_name(),
+                )
+                .ok_or(HandlerError::NotFound)
+        })
     }
 }
