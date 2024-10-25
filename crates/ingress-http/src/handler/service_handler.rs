@@ -18,7 +18,7 @@ use metrics::{counter, histogram};
 use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use tracing::{info, trace, warn, Instrument};
+use tracing::{info, trace, trace_span, warn, Instrument};
 
 use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherRequest};
 use restate_types::identifiers::InvocationId;
@@ -251,7 +251,10 @@ where
         }
 
         // Wait on response
-        let response = if let Ok(response) = response_rx.await {
+        let response = if let Ok(response) = response_rx
+            .instrument(trace_span!("Waiting for response"))
+            .await
+        {
             response
         } else {
             dispatcher.evict_pending_response(ingress_correlation_id);
