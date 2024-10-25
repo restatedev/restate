@@ -63,7 +63,6 @@ pub mod cluster {
 pub mod node {
     use opentelemetry::global;
     use opentelemetry::propagation::{Extractor, Injector};
-    use opentelemetry::trace::TraceContextExt;
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     use crate::GenerationalNodeId;
@@ -111,16 +110,10 @@ pub mod node {
             in_response_to: Option<u64>,
         ) -> Self {
             let context = tracing::Span::current().context();
-            let span_context = if context.span().span_context().is_sampled() {
-                let mut span_context = SpanContext::default();
-                global::get_text_map_propagator(|propagator| {
-                    propagator.inject_context(&context, &mut span_context)
-                });
-
-                Some(span_context)
-            } else {
-                None
-            };
+            let mut span_context = SpanContext::default();
+            global::get_text_map_propagator(|propagator| {
+                propagator.inject_context(&context, &mut span_context)
+            });
 
             Self {
                 my_nodes_config_version: Some(nodes_config_version.into()),
@@ -129,7 +122,7 @@ pub mod node {
                 my_partition_table_version: partition_table_version.map(Into::into),
                 msg_id,
                 in_response_to,
-                span_context,
+                span_context: Some(span_context),
             }
         }
     }
