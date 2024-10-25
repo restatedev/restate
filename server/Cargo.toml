@@ -28,6 +28,7 @@ options_schema = [
 ]
 memory-loglet = ["restate-node/memory-loglet", "restate-admin/memory-loglet"]
 replicated-loglet = ["restate-node/replicated-loglet", "restate-admin/replicated-loglet"]
+crate_per_service = ["restate-tracing-instrumentation/service_per_crate"]
 
 [dependencies]
 restate-admin = { workspace = true }

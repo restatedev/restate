@@ -5978,6 +5978,7 @@ dependencies = [
  "restate-service-protocol",
  "restate-storage-query-datafusion",
  "restate-test-util",
+ "restate-tracing-instrumentation",
  "restate-types",
  "restate-worker",
  "rust-rocksdb",

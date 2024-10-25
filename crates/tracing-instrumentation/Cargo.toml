@@ -9,6 +9,11 @@ publish = false
 
 [features]
 default = []
+# if enabled, each "crate" will show up
+# as it's own service in collectors like `jaeger`
+# if not (default) all traces will instead
+# show up under one service `restate-server`
+service_per_crate = []
 
 options_schema = ["dep:schemars"]
 rt-tokio = ["dep:tokio"]

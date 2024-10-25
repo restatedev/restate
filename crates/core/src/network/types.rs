@@ -146,7 +146,7 @@ impl<M> Incoming<M> {
         self.parent_context.as_ref()
     }
 
-    /// A shortuct to set current tracing [`Span`] parent
+    /// A shortcut to set current tracing [`Span`] parent
     /// to remote caller span context
     ///
     /// This only works on the first call. Subsequent calls
@@ -157,6 +157,20 @@ impl<M> Incoming<M> {
     pub fn follow_from_sender(&mut self) {
         if let Some(context) = self.parent_context.take() {
             Span::current().set_parent(context)
+        }
+    }
+
+    /// A shortcut to set given [`Span`] parent
+    /// to remote caller span context
+    ///
+    /// This only works on the first call. Subsequent calls
+    /// has no effect on the current [`Span`].
+    ///
+    /// If you need to create `parallel` spans for the same
+    /// incoming message, use [`Self::parent_context()`] instead
+    pub fn follow_from_sender_for(&mut self, span: &Span) {
+        if let Some(context) = self.parent_context.take() {
+            span.set_parent(context)
         }
     }
 

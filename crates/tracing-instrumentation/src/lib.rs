@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt::Display;
 
+use exporter::RuntimeModifierSpanExporter;
 use opentelemetry::trace::{TraceError, TracerProvider};
 use opentelemetry::{global, KeyValue};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
@@ -37,8 +38,12 @@ use tracing_subscriber::{EnvFilter, Layer, Registry};
 
 use restate_types::config::{CommonOptions, LogFormat};
 
-use crate::exporter::ResourceModifyingSpanExporter;
+use crate::exporter::UserServiceModifierSpanExporter;
 use crate::pretty::PrettyFields;
+
+pub use exporter::set_global_node_id;
+
+const SERVICE_INSTANCE_NAME: &str = "service.instance.name";
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
@@ -97,7 +102,7 @@ fn build_services_tracing(common_opts: &CommonOptions) -> Result<(), Error> {
     )
     .build_span_exporter()?;
 
-    let exporter = ResourceModifyingSpanExporter::new(exporter);
+    let exporter = UserServiceModifierSpanExporter::new(exporter);
 
     let provider = opentelemetry_sdk::trace::TracerProvider::builder()
         .with_config(opentelemetry_sdk::trace::Config::default().with_resource(resource))
@@ -147,7 +152,7 @@ where
             "Restate",
         ),
         KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID,
+            SERVICE_INSTANCE_NAME,
             format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
         ),
         KeyValue::new(
@@ -171,6 +176,7 @@ where
         )
         .build_span_exporter()?;
 
+        let exporter = RuntimeModifierSpanExporter::new(exporter);
         tracer_provider_builder = tracer_provider_builder.with_span_processor(
             BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
         );
@@ -183,7 +189,7 @@ where
             service_name,
             opentelemetry_sdk::runtime::Tokio,
         );
-        let exporter = ResourceModifyingSpanExporter::new(exporter);
+        let exporter = UserServiceModifierSpanExporter::new(exporter);
 
         tracer_provider_builder = tracer_provider_builder.with_span_processor(
             BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
@@ -201,7 +207,7 @@ where
 
     Ok(Some(
         tracing_opentelemetry::layer()
-            .with_location(false)
+            .with_location(cfg!(feature = "service_per_crate"))
             .with_threads(false)
             .with_tracked_inactivity(false)
             .with_tracer(tracer)
