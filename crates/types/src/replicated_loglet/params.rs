@@ -11,15 +11,15 @@
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 
-use itertools::Itertools;
-use rand::seq::SliceRandom;
-use serde_with::DisplayFromStr;
-
 use super::ReplicationProperty;
 use crate::logs::metadata::SegmentIndex;
 use crate::logs::LogId;
 use crate::nodes_config::NodesConfiguration;
 use crate::{GenerationalNodeId, PlainNodeId};
+use itertools::Itertools;
+use rand::seq::SliceRandom;
+use serde_with::DisplayFromStr;
+use xxhash_rust::xxh3::Xxh3Builder;
 
 /// Configuration parameters of a replicated loglet segment
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -181,6 +181,16 @@ impl NodeSet {
     /// Filters out nodes that are not part of the effective nodeset (empty nodes)
     pub fn to_effective(&self, nodes_config: &NodesConfiguration) -> EffectiveNodeSet {
         EffectiveNodeSet::new(self, nodes_config)
+    }
+
+    /// Creates a new nodeset that excludes the nodes not in the provided set
+    pub fn new_excluding(&self, excluded_node_ids: &HashSet<PlainNodeId, Xxh3Builder>) -> NodeSet {
+        NodeSet::from(
+            self.iter()
+                .copied()
+                .filter(|node_id| !excluded_node_ids.contains(node_id))
+                .collect::<HashSet<_>>(),
+        )
     }
 
     /// Shuffles the nodes but puts our node-id at the end if it exists. In other words,
