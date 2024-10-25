@@ -159,7 +159,7 @@ impl Node {
             let mut base_config = base_config.clone();
             // let any node write the initial NodesConfiguration
             base_config.common.allow_bootstrap = true;
-            base_config.common.force_node_id = Some(PlainNodeId::new(1));
+            base_config.common.force_node_id = Some(PlainNodeId::new(0));
             nodes.push(Self::new_test_node(
                 "metadata-node",
                 base_config,
@@ -170,7 +170,7 @@ impl Node {
 
         for node in 1..=size {
             let mut base_config = base_config.clone();
-            base_config.common.force_node_id = Some(PlainNodeId::new(node + 1));
+            base_config.common.force_node_id = Some(PlainNodeId::new(node));
             nodes.push(Self::new_test_node(
                 format!("node-{node}"),
                 base_config,
@@ -516,7 +516,7 @@ impl StartedNode {
     pub fn terminate(&self) -> io::Result<()> {
         match self.status {
             StartedNodeStatus::Exited(_) => Ok(()),
-            StartedNodeStatus::Failed(kind) => Err((kind).into()),
+            StartedNodeStatus::Failed(kind) => Err(kind.into()),
             StartedNodeStatus::Running { pid, .. } => {
                 info!(
                     "Sending SIGTERM to node {} (pid {})",
@@ -842,7 +842,7 @@ impl Searcher {
     }
 
     fn search(&self, regex: Regex) -> impl Stream<Item = String> + 'static {
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = mpsc::channel(1000);
         let sender = Arc::new(sender);
         let sender_ptr = Arc::as_ptr(&sender);
         self.inner.rcu(|inner| {
