@@ -89,6 +89,8 @@ impl<'a> NodeSetSelector<'a> {
             trace!(
                 candidate_nodes_count = ?candidates.len(),
                 ?min_copies,
+                cluster_state = ?self.cluster_state,
+                nodes_config = ?self.nodes_config,
                 "Not enough writeable nodes to meet the minimum replication requirements"
             );
             return Err(NodeSelectionError::InsufficientWriteableNodes);
@@ -176,7 +178,7 @@ pub enum NodeSelectionError {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use std::collections::HashSet;
 
     use enumset::{enum_set, EnumSet};
@@ -527,16 +529,11 @@ mod tests {
         assert_eq!(selection.unwrap().len(), 3); // now exceeds replication requirement
     }
 
-    pub fn node(
-        id: impl Into<PlainNodeId>,
-        roles: EnumSet<Role>,
-        storage_state: StorageState,
-    ) -> NodeConfig {
-        let id: PlainNodeId = id.into();
+    pub fn node(id: u32, roles: EnumSet<Role>, storage_state: StorageState) -> NodeConfig {
         NodeConfig::new(
-            format!("n{}", id),
-            id.with_generation(1),
-            format!("http://n{}", id).parse().unwrap(),
+            format!("node-{}", id),
+            PlainNodeId::from(id).with_generation(1),
+            format!("https://node-{}", id).parse().unwrap(),
             roles,
             LogServerConfig { storage_state },
         )

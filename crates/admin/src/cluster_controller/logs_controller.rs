@@ -378,11 +378,7 @@ fn build_new_replicated_loglet_configuration(
                 ?loglet_id,
                 "Insufficient writeable nodes to place replicated loglet"
             );
-            previous_configuration.cloned().map(|mut params| {
-                params.loglet_id = loglet_id;
-                params.sequencer = sequencer;
-                params
-            })
+            None
         }
     }
 }
@@ -567,7 +563,7 @@ enum Event {
 /// there can be multiple writes happening concurrently from different logs controllers, we can only
 /// assume that our [`LogsControllerInner::logs_state`] is valid after we see our write succeed. If
 /// a different logs controller writes first, then we have to reset our internal state. To avoid the
-/// complexity of handling multiple in-flight logs writes, the controller waits until the an
+/// complexity of handling multiple in-flight logs writes, the controller waits until the
 /// in-flight write completes or a newer log is detected.
 struct LogsControllerInner {
     // todo make configurable
@@ -633,7 +629,7 @@ impl LogsControllerInner {
                     previous_version: self.current_logs.version(),
                     debounce: None,
                 });
-                // we already update the current logs but will wait until we learn whether the write
+                // we already update the current logs but will wait until we learn whether the update
                 // was successful or not. If not, then we'll reset our internal state wrt the new
                 // logs version.
                 self.current_logs = logs;
@@ -949,7 +945,7 @@ impl LogsController {
 
                 if writable_loglet.segment_index() != tail_segment.index() {
                     // writable segment in bifrost is probably ahead of our snapshot.
-                    // then there is probably a new metadata update that will gonna fix this
+                    // then there is probably a new metadata update that will fix this
                     // for now we just ignore this segment
                     trace!(%log_id, segment_index=%tail_segment.index(), "Segment is not tail segment, skip finding tail");
                     continue;
@@ -971,7 +967,7 @@ impl LogsController {
 
                 updates.insert(*log_id, update);
             }
-            // we explicity drop the permit here to make sure
+            // we explicitly drop the permit here to make sure
             // it's moved to the future closure
             drop(permit);
             Event::LogsTailUpdates { updates }
@@ -1093,7 +1089,7 @@ impl LogsController {
                             Event::WriteLogsFailed {
                                 logs,
                                 previous_version,
-                                debounce
+                                debounce,
                             }
                         }
                     };
@@ -1105,7 +1101,7 @@ impl LogsController {
                 let version = logs.version();
                 Event::WriteLogsSucceeded(version)
             })
-            .await
+                .await
         });
     }
 
@@ -1230,5 +1226,238 @@ impl<'a> scheduler::PartitionProcessorPlacementHints
                 | LogState::Sealed { .. }
                 | LogState::Provisioning { .. } => None,
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use enumset::{enum_set, EnumSet};
+
+    use restate_core::TestCoreEnvBuilder;
+    use restate_types::nodes_config::{NodesConfiguration, Role, StorageState};
+    use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletId};
+    use restate_types::{GenerationalNodeId, NodeId};
+
+    use crate::cluster_controller::logs_controller::build_new_replicated_loglet_configuration;
+    use crate::cluster_controller::nodeset_selection;
+    use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+
+    #[derive(Debug, Default, Clone)]
+    struct MockNodes {
+        pub nodes_config: NodesConfiguration,
+        pub observed_state: ObservedClusterState,
+    }
+
+    #[allow(dead_code)]
+    impl MockNodes {
+        fn builder() -> MockNodeBuilder {
+            MockNodeBuilder {
+                nodes_config: NodesConfiguration::new(1.into(), "mock-cluster".to_owned()),
+                observed_state: ObservedClusterState::default(),
+            }
+        }
+
+        fn kill_node(&mut self, node_id: u32) {
+            let id = node_id.into();
+            self.observed_state.alive_nodes.remove(&id);
+            self.observed_state.dead_nodes.insert(id);
+        }
+
+        fn revive_node(&mut self, node_id: u32, generation: u32) {
+            let id = node_id.into();
+            self.observed_state.dead_nodes.remove(&id);
+            self.observed_state
+                .alive_nodes
+                .insert(id, id.with_generation(generation));
+        }
+    }
+
+    struct MockNodeBuilder {
+        nodes_config: NodesConfiguration,
+        observed_state: ObservedClusterState,
+    }
+
+    #[allow(dead_code)]
+    impl MockNodeBuilder {
+        fn with_node(
+            &mut self,
+            node_id: u32,
+            roles: EnumSet<Role>,
+            storage_state: StorageState,
+        ) -> &mut Self {
+            let id = node_id.into();
+            self.nodes_config
+                .upsert_node(nodeset_selection::tests::node(
+                    node_id,
+                    roles,
+                    storage_state,
+                ));
+            self.observed_state
+                .alive_nodes
+                .insert(id, id.with_generation(1));
+
+            self
+        }
+
+        fn add_all(&mut self, nodes: Vec<(NodeId, EnumSet<Role>, StorageState)>) {
+            for (node_id, roles, storage_state) in nodes {
+                self.nodes_config
+                    .upsert_node(nodeset_selection::tests::node(
+                        node_id.id().raw_id(),
+                        roles,
+                        storage_state,
+                    ));
+                match node_id {
+                    NodeId::Plain(node_id) => {
+                        self.observed_state.dead_nodes.insert(node_id);
+                    }
+                    NodeId::Generational(node_id) => {
+                        self.observed_state
+                            .alive_nodes
+                            .insert(node_id.as_plain(), node_id);
+                    }
+                }
+            }
+        }
+
+        fn with_nodes<const N: usize>(
+            mut self,
+            ids: [u32; N],
+            roles: EnumSet<Role>,
+            state: StorageState,
+        ) -> Self {
+            for id in ids {
+                self.with_node(id, roles, state);
+            }
+            self
+        }
+
+        fn with_dedicated_admin_node(self, id: u32) -> Self {
+            self.with_nodes(
+                [id],
+                enum_set!(Role::Admin | Role::MetadataStore),
+                StorageState::Disabled,
+            )
+        }
+
+        fn with_dedicated_admin_nodes<const N: usize>(self, ids: [u32; N]) -> Self {
+            self.with_nodes(
+                ids,
+                enum_set!(Role::Admin | Role::MetadataStore),
+                StorageState::Disabled,
+            )
+        }
+
+        fn with_dedicated_worker_nodes<const N: usize>(self, ids: [u32; N]) -> Self {
+            self.with_nodes(ids, enum_set!(Role::Worker), StorageState::Disabled)
+        }
+
+        fn with_dedicated_log_server_nodes<const N: usize>(self, ids: [u32; N]) -> Self {
+            self.with_nodes(ids, enum_set!(Role::LogServer), StorageState::ReadWrite)
+        }
+
+        fn with_mixed_server_nodes<const N: usize>(self, ids: [u32; N]) -> Self {
+            self.with_nodes(
+                ids,
+                enum_set!(Role::Worker | Role::LogServer),
+                StorageState::ReadWrite,
+            )
+        }
+
+        fn build(self) -> MockNodes {
+            MockNodes {
+                nodes_config: self.nodes_config,
+                observed_state: self.observed_state,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_and_reconfigure_replicated_loglet() -> googletest::Result<()> {
+        let mut nodes = MockNodes::builder()
+            .with_dedicated_admin_node(0)
+            .with_dedicated_log_server_nodes([1, 2, 3])
+            .with_dedicated_worker_nodes([4, 5, 6])
+            .build();
+
+        let env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(GenerationalNodeId::new(0, 1))
+            .set_nodes_config(nodes.nodes_config.clone())
+            .build()
+            .await;
+
+        env.tc
+            .run_in_scope("test", None, async move {
+                let initial = build_new_replicated_loglet_configuration(
+                    ReplicatedLogletId::from(1),
+                    &nodes.observed_state,
+                    None,
+                    Some(NodeId::new_plain(5)),
+                );
+
+                assert!(&initial.is_some());
+                let config = initial.unwrap();
+
+                assert_eq!(config.nodeset, NodeSet::from([1, 2, 3]));
+                assert_eq!(config.sequencer, GenerationalNodeId::new(5, 1));
+
+                nodes.kill_node(2); // one log server; loglet effective nodeset down to [N1, N3]
+                nodes.kill_node(5); // previous sequencer
+
+                let config = build_new_replicated_loglet_configuration(
+                    config.loglet_id,
+                    &nodes.observed_state,
+                    Some(&config),
+                    Some(config.sequencer.into()),
+                )
+                .unwrap();
+
+                // we can reconfigure loglet to use [N1, N3] with a different sequencer
+                assert_eq!(config.nodeset, NodeSet::from([1, 3]));
+                assert_ne!(config.sequencer, GenerationalNodeId::new(5, 1));
+
+                nodes.revive_node(2, 2);
+
+                let config = build_new_replicated_loglet_configuration(
+                    config.loglet_id,
+                    &nodes.observed_state,
+                    Some(&config),
+                    Some(NodeId::new_plain(6)),
+                )
+                .unwrap();
+
+                // we can reconfigure back to [N1, N2, N3] and improve availability
+                assert_eq!(config.nodeset, NodeSet::from([1, 2, 3]));
+
+                // writable log server majority not possible now
+                nodes.kill_node(1);
+                nodes.kill_node(3);
+
+                assert!(build_new_replicated_loglet_configuration(
+                    config.loglet_id,
+                    &nodes.observed_state,
+                    Some(&config),
+                    Some(config.sequencer.into()),
+                )
+                .is_none());
+
+                // need at least one more log server back...
+                nodes.revive_node(1, 2);
+
+                let config = build_new_replicated_loglet_configuration(
+                    config.loglet_id,
+                    &nodes.observed_state,
+                    Some(&config),
+                    Some(config.sequencer.into()),
+                )
+                .unwrap();
+
+                // ... then we can form a nodeset that meets the replication requirement again
+                assert_eq!(config.nodeset, NodeSet::from([1, 2]));
+                assert_eq!(config.sequencer, GenerationalNodeId::new(6, 1));
+
+                Ok(())
+            })
+            .await
     }
 }
