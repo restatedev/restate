@@ -15,7 +15,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, info};
+use tracing::{debug, trace};
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_types::cluster_controller::SchedulingPlan;
@@ -129,7 +129,7 @@ impl PartitionRoutingRefresher {
         loop {
             tokio::select! {
                 _ = &mut cancel => {
-                    info!("Routing information refresher stopped");
+                    debug!("Routing information refresher stopped");
                     break;
                 }
                 Some(cmd) = self.receiver.recv() => {
@@ -140,7 +140,7 @@ impl PartitionRoutingRefresher {
                     }
                 }
                 _ = update_interval.tick() => {
-                    debug!("Refreshing routing information...");
+                    trace!("Refreshing routing information...");
                     self.spawn_sync_routing_information_task();
                 }
             }
