@@ -76,10 +76,10 @@ async fn replicated_loglet_client(
 }
 
 pub struct TestEnv {
-    bifrost: Bifrost,
+    pub bifrost: Bifrost,
     pub loglet: Arc<dyn Loglet>,
-    metadata_writer: MetadataWriter,
-    metadata_store_client: MetadataStoreClient,
+    pub metadata_writer: MetadataWriter,
+    pub metadata_store_client: MetadataStoreClient,
     pub cluster: StartedCluster,
 }
 
