@@ -12,7 +12,7 @@ use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace, trace_span, warn, Instrument};
 
 use restate_core::network::Incoming;
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle, TaskKind};
@@ -258,7 +258,10 @@ impl<S: LogStore> LogletWorker<S> {
                     self.process_trim(msg);
                 }
                 // STORE
-                Some(msg) = store_rx.recv() => {
+                Some(mut msg) = store_rx.recv() => {
+                    let span = trace_span!("LogServer: store");
+                    msg.follow_from_sender_for(&span);
+
                     let (reciprocal, msg) = msg.split();
                     // this message might be telling us about a higher `known_global_tail`
                     self.loglet_state.notify_known_global_tail(msg.header.known_global_tail);
@@ -290,7 +293,7 @@ impl<S: LogStore> LogletWorker<S> {
                                     let _ = reciprocal.prepare(Stored::empty()).send().await;
                                 }
                             }
-                        });
+                        }.instrument(span));
                     } else {
                         // we didn't store, let's respond immediately with status
                         let msg = Stored::new(self.loglet_state.local_tail(), self.loglet_state.known_global_tail()).with_status(status);
