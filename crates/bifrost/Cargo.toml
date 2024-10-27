@@ -43,7 +43,6 @@ tokio-stream = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
-tempfile = { workspace = true }
 
 
 [dev-dependencies]
