@@ -129,7 +129,7 @@ impl NetworkServer {
         );
 
         run_hyper_server(
-            &options.bind_address,
+            &options.bind_address.unwrap(),
             service,
             "node-grpc",
             || node_status.update(NodeStatus::Alive),
