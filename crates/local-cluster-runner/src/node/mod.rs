@@ -27,7 +27,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio::{process::Command, sync::mpsc::Sender};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use typed_builder::TypedBuilder;
 
 use restate_types::{
@@ -78,7 +78,7 @@ pub struct Node {
             pub fn with_roles(self, roles: EnumSet<Role>) {
                 self.base_config.common.roles = roles
             }
-        ))]
+    ))]
     base_config: Configuration,
     binary_source: BinarySource,
     #[builder(default)]
@@ -506,7 +506,10 @@ impl StartedNode {
                     nix::sys::signal::SIGKILL,
                 ) {
                     Ok(()) => (&mut self.status).await,
-                    Err(errno) => Err(io::Error::from_raw_os_error(errno as i32)),
+                    Err(errno) => match errno {
+                        nix::errno::Errno::ESRCH => Ok(ExitStatus::default()), // ignore "no such process"
+                        _ => Err(io::Error::from_raw_os_error(errno as i32)),
+                    },
                 }
             }
         }
@@ -523,11 +526,23 @@ impl StartedNode {
                     self.config.node_name(),
                     pid
                 );
-                nix::sys::signal::kill(
+                match nix::sys::signal::kill(
                     nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
                     nix::sys::signal::SIGTERM,
-                )
-                .map_err(|errno| io::Error::from_raw_os_error(errno as i32))
+                ) {
+                    Ok(()) => Ok(()),
+                    Err(errno) => match errno {
+                        nix::errno::Errno::ESRCH => {
+                            warn!(
+                                "Node {} (pid {}) did not exist when sending SIGTERM",
+                                self.config.node_name(),
+                                pid
+                            );
+                            Ok(())
+                        }
+                        _ => Err(io::Error::from_raw_os_error(errno as i32)),
+                    },
+                }
             }
         }
     }
