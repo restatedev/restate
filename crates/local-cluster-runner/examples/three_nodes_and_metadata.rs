@@ -2,8 +2,9 @@ use std::num::NonZeroU16;
 use std::time::Duration;
 
 use enumset::enum_set;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use regex::Regex;
+use tokio::spawn;
 use tracing::{error, info};
 
 use restate_local_cluster_runner::{
@@ -34,33 +35,52 @@ async fn main() {
         3,
     );
 
+    let shutdown_signal = shutdown();
+    tokio::pin!(shutdown_signal);
+
+    // Create the log stream upfront to avoid startup race condition
+    let mut admin_ready = nodes[0].lines(Regex::new("Restate server is ready").unwrap());
+
+    let admin_startup_timeout = spawn(async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    })
+    .fuse();
+    tokio::pin!(admin_startup_timeout);
+
     let cluster = Cluster::builder()
         .cluster_name("test-cluster")
         .nodes(nodes)
         .build();
 
-    // start capturing signals
-    let shutdown_fut = shutdown();
-
     let mut cluster = cluster.start().await.unwrap();
-    let mut admin_output = cluster.nodes[0].lines(Regex::new("Server listening").unwrap());
+    let mut ready = false;
 
-    tokio::select! {
-        _ = shutdown_fut => {}
-
-        line = admin_output.next() => match line
-        {
-            None => {
-                error!("metadata node exited early");
-                std::process::exit(1)
+    loop {
+        tokio::select! {
+            _ = &mut shutdown_signal => {
+                break;
             }
-            Some(line) => {
-                info!("matched metadata logline: {line}")
+            _ = &mut admin_startup_timeout => {
+                if !ready {
+                    error!("timeout waiting for admin node to start up");
+                    break;
+                }
+            }
+            line = admin_ready.next() => match line
+            {
+                None => {
+                    error!("admin node exited");
+                    break;
+                }
+                Some(line) => {
+                    info!("admin node ready: {line}");
+                    ready = true;
+                }
             }
         }
     }
 
-    drop(admin_output);
+    info!("cluster shutting down");
     cluster
         .graceful_shutdown(Duration::from_secs(5))
         .await
