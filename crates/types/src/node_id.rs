@@ -125,12 +125,6 @@ impl GenerationalNodeId {
 #[display("N{}", _0)]
 pub struct PlainNodeId(u32);
 
-impl PlainNodeId {
-    pub fn raw_id(self) -> u32 {
-        self.0
-    }
-}
-
 impl FromStr for PlainNodeId {
     type Err = MalformedPlainNodeId;
 
