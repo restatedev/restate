@@ -18,6 +18,7 @@ use std::sync::{Arc, OnceLock};
 use arc_swap::{ArcSwap, AsRaw};
 use enum_map::EnumMap;
 use tokio::sync::{mpsc, oneshot, watch};
+use tracing::instrument;
 
 use restate_types::live::{Live, Pinned};
 use restate_types::logs::metadata::Logs;
@@ -175,6 +176,7 @@ impl Metadata {
     }
 
     /// Returns when the metadata kind is at the provided version (or newer)
+    #[instrument(level = "debug", skip(self))]
     pub async fn wait_for_version(
         &self,
         metadata_kind: MetadataKind,

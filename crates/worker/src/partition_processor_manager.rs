@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -16,14 +17,14 @@ use std::time::Duration;
 
 use anyhow::Context;
 use futures::future::OptionFuture;
-use futures::stream::StreamExt;
+use futures::stream::{FuturesUnordered, StreamExt};
 use futures::Stream;
 use metrics::gauge;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, debug_span, info, instrument, trace, warn, Instrument, Span};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
@@ -501,8 +502,10 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 Some(command) = self.rx.recv() => {
                     self.on_command(command);
                 }
-                Some(update_processors) = self.incoming_update_processors.next() => {
-                    if let Err(err) = self.on_control_processors(update_processors).await {
+                Some(control_processors) = self.incoming_update_processors.next() => {
+                    let span = debug_span!(parent: None, "control_processors");
+                    span.follows_from(Span::current());
+                    if let Err(err) = self.on_control_processors(control_processors).instrument(span).await {
                         warn!("failed processing control processors command: {err}");
                     }
                 }
@@ -589,6 +592,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         }
     }
 
+    #[instrument(skip_all)]
     async fn on_control_processors(
         &mut self,
         control_processor: Incoming<ControlProcessors>,
@@ -607,9 +611,21 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             .await?
             .into_arc();
 
+        let mut tasks = FuturesUnordered::new();
         for control_processor in control_processors.commands {
-            self.on_control_processor(control_processor, &partition_table)
+            let maybe_starting = self
+                .on_control_processor(control_processor, &partition_table)
                 .await?;
+
+            if let MaybeStarting::Starting(starting) = maybe_starting {
+                tasks.push(starting);
+            }
+        }
+
+        while let Some(started) = tasks.next().await {
+            let started = started?;
+            self.running_partition_processors
+                .insert(started.partition_id, started);
         }
 
         Ok(())
@@ -620,7 +636,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         &mut self,
         control_processor: ControlProcessor,
         partition_table: &PartitionTable,
-    ) -> Result<(), Error> {
+    ) -> Result<MaybeStarting<impl Future<Output = Result<ProcessorState, Error>>>, Error> {
         let partition_id = control_processor.partition_id;
 
         match control_processor.command {
@@ -644,12 +660,13 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     .get_partition(&partition_id)
                     .map(|partition| &partition.key_range)
                 {
-                    self.start_partition_processor(
+                    let starting = self.start_partition_processor(
                         partition_id,
-                        partition_key_range,
+                        partition_key_range.clone(),
                         RunMode::Follower,
-                    )
-                    .await?;
+                    );
+
+                    return Ok(MaybeStarting::Starting(starting));
                 } else {
                     debug!("Unknown partition id '{partition_id}'. Ignoring follower command.");
                 }
@@ -666,22 +683,25 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     .get_partition(&partition_id)
                     .map(|partition| &partition.key_range)
                 {
-                    self.start_partition_processor(
+                    let starting = self.start_partition_processor(
                         partition_id,
-                        partition_key_range,
+                        partition_key_range.clone(),
                         RunMode::Leader,
-                    )
-                    .await?;
+                    );
+
+                    return Ok(MaybeStarting::Starting(starting));
                 } else {
                     debug!("Unknown partition id '{partition_id}'. Ignoring leader command.");
                 }
             }
         }
 
-        Ok(())
+        Ok(MaybeStarting::Noop)
     }
 
+    #[instrument(skip_all)]
     pub async fn apply_plan(&mut self, actions: &[Action]) -> Result<(), Error> {
+        let mut tasks = FuturesUnordered::new();
         for action in actions {
             match action {
                 Action::RunPartition(action) => {
@@ -690,12 +710,13 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                         .running_partition_processors
                         .contains_key(&action.partition_id)
                     {
-                        self.start_partition_processor(
+                        let starting = self.start_partition_processor(
                             action.partition_id,
-                            &action.key_range_inclusive.clone().into(),
+                            action.key_range_inclusive.clone().into(),
                             action.mode,
-                        )
-                        .await?;
+                        );
+
+                        tasks.push(starting);
                     } else {
                         debug!(
                             "Partition processor for partition id '{}' is already running.",
@@ -706,56 +727,26 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             }
         }
 
+        while let Some(started) = tasks.next().await {
+            let state = started?;
+            self.running_partition_processors
+                .insert(state.partition_id, state);
+        }
+
         gauge!(NUM_ACTIVE_PARTITIONS).set(self.running_partition_processors.len() as f64);
         Ok(())
     }
 
-    async fn start_partition_processor(
-        &mut self,
-        partition_id: PartitionId,
-        key_range: &RangeInclusive<PartitionKey>,
-        mode: RunMode,
-    ) -> Result<(), Error> {
-        debug!("Start new partition processor.");
-        let mut state = self.spawn_partition_processor(partition_id, key_range.clone())?;
-
-        if RunMode::Leader == mode {
-            state
-                .run_for_leader(
-                    self.metadata_store_client.clone(),
-                    self.metadata.my_node_id(),
-                )
-                .await?
-        }
-
-        self.running_partition_processors
-            .insert(partition_id, state);
-        Ok(())
-    }
-
-    fn spawn_partition_processor(
+    fn start_partition_processor(
         &mut self,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
-    ) -> Result<ProcessorState, Error> {
-        let (control_tx, control_rx) = mpsc::channel(2);
-        let status = PartitionProcessorStatus::new();
-        let (watch_tx, watch_rx) = watch::channel(status.clone());
-
+        run_mode: RunMode,
+    ) -> impl Future<Output = Result<ProcessorState, Error>> {
         let config = self.updateable_config.pinned();
-        let options = &config.worker;
-
-        let networking = self.networking.clone();
-        let bifrost = self.bifrost.clone();
-        let node_id = self.metadata.my_node_id();
-
         let schema = self.metadata.updateable_schema();
 
-        let invoker: InvokerService<
-            InvokerStorageReader<PartitionStore>,
-            EntryEnricher<Schema, ProtobufRawEntryCodec>,
-            Schema,
-        > = InvokerService::from_options(
+        let invoker = InvokerService::from_options(
             &config.common.service_client,
             &config.worker.invoker,
             EntryEnricher::new(schema.clone()),
@@ -765,17 +756,6 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         self.invokers_status_reader
             .push(key_range.clone(), invoker.status_reader());
 
-        let pp_builder = PartitionProcessorBuilder::new(
-            node_id,
-            partition_id,
-            key_range.clone(),
-            status,
-            options,
-            control_rx,
-            watch_tx,
-            invoker.handle(),
-        );
-
         // the name is also used as thread names for the corresponding tokio runtimes, let's keep
         // it short.
         let task_name = self
@@ -783,22 +763,92 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             .entry(partition_id)
             .or_insert_with(|| Box::leak(Box::new(format!("pp-{}", partition_id))));
 
-        let invoker_name = Box::leak(Box::new(format!("invoker-{}", partition_id)));
-        let invoker_config = self.updateable_config.clone().map(|c| &c.worker.invoker);
-        let configuration = self.updateable_config.clone();
-
-        let maybe_task_id: Result<TaskId, RuntimeError> = self.task_center.start_runtime(
-            TaskKind::PartitionProcessor,
+        let task = SpawnPartitionProcessorTask {
             task_name,
+            node_id: self.metadata.my_node_id(),
+            partition_id,
+            run_mode,
+            key_range,
+            configuration: self.updateable_config.clone(),
+            networking: self.networking.clone(),
+            bifrost: self.bifrost.clone(),
+            invoker,
+            partition_store_manager: self.partition_store_manager.clone(),
+            metadata_store_client: self.metadata_store_client.clone(),
+        };
+
+        task.run()
+    }
+}
+
+enum MaybeStarting<Fut>
+where
+    Fut: Future<Output = Result<ProcessorState, Error>>,
+{
+    Noop,
+    Starting(Fut),
+}
+
+struct SpawnPartitionProcessorTask<T: TransportConnect> {
+    task_name: &'static str,
+    node_id: GenerationalNodeId,
+    partition_id: PartitionId,
+    run_mode: RunMode,
+    key_range: RangeInclusive<PartitionKey>,
+    configuration: Live<Configuration>,
+    networking: Networking<T>,
+    bifrost: Bifrost,
+    invoker: InvokerService<
+        InvokerStorageReader<PartitionStore>,
+        EntryEnricher<Schema, ProtobufRawEntryCodec>,
+        Schema,
+    >,
+    partition_store_manager: PartitionStoreManager,
+    metadata_store_client: MetadataStoreClient,
+}
+
+impl<T: TransportConnect> SpawnPartitionProcessorTask<T> {
+    #[instrument(
+        name="spawn_partition_processor", 
+        skip_all,
+        fields(
+            partition_id=%self.partition_id,
+            run_mode=%self.run_mode,
+        )
+    )]
+    async fn run(self) -> Result<ProcessorState, Error> {
+        let (control_tx, control_rx) = mpsc::channel(2);
+        let status = PartitionProcessorStatus::new();
+        let (watch_tx, watch_rx) = watch::channel(status.clone());
+
+        let options = &self.configuration.pinned().worker;
+
+        let pp_builder = PartitionProcessorBuilder::new(
+            self.node_id,
+            self.partition_id,
+            self.key_range.clone(),
+            status,
+            options,
+            control_rx,
+            watch_tx,
+            self.invoker.handle(),
+        );
+
+        let invoker_name = Box::leak(Box::new(format!("invoker-{}", self.partition_id)));
+        let invoker_config = self.configuration.clone().map(|c| &c.worker.invoker);
+
+        let maybe_task_id: Result<TaskId, RuntimeError> = task_center().start_runtime(
+            TaskKind::PartitionProcessor,
+            self.task_name,
             Some(pp_builder.partition_id),
             {
-                let storage_manager = self.partition_store_manager.clone();
                 let options = options.clone();
-                let key_range = key_range.clone();
+                let key_range = self.key_range.clone();
                 move || async move {
-                    let partition_store = storage_manager
+                    let partition_store = self
+                        .partition_store_manager
                         .open_partition_store(
-                            partition_id,
+                            self.partition_id,
                             key_range,
                             OpenMode::CreateIfMissing,
                             &options.storage.rocksdb,
@@ -809,15 +859,15 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                         TaskKind::SystemService,
                         invoker_name,
                         Some(pp_builder.partition_id),
-                        invoker.run(invoker_config),
+                        self.invoker.run(invoker_config),
                     )?;
 
                     pp_builder
                         .build::<ProtobufRawEntryCodec, T>(
-                            networking,
-                            bifrost,
+                            self.networking,
+                            self.bifrost,
                             partition_store,
-                            configuration,
+                            self.configuration,
                         )
                         .await?
                         .run()
@@ -837,16 +887,23 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             Err(RuntimeError::Shutdown(e)) => Err(e),
         }?;
 
-        Ok(ProcessorState::new(
-            partition_id,
+        let mut state = ProcessorState::new(
+            self.partition_id,
             task_id,
-            key_range,
+            self.key_range,
             PartitionProcessorHandle::new(control_tx),
             watch_rx,
-        ))
+        );
+
+        if self.run_mode == RunMode::Leader {
+            state
+                .run_for_leader(self.metadata_store_client, self.node_id)
+                .await?
+        }
+
+        Ok(state)
     }
 }
-
 /// Monitors the persisted log lsns and notifies the partition processor manager about it. The
 /// current approach requires flushing the memtables to make sure that data has been persisted.
 /// An alternative approach could be to register an event listener on flush events and using
