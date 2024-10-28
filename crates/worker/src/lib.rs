@@ -36,7 +36,7 @@ use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
 use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 use restate_storage_query_postgres::service::PostgresQueryService;
@@ -169,8 +169,8 @@ impl<T: TransportConnect> Worker<T> {
 
         let storage_query_context = QueryContext::create(
             &config.admin.query_engine,
-            partition_processor_manager.handle(),
-            partition_store_manager.clone(),
+            SelectPartitionsFromMetadata::new(metadata),
+            Some(partition_store_manager.clone()),
             partition_processor_manager.invokers_status_reader(),
             schema.clone(),
             create_remote_scanner_service(networking, task_center(), router_builder),

@@ -574,10 +574,6 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
     fn on_command(&mut self, command: ProcessorsManagerCommand) {
         use ProcessorsManagerCommand::*;
         match command {
-            GetLivePartitions(sender) => {
-                let live_partitions = self.running_partition_processors.keys().cloned().collect();
-                let _ = sender.send(live_partitions);
-            }
             CreateSnapshot(partition_id, sender) => {
                 self.running_partition_processors
                     .get(&partition_id)

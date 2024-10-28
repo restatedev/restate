@@ -61,7 +61,9 @@ impl Debug for RemoteScannerManager {
 }
 
 pub enum PartitionLocation {
-    Local,
+    Local {
+        scanner: Arc<dyn ScanPartition>,
+    },
     #[allow(dead_code)]
     Remote {
         node_id: NodeId,
@@ -82,25 +84,36 @@ impl RemoteScannerManager {
     pub fn create_distributed_scanner(
         &self,
         table_name: impl Into<String>,
-        local_scanner: Arc<dyn ScanPartition>,
+        local_scanner: Option<Arc<dyn ScanPartition>>,
     ) -> impl ScanPartition + Clone {
         let name = table_name.into();
-        // make the local scanner available to serve a remote RPC.
-        // see usages of [[local_partition_scanner]]
-        // we use the table_name to associate a remote scanner with its local counterpart.
-        self.local_store_scanners
-            .register(name.clone(), local_scanner.clone());
 
-        RemotePartitionsScanner::new(self.clone(), local_scanner, name)
+        if let Some(local_scanner) = local_scanner {
+            // make the local scanner available to serve a remote RPC.
+            // see usages of [[local_partition_scanner]]
+            // we use the table_name to associate a remote scanner with its local counterpart.
+            self.local_store_scanners
+                .register(name.clone(), local_scanner.clone());
+        }
+
+        RemotePartitionsScanner::new(self.clone(), name)
     }
 
     pub fn local_partition_scanner(&self, table: &str) -> Option<Arc<dyn ScanPartition>> {
         self.local_store_scanners.get(table)
     }
 
-    pub fn get_partition_target_node(&self, _partition_id: PartitionId) -> PartitionLocation {
+    pub fn get_partition_target_node(
+        &self,
+        table: &str,
+        _partition_id: PartitionId,
+    ) -> PartitionLocation {
         // TODO: obtain this information from the metadata, once exposed
-        PartitionLocation::Local
+        PartitionLocation::Local {
+            scanner: self
+                .local_partition_scanner(table)
+                .expect("should be present"),
+        }
     }
 }
 
@@ -109,19 +122,13 @@ impl RemoteScannerManager {
 #[derive(Clone, Debug)]
 pub struct RemotePartitionsScanner {
     manager: RemoteScannerManager,
-    local_scanner: Arc<dyn ScanPartition>,
     table_name: String,
 }
 
 impl RemotePartitionsScanner {
-    pub fn new(
-        manager: RemoteScannerManager,
-        local_scanner: Arc<dyn ScanPartition>,
-        table: impl Into<String>,
-    ) -> Self {
+    pub fn new(manager: RemoteScannerManager, table: impl Into<String>) -> Self {
         Self {
             manager,
-            local_scanner,
             table_name: table.into(),
         }
     }
@@ -134,10 +141,12 @@ impl ScanPartition for RemotePartitionsScanner {
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
     ) -> SendableRecordBatchStream {
-        match self.manager.get_partition_target_node(partition_id) {
-            PartitionLocation::Local => {
-                self.local_scanner
-                    .scan_partition(partition_id, range, projection)
+        match self
+            .manager
+            .get_partition_target_node(&self.table_name, partition_id)
+        {
+            PartitionLocation::Local { scanner } => {
+                scanner.scan_partition(partition_id, range, projection)
             }
             PartitionLocation::Remote { node_id } => remote_scan_as_datafusion_stream(
                 self.manager.svc.clone(),

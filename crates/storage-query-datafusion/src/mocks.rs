@@ -169,7 +169,7 @@ impl MockQueryEngine {
             QueryContext::create(
                 &QueryEngineOptions::default(),
                 MockPartitionSelector,
-                manager,
+                Some(manager),
                 status,
                 Live::from_value(schemas),
                 Arc::new(NoopSvc),
