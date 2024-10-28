@@ -1279,18 +1279,12 @@ pub mod tests {
         pub observed_state: ObservedClusterState,
     }
 
-    // todo(pavel) refactor nodeset selector tests to use these helpers
-    #[allow(dead_code)]
     impl MockNodes {
         pub fn builder() -> MockNodeBuilder {
             MockNodeBuilder {
                 nodes_config: NodesConfiguration::new(1.into(), "mock-cluster".to_owned()),
                 observed_state: ObservedClusterState::default(),
             }
-        }
-
-        pub fn add_dedicated_worker_node(&mut self, id: u32) {
-            self.add_node(id, enum_set!(Role::Worker), StorageState::Disabled)
         }
 
         pub fn add_dedicated_log_server_node(&mut self, id: u32) {
@@ -1344,7 +1338,6 @@ pub mod tests {
         observed_state: ObservedClusterState,
     }
 
-    #[allow(dead_code)]
     impl MockNodeBuilder {
         pub fn with_node(
             mut self,
@@ -1376,23 +1369,6 @@ pub mod tests {
             self
         }
 
-        pub fn add_all(&mut self, nodes: Vec<(NodeId, EnumSet<Role>, StorageState)>) {
-            for (node_id, roles, storage_state) in nodes {
-                self.nodes_config
-                    .upsert_node(node(node_id.id().raw_id(), roles, storage_state));
-                match node_id {
-                    NodeId::Plain(node_id) => {
-                        self.observed_state.dead_nodes.insert(node_id);
-                    }
-                    NodeId::Generational(node_id) => {
-                        self.observed_state
-                            .alive_nodes
-                            .insert(node_id.as_plain(), node_id);
-                    }
-                }
-            }
-        }
-
         pub fn with_nodes<const N: usize>(
             mut self,
             ids: [u32; N],
@@ -1417,14 +1393,6 @@ pub mod tests {
         pub fn with_dedicated_admin_node(self, id: u32) -> Self {
             self.with_nodes(
                 [id],
-                enum_set!(Role::Admin | Role::MetadataStore),
-                StorageState::Disabled,
-            )
-        }
-
-        pub fn with_dedicated_admin_nodes<const N: usize>(self, ids: [u32; N]) -> Self {
-            self.with_nodes(
-                ids,
                 enum_set!(Role::Admin | Role::MetadataStore),
                 StorageState::Disabled,
             )
