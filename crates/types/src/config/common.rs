@@ -65,6 +65,7 @@ pub struct CommonOptions {
     pub metadata_store_client: MetadataStoreClientOptions,
 
     /// Address to bind for the Node server. Default is `0.0.0.0:5122`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub bind_address: Option<BindAddress>,
 
