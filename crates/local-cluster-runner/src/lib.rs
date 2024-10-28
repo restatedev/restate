@@ -39,7 +39,7 @@ pub fn shutdown() -> impl Future<Output = &'static str> {
 }
 
 pub fn random_socket_address() -> io::Result<SocketAddr> {
-    let base_path = std::env::var_os(RESTATE_TEST_PORTS_POOL_DIR)
+    let base_path = env::var_os(RESTATE_TEST_PORTS_POOL_DIR)
         .map(PathBuf::from)
         .unwrap_or_else(|| env::temp_dir().join(DEFAULTS_PORTS_POOL));
 

@@ -94,6 +94,10 @@ impl PartitionTable {
         self.partitions.iter_mut()
     }
 
+    pub fn partition_ids(&self) -> impl Iterator<Item = &PartitionId> {
+        self.partitions.keys()
+    }
+
     pub fn num_partitions(&self) -> u16 {
         u16::try_from(self.partitions.len()).expect("number of partitions should fit into u16")
     }

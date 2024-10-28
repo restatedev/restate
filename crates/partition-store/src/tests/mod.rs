@@ -16,8 +16,8 @@ use std::pin::pin;
 use futures::Stream;
 use tokio_stream::StreamExt;
 
+use crate::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_core::TaskCenterBuilder;
-use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
 use restate_types::config::{CommonOptions, WorkerOptions};

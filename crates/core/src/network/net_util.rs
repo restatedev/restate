@@ -45,6 +45,9 @@ pub fn create_tonic_channel_from_advertised_address(address: AdvertisedAddress) 
             // todo: Make the channel settings configurable
             Channel::builder(uri)
                 .connect_timeout(Duration::from_secs(5))
+                // todo make http2 keep alive configurable
+                .http2_keep_alive_interval(Duration::from_secs(40))
+                .keep_alive_timeout(Duration::from_secs(20))
                 // todo: configure the channel from configuration file
                 .http2_adaptive_window(true)
                 .connect_lazy()

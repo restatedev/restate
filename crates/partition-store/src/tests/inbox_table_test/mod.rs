@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{assert_stream_eq, mock_state_mutation};
+use super::{assert_stream_eq, mock_state_mutation};
+
+use crate::PartitionStore;
 use once_cell::sync::Lazy;
-use restate_partition_store::PartitionStore;
 use restate_storage_api::inbox_table::{
     InboxEntry, InboxTable, ReadOnlyInboxTable, SequenceNumberInboxEntry,
 };

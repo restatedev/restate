@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cluster_controller::logs_controller;
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use std::collections::{BTreeMap, BTreeSet};
+
 use rand::seq::IteratorRandom;
+use tracing::{debug, trace};
+use xxhash_rust::xxh3::Xxh3Builder;
+
 use restate_core::metadata_store::{
     retry_on_network_error, MetadataStoreClient, Precondition, ReadError, ReadWriteError,
     WriteError,
@@ -32,9 +35,9 @@ use restate_types::net::partition_processor_manager::{
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Versioned};
-use std::collections::{BTreeMap, BTreeSet};
-use tracing::{debug, trace};
-use xxhash_rust::xxh3::Xxh3Builder;
+
+use crate::cluster_controller::logs_controller;
+use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 
 type HashSet<T> = std::collections::HashSet<T, Xxh3Builder>;
 

@@ -24,7 +24,7 @@ jobs:
       RUST_BACKTRACE: full
     steps:
       - name: Install liburing
-        run: sudo apt-get install -y liburing-dev
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev
 
       - uses: actions/checkout@v4
 

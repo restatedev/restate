@@ -251,6 +251,66 @@ where
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum ConnectionAwareRpcError<T> {
+    #[error("connection closed")]
+    ConnectionClosed,
+    #[error(transparent)]
+    ConnectionError(#[from] NetworkError),
+    #[error(transparent)]
+    SendError(#[from] NetworkSendError<T>),
+    #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
+}
+
+impl<T> From<RpcError<T>> for ConnectionAwareRpcError<T> {
+    fn from(value: RpcError<T>) -> Self {
+        match value {
+            RpcError::SendError(err) => ConnectionAwareRpcError::SendError(err),
+            RpcError::Shutdown(err) => ConnectionAwareRpcError::Shutdown(err),
+        }
+    }
+}
+
+/// Decorator of the [`RpcRouter`] which allows to monitor the state of connections on which
+/// messages are sent. This can be useful to detect if a response won't be received because the
+/// connection was closed. This requires that the recipient sends responses back to the sender on
+/// the very same connection.
+pub struct ConnectionAwareRpcRouter<T>
+where
+    T: RpcRequest,
+{
+    rpc_router: RpcRouter<T>,
+}
+
+impl<T> ConnectionAwareRpcRouter<T>
+where
+    T: RpcRequest + WireEncode + Send + Sync + 'static,
+    T::ResponseMessage: WireDecode + Send + Sync + 'static,
+{
+    pub async fn call<C: TransportConnect>(
+        &self,
+        networking: &Networking<C>,
+        peer: impl Into<NodeId>,
+        msg: T,
+    ) -> Result<Incoming<T::ResponseMessage>, ConnectionAwareRpcError<Outgoing<T, HasConnection>>>
+    {
+        let peer = peer.into();
+        let connection = networking.node_connection(peer).await?;
+        let connection_closed = connection.closed();
+        let outgoing = Outgoing::new(peer, msg).assign_connection(connection);
+
+        tokio::select! {
+            response = self.rpc_router.call_on_connection(outgoing) => {
+                response.map_err(Into::into)
+            },
+            _ = connection_closed => {
+                Err(ConnectionAwareRpcError::ConnectionClosed)
+            }
+        }
+    }
+}
+
 pub struct StreamingResponseTracker<T>
 where
     T: Targeted,

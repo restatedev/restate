@@ -18,7 +18,7 @@ use test_log::test;
 
 #[test(tokio::test)]
 async fn send_with_delay() {
-    let mut test_env = TestEnv::create_with_neo_invocation_status_table().await;
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_service();
     let invocation_id = InvocationId::mock_random();
@@ -90,7 +90,7 @@ async fn send_with_delay() {
 
 #[test(tokio::test)]
 async fn send_with_delay_to_locked_virtual_object() {
-    let mut test_env = TestEnv::create_with_neo_invocation_status_table().await;
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
@@ -182,7 +182,7 @@ async fn send_with_delay_to_locked_virtual_object() {
 
 #[test(tokio::test)]
 async fn send_with_delay_and_idempotency_key() {
-    let mut test_env = TestEnv::create_with_neo_invocation_status_table().await;
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;

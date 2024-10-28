@@ -27,7 +27,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio::{process::Command, sync::mpsc::Sender};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use typed_builder::TypedBuilder;
 
 use restate_types::{
@@ -78,7 +78,7 @@ pub struct Node {
             pub fn with_roles(self, roles: EnumSet<Role>) {
                 self.base_config.common.roles = roles
             }
-        ))]
+    ))]
     base_config: Configuration,
     binary_source: BinarySource,
     #[builder(default)]
@@ -159,7 +159,7 @@ impl Node {
             let mut base_config = base_config.clone();
             // let any node write the initial NodesConfiguration
             base_config.common.allow_bootstrap = true;
-            base_config.common.force_node_id = Some(PlainNodeId::new(1));
+            base_config.common.force_node_id = Some(PlainNodeId::new(0));
             nodes.push(Self::new_test_node(
                 "metadata-node",
                 base_config,
@@ -170,7 +170,7 @@ impl Node {
 
         for node in 1..=size {
             let mut base_config = base_config.clone();
-            base_config.common.force_node_id = Some(PlainNodeId::new(node + 1));
+            base_config.common.force_node_id = Some(PlainNodeId::new(node));
             nodes.push(Self::new_test_node(
                 format!("node-{node}"),
                 base_config,
@@ -208,8 +208,12 @@ impl Node {
             *file = base_dir.join(&*file)
         }
         if self.base_config.common.bind_address.is_none() {
-            // TODO: Derive bind_address from advertised_address
-            self.base_config.common.bind_address = Some("0.0.0.0:5122".parse().unwrap());
+            // Derive bind_address from advertised_address
+            self.base_config.common.bind_address = self
+                .base_config
+                .common
+                .advertised_address
+                .derive_bind_address();
         }
 
         if let Some(BindAddress::Uds(file)) = &mut self.base_config.common.bind_address {
@@ -282,7 +286,12 @@ impl Node {
             &mut cmd
         }
         .env("RESTATE_CONFIG", node_config_file)
-        .env("TOKIO_CONSOLE_BIND", "127.0.0.1:0")
+        .env(
+            "TOKIO_CONSOLE_BIND",
+            random_socket_address()
+                .expect("to find a random port for tokio console")
+                .to_string(),
+        )
         .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -512,7 +521,10 @@ impl StartedNode {
                     nix::sys::signal::SIGKILL,
                 ) {
                     Ok(()) => (&mut self.status).await,
-                    Err(errno) => Err(io::Error::from_raw_os_error(errno as i32)),
+                    Err(errno) => match errno {
+                        nix::errno::Errno::ESRCH => Ok(ExitStatus::default()), // ignore "no such process"
+                        _ => Err(io::Error::from_raw_os_error(errno as i32)),
+                    },
                 }
             }
         }
@@ -522,18 +534,28 @@ impl StartedNode {
     pub fn terminate(&self) -> io::Result<()> {
         match self.status {
             StartedNodeStatus::Exited(_) => Ok(()),
-            StartedNodeStatus::Failed(kind) => Err((kind).into()),
+            StartedNodeStatus::Failed(kind) => Err(kind.into()),
             StartedNodeStatus::Running { pid, .. } => {
                 info!(
                     "Sending SIGTERM to node {} (pid {})",
                     self.config.node_name(),
                     pid
                 );
-                nix::sys::signal::kill(
+                match nix::sys::signal::kill(
                     nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
                     nix::sys::signal::SIGTERM,
-                )
-                .map_err(|errno| io::Error::from_raw_os_error(errno as i32))
+                ) {
+                    Err(nix::errno::Errno::ESRCH) => {
+                        warn!(
+                            "Node {} server process (pid {}) did not exist when sending SIGTERM",
+                            self.config.node_name(),
+                            pid
+                        );
+                        Ok(())
+                    }
+                    Err(errno) => Err(io::Error::from_raw_os_error(errno as i32)),
+                    _ => Ok(()),
+                }
             }
         }
     }

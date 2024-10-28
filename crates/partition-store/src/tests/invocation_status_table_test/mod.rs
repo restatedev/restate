@@ -12,15 +12,20 @@
 #![allow(clippy::borrow_interior_mutable_const)]
 #![allow(clippy::declare_interior_mutable_const)]
 
-use super::{assert_stream_eq, storage_test_environment};
+use super::storage_test_environment;
 
+use crate::invocation_status_table::{InvocationStatusKey, InvocationStatusKeyV1};
+use crate::partition_store::StorageAccess;
 use bytestring::ByteString;
+use futures_util::TryStreamExt;
+use googletest::prelude::*;
 use once_cell::sync::Lazy;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, JournalMetadata,
-    SourceTable, StatusTimestamps,
+    InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, InvocationStatusV1,
+    JournalMetadata, ReadOnlyInvocationStatusTable, StatusTimestamps,
 };
-use restate_types::identifiers::InvocationId;
+use restate_storage_api::Transaction;
+use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
 };
@@ -73,10 +78,7 @@ const INVOCATION_TARGET_5: InvocationTarget = InvocationTarget::VirtualObject {
 static INVOCATION_ID_5: Lazy<InvocationId> =
     Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_5));
 
-fn invoked_status(
-    invocation_target: InvocationTarget,
-    source_table: SourceTable,
-) -> InvocationStatus {
+fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Invoked(InFlightInvocationMetadata {
         invocation_target,
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
@@ -86,14 +88,10 @@ fn invoked_status(
         source: Source::Ingress,
         completion_retention_duration: Duration::ZERO,
         idempotency_key: None,
-        source_table,
     })
 }
 
-fn suspended_status(
-    invocation_target: InvocationTarget,
-    source_table: SourceTable,
-) -> InvocationStatus {
+fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Suspended {
         metadata: InFlightInvocationMetadata {
             invocation_target,
@@ -104,7 +102,6 @@ fn suspended_status(
             source: Source::Ingress,
             completion_retention_duration: Duration::ZERO,
             idempotency_key: None,
-            source_table,
         },
         waiting_for_completed_entries: HashSet::default(),
     }
@@ -113,31 +110,31 @@ fn suspended_status(
 async fn populate_data<T: InvocationStatusTable>(txn: &mut T) {
     txn.put_invocation_status(
         &INVOCATION_ID_1,
-        &invoked_status(INVOCATION_TARGET_1.clone(), SourceTable::Old),
+        &invoked_status(INVOCATION_TARGET_1.clone()),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_2,
-        &invoked_status(INVOCATION_TARGET_2.clone(), SourceTable::Old),
+        &invoked_status(INVOCATION_TARGET_2.clone()),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_3,
-        &suspended_status(INVOCATION_TARGET_3.clone(), SourceTable::Old),
+        &suspended_status(INVOCATION_TARGET_3.clone()),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_4,
-        &invoked_status(INVOCATION_TARGET_4.clone(), SourceTable::New),
+        &invoked_status(INVOCATION_TARGET_4.clone()),
     )
     .await;
 
     txn.put_invocation_status(
         &INVOCATION_ID_5,
-        &suspended_status(INVOCATION_TARGET_5.clone(), SourceTable::New),
+        &suspended_status(INVOCATION_TARGET_5.clone()),
     )
     .await;
 }
@@ -147,27 +144,31 @@ async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
         txn.get_invocation_status(&INVOCATION_ID_1)
             .await
             .expect("should not fail"),
-        invoked_status(INVOCATION_TARGET_1.clone(), SourceTable::Old)
+        invoked_status(INVOCATION_TARGET_1.clone())
     );
 
     assert_eq!(
         txn.get_invocation_status(&INVOCATION_ID_4)
             .await
             .expect("should not fail"),
-        invoked_status(INVOCATION_TARGET_4.clone(), SourceTable::New)
+        invoked_status(INVOCATION_TARGET_4.clone())
     );
 }
 
 async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut T) {
-    let stream = txn.all_invoked_invocations();
-
-    let expected = vec![
-        (*INVOCATION_ID_1, INVOCATION_TARGET_1.clone()),
-        (*INVOCATION_ID_2, INVOCATION_TARGET_2.clone()),
-        (*INVOCATION_ID_4, INVOCATION_TARGET_4.clone()),
-    ];
-
-    assert_stream_eq(stream, expected).await;
+    let actual = txn
+        .all_invoked_invocations()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+    assert_that!(
+        actual,
+        unordered_elements_are![
+            eq((*INVOCATION_ID_1, INVOCATION_TARGET_1.clone())),
+            eq((*INVOCATION_ID_2, INVOCATION_TARGET_2.clone())),
+            eq((*INVOCATION_ID_4, INVOCATION_TARGET_4.clone()))
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -178,4 +179,61 @@ async fn test_invocation_status() {
 
     verify_point_lookups(&mut txn).await;
     verify_all_svc_with_status_invoked(&mut txn).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_migration() {
+    let mut rocksdb = storage_test_environment().await;
+
+    let invocation_id = InvocationId::mock_random();
+    let status = InvocationStatus::Invoked(InFlightInvocationMetadata::mock());
+
+    // Let's mock the old invocation status
+    let mut txn = rocksdb.transaction();
+    txn.put_kv(
+        InvocationStatusKeyV1::default()
+            .partition_key(invocation_id.partition_key())
+            .invocation_uuid(invocation_id.invocation_uuid()),
+        &InvocationStatusV1(status.clone()),
+    );
+    txn.commit().await.unwrap();
+
+    // Make sure we can read without mutating
+    assert_eq!(
+        status,
+        rocksdb.get_invocation_status(&invocation_id).await.unwrap()
+    );
+
+    // Now reading should perform the migration,
+    // and result should be equal to the first inserted status
+    let mut txn = rocksdb.transaction();
+    assert_eq!(
+        status,
+        txn.get_invocation_status(&invocation_id).await.unwrap()
+    );
+    txn.commit().await.unwrap();
+
+    // Let's check migration was done
+    assert!(rocksdb
+        .get_kv_raw(
+            InvocationStatusKeyV1::default()
+                .partition_key(invocation_id.partition_key())
+                .invocation_uuid(invocation_id.invocation_uuid()),
+            |_, v| Ok(v.is_none())
+        )
+        .unwrap());
+    assert!(rocksdb
+        .get_kv_raw(
+            InvocationStatusKey::default()
+                .partition_key(invocation_id.partition_key())
+                .invocation_uuid(invocation_id.invocation_uuid()),
+            |_, v| Ok(v.is_some())
+        )
+        .unwrap());
+
+    // Make sure we can read without mutating V2
+    assert_eq!(
+        status,
+        rocksdb.get_invocation_status(&invocation_id).await.unwrap()
+    );
 }

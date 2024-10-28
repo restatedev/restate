@@ -940,6 +940,7 @@ async fn set_custom_content_type_on_response() {
                     set_content_type_if_empty: false,
                     has_json_schema: false,
                 },
+                json_schema: None,
             },
             ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
         },
@@ -987,6 +988,7 @@ async fn set_custom_content_type_on_empty_response() {
                     set_content_type_if_empty: true,
                     has_json_schema: false,
                 },
+                json_schema: None,
             },
             ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
         },

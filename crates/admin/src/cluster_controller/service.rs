@@ -20,13 +20,15 @@ use futures::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
+use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, warn};
 
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{
-    Incoming, MessageRouterBuilder, NetworkSender, Networking, TransportConnect,
+    Incoming, MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking,
+    TransportConnect,
 };
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
@@ -47,6 +49,8 @@ use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, Version};
 
 use super::cluster_state_refresher::{ClusterStateRefresher, ClusterStateWatcher};
+use super::grpc_svc_handler::ClusterCtrlSvcHandler;
+use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use crate::cluster_controller::logs_controller::{
     LogsBasedPartitionProcessorPlacementHints, LogsController,
 };
@@ -65,6 +69,7 @@ pub struct Service<T> {
     health_status: HealthStatus<AdminStatus>,
     metadata: Metadata,
     networking: Networking<T>,
+    bifrost: Bifrost,
     incoming_messages: Pin<Box<dyn Stream<Item = Incoming<AttachRequest>> + Send + Sync + 'static>>,
     cluster_state_refresher: ClusterStateRefresher<T>,
     processor_manager_client: PartitionProcessorManagerClient<Networking<T>>,
@@ -87,10 +92,12 @@ where
     pub fn new(
         mut configuration: Live<Configuration>,
         health_status: HealthStatus<AdminStatus>,
+        bifrost: Bifrost,
         task_center: TaskCenter,
         metadata: Metadata,
         networking: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
+        server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
         metadata_store_client: MetadataStoreClient,
     ) -> Self {
@@ -112,12 +119,28 @@ where
         let (log_trim_interval, log_trim_threshold) =
             Self::create_log_trim_interval(&options.admin);
 
+        // Registering ClusterCtrlSvc grpc service to network server
+        server_builder.register_grpc_service(
+            ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(
+                ClusterControllerHandle {
+                    tx: command_tx.clone(),
+                },
+                metadata_store_client.clone(),
+                bifrost.clone(),
+                metadata_writer.clone(),
+            ))
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip),
+            crate::cluster_controller::protobuf::FILE_DESCRIPTOR_SET,
+        );
+
         Service {
             configuration,
             health_status,
             task_center,
             metadata,
             networking,
+            bifrost,
             incoming_messages,
             cluster_state_refresher,
             metadata_writer,
@@ -229,13 +252,15 @@ impl<T: TransportConnect> Service<T> {
 
     pub async fn run(
         mut self,
-        bifrost: Bifrost,
         all_partitions_started_tx: Option<oneshot::Sender<()>>,
     ) -> anyhow::Result<()> {
         self.init_partition_table().await?;
 
-        let bifrost_admin =
-            BifrostAdmin::new(&bifrost, &self.metadata_writer, &self.metadata_store_client);
+        let bifrost_admin = BifrostAdmin::new(
+            &self.bifrost,
+            &self.metadata_writer,
+            &self.metadata_store_client,
+        );
 
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         let mut config_watcher = Configuration::watcher();
@@ -276,7 +301,7 @@ impl<T: TransportConnect> Service<T> {
         let mut logs_controller = LogsController::init(
             configuration,
             self.metadata.clone(),
-            bifrost.clone(),
+            self.bifrost.clone(),
             self.metadata_store_client.clone(),
             self.metadata_writer.clone(),
         )
@@ -312,9 +337,16 @@ impl<T: TransportConnect> Service<T> {
                     }
                 }
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
+                    let nodes_config = &nodes_config.live_load();
                     observed_cluster_state.update(&cluster_state);
-                    logs_controller.on_observed_cluster_state_update(&observed_cluster_state, SchedulingPlanNodeSetSelectorHints::from(&scheduler))?;
-                    scheduler.on_observed_cluster_state(&observed_cluster_state, nodes_config.live_load(), LogsBasedPartitionProcessorPlacementHints::from(&logs_controller)).await?;
+                    logs_controller.on_observed_cluster_state_update(
+                        nodes_config,
+                        &observed_cluster_state, SchedulingPlanNodeSetSelectorHints::from(&scheduler))?;
+                    scheduler.on_observed_cluster_state(
+                        &observed_cluster_state,
+                        nodes_config,
+                        LogsBasedPartitionProcessorPlacementHints::from(&logs_controller))
+                    .await?;
                 }
                 result = logs_controller.run_async_operations() => {
                     result?;
@@ -679,11 +711,13 @@ mod tests {
 
     use googletest::assert_that;
     use googletest::matchers::eq;
-    use restate_types::net::node::{GetNodeState, NodeStateResponse};
     use test_log::test;
 
-    use restate_bifrost::Bifrost;
-    use restate_core::network::{FailingConnector, Incoming, MessageHandler, MockPeerConnection};
+    use restate_bifrost::providers::memory_loglet;
+    use restate_bifrost::{Bifrost, BifrostService};
+    use restate_core::network::{
+        FailingConnector, Incoming, MessageHandler, MockPeerConnection, NetworkServerBuilder,
+    };
     use restate_core::{NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::{AdminOptions, Configuration};
@@ -691,6 +725,7 @@ mod tests {
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
+    use restate_types::net::node::{GetNodeState, NodeStateResponse};
     use restate_types::net::partition_processor_manager::ControlProcessors;
     use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
@@ -701,32 +736,36 @@ mod tests {
         const LOG_ID: LogId = LogId::new(0);
         let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
 
+        let metadata = builder.metadata.clone();
+
+        let bifrost_svc = BifrostService::new(builder.tc.clone(), metadata.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let bifrost = bifrost_svc.handle();
+
         let svc = Service::new(
             Live::from_value(Configuration::default()),
             HealthStatus::default(),
+            bifrost.clone(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.networking.clone(),
             &mut builder.router_builder,
+            &mut NetworkServerBuilder::default(),
             builder.metadata_writer.clone(),
             builder.metadata_store_client.clone(),
         );
-        let metadata = builder.metadata.clone();
         let svc_handle = svc.handle();
 
         let node_env = builder.build().await;
+        bifrost_svc.start().await?;
 
-        let bifrost = node_env
-            .tc
-            .run_in_scope("init", None, Bifrost::init_in_memory(metadata))
-            .await;
         let mut appender = bifrost.create_appender(LOG_ID)?;
 
         node_env.tc.spawn(
             TaskKind::SystemService,
             "cluster-controller",
             None,
-            svc.run(bifrost.clone(), None),
+            svc.run(None),
         )?;
 
         node_env
@@ -1007,13 +1046,21 @@ mod tests {
         let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let metadata = builder.metadata.clone();
 
+        let bifrost_svc = BifrostService::new(builder.tc.clone(), metadata.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let bifrost = bifrost_svc.handle();
+
+        let mut server_builder = NetworkServerBuilder::default();
+
         let svc = Service::new(
             Live::from_value(config),
             HealthStatus::default(),
+            bifrost.clone(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.networking.clone(),
             &mut builder.router_builder,
+            &mut server_builder,
             builder.metadata_writer.clone(),
             builder.metadata_store_client.clone(),
         );
@@ -1036,18 +1083,15 @@ mod tests {
         let builder = modify_builder(builder.set_nodes_config(nodes_config));
 
         let node_env = builder.build().await;
-
-        let bifrost = node_env
-            .tc
-            .run_in_scope("init", None, Bifrost::init_in_memory(metadata))
-            .await;
+        bifrost_svc.start().await?;
 
         node_env.tc.spawn(
             TaskKind::SystemService,
             "cluster-controller",
             None,
-            svc.run(bifrost.clone(), None),
+            svc.run(None),
         )?;
+
         Ok((node_env, bifrost))
     }
 }

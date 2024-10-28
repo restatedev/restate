@@ -23,8 +23,7 @@ use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
-
-use restate_core::worker_api::ProcessorsManagerHandle;
+use restate_core::Metadata;
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
 use restate_types::config::QueryEngineOptions;
@@ -109,7 +108,7 @@ impl QueryContext {
     pub async fn create(
         options: &QueryEngineOptions,
         partition_selector: impl SelectPartitions + Clone,
-        partition_store_manager: PartitionStoreManager,
+        local_partition_store_manager: Option<PartitionStoreManager>,
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
         schemas: Live<
             impl DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
@@ -132,34 +131,38 @@ impl QueryContext {
         crate::invocation_status::register_self(
             &ctx,
             partition_selector.clone(),
-            partition_store_manager.clone(),
+            local_partition_store_manager.clone(),
         )?;
         crate::keyed_service_status::register_self(
             &ctx,
             partition_selector.clone(),
-            partition_store_manager.clone(),
+            local_partition_store_manager.clone(),
         )?;
         crate::state::register_self(
             &ctx,
             partition_selector.clone(),
-            partition_store_manager.clone(),
+            local_partition_store_manager.clone(),
         )?;
         crate::journal::register_self(
             &ctx,
             partition_selector.clone(),
-            partition_store_manager.clone(),
+            local_partition_store_manager.clone(),
         )?;
         crate::inbox::register_self(
             &ctx,
             partition_selector.clone(),
-            partition_store_manager.clone(),
+            local_partition_store_manager.clone(),
         )?;
         crate::idempotency::register_self(
             &ctx,
             partition_selector.clone(),
-            partition_store_manager.clone(),
+            local_partition_store_manager.clone(),
         )?;
-        crate::promise::register_self(&ctx, partition_selector.clone(), partition_store_manager)?;
+        crate::promise::register_self(
+            &ctx,
+            partition_selector.clone(),
+            local_partition_store_manager,
+        )?;
 
         let ctx = ctx
             .datafusion_context
@@ -192,7 +195,7 @@ impl QueryContext {
     pub(crate) fn create_distributed_scanner(
         &self,
         table_name: impl Into<String>,
-        local_partition_scanner: Arc<dyn ScanPartition>,
+        local_partition_scanner: Option<Arc<dyn ScanPartition>>,
     ) -> impl ScanPartition + Clone {
         self.remote_scanner_manager
             .create_distributed_scanner(table_name, local_partition_scanner)
@@ -313,9 +316,27 @@ impl AsRef<SessionContext> for QueryContext {
     }
 }
 
+/// Newtype to add debug implementation which is required for [`SelectPartitions`].
+#[derive(Clone, derive_more::Debug)]
+pub struct SelectPartitionsFromMetadata {
+    #[debug(skip)]
+    metadata: Metadata,
+}
+
+impl SelectPartitionsFromMetadata {
+    pub fn new(metadata: Metadata) -> Self {
+        Self { metadata }
+    }
+}
+
 #[async_trait]
-impl SelectPartitions for ProcessorsManagerHandle {
+impl SelectPartitions for SelectPartitionsFromMetadata {
     async fn get_live_partitions(&self) -> Result<Vec<PartitionId>, GenericError> {
-        Ok(self.get_live_partitions().await?)
+        Ok(self
+            .metadata
+            .partition_table_ref()
+            .partition_ids()
+            .cloned()
+            .collect())
     }
 }
