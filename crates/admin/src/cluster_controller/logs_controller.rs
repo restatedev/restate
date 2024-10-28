@@ -1356,6 +1356,7 @@ pub mod tests {
             self
         }
 
+        #[allow(dead_code)]
         pub fn with_dead_node(
             mut self,
             node_id: u32,
