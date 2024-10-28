@@ -49,6 +49,7 @@ use restate_types::{logs, GenerationalNodeId, NodeId, PlainNodeId, Version, Vers
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler;
 use nodeset_selection::{NodeSelectionError, NodeSetSelectionStrategy, NodeSetSelector};
+use restate_types::nodes_config::NodesConfiguration;
 
 pub type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
 
@@ -317,6 +318,7 @@ fn try_provisioning(
         #[cfg(feature = "replicated-loglet")]
         ProviderKind::Replicated => build_new_replicated_loglet_configuration(
             ReplicatedLogletId::new(log_id, SegmentIndex::OLDEST),
+            metadata().nodes_config_ref().as_ref(),
             observed_cluster_state,
             None,
             node_set_selector_hints.preferred_sequencer(&log_id),
@@ -330,6 +332,7 @@ fn try_provisioning(
 #[cfg(feature = "replicated-loglet")]
 fn build_new_replicated_loglet_configuration(
     loglet_id: ReplicatedLogletId,
+    nodes_config: &NodesConfiguration,
     observed_cluster_state: &ObservedClusterState,
     previous_configuration: Option<&ReplicatedLogletParams>,
     preferred_sequencer: Option<NodeId>,
@@ -343,8 +346,6 @@ fn build_new_replicated_loglet_configuration(
     // todo: make nodeset selection strategy configurable
     let strategy = NodeSetSelectionStrategy::StrictFaultTolerantGreedy;
 
-    // todo(pavel): pass nodes_config in as a parameter
-    let nodes_config = metadata().nodes_config_ref();
     let preferred_nodes = previous_configuration
         .map(|p| p.nodeset.clone())
         .unwrap_or_default();
@@ -359,7 +360,7 @@ fn build_new_replicated_loglet_configuration(
             observed_cluster_state.alive_nodes.values().choose(&mut rng)
         })?;
 
-    let selection = NodeSetSelector::new(nodes_config.as_ref(), observed_cluster_state).select(
+    let selection = NodeSetSelector::new(nodes_config, observed_cluster_state).select(
         strategy,
         &replication,
         &mut rng,
@@ -474,6 +475,7 @@ impl LogletConfiguration {
             LogletConfiguration::Replicated(configuration) => {
                 build_new_replicated_loglet_configuration(
                     configuration.loglet_id.next(),
+                    &metadata().nodes_config_snapshot(),
                     observed_cluster_state,
                     Some(configuration),
                     preferred_sequencer,
@@ -1263,7 +1265,6 @@ pub mod tests {
 
     use enumset::{enum_set, EnumSet};
 
-    use restate_core::TestCoreEnvBuilder;
     use restate_types::nodes_config::{
         LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
@@ -1441,110 +1442,106 @@ pub mod tests {
             .dead_nodes([6]) // N6 starts out offline
             .build();
 
-        let env = TestCoreEnvBuilder::with_incoming_only_connector()
-            .set_my_node_id(GenerationalNodeId::new(0, 1))
-            .set_nodes_config(nodes.nodes_config.clone())
-            .build()
-            .await;
+        let initial = build_new_replicated_loglet_configuration(
+            ReplicatedLogletId::from(1),
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            None,
+            Some(NodeId::new_plain(5)),
+        )
+        .unwrap();
 
-        env.tc
-            .run_in_scope("test", None, async move {
-                let initial = build_new_replicated_loglet_configuration(
-                    ReplicatedLogletId::from(1),
-                    &nodes.observed_state,
-                    None,
-                    Some(NodeId::new_plain(5)),
-                )
-                .unwrap();
+        assert_eq!(initial.nodeset, NodeSet::from([1, 2, 3]));
+        assert_eq!(initial.sequencer, GenerationalNodeId::new(5, 1));
+        assert_eq!(
+            initial.replication,
+            ReplicationProperty::new(NonZeroU8::new(2).unwrap())
+        ); // hard-coded default
 
-                assert_eq!(initial.nodeset, NodeSet::from([1, 2, 3]));
-                assert_eq!(initial.sequencer, GenerationalNodeId::new(5, 1));
-                assert_eq!(
-                    initial.replication,
-                    ReplicationProperty::new(NonZeroU8::new(2).unwrap())
-                ); // hard-coded default
+        // with one log server down (out of 3) and the previous sequencer, we expect no
+        // change to the nodeset but a new sequencer to be chosen
+        nodes.kill_nodes([2, 5]);
 
-                // with one log server down (out of 3) and the previous sequencer, we expect no
-                // change to the nodeset but a new sequencer to be chosen
-                nodes.kill_nodes([2, 5]);
+        let config = build_new_replicated_loglet_configuration(
+            initial.loglet_id,
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            Some(&initial),
+            Some(initial.sequencer.into()),
+        )
+        .unwrap();
 
-                let config = build_new_replicated_loglet_configuration(
-                    initial.loglet_id,
-                    &nodes.observed_state,
-                    Some(&initial),
-                    Some(initial.sequencer.into()),
-                )
-                .unwrap();
+        assert_eq!(
+            config.nodeset,
+            NodeSet::from([1, 2, 3]),
+            "leave the loglet alone when nodset can't be improved"
+        );
+        assert_ne!(
+            config.sequencer,
+            GenerationalNodeId::new(5, 1),
+            "sequencer must change to a live node"
+        );
+        let sequencer_g2 = config.sequencer;
 
-                assert_eq!(
-                    config.nodeset,
-                    NodeSet::from([1, 2, 3]),
-                    "leave the loglet alone when nodset can't be improved"
-                );
-                assert_ne!(
-                    config.sequencer,
-                    GenerationalNodeId::new(5, 1),
-                    "sequencer must change to a live node"
-                );
-                let sequencer_g2 = config.sequencer;
+        nodes.revive_node((2, 2)); // N2 comes back
 
-                nodes.revive_node((2, 2)); // N2 comes back
+        let mut config = build_new_replicated_loglet_configuration(
+            config.loglet_id,
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            Some(&config),
+            Some(config.sequencer.into()),
+        )
+        .unwrap();
 
-                let mut config = build_new_replicated_loglet_configuration(
-                    config.loglet_id,
-                    &nodes.observed_state,
-                    Some(&config),
-                    Some(config.sequencer.into()),
-                )
-                .unwrap();
+        assert_eq!(config.nodeset, NodeSet::from([1, 2, 3]));
+        assert_eq!(config.sequencer, sequencer_g2); // unchanged
 
-                assert_eq!(config.nodeset, NodeSet::from([1, 2, 3]));
-                assert_eq!(config.sequencer, sequencer_g2); // unchanged
+        nodes.kill_nodes([1, 2]); // nodeset loses write quorum
+                                  // pretend that N5 (which is now dead) was the sequencer, to force a loglet reconfiguration
+        config.sequencer = GenerationalNodeId::from((5.into(), 1));
 
-                nodes.kill_nodes([1, 2]); // nodeset loses write quorum
-                                          // pretend that N5 (which is now dead) was the sequencer, to force a loglet reconfiguration
-                config.sequencer = GenerationalNodeId::from((5.into(), 1));
+        let new_sequencer_config = build_new_replicated_loglet_configuration(
+            config.loglet_id,
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            Some(&config),
+            Some(NodeId::Generational(config.sequencer)),
+        )
+        .expect("controller reconfigures the sequencer");
+        assert_eq!(
+            config.nodeset, new_sequencer_config.nodeset,
+            "loglet nodeset remains unchanged"
+        );
 
-                let new_sequencer_config = build_new_replicated_loglet_configuration(
-                    config.loglet_id,
-                    &nodes.observed_state,
-                    Some(&config),
-                    Some(NodeId::Generational(config.sequencer)),
-                )
-                .expect("controller reconfigures the sequencer");
-                assert_eq!(
-                    config.nodeset, new_sequencer_config.nodeset,
-                    "loglet nodeset remains unchanged"
-                );
+        // N1 comes back and N6 is added, which was not previously in the loglet's nodeset
+        nodes.revive_nodes([(1, 2), (6, 2)]);
 
-                // N1 comes back and N6 is added, which was not previously in the loglet's nodeset
-                nodes.revive_nodes([(1, 2), (6, 2)]);
+        let config = build_new_replicated_loglet_configuration(
+            new_sequencer_config.loglet_id,
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            Some(&new_sequencer_config),
+            Some(new_sequencer_config.sequencer.into()),
+        )
+        .unwrap();
 
-                let config = build_new_replicated_loglet_configuration(
-                    new_sequencer_config.loglet_id,
-                    &nodes.observed_state,
-                    Some(&new_sequencer_config),
-                    Some(new_sequencer_config.sequencer.into()),
-                )
-                .unwrap();
+        // ... then we can form a healthy nodeset that meets the replication requirement
+        assert_eq!(config.nodeset, NodeSet::from([1, 3, 6]));
 
-                // ... then we can form a healthy nodeset that meets the replication requirement
-                assert_eq!(config.nodeset, NodeSet::from([1, 3, 6]));
+        nodes.revive_node((2, 3)); // N2 comes back _again_
 
-                nodes.revive_node((2, 3)); // N2 comes back _again_
+        let config = build_new_replicated_loglet_configuration(
+            new_sequencer_config.loglet_id,
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            Some(&new_sequencer_config),
+            Some(new_sequencer_config.sequencer.into()),
+        )
+        .unwrap();
 
-                let config = build_new_replicated_loglet_configuration(
-                    new_sequencer_config.loglet_id,
-                    &nodes.observed_state,
-                    Some(&new_sequencer_config),
-                    Some(new_sequencer_config.sequencer.into()),
-                )
-                .unwrap();
-
-                // we can now furhter expand the nodeset to exceed the 2f fault tolerance
-                assert_eq!(config.nodeset, NodeSet::from([1, 2, 3, 6]));
-                Ok(())
-            })
-            .await
+        // we can now furhter expand the nodeset to exceed the 2f fault tolerance
+        assert_eq!(config.nodeset, NodeSet::from([1, 2, 3, 6]));
+        Ok(())
     }
 }
