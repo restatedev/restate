@@ -12,13 +12,12 @@ use std::str::FromStr;
 use std::time::Duration;
 use std::{cmp, fmt};
 
+use super::Schema;
+use crate::invocation::InvocationTargetType;
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-
-use super::Schema;
-use crate::invocation::InvocationTargetType;
 
 pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 pub const DEFAULT_WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
@@ -113,6 +112,15 @@ impl InputRules {
 
         res
     }
+
+    pub fn json_schema(&self) -> Option<serde_json::Value> {
+        for rule in &self.input_validation_rules {
+            if let InputValidationRule::JsonValue { schema, .. } = rule {
+                return Some(schema.clone());
+            }
+        }
+        None
+    }
 }
 
 impl Default for InputRules {
@@ -180,7 +188,9 @@ pub enum InputValidationRule {
     JsonValue {
         // Can use wildcards
         content_type: InputContentType,
-        // TODO add json schema.
+        // Right now we don't use this schema for anything except printing,
+        // so no need to use a more specialized type (we validate the schema is valid inside the schema registry updater)
+        schema: serde_json::Value,
     },
 }
 
@@ -191,9 +201,10 @@ impl fmt::Display for InputValidationRule {
             InputValidationRule::ContentType { content_type } => {
                 write!(f, "{}", content_type)
             }
-            InputValidationRule::JsonValue { content_type } => {
-                write!(f, "{}", content_type)
-            }
+            InputValidationRule::JsonValue {
+                content_type,
+                schema,
+            } => try_display_json_detailed_info(f, schema, || content_type),
         }
     }
 }
@@ -218,7 +229,7 @@ impl InputValidationRule {
                 }
                 content_type.validate(input_content_type.unwrap())?;
             }
-            InputValidationRule::JsonValue { content_type } => {
+            InputValidationRule::JsonValue { content_type, .. } => {
                 if input_content_type.is_none() {
                     return Err(InputValidationError::EmptyContentType);
                 }
@@ -291,13 +302,13 @@ impl InputContentType {
             .map(|(ct, _)| ct)
             .unwrap_or(input_content_type);
 
-        return match ct_without_args.trim().split_once('/') {
+        match ct_without_args.trim().split_once('/') {
             Some((first_part, second_part)) => Ok((first_part, second_part)),
             None => Err(InputValidationError::ContentTypeNotMatching(
                 input_content_type.to_owned(),
                 self.clone(),
             )),
-        };
+        }
     }
 }
 
@@ -343,6 +354,8 @@ impl FromStr for InputContentType {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputRules {
     pub content_type_rule: OutputContentTypeRule,
+    // Json schema, if present
+    pub json_schema: Option<serde_json::Value>,
 }
 
 impl OutputRules {
@@ -362,11 +375,21 @@ impl OutputRules {
             }
         }
     }
+
+    pub fn json_schema(&self) -> Option<serde_json::Value> {
+        self.json_schema.as_ref().cloned()
+    }
 }
 
 impl fmt::Display for OutputRules {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.content_type_rule)
+        try_display_json_detailed_info(
+            f,
+            self.json_schema
+                .as_ref()
+                .unwrap_or(&serde_json::Value::Null),
+            || &self.content_type_rule,
+        )
     }
 }
 
@@ -380,6 +403,8 @@ pub enum OutputContentTypeRule {
         // Otherwise, don't set the content-type.
         set_content_type_if_empty: bool,
         // If true, this should be a JSON Value.
+        // We don't need this field anymore, but we can't remove because we break back-compat
+        #[deprecated]
         has_json_schema: bool,
     },
 }
@@ -409,6 +434,20 @@ impl fmt::Display for OutputContentTypeRule {
                 write!(f, "{}", String::from_utf8_lossy(content_type.as_bytes()))
             }
         }
+    }
+}
+
+fn try_display_json_detailed_info<D: fmt::Display>(
+    f: &mut fmt::Formatter<'_>,
+    schema: &serde_json::Value,
+    default: impl FnOnce() -> D,
+) -> fmt::Result {
+    if let Some(serde_json::Value::String(title)) = schema.get("title") {
+        write!(f, "JSON '{}'", title)
+    } else if let Some(serde_json::Value::String(ty)) = schema.get("type") {
+        write!(f, "JSON {}", ty)
+    } else {
+        write!(f, "{}", default())
     }
 }
 
@@ -587,6 +626,7 @@ mod tests {
                 InputValidationRule::NoBodyAndContentType,
                 InputValidationRule::JsonValue {
                     content_type: InputContentType::Any,
+                    schema: Default::default(),
                 },
             ],
         };
@@ -608,6 +648,7 @@ mod tests {
                     "application".into(),
                     "restate+json".into(),
                 ),
+                schema: Default::default(),
             }],
         };
 
@@ -645,6 +686,7 @@ mod tests {
                 set_content_type_if_empty: true,
                 has_json_schema: false,
             },
+            json_schema: None,
         };
 
         assert_eq!(input_rules.infer_content_type(false), Some(ct.clone()));
@@ -655,6 +697,7 @@ mod tests {
     fn infer_content_type_empty() {
         let input_rules = OutputRules {
             content_type_rule: OutputContentTypeRule::None,
+            json_schema: None,
         };
 
         assert_eq!(input_rules.infer_content_type(false), None);

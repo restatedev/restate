@@ -144,15 +144,27 @@ pub struct HandlerMetadata {
 
     pub ty: HandlerMetadataType,
 
-    // # Human readable input description
-    //
-    // If empty, no schema was provided by the user at discovery time.
+    /// # Human readable input description
+    ///
+    /// If empty, no schema was provided by the user at discovery time.
     pub input_description: String,
 
-    // # Human readable output description
-    //
-    // If empty, no schema was provided by the user at discovery time.
+    /// # Human readable output description
+    ///
+    /// If empty, no schema was provided by the user at discovery time.
     pub output_description: String,
+
+    /// # Input JSON Schema
+    ///
+    /// JSON Schema of the handler input
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_json_schema: Option<serde_json::Value>,
+
+    /// # Output JSON Schema
+    ///
+    /// JSON Schema of the handler output
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 /// This API will return services registered by the user.
@@ -193,6 +205,8 @@ impl ServiceSchemas {
                     ty: h_schemas.target_meta.target_ty.into(),
                     input_description: h_schemas.target_meta.input_rules.to_string(),
                     output_description: h_schemas.target_meta.output_rules.to_string(),
+                    input_json_schema: h_schemas.target_meta.input_rules.json_schema(),
+                    output_schema: h_schemas.target_meta.output_rules.json_schema(),
                 })
                 .collect(),
             ty: self.ty,
@@ -283,6 +297,8 @@ pub mod test_util {
                         ty: HandlerMetadataType::Shared,
                         input_description: "any".to_string(),
                         output_description: "any".to_string(),
+                        input_json_schema: None,
+                        output_schema: None,
                     })
                     .collect(),
                 ty: ServiceType::Service,
@@ -309,6 +325,8 @@ pub mod test_util {
                         ty: HandlerMetadataType::Exclusive,
                         input_description: "any".to_string(),
                         output_description: "any".to_string(),
+                        input_json_schema: None,
+                        output_schema: None,
                     })
                     .collect(),
                 ty: ServiceType::VirtualObject,

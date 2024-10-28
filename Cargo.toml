@@ -129,6 +129,7 @@ hyper-rustls = { version = "0.27.2", default-features = false, features = [
 ] }
 hyper-util = { version = "0.1" }
 itertools = "0.13.0"
+jsonschema = "0.26.0"
 metrics = { version = "0.23" }
 metrics-exporter-prometheus = { version = "0.15", default-features = false, features = [
     "async-runtime",
