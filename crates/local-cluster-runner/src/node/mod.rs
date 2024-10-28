@@ -857,7 +857,7 @@ impl Searcher {
     }
 
     fn search(&self, regex: Regex) -> impl Stream<Item = String> + 'static {
-        let (sender, receiver) = mpsc::channel(1000);
+        let (sender, receiver) = mpsc::channel(1);
         let sender = Arc::new(sender);
         let sender_ptr = Arc::as_ptr(&sender);
         self.inner.rcu(|inner| {
