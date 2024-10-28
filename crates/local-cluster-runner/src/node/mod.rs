@@ -530,18 +530,16 @@ impl StartedNode {
                     nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
                     nix::sys::signal::SIGTERM,
                 ) {
-                    Ok(()) => Ok(()),
-                    Err(errno) => match errno {
-                        nix::errno::Errno::ESRCH => {
-                            warn!(
-                                "Node {} (pid {}) did not exist when sending SIGTERM",
-                                self.config.node_name(),
-                                pid
-                            );
-                            Ok(())
-                        }
-                        _ => Err(io::Error::from_raw_os_error(errno as i32)),
-                    },
+                    Err(nix::errno::Errno::ESRCH) => {
+                        warn!(
+                            "Node {} server process (pid {}) did not exist when sending SIGTERM",
+                            self.config.node_name(),
+                            pid
+                        );
+                        Ok(())
+                    }
+                    Err(errno) => Err(io::Error::from_raw_os_error(errno as i32)),
+                    _ => Ok(()),
                 }
             }
         }
