@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// use arrow_flight::encode::FlightDataEncoderBuilder;
-use arrow_flight::error::FlightError;
 use enumset::EnumSet;
 use futures::stream::BoxStream;
 use tokio_stream::StreamExt;
@@ -17,7 +15,6 @@ use tonic::{Request, Response, Status, Streaming};
 
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvc;
 use restate_core::network::protobuf::node_svc::IdentResponse;
-use restate_core::network::protobuf::node_svc::{StorageQueryRequest, StorageQueryResponse};
 use restate_core::network::ConnectionManager;
 use restate_core::network::{ProtocolError, TransportConnect};
 use restate_core::{metadata, TaskCenter};
@@ -80,43 +77,6 @@ impl<T: TransportConnect> NodeSvc for NodeSvcHandler<T> {
         })
     }
 
-    type QueryStorageStream = BoxStream<'static, Result<StorageQueryResponse, Status>>;
-
-    async fn query_storage(
-        &self,
-        _request: Request<StorageQueryRequest>,
-    ) -> Result<Response<Self::QueryStorageStream>, Status> {
-        // let Some(ref worker) = self.worker else {
-        //     return Err(Status::failed_precondition("Not a worker node"));
-        // };
-        // let query = request.into_inner().query;
-        //
-        // let record_stream = self
-        //     .task_center
-        //     .run_in_scope("query-storage", None, async move {
-        //         worker.query_context.execute(&query).await.map_err(|err| {
-        //             Status::internal(format!("failed executing the query '{}': {}", query, err))
-        //         })
-        //     })
-        //     .await?;
-        //
-        // let schema = record_stream.schema();
-        // let response_stream =
-        //     FlightDataEncoderBuilder::new()
-        //         // CLI is expecting schema information
-        //         .with_schema(schema)
-        //         .build(record_stream.map_err(|err| {
-        //             FlightError::from(datafusion::arrow::error::ArrowError::from(err))
-        //         }))
-        //         .map_ok(|flight_data| StorageQueryResponse {
-        //             header: flight_data.data_header,
-        //             data: flight_data.data_body,
-        //         })
-        //         .map_err(flight_error_to_tonic_status);
-        // Ok(Response::new(Box::pin(response_stream)))
-        todo!()
-    }
-
     type CreateConnectionStream = BoxStream<'static, Result<Message, Status>>;
 
     // Status codes returned in different scenarios:
@@ -146,17 +106,5 @@ impl<T: TransportConnect> NodeSvc for NodeSvcHandler<T> {
         // sending tonic::Status errors explicitly. We use ConnectionControl frames to communicate
         // errors and/or drop the stream when necessary.
         Ok(Response::new(Box::pin(output_stream.map(Ok))))
-    }
-}
-
-// todo: Remove once arrow-flight supports tonic 0.12
-fn flight_error_to_tonic_status(err: FlightError) -> Status {
-    match err {
-        FlightError::Arrow(e) => Status::internal(e.to_string()),
-        FlightError::NotYetImplemented(e) => Status::internal(e),
-        FlightError::Tonic(status) => status,
-        FlightError::ProtocolError(e) => Status::internal(e),
-        FlightError::DecodeError(e) => Status::internal(e),
-        FlightError::ExternalError(e) => Status::internal(e.to_string()),
     }
 }

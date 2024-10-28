@@ -208,19 +208,17 @@ impl Node {
             None
         };
 
-        let admin_role = if config.has_role(Role::Admin) {
+        let worker_role = if config.has_role(Role::Worker) {
             Some(
-                AdminRole::create(
-                    health.admin_status(),
-                    tc.clone(),
-                    bifrost.clone(),
-                    updateable_config.clone(),
+                WorkerRole::create(
+                    health.worker_status(),
                     metadata.clone(),
-                    networking.clone(),
-                    metadata_manager.writer(),
-                    &mut server_builder,
+                    updateable_config.clone(),
                     &mut router_builder,
+                    networking.clone(),
+                    bifrost_svc.handle(),
                     metadata_store_client.clone(),
+                    updating_schema_information,
                 )
                 .await?,
             )
@@ -228,17 +226,22 @@ impl Node {
             None
         };
 
-        let worker_role = if config.has_role(Role::Worker) {
+        let admin_role = if config.has_role(Role::Admin) {
             Some(
-                WorkerRole::create(
-                    health.worker_status(),
-                    metadata,
+                AdminRole::create(
+                    health.admin_status(),
+                    tc.clone(),
+                    bifrost.clone(),
                     updateable_config.clone(),
-                    &mut router_builder,
+                    metadata,
                     networking.clone(),
-                    bifrost_svc.handle(),
+                    metadata_manager.writer(),
+                    &mut server_builder,
+                    &mut router_builder,
                     metadata_store_client.clone(),
-                    updating_schema_information,
+                    worker_role
+                        .as_ref()
+                        .map(|worker_role| worker_role.storage_query_context().clone()),
                 )
                 .await?,
             )
@@ -405,10 +408,7 @@ impl Node {
                 TaskKind::SystemBoot,
                 "admin-init",
                 None,
-                admin_role.start(
-                    all_partitions_started_tx,
-                    config.common.advertised_address.clone(),
-                ),
+                admin_role.start(all_partitions_started_tx),
             )?;
 
             all_partitions_started_rx

@@ -34,7 +34,6 @@ restate-worker = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }

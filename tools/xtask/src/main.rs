@@ -15,11 +15,9 @@ use std::{env, io};
 use anyhow::bail;
 use reqwest::header::ACCEPT;
 use schemars::gen::SchemaSettings;
-use tonic::transport::{Channel, Uri};
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_core::TaskKind;
 use restate_core::TestCoreEnv;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
@@ -124,16 +122,14 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
             ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)
                 .unwrap(),
         ),
+        None,
     );
 
     node_env.tc.spawn(
         TaskKind::TestRunner,
         "doc-gen",
         None,
-        admin_service.run(
-            Constant::new(config.admin),
-            NodeSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
-        ),
+        admin_service.run(Constant::new(config.admin)),
     )?;
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(20))
