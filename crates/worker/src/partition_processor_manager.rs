@@ -17,11 +17,12 @@ use std::time::Duration;
 
 use anyhow::Context;
 use futures::future::OptionFuture;
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures::stream::StreamExt;
 use futures::Stream;
 use metrics::gauge;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::JoinSet;
 use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, debug_span, info, instrument, trace, warn, Instrument, Span};
@@ -125,10 +126,11 @@ struct ProcessorState {
     partition_id: PartitionId,
     task_id: TaskId,
     _created_at: MillisSinceEpoch,
-    _key_range: RangeInclusive<PartitionKey>,
+    key_range: RangeInclusive<PartitionKey>,
     planned_mode: RunMode,
     running_for_leadership_with_epoch: Option<LeaderEpoch>,
     handle: PartitionProcessorHandle,
+    status_reader: ChannelStatusReader,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
 }
 
@@ -138,16 +140,18 @@ impl ProcessorState {
         task_id: TaskId,
         key_range: RangeInclusive<PartitionKey>,
         handle: PartitionProcessorHandle,
+        status_reader: ChannelStatusReader,
         watch_rx: watch::Receiver<PartitionProcessorStatus>,
     ) -> Self {
         Self {
             partition_id,
             task_id,
             _created_at: MillisSinceEpoch::now(),
-            _key_range: key_range,
+            key_range,
             planned_mode: RunMode::Follower,
             running_for_leadership_with_epoch: None,
             handle,
+            status_reader,
             watch_rx,
         }
     }
@@ -611,21 +615,34 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             .await?
             .into_arc();
 
-        let mut tasks = FuturesUnordered::new();
+        let mut tasks = JoinSet::new();
         for control_processor in control_processors.commands {
             let maybe_starting = self
                 .on_control_processor(control_processor, &partition_table)
                 .await?;
 
             if let MaybeStarting::Starting(starting) = maybe_starting {
-                tasks.push(starting);
+                let tc = self.task_center.clone();
+                tasks.spawn(
+                    async move {
+                        tc.run_in_scope(
+                            "start-partition-processor",
+                            Some(control_processor.partition_id),
+                            starting,
+                        )
+                        .await
+                    }
+                    .instrument(debug_span!("start_partition_processor")),
+                );
             }
         }
 
-        while let Some(started) = tasks.next().await {
-            let started = started?;
+        while let Some(started) = tasks.join_next().await {
+            let state = started.unwrap()?;
+            self.invokers_status_reader
+                .push(state.key_range.clone(), state.status_reader.clone());
             self.running_partition_processors
-                .insert(started.partition_id, started);
+                .insert(state.partition_id, state);
         }
 
         Ok(())
@@ -696,12 +713,12 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             }
         }
 
-        Ok(MaybeStarting::Noop)
+        Ok(MaybeStarting::NotStarting)
     }
 
     #[instrument(skip_all)]
     pub async fn apply_plan(&mut self, actions: &[Action]) -> Result<(), Error> {
-        let mut tasks = FuturesUnordered::new();
+        let mut tasks = JoinSet::new();
         for action in actions {
             match action {
                 Action::RunPartition(action) => {
@@ -716,7 +733,19 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                             action.mode,
                         );
 
-                        tasks.push(starting);
+                        let tc = self.task_center.clone();
+                        let partition_id = action.partition_id;
+                        tasks.spawn(
+                            async move {
+                                tc.run_in_scope(
+                                    "start-partition-processor",
+                                    Some(partition_id),
+                                    starting,
+                                )
+                                .await
+                            }
+                            .instrument(debug_span!("start_partition_processor")),
+                        );
                     } else {
                         debug!(
                             "Partition processor for partition id '{}' is already running.",
@@ -727,8 +756,10 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             }
         }
 
-        while let Some(started) = tasks.next().await {
-            let state = started?;
+        while let Some(started) = tasks.join_next().await {
+            let state = started.unwrap()?;
+            self.invokers_status_reader
+                .push(state.key_range.clone(), state.status_reader.clone());
             self.running_partition_processors
                 .insert(state.partition_id, state);
         }
@@ -737,25 +768,16 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         Ok(())
     }
 
+    /// Creates a future that when awaited starts the partition processor.
+    ///
+    /// This allows multiple partition processors to be started concurrently without holding
+    /// and exclusive lock to [`Self`]
     fn start_partition_processor(
         &mut self,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
         run_mode: RunMode,
     ) -> impl Future<Output = Result<ProcessorState, Error>> {
-        let config = self.updateable_config.pinned();
-        let schema = self.metadata.updateable_schema();
-
-        let invoker = InvokerService::from_options(
-            &config.common.service_client,
-            &config.worker.invoker,
-            EntryEnricher::new(schema.clone()),
-            schema,
-        )?;
-
-        self.invokers_status_reader
-            .push(key_range.clone(), invoker.status_reader());
-
         // the name is also used as thread names for the corresponding tokio runtimes, let's keep
         // it short.
         let task_name = self
@@ -770,9 +792,9 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             run_mode,
             key_range,
             configuration: self.updateable_config.clone(),
+            metadata: self.metadata.clone(),
             networking: self.networking.clone(),
             bifrost: self.bifrost.clone(),
-            invoker,
             partition_store_manager: self.partition_store_manager.clone(),
             metadata_store_client: self.metadata_store_client.clone(),
         };
@@ -785,7 +807,7 @@ enum MaybeStarting<Fut>
 where
     Fut: Future<Output = Result<ProcessorState, Error>>,
 {
-    Noop,
+    NotStarting,
     Starting(Fut),
 }
 
@@ -796,13 +818,9 @@ struct SpawnPartitionProcessorTask<T: TransportConnect> {
     run_mode: RunMode,
     key_range: RangeInclusive<PartitionKey>,
     configuration: Live<Configuration>,
+    metadata: Metadata,
     networking: Networking<T>,
     bifrost: Bifrost,
-    invoker: InvokerService<
-        InvokerStorageReader<PartitionStore>,
-        EntryEnricher<Schema, ProtobufRawEntryCodec>,
-        Schema,
-    >,
     partition_store_manager: PartitionStoreManager,
     metadata_store_client: MetadataStoreClient,
 }
@@ -817,6 +835,21 @@ impl<T: TransportConnect> SpawnPartitionProcessorTask<T> {
         )
     )]
     async fn run(self) -> Result<ProcessorState, Error> {
+        let config = self.configuration.pinned();
+        let schema = self.metadata.updateable_schema();
+        let invoker: InvokerService<
+            InvokerStorageReader<PartitionStore>,
+            EntryEnricher<Schema, ProtobufRawEntryCodec>,
+            Schema,
+        > = InvokerService::from_options(
+            &config.common.service_client,
+            &config.worker.invoker,
+            EntryEnricher::new(schema.clone()),
+            schema,
+        )?;
+
+        let status_reader = invoker.status_reader();
+
         let (control_tx, control_rx) = mpsc::channel(2);
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());
@@ -831,7 +864,7 @@ impl<T: TransportConnect> SpawnPartitionProcessorTask<T> {
             options,
             control_rx,
             watch_tx,
-            self.invoker.handle(),
+            invoker.handle(),
         );
 
         let invoker_name = Box::leak(Box::new(format!("invoker-{}", self.partition_id)));
@@ -859,7 +892,7 @@ impl<T: TransportConnect> SpawnPartitionProcessorTask<T> {
                         TaskKind::SystemService,
                         invoker_name,
                         Some(pp_builder.partition_id),
-                        self.invoker.run(invoker_config),
+                        invoker.run(invoker_config),
                     )?;
 
                     pp_builder
@@ -892,6 +925,7 @@ impl<T: TransportConnect> SpawnPartitionProcessorTask<T> {
             task_id,
             self.key_range,
             PartitionProcessorHandle::new(control_tx),
+            status_reader,
             watch_rx,
         );
 
