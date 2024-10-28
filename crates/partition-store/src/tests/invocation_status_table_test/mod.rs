@@ -14,15 +14,18 @@
 
 use super::storage_test_environment;
 
+use crate::invocation_status_table::{InvocationStatusKey, InvocationStatusKeyV1};
+use crate::partition_store::StorageAccess;
 use bytestring::ByteString;
 use futures_util::TryStreamExt;
 use googletest::prelude::*;
 use once_cell::sync::Lazy;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, JournalMetadata,
-    StatusTimestamps,
+    InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, InvocationStatusV1,
+    JournalMetadata, ReadOnlyInvocationStatusTable, StatusTimestamps,
 };
-use restate_types::identifiers::InvocationId;
+use restate_storage_api::Transaction;
+use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
 };
@@ -176,4 +179,54 @@ async fn test_invocation_status() {
 
     verify_point_lookups(&mut txn).await;
     verify_all_svc_with_status_invoked(&mut txn).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_migration() {
+    let mut rocksdb = storage_test_environment().await;
+
+    let invocation_id = InvocationId::mock_random();
+    let status = InvocationStatus::Invoked(InFlightInvocationMetadata::mock());
+
+    // Let's mock the old invocation status
+    let mut txn = rocksdb.transaction();
+    txn.put_kv(
+        InvocationStatusKeyV1::default()
+            .partition_key(invocation_id.partition_key())
+            .invocation_uuid(invocation_id.invocation_uuid()),
+        &InvocationStatusV1(status.clone()),
+    );
+    txn.commit().await.unwrap();
+
+    // Make sure we can read without mutating
+    assert_eq!(
+        status,
+        rocksdb.get_invocation_status(&invocation_id).await.unwrap()
+    );
+
+    // Now reading should perform the migration
+    let mut txn = rocksdb.transaction();
+    assert_eq!(
+        status,
+        txn.get_invocation_status(&invocation_id).await.unwrap()
+    );
+    txn.commit().await.unwrap();
+
+    // Let's check migration was done
+    assert!(rocksdb
+        .get_kv_raw(
+            InvocationStatusKeyV1::default()
+                .partition_key(invocation_id.partition_key())
+                .invocation_uuid(invocation_id.invocation_uuid()),
+            |_, v| Ok(v.is_none())
+        )
+        .unwrap());
+    assert!(rocksdb
+        .get_kv_raw(
+            InvocationStatusKey::default()
+                .partition_key(invocation_id.partition_key())
+                .invocation_uuid(invocation_id.invocation_uuid()),
+            |_, v| Ok(v.is_some())
+        )
+        .unwrap());
 }
