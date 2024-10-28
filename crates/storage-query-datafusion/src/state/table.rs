@@ -23,19 +23,21 @@ use crate::context::{QueryContext, SelectPartitions};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::state::row::append_state_row;
 use crate::state::schema::StateBuilder;
-use crate::table_providers::PartitionedTableProvider;
+use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
 const NAME: &str = "state";
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
     partition_selector: impl SelectPartitions,
-    partition_store_manager: PartitionStoreManager,
+    local_partition_store_manager: Option<PartitionStoreManager>,
 ) -> datafusion::common::Result<()> {
-    let local_scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        StateScanner,
-    ));
+    let local_scanner = local_partition_store_manager.map(|partition_store_manager| {
+        Arc::new(LocalPartitionsScanner::new(
+            partition_store_manager,
+            StateScanner,
+        )) as Arc<dyn ScanPartition>
+    });
     let table = PartitionedTableProvider::new(
         partition_selector,
         StateBuilder::schema(),
