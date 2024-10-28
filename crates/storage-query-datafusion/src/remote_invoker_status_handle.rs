@@ -15,6 +15,7 @@ use std::ops::RangeInclusive;
 use std::{future, iter};
 
 // todo implement [`StatusHandle`] for reading the status of remote invokers.
+#[derive(Clone, Debug)]
 pub struct RemoteInvokerStatusHandle;
 
 impl StatusHandle for RemoteInvokerStatusHandle {

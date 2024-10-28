@@ -15,14 +15,13 @@ use http::StatusCode;
 use restate_bifrost::Bifrost;
 use restate_types::config::AdminOptions;
 use restate_types::live::LiveLoad;
-use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util;
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_core::MetadataWriter;
 use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::net::BindAddress;
 use restate_types::schema::subscriptions::SubscriptionValidator;
 
@@ -36,6 +35,7 @@ pub struct BuildError(#[from] restate_service_client::BuildError);
 pub struct AdminService<V> {
     bifrost: Bifrost,
     schema_registry: SchemaRegistry<V>,
+    query_context: Option<QueryContext>,
 }
 
 impl<V> AdminService<V>
@@ -48,6 +48,7 @@ where
         bifrost: Bifrost,
         subscription_validator: V,
         service_discovery: ServiceDiscovery,
+        query_context: Option<QueryContext>,
     ) -> Self {
         Self {
             bifrost,
@@ -57,20 +58,26 @@ where
                 service_discovery,
                 subscription_validator,
             ),
+            query_context,
         }
     }
 
     pub async fn run(
         self,
         mut updateable_config: impl LiveLoad<AdminOptions> + Send + 'static,
-        node_svc_client: NodeSvcClient<Channel>,
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
 
         let rest_state = state::AdminServiceState::new(self.schema_registry, self.bifrost);
 
-        let query_state = Arc::new(state::QueryServiceState { node_svc_client });
-        let router = axum::Router::new().merge(storage_query::create_router(query_state));
+        let router = self
+            .query_context
+            .map(|query_context| {
+                let query_state = Arc::new(state::QueryServiceState { query_context });
+
+                axum::Router::new().merge(storage_query::create_router(query_state))
+            })
+            .unwrap_or_default();
 
         // Merge Web UI router
         #[cfg(feature = "serve-web-ui")]

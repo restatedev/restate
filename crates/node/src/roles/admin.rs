@@ -17,8 +17,6 @@ use restate_admin::cluster_controller;
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
@@ -26,11 +24,13 @@ use restate_core::network::TransportConnect;
 use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
+use restate_storage_query_datafusion::remote_invoker_status_handle::RemoteInvokerStatusHandle;
+use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
 use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
-use restate_types::net::AdvertisedAddress;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::retries::RetryPolicy;
 
@@ -45,6 +45,9 @@ pub enum AdminRoleBuildError {
     #[error("failed building the service client: {0}")]
     #[code(unknown)]
     ServiceClient(#[from] restate_service_client::BuildError),
+    #[error("failed creating the datafusion query context: {0}")]
+    #[code(unknown)]
+    QueryDataFusion(#[from] restate_storage_query_datafusion::BuildError),
 }
 
 pub struct AdminRole<T> {
@@ -66,6 +69,7 @@ impl<T: TransportConnect> AdminRole<T> {
         server_builder: &mut NetworkServerBuilder,
         router_builder: &mut MessageRouterBuilder,
         metadata_store_client: MetadataStoreClient,
+        local_query_context: Option<QueryContext>,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
         let config = updateable_config.pinned();
@@ -76,12 +80,32 @@ impl<T: TransportConnect> AdminRole<T> {
             ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)?;
         let service_discovery = ServiceDiscovery::new(retry_policy, client);
 
+        let query_context = if let Some(query_context) = local_query_context {
+            query_context
+        } else {
+            // need to create a remote query context since we are not co-located with a worker role
+            QueryContext::create(
+                &config.admin.query_engine,
+                SelectPartitionsFromMetadata::new(metadata.clone()),
+                None,
+                RemoteInvokerStatusHandle,
+                metadata.updateable_schema(),
+                create_remote_scanner_service(
+                    networking.clone(),
+                    task_center.clone(),
+                    router_builder,
+                ),
+            )
+            .await?
+        };
+
         let admin = AdminService::new(
             metadata_writer.clone(),
             metadata_store_client.clone(),
             bifrost.clone(),
             config.ingress.clone(),
             service_discovery,
+            Some(query_context),
         );
 
         let controller = if config.admin.is_cluster_controller_enabled() {
@@ -111,7 +135,6 @@ impl<T: TransportConnect> AdminRole<T> {
     pub async fn start(
         self,
         all_partitions_started_tx: oneshot::Sender<()>,
-        node_address: AdvertisedAddress,
     ) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
@@ -128,10 +151,7 @@ impl<T: TransportConnect> AdminRole<T> {
             TaskKind::RpcServer,
             "admin-rpc-server",
             None,
-            self.admin.run(
-                self.updateable_config.map(|c| &c.admin),
-                NodeSvcClient::new(create_tonic_channel_from_advertised_address(node_address)),
-            ),
+            self.admin.run(self.updateable_config.map(|c| &c.admin)),
         )?;
 
         Ok(())
