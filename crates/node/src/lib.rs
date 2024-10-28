@@ -98,6 +98,10 @@ pub enum BuildError {
     #[error("failed to initialize metadata store client: {0}")]
     #[code(unknown)]
     MetadataStoreClient(GenericError),
+
+    #[error("building metadata store failed: {0}")]
+    #[code(unknown)]
+    MetadataStore(#[from] restate_metadata_store::local::BuildError),
 }
 
 pub struct Node {
@@ -127,16 +131,19 @@ impl Node {
 
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
-        // todo(asoli) move local metadata store to use NetworkServer
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
-            Some(LocalMetadataStoreService::from_options(
-                health.metadata_server_status(),
-                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
-                updateable_config
-                    .clone()
-                    .map(|config| &config.metadata_store.rocksdb)
-                    .boxed(),
-            ))
+            Some(
+                LocalMetadataStoreService::create(
+                    health.metadata_server_status(),
+                    &config.metadata_store,
+                    updateable_config
+                        .clone()
+                        .map(|config| &config.metadata_store.rocksdb)
+                        .boxed(),
+                    &mut server_builder,
+                )
+                .await?,
+            )
         } else {
             None
         };
@@ -286,6 +293,23 @@ impl Node {
 
         let config = self.updateable_config.pinned();
 
+        // spawn the node rpc server first to enable connecting to the metadata store
+        tc.spawn(TaskKind::RpcServer, "node-rpc-server", None, {
+            let health = self.health.clone();
+            let common_options = config.common.clone();
+            let connection_manager = self.networking.connection_manager().clone();
+            async move {
+                NetworkServer::run(
+                    health,
+                    connection_manager,
+                    self.server_builder,
+                    common_options,
+                )
+                .await?;
+                Ok(())
+            }
+        })?;
+
         if let Some(metadata_store) = self.metadata_store_role {
             tc.spawn(
                 TaskKind::MetadataStore,
@@ -428,22 +452,6 @@ impl Node {
                 worker_role.start(all_partitions_started_rx),
             )?;
         }
-
-        tc.spawn(TaskKind::RpcServer, "node-rpc-server", None, {
-            let health = self.health.clone();
-            let common_options = config.common.clone();
-            let connection_manager = self.networking.connection_manager().clone();
-            async move {
-                NetworkServer::run(
-                    health,
-                    connection_manager,
-                    self.server_builder,
-                    common_options,
-                )
-                .await?;
-                Ok(())
-            }
-        })?;
 
         self.base_role.start()?;
 

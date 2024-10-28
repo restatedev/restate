@@ -4,6 +4,7 @@ use std::time::Duration;
 use enumset::enum_set;
 use futures_util::StreamExt;
 use regex::Regex;
+use restate_local_cluster_runner::node::MetadataStoreLocation;
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
@@ -43,10 +44,10 @@ async fn node_id_mismatch() -> googletest::Result<()> {
         .base_config(base_config)
         .with_node_name("node-1")
         .with_node_socket()
-        .with_socket_metadata()
         .with_random_ports()
         .with_node_id(PlainNodeId::new(1234))
         .with_roles(enum_set!(Role::Admin | Role::Worker))
+        .with_embedded_metadata_store(cluster.nodes[0].node_address().clone())
         .build();
 
     cluster.push_node(mismatch_node).await?;
@@ -88,6 +89,7 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
         base_config,
         BinarySource::CargoTest,
         enum_set!(Role::Admin | Role::Worker),
+        MetadataStoreLocation::Remote(cluster.nodes[0].node_address().clone()),
     );
 
     let mut mismatch_node = mismatch_node

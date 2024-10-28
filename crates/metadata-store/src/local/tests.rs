@@ -14,17 +14,17 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use test_log::test;
 
-use restate_core::network::FailingConnector;
+use restate_core::network::{FailingConnector, NetworkServerBuilder};
 use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
     self, reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
-    MetadataStoreClientOptionsBuilder, MetadataStoreOptions, RocksDbOptions,
+    MetadataStoreOptions, RocksDbOptions,
 };
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxedLiveLoad, Live};
 use restate_types::net::{AdvertisedAddress, BindAddress};
-use restate_types::protobuf::common::MetadataServerStatus;
+use restate_types::protobuf::common::NodeStatus;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
@@ -262,20 +262,12 @@ async fn durable_storage() -> anyhow::Result<()> {
     // reset RocksDbManager to allow restarting the metadata store
     RocksDbManager::get().reset().await?;
 
-    let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
-    let bind_address = BindAddress::Uds(uds_path.clone());
-    let metadata_store_client_opts = MetadataStoreClientOptionsBuilder::default()
-        .metadata_store_client(restate_types::config::MetadataStoreClient::Embedded {
-            address: AdvertisedAddress::Uds(uds_path),
-        })
-        .build()
-        .expect("valid metadata store client options");
-    let mut metadata_store_opts = opts.clone();
-    metadata_store_opts.bind_address = bind_address;
+    let metadata_store_client_opts = MetadataStoreClientOptions::default();
+    let metadata_store_opts = opts.clone();
     let metadata_store_opts = Live::from_value(metadata_store_opts);
     let client = start_metadata_store(
         metadata_store_client_opts,
-        metadata_store_opts.clone().boxed(),
+        &metadata_store_opts.pinned(),
         metadata_store_opts.map(|c| &c.rocksdb).boxed(),
         &env.tc,
     )
@@ -312,16 +304,10 @@ async fn create_test_environment(
     opts: &MetadataStoreOptions,
 ) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv<FailingConnector>)> {
     // Setup metadata store on unix domain socket.
-    let mut config = Configuration::default();
-    let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
-    let bind_address = BindAddress::Uds(uds_path.clone());
-    let advertised_address = AdvertisedAddress::Uds(uds_path);
-    config.metadata_store = opts.clone();
-    config.metadata_store.bind_address = bind_address;
-    config.common.metadata_store_client.metadata_store_client =
-        config::MetadataStoreClient::Embedded {
-            address: advertised_address.clone(),
-        };
+    let config = Configuration {
+        metadata_store: opts.clone(),
+        ..Default::default()
+    };
 
     restate_types::config::set_current_config(config.clone());
     let config = Live::from_value(config);
@@ -337,7 +323,7 @@ async fn create_test_environment(
 
     let client = start_metadata_store(
         config.pinned().common.metadata_store_client.clone(),
-        config.clone().map(|c| &c.metadata_store).boxed(),
+        &config.pinned().metadata_store,
         config.clone().map(|c| &c.metadata_store.rocksdb).boxed(),
         task_center,
     )
@@ -347,17 +333,35 @@ async fn create_test_environment(
 }
 
 async fn start_metadata_store(
-    metadata_store_client_options: MetadataStoreClientOptions,
-    opts: BoxedLiveLoad<MetadataStoreOptions>,
+    mut metadata_store_client_options: MetadataStoreClientOptions,
+    opts: &MetadataStoreOptions,
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     task_center: &TaskCenter,
 ) -> anyhow::Result<MetadataStoreClient> {
-    let health_status = HealthStatus::default();
-    let service = LocalMetadataStoreService::from_options(
-        health_status.clone(),
+    let mut server_builder = NetworkServerBuilder::default();
+    let service = LocalMetadataStoreService::create(
+        HealthStatus::default(),
         opts,
         updateables_rocksdb_options,
-    );
+        &mut server_builder,
+    )
+    .await?;
+
+    let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
+    let bind_address = BindAddress::Uds(uds.clone());
+    metadata_store_client_options.metadata_store_client = config::MetadataStoreClient::Embedded {
+        address: AdvertisedAddress::Uds(uds),
+    };
+
+    let rpc_server_health_status = HealthStatus::default();
+    task_center.spawn(TaskKind::RpcServer, "metadata-rpc-server", None, {
+        let rpc_server_health_status = rpc_server_health_status.clone();
+        async move {
+            server_builder
+                .run(rpc_server_health_status, None, &bind_address)
+                .await
+        }
+    })?;
 
     task_center.spawn(
         TaskKind::MetadataStore,
@@ -374,8 +378,8 @@ async fn start_metadata_store(
             metadata_store_client_options.metadata_store_client
     );
 
-    health_status
-        .wait_for_value(MetadataServerStatus::Ready)
+    rpc_server_health_status
+        .wait_for_value(NodeStatus::Alive)
         .await;
 
     let rocksdb_client = LocalMetadataStoreClient::new(address);

@@ -59,7 +59,7 @@ impl NetworkServerBuilder {
     pub async fn run(
         self,
         node_health: HealthStatus<NodeStatus>,
-        axum_router: axum::routing::Router,
+        axum_router: Option<axum::routing::Router>,
         bind_address: &BindAddress,
     ) -> Result<(), anyhow::Error> {
         // Trace layer
@@ -68,6 +68,7 @@ impl NetworkServerBuilder {
             .level(tracing::Level::ERROR);
 
         let axum_router = axum_router
+            .unwrap_or_default()
             .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
             .fallback(handler_404);
 
