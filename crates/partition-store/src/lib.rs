@@ -26,6 +26,9 @@ pub mod snapshots;
 pub mod state_table;
 pub mod timer_table;
 
+#[cfg(test)]
+mod tests;
+
 pub use partition_store::*;
 pub use partition_store_manager::*;
 

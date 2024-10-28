@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{assert_stream_eq, storage_test_environment};
+use super::{assert_stream_eq, storage_test_environment};
+
+use crate::PartitionStore;
 use bytes::Bytes;
-use restate_partition_store::PartitionStore;
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_storage_api::Transaction;
 use restate_types::identifiers::ServiceId;

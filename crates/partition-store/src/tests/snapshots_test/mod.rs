@@ -2,10 +2,8 @@ use std::ops::RangeInclusive;
 use std::time::SystemTime;
 use tempfile::tempdir;
 
-use restate_partition_store::snapshots::{
-    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
-};
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
+use crate::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_storage_api::Transaction;
 use restate_types::config::WorkerOptions;

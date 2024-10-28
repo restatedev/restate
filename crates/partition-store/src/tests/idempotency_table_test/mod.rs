@@ -12,7 +12,8 @@
 #![allow(clippy::borrow_interior_mutable_const)]
 #![allow(clippy::declare_interior_mutable_const)]
 
-use crate::storage_test_environment;
+use super::storage_test_environment;
+
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
