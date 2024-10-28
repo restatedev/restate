@@ -108,32 +108,32 @@ fn get_invocation_status<S: StorageAccess>(
 ) -> Result<InvocationStatus> {
     let _x = RocksDbPerfGuard::new("get-invocation-status");
 
-    // todo: Remove this once we remove the old InvocationStatus
-    // Try read the old one first
-    // The underlying assumption is that an invocation status will never exist in both old and new
-    // invocation status table.
-    if let Some(s) = storage
-        .get_value::<_, InvocationStatusV1>(create_invocation_status_key_v1(invocation_id))?
+    if let Some(s) =
+        storage.get_value::<_, InvocationStatus>(create_invocation_status_key(invocation_id))?
     {
-        return Ok(s.0);
+        return Ok(s);
     }
 
-    // todo: Read first from new invocation status table once the runtime writes to this table
+    // todo: Remove this once we remove the old InvocationStatus
+    // The underlying assumption is that an invocation status will never exist in both old and new
+    // invocation status table.
     storage
-        .get_value::<_, InvocationStatus>(create_invocation_status_key(invocation_id))
+        .get_value::<_, InvocationStatusV1>(create_invocation_status_key_v1(invocation_id))
         .map(|value| {
             if let Some(invocation_status) = value {
-                invocation_status
+                invocation_status.0
             } else {
                 InvocationStatus::Free
             }
         })
 }
 
-pub async fn try_migrate_on_read(
-    storage: &mut PartitionStoreTransaction<'_>,
+fn try_migrate_and_get_invocation_status<S: StorageAccess>(
+    storage: &mut S,
     invocation_id: &InvocationId,
-) -> Result<Option<InvocationStatus>> {
+) -> Result<InvocationStatus> {
+    let _x = RocksDbPerfGuard::new("try-migrate-and-get-invocation-status");
+
     let v1_key = create_invocation_status_key_v1(invocation_id);
     if let Some(status_v1) = storage.get_value::<_, InvocationStatusV1>(v1_key.clone())? {
         trace!("Migrating invocation {invocation_id} from InvocationStatus V1 to V2");
@@ -143,20 +143,12 @@ pub async fn try_migrate_on_read(
                 *v1_key.partition_key_ok_or()?,
                 *v1_key.invocation_uuid_ok_or()?,
             ),
-            &status_v1.0.clone(),
+            &status_v1.0,
         );
         storage.delete_key(&v1_key);
-        return Ok(Some(status_v1.0));
+        return Ok(status_v1.0);
     }
 
-    Ok(None)
-}
-
-fn get_invocation_status_v2<S: StorageAccess>(
-    storage: &mut S,
-    invocation_id: &InvocationId,
-) -> Result<InvocationStatus> {
-    let _x = RocksDbPerfGuard::new("get-invocation-status");
     storage
         .get_value::<_, InvocationStatus>(create_invocation_status_key(invocation_id))
         .map(|value| {
@@ -305,13 +297,7 @@ impl<'a> ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'a> {
         invocation_id: &InvocationId,
     ) -> Result<InvocationStatus> {
         self.assert_partition_key(invocation_id);
-
-        // Run migration on read
-        if let Some(status) = try_migrate_on_read(self, invocation_id).await? {
-            return Ok(status);
-        }
-
-        get_invocation_status_v2(self, invocation_id)
+        try_migrate_and_get_invocation_status(self, invocation_id)
     }
 
     fn all_invoked_invocations(
