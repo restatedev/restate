@@ -207,9 +207,15 @@ impl Node {
         if let BindAddress::Uds(file) = &mut self.base_config.metadata_store.bind_address {
             *file = base_dir.join(&*file)
         }
-        if let BindAddress::Uds(file) = &mut self.base_config.common.bind_address.clone().unwrap() {
-            *file = base_dir.join(&*file)
+        if self.base_config.common.bind_address.is_none() {
+            // TODO: Derive bind_address from advertised_address
+            self.base_config.common.bind_address = Some("0.0.0.0:5122".parse().unwrap());
         }
+
+        if let Some(BindAddress::Uds(file)) = &mut self.base_config.common.bind_address {
+            *file = base_dir.join(&*file);
+        }
+
         if let AdvertisedAddress::Uds(file) = &mut self.base_config.common.advertised_address {
             *file = base_dir.join(&*file)
         }
