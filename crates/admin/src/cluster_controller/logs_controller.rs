@@ -51,7 +51,7 @@ use crate::cluster_controller::scheduler;
 use nodeset_selection::{NodeSelectionError, NodeSetSelectionStrategy, NodeSetSelector};
 use restate_types::nodes_config::NodesConfiguration;
 
-pub type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
+type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
 
 const FALLBACK_MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
 
@@ -394,20 +394,24 @@ fn build_new_replicated_loglet_configuration(
             );
 
             // Although the NodeSetSelector could not find a suitable nodeset, this is also an
-            // opportunity to update the sequencer. This still requires that a quorum of the loglet
-            // nodeset is available in order to seal the previous segment to move to a new sequencer
-            // but make that the data plane's (or, worst case, an operator's) problem.
-            if previous_configuration.is_some_and(|p| p.sequencer != sequencer) {
-                Some(ReplicatedLogletParams {
+            // opportunity to update the sequencer.
+            previous_configuration.map(|p| {
+                if p.sequencer != sequencer {
+                    debug!(
+                        ?loglet_id,
+                        ?sequencer,
+                        "Updating loglet sequencer only, retaining original nodeset configuration"
+                    );
+                }
+
+                ReplicatedLogletParams {
                     loglet_id,
                     sequencer,
                     replication,
                     nodeset: previous_configuration.expect("to exist").nodeset.clone(),
                     write_set: None,
-                })
-            } else {
-                None
-            }
+                }
+            })
         }
     }
 }
@@ -1264,7 +1268,6 @@ pub mod tests {
     use std::num::NonZeroU8;
 
     use enumset::{enum_set, EnumSet};
-
     use restate_types::nodes_config::{
         LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
@@ -1309,7 +1312,7 @@ pub mod tests {
 
         pub fn kill_node(&mut self, node_id: u32) {
             let id = node_id.into();
-            self.observed_state.alive_nodes.remove(&id);
+            assert!(self.observed_state.alive_nodes.remove(&id).is_some(), "node not found");
             self.observed_state.dead_nodes.insert(id);
         }
 
@@ -1321,7 +1324,7 @@ pub mod tests {
 
         pub fn revive_node(&mut self, (node_id, generation): (u32, u32)) {
             let id = node_id.into();
-            self.observed_state.dead_nodes.remove(&id);
+            assert!(self.observed_state.dead_nodes.remove(&id), "node not found");
             self.observed_state
                 .alive_nodes
                 .insert(id, id.with_generation(generation));
@@ -1400,6 +1403,10 @@ pub mod tests {
             )
         }
 
+        pub fn with_all_roles_node(self, id: u32) -> Self {
+            self.with_nodes([id], EnumSet::all(), StorageState::ReadWrite)
+        }
+
         pub fn with_dedicated_worker_nodes<const N: usize>(self, ids: [u32; N]) -> Self {
             self.with_nodes(ids, enum_set!(Role::Worker), StorageState::Disabled)
         }
@@ -1432,6 +1439,96 @@ pub mod tests {
             roles,
             LogServerConfig { storage_state },
         )
+    }
+
+    #[tokio::test]
+    async fn three_node_cluster_handles_sequencer_failure() -> googletest::Result<()> {
+        let mut nodes = MockNodes::builder()
+            .with_all_roles_node(0)
+            .with_mixed_server_nodes([1, 2])
+            .build();
+
+        let initial = build_new_replicated_loglet_configuration(
+            ReplicatedLogletId::from(1),
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            None,
+            Some(NodeId::new_plain(1)),
+        )
+        .unwrap();
+
+        assert_eq!(initial.nodeset, NodeSet::from([0, 1, 2]));
+        assert_eq!(initial.sequencer, GenerationalNodeId::new(1, 1));
+
+        nodes.kill_node(1);
+
+        let updated = build_new_replicated_loglet_configuration(
+            initial.loglet_id,
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            Some(&initial),
+            Some(initial.sequencer.into()),
+        )
+        .unwrap();
+
+        assert_eq!(updated.nodeset, NodeSet::from([0, 1, 2]), "unchanged");
+        assert_ne!(
+            updated.sequencer, initial.sequencer,
+            "must change to a live node"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn three_node_cluster_handles_non_sequencer_failure() -> googletest::Result<()> {
+        let mut nodes = MockNodes::builder()
+            .with_all_roles_node(0)
+            .with_mixed_server_nodes([1, 2])
+            .build();
+
+        let initial = build_new_replicated_loglet_configuration(
+            ReplicatedLogletId::from(1),
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            None,
+            Some(NodeId::new_plain(1)),
+        )
+        .unwrap();
+
+        assert_eq!(initial.nodeset, NodeSet::from([0, 1, 2]));
+        assert_eq!(initial.sequencer, GenerationalNodeId::new(1, 1));
+
+        nodes.kill_node(2);
+
+        let updated = build_new_replicated_loglet_configuration(
+            initial.loglet_id,
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            Some(&initial),
+            Some(initial.sequencer.into()),
+        )
+        .unwrap();
+
+        assert_eq!(updated.nodeset, NodeSet::from([0, 1, 2]), "unchanged");
+        assert_eq!(
+            updated.sequencer, initial.sequencer,
+            "does not need to change"
+        );
+
+        let updated = build_new_replicated_loglet_configuration(
+            initial.loglet_id,
+            &nodes.nodes_config,
+            &nodes.observed_state,
+            Some(&initial),
+            Some(NodeId::new_plain(0)),
+        )
+        .unwrap();
+
+        assert_eq!(updated.nodeset, NodeSet::from([0, 1, 2]), "unchanged");
+        assert_eq!(updated.sequencer, GenerationalNodeId::new(0, 1),);
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -1475,7 +1572,7 @@ pub mod tests {
         assert_eq!(
             config.nodeset,
             NodeSet::from([1, 2, 3]),
-            "leave the loglet alone when nodset can't be improved"
+            "leave the loglet alone when nodeset can't be improved"
         );
         assert_ne!(
             config.sequencer,
@@ -1541,7 +1638,7 @@ pub mod tests {
         )
         .unwrap();
 
-        // we can now furhter expand the nodeset to exceed the 2f fault tolerance
+        // we can now further expand the nodeset to exceed the 2f fault tolerance
         assert_eq!(config.nodeset, NodeSet::from([1, 2, 3, 6]));
         Ok(())
     }
