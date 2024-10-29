@@ -204,7 +204,8 @@ async fn test_migration() {
         rocksdb.get_invocation_status(&invocation_id).await.unwrap()
     );
 
-    // Now reading should perform the migration
+    // Now reading should perform the migration,
+    // and result should be equal to the first inserted status
     let mut txn = rocksdb.transaction();
     assert_eq!(
         status,
@@ -229,4 +230,10 @@ async fn test_migration() {
             |_, v| Ok(v.is_some())
         )
         .unwrap());
+
+    // Make sure we can read without mutating V2
+    assert_eq!(
+        status,
+        rocksdb.get_invocation_status(&invocation_id).await.unwrap()
+    );
 }

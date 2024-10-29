@@ -29,7 +29,7 @@ use tracing::trace;
 // TODO remove this once we remove the old InvocationStatus
 define_table_key!(
     TableKind::InvocationStatus,
-    KeyKind::InvocationStatus,
+    KeyKind::InvocationStatusV1,
     InvocationStatusKeyV1(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid
@@ -45,7 +45,7 @@ fn create_invocation_status_key_v1(invocation_id: &InvocationId) -> InvocationSt
 
 define_table_key!(
     TableKind::InvocationStatus,
-    KeyKind::InvocationStatusV2,
+    KeyKind::InvocationStatus,
     InvocationStatusKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid
@@ -136,7 +136,7 @@ fn try_migrate_and_get_invocation_status<S: StorageAccess>(
 
     let v1_key = create_invocation_status_key_v1(invocation_id);
     if let Some(status_v1) = storage.get_value::<_, InvocationStatusV1>(v1_key.clone())? {
-        trace!("Migrating invocation {invocation_id} from InvocationStatus V1 to V2");
+        trace!("Migrating invocation {invocation_id} from InvocationStatus V1");
         put_invocation_status(
             storage,
             &InvocationId::from_parts(
@@ -341,9 +341,9 @@ mod tests {
     fn round_trip() {
         let expected_invocation_id = InvocationId::mock_random();
 
-        let key = create_invocation_status_key_v1(&expected_invocation_id).serialize();
+        let key = create_invocation_status_key(&expected_invocation_id).serialize();
 
-        let actual_invocation_id = invocation_id_from_v1_key_bytes(&mut key.freeze()).unwrap();
+        let actual_invocation_id = invocation_id_from_key_bytes(&mut key.freeze()).unwrap();
 
         assert_eq!(actual_invocation_id, expected_invocation_id);
     }

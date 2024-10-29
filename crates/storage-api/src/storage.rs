@@ -802,6 +802,7 @@ pub mod v1 {
             }
         }
 
+        // We need this for the test_migration in invocation_status_table_test
         #[cfg(feature = "test-util")]
         impl From<crate::invocation_status_table::InvocationStatusV1> for InvocationStatus {
             fn from(value: crate::invocation_status_table::InvocationStatusV1) -> Self {
