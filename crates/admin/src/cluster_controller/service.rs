@@ -312,9 +312,16 @@ impl<T: TransportConnect> Service<T> {
                     }
                 }
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
+                    let nodes_config = &nodes_config.live_load();
                     observed_cluster_state.update(&cluster_state);
-                    logs_controller.on_observed_cluster_state_update(&observed_cluster_state, SchedulingPlanNodeSetSelectorHints::from(&scheduler))?;
-                    scheduler.on_observed_cluster_state(&observed_cluster_state, nodes_config.live_load(), LogsBasedPartitionProcessorPlacementHints::from(&logs_controller)).await?;
+                    logs_controller.on_observed_cluster_state_update(
+                        nodes_config,
+                        &observed_cluster_state, SchedulingPlanNodeSetSelectorHints::from(&scheduler))?;
+                    scheduler.on_observed_cluster_state(
+                        &observed_cluster_state,
+                        nodes_config,
+                        LogsBasedPartitionProcessorPlacementHints::from(&logs_controller))
+                    .await?;
                 }
                 result = logs_controller.run_async_operations() => {
                     result?;

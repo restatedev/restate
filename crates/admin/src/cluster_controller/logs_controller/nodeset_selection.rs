@@ -41,6 +41,21 @@ impl<'a> NodeSetSelector<'a> {
         }
     }
 
+    /// Determines if the current nodeset can be improved, either by
+    pub fn can_improve(&self, current_nodeset: &NodeSet) -> bool {
+        let healthy_nodeset =
+            WritableNodeSet::from(&current_nodeset, self.cluster_state, self.nodes_config);
+        let candidates = WritableNodeSet::from_cluster(self.cluster_state, self.nodes_config);
+
+        // todo: make this strategy-aware, we should be comparing against max allowable size, not just the current len
+        if healthy_nodeset.len() == current_nodeset.len() {
+            return false;
+        }
+
+        // todo: check for majority overlap, otherwise we can't seal the previous loglet!
+        healthy_nodeset.len() < candidates.len()
+    }
+
     /// Picks a set of storage nodes for a replicated loglet out of the available pool. Only alive,
     /// writable storage nodes will be used. Returns a proposed new nodeset that meets the
     /// requirements of the supplied selection strategy and replication, or an explicit error.
@@ -57,7 +72,7 @@ impl<'a> NodeSetSelector<'a> {
         }
 
         // Only consider alive, writable storage nodes.
-        let candidates = WritableNodeSet::from(self.cluster_state, self.nodes_config);
+        let candidates = WritableNodeSet::from_cluster(self.cluster_state, self.nodes_config);
 
         let min_copies = replication_property.num_copies();
         if candidates.len() < min_copies.into() {
@@ -80,7 +95,7 @@ impl<'a> NodeSetSelector<'a> {
         );
         let optimal_fault_tolerant_nodeset_size = (usize::from(min_copies) - 1) * 2 + 1;
         assert!(
-            optimal_fault_tolerant_nodeset_size >= min_copies as usize,
+            optimal_fault_tolerant_nodeset_size >= usize::from(min_copies),
             "The calculated minimum nodeset size can not be less than the replication factor"
         );
 
@@ -123,9 +138,9 @@ impl<'a> NodeSetSelector<'a> {
         // todo: implement location scope-aware selection
         if nodeset.len() < nodeset_min_size {
             trace!(
-                selected_nodes_count = ?nodeset.len(),
-                ?nodeset_target_size,
-                "Failed to place replicated loglet: insufficient writeable nodes in the nodeset to meet availability goal"
+                "Failed to place replicated loglet: insufficient writeable nodes to meet minimum size requirement {} < {}",
+                nodeset.len(),
+                nodeset_min_size,
             );
             return Err(NodeSelectionError::InsufficientWriteableNodes);
         }
@@ -170,8 +185,11 @@ pub enum NodeSelectionError {
 struct WritableNodeSet(NodeSet);
 
 impl WritableNodeSet {
-    /// Constructs a new nodeset consisting of only alive, read-write storage nodes.
-    pub fn from(cluster_state: &ObservedClusterState, nodes_config: &NodesConfiguration) -> Self {
+    /// Constructs a new nodeset consisting of only alive, read-write storage nodes cluster-wide.
+    pub fn from_cluster(
+        cluster_state: &ObservedClusterState,
+        nodes_config: &NodesConfiguration,
+    ) -> Self {
         Self(
             cluster_state
                 .alive_nodes
@@ -181,6 +199,26 @@ impl WritableNodeSet {
                     nodes_config
                         .get_log_server_storage_state(node_id)
                         .can_write_to()
+                })
+                .collect(),
+        )
+    }
+
+    /// Filters only the alive, read-write storage nodes from an existing nodeset.
+    pub fn from(
+        nodeset: &NodeSet,
+        cluster_state: &ObservedClusterState,
+        nodes_config: &NodesConfiguration,
+    ) -> Self {
+        Self(
+            nodeset
+                .iter()
+                .copied()
+                .filter(|node_id| {
+                    cluster_state.alive_nodes.contains_key(node_id)
+                        && nodes_config
+                            .get_log_server_storage_state(node_id)
+                            .can_write_to()
                 })
                 .collect(),
         )
