@@ -50,7 +50,7 @@ impl<'a> NodeSetSelector<'a> {
         replication_property: &ReplicationProperty,
     ) -> bool {
         let current_writable =
-            WritableNodeSet::from(&nodeset, self.cluster_state, self.nodes_config);
+            WritableNodeSet::from(nodeset, self.cluster_state, self.nodes_config);
         let candidates = WritableNodeSet::from_cluster(self.cluster_state, self.nodes_config);
 
         let (nodeset_min_size, nodeset_max_size) =
