@@ -34,14 +34,13 @@ use restate_core::ShutdownError;
 use restate_rocksdb::{RocksDb, RocksError};
 use restate_storage_api::{Storage, StorageError, Transaction};
 
-use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::LocalPartitionSnapshot;
+use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 
 pub type DB = rocksdb::DB;
 
@@ -135,7 +134,7 @@ impl TableKind {
     pub const fn key_kinds(self) -> &'static [KeyKind] {
         match self {
             Self::State => &[KeyKind::State],
-            Self::InvocationStatus => &[KeyKind::InvocationStatus, KeyKind::InvocationStatusV2],
+            Self::InvocationStatus => &[KeyKind::InvocationStatusV1, KeyKind::InvocationStatus],
             Self::ServiceStatus => &[KeyKind::ServiceStatus],
             Self::Idempotency => &[KeyKind::Idempotency],
             Self::Inbox => &[KeyKind::Inbox],

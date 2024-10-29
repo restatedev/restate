@@ -297,7 +297,7 @@ pub mod v1 {
             };
         }
 
-        impl TryFrom<InvocationStatusV2> for crate::invocation_status_table::InvocationStatusV2 {
+        impl TryFrom<InvocationStatusV2> for crate::invocation_status_table::InvocationStatus {
             type Error = ConversionError;
 
             fn try_from(value: InvocationStatusV2) -> Result<Self, Self::Error> {
@@ -370,8 +370,6 @@ pub mod v1 {
                                                 .unwrap_or_default()
                                                 .try_into()?,
                                         idempotency_key: idempotency_key.map(ByteString::from),
-                                        source_table:
-                                            crate::invocation_status_table::SourceTable::New,
                                     },
                             },
                         ))
@@ -395,8 +393,6 @@ pub mod v1 {
                                                 .unwrap_or_default()
                                                 .try_into()?,
                                         idempotency_key: idempotency_key.map(ByteString::from),
-                                        source_table:
-                                            crate::invocation_status_table::SourceTable::New,
                                     },
                             },
                         ))
@@ -420,7 +416,6 @@ pub mod v1 {
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
-                                source_table: crate::invocation_status_table::SourceTable::New,
                             },
                         ))
                     }
@@ -443,7 +438,6 @@ pub mod v1 {
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
-                                source_table: crate::invocation_status_table::SourceTable::New,
                             },
                             waiting_for_completed_entries: waiting_for_completed_entries
                                 .into_iter()
@@ -458,7 +452,6 @@ pub mod v1 {
                                 span_context: expect_or_fail!(span_context)?.try_into()?,
                                 source,
                                 idempotency_key: idempotency_key.map(ByteString::from),
-                                source_table: crate::invocation_status_table::SourceTable::New,
                                 response_result: expect_or_fail!(result)?.try_into()?,
                                 completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
@@ -471,14 +464,11 @@ pub mod v1 {
                         value.status,
                     )),
                 }
-                .map(crate::invocation_status_table::InvocationStatusV2)
             }
         }
 
-        impl From<crate::invocation_status_table::InvocationStatusV2> for InvocationStatusV2 {
-            fn from(
-                crate::invocation_status_table::InvocationStatusV2(value): crate::invocation_status_table::InvocationStatusV2,
-            ) -> Self {
+        impl From<crate::invocation_status_table::InvocationStatus> for InvocationStatusV2 {
+            fn from(value: crate::invocation_status_table::InvocationStatus) -> Self {
                 match value {
                     crate::invocation_status_table::InvocationStatus::Scheduled(
                         crate::invocation_status_table::ScheduledInvocation {
@@ -494,7 +484,6 @@ pub mod v1 {
                                     execution_time,
                                     completion_retention_duration,
                                     idempotency_key,
-                                    source_table: _,
                                 },
                         },
                     ) => InvocationStatusV2 {
@@ -546,7 +535,6 @@ pub mod v1 {
                                     execution_time,
                                     completion_retention_duration,
                                     idempotency_key,
-                                    source_table: _,
                                 },
                             inbox_sequence_number,
                         },
@@ -595,7 +583,6 @@ pub mod v1 {
                             source,
                             completion_retention_duration,
                             idempotency_key,
-                            source_table: _,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -659,7 +646,6 @@ pub mod v1 {
                                 source,
                                 completion_retention_duration,
                                 idempotency_key,
-                                source_table: _,
                             },
                         waiting_for_completed_entries,
                     } => {
@@ -724,7 +710,6 @@ pub mod v1 {
                             timestamps,
                             response_result,
                             completion_retention_duration,
-                            source_table: _,
                         },
                     ) => InvocationStatusV2 {
                         status: invocation_status_v2::Status::Completed.into(),
@@ -765,7 +750,7 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<InvocationStatus> for crate::invocation_status_table::InvocationStatus {
+        impl TryFrom<InvocationStatus> for crate::invocation_status_table::InvocationStatusV1 {
             type Error = ConversionError;
 
             fn try_from(value: InvocationStatus) -> Result<Self, Self::Error> {
@@ -806,13 +791,22 @@ pub mod v1 {
                     }
                 };
 
-                Ok(result)
+                Ok(crate::invocation_status_table::InvocationStatusV1(result))
             }
         }
 
-        impl From<crate::invocation_status_table::InvocationStatus> for InvocationStatus {
-            fn from(value: crate::invocation_status_table::InvocationStatus) -> Self {
-                let status = match value {
+        #[cfg(not(feature = "test-util"))]
+        impl From<crate::invocation_status_table::InvocationStatusV1> for InvocationStatus {
+            fn from(_: crate::invocation_status_table::InvocationStatusV1) -> Self {
+                panic!("Unexpected conversion to old InvocationStatus, this is not expected to happen.")
+            }
+        }
+
+        // We need this for the test_migration in invocation_status_table_test
+        #[cfg(feature = "test-util")]
+        impl From<crate::invocation_status_table::InvocationStatusV1> for InvocationStatus {
+            fn from(value: crate::invocation_status_table::InvocationStatusV1) -> Self {
+                let status = match value.0 {
                     crate::invocation_status_table::InvocationStatus::Inboxed(inboxed_status) => {
                         invocation_status::Status::Inboxed(Inboxed::from(inboxed_status))
                     }
@@ -930,7 +924,6 @@ pub mod v1 {
                     source,
                     completion_retention_duration: completion_retention_time,
                     idempotency_key,
-                    source_table: crate::invocation_status_table::SourceTable::Old,
                 })
             }
         }
@@ -946,7 +939,6 @@ pub mod v1 {
                     source,
                     completion_retention_duration: completion_retention_time,
                     idempotency_key,
-                    source_table: _,
                 } = value;
 
                 let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -1042,7 +1034,6 @@ pub mod v1 {
                         source: caller,
                         completion_retention_duration: completion_retention_time,
                         idempotency_key,
-                        source_table: crate::invocation_status_table::SourceTable::Old,
                     },
                     waiting_for_completed_entries,
                 ))
@@ -1167,7 +1158,6 @@ pub mod v1 {
                         idempotency_key,
                         completion_retention_duration: completion_retention_time,
                         invocation_target,
-                        source_table: crate::invocation_status_table::SourceTable::Old,
                     },
                 })
             }
@@ -1188,7 +1178,6 @@ pub mod v1 {
                             execution_time,
                             completion_retention_duration: completion_retention_time,
                             idempotency_key,
-                            source_table: _,
                         },
                     inbox_sequence_number,
                 } = value;
@@ -1250,7 +1239,6 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("result"))?
                         .try_into()?,
                     idempotency_key,
-                    source_table: crate::invocation_status_table::SourceTable::Old,
                     // The value Duration::MAX here disables the new cleaner task business logic.
                     // Look at crates/worker/src/partition/cleaner.rs for more details.
                     completion_retention_duration: std::time::Duration::MAX,
@@ -1268,7 +1256,6 @@ pub mod v1 {
                     response_result,
                     // We don't store this in the old invocation status table
                     completion_retention_duration: _,
-                    source_table: _,
                     // The old invocation status table doesn't support span context on Completed
                     span_context: _,
                 } = value;

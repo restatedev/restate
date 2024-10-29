@@ -17,17 +17,32 @@ use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
-    InvocationStatusTable, InvocationStatusV2, PreFlightInvocationMetadata,
-    ReadOnlyInvocationStatusTable, ScheduledInvocation, SourceTable,
+    InvocationStatus, InvocationStatusTable, InvocationStatusV1, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::invocation::InvocationTarget;
 use restate_types::storage::StorageCodec;
 use std::ops::RangeInclusive;
+use tracing::trace;
 
 // TODO remove this once we remove the old InvocationStatus
+define_table_key!(
+    TableKind::InvocationStatus,
+    KeyKind::InvocationStatusV1,
+    InvocationStatusKeyV1(
+        partition_key: PartitionKey,
+        invocation_uuid: InvocationUuid
+    )
+);
+
+// TODO remove this once we remove the old InvocationStatus
+fn create_invocation_status_key_v1(invocation_id: &InvocationId) -> InvocationStatusKeyV1 {
+    InvocationStatusKeyV1::default()
+        .partition_key(invocation_id.partition_key())
+        .invocation_uuid(invocation_id.invocation_uuid())
+}
+
 define_table_key!(
     TableKind::InvocationStatus,
     KeyKind::InvocationStatus,
@@ -37,31 +52,15 @@ define_table_key!(
     )
 );
 
-// TODO remove this once we remove the old InvocationStatus
 fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatusKey {
     InvocationStatusKey::default()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid())
 }
 
-define_table_key!(
-    TableKind::InvocationStatus,
-    KeyKind::InvocationStatusV2,
-    NeoInvocationStatusKey(
-        partition_key: PartitionKey,
-        invocation_uuid: InvocationUuid
-    )
-);
-
-fn create_neo_invocation_status_key(invocation_id: &InvocationId) -> NeoInvocationStatusKey {
-    NeoInvocationStatusKey::default()
-        .partition_key(invocation_id.partition_key())
-        .invocation_uuid(invocation_id.invocation_uuid())
-}
-
 // TODO remove this once we remove the old InvocationStatus
-fn invocation_id_from_old_key_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Result<InvocationId> {
-    let mut key = InvocationStatusKey::deserialize_from(bytes)?;
+fn invocation_id_from_v1_key_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Result<InvocationId> {
+    let mut key = InvocationStatusKeyV1::deserialize_from(bytes)?;
     let partition_key = key
         .partition_key
         .take()
@@ -74,8 +73,8 @@ fn invocation_id_from_old_key_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Resu
     ))
 }
 
-fn invocation_id_from_neo_key_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Result<InvocationId> {
-    let mut key = NeoInvocationStatusKey::deserialize_from(bytes)?;
+fn invocation_id_from_key_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Result<InvocationId> {
+    let mut key = InvocationStatusKey::deserialize_from(bytes)?;
     let partition_key = key
         .partition_key
         .take()
@@ -94,49 +93,11 @@ fn put_invocation_status<S: StorageAccess>(
     status: &InvocationStatus,
 ) {
     match status {
-        InvocationStatus::Inboxed(InboxedInvocation {
-            metadata: PreFlightInvocationMetadata { source_table, .. },
-            ..
-        })
-        | InvocationStatus::Invoked(InFlightInvocationMetadata { source_table, .. })
-        | InvocationStatus::Suspended {
-            metadata: InFlightInvocationMetadata { source_table, .. },
-            ..
-        }
-        | InvocationStatus::Completed(CompletedInvocation { source_table, .. }) => {
-            match source_table {
-                // TODO remove this once we remove the old InvocationStatus
-                SourceTable::Old => {
-                    storage.put_kv(create_invocation_status_key(invocation_id), status);
-                }
-                SourceTable::New => {
-                    storage.put_kv(
-                        create_neo_invocation_status_key(invocation_id),
-                        // todo: remove clone
-                        &InvocationStatusV2(status.clone()),
-                    );
-                }
-            }
-        }
-        InvocationStatus::Scheduled(ScheduledInvocation {
-            metadata: PreFlightInvocationMetadata { source_table, .. },
-        }) => {
-            assert_eq!(
-                *source_table,
-                SourceTable::New,
-                "Scheduled status can be stored only for NeoInvocationStatus table"
-            );
-            // The scheduled variant is only on the NeoInvocationStatus
-            storage.put_kv(
-                create_neo_invocation_status_key(invocation_id),
-                // todo: remove clone
-                &InvocationStatusV2(status.clone()),
-            );
-        }
         InvocationStatus::Free => {
-            // TODO remove this once we remove the old InvocationStatus
             storage.delete_key(&create_invocation_status_key(invocation_id));
-            storage.delete_key(&create_neo_invocation_status_key(invocation_id));
+        }
+        _ => {
+            storage.put_kv(create_invocation_status_key(invocation_id), status);
         }
     }
 }
@@ -147,19 +108,17 @@ fn get_invocation_status<S: StorageAccess>(
 ) -> Result<InvocationStatus> {
     let _x = RocksDbPerfGuard::new("get-invocation-status");
 
-    // todo: Remove this once we remove the old InvocationStatus
-    // Try read the old one first
-    // The underlying assumption is that an invocation status will never exist in both old and new
-    // invocation status table.
     if let Some(s) =
         storage.get_value::<_, InvocationStatus>(create_invocation_status_key(invocation_id))?
     {
         return Ok(s);
     }
 
-    // todo: Read first from new invocation status table once the runtime writes to this table
+    // todo: Remove this once we remove the old InvocationStatus
+    // The underlying assumption is that an invocation status will never exist in both old and new
+    // invocation status table.
     storage
-        .get_value::<_, InvocationStatusV2>(create_neo_invocation_status_key(invocation_id))
+        .get_value::<_, InvocationStatusV1>(create_invocation_status_key_v1(invocation_id))
         .map(|value| {
             if let Some(invocation_status) = value {
                 invocation_status.0
@@ -169,10 +128,42 @@ fn get_invocation_status<S: StorageAccess>(
         })
 }
 
+fn try_migrate_and_get_invocation_status<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+) -> Result<InvocationStatus> {
+    let _x = RocksDbPerfGuard::new("try-migrate-and-get-invocation-status");
+
+    let v1_key = create_invocation_status_key_v1(invocation_id);
+    if let Some(status_v1) = storage.get_value::<_, InvocationStatusV1>(v1_key.clone())? {
+        trace!("Migrating invocation {invocation_id} from InvocationStatus V1");
+        put_invocation_status(
+            storage,
+            &InvocationId::from_parts(
+                *v1_key.partition_key_ok_or()?,
+                *v1_key.invocation_uuid_ok_or()?,
+            ),
+            &status_v1.0,
+        );
+        storage.delete_key(&v1_key);
+        return Ok(status_v1.0);
+    }
+
+    storage
+        .get_value::<_, InvocationStatus>(create_invocation_status_key(invocation_id))
+        .map(|value| {
+            if let Some(invocation_status) = value {
+                invocation_status
+            } else {
+                InvocationStatus::Free
+            }
+        })
+}
+
 fn delete_invocation_status<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) {
     // TODO remove this once we remove the old InvocationStatus
+    storage.delete_key(&create_invocation_status_key_v1(invocation_id));
     storage.delete_key(&create_invocation_status_key(invocation_id));
-    storage.delete_key(&create_neo_invocation_status_key(invocation_id));
 }
 
 fn invoked_invocations<S: StorageAccess>(
@@ -181,9 +172,9 @@ fn invoked_invocations<S: StorageAccess>(
 ) -> Vec<Result<(InvocationId, InvocationTarget)>> {
     let _x = RocksDbPerfGuard::new("invoked-invocations");
     let mut invocations = storage.for_each_key_value_in_place(
-        FullScanPartitionKeyRange::<InvocationStatusKey>(partition_key_range.clone()),
+        FullScanPartitionKeyRange::<InvocationStatusKeyV1>(partition_key_range.clone()),
         |mut k, mut v| {
-            let result = read_invoked_full_invocation_id(&mut k, &mut v).transpose();
+            let result = read_invoked_v1_full_invocation_id(&mut k, &mut v).transpose();
             if let Some(res) = result {
                 TableScanIterationDecision::Emit(res)
             } else {
@@ -192,9 +183,9 @@ fn invoked_invocations<S: StorageAccess>(
         },
     );
     invocations.extend(storage.for_each_key_value_in_place(
-        FullScanPartitionKeyRange::<NeoInvocationStatusKey>(partition_key_range),
+        FullScanPartitionKeyRange::<InvocationStatusKey>(partition_key_range),
         |mut k, mut v| {
-            let result = read_invoked_neo_full_invocation_id(&mut k, &mut v).transpose();
+            let result = read_invoked_full_invocation_id(&mut k, &mut v).transpose();
             if let Some(res) = result {
                 TableScanIterationDecision::Emit(res)
             } else {
@@ -212,28 +203,27 @@ fn all_invocation_status<S: StorageAccess>(
 ) -> impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send + '_ {
     stream::iter(
         OwnedIterator::new(storage.iterator_from(
-            FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+            FullScanPartitionKeyRange::<InvocationStatusKeyV1>(range.clone()),
         ))
         .map(|(mut key, mut value)| {
-            let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
-            let state_value = StorageCodec::decode::<InvocationStatus, _>(&mut value)
+            let state_key = InvocationStatusKeyV1::deserialize_from(&mut key)?;
+            let state_value = StorageCodec::decode::<InvocationStatusV1, _>(&mut value)
                 .map_err(|err| StorageError::Conversion(err.into()))?;
 
             let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
             Ok((
                 InvocationId::from_parts(partition_key, invocation_uuid),
-                state_value,
+                state_value.0,
             ))
         })
         .chain(
             OwnedIterator::new(storage.iterator_from(FullScanPartitionKeyRange::<
-                NeoInvocationStatusKey,
+                InvocationStatusKey,
             >(range.clone())))
             .map(|(mut key, mut value)| {
-                let state_key = NeoInvocationStatusKey::deserialize_from(&mut key)?;
-                let state_value = StorageCodec::decode::<InvocationStatusV2, _>(&mut value)
-                    .map_err(|err| StorageError::Conversion(err.into()))?
-                    .0;
+                let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
+                let state_value = StorageCodec::decode::<InvocationStatus, _>(&mut value)
+                    .map_err(|err| StorageError::Conversion(err.into()))?;
 
                 let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
                 Ok((
@@ -246,29 +236,28 @@ fn all_invocation_status<S: StorageAccess>(
 }
 
 // TODO remove this once we remove the old InvocationStatus
-fn read_invoked_full_invocation_id(
+fn read_invoked_v1_full_invocation_id(
     mut k: &mut &[u8],
     v: &mut &[u8],
 ) -> Result<Option<(InvocationId, InvocationTarget)>> {
-    let invocation_id = invocation_id_from_old_key_bytes(&mut k)?;
-    let invocation_status = StorageCodec::decode::<InvocationStatus, _>(v)
+    let invocation_id = invocation_id_from_v1_key_bytes(&mut k)?;
+    let invocation_status = StorageCodec::decode::<InvocationStatusV1, _>(v)
         .map_err(|err| StorageError::Generic(err.into()))?;
-    if let InvocationStatus::Invoked(invocation_meta) = invocation_status {
+    if let InvocationStatus::Invoked(invocation_meta) = invocation_status.0 {
         Ok(Some((invocation_id, invocation_meta.invocation_target)))
     } else {
         Ok(None)
     }
 }
 
-fn read_invoked_neo_full_invocation_id(
+fn read_invoked_full_invocation_id(
     mut k: &mut &[u8],
     v: &mut &[u8],
 ) -> Result<Option<(InvocationId, InvocationTarget)>> {
     // TODO this can be improved by simply parsing InvocationTarget and the Status enum
-    let invocation_id = invocation_id_from_neo_key_bytes(&mut k)?;
-    let invocation_status = StorageCodec::decode::<InvocationStatusV2, _>(v)
-        .map_err(|err| StorageError::Generic(err.into()))?
-        .0;
+    let invocation_id = invocation_id_from_key_bytes(&mut k)?;
+    let invocation_status = StorageCodec::decode::<InvocationStatus, _>(v)
+        .map_err(|err| StorageError::Generic(err.into()))?;
     if let InvocationStatus::Invoked(invocation_meta) = invocation_status {
         Ok(Some((invocation_id, invocation_meta.invocation_target)))
     } else {
@@ -308,7 +297,7 @@ impl<'a> ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'a> {
         invocation_id: &InvocationId,
     ) -> Result<InvocationStatus> {
         self.assert_partition_key(invocation_id);
-        get_invocation_status(self, invocation_id)
+        try_migrate_and_get_invocation_status(self, invocation_id)
     }
 
     fn all_invoked_invocations(
@@ -354,7 +343,7 @@ mod tests {
 
         let key = create_invocation_status_key(&expected_invocation_id).serialize();
 
-        let actual_invocation_id = invocation_id_from_old_key_bytes(&mut key.freeze()).unwrap();
+        let actual_invocation_id = invocation_id_from_key_bytes(&mut key.freeze()).unwrap();
 
         assert_eq!(actual_invocation_id, expected_invocation_id);
     }

@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::mock_service_invocation;
+use super::mock_service_invocation;
+
+use crate::PartitionStore;
 use futures_util::StreamExt;
 use googletest::matchers::eq;
 use googletest::{assert_that, pat};
-use restate_partition_store::PartitionStore;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};

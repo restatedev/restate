@@ -11,7 +11,7 @@
 use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 use crate::table_util::format_using;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, JournalMetadata, SourceTable, StatusTimestamps,
+    InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{
@@ -85,9 +85,7 @@ pub(crate) fn append_invocation_status_row(
             fill_invoked_by(&mut row, output, completed.source);
 
             // We fill the span context only for the new table, as the old table will contain always the empty value
-            if completed.source_table == SourceTable::New {
-                fill_span_context(&mut row, output, &completed.span_context);
-            }
+            fill_span_context(&mut row, output, &completed.span_context);
 
             match completed.response_result {
                 ResponseResult::Success(_) => {
