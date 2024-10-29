@@ -374,15 +374,13 @@ fn build_new_replicated_loglet_configuration(
     );
 
     match selection {
-        Ok(nodeset) => {
-            Some(ReplicatedLogletParams {
-                loglet_id,
-                sequencer,
-                replication,
-                nodeset,
-                write_set: None,
-            })
-        }
+        Ok(nodeset) => Some(ReplicatedLogletParams {
+            loglet_id,
+            sequencer,
+            replication,
+            nodeset,
+            write_set: None,
+        }),
 
         Err(NodeSelectionError::InsufficientWriteableNodes) => {
             debug!(
@@ -452,16 +450,12 @@ impl LogletConfiguration {
                     );
                 }
 
-                // todo: incorporate a sealability check based on the current segment's nodeset health
                 let nodeset_improvement_possible =
                     NodeSetSelector::new(nodes_config, observed_cluster_state).can_improve(
                         &configuration.nodeset,
                         NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
                         &configuration.replication,
                     );
-
-                let requires_reconfiguration =
-                    sequencer_change_required || nodeset_improvement_possible;
 
                 if nodeset_improvement_possible {
                     debug!(
@@ -470,7 +464,7 @@ impl LogletConfiguration {
                     );
                 }
 
-                requires_reconfiguration
+                sequencer_change_required || nodeset_improvement_possible
             }
             LogletConfiguration::Local(_) => false,
             #[cfg(any(test, feature = "memory-loglet"))]

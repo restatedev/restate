@@ -19,13 +19,12 @@ use restate_types::replicated_loglet::{LocationScope, NodeSet, ReplicationProper
 
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 
-/// Nodeset selector for picking a set of storage nodes for a replicated loglet out of a
-/// broader pool of available nodes.
+/// Nodeset selector for picking a set of storage nodes for a replicated loglet out of a broader
+/// pool of available nodes.
 ///
-/// This selector can be reused once constructed to make multiple decision in a single scheduling iteration,
-/// if the node configuration and the replication settings are not changing.
-#[cfg(feature = "replicated-loglet")]
-#[derive(Clone)]
+/// This selector can be reused once constructed to make multiple decisions in a single scheduling
+/// iteration, if the node configuration and the replication settings are not changing. [cfg(feature
+/// = "replicated-loglet")] [derive(Clone)]
 pub struct NodeSetSelector<'a> {
     nodes_config: &'a NodesConfiguration,
     cluster_state: &'a ObservedClusterState,
@@ -42,8 +41,8 @@ impl<'a> NodeSetSelector<'a> {
         }
     }
 
-    /// Determines if the current nodeset can be improved by replacing or adding members. Does NOT consider sealability
-    /// of the current configuration when making a decision!
+    /// Determines if a nodeset can be improved by adding or replacing members. Does NOT consider
+    /// sealability of the current configuration when making decisions!
     pub fn can_improve(
         &self,
         nodeset: &NodeSet,
@@ -61,7 +60,8 @@ impl<'a> NodeSetSelector<'a> {
             return false;
         }
 
-        // todo: check current segment for sealability, otherwise we might propose reconfiguration when we are almost certain to get stuck!
+        // todo: we should check the current segment for sealability, otherwise we might propose
+        //  reconfiguration when we are virtually certain to get stuck!
         candidates.len() >= nodeset_min_size && candidates.len() > current_writable.len()
     }
 
