@@ -374,16 +374,7 @@ fn build_new_replicated_loglet_configuration(
     );
 
     match selection {
-        Ok(selected_nodeset) => {
-            let nodeset = if previous_configuration.map(|p| &p.nodeset).is_some_and(|n| {
-                n.new_excluding(&observed_cluster_state.dead_nodes) == selected_nodeset
-            }) {
-                // The proposed nodeset is the same as the previous one modulo dead nodes; keep it
-                previous_configuration.expect("to exist").nodeset.clone()
-            } else {
-                selected_nodeset
-            };
-
+        Ok(nodeset) => {
             Some(ReplicatedLogletParams {
                 loglet_id,
                 sequencer,
