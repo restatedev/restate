@@ -449,20 +449,36 @@ impl LogletConfiguration {
         match self {
             #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(configuration) => {
-                let sequencer_change_required =
-                    !observed_cluster_state.is_node_alive(configuration.sequencer);
+                let sequencer_change_required = !observed_cluster_state
+                    .is_node_alive(configuration.sequencer)
+                    && !observed_cluster_state.alive_nodes.is_empty();
 
-                // Incorporates liveness information as well as node storage state
+                if sequencer_change_required {
+                    debug!(
+                        loglet_id = ?configuration.loglet_id,
+                        "Replicated loglet requires a sequencer change, existing sequencer {} is presumed dead",
+                        configuration.sequencer
+                    );
+                }
+
+                // todo: incorporate a sealability check based on the current segment's nodeset health
                 let nodeset_improvement_possible =
-                    NodeSetSelector::new(nodes_config, observed_cluster_state)
-                        .can_improve(&configuration.nodeset);
+                    NodeSetSelector::new(nodes_config, observed_cluster_state).can_improve(
+                        &configuration.nodeset,
+                        NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
+                        &configuration.replication,
+                    );
 
                 let requires_reconfiguration =
                     sequencer_change_required || nodeset_improvement_possible;
-                if requires_reconfiguration {
-                    // todo: why?
-                    debug!("Replicated loglet requires reconfiguration");
+
+                if nodeset_improvement_possible {
+                    debug!(
+                        loglet_id = ?configuration.loglet_id,
+                        "Replicated loglet nodeset can be improved, will attempt reconfiguration"
+                    );
                 }
+
                 requires_reconfiguration
             }
             LogletConfiguration::Local(_) => false,
@@ -1471,7 +1487,7 @@ pub mod tests {
 
     #[test]
     fn loglet_requires_reconfiguration() {
-        let nodes = MockNodes::builder()
+        let mut nodes = MockNodes::builder()
             .with_all_roles_node(0)
             .with_dead_node(
                 1,
@@ -1485,70 +1501,53 @@ pub mod tests {
             )
             .build();
 
-        let sequencer_dead = LogletConfiguration::Replicated(ReplicatedLogletParams {
+        let seq_n0 = ReplicatedLogletParams {
             loglet_id: ReplicatedLogletId::from(1),
-            nodeset: NodeSet::from([0, 1, 2]),
-            sequencer: GenerationalNodeId::new(1, 1),
-            replication: ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
-            write_set: None,
-        });
-
-        let log_server_dead = LogletConfiguration::Replicated(ReplicatedLogletParams {
-            loglet_id: ReplicatedLogletId::from(1),
-            nodeset: NodeSet::from([0, 1, 2]),
             sequencer: GenerationalNodeId::new(0, 1),
             replication: ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
-            write_set: None,
-        });
-
-        assert!(sequencer_dead.requires_reconfiguration(&nodes.nodes_config, &nodes.observed_state));
-        assert!(
-            !log_server_dead.requires_reconfiguration(&nodes.nodes_config, &nodes.observed_state),
-            "we should not reconfigure when we can't improve the nodeset"
-        );
-    }
-
-    #[test]
-    fn three_node_cluster_handles_sequencer_failure() {
-        let nodes = MockNodes::builder()
-            .with_all_roles_node(0)
-            .with_dead_node(
-                1,
-                enum_set!(Role::LogServer | Role::Worker),
-                StorageState::ReadWrite,
-            )
-            .with_node(
-                2,
-                enum_set!(Role::LogServer | Role::Worker),
-                StorageState::ReadWrite,
-            )
-            .build();
-
-        let previous_config = ReplicatedLogletParams {
-            loglet_id: ReplicatedLogletId::from(1),
             nodeset: NodeSet::from([0, 1, 2]),
-            sequencer: GenerationalNodeId::new(1, 1),
-            replication: ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             write_set: None,
         };
 
-        let updated_config = build_new_replicated_loglet_configuration(
-            previous_config.loglet_id,
+        let sequencer_replacement = LogletConfiguration::Replicated(ReplicatedLogletParams {
+            sequencer: GenerationalNodeId::new(1, 1),
+            ..seq_n0.clone()
+        });
+
+        assert!(sequencer_replacement
+            .requires_reconfiguration(&nodes.nodes_config, &nodes.observed_state));
+
+        let params = LogletConfiguration::Replicated(seq_n0.clone());
+        assert!(
+            !params.requires_reconfiguration(&nodes.nodes_config, &nodes.observed_state),
+            "we should not reconfigure when we can't improve the nodeset"
+        );
+
+        nodes.add_dedicated_log_server_node(3);
+        assert!(
+            params.requires_reconfiguration(&nodes.nodes_config, &nodes.observed_state),
+            "we should be able to go to [N0, N2, N3] from the previous configuration"
+        );
+
+        // this _should_ be false, as we likely can't seal the [N0, N1, N2] loglet segment with nodes N1 and N2 dead.
+        // in the future, we'll make the logs controller smarter about this type of thing
+        nodes.add_dedicated_log_server_node(4);
+        nodes.kill_node(2);
+        assert!(params.requires_reconfiguration(&nodes.nodes_config, &nodes.observed_state));
+
+        let config = build_new_replicated_loglet_configuration(
+            seq_n0.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
-            Some(&previous_config),
-            Some(previous_config.sequencer.into()),
+            Some(&seq_n0),
+            Some(seq_n0.sequencer.into()),
         )
         .unwrap();
-
+        assert_eq!(config.sequencer, seq_n0.sequencer, "no change in sequencer");
         assert_eq!(
-            updated_config.nodeset,
-            NodeSet::from([0, 1, 2]),
-            "unchanged"
-        );
-        assert!(
-            NodeSet::from([0, 2]).contains(&updated_config.sequencer.as_plain()),
-            "sequencer must change to another live node"
+            config.nodeset,
+            NodeSet::from([0, 3, 4]),
+            "picks healthy log servers for nodeset"
         );
     }
 

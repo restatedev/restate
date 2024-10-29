@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::cmp::max;
+
 use rand::prelude::IteratorRandom;
 use rand::Rng;
-use std::cmp::max;
 use tracing::trace;
 
 use restate_types::nodes_config::NodesConfiguration;
@@ -41,19 +42,27 @@ impl<'a> NodeSetSelector<'a> {
         }
     }
 
-    /// Determines if the current nodeset can be improved, either by
-    pub fn can_improve(&self, current_nodeset: &NodeSet) -> bool {
-        let healthy_nodeset =
-            WritableNodeSet::from(&current_nodeset, self.cluster_state, self.nodes_config);
+    /// Determines if the current nodeset can be improved by replacing or adding members. Does NOT consider sealability
+    /// of the current configuration when making a decision!
+    pub fn can_improve(
+        &self,
+        nodeset: &NodeSet,
+        strategy: NodeSetSelectionStrategy,
+        replication_property: &ReplicationProperty,
+    ) -> bool {
+        let current_writable =
+            WritableNodeSet::from(&nodeset, self.cluster_state, self.nodes_config);
         let candidates = WritableNodeSet::from_cluster(self.cluster_state, self.nodes_config);
 
-        // todo: make this strategy-aware, we should be comparing against max allowable size, not just the current len
-        if healthy_nodeset.len() == current_nodeset.len() {
+        let (nodeset_min_size, nodeset_max_size) =
+            nodeset_size_range(&strategy, replication_property, &candidates);
+
+        if current_writable.len() == nodeset_max_size {
             return false;
         }
 
-        // todo: check for majority overlap, otherwise we can't seal the previous loglet!
-        healthy_nodeset.len() < candidates.len()
+        // todo: check current segment for sealability, otherwise we might propose reconfiguration when we are almost certain to get stuck!
+        candidates.len() >= nodeset_min_size && candidates.len() > current_writable.len()
     }
 
     /// Picks a set of storage nodes for a replicated loglet out of the available pool. Only alive,
@@ -74,37 +83,19 @@ impl<'a> NodeSetSelector<'a> {
         // Only consider alive, writable storage nodes.
         let candidates = WritableNodeSet::from_cluster(self.cluster_state, self.nodes_config);
 
-        let min_copies = replication_property.num_copies();
-        if candidates.len() < min_copies.into() {
+        let (nodeset_min_size, nodeset_target_size) =
+            nodeset_size_range(&strategy, replication_property, &candidates);
+
+        if candidates.len() < nodeset_min_size {
             trace!(
                 candidate_nodes_count = ?candidates.len(),
-                ?min_copies,
+                ?nodeset_min_size,
                 cluster_state = ?self.cluster_state,
                 nodes_config = ?self.nodes_config,
                 "Not enough writeable nodes to meet the minimum replication requirements"
             );
             return Err(NodeSelectionError::InsufficientWriteableNodes);
         }
-
-        // ReplicationFactor(f+1) implies a minimum of 2f+1 nodes. At this point we are only
-        // calculating the nodeset floor size, the actual size will be determined by the specific
-        // strategy in use.
-        assert!(
-            min_copies < u8::MAX >> 1,
-            "The replication factor implies a cluster size that exceeds the maximum supported size"
-        );
-        let optimal_fault_tolerant_nodeset_size = (usize::from(min_copies) - 1) * 2 + 1;
-        assert!(
-            optimal_fault_tolerant_nodeset_size >= usize::from(min_copies),
-            "The calculated minimum nodeset size can not be less than the replication factor"
-        );
-
-        let (nodeset_min_size, nodeset_target_size) = match strategy {
-            NodeSetSelectionStrategy::StrictFaultTolerantGreedy => (
-                optimal_fault_tolerant_nodeset_size,
-                max(optimal_fault_tolerant_nodeset_size, candidates.len()),
-            ),
-        };
 
         let nodeset = match strategy {
             NodeSetSelectionStrategy::StrictFaultTolerantGreedy => {
@@ -147,6 +138,37 @@ impl<'a> NodeSetSelector<'a> {
 
         Ok(nodeset)
     }
+}
+
+fn nodeset_size_range(
+    strategy: &NodeSetSelectionStrategy,
+    replication_property: &ReplicationProperty,
+    candidates: &WritableNodeSet,
+) -> (usize, usize) {
+    let min_copies = replication_property.num_copies();
+
+    // ReplicationFactor(f+1) implies a minimum of 2f+1 nodes. At this point we are only
+    // calculating the nodeset floor size, the actual size will be determined by the specific
+    // strategy in use.
+    assert!(
+        min_copies < u8::MAX >> 1,
+        "The replication factor implies a cluster size that exceeds the maximum supported size"
+    );
+
+    let optimal_fault_tolerant_nodeset_size = (usize::from(min_copies) - 1) * 2 + 1;
+    assert!(
+        optimal_fault_tolerant_nodeset_size >= usize::from(min_copies),
+        "The calculated minimum nodeset size can not be less than the replication factor"
+    );
+
+    let (nodeset_min_size, nodeset_target_size) = match strategy {
+        NodeSetSelectionStrategy::StrictFaultTolerantGreedy => (
+            optimal_fault_tolerant_nodeset_size,
+            max(optimal_fault_tolerant_nodeset_size, candidates.len()),
+        ),
+    };
+
+    (nodeset_min_size, nodeset_target_size)
 }
 
 /// Nodeset selection strategy for picking cluster members to host replicated logs. Note that this
