@@ -132,7 +132,13 @@ impl SchemaUpdater {
                 service
                     .handlers
                     .into_iter()
-                    .map(|h| DiscoveredHandlerMetadata::from_schema(service_type, h))
+                    .map(|h| {
+                        DiscoveredHandlerMetadata::from_schema(
+                            service_name.as_ref(),
+                            service_type,
+                            h,
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()?,
             );
 
@@ -457,6 +463,7 @@ struct DiscoveredHandlerMetadata {
 
 impl DiscoveredHandlerMetadata {
     fn from_schema(
+        service_name: &str,
         service_type: ServiceType,
         handler: endpoint_manifest::Handler,
     ) -> Result<Self, ServiceError> {
@@ -490,18 +497,31 @@ impl DiscoveredHandlerMetadata {
             ty,
             input: handler
                 .input
-                .map(|s| DiscoveredHandlerMetadata::input_rules_from_schema(&handler.name, s))
+                .map(|input_payload| {
+                    DiscoveredHandlerMetadata::input_rules_from_schema(
+                        service_name,
+                        &handler.name,
+                        input_payload,
+                    )
+                })
                 .transpose()?
                 .unwrap_or_default(),
             output: handler
                 .output
-                .map(DiscoveredHandlerMetadata::output_rules_from_schema)
+                .map(|output_payload| {
+                    DiscoveredHandlerMetadata::output_rules_from_schema(
+                        service_name,
+                        &handler.name,
+                        output_payload,
+                    )
+                })
                 .transpose()?
                 .unwrap_or_default(),
         })
     }
 
     fn input_rules_from_schema(
+        svc_name: &str,
         handler_name: &str,
         schema: endpoint_manifest::InputPayload,
     ) -> Result<InputRules, ServiceError> {
@@ -523,8 +543,21 @@ impl DiscoveredHandlerMetadata {
             })
             .transpose()?
         {
-            if schema.json_schema.is_some() {
-                input_validation_rules.push(InputValidationRule::JsonValue { content_type });
+            if let Some(schema) = schema.json_schema {
+                // Validate schema is valid
+                if let Err(e) = jsonschema::validator_for(&schema) {
+                    return Err(ServiceError::BadJsonSchema {
+                        service: svc_name.to_owned(),
+                        handler: handler_name.to_owned(),
+                        position: "input",
+                        error: Box::new(e),
+                    });
+                }
+
+                input_validation_rules.push(InputValidationRule::JsonValue {
+                    content_type,
+                    schema,
+                });
             } else {
                 input_validation_rules.push(InputValidationRule::ContentType { content_type });
             }
@@ -536,9 +569,22 @@ impl DiscoveredHandlerMetadata {
     }
 
     fn output_rules_from_schema(
+        svc_name: &str,
+        handler_name: &str,
         schema: endpoint_manifest::OutputPayload,
     ) -> Result<OutputRules, ServiceError> {
         Ok(if let Some(ct) = schema.content_type {
+            if let Some(schema) = &schema.json_schema {
+                if let Err(e) = jsonschema::validator_for(schema) {
+                    return Err(ServiceError::BadJsonSchema {
+                        service: svc_name.to_owned(),
+                        handler: handler_name.to_owned(),
+                        position: "output",
+                        error: Box::new(e),
+                    });
+                }
+            }
+
             OutputRules {
                 content_type_rule: OutputContentTypeRule::Set {
                     content_type: HeaderValue::from_str(&ct)
@@ -546,10 +592,12 @@ impl DiscoveredHandlerMetadata {
                     set_content_type_if_empty: schema.set_content_type_if_empty.unwrap_or(false),
                     has_json_schema: schema.json_schema.is_some(),
                 },
+                json_schema: schema.json_schema,
             }
         } else {
             OutputRules {
                 content_type_rule: OutputContentTypeRule::None,
+                json_schema: None,
             }
         })
     }

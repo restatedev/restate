@@ -93,6 +93,15 @@ pub enum ServiceError {
     #[error("invalid combination of service type and handler type '({0}, {1:?})'")]
     #[code(unknown)]
     BadServiceAndHandlerType(ServiceType, Option<endpoint_manifest::HandlerType>),
+    #[error("the json schema for {service}/{handler} {position} is invalid: {error}")]
+    #[code(unknown)]
+    BadJsonSchema {
+        service: String,
+        handler: String,
+        position: &'static str,
+        #[source]
+        error: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
     #[error("modifying retention time for service type {0} is unsupported")]
     #[code(unknown)]
     CannotModifyRetentionTime(ServiceType),

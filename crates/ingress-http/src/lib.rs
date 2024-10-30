@@ -106,6 +106,8 @@ mod mocks {
                     ty: invocation_target_metadata.target_ty.into(),
                     input_description: "any".to_string(),
                     output_description: "any".to_string(),
+                    input_json_schema: None,
+                    output_json_schema: None,
                 }],
                 ty: invocation_target_metadata.target_ty.into(),
                 deployment_id: DeploymentId::default(),
