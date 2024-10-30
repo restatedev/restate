@@ -1,10 +1,10 @@
 use std::num::NonZeroU16;
+use std::pin::pin;
 use std::time::Duration;
 
 use enumset::enum_set;
 use futures::{FutureExt, StreamExt};
 use regex::Regex;
-use tokio::spawn;
 use tracing::{error, info};
 
 use restate_local_cluster_runner::{
@@ -35,24 +35,20 @@ async fn main() {
         3,
     );
 
-    let shutdown_signal = shutdown();
-    tokio::pin!(shutdown_signal);
+    let mut shutdown_signal = pin!(shutdown());
 
     // Create the log stream upfront to avoid startup race condition
     let mut admin_ready = nodes[0].lines(Regex::new("Restate server is ready").unwrap());
 
-    let admin_startup_timeout = spawn(async {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    })
-    .fuse();
-    tokio::pin!(admin_startup_timeout);
+    let mut admin_startup_timeout = pin!(tokio::time::sleep(Duration::from_secs(5)));
 
     let cluster = Cluster::builder()
         .cluster_name("test-cluster")
         .nodes(nodes)
         .build();
 
-    let mut cluster = cluster.start().await.unwrap();
+    let mut cluster_fut = pin!(cluster.start().fuse());
+    let mut maybe_cluster = None;
     let mut ready = false;
 
     loop {
@@ -60,7 +56,10 @@ async fn main() {
             _ = &mut shutdown_signal => {
                 break;
             }
-            _ = &mut admin_startup_timeout => {
+            started = &mut cluster_fut => {
+                maybe_cluster = Some(started);
+            }
+            _ = &mut admin_startup_timeout, if !ready => {
                 if !ready {
                     error!("timeout waiting for admin node to start up");
                     break;
@@ -73,16 +72,19 @@ async fn main() {
                     break;
                 }
                 Some(line) => {
-                    info!("admin node ready: {line}");
+                    info!("admin node started: {line}");
                     ready = true;
                 }
             }
         }
     }
 
-    info!("cluster shutting down");
-    cluster
-        .graceful_shutdown(Duration::from_secs(5))
-        .await
-        .expect("cluster to shut down");
+    if let Some(res) = maybe_cluster {
+        let mut cluster = res.unwrap();
+        info!("cluster shutting down");
+        cluster
+            .graceful_shutdown(Duration::from_secs(5))
+            .await
+            .expect("cluster to shut down");
+    }
 }
