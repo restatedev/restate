@@ -164,7 +164,7 @@ pub struct HandlerMetadata {
     ///
     /// JSON Schema of the handler output
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_schema: Option<serde_json::Value>,
+    pub output_json_schema: Option<serde_json::Value>,
 }
 
 /// This API will return services registered by the user.
@@ -206,7 +206,7 @@ impl ServiceSchemas {
                     input_description: h_schemas.target_meta.input_rules.to_string(),
                     output_description: h_schemas.target_meta.output_rules.to_string(),
                     input_json_schema: h_schemas.target_meta.input_rules.json_schema(),
-                    output_schema: h_schemas.target_meta.output_rules.json_schema(),
+                    output_json_schema: h_schemas.target_meta.output_rules.json_schema(),
                 })
                 .collect(),
             ty: self.ty,
@@ -298,7 +298,7 @@ pub mod test_util {
                         input_description: "any".to_string(),
                         output_description: "any".to_string(),
                         input_json_schema: None,
-                        output_schema: None,
+                        output_json_schema: None,
                     })
                     .collect(),
                 ty: ServiceType::Service,
@@ -326,7 +326,7 @@ pub mod test_util {
                         input_description: "any".to_string(),
                         output_description: "any".to_string(),
                         input_json_schema: None,
-                        output_schema: None,
+                        output_json_schema: None,
                     })
                     .collect(),
                 ty: ServiceType::VirtualObject,
