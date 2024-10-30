@@ -276,7 +276,12 @@ impl Node {
             &mut cmd
         }
         .env("RESTATE_CONFIG", node_config_file)
-        .env("TOKIO_CONSOLE_BIND", "127.0.0.1:0")
+        .env(
+            "TOKIO_CONSOLE_BIND",
+            random_socket_address()
+                .expect("to find a random port for tokio console")
+                .to_string(),
+        )
         .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
