@@ -1643,7 +1643,7 @@ pub mod tests {
         )
         .unwrap();
 
-        // we can now further expand the nodeset to exceed the 2f fault tolerance
+        // we can now further expand the nodeset to exceed the 2f + 1 fault tolerance
         assert_eq!(config.nodeset, NodeSet::from([1, 2, 3, 6]));
     }
 }
