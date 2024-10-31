@@ -352,7 +352,7 @@ impl Node {
                     "Node ID mismatch: configured node ID is {}, but the nodes configuration contains {}",
                     config.common.force_node_id.unwrap(),
                     my_node_id.as_plain()
-                    )))?;
+                )))?;
         }
 
         // Same cluster?
@@ -362,7 +362,7 @@ impl Node {
                     "Cluster name mismatch: configured cluster name is '{}', but the nodes configuration contains '{}'",
                     config.common.cluster_name(),
                     nodes_config.cluster_name()
-                    )))?;
+                )))?;
         }
 
         // My Node ID is set
@@ -424,6 +424,7 @@ impl Node {
                     bifrost.clone(),
                     all_partitions_started_tx,
                     config.common.advertised_address.clone(),
+                    config.networking.connect_timeout.into(),
                 ),
             )?;
 
@@ -585,8 +586,8 @@ impl Node {
                 Ok(nodes_config)
             })
         })
-        .await
-        .map_err(|err| err.transpose())
+            .await
+            .map_err(|err| err.transpose())
     }
 
     pub fn bifrost(&self) -> restate_bifrost::Bifrost {

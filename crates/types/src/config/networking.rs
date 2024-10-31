@@ -21,40 +21,47 @@ use crate::retries::RetryPolicy;
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "NetworkingOptions", default))]
-#[serde(rename_all = "kebab-case")]
 #[builder(default)]
+#[serde(rename_all = "kebab-case")]
 pub struct NetworkingOptions {
-    /// # Retry policy
+    /// # Connect timeout
+    ///
+    /// TCP connection timeout for Restate cluster node-to-node network connections.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub connect_timeout: humantime::Duration,
+
+    /// # Connect retry policy
     ///
     /// Retry policy to use for internal node-to-node networking.
     pub connect_retry_policy: RetryPolicy,
 
-    /// # Connection Send Buffer
-    ///
-    /// The number of messages that can be queued on the outbound stream of a single
-    /// connection
-    pub outbound_queue_length: NonZeroUsize,
-
     /// # Handshake timeout
     ///
-    /// Timeout for handshake message for internal node-to-node networking.
+    /// Timeout for receiving a handshake response from Restate cluster peers.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub handshake_timeout: humantime::Duration,
+
+    /// # Connection Send Buffer
+    ///
+    /// The number of messages that can be queued on the outbound stream of a single
+    /// connection.
+    pub outbound_queue_length: NonZeroUsize,
 }
 
 impl Default for NetworkingOptions {
     fn default() -> Self {
         Self {
+            connect_timeout: Duration::from_secs(5).into(),
             connect_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,
                 Some(10),
                 Some(Duration::from_millis(3000)),
             ),
-
-            outbound_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
             handshake_timeout: Duration::from_secs(3).into(),
+            outbound_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
         }
     }
 }

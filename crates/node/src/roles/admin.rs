@@ -114,6 +114,7 @@ impl<T: TransportConnect> AdminRole<T> {
         bifrost: Bifrost,
         all_partitions_started_tx: oneshot::Sender<()>,
         node_address: AdvertisedAddress,
+        connect_timeout: Duration,
     ) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
@@ -132,7 +133,10 @@ impl<T: TransportConnect> AdminRole<T> {
             None,
             self.admin.run(
                 self.updateable_config.map(|c| &c.admin),
-                NodeSvcClient::new(create_tonic_channel_from_advertised_address(node_address)),
+                NodeSvcClient::new(create_tonic_channel_from_advertised_address(
+                    node_address,
+                    connect_timeout,
+                )),
                 bifrost,
             ),
         )?;

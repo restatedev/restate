@@ -28,7 +28,10 @@ use tracing::{debug, info, instrument, Span};
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 
-pub fn create_tonic_channel_from_advertised_address(address: AdvertisedAddress) -> Channel {
+pub fn create_tonic_channel_from_advertised_address(
+    address: AdvertisedAddress,
+    connect_timeout: Duration,
+) -> Channel {
     match address {
         AdvertisedAddress::Uds(uds_path) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
@@ -42,9 +45,8 @@ pub fn create_tonic_channel_from_advertised_address(address: AdvertisedAddress) 
                 }))
         }
         AdvertisedAddress::Http(uri) => {
-            // todo: Make the channel settings configurable
             Channel::builder(uri)
-                .connect_timeout(Duration::from_secs(5))
+                .connect_timeout(connect_timeout)
                 // todo make http2 keep alive configurable
                 .http2_keep_alive_interval(Duration::from_secs(40))
                 .keep_alive_timeout(Duration::from_secs(20))

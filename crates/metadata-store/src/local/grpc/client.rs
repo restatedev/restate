@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use bytestring::ByteString;
 use tonic::transport::Channel;
@@ -29,9 +31,11 @@ use crate::local::grpc::pb_conversions::ConversionError;
 pub struct LocalMetadataStoreClient {
     svc_client: MetadataStoreSvcClient<Channel>,
 }
+
 impl LocalMetadataStoreClient {
-    pub fn new(metadata_store_address: AdvertisedAddress) -> Self {
-        let channel = create_tonic_channel_from_advertised_address(metadata_store_address);
+    pub fn new(metadata_store_address: AdvertisedAddress, connect_timeout: Duration) -> Self {
+        let channel =
+            create_tonic_channel_from_advertised_address(metadata_store_address, connect_timeout);
 
         Self {
             svc_client: MetadataStoreSvcClient::new(channel),

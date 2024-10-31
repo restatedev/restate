@@ -378,7 +378,12 @@ async fn start_metadata_store(
         .wait_for_value(MetadataServerStatus::Ready)
         .await;
 
-    let rocksdb_client = LocalMetadataStoreClient::new(address);
+    let rocksdb_client = LocalMetadataStoreClient::new(
+        address,
+        metadata_store_client_options
+            .metadata_store_connect_timeout
+            .into(),
+    );
     let client = MetadataStoreClient::new(
         rocksdb_client,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),
