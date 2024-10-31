@@ -73,12 +73,22 @@ pub enum GetInvocationOutputResponse {
     Ready(InvocationOutput),
 }
 
-#[derive(Clone)]
 pub struct PartitionProcessorRpcClient<C> {
     networking: Networking<C>,
     rpc_router: ConnectionAwareRpcRouter<PartitionProcessorRpcRequest>,
     partition_table: Live<PartitionTable>,
     partition_routing: PartitionRouting,
+}
+
+impl<C> Clone for PartitionProcessorRpcClient<C> {
+    fn clone(&self) -> Self {
+        Self {
+            networking: self.networking.clone(),
+            rpc_router: self.rpc_router.clone(),
+            partition_table: self.partition_table.clone(),
+            partition_routing: self.partition_routing.clone(),
+        }
+    }
 }
 
 impl<C> PartitionProcessorRpcClient<C> {

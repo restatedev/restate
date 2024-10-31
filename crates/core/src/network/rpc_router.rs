@@ -296,6 +296,10 @@ where
     T: RpcRequest + WireEncode + Send + Sync + 'static,
     T::ResponseMessage: WireDecode + Send + Sync + 'static,
 {
+    pub fn new(router_builder: &mut MessageRouterBuilder) -> Self {
+        ConnectionAwareRpcRouter::from(RpcRouter::new(router_builder))
+    }
+
     pub async fn call<C: TransportConnect>(
         &self,
         networking: &Networking<C>,
@@ -316,6 +320,15 @@ where
                 Err(ConnectionAwareRpcError::ConnectionClosed)
             }
         }
+    }
+}
+
+impl<T> From<RpcRouter<T>> for ConnectionAwareRpcRouter<T>
+where
+    T: RpcRequest,
+{
+    fn from(rpc_router: RpcRouter<T>) -> Self {
+        ConnectionAwareRpcRouter { rpc_router }
     }
 }
 

@@ -13,7 +13,7 @@ use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpc
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
 };
-use restate_core::network::NetworkSender;
+use restate_core::network::TransportConnect;
 use restate_ingress_http::{RequestDispatcher, RequestDispatcherError};
 use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::{
@@ -24,15 +24,24 @@ use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocat
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
 
-#[derive(Clone)]
-pub struct RpcRequestDispatcher<N> {
-    partition_processor_rpc_client: PartitionProcessorRpcClient<N>,
+pub struct RpcRequestDispatcher<C> {
+    partition_processor_rpc_client: PartitionProcessorRpcClient<C>,
     retry_policy: RetryPolicy,
     rpc_timeout: Duration,
 }
 
-impl<N> RpcRequestDispatcher<N> {
-    pub fn new(partition_processor_rpc_client: PartitionProcessorRpcClient<N>) -> Self {
+impl<T> Clone for RpcRequestDispatcher<T> {
+    fn clone(&self) -> Self {
+        RpcRequestDispatcher {
+            partition_processor_rpc_client: self.partition_processor_rpc_client.clone(),
+            retry_policy: self.retry_policy.clone(),
+            rpc_timeout: self.rpc_timeout,
+        }
+    }
+}
+
+impl<C> RpcRequestDispatcher<C> {
+    pub fn new(partition_processor_rpc_client: PartitionProcessorRpcClient<C>) -> Self {
         Self {
             partition_processor_rpc_client,
             // Totally random chosen!!!
@@ -42,11 +51,11 @@ impl<N> RpcRequestDispatcher<N> {
     }
 }
 
-impl<N> RequestDispatcher for RpcRequestDispatcher<N>
+impl<C> RequestDispatcher for RpcRequestDispatcher<C>
 where
-    N: NetworkSender + 'static,
+    C: TransportConnect,
 {
-    async fn append_invocation_and_wait_submit_notification_if_needed(
+    async fn send(
         &self,
         service_invocation: ServiceInvocation,
     ) -> Result<SubmittedInvocationNotification, RequestDispatcherError> {
@@ -89,7 +98,7 @@ where
         }
     }
 
-    async fn append_invocation_and_wait_output(
+    async fn call(
         &self,
         service_invocation: ServiceInvocation,
     ) -> Result<InvocationOutput, RequestDispatcherError> {
@@ -163,7 +172,7 @@ where
         .context("error when trying to interact with partition processor")?)
     }
 
-    async fn append_invocation_response(
+    async fn send_invocation_response(
         &self,
         invocation_response: InvocationResponse,
     ) -> Result<(), RequestDispatcherError> {

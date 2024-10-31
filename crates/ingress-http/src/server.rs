@@ -263,7 +263,7 @@ mod tests {
     async fn test_http_post() {
         let mut mock_dispatcher = MockRequestDispatcher::default();
         mock_dispatcher
-            .expect_append_invocation_and_wait_output()
+            .expect_call()
             .once()
             .return_once(|service_invocation| {
                 assert_eq!(

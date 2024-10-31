@@ -241,7 +241,7 @@ where
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         let response = dispatcher
-            .append_invocation_and_wait_output(service_invocation)
+            .call(service_invocation)
             .instrument(trace_span!("Waiting for response"))
             .await?;
 
@@ -256,9 +256,7 @@ where
         let execution_time = service_invocation.execution_time;
 
         // Send the service invocation, wait for the submit notification
-        let response = dispatcher
-            .append_invocation_and_wait_submit_notification_if_needed(service_invocation)
-            .await?;
+        let response = dispatcher.send(service_invocation).await?;
 
         trace!("Complete external HTTP send request successfully");
         Ok(Response::builder()

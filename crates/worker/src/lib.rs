@@ -26,7 +26,7 @@ use tokio::sync::oneshot;
 
 use restate_bifrost::Bifrost;
 use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
-use restate_core::network::rpc_router::RpcRouter;
+use restate_core::network::rpc_router::ConnectionAwareRpcRouter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
@@ -62,7 +62,7 @@ type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
 >;
 
-type ExternalClientIngress<T> = HyperServerIngress<Schema, RpcRequestDispatcher<Networking<T>>>;
+type ExternalClientIngress<T> = HyperServerIngress<Schema, RpcRequestDispatcher<T>>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -148,7 +148,7 @@ impl<T: TransportConnect> Worker<T> {
         let partition_routing_refresher =
             PartitionRoutingRefresher::new(metadata_store_client.clone());
 
-        let rpc_router = RpcRouter::new(router_builder);
+        let rpc_router = ConnectionAwareRpcRouter::new(router_builder);
         let partition_table = metadata.updateable_partition_table();
         // http ingress
         let ingress_http = HyperServerIngress::from_options(

@@ -68,7 +68,7 @@ async fn call_service() {
 
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
-        .expect_append_invocation_and_wait_output()
+        .expect_call()
         .return_once(|service_invocation| {
             assert_eq!(
                 service_invocation.invocation_target.service_name(),
@@ -116,7 +116,7 @@ async fn call_service_with_get() {
 
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
-        .expect_append_invocation_and_wait_output()
+        .expect_call()
         .return_once(|service_invocation| {
             assert_eq!(
                 service_invocation.invocation_target.service_name(),
@@ -183,7 +183,7 @@ async fn call_virtual_object() {
 
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
-        .expect_append_invocation_and_wait_output()
+        .expect_call()
         .return_once(|service_invocation| {
             assert_eq!(
                 service_invocation.invocation_target.service_name(),
@@ -241,7 +241,7 @@ async fn send_service() {
 
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
-        .expect_append_invocation_and_wait_submit_notification_if_needed()
+        .expect_send()
         .return_once(|service_invocation| {
             assert_eq!(
                 service_invocation.invocation_target.service_name(),
@@ -286,7 +286,7 @@ async fn send_with_delay_service() {
 
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
-        .expect_append_invocation_and_wait_submit_notification_if_needed()
+        .expect_send()
         .return_once(|service_invocation| {
             // Get the function invocation and assert on it
             assert_eq!(
@@ -333,7 +333,7 @@ async fn send_virtual_object() {
 
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
-        .expect_append_invocation_and_wait_submit_notification_if_needed()
+        .expect_send()
         .return_once(|service_invocation| {
             assert_eq!(
                 service_invocation.invocation_target.service_name(),
@@ -383,7 +383,7 @@ async fn idempotency_key_parsing() {
 
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
-        .expect_append_invocation_and_wait_output()
+        .expect_call()
         .return_once(|service_invocation| {
             assert_eq!(
                 service_invocation.invocation_target.service_name(),
@@ -448,7 +448,7 @@ async fn idempotency_key_and_send() {
 
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
-        .expect_append_invocation_and_wait_submit_notification_if_needed()
+        .expect_send()
         .return_once(|service_invocation| {
             assert_eq!(
                 service_invocation.invocation_target.service_name(),
@@ -508,7 +508,7 @@ async fn idempotency_key_and_send_with_different_invocation_id() {
 
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
-        .expect_append_invocation_and_wait_submit_notification_if_needed()
+        .expect_send()
         .return_once(|service_invocation| {
             assert_eq!(
                 service_invocation.invocation_target.service_name(),
@@ -1095,7 +1095,7 @@ async fn health() {
 fn expect_invocation_and_reply_with_empty() -> MockRequestDispatcher {
     let mut mock_dispatcher = MockRequestDispatcher::new();
     mock_dispatcher
-        .expect_append_invocation_and_wait_output()
+        .expect_call()
         .return_once(|service_invocation| {
             ready(Ok(InvocationOutput {
                 request_id: Default::default(),
@@ -1115,7 +1115,7 @@ fn expect_invocation_and_reply_with_empty() -> MockRequestDispatcher {
 fn expect_invocation_and_reply_with_non_empty() -> MockRequestDispatcher {
     let mut mock_dispatcher = MockRequestDispatcher::new();
     mock_dispatcher
-        .expect_append_invocation_and_wait_output()
+        .expect_call()
         .return_once(|service_invocation| {
             ready(Ok(InvocationOutput {
                 request_id: Default::default(),
