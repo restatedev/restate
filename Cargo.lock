@@ -5755,6 +5755,7 @@ dependencies = [
  "jsonschema",
  "mime_guess",
  "okapi-operation",
+ "pin-project",
  "prost",
  "prost-dto",
  "prost-types",
