@@ -201,7 +201,7 @@ pub enum JournalEntryType {
     GetState,
     SetState,
     ClearState,
-    SideEffect,
+    Run,
     /// GetPromise is the blocking promise API,
     ///  PeekPromise is the non-blocking variant (we don't need to show it)
     GetPromise(Option<String>),
@@ -227,7 +227,7 @@ impl JournalEntryType {
                 | JournalEntryType::Call(_)
                 | JournalEntryType::OneWayCall(_)
                 | JournalEntryType::Awakeable(_)
-                | JournalEntryType::SideEffect
+                | JournalEntryType::Run
                 | JournalEntryType::GetPromise(_)
         )
     }
@@ -243,7 +243,7 @@ impl Display for JournalEntryType {
             JournalEntryType::GetState => write!(f, "GetState"),
             JournalEntryType::SetState => write!(f, "SetState"),
             JournalEntryType::ClearState => write!(f, "ClearState"),
-            JournalEntryType::SideEffect => write!(f, "SideEffect"),
+            JournalEntryType::Run => write!(f, "Run"),
             JournalEntryType::GetPromise(_) => write!(f, "Promise"),
             JournalEntryType::Other(s) => write!(f, "{}", s),
         }
@@ -1023,7 +1023,7 @@ pub async fn get_invocation_journal(
                 "GetState" => JournalEntryType::GetState,
                 "SetState" => JournalEntryType::SetState,
                 "ClearState" => JournalEntryType::ClearState,
-                "Run" => JournalEntryType::SideEffect,
+                "Run" => JournalEntryType::Run,
                 "GetPromise" => JournalEntryType::GetPromise(row.promise_name),
                 t => JournalEntryType::Other(t.to_owned()),
             };
