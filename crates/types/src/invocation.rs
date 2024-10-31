@@ -332,6 +332,12 @@ impl ServiceInvocation {
             .as_ref()
             .map(|k| IdempotencyId::combine(self.invocation_id, &self.invocation_target, k.clone()))
     }
+
+    /// Invocations are idempotent if they have an idempotency key specified or are of type workflow
+    pub fn is_idempotent(&self) -> bool {
+        self.idempotency_key.is_some()
+            || matches!(self.invocation_target.service_ty(), ServiceType::Workflow)
+    }
 }
 
 impl WithPartitionKey for ServiceInvocation {
@@ -426,7 +432,7 @@ impl ServiceInvocationResponseSink {
 /// Source of an invocation
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
-    Ingress,
+    Ingress(PartitionProcessorRpcRequestId),
     Service(InvocationId, InvocationTarget),
     /// Internal calls for the non-deterministic built-in services
     Internal,

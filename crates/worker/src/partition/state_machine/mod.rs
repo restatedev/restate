@@ -471,41 +471,68 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         }.await?;
 
-        // Handle duplicate requests from ingress RPCs. These are always deduplicated without further operations.
-        if let Some(ingress_sink @ ServiceInvocationResponseSink::Ingress { .. }) =
-            &service_invocation.response_sink
+        if cfg!(debug_assertions)
+            && !is_workflow_run
+            && !has_idempotency_key
+            && previous_invocation_status != InvocationStatus::Free
         {
-            if let InvocationStatus::Scheduled(ScheduledInvocation {
-                metadata: PreFlightInvocationMetadata { response_sinks, .. },
-            })
-            | InvocationStatus::Inboxed(InboxedInvocation {
-                metadata: PreFlightInvocationMetadata { response_sinks, .. },
-                ..
-            })
-            | InvocationStatus::Invoked(InFlightInvocationMetadata {
-                response_sinks, ..
-            })
-            | InvocationStatus::Suspended {
-                metadata: InFlightInvocationMetadata { response_sinks, .. },
-                ..
-            } = &previous_invocation_status
+            // Let's fire a warning in case we got a duplicated invocation id,
+            //  but the invocation is not from the ingress with the same request id!
+            let mut request_from_same_ingress = false;
+            if let Some(ingress_sink @ ServiceInvocationResponseSink::Ingress { .. }) =
+                &service_invocation.response_sink
             {
-                if response_sinks.contains(ingress_sink) {
-                    return Ok(None);
+                if let InvocationStatus::Scheduled(ScheduledInvocation {
+                    metadata: PreFlightInvocationMetadata { response_sinks, .. },
+                })
+                | InvocationStatus::Inboxed(InboxedInvocation {
+                    metadata: PreFlightInvocationMetadata { response_sinks, .. },
+                    ..
+                })
+                | InvocationStatus::Invoked(InFlightInvocationMetadata {
+                    response_sinks,
+                    ..
+                })
+                | InvocationStatus::Suspended {
+                    metadata: InFlightInvocationMetadata { response_sinks, .. },
+                    ..
+                } = &previous_invocation_status
+                {
+                    if response_sinks.contains(ingress_sink) {
+                        request_from_same_ingress = true;
+                    }
                 }
             }
-        }
 
-        if !is_workflow_run && !has_idempotency_key {
-            // No duplicate id should exist
-            debug_assert!(
-                ctx.get_invocation_status(&invocation_id)
-                    .await
-                    .is_ok_and(|status| status == InvocationStatus::Free),
-                "There shouldn't be a duplicate for invocation id {}",
-                invocation_id
-            );
-            return Ok(Some(service_invocation));
+            if let Source::Ingress(_) = &service_invocation.source {
+                if let InvocationStatus::Scheduled(ScheduledInvocation {
+                    metadata: PreFlightInvocationMetadata { source, .. },
+                })
+                | InvocationStatus::Inboxed(InboxedInvocation {
+                    metadata: PreFlightInvocationMetadata { source, .. },
+                    ..
+                })
+                | InvocationStatus::Invoked(InFlightInvocationMetadata { source, .. })
+                | InvocationStatus::Suspended {
+                    metadata: InFlightInvocationMetadata { source, .. },
+                    ..
+                }
+                | InvocationStatus::Completed(CompletedInvocation { source, .. }) =
+                    &previous_invocation_status
+                {
+                    if service_invocation.source == *source {
+                        request_from_same_ingress = true;
+                    }
+                }
+            }
+
+            if !request_from_same_ingress {
+                warn!(
+                    "Detected a potential bug here: \
+                    I got a duplicated invocation id, for an invocation that is not idempotent (neither has idempotency key, nor it's workflow run), \
+                    and the source of the request is not the same RPC. \
+                    This seems like either a bug in the internal message routing, or a ULID collision, meaning no one would be reading this message because an asteroid already hit earth.");
+            }
         }
 
         if previous_invocation_status == InvocationStatus::Free {
@@ -548,57 +575,16 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Self::send_submit_notification_if_needed(
             ctx,
             service_invocation.invocation_id,
-            false,
+            // is_new_invocation is true if the RPC ingress request is a duplicate.
+            service_invocation.source
+                == *previous_invocation_status
+                    .source()
+                    .expect("source must be present when InvocationStatus is not Free"),
             service_invocation.submit_notification_sink,
         );
 
-        // For idempotency_key requests, append the response sink or return back the original result
-        if has_idempotency_key {
-            debug_if_leader!(
-                ctx.is_leader,
-                restate.idempotency.key = ?service_invocation.idempotency_key.unwrap(),
-                "Invocation with idempotency key is a duplicate"
-            );
-            match previous_invocation_status {
-                is @ InvocationStatus::Invoked { .. }
-                | is @ InvocationStatus::Suspended { .. }
-                | is @ InvocationStatus::Inboxed { .. }
-                | is @ InvocationStatus::Scheduled { .. } => {
-                    if let Some(ref response_sink) = service_invocation.response_sink {
-                        if !is
-                            .get_response_sinks()
-                            .expect("response sink must be present")
-                            .contains(response_sink)
-                        {
-                            Self::do_append_response_sink(
-                                ctx,
-                                invocation_id,
-                                is,
-                                response_sink.clone(),
-                            )
-                            .await?
-                        }
-                    }
-                }
-                InvocationStatus::Completed(completed) => {
-                    let completion_expiry_time = unsafe { completed.completion_expiry_time() };
-                    self.send_response_to_sinks(
-                        ctx,
-                        service_invocation.response_sink.take().into_iter(),
-                        completed.response_result,
-                        Some(invocation_id),
-                        completion_expiry_time,
-                        Some(&completed.invocation_target),
-                    )
-                    .await?;
-                }
-                InvocationStatus::Free => {
-                    unreachable!("This was checked before!")
-                }
-            }
-            return Ok(None);
-        }
         // For workflow run, we don't append the response sink, but we send a failure instead.
+        // This is a special handling we do only for workflows.
         if is_workflow_run {
             debug_if_leader!(
                 ctx.is_leader,
@@ -613,6 +599,49 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 Some(&service_invocation.invocation_target),
             )
             .await?;
+        }
+
+        // For all the other type of duplicate requests, append the response sink or return back the original result
+        if has_idempotency_key {
+            debug_if_leader!(
+                ctx.is_leader,
+                restate.idempotency.key = ?service_invocation.idempotency_key.unwrap(),
+                "Invocation with idempotency key is a duplicate"
+            );
+        }
+
+        match previous_invocation_status {
+            is @ InvocationStatus::Invoked { .. }
+            | is @ InvocationStatus::Suspended { .. }
+            | is @ InvocationStatus::Inboxed { .. }
+            | is @ InvocationStatus::Scheduled { .. } => {
+                if let Some(ref response_sink) = service_invocation.response_sink {
+                    if !is
+                        .get_response_sinks()
+                        .expect("response sink must be present")
+                        .contains(response_sink)
+                    {
+                        Self::do_append_response_sink(ctx, invocation_id, is, response_sink.clone())
+                            .await?
+                    }
+                }
+            }
+            InvocationStatus::Completed(completed) => {
+                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
+                let completion_expiry_time = unsafe { completed.completion_expiry_time() };
+                self.send_response_to_sinks(
+                    ctx,
+                    service_invocation.response_sink.take().into_iter(),
+                    completed.response_result,
+                    Some(invocation_id),
+                    completion_expiry_time,
+                    Some(&completed.invocation_target),
+                )
+                .await?;
+            }
+            InvocationStatus::Free => {
+                unreachable!("This was checked before!")
+            }
         }
 
         Ok(None)
@@ -2699,6 +2728,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 .await?;
             }
             InvocationStatus::Completed(completed) => {
+                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
                 let completion_expiry_time = unsafe { completed.completion_expiry_time() };
                 self.send_response_to_sinks(
                     ctx,

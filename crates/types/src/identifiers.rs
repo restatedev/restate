@@ -868,6 +868,10 @@ impl FromStr for LambdaARN {
 pub struct PartitionProcessorRpcRequestId(Ulid);
 
 impl PartitionProcessorRpcRequestId {
+    pub fn new() -> Self {
+        Self(Ulid::new())
+    }
+
     pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
         let ulid = Ulid::from_bytes(b.try_into().map_err(|_| IdDecodeError::Length)?);
         debug_assert!(!ulid.is_nil());
@@ -887,7 +891,7 @@ impl PartitionProcessorRpcRequestId {
 
 impl Default for PartitionProcessorRpcRequestId {
     fn default() -> Self {
-        Self(Ulid::new())
+        PartitionProcessorRpcRequestId::new()
     }
 }
 
