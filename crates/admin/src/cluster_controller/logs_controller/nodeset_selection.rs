@@ -23,8 +23,8 @@ use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 /// pool of available nodes.
 ///
 /// This selector can be reused once constructed to make multiple decisions in a single scheduling
-/// iteration, if the node configuration and the replication settings are not changing. 
-#[cfg(feature = "replicated-loglet")] 
+/// iteration, if the node configuration and the replication settings are not changing.
+#[cfg(feature = "replicated-loglet")]
 #[derive(Clone)]
 pub struct NodeSetSelector<'a> {
     nodes_config: &'a NodesConfiguration,

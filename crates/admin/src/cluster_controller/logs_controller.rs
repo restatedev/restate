@@ -496,7 +496,7 @@ impl LogletConfiguration {
             LogletConfiguration::Replicated(configuration) => {
                 build_new_replicated_loglet_configuration(
                     configuration.loglet_id.next(),
-                    &metadata().nodes_config_snapshot(),
+                    &metadata().nodes_config_ref(),
                     observed_cluster_state,
                     Some(configuration),
                     preferred_sequencer,
