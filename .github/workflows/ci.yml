@@ -23,6 +23,9 @@ jobs:
     env:
       RUST_BACKTRACE: full
     steps:
+      - name: Update package lists
+        run: sudo apt-get update
+        
       - name: Install liburing
         run: sudo apt-get install -y liburing-dev
 
