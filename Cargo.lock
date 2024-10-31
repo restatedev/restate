@@ -5766,6 +5766,7 @@ dependencies = [
  "datafusion",
  "derive_builder",
  "derive_more",
+ "enumset",
  "futures",
  "googletest",
  "http 1.1.0",
