@@ -26,12 +26,6 @@ jobs:
       - name: Install liburing
         run: sudo apt-get update && sudo apt-get install -y liburing-dev
 
-      - name: Setup interactive ssh session
-        uses: Warpbuilds/action-debugger@v1.3
-        if: ${{ failure() }}
-        with:
-          limit-access-to-actor: true
-
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
