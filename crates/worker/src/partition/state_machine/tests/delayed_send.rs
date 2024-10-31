@@ -168,7 +168,6 @@ async fn send_with_delay_and_idempotency_key() {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
-            response_sink: None,
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 request_id: request_id_1,
             }),
@@ -177,6 +176,7 @@ async fn send_with_delay_and_idempotency_key() {
             execution_time: Some(MillisSinceEpoch::from(
                 SystemTime::now() + Duration::from_secs(60),
             )),
+            source: Source::Ingress(request_id_1),
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -199,7 +199,6 @@ async fn send_with_delay_and_idempotency_key() {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key),
-            response_sink: None,
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 request_id: request_id_2,
             }),
@@ -208,6 +207,7 @@ async fn send_with_delay_and_idempotency_key() {
             execution_time: Some(MillisSinceEpoch::from(
                 SystemTime::now() + Duration::from_secs(60),
             )),
+            source: Source::Ingress(request_id_2),
             ..ServiceInvocation::mock()
         }))
         .await;

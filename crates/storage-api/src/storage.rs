@@ -109,7 +109,9 @@ pub mod v1 {
         };
         use crate::StorageError;
         use restate_types::errors::{IdDecodeError, InvocationError};
-        use restate_types::identifiers::{WithInvocationId, WithPartitionKey};
+        use restate_types::identifiers::{
+            PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
+        };
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::service_protocol::ServiceProtocolVersion;
@@ -1311,7 +1313,10 @@ pub mod v1 {
                     .source
                     .ok_or(ConversionError::missing_field("source"))?
                 {
-                    source::Source::Ingress(_) => restate_types::invocation::Source::Ingress,
+                    source::Source::Ingress(ingress) => restate_types::invocation::Source::Ingress(
+                        PartitionProcessorRpcRequestId::from_slice(&ingress.rpc_id)
+                            .map_err(|e| ConversionError::InvalidData(e.into()))?,
+                    ),
                     source::Source::Service(service) => restate_types::invocation::Source::Service(
                         restate_types::identifiers::InvocationId::try_from(
                             service
@@ -1334,7 +1339,11 @@ pub mod v1 {
         impl From<restate_types::invocation::Source> for Source {
             fn from(value: restate_types::invocation::Source) -> Self {
                 let source = match value {
-                    restate_types::invocation::Source::Ingress => source::Source::Ingress(()),
+                    restate_types::invocation::Source::Ingress(rpc_id) => {
+                        source::Source::Ingress(source::Ingress {
+                            rpc_id: rpc_id.to_bytes().to_vec().into(),
+                        })
+                    }
                     restate_types::invocation::Source::Service(
                         invocation_id,
                         invocation_target,

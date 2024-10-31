@@ -717,6 +717,7 @@ where
                 Ok(PartitionProcessorRpcResponse::NotSupported)
             }
             InvocationStatus::Completed(completed) => {
+                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
                 let completion_expiry_time = unsafe { completed.completion_expiry_time() };
                 Ok(PartitionProcessorRpcResponse::Output(InvocationOutput {
                     request_id,

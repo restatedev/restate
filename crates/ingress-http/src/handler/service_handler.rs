@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::{info, trace, trace_span, Instrument};
 
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
     WorkflowHandlerType,
@@ -179,8 +179,11 @@ where
             let delay = parse_delay(parts.uri.query())?;
 
             // Prepare service invocation
-            let mut service_invocation =
-                ServiceInvocation::initialize(invocation_id, invocation_target, Source::Ingress);
+            let mut service_invocation = ServiceInvocation::initialize(
+                invocation_id,
+                invocation_target,
+                Source::Ingress(PartitionProcessorRpcRequestId::default()),
+            );
             service_invocation.with_related_span(SpanRelation::Parent(ingress_span_context));
             service_invocation.completion_retention_duration =
                 invocation_target_meta.compute_retention(idempotency_key.is_some());

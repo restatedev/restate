@@ -265,7 +265,7 @@ async fn complete_already_completed_invocation(#[case] disable_idempotency_table
         &InvocationStatus::Completed(CompletedInvocation {
             invocation_target: invocation_target.clone(),
             span_context: ServiceInvocationSpanContext::default(),
-            source: Source::Ingress,
+            source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
             idempotency_key: Some(idempotency_key.clone()),
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(response_bytes.clone()),
@@ -398,10 +398,15 @@ async fn attach_with_service_invocation_command_while_executing(
 }
 
 #[rstest]
-#[case(true)]
-#[case(false)]
+#[case(true, true)]
+#[case(true, false)]
+#[case(false, true)]
+#[case(false, false)]
 #[tokio::test]
-async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: bool) {
+async fn attach_with_send_service_invocation(
+    #[case] disable_idempotency_table: bool,
+    #[case] use_same_request_id: bool,
+) {
     let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
@@ -410,7 +415,11 @@ async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: 
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let request_id_1 = PartitionProcessorRpcRequestId::default();
-    let request_id_2 = PartitionProcessorRpcRequestId::default();
+    let request_id_2 = if use_same_request_id {
+        request_id_1
+    } else {
+        PartitionProcessorRpcRequestId::default()
+    };
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -422,6 +431,7 @@ async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: 
             }),
             idempotency_key: Some(idempotency_key.clone()),
             completion_retention_duration: Some(retention),
+            source: Source::Ingress(request_id_1),
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -438,12 +448,12 @@ async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: 
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
-            response_sink: None,
             idempotency_key: Some(idempotency_key.clone()),
             completion_retention_duration: Some(retention),
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 request_id: request_id_2,
             }),
+            source: Source::Ingress(request_id_2),
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -453,7 +463,7 @@ async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: 
             not(contains(pat!(Action::IngressResponse { .. }))),
             contains(eq(Action::IngressSubmitNotification {
                 request_id: request_id_2,
-                is_new_invocation: false,
+                is_new_invocation: use_same_request_id,
             }))
         )
     );
@@ -479,9 +489,9 @@ async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: 
         .await;
 
     // Assert responses
-    assert_that!(
-        actions,
-        all!(
+    if use_same_request_id {
+        assert_that!(
+            actions,
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_1),
                 invocation_id: some(eq(invocation_id)),
@@ -489,12 +499,26 @@ async fn attach_with_send_service_invocation(#[case] disable_idempotency_table: 
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
-            })),
-            not(contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_2)
-            }))),
-        )
-    );
+            }))
+        );
+    } else {
+        assert_that!(
+            actions,
+            all!(
+                contains(pat!(Action::IngressResponse {
+                    request_id: eq(request_id_1),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(IngressResponseResult::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })),
+                not(contains(pat!(Action::IngressResponse {
+                    request_id: eq(request_id_2)
+                }))),
+            )
+        );
+    }
     test_env.shutdown().await;
 }
 

@@ -13,7 +13,9 @@ use std::hash::Hash;
 
 use bytes::Bytes;
 
-use restate_types::identifiers::{partitioner, InvocationId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::{
+    partitioner, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
+};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, SpanRelation, VirtualObjectHandlerType,
     WorkflowHandlerType,
@@ -128,7 +130,7 @@ impl IngressDispatcherRequest {
         let mut service_invocation = ServiceInvocation::initialize(
             invocation_id,
             invocation_target,
-            restate_types::invocation::Source::Ingress,
+            restate_types::invocation::Source::Ingress(PartitionProcessorRpcRequestId::new()),
         );
         service_invocation.with_related_span(related_span);
         service_invocation.argument = argument;

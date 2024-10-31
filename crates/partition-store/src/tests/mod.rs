@@ -21,7 +21,9 @@ use restate_core::TaskCenterBuilder;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
 use restate_types::config::{CommonOptions, WorkerOptions};
-use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId};
+use restate_types::identifiers::{
+    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
+};
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
 use restate_types::live::{Constant, Live};
 use restate_types::state_mut::ExternalStateMutation;
@@ -96,7 +98,7 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         invocation_id: InvocationId::mock_generate(&invocation_target),
         invocation_target,
         argument: Default::default(),
-        source: Source::Ingress,
+        source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
         response_sink: None,
         span_context: Default::default(),
         headers: vec![],

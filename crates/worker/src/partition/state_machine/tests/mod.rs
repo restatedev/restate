@@ -736,7 +736,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
             invocation_id,
             invocation_target: invocation_target.clone(),
             argument: Default::default(),
-            source: Source::Ingress,
+            source: Source::Ingress(request_id_1),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),
