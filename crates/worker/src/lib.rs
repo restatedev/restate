@@ -30,6 +30,7 @@ use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
+use restate_core::routing_info::PartitionRoutingRefresher;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
@@ -142,6 +143,11 @@ impl<T: TransportConnect> Worker<T> {
         )
         .await?;
 
+        // TODO sort this out!
+        //  it's on https://github.com/restatedev/restate/pull/2172
+        let partition_routing_refresher =
+            PartitionRoutingRefresher::new(metadata_store_client.clone());
+
         let rpc_router = RpcRouter::new(router_builder);
         let partition_table = metadata.updateable_partition_table();
         // http ingress
@@ -151,6 +157,7 @@ impl<T: TransportConnect> Worker<T> {
                 networking.clone(),
                 rpc_router,
                 partition_table,
+                partition_routing_refresher.partition_routing(),
             )),
             schema.clone(),
         );

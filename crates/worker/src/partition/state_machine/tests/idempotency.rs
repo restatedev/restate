@@ -213,11 +213,11 @@ async fn start_and_complete_idempotent_invocation_neo_table(
     assert_that!(
         actions,
         contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(IngressResponseResult::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
+            request_id: eq(request_id),
+            invocation_id: some(eq(invocation_id)),
+            response: eq(IngressResponseResult::Success(
+                invocation_target.clone(),
+                response_bytes.clone()
             ))
         }))
     );
