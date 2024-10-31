@@ -35,12 +35,19 @@ use crate::{cancellation_watcher, ShutdownError};
 /// tracking tokens if caller dropped the future.
 ///
 /// This type is designed to be used by senders of RpcRequest(s).
-#[derive(Clone)]
 pub struct RpcRouter<T>
 where
     T: RpcRequest,
 {
     response_tracker: ResponseTracker<T::ResponseMessage>,
+}
+
+impl<T: RpcRequest> Clone for RpcRouter<T> {
+    fn clone(&self) -> Self {
+        RpcRouter {
+            response_tracker: self.response_tracker.clone(),
+        }
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -276,6 +283,7 @@ impl<T> From<RpcError<T>> for ConnectionAwareRpcError<T> {
 /// messages are sent. This can be useful to detect if a response won't be received because the
 /// connection was closed. This requires that the recipient sends responses back to the sender on
 /// the very same connection.
+#[derive(Clone)]
 pub struct ConnectionAwareRpcRouter<T>
 where
     T: RpcRequest,

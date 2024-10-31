@@ -19,8 +19,8 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
 
-use crate::network::rpc_router::{RpcError, RpcRouter};
-use crate::network::NetworkSender;
+use crate::network::rpc_router::{ConnectionAwareRpcError, ConnectionAwareRpcRouter, RpcError};
+use crate::network::{HasConnection, Networking, Outgoing, TransportConnect};
 use crate::routing_info::PartitionRouting;
 use crate::ShutdownError;
 
@@ -34,8 +34,19 @@ pub enum PartitionProcessorRpcClientError {
     SendFailed,
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
+    #[error(transparent)]
+    ConnectionAwareRpcError(
+        #[from] ConnectionAwareRpcError<Outgoing<PartitionProcessorRpcRequest, HasConnection>>,
+    ),
     #[error("operation failed: {0}")]
     Internal(String),
+}
+
+impl PartitionProcessorRpcClientError {
+    pub fn is_safe_to_retry(&self) -> bool {
+        // TODO sort this out
+        false
+    }
 }
 
 impl<T> From<RpcError<T>> for PartitionProcessorRpcClientError {
@@ -63,22 +74,22 @@ pub enum GetInvocationOutputResponse {
 }
 
 #[derive(Clone)]
-pub struct PartitionProcessorRpcClient<N> {
-    network_sender: N,
-    rpc_router: RpcRouter<PartitionProcessorRpcRequest>,
+pub struct PartitionProcessorRpcClient<C> {
+    networking: Networking<C>,
+    rpc_router: ConnectionAwareRpcRouter<PartitionProcessorRpcRequest>,
     partition_table: Live<PartitionTable>,
     partition_routing: PartitionRouting,
 }
 
-impl<N> PartitionProcessorRpcClient<N> {
+impl<C> PartitionProcessorRpcClient<C> {
     pub fn new(
-        network_sender: N,
-        rpc_router: RpcRouter<PartitionProcessorRpcRequest>,
+        networking: Networking<C>,
+        rpc_router: ConnectionAwareRpcRouter<PartitionProcessorRpcRequest>,
         partition_table: Live<PartitionTable>,
         partition_routing: PartitionRouting,
     ) -> Self {
         Self {
-            network_sender,
+            networking,
             rpc_router,
             partition_table,
             partition_routing,
@@ -86,9 +97,9 @@ impl<N> PartitionProcessorRpcClient<N> {
     }
 }
 
-impl<N> PartitionProcessorRpcClient<N>
+impl<C> PartitionProcessorRpcClient<C>
 where
-    N: NetworkSender + 'static,
+    C: TransportConnect,
 {
     pub async fn append_invocation(
         &self,
@@ -254,7 +265,6 @@ where
             .pinned()
             .find_partition_id(inner_request.partition_key())?;
 
-        // TODO Find node on which the leader for the given partition runs
         let node_id = self
             .partition_routing
             .get_node_by_partition(partition_id)
@@ -264,7 +274,7 @@ where
         let response = self
             .rpc_router
             .call(
-                &self.network_sender,
+                &self.networking,
                 node_id,
                 PartitionProcessorRpcRequest {
                     request_id,
