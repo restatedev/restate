@@ -14,8 +14,8 @@ use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationRe
 use restate_types::live::Live;
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, GetInvocationOutputResponseMode, InvocationOutput,
-    PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
-    SubmittedInvocationNotification,
+    PartitionProcessorRpcError, PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner,
+    PartitionProcessorRpcResponse, SubmittedInvocationNotification,
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
 
@@ -38,14 +38,43 @@ pub enum PartitionProcessorRpcClientError {
     ConnectionAwareRpcError(
         #[from] ConnectionAwareRpcError<Outgoing<PartitionProcessorRpcRequest, HasConnection>>,
     ),
-    #[error("operation failed: {0}")]
+    #[error("message has been routed to a node which is not leader for partition '{0}'")]
+    NotLeader(PartitionId),
+    #[error("rejecting rpc because the partition is too busy")]
+    Busy,
+    #[error("internal error: {0}")]
     Internal(String),
 }
 
 impl PartitionProcessorRpcClientError {
     pub fn is_safe_to_retry(&self) -> bool {
-        // TODO sort this out
-        false
+        match self {
+            PartitionProcessorRpcClientError::ConnectionAwareRpcError(
+                ConnectionAwareRpcError::CannotEstablishConnectionToPeer { .. },
+            )
+            | PartitionProcessorRpcClientError::UnknownPartition(_)
+            | PartitionProcessorRpcClientError::UnknownNodePerPartition(_)
+            | PartitionProcessorRpcClientError::NotLeader(_) => {
+                // These are pre-flight error that we can distinguish,
+                // and for which we know for certain that no message was proposed yet to the log.
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+impl From<PartitionProcessorRpcError> for PartitionProcessorRpcClientError {
+    fn from(value: PartitionProcessorRpcError) -> Self {
+        match value {
+            PartitionProcessorRpcError::NotLeader(partition_id) => {
+                PartitionProcessorRpcClientError::NotLeader(partition_id)
+            }
+            PartitionProcessorRpcError::Busy => PartitionProcessorRpcClientError::Busy,
+            PartitionProcessorRpcError::Internal(msg) => {
+                PartitionProcessorRpcClientError::Internal(msg)
+            }
+        }
     }
 }
 
@@ -294,8 +323,6 @@ where
             )
             .await?;
 
-        response
-            .into_body()
-            .map_err(|err| PartitionProcessorRpcClientError::Internal(err.to_string()))
+        Ok(response.into_body()?)
     }
 }

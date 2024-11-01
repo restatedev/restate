@@ -262,8 +262,8 @@ where
 pub enum ConnectionAwareRpcError<T> {
     #[error("connection closed")]
     ConnectionClosed,
-    #[error(transparent)]
-    ConnectionError(#[from] NetworkError),
+    #[error("cannot establish connection to peer {0}: {1}")]
+    CannotEstablishConnectionToPeer(NodeId, #[source] NetworkError),
     #[error(transparent)]
     SendError(#[from] NetworkSendError<T>),
     #[error(transparent)]
@@ -308,7 +308,10 @@ where
     ) -> Result<Incoming<T::ResponseMessage>, ConnectionAwareRpcError<Outgoing<T, HasConnection>>>
     {
         let peer = peer.into();
-        let connection = networking.node_connection(peer).await?;
+        let connection = networking
+            .node_connection(peer)
+            .await
+            .map_err(|e| ConnectionAwareRpcError::CannotEstablishConnectionToPeer(peer, e))?;
         let connection_closed = connection.closed();
         let outgoing = Outgoing::new(peer, msg).assign_connection(connection);
 
