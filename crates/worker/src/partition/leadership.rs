@@ -690,12 +690,12 @@ where
                 let shuffle_stream = (&mut leader_state.shuffle_stream).map(ActionEffect::Shuffle);
                 let action_effects_stream = stream::unfold(
                     &mut leader_state.pending_cleanup_timers_to_schedule,
-                    |action_effects| {
-                        let result = action_effects.pop_front();
+                    |pending_cleanup_timers_to_schedule| {
+                        let result = pending_cleanup_timers_to_schedule.pop_front();
                         future::ready(result.map(|(invocation_id, duration)| {
                             (
                                 ActionEffect::ScheduleCleanupTimer(invocation_id, duration),
-                                action_effects,
+                                pending_cleanup_timers_to_schedule,
                             )
                         }))
                     },
@@ -904,6 +904,12 @@ impl SelfAppendFuture {
             );
         }
     }
+
+    fn succeed_with_appended(&mut self) {
+        if let Some(reciprocal) = self.1.take() {
+            respond_to_rpc(reciprocal.prepare(Ok(PartitionProcessorRpcResponse::Appended)));
+        }
+    }
 }
 
 impl Future for SelfAppendFuture {
@@ -916,13 +922,7 @@ impl Future for SelfAppendFuture {
             self.get_mut().fail_with_internal();
             return Poll::Ready(());
         }
-        respond_to_rpc(
-            self.get_mut()
-                .1
-                .take()
-                .expect("Future should be called once")
-                .prepare(Ok(PartitionProcessorRpcResponse::Appended)),
-        );
+        self.succeed_with_appended();
         Poll::Ready(())
     }
 }

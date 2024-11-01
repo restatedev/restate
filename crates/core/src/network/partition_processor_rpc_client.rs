@@ -28,8 +28,8 @@ use crate::ShutdownError;
 pub enum PartitionProcessorRpcClientError {
     #[error(transparent)]
     UnknownPartition(#[from] PartitionTableError),
-    #[error("cannot find node per partition {0}")]
-    UnknownNodePerPartition(PartitionId),
+    #[error("cannot find node for partition {0}")]
+    UnknownNode(PartitionId),
     #[error("failed sending request")]
     SendFailed,
     #[error(transparent)]
@@ -53,7 +53,7 @@ impl PartitionProcessorRpcClientError {
                 ConnectionAwareRpcError::CannotEstablishConnectionToPeer { .. },
             )
             | PartitionProcessorRpcClientError::UnknownPartition(_)
-            | PartitionProcessorRpcClientError::UnknownNodePerPartition(_)
+            | PartitionProcessorRpcClientError::UnknownNode(_)
             | PartitionProcessorRpcClientError::NotLeader(_) => {
                 // These are pre-flight error that we can distinguish,
                 // and for which we know for certain that no message was proposed yet to the log.
@@ -307,9 +307,7 @@ where
         let node_id = self
             .partition_routing
             .get_node_by_partition(partition_id)
-            .ok_or(PartitionProcessorRpcClientError::UnknownNodePerPartition(
-                partition_id,
-            ))?;
+            .ok_or(PartitionProcessorRpcClientError::UnknownNode(partition_id))?;
         let response = self
             .rpc_router
             .call(
