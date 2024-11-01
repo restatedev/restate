@@ -565,7 +565,7 @@ where
                 );
 
                 self.leadership_state
-                    .self_propose_and_wait_response(
+                    .self_propose_and_respond_asynchronously(
                         service_invocation.partition_key(),
                         Command::Invoke(service_invocation),
                         response_tx,
@@ -659,7 +659,7 @@ where
             }
             PartitionProcessorRpcRequestInner::AppendInvocationResponse(invocation_response) => {
                 self.leadership_state
-                    .self_propose_and_wait_response(
+                    .self_propose_and_respond_asynchronously(
                         invocation_response.partition_key(),
                         Command::InvocationResponse(invocation_response),
                         response_tx,
@@ -695,6 +695,7 @@ where
         let invocation_id = match invocation_query {
             InvocationQuery::Invocation(iid) => iid,
             ref q @ InvocationQuery::Workflow(ref sid) => {
+                // TODO We need this query for backward compatibility, remove when we remove the idempotency table
                 match partition_store.get_virtual_object_status(sid).await? {
                     VirtualObjectStatus::Locked(iid) => iid,
                     VirtualObjectStatus::Unlocked => {
@@ -704,6 +705,7 @@ where
                 }
             }
             ref q @ InvocationQuery::IdempotencyId(ref iid) => {
+                // TODO We need this query for backward compatibility, remove when we remove the idempotency table
                 match partition_store.get_idempotency_metadata(iid).await? {
                     Some(idempotency_metadata) => idempotency_metadata.invocation_id,
                     None => {

@@ -1315,7 +1315,8 @@ pub mod v1 {
                 {
                     source::Source::Ingress(ingress) => restate_types::invocation::Source::Ingress(
                         PartitionProcessorRpcRequestId::from_slice(&ingress.rpc_id)
-                            .map_err(|e| ConversionError::InvalidData(e.into()))?,
+                            // TODO this should become an hard error in Restate 1.3
+                            .unwrap_or_default(),
                     ),
                     source::Source::Service(service) => restate_types::invocation::Source::Service(
                         restate_types::identifiers::InvocationId::try_from(

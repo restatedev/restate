@@ -40,6 +40,8 @@ pub enum PartitionProcessorRpcClientError {
     ),
     #[error("message has been routed to a node which is not leader for partition '{0}'")]
     NotLeader(PartitionId),
+    #[error("message has been routed to a node which lost leadership for partition '{0}'")]
+    LostLeadership(PartitionId),
     #[error("rejecting rpc because the partition is too busy")]
     Busy,
     #[error("internal error: {0}")]
@@ -47,10 +49,14 @@ pub enum PartitionProcessorRpcClientError {
 }
 
 impl PartitionProcessorRpcClientError {
+    /// Returns true when the operation can be retried assuming no state mutation could have occurred in the PartitionProcessor.
     pub fn is_safe_to_retry(&self) -> bool {
         match self {
             PartitionProcessorRpcClientError::ConnectionAwareRpcError(
                 ConnectionAwareRpcError::CannotEstablishConnectionToPeer { .. },
+            )
+            | PartitionProcessorRpcClientError::ConnectionAwareRpcError(
+                ConnectionAwareRpcError::SendError { .. },
             )
             | PartitionProcessorRpcClientError::UnknownPartition(_)
             | PartitionProcessorRpcClientError::UnknownNode(_)
@@ -69,6 +75,9 @@ impl From<PartitionProcessorRpcError> for PartitionProcessorRpcClientError {
         match value {
             PartitionProcessorRpcError::NotLeader(partition_id) => {
                 PartitionProcessorRpcClientError::NotLeader(partition_id)
+            }
+            PartitionProcessorRpcError::LostLeadership(partition_id) => {
+                PartitionProcessorRpcClientError::LostLeadership(partition_id)
             }
             PartitionProcessorRpcError::Busy => PartitionProcessorRpcClientError::Busy,
             PartitionProcessorRpcError::Internal(msg) => {
@@ -90,6 +99,7 @@ impl<T> From<RpcError<T>> for PartitionProcessorRpcClientError {
 #[derive(Debug, Clone)]
 pub enum AttachInvocationResponse {
     NotFound,
+    /// Returned when the invocation hasn't an idempotency key, nor it's a workflow run.
     NotSupported,
     Ready(InvocationOutput),
 }
@@ -97,7 +107,9 @@ pub enum AttachInvocationResponse {
 #[derive(Debug, Clone)]
 pub enum GetInvocationOutputResponse {
     NotFound,
+    /// The invocation was found, but it's still processing and a result is not ready yet.
     NotReady,
+    /// Returned when the invocation hasn't an idempotency key, nor it's a workflow run.
     NotSupported,
     Ready(InvocationOutput),
 }
@@ -140,6 +152,7 @@ impl<C> PartitionProcessorRpcClient<C>
 where
     C: TransportConnect,
 {
+    /// Append the invocation to the log, returning as soon as the invocation was successfully appended.
     pub async fn append_invocation(
         &self,
         request_id: PartitionProcessorRpcRequestId,
@@ -163,6 +176,7 @@ where
         Ok(())
     }
 
+    /// Append the invocation to the log, waiting for the submit notification emitted by the PartitionProcessor.
     pub async fn append_invocation_and_wait_submit_notification(
         &self,
         request_id: PartitionProcessorRpcRequestId,
@@ -190,6 +204,7 @@ where
         Ok(submit_notification)
     }
 
+    /// Append the invocation and wait for its output.
     pub async fn append_invocation_and_wait_output(
         &self,
         request_id: PartitionProcessorRpcRequestId,

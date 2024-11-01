@@ -525,11 +525,11 @@ where
 
                 // Reply to all RPCs with not a leader
                 for (_, reciprocal) in awaiting_rpc_actions.drain() {
-                    respond_to_rpc(
-                        reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
+                    respond_to_rpc(reciprocal.prepare(Err(
+                        PartitionProcessorRpcError::LostLeadership(
                             self.partition_processor_metadata.partition_id,
-                        ))),
-                    );
+                        ),
+                    )));
                 }
                 for fut in awaiting_rpc_self_appends.iter_mut() {
                     fut.fail_with_not_leader(self.partition_processor_metadata.partition_id);
@@ -807,7 +807,7 @@ where
                         // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
                         let old_reciprocal = o.remove();
                         respond_to_rpc(old_reciprocal.prepare(Err(
-                            PartitionProcessorRpcError::Internal("expired".to_string()),
+                            PartitionProcessorRpcError::Internal("retried".to_string()),
                         )));
                         leader_state
                             .awaiting_rpc_actions
@@ -831,7 +831,8 @@ where
         }
     }
 
-    pub async fn self_propose_and_wait_response(
+    /// Self propose to this partition, and register the reciprocal to respond asynchronously.
+    pub async fn self_propose_and_respond_asynchronously(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
@@ -898,7 +899,7 @@ impl SelfAppendFuture {
     fn fail_with_not_leader(&mut self, this_partition_id: PartitionId) {
         if let Some(reciprocal) = self.1.take() {
             respond_to_rpc(
-                reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
+                reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
                     this_partition_id,
                 ))),
             );

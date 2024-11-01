@@ -73,6 +73,8 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
 pub enum PartitionProcessorRpcError {
     #[error("not leader for partition '{0}'")]
     NotLeader(PartitionId),
+    #[error("not leader anymore for partition '{0}'")]
+    LostLeadership(PartitionId),
     #[error("rejecting rpc because too busy")]
     Busy,
     #[error("internal error: {0}")]

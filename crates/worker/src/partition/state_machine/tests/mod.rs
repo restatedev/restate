@@ -1001,30 +1001,44 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
     let invocation_id = InvocationId::mock_random();
 
     let request_id = PartitionProcessorRpcRequestId::default();
+    let service_invocation = {
+        let mut si = ServiceInvocation::mock();
+        si.invocation_id = invocation_id;
+        si.response_sink = Some(ServiceInvocationResponseSink::Ingress { request_id });
+        si.submit_notification_sink = Some(SubmitNotificationSink::Ingress { request_id });
+        si.source = Source::Ingress(request_id);
+        si
+    };
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
-            invocation_id,
-            response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
-            ..ServiceInvocation::mock()
-        }))
+        .apply(Command::Invoke(service_invocation.clone()))
         .await;
-
     assert_that!(
         actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        all!(
+            contains(pat!(Action::Invoke {
+                invocation_id: eq(invocation_id),
+            })),
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                is_new_invocation: eq(true)
+            }))
+        )
     );
 
     // Invoking this again won't have any effect
-    let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
-            invocation_id,
-            response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
-            ..ServiceInvocation::mock()
-        }))
-        .await;
-    assert_that!(actions, empty());
+    let actions = test_env.apply(Command::Invoke(service_invocation)).await;
+    assert_that!(
+        actions,
+        all!(
+            not(contains(pat!(Action::Invoke {
+                invocation_id: eq(invocation_id),
+            }))),
+            contains(pat!(Action::IngressSubmitNotification {
+                request_id: eq(request_id),
+                is_new_invocation: eq(false)
+            }))
+        )
+    );
 
     test_env.shutdown().await;
     Ok(())

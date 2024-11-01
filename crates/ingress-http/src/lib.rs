@@ -50,17 +50,15 @@ pub enum RequestDispatcherError {
 }
 
 /// Trait used by the invoker to dispatch requests to target partition processors.
-///
-/// All retry policies and business logic is handled by the implementation.
 #[cfg_attr(test, mockall::automock)]
 pub trait RequestDispatcher {
-    /// Send: submit invocation and wait for the [`SubmittedInvocationNotification`]
+    /// Send: append invocation and wait for the [`SubmittedInvocationNotification`]
     fn send(
         &self,
         invocation_request: InvocationRequest,
     ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send;
 
-    /// Call: submit invocation and wait for its response
+    /// Call: append invocation and wait for its response
     fn call(
         &self,
         invocation_request: InvocationRequest,
