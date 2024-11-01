@@ -27,7 +27,7 @@ use restate_core::network::partition_processor_rpc_client::{
 };
 use restate_core::TestCoreEnv;
 use restate_test_util::{assert, assert_eq};
-use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId};
+use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId, WithInvocationId};
 use restate_types::invocation::{
     InvocationQuery, InvocationTarget, InvocationTargetType, VirtualObjectHandlerType,
     WorkflowHandlerType,
@@ -69,20 +69,20 @@ async fn call_service() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_call()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             assert_eq!(
-                service_invocation.invocation_target.service_name(),
+                invocation_request.header.target.service_name(),
                 "greeter.Greeter"
             );
-            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+            assert_eq!(invocation_request.header.target.handler_name(), "greet");
 
             let greeting_req: GreetingRequest =
-                serde_json::from_slice(&service_invocation.argument).unwrap();
+                serde_json::from_slice(&invocation_request.body).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
 
             Box::pin(ready(Ok(InvocationOutput {
                 request_id: Default::default(),
-                invocation_id: Some(service_invocation.invocation_id),
+                invocation_id: Some(invocation_request.invocation_id()),
                 completion_expiry_time: None,
                 response: IngressResponseResult::Success(
                     InvocationTarget::service("greeter.Greeter", "greet"),
@@ -117,21 +117,21 @@ async fn call_service_with_get() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_call()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             assert_eq!(
-                service_invocation.invocation_target.service_name(),
+                invocation_request.header.target.service_name(),
                 "greeter.Greeter"
             );
-            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+            assert_eq!(invocation_request.header.target.handler_name(), "greet");
 
-            assert!(service_invocation.argument.is_empty());
+            assert!(invocation_request.body.is_empty());
 
             ready(Ok(InvocationOutput {
                 request_id: Default::default(),
                 invocation_id: Some(InvocationId::mock_random()),
                 completion_expiry_time: None,
                 response: IngressResponseResult::Success(
-                    service_invocation.invocation_target,
+                    invocation_request.header.target,
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
                     })
@@ -184,19 +184,16 @@ async fn call_virtual_object() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_call()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             assert_eq!(
-                service_invocation.invocation_target.service_name(),
+                invocation_request.header.target.service_name(),
                 "greeter.GreeterObject"
             );
-            assert_eq!(
-                service_invocation.invocation_target.key().unwrap(),
-                &"my-key"
-            );
-            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+            assert_eq!(invocation_request.header.target.key().unwrap(), &"my-key");
+            assert_eq!(invocation_request.header.target.handler_name(), "greet");
 
             let greeting_req: GreetingRequest =
-                serde_json::from_slice(&service_invocation.argument).unwrap();
+                serde_json::from_slice(&invocation_request.body).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
 
             Box::pin(ready(Ok(InvocationOutput {
@@ -204,7 +201,7 @@ async fn call_virtual_object() {
                 invocation_id: Some(InvocationId::mock_random()),
                 completion_expiry_time: None,
                 response: IngressResponseResult::Success(
-                    service_invocation.invocation_target,
+                    invocation_request.header.target,
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
                     })
@@ -242,15 +239,15 @@ async fn send_service() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_send()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             assert_eq!(
-                service_invocation.invocation_target.service_name(),
+                invocation_request.header.target.service_name(),
                 "greeter.Greeter"
             );
-            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+            assert_eq!(invocation_request.header.target.handler_name(), "greet");
 
             let greeting_req: GreetingRequest =
-                serde_json::from_slice(&service_invocation.argument).unwrap();
+                serde_json::from_slice(&invocation_request.body).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
 
             ready(Ok(SubmittedInvocationNotification {
@@ -287,17 +284,17 @@ async fn send_with_delay_service() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_send()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             // Get the function invocation and assert on it
             assert_eq!(
-                service_invocation.invocation_target.service_name(),
+                invocation_request.header.target.service_name(),
                 "greeter.Greeter"
             );
-            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
-            assert!(service_invocation.execution_time.is_some());
+            assert_eq!(invocation_request.header.target.handler_name(), "greet");
+            assert!(invocation_request.header.execution_time.is_some());
 
             let greeting_req: GreetingRequest =
-                serde_json::from_slice(&service_invocation.argument).unwrap();
+                serde_json::from_slice(&invocation_request.body).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
 
             ready(Ok(SubmittedInvocationNotification {
@@ -334,19 +331,16 @@ async fn send_virtual_object() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_send()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             assert_eq!(
-                service_invocation.invocation_target.service_name(),
+                invocation_request.header.target.service_name(),
                 "greeter.GreeterObject"
             );
-            assert_eq!(
-                service_invocation.invocation_target.key().unwrap(),
-                &"my-key"
-            );
-            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+            assert_eq!(invocation_request.header.target.key().unwrap(), &"my-key");
+            assert_eq!(invocation_request.header.target.handler_name(), "greet");
 
             let greeting_req: GreetingRequest =
-                serde_json::from_slice(&service_invocation.argument).unwrap();
+                serde_json::from_slice(&invocation_request.body).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
 
             ready(Ok(SubmittedInvocationNotification {
@@ -384,23 +378,23 @@ async fn idempotency_key_parsing() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_call()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             assert_eq!(
-                service_invocation.invocation_target.service_name(),
+                invocation_request.header.target.service_name(),
                 "greeter.Greeter"
             );
-            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+            assert_eq!(invocation_request.header.target.handler_name(), "greet");
 
             let greeting_req: GreetingRequest =
-                serde_json::from_slice(&service_invocation.argument).unwrap();
+                serde_json::from_slice(&invocation_request.body).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
 
             assert_eq!(
-                service_invocation.idempotency_key,
+                invocation_request.header.idempotency_key,
                 Some(ByteString::from_static("123456"))
             );
             assert_eq!(
-                service_invocation.completion_retention_duration,
+                invocation_request.header.completion_retention_duration,
                 Some(Duration::from_secs(60 * 60 * 24))
             );
 
@@ -409,7 +403,7 @@ async fn idempotency_key_parsing() {
                 invocation_id: Some(InvocationId::mock_random()),
                 completion_expiry_time: None,
                 response: IngressResponseResult::Success(
-                    service_invocation.invocation_target,
+                    invocation_request.header.target,
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
                     })
@@ -449,23 +443,23 @@ async fn idempotency_key_and_send() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_send()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             assert_eq!(
-                service_invocation.invocation_target.service_name(),
+                invocation_request.header.target.service_name(),
                 "greeter.Greeter"
             );
-            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+            assert_eq!(invocation_request.header.target.handler_name(), "greet");
 
             let greeting_req: GreetingRequest =
-                serde_json::from_slice(&service_invocation.argument).unwrap();
+                serde_json::from_slice(&invocation_request.body).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
 
             assert_eq!(
-                service_invocation.idempotency_key,
+                invocation_request.header.idempotency_key,
                 Some(ByteString::from_static("123456"))
             );
             assert_eq!(
-                service_invocation.completion_retention_duration,
+                invocation_request.header.completion_retention_duration,
                 Some(Duration::from_secs(60 * 60 * 24))
             );
 
@@ -509,23 +503,23 @@ async fn idempotency_key_and_send_with_different_invocation_id() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_send()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             assert_eq!(
-                service_invocation.invocation_target.service_name(),
+                invocation_request.header.target.service_name(),
                 "greeter.Greeter"
             );
-            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+            assert_eq!(invocation_request.header.target.handler_name(), "greet");
 
             let greeting_req: GreetingRequest =
-                serde_json::from_slice(&service_invocation.argument).unwrap();
+                serde_json::from_slice(&invocation_request.body).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
 
             assert_eq!(
-                service_invocation.idempotency_key,
+                invocation_request.header.idempotency_key,
                 Some(ByteString::from_static("123456"))
             );
             assert_eq!(
-                service_invocation.completion_retention_duration,
+                invocation_request.header.completion_retention_duration,
                 Some(Duration::from_secs(60 * 60 * 24))
             );
 
@@ -1096,13 +1090,13 @@ fn expect_invocation_and_reply_with_empty() -> MockRequestDispatcher {
     let mut mock_dispatcher = MockRequestDispatcher::new();
     mock_dispatcher
         .expect_call()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             ready(Ok(InvocationOutput {
                 request_id: Default::default(),
                 completion_expiry_time: None,
-                invocation_id: Some(service_invocation.invocation_id),
+                invocation_id: Some(invocation_request.invocation_id()),
                 response: IngressResponseResult::Success(
-                    service_invocation.invocation_target,
+                    invocation_request.header.target,
                     Bytes::new(),
                 ),
             }))
@@ -1116,13 +1110,13 @@ fn expect_invocation_and_reply_with_non_empty() -> MockRequestDispatcher {
     let mut mock_dispatcher = MockRequestDispatcher::new();
     mock_dispatcher
         .expect_call()
-        .return_once(|service_invocation| {
+        .return_once(|invocation_request| {
             ready(Ok(InvocationOutput {
                 request_id: Default::default(),
-                invocation_id: Some(service_invocation.invocation_id),
+                invocation_id: Some(invocation_request.invocation_id()),
                 completion_expiry_time: None,
                 response: IngressResponseResult::Success(
-                    service_invocation.invocation_target,
+                    invocation_request.header.target,
                     Bytes::from_static(b"123"),
                 ),
             }))

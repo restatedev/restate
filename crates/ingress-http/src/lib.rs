@@ -22,7 +22,7 @@ use std::net::{IpAddr, SocketAddr};
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
 };
-use restate_types::invocation::{InvocationQuery, InvocationResponse, ServiceInvocation};
+use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 
 /// Client connection information for a given RPC request
@@ -57,13 +57,13 @@ pub trait RequestDispatcher {
     /// Send: submit invocation and wait for the [`SubmittedInvocationNotification`]
     fn send(
         &self,
-        service_invocation: ServiceInvocation,
+        invocation_request: InvocationRequest,
     ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send;
 
     /// Call: submit invocation and wait for its response
     fn call(
         &self,
-        service_invocation: ServiceInvocation,
+        invocation_request: InvocationRequest,
     ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send;
 
     /// Attach to an invocation using the given query
@@ -214,17 +214,17 @@ mod mocks {
     impl RequestDispatcher for Arc<MockRequestDispatcher> {
         fn send(
             &self,
-            service_invocation: ServiceInvocation,
+            invocation_request: InvocationRequest,
         ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send
         {
-            MockRequestDispatcher::send(self, service_invocation)
+            MockRequestDispatcher::send(self, invocation_request)
         }
 
         fn call(
             &self,
-            service_invocation: ServiceInvocation,
+            invocation_request: InvocationRequest,
         ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send {
-            MockRequestDispatcher::call(self, service_invocation)
+            MockRequestDispatcher::call(self, invocation_request)
         }
 
         fn attach_invocation(

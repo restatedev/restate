@@ -47,7 +47,8 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
-    ResponseResult, ServiceInvocationResponseSink, SubmitNotificationSink, WorkflowHandlerType,
+    ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, SubmitNotificationSink,
+    WorkflowHandlerType,
 };
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::live::Live;
@@ -60,7 +61,7 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::retries::RetryPolicy;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::GenerationalNodeId;
+use restate_types::{invocation, GenerationalNodeId};
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
@@ -555,9 +556,14 @@ where
         ) = rpc.split();
         match inner {
             PartitionProcessorRpcRequestInner::AppendInvocation(
-                service_invocation,
+                invocation_request,
                 AppendInvocationReplyOn::Appended,
             ) => {
+                let service_invocation = ServiceInvocation::from_request(
+                    invocation_request,
+                    invocation::Source::ingress(request_id),
+                );
+
                 self.leadership_state
                     .self_propose_and_wait_response(
                         service_invocation.partition_key(),
@@ -567,9 +573,13 @@ where
                     .await;
             }
             PartitionProcessorRpcRequestInner::AppendInvocation(
-                mut service_invocation,
+                invocation_request,
                 AppendInvocationReplyOn::Submitted,
             ) => {
+                let mut service_invocation = ServiceInvocation::from_request(
+                    invocation_request,
+                    invocation::Source::ingress(request_id),
+                );
                 service_invocation.submit_notification_sink =
                     Some(SubmitNotificationSink::Ingress { request_id });
 
@@ -583,9 +593,13 @@ where
                     .await
             }
             PartitionProcessorRpcRequestInner::AppendInvocation(
-                mut service_invocation,
+                invocation_request,
                 AppendInvocationReplyOn::Output,
             ) => {
+                let mut service_invocation = ServiceInvocation::from_request(
+                    invocation_request,
+                    invocation::Source::ingress(request_id),
+                );
                 service_invocation.response_sink =
                     Some(ServiceInvocationResponseSink::Ingress { request_id });
 

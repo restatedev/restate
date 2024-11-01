@@ -13,7 +13,7 @@
 use crate::errors::InvocationError;
 use crate::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, PartitionKey, PartitionProcessorRpcRequestId,
-    ServiceId, WithPartitionKey,
+    ServiceId, WithInvocationId, WithPartitionKey,
 };
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
@@ -273,6 +273,76 @@ impl fmt::Display for InvocationTarget {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InvocationRequestHeader {
+    pub id: InvocationId,
+    pub target: InvocationTarget,
+    pub headers: Vec<Header>,
+    pub span_context: ServiceInvocationSpanContext,
+
+    /// Key to use for idempotent request. If none, this request is not idempotent, or it's a workflow call. See [`InvocationRequestHeader::is_idempotent`].
+    pub idempotency_key: Option<ByteString>,
+
+    /// Time when the request should be executed. If none, it's executed immediately.
+    pub execution_time: Option<MillisSinceEpoch>,
+
+    /// Retention duration of the completed status. If none, the completed status is not retained.
+    pub completion_retention_duration: Option<Duration>,
+}
+
+impl InvocationRequestHeader {
+    pub fn initialize(id: InvocationId, target: InvocationTarget) -> Self {
+        Self {
+            id,
+            target,
+            headers: vec![],
+            span_context: ServiceInvocationSpanContext::empty(),
+            idempotency_key: None,
+            execution_time: None,
+            completion_retention_duration: None,
+        }
+    }
+
+    pub fn with_related_span(&mut self, span_relation: SpanRelation) {
+        self.span_context = ServiceInvocationSpanContext::start(&self.id, span_relation);
+    }
+
+    /// Invocations are idempotent if they have an idempotency key specified or are of type workflow
+    pub fn is_idempotent(&self) -> bool {
+        self.idempotency_key.is_some() || matches!(self.target.service_ty(), ServiceType::Workflow)
+    }
+}
+
+impl WithInvocationId for InvocationRequestHeader {
+    fn invocation_id(&self) -> InvocationId {
+        self.id
+    }
+}
+
+/// Struct representing an invocation request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InvocationRequest {
+    pub header: InvocationRequestHeader,
+    pub body: Bytes,
+}
+
+impl InvocationRequest {
+    pub fn new(header: InvocationRequestHeader, body: Bytes) -> Self {
+        Self { header, body }
+    }
+
+    /// Invocations are idempotent if they have an idempotency key specified or are of type workflow
+    pub fn is_idempotent(&self) -> bool {
+        self.header.is_idempotent()
+    }
+}
+
+impl WithInvocationId for InvocationRequest {
+    fn invocation_id(&self) -> InvocationId {
+        self.header.invocation_id()
+    }
+}
+
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServiceInvocation {
@@ -303,6 +373,22 @@ pub enum SubmitNotificationSink {
 }
 
 impl ServiceInvocation {
+    pub fn from_request(request: InvocationRequest, source: Source) -> Self {
+        Self {
+            invocation_id: request.header.id,
+            invocation_target: request.header.target,
+            argument: request.body,
+            source,
+            span_context: request.header.span_context,
+            headers: request.header.headers,
+            execution_time: request.header.execution_time,
+            completion_retention_duration: request.header.completion_retention_duration,
+            idempotency_key: request.header.idempotency_key,
+            response_sink: None,
+            submit_notification_sink: None,
+        }
+    }
+
     pub fn initialize(
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
@@ -436,6 +522,12 @@ pub enum Source {
     Service(InvocationId, InvocationTarget),
     /// Internal calls for the non-deterministic built-in services
     Internal,
+}
+
+impl Source {
+    pub fn ingress(request_id: PartitionProcessorRpcRequestId) -> Self {
+        Self::Ingress(request_id)
+    }
 }
 
 /// This struct contains the relevant span information for a [`ServiceInvocation`].

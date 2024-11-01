@@ -16,10 +16,7 @@ use restate_core::network::partition_processor_rpc_client::{
 use restate_core::network::TransportConnect;
 use restate_ingress_http::{RequestDispatcher, RequestDispatcherError};
 use restate_types::identifiers::PartitionProcessorRpcRequestId;
-use restate_types::invocation::{
-    InvocationQuery, InvocationResponse, InvocationTargetType, ServiceInvocation,
-    WorkflowHandlerType,
-};
+use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
@@ -57,13 +54,10 @@ where
 {
     async fn send(
         &self,
-        service_invocation: ServiceInvocation,
+        invocation_request: InvocationRequest,
     ) -> Result<SubmittedInvocationNotification, RequestDispatcherError> {
         let request_id = PartitionProcessorRpcRequestId::default();
-        if service_invocation.idempotency_key.is_some()
-            || service_invocation.invocation_target.invocation_target_ty()
-                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-        {
+        if invocation_request.is_idempotent() {
             // In this case we need to wait for the submit notification from the PP, this is safe to retry
             self.retry_policy
                 .clone()
@@ -73,7 +67,7 @@ where
                         self.partition_processor_rpc_client
                             .append_invocation_and_wait_submit_notification(
                                 request_id,
-                                service_invocation.clone(),
+                                invocation_request.clone(),
                             ),
                     )
                     .await
@@ -86,7 +80,7 @@ where
             tokio::time::timeout(
                 self.rpc_timeout,
                 self.partition_processor_rpc_client
-                    .append_invocation(request_id, service_invocation),
+                    .append_invocation(request_id, invocation_request),
             )
             .await
             .context("timeout while trying to reach partition processor")?
@@ -100,13 +94,10 @@ where
 
     async fn call(
         &self,
-        service_invocation: ServiceInvocation,
+        invocation_request: InvocationRequest,
     ) -> Result<InvocationOutput, RequestDispatcherError> {
         let request_id = PartitionProcessorRpcRequestId::default();
-        if service_invocation.idempotency_key.is_some()
-            || service_invocation.invocation_target.invocation_target_ty()
-                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-        {
+        if invocation_request.is_idempotent() {
             // For workflow or idempotent calls, it is safe to retry always
             self.retry_policy
                 .clone()
@@ -116,7 +107,7 @@ where
                         self.partition_processor_rpc_client
                             .append_invocation_and_wait_output(
                                 request_id,
-                                service_invocation.clone(),
+                                invocation_request.clone(),
                             ),
                     )
                     .await
@@ -128,7 +119,7 @@ where
             Ok(tokio::time::timeout(
                 self.rpc_timeout,
                 self.partition_processor_rpc_client
-                    .append_invocation_and_wait_output(request_id, service_invocation),
+                    .append_invocation_and_wait_output(request_id, invocation_request),
             )
             .await
             .context("timeout while trying to reach partition processor")?

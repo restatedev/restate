@@ -12,7 +12,7 @@ use crate::errors::InvocationError;
 use crate::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
-use crate::invocation::{InvocationQuery, InvocationResponse, InvocationTarget, ServiceInvocation};
+use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget};
 use crate::net::define_rpc;
 use crate::net::TargetName;
 use crate::time::MillisSinceEpoch;
@@ -54,7 +54,7 @@ pub enum GetInvocationOutputResponseMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcRequestInner {
-    AppendInvocation(ServiceInvocation, AppendInvocationReplyOn),
+    AppendInvocation(InvocationRequest, AppendInvocationReplyOn),
     GetInvocationOutput(InvocationQuery, GetInvocationOutputResponseMode),
     AppendInvocationResponse(InvocationResponse),
 }

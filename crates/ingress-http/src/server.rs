@@ -239,6 +239,7 @@ mod tests {
     use hyper_util::rt::TokioExecutor;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
     use restate_test_util::assert_eq;
+    use restate_types::identifiers::WithInvocationId;
     use restate_types::invocation::InvocationTarget;
     use restate_types::net::partition_processor::IngressResponseResult;
     use serde::{Deserialize, Serialize};
@@ -265,20 +266,20 @@ mod tests {
         mock_dispatcher
             .expect_call()
             .once()
-            .return_once(|service_invocation| {
+            .return_once(|invocation_request| {
                 assert_eq!(
-                    service_invocation.invocation_target.service_name(),
+                    invocation_request.header.target.service_name(),
                     "greeter.Greeter"
                 );
-                assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+                assert_eq!(invocation_request.header.target.handler_name(), "greet");
 
                 let greeting_req: GreetingRequest =
-                    serde_json::from_slice(&service_invocation.argument).unwrap();
+                    serde_json::from_slice(&invocation_request.body).unwrap();
                 assert_eq!(&greeting_req.person, "Francesco");
 
                 Box::pin(ready(Ok(InvocationOutput {
                     request_id: Default::default(),
-                    invocation_id: Some(service_invocation.invocation_id),
+                    invocation_id: Some(invocation_request.invocation_id()),
                     completion_expiry_time: None,
                     response: IngressResponseResult::Success(
                         InvocationTarget::service("greeter.Greeter", "greet"),

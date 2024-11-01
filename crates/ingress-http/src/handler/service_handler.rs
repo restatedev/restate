@@ -20,10 +20,10 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::{info, trace, trace_span, Instrument};
 
-use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+use restate_types::identifiers::{InvocationId, WithInvocationId};
 use restate_types::invocation::{
-    Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
-    WorkflowHandlerType,
+    Header, InvocationRequest, InvocationRequestHeader, InvocationTarget, InvocationTargetType,
+    SpanRelation, WorkflowHandlerType,
 };
 use restate_types::schema::invocation_target::{
     InvocationTargetMetadata, InvocationTargetResolver,
@@ -179,19 +179,15 @@ where
             let delay = parse_delay(parts.uri.query())?;
 
             // Prepare service invocation
-            let mut service_invocation = ServiceInvocation::initialize(
-                invocation_id,
-                invocation_target,
-                Source::Ingress(PartitionProcessorRpcRequestId::default()),
-            );
-            service_invocation.with_related_span(SpanRelation::Parent(ingress_span_context));
-            service_invocation.completion_retention_duration =
+            let mut invocation_request_header =
+                InvocationRequestHeader::initialize(invocation_id, invocation_target);
+            invocation_request_header.with_related_span(SpanRelation::Parent(ingress_span_context));
+            invocation_request_header.completion_retention_duration =
                 invocation_target_meta.compute_retention(idempotency_key.is_some());
             if let Some(key) = idempotency_key {
-                service_invocation.idempotency_key = Some(key);
+                invocation_request_header.idempotency_key = Some(key);
             }
-            service_invocation.headers = headers;
-            service_invocation.argument = body;
+            invocation_request_header.headers = headers;
 
             match invoke_ty {
                 InvokeType::Call => {
@@ -199,17 +195,21 @@ where
                         return Err(HandlerError::UnsupportedDelay);
                     }
                     Self::handle_service_call(
-                        service_invocation,
+                        InvocationRequest::new(invocation_request_header, body),
                         invocation_target_meta,
                         self.dispatcher,
                     )
                     .await
                 }
                 InvokeType::Send => {
-                    service_invocation.execution_time =
+                    invocation_request_header.execution_time =
                         delay.map(|d| SystemTime::now() + d).map(Into::into);
 
-                    Self::handle_service_send(service_invocation, self.dispatcher).await
+                    Self::handle_service_send(
+                        InvocationRequest::new(invocation_request_header, body),
+                        self.dispatcher,
+                    )
+                    .await
                 }
             }
         }
@@ -236,12 +236,12 @@ where
     }
 
     async fn handle_service_call(
-        service_invocation: ServiceInvocation,
+        invocation_request: InvocationRequest,
         invocation_target_metadata: InvocationTargetMetadata,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         let response = dispatcher
-            .call(service_invocation)
+            .call(invocation_request)
             .instrument(trace_span!("Waiting for response"))
             .await?;
 
@@ -249,14 +249,14 @@ where
     }
 
     async fn handle_service_send(
-        service_invocation: ServiceInvocation,
+        invocation_request: InvocationRequest,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
-        let invocation_id = service_invocation.invocation_id;
-        let execution_time = service_invocation.execution_time;
+        let invocation_id = invocation_request.invocation_id();
+        let execution_time = invocation_request.header.execution_time;
 
         // Send the service invocation, wait for the submit notification
-        let response = dispatcher.send(service_invocation).await?;
+        let response = dispatcher.send(invocation_request).await?;
 
         trace!("Complete external HTTP send request successfully");
         Ok(Response::builder()

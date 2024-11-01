@@ -10,7 +10,7 @@
 
 use assert2::let_assert;
 use restate_types::identifiers::{PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey};
-use restate_types::invocation::{InvocationQuery, InvocationResponse, ServiceInvocation};
+use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::live::Live;
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, GetInvocationOutputResponseMode, InvocationOutput,
@@ -114,13 +114,13 @@ where
     pub async fn append_invocation(
         &self,
         request_id: PartitionProcessorRpcRequestId,
-        service_invocation: ServiceInvocation,
+        invocation_request: InvocationRequest,
     ) -> Result<(), PartitionProcessorRpcClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
                 PartitionProcessorRpcRequestInner::AppendInvocation(
-                    service_invocation,
+                    invocation_request,
                     AppendInvocationReplyOn::Appended,
                 ),
             )
@@ -137,13 +137,13 @@ where
     pub async fn append_invocation_and_wait_submit_notification(
         &self,
         request_id: PartitionProcessorRpcRequestId,
-        service_invocation: ServiceInvocation,
+        invocation_request: InvocationRequest,
     ) -> Result<SubmittedInvocationNotification, PartitionProcessorRpcClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
                 PartitionProcessorRpcRequestInner::AppendInvocation(
-                    service_invocation,
+                    invocation_request,
                     AppendInvocationReplyOn::Submitted,
                 ),
             )
@@ -164,13 +164,13 @@ where
     pub async fn append_invocation_and_wait_output(
         &self,
         request_id: PartitionProcessorRpcRequestId,
-        service_invocation: ServiceInvocation,
+        invocation_request: InvocationRequest,
     ) -> Result<InvocationOutput, PartitionProcessorRpcClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
                 PartitionProcessorRpcRequestInner::AppendInvocation(
-                    service_invocation,
+                    invocation_request,
                     AppendInvocationReplyOn::Output,
                 ),
             )
