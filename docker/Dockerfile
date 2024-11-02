@@ -33,11 +33,12 @@ ARG SCCACHE_GHA_ENABLED=''
 # Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
 # Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
 ARG CARGO_PROFILE_RELEASE_DEBUG=false
+ARG RESTATE_FEATURES=''
 # Caching layer if nothing has changed
 # Only build restate binary to avoid compiling unneeded crates
-RUN just arch=$TARGETARCH libc=gnu chef-cook --release --bin restate-server
+RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release --bin restate-server
 COPY . .
-RUN just arch=$TARGETARCH libc=gnu build --release --bin restate-server && \
+RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release --bin restate-server && \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server
 
