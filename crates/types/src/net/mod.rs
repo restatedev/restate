@@ -25,7 +25,7 @@ use anyhow::{Context, Error};
 // re-exports for convenience
 pub use error::*;
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -96,10 +96,12 @@ impl AdvertisedAddress {
                 uri.authority()
                     .and_then(|auth| auth.port_u16())
                     .map(|port| {
-                        BindAddress::Socket(SocketAddr::new(
-                            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                            port,
-                        ))
+                        let ip = if uri.host().unwrap_or("").contains(':') {
+                            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+                        } else {
+                            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+                        };
+                        BindAddress::Socket(SocketAddr::new(ip, port))
                     })
             }
             AdvertisedAddress::Uds(path) => Some(BindAddress::Uds(path.clone())),
@@ -237,7 +239,7 @@ use {define_message, define_rpc};
 mod tests {
     use super::*;
 
-    use std::str::FromStr;
+    use std::{net::Ipv6Addr, str::FromStr};
 
     #[test]
     fn test_parse_empty_input() {
@@ -352,6 +354,28 @@ mod tests {
         match bind_addr {
             BindAddress::Uds(path) => assert_eq!(path, PathBuf::from("/path/to/socket")),
             _ => panic!("Expected Uds variant"),
+        }
+    }
+    #[test]
+    fn test_derive_bind_address_ipv6() {
+        // Create an IPv6 advertised address
+        let address = "http://[::1]:8080"; // IPv6 localhost with port 8080
+        let advertised_address =
+            AdvertisedAddress::from_str(address).expect("Failed to parse IPv6 URI");
+
+        // Derive the bind address
+        let bind_address = advertised_address.derive_bind_address();
+
+        // Check that it matches the expected IPv6 bind address
+        match bind_address {
+            Some(BindAddress::Socket(socket_addr)) => {
+                assert_eq!(socket_addr.ip(), IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+                assert_eq!(socket_addr.port(), 8080);
+            }
+            _ => panic!(
+                "Expected BindAddress::Socket with IPv6, got {:?}",
+                bind_address
+            ),
         }
     }
 
