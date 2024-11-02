@@ -1035,7 +1035,7 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
             }))),
             contains(pat!(Action::IngressSubmitNotification {
                 request_id: eq(request_id),
-                is_new_invocation: eq(false)
+                is_new_invocation: eq(true)
             }))
         )
     );

@@ -70,7 +70,7 @@ pub trait RequestDispatcher {
         invocation_query: InvocationQuery,
     ) -> impl Future<Output = Result<AttachInvocationResponse, RequestDispatcherError>> + Send;
 
-    /// Get invocation output
+    /// Get invocation output, without blocking when it's still running.
     fn get_invocation_output(
         &self,
         invocation_query: InvocationQuery,
