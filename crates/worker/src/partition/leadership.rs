@@ -532,7 +532,7 @@ where
                     )));
                 }
                 for fut in awaiting_rpc_self_appends.iter_mut() {
-                    fut.fail_with_not_leader(self.partition_processor_metadata.partition_id);
+                    fut.fail_with_lost_leadership(self.partition_processor_metadata.partition_id);
                 }
                 awaiting_rpc_self_appends.clear();
             }
@@ -896,7 +896,7 @@ impl SelfAppendFuture {
         }
     }
 
-    fn fail_with_not_leader(&mut self, this_partition_id: PartitionId) {
+    fn fail_with_lost_leadership(&mut self, this_partition_id: PartitionId) {
         if let Some(reciprocal) = self.1.take() {
             respond_to_rpc(
                 reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(

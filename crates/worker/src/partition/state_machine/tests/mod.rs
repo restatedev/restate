@@ -1025,7 +1025,8 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
         )
     );
 
-    // Invoking this again won't have any effect
+    // Applying this again won't generate Invoke action,
+    // but will return same submit notification.
     let actions = test_env.apply(Command::Invoke(service_invocation)).await;
     assert_that!(
         actions,
