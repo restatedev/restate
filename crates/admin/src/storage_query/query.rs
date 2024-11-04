@@ -10,7 +10,7 @@
 
 use std::io::Write;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::extract::State;
@@ -28,7 +28,7 @@ use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
 use okapi_operation::*;
-use pin_project::pin_project;
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
@@ -83,7 +83,10 @@ pub async fn query(
         .expect("content-type header is correct"))
 }
 
-trait RecordBatchWriter: Sized {
+trait RecordBatchWriter
+where
+    Self: Sized,
+{
     // Create the writer
     fn new(schema: &Schema) -> Result<Self, DataFusionError>;
 
@@ -117,15 +120,15 @@ impl RecordBatchWriter for StreamWriter<Vec<u8>> {
 #[derive(Clone)]
 // unfortunately the json writer doesnt give a way to get a mutable reference to the underlying writer, so we need another pointer in to its buffer
 // we use a lock here to help make the writer send/sync, despite it being totally uncontended :(
-struct LockWriter(Arc<RwLock<Vec<u8>>>);
+struct LockWriter(Arc<Mutex<Vec<u8>>>);
 
 impl LockWriter {
     fn new() -> Self {
-        Self(Arc::new(RwLock::new(Vec::new())))
+        Self(Arc::new(Mutex::new(Vec::new())))
     }
 
     fn take(&self) -> Vec<u8> {
-        let mut vec = self.0.write().unwrap();
+        let mut vec = self.0.lock();
         let new_vec = Vec::with_capacity(vec.capacity());
         std::mem::replace(&mut vec, new_vec)
     }
@@ -133,11 +136,11 @@ impl LockWriter {
 
 impl Write for LockWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.write().unwrap().write(buf)
+        self.0.lock().write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0.write().unwrap().flush()
+        self.0.lock().flush()
     }
 }
 
@@ -170,9 +173,12 @@ impl RecordBatchWriter for JsonWriter {
     fn finish(&mut self) -> Result<Bytes, DataFusionError> {
         if !self.finished {
             self.finished = true;
+            self.json_writer.finish()?;
             if self.started {
-                self.lock_writer.write_all(b"]}")?;
+                // if we've started, json writer has set the tailing ]
+                self.lock_writer.write_all(b"}")?;
             } else {
+                // if we haven't started, json writer has written nothing, so we must write the []
                 self.lock_writer.write_all(b"[]}")?;
             }
         }
@@ -180,7 +186,6 @@ impl RecordBatchWriter for JsonWriter {
     }
 }
 
-#[pin_project]
 struct WriteRecordBatchStream<W> {
     done: bool,
     record_batch_stream: SendableRecordBatchStream,
@@ -197,7 +202,7 @@ impl<W: RecordBatchWriter> WriteRecordBatchStream<W> {
     }
 }
 
-impl<W: RecordBatchWriter> Stream for WriteRecordBatchStream<W> {
+impl<W: RecordBatchWriter + Unpin> Stream for WriteRecordBatchStream<W> {
     type Item = Result<Bytes, DataFusionError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -208,9 +213,7 @@ impl<W: RecordBatchWriter> Stream for WriteRecordBatchStream<W> {
         let record_batch = ready!(self.record_batch_stream.poll_next_unpin(cx));
 
         if let Some(record_batch) = record_batch {
-            match record_batch
-                .and_then(|record_batch| self.as_mut().stream_writer.write(&record_batch))
-            {
+            match record_batch.and_then(|record_batch| self.stream_writer.write(&record_batch)) {
                 Ok(bytes) => Poll::Ready(Some(Ok(bytes))),
                 Err(err) => {
                     self.done = true;
