@@ -18,7 +18,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
 
 use restate_core::metadata;
-use restate_core::partitions::PartitionNodeResolver;
+use restate_core::partitions::PartitionRouting;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::{GenerationalNodeId, NodeId};
 
@@ -55,7 +55,7 @@ impl LocalPartitionScannerRegistry {
 #[derive(Clone)]
 pub struct RemoteScannerManager {
     my_node_id: OnceLock<GenerationalNodeId>,
-    partition_node_resolver: PartitionNodeResolver,
+    partition_routing: PartitionRouting,
     remote_scanner: Arc<dyn RemoteScannerService>,
     local_store_scanners: LocalPartitionScannerRegistry,
 }
@@ -73,12 +73,12 @@ pub enum PartitionLocation {
 
 impl RemoteScannerManager {
     pub fn new(
-        partition_node_resolver: PartitionNodeResolver,
+        partition_routing: PartitionRouting,
         remote_scanner: Arc<dyn RemoteScannerService>,
     ) -> Self {
         Self {
             my_node_id: OnceLock::new(),
-            partition_node_resolver,
+            partition_routing,
             remote_scanner,
             local_store_scanners: LocalPartitionScannerRegistry::default(),
         }
@@ -87,12 +87,12 @@ impl RemoteScannerManager {
     #[cfg(test)]
     pub fn with_local_node_id(
         my_node_id: GenerationalNodeId,
-        partition_node_resolver: PartitionNodeResolver,
+        partition_routing: PartitionRouting,
         remote_scanner: Arc<dyn RemoteScannerService>,
     ) -> Self {
         Self {
             my_node_id: OnceLock::from(my_node_id),
-            partition_node_resolver,
+            partition_routing,
             remote_scanner,
             local_store_scanners: LocalPartitionScannerRegistry::default(),
         }
@@ -130,12 +130,9 @@ impl RemoteScannerManager {
     ) -> anyhow::Result<PartitionLocation> {
         let my_node_id = self.my_node_id();
 
-        match self
-            .partition_node_resolver
-            .get_partition_location(partition_id)
-        {
+        match self.partition_routing.get_partition_location(partition_id) {
             None => {
-                self.partition_node_resolver.request_refresh();
+                self.partition_routing.request_refresh();
                 bail!("node lookup for partition {} failed", partition_id)
             }
             Some(node_id)

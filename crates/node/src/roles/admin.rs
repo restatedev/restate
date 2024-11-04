@@ -21,7 +21,7 @@ use restate_core::network::MessageRouterBuilder;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
-use restate_core::partitions::PartitionNodeResolver;
+use restate_core::partitions::PartitionRouting;
 use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
@@ -66,7 +66,7 @@ impl<T: TransportConnect> AdminRole<T> {
         bifrost: Bifrost,
         updateable_config: Live<Configuration>,
         metadata: Metadata,
-        partition_node_resolver: PartitionNodeResolver,
+        partition_routing: PartitionRouting,
         networking: Networking<T>,
         metadata_writer: MetadataWriter,
         server_builder: &mut NetworkServerBuilder,
@@ -87,7 +87,7 @@ impl<T: TransportConnect> AdminRole<T> {
             query_context
         } else {
             let remote_scanner_manager = RemoteScannerManager::new(
-                partition_node_resolver,
+                partition_routing,
                 create_remote_scanner_service(
                     networking.clone(),
                     task_center.clone(),

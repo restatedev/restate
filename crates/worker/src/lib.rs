@@ -30,7 +30,7 @@ use restate_core::network::rpc_router::ConnectionAwareRpcRouter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
-use restate_core::partitions::PartitionNodeResolver;
+use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
@@ -116,7 +116,7 @@ impl<T: TransportConnect> Worker<T> {
         updateable_config: Live<Configuration>,
         health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
-        partition_node_resolver: PartitionNodeResolver,
+        partition_routing: PartitionRouting,
         networking: Networking<T>,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
@@ -145,11 +145,6 @@ impl<T: TransportConnect> Worker<T> {
         )
         .await?;
 
-        // TODO sort this out!
-        //  it's on https://github.com/restatedev/restate/pull/2172
-        let partition_routing_refresher =
-            PartitionRoutingRefresher::new(metadata_store_client.clone());
-
         let rpc_router = ConnectionAwareRpcRouter::new(router_builder);
         let partition_table = metadata.updateable_partition_table();
         // http ingress
@@ -159,7 +154,7 @@ impl<T: TransportConnect> Worker<T> {
                 networking.clone(),
                 rpc_router,
                 partition_table,
-                partition_routing_refresher.partition_routing(),
+                partition_routing.clone(),
             )),
             schema.clone(),
         );
@@ -180,7 +175,7 @@ impl<T: TransportConnect> Worker<T> {
         router_builder.add_message_handler(partition_processor_manager.message_handler());
 
         let remote_scanner_manager = RemoteScannerManager::new(
-            partition_node_resolver,
+            partition_routing,
             create_remote_scanner_service(networking, task_center(), router_builder),
         );
         let storage_query_context = QueryContext::create(

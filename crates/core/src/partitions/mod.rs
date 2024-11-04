@@ -44,35 +44,21 @@ pub enum Command {
 /// Discover cluster nodes for a given partition. Compared to the partition table, this view is more
 /// dynamic as it changes based on cluster nodes' operational status. Can be cheaply cloned.
 #[derive(Clone)]
-pub struct PartitionNodeResolver {
+pub struct PartitionRouting {
     sender: CommandSender,
     /// A mapping of partition IDs to node IDs that are believed to be authoritative for that serving requests.
     partition_to_node_mappings: Arc<ArcSwap<PartitionToNodesRoutingTable>>,
 }
 
-// pub trait PartitionNodeLookup: Send + Sync + Debug + 'static {
-//     /// Look up a suitable node to process requests for a given partition. Answers are authoritative
-//     /// though subject to propagation delays through the cluster in distributed deployments.
-//     /// Generally, as a consumer of routing information, your options are limited to backing off and
-//     /// retrying the request, or returning an error upstream when information is not available.
-//     ///
-//     /// A `None` response indicates that either we have no knowledge about this partition, or that
-//     /// the routing table has not yet been refreshed for the cluster. The latter condition should be
-//     /// brief and only on startup, so we can generally treat lack of response as a negative answer.
-//     fn get_partition_location(&self, partition_id: PartitionId) -> Option<NodeId>;
-//
-//     /// Provide a hint that the partition-to-nodes view may be outdated. This is useful when a
-//     /// caller discovers via some other mechanism that routing information may be invalid - for
-//     /// example, when a request to a node previously returned by
-//     /// [`PartitionNodeLookup::get_partition_location`] indicates that it is no longer serving that
-//     /// partition.
-//     ///
-//     /// This call returns immediately, while the refresh itself is performed asynchronously on a
-//     /// best-effort basis. Multiple calls will not result in multiple refresh attempts.
-//     fn request_refresh(&self);
-// }
-
-impl PartitionNodeResolver {
+impl PartitionRouting {
+    /// Look up a suitable node to process requests for a given partition. Answers are authoritative
+    /// though subject to propagation delays through the cluster in distributed deployments.
+    /// Generally, as a consumer of routing information, your options are limited to backing off and
+    /// retrying the request, or returning an error upstream when information is not available.
+    ///
+    /// A `None` response indicates that either we have no knowledge about this partition, or that
+    /// the routing table has not yet been refreshed for the cluster. The latter condition should be
+    /// brief and only on startup, so we can generally treat lack of response as a negative answer.
     pub fn get_partition_location(&self, partition_id: PartitionId) -> Option<NodeId> {
         let mappings = self.partition_to_node_mappings.load();
 
@@ -86,12 +72,21 @@ impl PartitionNodeResolver {
         }
     }
 
+    /// Provide a hint that the partition-to-nodes view may be outdated. This is useful when a
+    /// caller discovers via some other mechanism that routing information may be invalid - for
+    /// example, when a request to a node previously returned by
+    /// [`PartitionRouting::get_partition_location`] indicates that it is no longer serving that
+    /// partition.
+    ///
+    /// This call returns immediately, while the refresh itself is performed asynchronously on a
+    /// best-effort basis. Multiple calls will not result in multiple refresh attempts.
     pub fn request_refresh(&self) {
-        self.sender.try_send(Command::SyncRoutingInformation).ok();
+        // if the channel already contains an unconsumed message, it doesn't matter that we can't send another
+        let _ = self.sender.try_send(Command::SyncRoutingInformation).ok();
     }
 }
 
-impl Debug for PartitionNodeResolver {
+impl Debug for PartitionRouting {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("PartitionNodeResolver(")?;
         self.partition_to_node_mappings.load().fmt(f)?;
@@ -138,8 +133,8 @@ impl PartitionRoutingRefresher {
     }
 
     /// Get a handle to the partition-to-node routing table.
-    pub fn partition_node_resolver(&self) -> PartitionNodeResolver {
-        PartitionNodeResolver {
+    pub fn partition_routing(&self) -> PartitionRouting {
+        PartitionRouting {
             sender: self.sender.clone(),
             partition_to_node_mappings: self.inner.clone(),
         }
@@ -268,7 +263,7 @@ pub mod mocks {
     use tokio::sync::mpsc;
 
     // use crate::partitions::PartitionNodeLookup;
-    use crate::partitions::PartitionNodeResolver;
+    use crate::partitions::PartitionRouting;
     use restate_types::identifiers::PartitionId;
     use restate_types::{GenerationalNodeId, NodeId, Version};
 
@@ -280,13 +275,13 @@ pub mod mocks {
     pub fn fixed_single_node(
         node_id: GenerationalNodeId,
         partition_id: PartitionId,
-    ) -> PartitionNodeResolver {
+    ) -> PartitionRouting {
         let (sender, _) = mpsc::channel(1);
 
         let mut mappings = HashMap::default();
         mappings.insert(partition_id, NodeId::Generational(node_id));
 
-        PartitionNodeResolver {
+        PartitionRouting {
             sender,
             partition_to_node_mappings: Arc::new(ArcSwap::new(Arc::new(
                 super::PartitionToNodesRoutingTable {
