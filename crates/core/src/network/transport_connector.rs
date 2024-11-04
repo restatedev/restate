@@ -75,7 +75,7 @@ impl TransportConnect for GrpcConnector {
                 .or_insert_with(|| {
                     create_tonic_channel_from_advertised_address(
                         address,
-                        self.networking_options.connect_timeout.into(),
+                        &self.networking_options,
                     )
                 })
                 .clone(),

@@ -12,7 +12,6 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use crate::{cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskKind};
 use http::Uri;
@@ -25,12 +24,13 @@ use tokio_util::net::Listener;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, info, instrument, Span};
 
+use restate_types::config::CommonClientConnectionOptions;
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 
-pub fn create_tonic_channel_from_advertised_address(
+pub fn create_tonic_channel_from_advertised_address<T: CommonClientConnectionOptions>(
     address: AdvertisedAddress,
-    connect_timeout: Duration,
+    options: &T,
 ) -> Channel {
     match address {
         AdvertisedAddress::Uds(uds_path) => {
@@ -45,14 +45,18 @@ pub fn create_tonic_channel_from_advertised_address(
                 }))
         }
         AdvertisedAddress::Http(uri) => {
-            Channel::builder(uri)
-                .connect_timeout(connect_timeout)
-                // todo make http2 keep alive configurable
-                .http2_keep_alive_interval(Duration::from_secs(40))
-                .keep_alive_timeout(Duration::from_secs(20))
-                // todo: configure the channel from configuration file
-                .http2_adaptive_window(true)
-                .connect_lazy()
+            let mut channel_builder =
+                Channel::builder(uri).connect_timeout(options.connect_timeout());
+            if let Some(interval) = options.http2_keep_alive_interval() {
+                channel_builder = channel_builder.http2_keep_alive_interval(interval);
+            }
+            if let Some(timeout) = options.http2_keep_alive_timeout() {
+                channel_builder = channel_builder.keep_alive_timeout(timeout);
+            }
+            if let Some(adaptive) = options.http2_adaptive_window() {
+                channel_builder = channel_builder.http2_adaptive_window(adaptive);
+            }
+            channel_builder.connect_lazy()
         }
     }
 }
