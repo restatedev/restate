@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod consumer_task;
+mod dispatcher;
 mod metric_definitions;
 mod subscription_controller;
 

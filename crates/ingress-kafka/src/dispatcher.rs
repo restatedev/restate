@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Display;
-use std::hash::Hash;
-
 use bytes::Bytes;
-
+use restate_bifrost::Bifrost;
+use restate_core::metadata;
+use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{
     partitioner, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -21,13 +20,17 @@ use restate_types::invocation::{
     WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
+use restate_types::partition_table::PartitionTableError;
 use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
-
-mod dispatcher;
-pub mod error;
-
-// -- Types used by the ingress to interact with the dispatcher
-pub use dispatcher::{DispatchIngressRequest, IngressDispatcher};
+use restate_types::GenerationalNodeId;
+use restate_wal_protocol::{
+    append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
+};
+use std::fmt::Display;
+use std::hash::Hash;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+use tracing::debug;
 
 #[derive(Debug)]
 enum IngressDispatcherRequestInner {
@@ -147,11 +150,124 @@ impl IngressDispatcherRequest {
     }
 }
 
-#[cfg(feature = "test-util")]
+#[derive(Debug, thiserror::Error)]
+pub enum IngressDispatchError {
+    #[error("bifrost error: {0}")]
+    WalProtocol(#[from] restate_wal_protocol::Error),
+    #[error("partition routing error: {0}")]
+    PartitionRoutingError(#[from] PartitionTableError),
+}
+
+/// Dispatches a request from ingress to bifrost
+pub trait DispatchIngressRequest {
+    fn dispatch_ingress_request(
+        &self,
+        ingress_request: IngressDispatcherRequest,
+    ) -> impl std::future::Future<Output = Result<(), IngressDispatchError>> + Send;
+}
+
+#[derive(Default)]
+struct IngressDispatcherState {
+    msg_index: AtomicU64,
+}
+
+impl IngressDispatcherState {
+    fn get_and_increment_msg_index(&self) -> MessageIndex {
+        self.msg_index
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[derive(Clone)]
+pub struct IngressDispatcher {
+    bifrost: Bifrost,
+    state: Arc<IngressDispatcherState>,
+}
+impl IngressDispatcher {
+    pub fn new(bifrost: Bifrost) -> Self {
+        Self {
+            bifrost,
+            state: Arc::new(IngressDispatcherState::default()),
+        }
+    }
+}
+
+impl DispatchIngressRequest for IngressDispatcher {
+    async fn dispatch_ingress_request(
+        &self,
+        ingress_request: IngressDispatcherRequest,
+    ) -> Result<(), IngressDispatchError> {
+        let IngressDispatcherRequest {
+            inner,
+            request_mode,
+        } = ingress_request;
+
+        let (dedup_source, msg_index, proxying_partition_key) = match request_mode {
+            IngressRequestMode::FireAndForget => {
+                let msg_index = self.state.get_and_increment_msg_index();
+                (None, msg_index, None)
+            }
+            IngressRequestMode::DedupFireAndForget {
+                deduplication_id,
+                proxying_partition_key,
+            } => (
+                Some(deduplication_id.0),
+                deduplication_id.1,
+                proxying_partition_key,
+            ),
+        };
+
+        let partition_key = proxying_partition_key.unwrap_or_else(|| inner.partition_key());
+
+        let envelope = wrap_service_invocation_in_envelope(
+            partition_key,
+            inner,
+            metadata().my_node_id(),
+            dedup_source,
+            msg_index,
+        );
+        let (log_id, lsn) = append_envelope_to_bifrost(&self.bifrost, Arc::new(envelope)).await?;
+
+        debug!(
+            log_id = %log_id,
+            lsn = %lsn,
+            "Ingress request written to bifrost"
+        );
+        Ok(())
+    }
+}
+
+fn wrap_service_invocation_in_envelope(
+    partition_key: PartitionKey,
+    inner: IngressDispatcherRequestInner,
+    from_node_id: GenerationalNodeId,
+    deduplication_source: Option<String>,
+    msg_index: MessageIndex,
+) -> Envelope {
+    let header = Header {
+        source: Source::Ingress {
+            node_id: from_node_id,
+            nodes_config_version: metadata().nodes_config_version(),
+        },
+        dest: Destination::Processor {
+            partition_key,
+            dedup: deduplication_source.map(|src| DedupInformation::ingress(src, msg_index)),
+        },
+    };
+
+    Envelope::new(
+        header,
+        match inner {
+            IngressDispatcherRequestInner::Invoke(si) => Command::Invoke(si),
+            IngressDispatcherRequestInner::ProxyThrough(si) => Command::ProxyThrough(si),
+        },
+    )
+}
+
+#[cfg(test)]
 pub mod test_util {
     use super::*;
 
-    use crate::error::IngressDispatchError;
     use restate_test_util::let_assert;
     use tokio::sync::mpsc;
 
