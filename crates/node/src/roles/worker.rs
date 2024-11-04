@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use codederror::CodedError;
-use tokio::sync::oneshot;
 
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
@@ -103,10 +102,7 @@ impl<T: TransportConnect> WorkerRole<T> {
         self.worker.storage_query_context()
     }
 
-    pub async fn start(
-        self,
-        all_partitions_started_rx: oneshot::Receiver<()>,
-    ) -> anyhow::Result<()> {
+    pub async fn start(self) -> anyhow::Result<()> {
         let tc = task_center();
         // todo: only run subscriptions on node 0 once being distributed
         tc.spawn_child(
@@ -117,7 +113,7 @@ impl<T: TransportConnect> WorkerRole<T> {
         )?;
 
         tc.spawn_child(TaskKind::RoleRunner, "worker-service", None, async {
-            self.worker.run(all_partitions_started_rx).await
+            self.worker.run().await
         })?;
 
         Ok(())

@@ -22,7 +22,6 @@ mod subscription_integration;
 
 use codederror::CodedError;
 use std::time::Duration;
-use tokio::sync::oneshot;
 
 use restate_bifrost::Bifrost;
 use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
@@ -32,7 +31,7 @@ use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::routing_info::PartitionRoutingRefresher;
 use restate_core::worker_api::ProcessorsManagerHandle;
-use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
+use restate_core::{task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
@@ -222,7 +221,7 @@ impl<T: TransportConnect> Worker<T> {
         self.partition_processor_manager.handle()
     }
 
-    pub async fn run(self, all_partitions_started_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
+    pub async fn run(self) -> anyhow::Result<()> {
         let tc = task_center();
 
         // Ingress RPC server
@@ -230,16 +229,7 @@ impl<T: TransportConnect> Worker<T> {
             TaskKind::IngressServer,
             "ingress-rpc-server",
             None,
-            async move {
-                tokio::select! {
-                    Ok(_) = all_partitions_started_rx => {
-                        self.external_client_ingress.run().await
-                    }
-                    _ = cancellation_watcher() => {
-                        Ok(())
-                    }
-                }
-            },
+            self.external_client_ingress.run(),
         )?;
 
         // Postgres external server

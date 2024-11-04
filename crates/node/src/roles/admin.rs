@@ -10,8 +10,6 @@
 
 use std::time::Duration;
 
-use tokio::sync::oneshot;
-
 use codederror::CodedError;
 use restate_admin::cluster_controller;
 use restate_admin::service::AdminService;
@@ -132,10 +130,7 @@ impl<T: TransportConnect> AdminRole<T> {
         })
     }
 
-    pub async fn start(
-        self,
-        all_partitions_started_tx: oneshot::Sender<()>,
-    ) -> Result<(), anyhow::Error> {
+    pub async fn start(self) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
         if let Some(cluster_controller) = self.controller {
@@ -143,7 +138,7 @@ impl<T: TransportConnect> AdminRole<T> {
                 TaskKind::SystemService,
                 "cluster-controller-service",
                 None,
-                cluster_controller.run(Some(all_partitions_started_tx)),
+                cluster_controller.run(),
             )?;
         }
 

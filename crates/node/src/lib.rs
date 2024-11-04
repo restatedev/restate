@@ -12,7 +12,6 @@ mod cluster_marker;
 mod network_server;
 mod roles;
 
-use tokio::sync::oneshot;
 use tracing::{debug, error, info, trace};
 
 use codederror::CodedError;
@@ -425,31 +424,16 @@ impl Node {
             )?;
         }
 
-        let all_partitions_started_rx = if let Some(admin_role) = self.admin_role {
-            // todo: This is a temporary fix for https://github.com/restatedev/restate/issues/1651
-            let (all_partitions_started_tx, all_partitions_started_rx) = oneshot::channel();
-            tc.spawn(
-                TaskKind::SystemBoot,
-                "admin-init",
-                None,
-                admin_role.start(all_partitions_started_tx),
-            )?;
-
-            all_partitions_started_rx
-        } else {
-            // We don't wait for all partitions being the leader if we are not co-located with the
-            // admin role which should not be the normal deployment today.
-            let (all_partitions_started_tx, all_partitions_started_rx) = oneshot::channel();
-            let _ = all_partitions_started_tx.send(());
-            all_partitions_started_rx
-        };
+        if let Some(admin_role) = self.admin_role {
+            tc.spawn(TaskKind::SystemBoot, "admin-init", None, admin_role.start())?;
+        }
 
         if let Some(worker_role) = self.worker_role {
             tc.spawn(
                 TaskKind::SystemBoot,
                 "worker-init",
                 None,
-                worker_role.start(all_partitions_started_rx),
+                worker_role.start(),
             )?;
         }
 
