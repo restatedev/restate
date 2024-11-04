@@ -30,9 +30,6 @@ use crate::{
     cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind,
 };
 
-// #[cfg(any(test))]
-// pub use mocks::*;
-
 pub type CommandSender = mpsc::Sender<Command>;
 pub type CommandReceiver = mpsc::Receiver<Command>;
 
@@ -59,7 +56,7 @@ impl PartitionRouting {
     /// A `None` response indicates that either we have no knowledge about this partition, or that
     /// the routing table has not yet been refreshed for the cluster. The latter condition should be
     /// brief and only on startup, so we can generally treat lack of response as a negative answer.
-    pub fn get_partition_location(&self, partition_id: PartitionId) -> Option<NodeId> {
+    pub fn get_node_by_partition(&self, partition_id: PartitionId) -> Option<NodeId> {
         let mappings = self.partition_to_node_mappings.load();
 
         // This check should ideally be strengthened to make sure we're using reasonably fresh lookup data
@@ -75,7 +72,7 @@ impl PartitionRouting {
     /// Provide a hint that the partition-to-nodes view may be outdated. This is useful when a
     /// caller discovers via some other mechanism that routing information may be invalid - for
     /// example, when a request to a node previously returned by
-    /// [`PartitionRouting::get_partition_location`] indicates that it is no longer serving that
+    /// [`PartitionRouting::get_node_by_partition`] indicates that it is no longer serving that
     /// partition.
     ///
     /// This call returns immediately, while the refresh itself is performed asynchronously on a
@@ -262,15 +259,9 @@ pub mod mocks {
     use arc_swap::ArcSwap;
     use tokio::sync::mpsc;
 
-    // use crate::partitions::PartitionNodeLookup;
     use crate::partitions::PartitionRouting;
     use restate_types::identifiers::PartitionId;
     use restate_types::{GenerationalNodeId, NodeId, Version};
-
-    // #[derive(Debug)]
-    // pub struct FixedPartitionNode {
-    //     my_node_id: GenerationalNodeId,
-    // }
 
     pub fn fixed_single_node(
         node_id: GenerationalNodeId,

@@ -319,12 +319,11 @@ where
             .pinned()
             .find_partition_id(inner_request.partition_key())?;
 
-        // TODO enable it once https://github.com/restatedev/restate/pull/2172 goes in
-        // let node_id = self
-        //     .partition_routing
-        //     .get_node_by_partition(partition_id)
-        //     .ok_or(PartitionProcessorRpcClientError::UnknownNode(partition_id))?;
-        let node_id = metadata().my_node_id();
+        let node_id = self
+            .partition_routing
+            .get_node_by_partition(partition_id)
+            .ok_or(PartitionProcessorRpcClientError::UnknownNode(partition_id))?;
+
         let response = self
             .rpc_router
             .call(

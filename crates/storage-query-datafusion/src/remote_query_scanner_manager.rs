@@ -130,7 +130,7 @@ impl RemoteScannerManager {
     ) -> anyhow::Result<PartitionLocation> {
         let my_node_id = self.my_node_id();
 
-        match self.partition_routing.get_partition_location(partition_id) {
+        match self.partition_routing.get_node_by_partition(partition_id) {
             None => {
                 self.partition_routing.request_refresh();
                 bail!("node lookup for partition {} failed", partition_id)
@@ -153,7 +153,7 @@ impl RemoteScannerManager {
     // Note: we initialize my_node_id lazily as it is not available at construction time. We should
     // be careful since the call to metadata().my_node_id() will panic if the system configuration
     // isn't fully initialized yet, but we shouldn't be able to accept queries until that is in fact
-    // the case. For testing, set the node id explicitly with new_with_fixed_node_id.
+    // the case.
     #[inline]
     fn my_node_id(&self) -> &GenerationalNodeId {
         self.my_node_id.get_or_init(|| metadata().my_node_id())
