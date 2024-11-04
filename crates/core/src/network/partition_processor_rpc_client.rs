@@ -22,7 +22,7 @@ use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTab
 use crate::network::rpc_router::{ConnectionAwareRpcError, ConnectionAwareRpcRouter, RpcError};
 use crate::network::{HasConnection, Networking, Outgoing, TransportConnect};
 use crate::partitions::PartitionRouting;
-use crate::{metadata, ShutdownError};
+use crate::ShutdownError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PartitionProcessorRpcClientError {
