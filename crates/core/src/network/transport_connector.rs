@@ -73,10 +73,7 @@ impl TransportConnect for GrpcConnector {
                 .channel_cache
                 .entry(address.clone())
                 .or_insert_with(|| {
-                    create_tonic_channel_from_advertised_address(
-                        address,
-                        &self.networking_options,
-                    )
+                    create_tonic_channel_from_advertised_address(address, &self.networking_options)
                 })
                 .clone(),
         };

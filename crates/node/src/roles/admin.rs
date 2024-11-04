@@ -25,7 +25,7 @@ use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_invoker_status_handle::RemoteInvokerStatusHandle;
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
-use restate_types::config::{Configuration, NetworkingOptions};
+use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;

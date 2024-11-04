@@ -32,9 +32,11 @@ pub struct LocalMetadataStoreClient {
 }
 
 impl LocalMetadataStoreClient {
-    pub fn new<T: CommonClientConnectionOptions>(metadata_store_address: AdvertisedAddress, options: &T) -> Self {
-        let channel =
-            create_tonic_channel_from_advertised_address(metadata_store_address, options);
+    pub fn new<T: CommonClientConnectionOptions>(
+        metadata_store_address: AdvertisedAddress,
+        options: &T,
+    ) -> Self {
+        let channel = create_tonic_channel_from_advertised_address(metadata_store_address, options);
 
         Self {
             svc_client: MetadataStoreSvcClient::new(channel),
