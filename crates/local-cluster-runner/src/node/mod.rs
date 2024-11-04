@@ -171,6 +171,17 @@ impl Node {
         for node in 1..=size {
             let mut base_config = base_config.clone();
             base_config.common.force_node_id = Some(PlainNodeId::new(node));
+
+            // Create a separate ingress role when running a worker
+            let roles = if roles.contains(Role::Worker) {
+                base_config
+                    .ingress
+                    .experimental_feature_enable_separate_ingress_role = true;
+                roles | Role::HttpIngress
+            } else {
+                roles
+            };
+
             nodes.push(Self::new_test_node(
                 format!("node-{node}"),
                 base_config,

@@ -1,4 +1,4 @@
-// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::{RequestDispatcher, RequestDispatcherError};
 use anyhow::anyhow;
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
@@ -16,7 +17,6 @@ use restate_core::network::partition_processor_rpc_client::{
     PartitionProcessorRpcClient, PartitionProcessorRpcClientError,
 };
 use restate_core::network::TransportConnect;
-use restate_ingress_http::{RequestDispatcher, RequestDispatcherError};
 use restate_types::identifiers::{PartitionProcessorRpcRequestId, WithInvocationId};
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};

@@ -40,13 +40,13 @@ use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
 use restate_types::protobuf::common::{
-    AdminStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
+    AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
 };
 use restate_types::Version;
 
 use crate::cluster_marker::ClusterValidationError;
 use crate::network_server::NetworkServer;
-use crate::roles::{AdminRole, BaseRole, WorkerRole};
+use crate::roles::{AdminRole, BaseRole, IngressRole, WorkerRole};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -112,7 +112,8 @@ pub struct Node {
     metadata_store_role: Option<LocalMetadataStoreService>,
     base_role: BaseRole,
     admin_role: Option<AdminRole<GrpcConnector>>,
-    worker_role: Option<WorkerRole<GrpcConnector>>,
+    worker_role: Option<WorkerRole>,
+    ingress_role: Option<IngressRole<GrpcConnector>>,
     #[cfg(feature = "replicated-loglet")]
     log_server: Option<LogServerService>,
     networking: Networking<GrpcConnector>,
@@ -157,7 +158,6 @@ impl Node {
         metadata_manager.register_in_message_router(&mut router_builder);
         let partition_routing_refresher =
             PartitionRoutingRefresher::new(metadata_store_client.clone());
-        let updating_schema_information = metadata.updateable_schema();
 
         #[cfg(feature = "replicated-loglet")]
         let record_cache = RecordCache::new(
@@ -220,10 +220,35 @@ impl Node {
                     networking.clone(),
                     bifrost_svc.handle(),
                     metadata_store_client.clone(),
-                    updating_schema_information,
                 )
                 .await?,
             )
+        } else {
+            None
+        };
+
+        let ingress_role = if config
+            .ingress
+            .experimental_feature_enable_separate_ingress_role
+            && config.has_role(Role::HttpIngress)
+            // todo remove once the safe fallback version supports the HttpIngress role
+            || !config
+                .ingress
+                .experimental_feature_enable_separate_ingress_role
+                && config.has_role(Role::Worker)
+        {
+            Some(IngressRole::create(
+                updateable_config
+                    .clone()
+                    .map(|config| &config.ingress)
+                    .boxed(),
+                health.ingress_status(),
+                networking.clone(),
+                metadata.updateable_schema(),
+                metadata.updateable_partition_table(),
+                partition_routing_refresher.partition_routing(),
+                &mut router_builder,
+            ))
         } else {
             None
         };
@@ -276,6 +301,7 @@ impl Node {
             metadata_store_client,
             base_role,
             admin_role,
+            ingress_role,
             worker_role,
             #[cfg(feature = "replicated-loglet")]
             log_server,
@@ -414,6 +440,10 @@ impl Node {
             )?;
         }
 
+        if let Some(ingress_role) = self.ingress_role {
+            tc.spawn_child(TaskKind::Ingress, "ingress-http", None, ingress_role.run())?;
+        }
+
         tc.spawn(TaskKind::RpcServer, "node-rpc-server", None, {
             let health = self.health.clone();
             let common_options = config.common.clone();
@@ -470,6 +500,13 @@ impl Node {
                             .wait_for_value(LogServerStatus::Ready)
                             .await;
                         trace!("Log-server is reporting ready");
+                    }
+                    Role::HttpIngress => {
+                        self.health
+                            .ingress_status()
+                            .wait_for_value(IngressStatus::Ready)
+                            .await;
+                        trace!("Ingress is reporting ready");
                     }
                 }
             }

@@ -331,13 +331,14 @@ impl CommonOptions {
 impl Default for CommonOptions {
     fn default() -> Self {
         Self {
-            // todo (asoli): Remove this when:
+            // todo (asoli): Remove `- Role::LogServer` when:
             //   a. The safe rollback version supports log-server (at least supports parsing the
             //   config with the log-server role)
             //   b. When log-server becomes enabled by default.
             //
+            // todo remove `- Role::Ingress` when the safe rollback version supports ingress
             //   see "roles_compat_test" test below.
-            roles: EnumSet::all() - Role::LogServer,
+            roles: EnumSet::all() - Role::LogServer - Role::HttpIngress,
             node_name: None,
             force_node_id: None,
             cluster_name: "localcluster".to_owned(),
@@ -610,5 +611,8 @@ mod tests {
         // make sure we don't add log-server by default until previous version can parse nodes
         // configuration with this role.
         assert!(!opts.roles.contains(Role::LogServer));
+        // make sure we don't add ingress by default until previous version can parse nodes
+        // configuration with this role.
+        assert!(!opts.roles.contains(Role::HttpIngress));
     }
 }
