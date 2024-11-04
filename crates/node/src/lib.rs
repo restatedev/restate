@@ -21,7 +21,7 @@ use restate_core::metadata_store::{retry_on_network_error, ReadWriteError};
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
-use restate_core::routing_info::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
+use restate_core::partitions::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
 };
@@ -213,7 +213,7 @@ impl Node {
                 WorkerRole::create(
                     health.worker_status(),
                     metadata.clone(),
-                    partition_routing_refresher.partition_routing(),
+                    partition_routing_refresher.partition_node_resolver(),
                     updateable_config.clone(),
                     &mut router_builder,
                     networking.clone(),
@@ -235,7 +235,7 @@ impl Node {
                     bifrost.clone(),
                     updateable_config.clone(),
                     metadata,
-                    partition_routing_refresher.partition_routing(),
+                    partition_routing_refresher.partition_node_resolver(),
                     networking.clone(),
                     metadata_manager.writer(),
                     &mut server_builder,

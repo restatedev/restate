@@ -28,7 +28,7 @@ use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
-use restate_core::routing_info::PartitionRouting;
+use restate_core::partitions::PartitionNodeResolver;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
@@ -39,6 +39,7 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
+use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
 use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_types::config::Configuration;
@@ -114,7 +115,7 @@ impl<T: TransportConnect> Worker<T> {
         updateable_config: Live<Configuration>,
         health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
-        partition_routing: PartitionRouting,
+        partition_node_resolver: PartitionNodeResolver,
         networking: Networking<T>,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
@@ -169,14 +170,17 @@ impl<T: TransportConnect> Worker<T> {
         // handle RPCs
         router_builder.add_message_handler(partition_processor_manager.message_handler());
 
+        let remote_scanner_manager = RemoteScannerManager::new(
+            partition_node_resolver,
+            create_remote_scanner_service(networking, task_center(), router_builder),
+        );
         let storage_query_context = QueryContext::create(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata::new(metadata),
             Some(partition_store_manager.clone()),
             partition_processor_manager.invokers_status_reader(),
             schema.clone(),
-            partition_routing,
-            create_remote_scanner_service(networking, task_center(), router_builder),
+            remote_scanner_manager,
         )
         .await?;
 

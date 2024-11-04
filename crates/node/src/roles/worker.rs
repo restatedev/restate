@@ -15,7 +15,7 @@ use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
-use restate_core::routing_info::PartitionRouting;
+use restate_core::partitions::PartitionNodeResolver;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{cancellation_watcher, task_center, Metadata, MetadataKind};
 use restate_core::{ShutdownError, TaskKind};
@@ -74,7 +74,7 @@ impl<T: TransportConnect> WorkerRole<T> {
     pub async fn create(
         health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
-        partition_routing: PartitionRouting,
+        partition_node_resolver: PartitionNodeResolver,
         updateable_config: Live<Configuration>,
         router_builder: &mut MessageRouterBuilder,
         networking: Networking<T>,
@@ -86,7 +86,7 @@ impl<T: TransportConnect> WorkerRole<T> {
             updateable_config,
             health_status,
             metadata.clone(),
-            partition_routing,
+            partition_node_resolver,
             networking,
             bifrost,
             router_builder,

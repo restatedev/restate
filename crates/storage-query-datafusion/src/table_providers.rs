@@ -29,7 +29,7 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 use crate::context::SelectPartitions;
 use crate::table_util::compute_ordering;
 
-pub(crate) trait ScanPartition: Send + Sync + Debug + 'static {
+pub trait ScanPartition: Send + Sync + Debug + 'static {
     fn scan_partition(
         &self,
         partition_id: PartitionId,

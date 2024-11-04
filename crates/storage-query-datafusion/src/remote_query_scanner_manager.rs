@@ -11,15 +11,16 @@
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::bail;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
 
-use restate_core::routing_info::{PartitionAuthoritativeNode, PartitionRouting};
+use restate_core::metadata;
+use restate_core::partitions::PartitionNodeResolver;
 use restate_types::identifiers::{PartitionId, PartitionKey};
-use restate_types::NodeId;
+use restate_types::{GenerationalNodeId, NodeId};
 
 use crate::remote_query_scanner_client::{remote_scan_as_datafusion_stream, RemoteScannerService};
 use crate::table_providers::ScanPartition;
@@ -53,8 +54,9 @@ impl LocalPartitionScannerRegistry {
 
 #[derive(Clone)]
 pub struct RemoteScannerManager {
-    svc: Arc<dyn RemoteScannerService>,
-    partition_routing: PartitionRouting,
+    my_node_id: OnceLock<GenerationalNodeId>,
+    partition_node_resolver: PartitionNodeResolver,
+    remote_scanner: Arc<dyn RemoteScannerService>,
     local_store_scanners: LocalPartitionScannerRegistry,
 }
 
@@ -65,20 +67,33 @@ impl Debug for RemoteScannerManager {
 }
 
 pub enum PartitionLocation {
-    Local {
-        scanner: Arc<dyn ScanPartition>,
-    },
-    #[allow(dead_code)]
-    Remote {
-        node_id: NodeId,
-    },
+    Local { scanner: Arc<dyn ScanPartition> },
+    Remote { node_id: NodeId },
 }
 
 impl RemoteScannerManager {
-    pub fn new(partition_routing: PartitionRouting, svc: Arc<dyn RemoteScannerService>) -> Self {
+    pub fn new(
+        partition_node_resolver: PartitionNodeResolver,
+        remote_scanner: Arc<dyn RemoteScannerService>,
+    ) -> Self {
         Self {
-            svc,
-            partition_routing,
+            my_node_id: OnceLock::new(),
+            partition_node_resolver,
+            remote_scanner,
+            local_store_scanners: LocalPartitionScannerRegistry::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_local_node_id(
+        my_node_id: GenerationalNodeId,
+        partition_node_resolver: PartitionNodeResolver,
+        remote_scanner: Arc<dyn RemoteScannerService>,
+    ) -> Self {
+        Self {
+            my_node_id: OnceLock::from(my_node_id),
+            partition_node_resolver,
+            remote_scanner,
             local_store_scanners: LocalPartitionScannerRegistry::default(),
         }
     }
@@ -113,19 +128,38 @@ impl RemoteScannerManager {
         table: &str,
         partition_id: PartitionId,
     ) -> anyhow::Result<PartitionLocation> {
-        match self.partition_routing.get_partition_location(partition_id) {
+        let my_node_id = self.my_node_id();
+
+        match self
+            .partition_node_resolver
+            .get_partition_location(partition_id)
+        {
             None => {
+                self.partition_node_resolver.request_refresh();
                 bail!("node lookup for partition {} failed", partition_id)
             }
-            Some(PartitionAuthoritativeNode::Local) => Ok(PartitionLocation::Local {
-                scanner: self
-                    .local_partition_scanner(table)
-                    .expect("should be present"),
-            }),
-            Some(PartitionAuthoritativeNode::Remote(node_id)) => {
-                Ok(PartitionLocation::Remote { node_id })
+            Some(node_id)
+                if node_id
+                    .as_generational()
+                    .is_some_and(|id| id == *my_node_id) =>
+            {
+                Ok(PartitionLocation::Local {
+                    scanner: self
+                        .local_partition_scanner(table)
+                        .expect("should be present"),
+                })
             }
+            Some(node_id) => Ok(PartitionLocation::Remote { node_id }),
         }
+    }
+
+    // Note: we initialize my_node_id lazily as it is not available at construction time. We should
+    // be careful since the call to metadata().my_node_id() will panic if the system configuration
+    // isn't fully initialized yet, but we shouldn't be able to accept queries until that is in fact
+    // the case. For testing, set the node id explicitly with new_with_fixed_node_id.
+    #[inline]
+    fn my_node_id(&self) -> &GenerationalNodeId {
+        self.my_node_id.get_or_init(|| metadata().my_node_id())
     }
 }
 
@@ -161,7 +195,7 @@ impl ScanPartition for RemotePartitionsScanner {
                 Ok(scanner.scan_partition(partition_id, range, projection)?)
             }
             PartitionLocation::Remote { node_id } => Ok(remote_scan_as_datafusion_stream(
-                self.manager.svc.clone(),
+                self.manager.remote_scanner.clone(),
                 node_id,
                 partition_id,
                 range,

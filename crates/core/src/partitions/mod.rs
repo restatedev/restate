@@ -9,8 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::pin::pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
@@ -22,16 +23,15 @@ use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
-use restate_types::{GenerationalNodeId, NodeId, Version, Versioned};
+use restate_types::{NodeId, Version, Versioned};
 
 use crate::metadata_store::MetadataStoreClient;
 use crate::{
-    cancellation_watcher, metadata, task_center, ShutdownError, TaskCenter, TaskHandle, TaskId,
-    TaskKind,
+    cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind,
 };
 
-#[cfg(any(test, feature = "test-util"))]
-pub use test_util::*;
+// #[cfg(any(test))]
+// pub use mocks::*;
 
 pub type CommandSender = mpsc::Sender<Command>;
 pub type CommandReceiver = mpsc::Receiver<Command>;
@@ -41,37 +41,39 @@ pub enum Command {
     SyncRoutingInformation,
 }
 
-pub enum PartitionAuthoritativeNode {
-    /// The local node is an authoritative source for this partition.
-    Local,
-    /// The partition resides on a remote node.
-    Remote(NodeId),
-}
-
-/// Holds a view of the known partition-to-node mappings. Use it to discover which node(s) to route
-/// requests to for a given partition. Compared to the partition table, this view is more dynamic as
-/// it changes based on cluster nodes' operational status. This handle can be cheaply cloned.
+/// Discover cluster nodes for a given partition. Compared to the partition table, this view is more
+/// dynamic as it changes based on cluster nodes' operational status. Can be cheaply cloned.
 #[derive(Clone)]
-pub struct PartitionRouting {
+pub struct PartitionNodeResolver {
     sender: CommandSender,
     /// A mapping of partition IDs to node IDs that are believed to be authoritative for that serving requests.
     partition_to_node_mappings: Arc<ArcSwap<PartitionToNodesRoutingTable>>,
-    my_node_id: OnceLock<GenerationalNodeId>,
 }
 
-impl PartitionRouting {
-    /// Look up a suitable node to process requests for a given partition. Answers are authoritative
-    /// though subject to propagation delays through the cluster in distributed deployments.
-    /// Generally, as a consumer of routing information, your options are limited to backing off and
-    /// retrying the request, or returning an error upstream when information is not available.
-    ///
-    /// A `None` response indicates that either we have no knowledge about this partition, or that
-    /// the routing table has not yet been refreshed for the cluster. The latter condition should be
-    /// brief and only on startup, so we can generally treat lack of response as a negative answer.
-    pub fn get_partition_location(
-        &self,
-        partition_id: PartitionId,
-    ) -> Option<PartitionAuthoritativeNode> {
+// pub trait PartitionNodeLookup: Send + Sync + Debug + 'static {
+//     /// Look up a suitable node to process requests for a given partition. Answers are authoritative
+//     /// though subject to propagation delays through the cluster in distributed deployments.
+//     /// Generally, as a consumer of routing information, your options are limited to backing off and
+//     /// retrying the request, or returning an error upstream when information is not available.
+//     ///
+//     /// A `None` response indicates that either we have no knowledge about this partition, or that
+//     /// the routing table has not yet been refreshed for the cluster. The latter condition should be
+//     /// brief and only on startup, so we can generally treat lack of response as a negative answer.
+//     fn get_partition_location(&self, partition_id: PartitionId) -> Option<NodeId>;
+//
+//     /// Provide a hint that the partition-to-nodes view may be outdated. This is useful when a
+//     /// caller discovers via some other mechanism that routing information may be invalid - for
+//     /// example, when a request to a node previously returned by
+//     /// [`PartitionNodeLookup::get_partition_location`] indicates that it is no longer serving that
+//     /// partition.
+//     ///
+//     /// This call returns immediately, while the refresh itself is performed asynchronously on a
+//     /// best-effort basis. Multiple calls will not result in multiple refresh attempts.
+//     fn request_refresh(&self);
+// }
+
+impl PartitionNodeResolver {
+    pub fn get_partition_location(&self, partition_id: PartitionId) -> Option<NodeId> {
         let mappings = self.partition_to_node_mappings.load();
 
         // This check should ideally be strengthened to make sure we're using reasonably fresh lookup data
@@ -80,41 +82,24 @@ impl PartitionRouting {
             self.request_refresh();
             None
         } else {
-            let partition_node = mappings.inner.get(&partition_id).cloned();
-            // Note: we defer calling my_node_id() until after we have a version of the routing
-            // table to ensure that we don't panic during server startup. Having loaded the routing
-            // table is an implicit but nonetheless strong signal that node initialization is done.
-            match partition_node {
-                Some(node_id)
-                    if node_id
-                        .as_generational()
-                        .is_some_and(|id| id == *self.my_node_id()) =>
-                {
-                    Some(PartitionAuthoritativeNode::Local)
-                }
-                Some(node_id) => Some(PartitionAuthoritativeNode::Remote(node_id)),
-                None => None,
-            }
+            mappings.inner.get(&partition_id).cloned()
         }
     }
 
-    #[inline]
-    fn my_node_id(&self) -> &GenerationalNodeId {
-        self.my_node_id.get_or_init(|| metadata().my_node_id())
-    }
-
-    /// Call this to hint to the background refresher that its view may be outdated. This is useful
-    /// when a caller discovers via some other mechanism that routing information may be invalid -
-    /// for example, when a request to a node previously returned by `get_node_by_partition` fails
-    /// with a response that explicitly indicates that it is no longer serving that partition.
-    ///
-    /// This call returns immediately, while the refresh itself is performed asynchronously on a
-    /// best-effort basis. Multiple calls will not result in multiple refresh attempts.
     pub fn request_refresh(&self) {
         self.sender.try_send(Command::SyncRoutingInformation).ok();
     }
 }
 
+impl Debug for PartitionNodeResolver {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PartitionNodeResolver(")?;
+        self.partition_to_node_mappings.load().fmt(f)?;
+        f.write_str(")")
+    }
+}
+
+#[derive(Debug)]
 struct PartitionToNodesRoutingTable {
     version: Version,
     /// A mapping of partition IDs to node IDs that are believed to be authoritative for that
@@ -153,11 +138,10 @@ impl PartitionRoutingRefresher {
     }
 
     /// Get a handle to the partition-to-node routing table.
-    pub fn partition_routing(&self) -> PartitionRouting {
-        PartitionRouting {
+    pub fn partition_node_resolver(&self) -> PartitionNodeResolver {
+        PartitionNodeResolver {
             sender: self.sender.clone(),
             partition_to_node_mappings: self.inner.clone(),
-            my_node_id: OnceLock::new(), // looked on use to only perform the lookup after we observe a version of routing
         }
     }
 
@@ -276,57 +260,40 @@ async fn sync_routing_information(
 }
 
 #[cfg(any(test, feature = "test-util"))]
-pub mod test_util {
+pub mod mocks {
     use std::collections::HashMap;
-    use std::ops::Deref;
-    use std::sync::{Arc, OnceLock};
+    use std::sync::Arc;
 
     use arc_swap::ArcSwap;
     use tokio::sync::mpsc;
 
-    use crate::routing_info::PartitionRouting;
+    // use crate::partitions::PartitionNodeLookup;
+    use crate::partitions::PartitionNodeResolver;
     use restate_types::identifiers::PartitionId;
     use restate_types::{GenerationalNodeId, NodeId, Version};
 
-    pub struct MockPartitionRouting {
-        my_node_id: GenerationalNodeId,
-        partition_routing: PartitionRouting,
-    }
+    // #[derive(Debug)]
+    // pub struct FixedPartitionNode {
+    //     my_node_id: GenerationalNodeId,
+    // }
 
-    impl MockPartitionRouting {
-        pub fn local_only() -> Self {
-            let (sender, _) = mpsc::channel(1);
-            let mut mappings = HashMap::default();
+    pub fn fixed_single_node(
+        node_id: GenerationalNodeId,
+        partition_id: PartitionId,
+    ) -> PartitionNodeResolver {
+        let (sender, _) = mpsc::channel(1);
 
-            // Matches MockPartitionSelector's default
-            let my_node_id = GenerationalNodeId::new(0, 1);
+        let mut mappings = HashMap::default();
+        mappings.insert(partition_id, NodeId::Generational(node_id));
 
-            mappings.insert(PartitionId::MIN, NodeId::Generational(my_node_id));
-            MockPartitionRouting {
-                my_node_id,
-                partition_routing: PartitionRouting {
-                    sender,
-                    partition_to_node_mappings: Arc::new(ArcSwap::new(Arc::new(
-                        super::PartitionToNodesRoutingTable {
-                            version: Version::MIN,
-                            inner: mappings,
-                        },
-                    ))),
-                    my_node_id: OnceLock::from(my_node_id),
+        PartitionNodeResolver {
+            sender,
+            partition_to_node_mappings: Arc::new(ArcSwap::new(Arc::new(
+                super::PartitionToNodesRoutingTable {
+                    version: Version::MIN,
+                    inner: mappings,
                 },
-            }
-        }
-
-        pub fn my_node_id(&self) -> GenerationalNodeId {
-            self.my_node_id
-        }
-    }
-
-    impl Deref for MockPartitionRouting {
-        type Target = PartitionRouting;
-
-        fn deref(&self) -> &Self::Target {
-            &self.partition_routing
+            ))),
         }
     }
 }
