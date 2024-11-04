@@ -5819,6 +5819,7 @@ dependencies = [
  "jsonschema",
  "mime_guess",
  "okapi-operation",
+ "parking_lot",
  "prost",
  "prost-dto",
  "prost-types",
