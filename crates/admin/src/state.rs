@@ -11,8 +11,7 @@
 
 use crate::schema_registry::SchemaRegistry;
 use restate_bifrost::Bifrost;
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use tonic::transport::Channel;
+use restate_storage_query_datafusion::context::QueryContext;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct AdminServiceState<V> {
@@ -22,7 +21,7 @@ pub struct AdminServiceState<V> {
 
 #[derive(Clone)]
 pub struct QueryServiceState {
-    pub node_svc_client: NodeSvcClient<Channel>,
+    pub query_context: QueryContext,
 }
 
 impl<V> AdminServiceState<V> {

@@ -11,11 +11,11 @@
 pub mod cluster_controller;
 pub mod codec;
 mod error;
-pub mod ingress;
 #[cfg(feature = "replicated-loglet")]
 pub mod log_server;
 pub mod metadata;
 pub mod node;
+pub mod partition_processor;
 pub mod partition_processor_manager;
 pub mod remote_query_scanner;
 #[cfg(feature = "replicated-loglet")]

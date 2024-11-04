@@ -10,7 +10,6 @@ publish = false
 [features]
 default = ["replicated-loglet", "serve-web-ui"]
 clients = []
-servers = []
 options_schema = ["restate-service-client/options_schema"]
 memory-loglet = ["restate-bifrost/memory-loglet"]
 replicated-loglet = ["restate-bifrost/replicated-loglet"]
@@ -23,15 +22,16 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
+restate-metadata-store = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
+restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-wal-protocol = { workspace = true }
 restate-web-ui = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-arrow-flight = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
@@ -49,6 +49,7 @@ jsonschema = { workspace = true }
 itertools = { workspace = true }
 mime_guess = { version = "2.0.5", optional = true }
 okapi-operation = { version = "0.3.0-rc2", features = ["axum-integration"] }
+parking_lot = { workspace = true }
 prost = { workspace = true }
 prost-dto = { workspace = true }
 prost-types = { workspace = true }
@@ -80,4 +81,3 @@ test-log = { workspace = true }
 tokio-stream = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-

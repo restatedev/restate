@@ -11,7 +11,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-
+use datafusion::error::DataFusionError;
 use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
@@ -23,8 +23,8 @@ use serde::Serialize;
 /// and later converted to a response through the IntoResponse implementation
 #[derive(Debug, thiserror::Error)]
 pub enum StorageQueryError {
-    #[error("failed grpc: {0}")]
-    Tonic(#[from] tonic::Status),
+    #[error("datafusion failed: {0}")]
+    DataFusion(#[from] DataFusionError),
 }
 
 /// # Error description response

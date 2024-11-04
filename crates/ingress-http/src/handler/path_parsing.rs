@@ -10,11 +10,9 @@
 
 use http::Uri;
 
-use restate_types::schema::service::ServiceMetadataResolver;
-
 use super::Handler;
 use super::HandlerError;
-use crate::InvocationStorageReader;
+use restate_types::schema::service::ServiceMetadataResolver;
 
 pub(crate) enum WorkflowRequestType {
     Attach(String, String),
@@ -223,10 +221,9 @@ pub(crate) enum RequestType {
     Workflow(WorkflowRequestType),
 }
 
-impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
-    StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
 {
     /// This function takes care of parsing the path of the request, inferring the correct request type
     pub(crate) fn parse_path(&mut self, uri: &Uri) -> Result<RequestType, HandlerError> {

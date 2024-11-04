@@ -6,7 +6,7 @@ This file contains recommendations for how to set up your local development envi
 
 ### Required dependencies
 
-To build the project, you need the Rust toolchain. Follow the guide here https://rustup.rs/ to setup Rust, Cargo, etc.
+To build the project, you need the Rust toolchain. Follow the guide here <https://rustup.rs/> to setup Rust, Cargo, etc.
 
 The project contains some Rust libraries binding to native libraries/build tools, which you'll require during the development, notably:
 
@@ -20,19 +20,22 @@ Optionally, you can install [just](https://github.com/casey/just) to make use of
 
 To setup these on Fedora, run:
 
-```
+```shell
 sudo dnf install clang lld lldb libcxx cmake openssl-devel rocksdb-devel protobuf-compiler protobuf-devel just liburing-devel
 ```
 
 On MacOS, you can use [homebrew](https://brew.sh)
-```
+
+```shell
 brew install cmake protobuf just
 ```
 
 Optionally, you can install node and Java for supporting tools and examples:
-```
+
+```shell
 brew install node openjdk
 ```
+
 If you choose to install OpenJDK via homebrew, you'll also need to link it so that it's available through the system-level wrappers.
 
 ```shell
@@ -67,11 +70,12 @@ just build --bin restate-server [--release]
 In order to build the `restate-cli` binary run:
 
 ```shell
-just build --bin restate-cli [--release]
+just build --bin restate [--release]
 ```
 
 ### Running the unit tests
-We recommend cargo-nextest https://nexte.st/ to run our unit tests
+
+We recommend cargo-nextest <https://nexte.st/> to run our unit tests
 
 ```shell
 just test
@@ -83,14 +87,13 @@ or directly with cargo:
 cargo nextest run --workspace
 ```
 
-
 ## Speeding builds up via sccache
 
 In order to speed up the build process, one can install the [sccache](https://github.com/mozilla/sccache) which caches build artifacts of `rustc`.
 
 ## Tracing
 
-It is useful to enable tracing when testing the runtime. 
+It is useful to enable tracing when testing the runtime.
 To set up the runtime to publish traces to Jaeger, refer to the observability documentation in the Restate official documentation.
 
 #### Starting Jaeger on Linux and MacOS
@@ -112,7 +115,7 @@ If you are running [Kind](https://kind.sigs.k8s.io/docs/user/quick-start/) as yo
 
 ### Knative on Rancher desktop
 
-If you are running [Rancher desktop](https://rancherdesktop.io/) as your local K8s environment, then you have to disable Traefik first. 
+If you are running [Rancher desktop](https://rancherdesktop.io/) as your local K8s environment, then you have to disable Traefik first.
 This can be done in the Rancher desktop UI under 'Kubernetes Settings' and requires a restart of Rancher.
 Next you can install Knative via:
 
@@ -126,8 +129,8 @@ This section explains how to generate the configuration documentation and REST a
 
 ### Workaround for stuck _Analysis..._ in CLion
 
-Due to https://github.com/intellij-rust/intellij-rust/issues/10847, disable Rust macro expansion feature of the Rust IntelliJ plugin, 
-as described here https://plugins.jetbrains.com/plugin/8182-rust/docs/rust-project-settings.html#general-settings.
+Due to <https://github.com/intellij-rust/intellij-rust/issues/10847>, disable Rust macro expansion feature of the Rust IntelliJ plugin,
+as described here <https://plugins.jetbrains.com/plugin/8182-rust/docs/rust-project-settings.html#general-settings>.
 
 ### Build the configuration documentation
 
@@ -138,16 +141,16 @@ Requirements:
 To generate the JSON schema:
 
 ```shell
-$ cargo xtask generate-config-schema > restate_config_schema.json 
+cargo xtask generate-config-schema > restate_config_schema.json 
 ```
 
 To generate the HTML documentation:
 
 ```shell
-$ generate-schema-doc --minify restate_config_schema.json restate_config_doc.html 
+generate-schema-doc --minify restate_config_schema.json restate_config_doc.html 
 ```
 
-The schema can be associated to `restate.yaml` in Jetbrains IDEs to enable autocompletion: https://www.jetbrains.com/help/idea/json.html#ws_json_using_schemas
+The schema can be associated to `restate.yaml` in Jetbrains IDEs to enable autocompletion: <https://www.jetbrains.com/help/idea/json.html#ws_json_using_schemas>
 
 ### Build the REST API documentation
 
@@ -158,13 +161,13 @@ Requirements:
 To generate the OpenAPI file:
 
 ```shell
-$ cargo xtask generate-rest-api-doc > openapi.json
+cargo xtask generate-rest-api-doc > openapi.json
 ```
 
 To generate the HTML documentation:
 
 ```shell
-$ npx @redocly/cli build-docs openapi.json
+npx @redocly/cli build-docs openapi.json
 ```
 
 ## Performance analysis
@@ -176,7 +179,7 @@ Requirements:
 For performance analysis you can generate a flamegraph of the runtime binary via:
 
 ```shell
-$ just flamegraph --bin restate-server
+just flamegraph --bin restate-server
 ```
 
 This command will produce a `flamegraph.svg` in the current working directory when the process is stopped.
