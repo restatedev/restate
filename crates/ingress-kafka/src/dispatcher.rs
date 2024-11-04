@@ -277,6 +277,7 @@ pub mod test_util {
     }
 
     impl MockDispatcher {
+        #[allow(dead_code)]
         pub fn new(sender: mpsc::UnboundedSender<IngressDispatcherRequest>) -> Self {
             Self { sender }
         }

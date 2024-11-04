@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use super::*;
+
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
@@ -26,15 +28,11 @@ use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 use restate_core::{cancellation_watcher, TaskCenter, TaskId, TaskKind};
-use restate_ingress_dispatcher::{
-    DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
-};
 use restate_types::invocation::{Header, SpanRelation};
 use restate_types::message::MessageIndex;
 use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
-
-use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

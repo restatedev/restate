@@ -15,7 +15,6 @@ use std::collections::HashSet;
 use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use rdkafka::error::KafkaError;
 use restate_core::{cancellation_watcher, task_center};
-use restate_ingress_dispatcher::IngressDispatcher;
 use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::live::LiveLoad;

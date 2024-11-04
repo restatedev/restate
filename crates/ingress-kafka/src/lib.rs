@@ -15,6 +15,9 @@ mod subscription_controller;
 
 use tokio::sync::mpsc;
 
+pub use dispatcher::{
+    DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
+};
 pub use subscription_controller::{Command, Error, Service};
 
 pub type SubscriptionCommandSender = mpsc::Sender<Command>;
