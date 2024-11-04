@@ -35,12 +35,19 @@ use crate::{cancellation_watcher, ShutdownError};
 /// tracking tokens if caller dropped the future.
 ///
 /// This type is designed to be used by senders of RpcRequest(s).
-#[derive(Clone)]
 pub struct RpcRouter<T>
 where
     T: RpcRequest,
 {
     response_tracker: ResponseTracker<T::ResponseMessage>,
+}
+
+impl<T: RpcRequest> Clone for RpcRouter<T> {
+    fn clone(&self) -> Self {
+        RpcRouter {
+            response_tracker: self.response_tracker.clone(),
+        }
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -255,8 +262,8 @@ where
 pub enum ConnectionAwareRpcError<T> {
     #[error("connection closed")]
     ConnectionClosed,
-    #[error(transparent)]
-    ConnectionError(#[from] NetworkError),
+    #[error("cannot establish connection to peer {0}: {1}")]
+    CannotEstablishConnectionToPeer(NodeId, #[source] NetworkError),
     #[error(transparent)]
     SendError(#[from] NetworkSendError<T>),
     #[error(transparent)]
@@ -276,6 +283,7 @@ impl<T> From<RpcError<T>> for ConnectionAwareRpcError<T> {
 /// messages are sent. This can be useful to detect if a response won't be received because the
 /// connection was closed. This requires that the recipient sends responses back to the sender on
 /// the very same connection.
+#[derive(Clone)]
 pub struct ConnectionAwareRpcRouter<T>
 where
     T: RpcRequest,
@@ -288,6 +296,14 @@ where
     T: RpcRequest + WireEncode + Send + Sync + 'static,
     T::ResponseMessage: WireDecode + Send + Sync + 'static,
 {
+    pub fn new(router_builder: &mut MessageRouterBuilder) -> Self {
+        ConnectionAwareRpcRouter::from_rpc_router(RpcRouter::new(router_builder))
+    }
+
+    pub fn from_rpc_router(rpc_router: RpcRouter<T>) -> Self {
+        ConnectionAwareRpcRouter { rpc_router }
+    }
+
     pub async fn call<C: TransportConnect>(
         &self,
         networking: &Networking<C>,
@@ -296,7 +312,10 @@ where
     ) -> Result<Incoming<T::ResponseMessage>, ConnectionAwareRpcError<Outgoing<T, HasConnection>>>
     {
         let peer = peer.into();
-        let connection = networking.node_connection(peer).await?;
+        let connection = networking
+            .node_connection(peer)
+            .await
+            .map_err(|e| ConnectionAwareRpcError::CannotEstablishConnectionToPeer(peer, e))?;
         let connection_closed = connection.closed();
         let outgoing = Outgoing::new(peer, msg).assign_connection(connection);
 

@@ -16,9 +16,14 @@ mod server;
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
-use restate_types::ingress::InvocationResponse;
-use restate_types::invocation::InvocationQuery;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+
+use restate_core::network::partition_processor_rpc_client::{
+    AttachInvocationResponse, GetInvocationOutputResponse,
+};
+use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
+use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 
 /// Client connection information for a given RPC request
 #[derive(Clone, Copy, Debug)]
@@ -38,33 +43,57 @@ impl ConnectInfo {
     }
 }
 
-pub enum GetOutputResult {
-    NotFound,
-    NotReady,
-    NotSupported,
-    Ready(InvocationResponse),
+#[derive(Debug, thiserror::Error)]
+pub enum RequestDispatcherError {
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error),
 }
 
-pub trait InvocationStorageReader {
-    fn get_output(
+/// Trait used by the invoker to dispatch requests to target partition processors.
+#[cfg_attr(test, mockall::automock)]
+pub trait RequestDispatcher {
+    /// Send: append invocation and wait for the [`SubmittedInvocationNotification`]
+    fn send(
         &self,
-        query: InvocationQuery,
-    ) -> impl std::future::Future<Output = Result<GetOutputResult, anyhow::Error>> + Send;
+        invocation_request: InvocationRequest,
+    ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send;
+
+    /// Call: append invocation and wait for its response
+    fn call(
+        &self,
+        invocation_request: InvocationRequest,
+    ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send;
+
+    /// Attach to an invocation using the given query
+    fn attach_invocation(
+        &self,
+        invocation_query: InvocationQuery,
+    ) -> impl Future<Output = Result<AttachInvocationResponse, RequestDispatcherError>> + Send;
+
+    /// Get invocation output, without blocking when it's still running.
+    fn get_invocation_output(
+        &self,
+        invocation_query: InvocationQuery,
+    ) -> impl Future<Output = Result<GetInvocationOutputResponse, RequestDispatcherError>> + Send;
+
+    /// Send invocation response (for awakeables).
+    fn send_invocation_response(
+        &self,
+        invocation_response: InvocationResponse,
+    ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send;
 }
 
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
-    use std::collections::HashMap;
-
-    use anyhow::Error;
     use serde::{Deserialize, Serialize};
+    use std::sync::Arc;
 
     use restate_types::identifiers::DeploymentId;
-    use restate_types::ingress::InvocationResponse;
     use restate_types::invocation::{
         InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
     };
+    use restate_types::net::partition_processor::InvocationOutput;
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_types::schema::invocation_target::{
         InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
@@ -180,17 +209,43 @@ mod mocks {
         mock_schemas
     }
 
-    #[derive(Debug, Clone, Default)]
-    pub(crate) struct MockStorageReader(pub(crate) HashMap<InvocationQuery, InvocationResponse>);
+    impl RequestDispatcher for Arc<MockRequestDispatcher> {
+        fn send(
+            &self,
+            invocation_request: InvocationRequest,
+        ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send
+        {
+            MockRequestDispatcher::send(self, invocation_request)
+        }
 
-    impl InvocationStorageReader for MockStorageReader {
-        async fn get_output(&self, query: InvocationQuery) -> Result<GetOutputResult, Error> {
-            Ok(self
-                .0
-                .get(&query)
-                .cloned()
-                .map(GetOutputResult::Ready)
-                .unwrap_or(GetOutputResult::NotFound))
+        fn call(
+            &self,
+            invocation_request: InvocationRequest,
+        ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send {
+            MockRequestDispatcher::call(self, invocation_request)
+        }
+
+        fn attach_invocation(
+            &self,
+            invocation_query: InvocationQuery,
+        ) -> impl Future<Output = Result<AttachInvocationResponse, RequestDispatcherError>> + Send
+        {
+            MockRequestDispatcher::attach_invocation(self, invocation_query)
+        }
+
+        fn get_invocation_output(
+            &self,
+            invocation_query: InvocationQuery,
+        ) -> impl Future<Output = Result<GetInvocationOutputResponse, RequestDispatcherError>> + Send
+        {
+            MockRequestDispatcher::get_invocation_output(self, invocation_query)
+        }
+
+        fn send_invocation_response(
+            &self,
+            invocation_response: InvocationResponse,
+        ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send {
+            MockRequestDispatcher::send_invocation_response(self, invocation_response)
         }
     }
 }

@@ -49,12 +49,12 @@ use restate_types::errors::{
     ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
     NOT_FOUND_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, ServiceId};
+use restate_types::identifiers::{
+    EntryIndex, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
+};
 use restate_types::identifiers::{
     IdempotencyId, JournalEntryId, WithInvocationId, WithPartitionKey,
 };
-use restate_types::ingress;
-use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
     InvocationTargetType, InvocationTermination, ResponseResult, ServiceInvocation,
@@ -72,6 +72,7 @@ use restate_types::journal::CompletionResult;
 use restate_types::journal::EntryType;
 use restate_types::journal::*;
 use restate_types::message::MessageIndex;
+use restate_types::net::partition_processor::IngressResponseResult;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::time::MillisSinceEpoch;
@@ -428,18 +429,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow);
         let mut has_idempotency_key = service_invocation.idempotency_key.is_some();
 
-        if !is_workflow_run && !has_idempotency_key {
-            // No duplicate id should exist
-            debug_assert!(
-                ctx.get_invocation_status(&invocation_id)
-                    .await
-                    .is_ok_and(|status| status == InvocationStatus::Free),
-                "There shouldn't be a duplicate for invocation id {}",
-                invocation_id
-            );
-            return Ok(Some(service_invocation));
-        }
-
         if is_workflow_run && has_idempotency_key {
             warn!("The idempotency key for workflow methods is ignored!");
             has_idempotency_key = false;
@@ -522,55 +511,16 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Self::send_submit_notification_if_needed(
             ctx,
             service_invocation.invocation_id,
-            false,
+            // is_new_invocation is true if the RPC ingress request is a duplicate.
+            service_invocation.source
+                == *previous_invocation_status
+                    .source()
+                    .expect("source must be present when InvocationStatus is not Free"),
             service_invocation.submit_notification_sink,
         );
 
-        // For idempotency_key requests, append the response sink or return back the original result
-        if has_idempotency_key {
-            debug_if_leader!(
-                ctx.is_leader,
-                restate.idempotency.key = ?service_invocation.idempotency_key.unwrap(),
-                "Invocation with idempotency key is a duplicate"
-            );
-            match previous_invocation_status {
-                is @ InvocationStatus::Invoked { .. }
-                | is @ InvocationStatus::Suspended { .. }
-                | is @ InvocationStatus::Inboxed { .. }
-                | is @ InvocationStatus::Scheduled { .. } => {
-                    if let Some(ref response_sink) = service_invocation.response_sink {
-                        if !is
-                            .get_response_sinks()
-                            .expect("response sink must be present")
-                            .contains(response_sink)
-                        {
-                            Self::do_append_response_sink(
-                                ctx,
-                                invocation_id,
-                                is,
-                                response_sink.clone(),
-                            )
-                            .await?
-                        }
-                    }
-                }
-                InvocationStatus::Completed(completed) => {
-                    self.send_response_to_sinks(
-                        ctx,
-                        service_invocation.response_sink.take().into_iter(),
-                        completed.response_result,
-                        Some(invocation_id),
-                        Some(&completed.invocation_target),
-                    )
-                    .await?;
-                }
-                InvocationStatus::Free => {
-                    unreachable!("This was checked before!")
-                }
-            }
-            return Ok(None);
-        }
         // For workflow run, we don't append the response sink, but we send a failure instead.
+        // This is a special handling we do only for workflows.
         if is_workflow_run {
             debug_if_leader!(
                 ctx.is_leader,
@@ -581,9 +531,53 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 service_invocation.response_sink.take().into_iter(),
                 ResponseResult::Failure(WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR),
                 Some(invocation_id),
+                None,
                 Some(&service_invocation.invocation_target),
             )
             .await?;
+        }
+
+        // For all the other type of duplicate requests, append the response sink or return back the original result
+        if has_idempotency_key {
+            debug_if_leader!(
+                ctx.is_leader,
+                restate.idempotency.key = ?service_invocation.idempotency_key.unwrap(),
+                "Invocation with idempotency key is a duplicate"
+            );
+        }
+
+        match previous_invocation_status {
+            is @ InvocationStatus::Invoked { .. }
+            | is @ InvocationStatus::Suspended { .. }
+            | is @ InvocationStatus::Inboxed { .. }
+            | is @ InvocationStatus::Scheduled { .. } => {
+                if let Some(ref response_sink) = service_invocation.response_sink {
+                    if !is
+                        .get_response_sinks()
+                        .expect("response sink must be present")
+                        .contains(response_sink)
+                    {
+                        Self::do_append_response_sink(ctx, invocation_id, is, response_sink.clone())
+                            .await?
+                    }
+                }
+            }
+            InvocationStatus::Completed(completed) => {
+                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
+                let completion_expiry_time = unsafe { completed.completion_expiry_time() };
+                self.send_response_to_sinks(
+                    ctx,
+                    service_invocation.response_sink.take().into_iter(),
+                    completed.response_result,
+                    Some(invocation_id),
+                    completion_expiry_time,
+                    Some(&completed.invocation_target),
+                )
+                .await?;
+            }
+            InvocationStatus::Free => {
+                unreachable!("This was checked before!")
+            }
         }
 
         Ok(None)
@@ -978,6 +972,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             response_sinks,
             &error,
             Some(invocation_id),
+            None,
             Some(&invocation_target),
         )
         .await?;
@@ -1511,6 +1506,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 invocation_metadata.response_sinks.clone(),
                 result.clone(),
                 Some(invocation_id),
+                None,
                 Some(&invocation_metadata.invocation_target),
             )
             .await?;
@@ -1569,6 +1565,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             invocation_metadata.response_sinks.clone(),
             response_result.clone(),
             Some(invocation_id),
+            None,
             Some(&invocation_metadata.invocation_target),
         )
         .await?;
@@ -1599,6 +1596,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         response_sinks: impl IntoIterator<Item = ServiceInvocationResponseSink>,
         res: impl Into<ResponseResult>,
         invocation_id: Option<InvocationId>,
+        completion_expiry_time: Option<MillisSinceEpoch>,
         invocation_target: Option<&InvocationTarget>,
     ) -> Result<(), Error> {
         let result = res.into();
@@ -1607,25 +1605,36 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 ServiceInvocationResponseSink::PartitionProcessor {
                     entry_index,
                     caller,
-                } => self.handle_outgoing_message(ctx, OutboxMessage::ServiceResponse(InvocationResponse {
-                    id: caller,
-                    entry_index,
-                    result: result.clone(),
-                })).await?,
-                ServiceInvocationResponseSink::Ingress { node_id, request_id } => {
-                    Self::send_ingress_response(ctx, IngressResponseEnvelope{ target_node: node_id, inner: ingress::InvocationResponse {
-                        request_id,
-                        invocation_id,
-                        response: match result.clone() {
-                            ResponseResult::Success(res) => {
-                                IngressResponseResult::Success(invocation_target.expect("For success responses, there must be an invocation target!").clone(), res)
-                            }
-                            ResponseResult::Failure(err) => {
-                                IngressResponseResult::Failure(err)
-                            }
-                        },
-                    } })
+                } => {
+                    self.handle_outgoing_message(
+                        ctx,
+                        OutboxMessage::ServiceResponse(InvocationResponse {
+                            id: caller,
+                            entry_index,
+                            result: result.clone(),
+                        }),
+                    )
+                    .await?
                 }
+                ServiceInvocationResponseSink::Ingress {
+                    request_id,
+                } => Self::send_ingress_response(
+                    ctx,
+                    request_id,
+                    invocation_id,
+                    completion_expiry_time,
+                    match result.clone() {
+                        ResponseResult::Success(res) => IngressResponseResult::Success(
+                            invocation_target
+                                .expect(
+                                    "For success responses, there must be an invocation target!",
+                                )
+                                .clone(),
+                            res,
+                        ),
+                        ResponseResult::Failure(err) => IngressResponseResult::Failure(err),
+                    },
+                ),
             }
         }
         Ok(())
@@ -2620,6 +2629,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     NOT_FOUND_INVOCATION_ERROR,
                     Some(invocation_id),
                     None,
+                    None,
                 )
                 .await?
             }
@@ -2637,6 +2647,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
                     Some(invocation_id),
                     None,
+                    None,
                 )
                 .await?
             }
@@ -2653,11 +2664,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 .await?;
             }
             InvocationStatus::Completed(completed) => {
+                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
+                let completion_expiry_time = unsafe { completed.completion_expiry_time() };
                 self.send_response_to_sinks(
                     ctx,
                     vec![attach_invocation_request.response_sink],
                     completed.response_result,
                     Some(invocation_id),
+                    completion_expiry_time,
                     Some(&completed.invocation_target),
                 )
                 .await?;
@@ -2669,23 +2683,18 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     fn send_ingress_response<State>(
         ctx: &mut StateMachineApplyContext<'_, State>,
-        ingress_response: IngressResponseEnvelope<ingress::InvocationResponse>,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: Option<InvocationId>,
+        completion_expiry_time: Option<MillisSinceEpoch>,
+        response: IngressResponseResult,
     ) {
-        match &ingress_response.inner {
-            ingress::InvocationResponse {
-                response: IngressResponseResult::Success(_, _),
-                request_id,
-                ..
-            } => debug_if_leader!(
+        match &response {
+            IngressResponseResult::Success(_, _) => debug_if_leader!(
                 ctx.is_leader,
                 "Send response to ingress with request id '{:?}': Success",
                 request_id
             ),
-            ingress::InvocationResponse {
-                response: IngressResponseResult::Failure(e),
-                request_id,
-                ..
-            } => debug_if_leader!(
+            IngressResponseResult::Failure(e) => debug_if_leader!(
                 ctx.is_leader,
                 "Send response to ingress with request id '{:?}': Failure({})",
                 request_id,
@@ -2693,8 +2702,12 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             ),
         };
 
-        ctx.action_collector
-            .push(Action::IngressResponse(ingress_response));
+        ctx.action_collector.push(Action::IngressResponse {
+            request_id,
+            invocation_id,
+            completion_expiry_time,
+            response,
+        });
     }
 
     fn send_submit_notification_if_needed<State>(
@@ -2704,11 +2717,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         submit_notification_sink: Option<SubmitNotificationSink>,
     ) {
         // Notify the ingress, if needed, of the chosen invocation_id
-        if let Some(SubmitNotificationSink::Ingress {
-            node_id,
-            request_id,
-        }) = submit_notification_sink
-        {
+        if let Some(SubmitNotificationSink::Ingress { request_id }) = submit_notification_sink {
             debug_if_leader!(
                 ctx.is_leader,
                 "Sending ingress attach invocation for {}",
@@ -2716,13 +2725,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             );
 
             ctx.action_collector
-                .push(Action::IngressSubmitNotification(IngressResponseEnvelope {
-                    target_node: node_id,
-                    inner: ingress::SubmittedInvocationNotification {
-                        request_id,
-                        is_new_invocation,
-                    },
-                }));
+                .push(Action::IngressSubmitNotification {
+                    request_id,
+                    is_new_invocation,
+                });
         }
     }
 

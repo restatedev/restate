@@ -9,27 +9,29 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
+use chrono::DateTime;
 use http::{header, HeaderName, Response};
 use http_body_util::Full;
 use tracing::{info, trace};
 
-use restate_types::identifiers::InvocationId;
-use restate_types::ingress::IngressResponseResult;
-use restate_types::invocation::InvocationTarget;
-use restate_types::schema::invocation_target::InvocationTargetMetadata;
-
 use crate::handler::error::HandlerError;
 use crate::handler::Handler;
+use restate_types::invocation::InvocationTarget;
+use restate_types::net::partition_processor::{IngressResponseResult, InvocationOutput};
+use restate_types::schema::invocation_target::InvocationTargetMetadata;
 
 pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 /// Contains the string representation of the invocation id
 pub(crate) const X_RESTATE_ID: HeaderName = HeaderName::from_static("x-restate-id");
 
-impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader> {
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
     pub(crate) fn reply_with_invocation_response(
-        response: IngressResponseResult,
-        invocation_id: Option<InvocationId>,
-        idempotency_expiry_time: Option<&str>,
+        InvocationOutput {
+            response,
+            invocation_id,
+            completion_expiry_time,
+            ..
+        }: InvocationOutput,
         invocation_target_metadata_retriever: impl FnOnce(
             &InvocationTarget,
         ) -> Result<
@@ -46,8 +48,13 @@ impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageRea
         }
 
         // Add idempotency expiry time if available
-        if let Some(expiry_time) = idempotency_expiry_time {
-            response_builder = response_builder.header(IDEMPOTENCY_EXPIRES, expiry_time);
+        if let Some(expiry_time) = completion_expiry_time {
+            response_builder = response_builder.header(
+                IDEMPOTENCY_EXPIRES,
+                DateTime::from_timestamp_millis(expiry_time.as_u64() as i64)
+                    .expect("conversion to chrono should work")
+                    .to_rfc3339(),
+            );
         }
 
         match response {

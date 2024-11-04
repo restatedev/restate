@@ -21,7 +21,7 @@ use std::future::Future;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Eq, PartialEq, Default)]
 pub enum InvokeInputJournal {
     #[default]
     NoCachedJournal,

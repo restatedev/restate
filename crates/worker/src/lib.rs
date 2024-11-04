@@ -25,6 +25,8 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use restate_bifrost::Bifrost;
+use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
+use restate_core::network::rpc_router::ConnectionAwareRpcRouter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
@@ -48,7 +50,7 @@ use restate_types::live::Live;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::Schema;
 
-use crate::ingress_integration::InvocationStorageReaderImpl;
+use crate::ingress_integration::RpcRequestDispatcher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
@@ -61,8 +63,7 @@ type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
 >;
 
-type ExternalClientIngress =
-    HyperServerIngress<Schema, IngressDispatcher, InvocationStorageReaderImpl>;
+type ExternalClientIngress<T> = HyperServerIngress<Schema, RpcRequestDispatcher<T>>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -103,7 +104,7 @@ pub struct Worker<T> {
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
     datafusion_remote_scanner: RemoteQueryScannerServer,
-    external_client_ingress: ExternalClientIngress,
+    external_client_ingress: ExternalClientIngress<T>,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
     partition_processor_manager: PartitionProcessorManager<T>,
@@ -125,13 +126,10 @@ impl<T: TransportConnect> Worker<T> {
         metric_definitions::describe_metrics();
         health_status.update(WorkerStatus::StartingUp);
 
-        let ingress_dispatcher = IngressDispatcher::new(bifrost.clone());
-        router_builder.add_message_handler(ingress_dispatcher.clone());
-
         let config = updateable_config.pinned();
 
         // ingress_kafka
-        let ingress_kafka = IngressKafkaService::new(ingress_dispatcher.clone());
+        let ingress_kafka = IngressKafkaService::new(IngressDispatcher::new(bifrost.clone()));
         let subscription_controller_handle = SubscriptionControllerHandle::new(
             config.ingress.clone(),
             ingress_kafka.create_command_sender(),
@@ -147,12 +145,23 @@ impl<T: TransportConnect> Worker<T> {
         )
         .await?;
 
+        // TODO sort this out!
+        //  it's on https://github.com/restatedev/restate/pull/2172
+        let partition_routing_refresher =
+            PartitionRoutingRefresher::new(metadata_store_client.clone());
+
+        let rpc_router = ConnectionAwareRpcRouter::new(router_builder);
+        let partition_table = metadata.updateable_partition_table();
         // http ingress
         let ingress_http = HyperServerIngress::from_options(
             &config.ingress,
-            ingress_dispatcher.clone(),
+            RpcRequestDispatcher::new(PartitionProcessorRpcClient::new(
+                networking.clone(),
+                rpc_router,
+                partition_table,
+                partition_routing_refresher.partition_routing(),
+            )),
             schema.clone(),
-            InvocationStorageReaderImpl::new(partition_store_manager.clone()),
         );
 
         let partition_processor_manager = PartitionProcessorManager::new(
