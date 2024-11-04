@@ -321,7 +321,7 @@ impl CommonOptions {
     pub fn set_derived_values(&mut self) {
         // Only derive bind_address if it is not explicitly set
         if self.bind_address.is_none() {
-            self.bind_address = Some(self.advertised_address.derive_bind_address().unwrap());
+            self.bind_address = Some(self.advertised_address.derive_bind_address());
         }
     }
 }

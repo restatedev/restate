@@ -210,11 +210,12 @@ impl Node {
 
         if self.base_config.common.bind_address.is_none() {
             // Derive bind_address from advertised_address
-            self.base_config.common.bind_address = self
-                .base_config
-                .common
-                .advertised_address
-                .derive_bind_address();
+            self.base_config.common.bind_address = Some(
+                self.base_config
+                    .common
+                    .advertised_address
+                    .derive_bind_address(),
+            );
         }
 
         if let Some(BindAddress::Uds(file)) = &mut self.base_config.common.bind_address {

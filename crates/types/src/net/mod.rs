@@ -89,22 +89,24 @@ fn parse_http(s: &str) -> Result<AdvertisedAddress, Error> {
 }
 
 impl AdvertisedAddress {
-    /// Derives a `BindAddress` based on the advertised address.
-    pub fn derive_bind_address(&self) -> Option<BindAddress> {
+    /// Derives a `BindAddress` based on the advertised address
+    pub fn derive_bind_address(&self) -> BindAddress {
         match self {
             AdvertisedAddress::Http(uri) => {
-                uri.authority()
+                let port = uri
+                    .authority()
                     .and_then(|auth| auth.port_u16())
-                    .map(|port| {
-                        let ip = if uri.host().unwrap_or("").contains(':') {
-                            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
-                        } else {
-                            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-                        };
-                        BindAddress::Socket(SocketAddr::new(ip, port))
-                    })
+                    .unwrap_or(5122); // Default to 5122 if no port is specified
+
+                let ip = if uri.host().unwrap_or("").contains(':') {
+                    IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+                } else {
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+                };
+
+                BindAddress::Socket(SocketAddr::new(ip, port))
             }
-            AdvertisedAddress::Uds(path) => Some(BindAddress::Uds(path.clone())),
+            AdvertisedAddress::Uds(path) => BindAddress::Uds(path.clone()),
         }
     }
 }
@@ -315,9 +317,7 @@ mod tests {
         let addr = input
             .parse::<AdvertisedAddress>()
             .expect("Failed to parse HTTP address");
-        let bind_addr = addr
-            .derive_bind_address()
-            .expect("Failed to derive bind address");
+        let bind_addr = addr.derive_bind_address();
 
         match bind_addr {
             BindAddress::Socket(socket_addr) => {
@@ -331,14 +331,22 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_bind_address_no_port() {
-        let input = "http://localhost";
-        let addr = input
-            .parse::<AdvertisedAddress>()
-            .expect("Failed to parse HTTP address");
-        let bind_addr = addr.derive_bind_address();
+    fn test_derive_bind_address_fallback_port() {
+        // Case with no port specified, should fallback to 5122
+        let advertised_address = AdvertisedAddress::from_str("http://example.com").unwrap();
+        let bind_address = advertised_address.derive_bind_address();
 
-        assert!(bind_addr.is_none(), "Expected None for URI without port");
+        match bind_address {
+            BindAddress::Socket(socket_addr) => {
+                assert_eq!(socket_addr.port(), 5122, "Expected port 5122 for fallback");
+                assert_eq!(
+                    socket_addr.ip(),
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    "Expected IPv4 unspecified address"
+                );
+            }
+            _ => panic!("Expected BindAddress::Socket"),
+        }
     }
 
     #[test]
@@ -347,9 +355,7 @@ mod tests {
         let addr = input
             .parse::<AdvertisedAddress>()
             .expect("Failed to parse UDS address");
-        let bind_addr = addr
-            .derive_bind_address()
-            .expect("Failed to derive bind address");
+        let bind_addr = addr.derive_bind_address();
 
         match bind_addr {
             BindAddress::Uds(path) => assert_eq!(path, PathBuf::from("/path/to/socket")),
@@ -368,7 +374,7 @@ mod tests {
 
         // Check that it matches the expected IPv6 bind address
         match bind_address {
-            Some(BindAddress::Socket(socket_addr)) => {
+            BindAddress::Socket(socket_addr) => {
                 assert_eq!(socket_addr.ip(), IpAddr::V6(Ipv6Addr::UNSPECIFIED));
                 assert_eq!(socket_addr.port(), 8080);
             }
@@ -415,31 +421,6 @@ mod tests {
             result.is_err(),
             "Expected an error for invalid bind address"
         );
-    }
-
-    #[test]
-    fn test_derive_bind_address_http_with_port() {
-        // Test case for AdvertisedAddress::Http with a valid host and port
-        let advertised_address = AdvertisedAddress::from_str("http://127.0.0.1:1337").unwrap();
-
-        // Derive the bind address
-        let bind_address = advertised_address.derive_bind_address().unwrap();
-
-        // Expected bind address
-        let expected_bind_address =
-            BindAddress::Socket(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 1337));
-
-        assert_eq!(bind_address, expected_bind_address);
-    }
-
-    #[test]
-    fn test_derive_bind_address_http_without_port() {
-        // Test case for AdvertisedAddress::Http without a port
-        let advertised_address = AdvertisedAddress::from_str("http://localhost").unwrap();
-
-        // Deriving a bind address should return None since no port is provided
-        let bind_address = advertised_address.derive_bind_address();
-        assert!(bind_address.is_none());
     }
 
     #[test]
