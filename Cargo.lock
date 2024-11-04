@@ -5423,6 +5423,7 @@ dependencies = [
  "http-body-util",
  "hyper-util",
  "okapi-operation",
+ "parking_lot",
  "prost 0.13.1",
  "prost-dto",
  "prost-types 0.13.1",

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::io::Write;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -27,17 +28,21 @@ use datafusion::arrow::buffer::{OffsetBuffer, ScalarBuffer};
 use datafusion::arrow::datatypes::{ByteArrayType, DataType, Field, FieldRef, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::writer::StreamWriter;
+use datafusion::arrow::json::writer::JsonArray;
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
+use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
 use okapi_operation::*;
-use restate_core::network::protobuf::node_svc::StorageQueryRequest;
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
 use tonic::metadata::{KeyAndValueRef, MetadataMap};
 use tonic::Status;
+
+use restate_core::network::protobuf::node_svc::StorageQueryRequest;
 
 use super::error::StorageQueryError;
 use crate::state::QueryServiceState;
@@ -63,6 +68,7 @@ pub struct QueryRequest {
 )]
 pub async fn query(
     State(state): State<Arc<QueryServiceState>>,
+    headers: HeaderMap,
     #[request_body(required = true)] Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, StorageQueryError> {
     let mut worker_grpc_client = state.node_svc_client.clone();
@@ -84,148 +90,156 @@ pub async fn query(
             .map_err(|status| FlightError::from(tonic_status_012_to_011(status))),
     );
 
-    // create a stream without LargeUtf8 or LargeBinary columns as JS doesn't support these yet
-    let result_stream = ConvertRecordBatchStream::new(record_batch_stream).map_ok(Frame::data);
+    let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
+        Some(v) if v == HeaderValue::from_static("application/json") => (
+            WriteRecordBatchStream::<JsonWriter>::new(record_batch_stream)
+                .map_ok(Frame::data)
+                .left_stream(),
+            "application/json",
+        ),
+        _ => (
+            WriteRecordBatchStream::<(SchemaRef, StreamWriter<Vec<u8>>)>::new(record_batch_stream)
+                .map_ok(Frame::data)
+                .right_stream(),
+            "application/vnd.apache.arrow.stream",
+        ),
+    };
 
     Ok(Response::builder()
-        .header(
-            http::header::CONTENT_TYPE,
-            "application/vnd.apache.arrow.stream",
-        )
+        .header(http::header::CONTENT_TYPE, content_type)
         .body(StreamBody::new(result_stream))
         .expect("content-type header is correct"))
 }
 
-fn convert_schema(schema: SchemaRef) -> SchemaRef {
-    let mut fields = Vec::with_capacity(schema.fields.len());
-    for field in schema.fields.iter() {
-        let data_type = match field.data_type() {
-            // Represent binary as base64
-            DataType::LargeBinary => DataType::Binary,
-            DataType::LargeUtf8 => DataType::Utf8,
-            other => other.clone(),
-        };
-        fields.push(FieldRef::new(Field::new(
-            field.name(),
-            data_type,
-            field.is_nullable(),
-        )));
-    }
-    SchemaRef::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
-}
-
-fn convert_record_batch(
-    converted_schema: SchemaRef,
-    batch: RecordBatch,
-) -> Result<RecordBatch, ArrowError> {
-    let mut columns = Vec::with_capacity(batch.columns().len());
-    for (i, field) in batch.schema().fields.iter().enumerate() {
-        match field.data_type() {
-            // Represent binary as base64
-            DataType::LargeBinary => {
-                let col: BinaryArray = convert_array_offset(batch.column(i).as_binary::<i64>())?;
-                columns.push(ArrayRef::from(Box::new(col) as Box<dyn Array>));
-            }
-            DataType::LargeUtf8 => {
-                let col: StringArray = convert_array_offset(batch.column(i).as_string::<i64>())?;
-                columns.push(ArrayRef::from(Box::new(col) as Box<dyn Array>));
-            }
-            _ => {
-                columns.push(batch.column(i).clone());
-            }
-        };
-    }
-    RecordBatch::try_new(converted_schema, columns)
-}
-
-fn convert_array_offset<Before: ByteArrayType, After: ByteArrayType>(
-    array: &GenericByteArray<Before>,
-) -> Result<GenericByteArray<After>, ArrowError>
+trait RecordBatchWriter
 where
-    After::Offset: TryFrom<Before::Offset>,
+    Self: Sized,
 {
-    let offsets = array
-        .offsets()
-        .iter()
-        .map(|&o| After::Offset::try_from(o))
-        .collect::<Result<ScalarBuffer<After::Offset>, _>>()
-        .map_err(|_| ArrowError::CastError("offset conversion failed".into()))?;
-    GenericByteArray::<After>::try_new(
-        OffsetBuffer::new(offsets),
-        array.values().clone(),
-        array.nulls().cloned(),
-    )
+    // Create the writer
+    fn new(schema: &Schema) -> Result<Self, ArrowError>;
+
+    /// Write a single batch to the writer.
+    fn write(&mut self, batch: &RecordBatch) -> Result<Bytes, ArrowError>;
+
+    /// Write footer or termination data, then mark the writer as done.
+    fn finish(&mut self) -> Result<Bytes, ArrowError>;
 }
 
-enum ConversionState {
+// Arrow format needs conversion of LargeUtf8 -> Utf8 because the CLI still expects this
+impl RecordBatchWriter for (SchemaRef, StreamWriter<Vec<u8>>) {
+    fn new(schema: &Schema) -> Result<Self, ArrowError> {
+        let converted_schema = convert_schema(schema);
+        let writer = StreamWriter::try_new(Vec::new(), &converted_schema)?;
+        Ok((converted_schema, writer))
+    }
+
+    fn write(&mut self, batch: &RecordBatch) -> Result<Bytes, ArrowError> {
+        self.1
+            .write(&convert_record_batch(self.0.clone(), batch)?)?;
+        let bytes = Bytes::copy_from_slice(self.1.get_ref());
+        self.1.get_mut().clear();
+        Ok(bytes)
+    }
+
+    fn finish(&mut self) -> Result<Bytes, ArrowError> {
+        self.1.finish()?;
+        let bytes = Bytes::copy_from_slice(self.1.get_ref());
+        self.1.get_mut().clear();
+        Ok(bytes)
+    }
+}
+
+#[derive(Clone)]
+// unfortunately the json writer doesnt give a way to get a mutable reference to the underlying writer, so we need another pointer in to its buffer
+// we use a lock here to help make the writer send/sync, despite it being totally uncontended :(
+struct LockWriter(Arc<Mutex<Vec<u8>>>);
+
+impl LockWriter {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(Vec::new())))
+    }
+
+    fn take(&self) -> Vec<u8> {
+        let mut vec = self.0.lock();
+        let new_vec = Vec::with_capacity(vec.capacity());
+        std::mem::replace(&mut vec, new_vec)
+    }
+}
+
+impl Write for LockWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().flush()
+    }
+}
+
+struct JsonWriter {
+    json_writer: datafusion::arrow::json::Writer<LockWriter, JsonArray>,
+    lock_writer: LockWriter,
+    started: bool,
+    finished: bool,
+}
+
+impl RecordBatchWriter for JsonWriter {
+    fn new(_schema: &Schema) -> Result<Self, ArrowError> {
+        let mut lock_writer = LockWriter::new();
+        // we write out under 'rows' key so that we may add extra keys later (eg 'schema')
+        lock_writer.write_all(br#"{"rows":"#)?;
+        Ok(Self {
+            json_writer: datafusion::arrow::json::Writer::new(lock_writer.clone()),
+            lock_writer,
+            started: false,
+            finished: false,
+        })
+    }
+
+    fn write(&mut self, batch: &RecordBatch) -> Result<Bytes, ArrowError> {
+        self.started = true;
+        self.json_writer.write(batch)?;
+        Ok(Bytes::from(self.lock_writer.take()))
+    }
+
+    fn finish(&mut self) -> Result<Bytes, ArrowError> {
+        if !self.finished {
+            self.finished = true;
+            self.json_writer.finish()?;
+            if self.started {
+                // if we've started, json writer has set the tailing ]
+                self.lock_writer.write_all(b"}")?;
+            } else {
+                // if we haven't started, json writer has written nothing, so we must write the []
+                self.lock_writer.write_all(b"[]}")?;
+            }
+        }
+        Ok(Bytes::from(self.lock_writer.take()))
+    }
+}
+
+enum WriterState<W> {
     WaitForSchema,
-    WaitForRecords(SchemaRef, StreamWriter<Vec<u8>>),
+    WaitForRecords(W),
 }
 
-/// Convert the record batches so that they don't contain LargeUtf8 or LargeBinary columns as JS doesn't
-/// support these yet.
-struct ConvertRecordBatchStream {
+struct WriteRecordBatchStream<W> {
     done: bool,
-    state: ConversionState,
-
     record_batch_stream: FlightRecordBatchStream,
+    writer_state: WriterState<W>,
 }
 
-impl ConvertRecordBatchStream {
+impl<W: RecordBatchWriter> WriteRecordBatchStream<W> {
     fn new(record_batch_stream: FlightRecordBatchStream) -> Self {
-        ConvertRecordBatchStream {
+        WriteRecordBatchStream {
             done: false,
-            state: ConversionState::WaitForSchema,
             record_batch_stream,
+            writer_state: WriterState::WaitForSchema,
         }
     }
 }
 
-impl ConvertRecordBatchStream {
-    fn create_stream_writer(
-        record_batch: &RecordBatch,
-    ) -> Result<(SchemaRef, StreamWriter<Vec<u8>>), ArrowError> {
-        let converted_schema = convert_schema(record_batch.schema());
-        let stream_writer = StreamWriter::try_new(Vec::new(), converted_schema.as_ref())?;
-
-        Ok((converted_schema, stream_writer))
-    }
-
-    fn write_batch(
-        converted_schema: &SchemaRef,
-        stream_writer: &mut StreamWriter<Vec<u8>>,
-        record_batch: RecordBatch,
-    ) -> Result<(), ArrowError> {
-        let record_batch = convert_record_batch(converted_schema.clone(), record_batch)?;
-        stream_writer.write(&record_batch)
-    }
-
-    fn process_record(
-        mut self: Pin<&mut Self>,
-        record_batch: Result<RecordBatch, FlightError>,
-    ) -> Result<Bytes, FlightError> {
-        let record_batch = record_batch?;
-        match &mut self.state {
-            ConversionState::WaitForSchema => {
-                let (converted_schema, mut stream_writer) =
-                    Self::create_stream_writer(&record_batch)?;
-                Self::write_batch(&converted_schema, &mut stream_writer, record_batch)?;
-                let bytes = Bytes::copy_from_slice(stream_writer.get_ref());
-                stream_writer.get_mut().clear();
-                self.state = ConversionState::WaitForRecords(converted_schema, stream_writer);
-                Ok(bytes)
-            }
-            ConversionState::WaitForRecords(converted_schema, stream_writer) => {
-                Self::write_batch(converted_schema, stream_writer, record_batch)?;
-                let bytes = Bytes::copy_from_slice(stream_writer.get_ref());
-                stream_writer.get_mut().clear();
-                Ok(bytes)
-            }
-        }
-    }
-}
-
-impl Stream for ConvertRecordBatchStream {
+impl<W: RecordBatchWriter + Unpin> Stream for WriteRecordBatchStream<W> {
     type Item = Result<Bytes, FlightError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -236,7 +250,17 @@ impl Stream for ConvertRecordBatchStream {
         let record_batch = ready!(self.record_batch_stream.poll_next_unpin(cx));
 
         if let Some(record_batch) = record_batch {
-            match self.as_mut().process_record(record_batch) {
+            match record_batch.and_then(|record_batch| match self.writer_state {
+                WriterState::WaitForSchema => {
+                    let mut stream_writer = W::new(&record_batch.schema())?;
+                    let bytes = stream_writer.write(&record_batch)?;
+                    self.writer_state = WriterState::WaitForRecords(stream_writer);
+                    Ok(bytes)
+                }
+                WriterState::WaitForRecords(ref mut stream_writer) => stream_writer
+                    .write(&record_batch)
+                    .map_err(FlightError::Arrow),
+            }) {
                 Ok(bytes) => Poll::Ready(Some(Ok(bytes))),
                 Err(err) => {
                     self.done = true;
@@ -245,21 +269,15 @@ impl Stream for ConvertRecordBatchStream {
             }
         } else {
             self.done = true;
-            if let ConversionState::WaitForRecords(_, stream_writer) = &mut self.state {
-                if let Err(err) = stream_writer.finish() {
-                    Poll::Ready(Some(Err(err.into())))
-                } else {
-                    let bytes = Bytes::copy_from_slice(stream_writer.get_ref());
-                    stream_writer.get_mut().clear();
-                    Poll::Ready(Some(Ok(bytes)))
-                }
+            if let WriterState::WaitForRecords(stream_writer) = &mut self.writer_state {
+                Poll::Ready(Some(stream_writer.finish().map_err(FlightError::Arrow)))
             } else {
                 // CLI is expecting schema information
-                if let (Some(schema), ConversionState::WaitForSchema) =
-                    (self.record_batch_stream.schema(), &self.state)
+                if let (Some(schema), WriterState::WaitForSchema) =
+                    (self.record_batch_stream.schema(), &self.writer_state)
                 {
-                    let schema_bytes = StreamWriter::try_new(Vec::new(), schema)
-                        .and_then(|stream_writer| stream_writer.into_inner().map(Bytes::from))
+                    let schema_bytes = W::new(schema)
+                        .and_then(|mut stream_writer| stream_writer.finish())
                         .map_err(FlightError::from);
 
                     Poll::Ready(Some(schema_bytes))
@@ -306,4 +324,65 @@ fn tonic_metadata_map_012_to_011(metadata_map: &MetadataMap) -> tonic_0_11::meta
     }
 
     resulting_metadata_map
+}
+
+fn convert_schema(schema: &Schema) -> SchemaRef {
+    let mut fields = Vec::with_capacity(schema.fields.len());
+    for field in schema.fields.iter() {
+        let data_type = match field.data_type() {
+            // Represent binary as base64
+            DataType::LargeBinary => DataType::Binary,
+            DataType::LargeUtf8 => DataType::Utf8,
+            other => other.clone(),
+        };
+        fields.push(FieldRef::new(Field::new(
+            field.name(),
+            data_type,
+            field.is_nullable(),
+        )));
+    }
+    SchemaRef::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+}
+
+fn convert_record_batch(
+    converted_schema: SchemaRef,
+    batch: &RecordBatch,
+) -> Result<RecordBatch, ArrowError> {
+    let mut columns = Vec::with_capacity(batch.columns().len());
+    for (i, field) in batch.schema().fields.iter().enumerate() {
+        match field.data_type() {
+            // Represent binary as base64
+            DataType::LargeBinary => {
+                let col: BinaryArray = convert_array_offset(batch.column(i).as_binary::<i64>())?;
+                columns.push(ArrayRef::from(Box::new(col) as Box<dyn Array>));
+            }
+            DataType::LargeUtf8 => {
+                let col: StringArray = convert_array_offset(batch.column(i).as_string::<i64>())?;
+                columns.push(ArrayRef::from(Box::new(col) as Box<dyn Array>));
+            }
+            _ => {
+                columns.push(batch.column(i).clone());
+            }
+        };
+    }
+    RecordBatch::try_new(converted_schema, columns)
+}
+
+fn convert_array_offset<Before: ByteArrayType, After: ByteArrayType>(
+    array: &GenericByteArray<Before>,
+) -> Result<GenericByteArray<After>, ArrowError>
+where
+    After::Offset: TryFrom<Before::Offset>,
+{
+    let offsets = array
+        .offsets()
+        .iter()
+        .map(|&o| After::Offset::try_from(o))
+        .collect::<Result<ScalarBuffer<After::Offset>, _>>()
+        .map_err(|_| ArrowError::CastError("offset conversion failed".into()))?;
+    GenericByteArray::<After>::try_new(
+        OffsetBuffer::new(offsets),
+        array.values().clone(),
+        array.nulls().cloned(),
+    )
 }
