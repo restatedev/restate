@@ -30,8 +30,6 @@ use http_body_util::Full;
 use hyper::http::HeaderValue;
 use hyper::{Request, Response};
 use path_parsing::RequestType;
-
-use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_types::live::Live;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
@@ -41,32 +39,24 @@ use super::*;
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 #[derive(Clone)]
-pub(crate) struct Handler<Schemas, Dispatcher, StorageReader> {
+pub(crate) struct Handler<Schemas, Dispatcher> {
     schemas: Live<Schemas>,
     dispatcher: Dispatcher,
-    storage_reader: StorageReader,
 }
 
-impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader> {
-    pub(crate) fn new(
-        schemas: Live<Schemas>,
-        dispatcher: Dispatcher,
-        storage_reader: StorageReader,
-    ) -> Self {
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
+    pub(crate) fn new(schemas: Live<Schemas>, dispatcher: Dispatcher) -> Self {
         Self {
             schemas,
             dispatcher,
-            storage_reader,
         }
     }
 }
 
-impl<Schemas, Dispatcher, StorageReader, Body> tower::Service<Request<Body>>
-    for Handler<Schemas, Dispatcher, StorageReader>
+impl<Schemas, Dispatcher, Body> tower::Service<Request<Body>> for Handler<Schemas, Dispatcher>
 where
     Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
-    Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
-    StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
+    Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
     Body: http_body::Body + Send + 'static,
     <Body as http_body::Body>::Data: Send + 'static,
     <Body as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,

@@ -25,7 +25,7 @@ use restate_storage_api::invocation_status_table::{
     JournalMetadata, ReadOnlyInvocationStatusTable, StatusTimestamps,
 };
 use restate_storage_api::Transaction;
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
 };
@@ -78,6 +78,9 @@ const INVOCATION_TARGET_5: InvocationTarget = InvocationTarget::VirtualObject {
 static INVOCATION_ID_5: Lazy<InvocationId> =
     Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_5));
 
+static RPC_REQUEST_ID: Lazy<PartitionProcessorRpcRequestId> =
+    Lazy::new(PartitionProcessorRpcRequestId::new);
+
 fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Invoked(InFlightInvocationMetadata {
         invocation_target,
@@ -85,7 +88,7 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         pinned_deployment: None,
         response_sinks: HashSet::new(),
         timestamps: StatusTimestamps::init(MillisSinceEpoch::new(0)),
-        source: Source::Ingress,
+        source: Source::Ingress(*RPC_REQUEST_ID),
         completion_retention_duration: Duration::ZERO,
         idempotency_key: None,
     })
@@ -99,7 +102,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             pinned_deployment: None,
             response_sinks: HashSet::new(),
             timestamps: StatusTimestamps::init(MillisSinceEpoch::new(0)),
-            source: Source::Ingress,
+            source: Source::Ingress(*RPC_REQUEST_ID),
             completion_retention_duration: Duration::ZERO,
             idempotency_key: None,
         },

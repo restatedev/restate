@@ -82,13 +82,17 @@ message JournalMeta {
 }
 
 message Source {
+  message Ingress {
+    bytes rpc_id = 1;
+  }
+
   message Service {
     InvocationId invocation_id = 1;
     InvocationTarget invocation_target = 2;
   }
 
   oneof source {
-    google.protobuf.Empty ingress = 9;
+    Ingress ingress = 9;
     Service service = 10;
     google.protobuf.Empty internal = 11;
   }
@@ -231,7 +235,7 @@ message ServiceInvocationResponseSink {
   }
 
   message Ingress {
-    GenerationalNodeId node_id = 1;
+    reserved 1;
     bytes request_id = 2;
   }
 
@@ -569,7 +573,7 @@ message IdempotencyMetadata {
 
 message SubmitNotificationSink {
   message Ingress {
-    GenerationalNodeId node_id = 1;
+    reserved 1;
     bytes request_id = 2;
   }
 
