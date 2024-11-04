@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
@@ -28,6 +26,7 @@ use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use crate::dispatcher::{DispatchKafkaEvent, KafkaIngressDispatcher, KafkaIngressEvent};
 use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 use restate_core::{cancellation_watcher, TaskCenter, TaskId, TaskKind};
 use restate_types::invocation::{Header, SpanRelation};
@@ -73,8 +72,8 @@ impl fmt::Display for KafkaDeduplicationId {
     }
 }
 
-impl DeduplicationId for KafkaDeduplicationId {
-    fn requires_proxying(subscription: &Subscription) -> bool {
+impl KafkaDeduplicationId {
+    pub(crate) fn requires_proxying(subscription: &Subscription) -> bool {
         matches!(
             subscription.sink(),
             Sink::Service {
@@ -88,14 +87,14 @@ impl DeduplicationId for KafkaDeduplicationId {
 #[derive(Clone)]
 pub struct MessageSender {
     subscription: Subscription,
-    dispatcher: IngressDispatcher,
+    dispatcher: KafkaIngressDispatcher,
 
     subscription_id: String,
     ingress_request_counter: metrics::Counter,
 }
 
 impl MessageSender {
-    pub fn new(subscription: Subscription, dispatcher: IngressDispatcher) -> Self {
+    pub fn new(subscription: Subscription, dispatcher: KafkaIngressDispatcher) -> Self {
         Self {
             subscription_id: subscription.id().to_string(),
             ingress_request_counter: counter!(
@@ -132,12 +131,15 @@ impl MessageSender {
         };
         let headers = Self::generate_events_attributes(&msg, &self.subscription_id);
 
-        let req = IngressDispatcherRequest::event(
+        let (deduplication_id, deduplication_index) =
+            Self::generate_deduplication_id(consumer_group_id, &msg);
+        let req = KafkaIngressEvent::new(
             &self.subscription,
             key,
             payload,
             SpanRelation::Parent(ingress_span_context),
-            Some(Self::generate_deduplication_id(consumer_group_id, &msg)),
+            deduplication_id,
+            deduplication_index,
             headers,
         )
         .map_err(|cause| Error::Event {
@@ -150,7 +152,7 @@ impl MessageSender {
         self.ingress_request_counter.increment(1);
 
         self.dispatcher
-            .dispatch_ingress_request(req)
+            .dispatch_kafka_event(req)
             .instrument(ingress_span)
             .await
             .map_err(|_| Error::IngressDispatcherClosed)?;

@@ -12,8 +12,10 @@ use super::consumer_task::MessageSender;
 use super::*;
 use std::collections::HashSet;
 
+use crate::dispatcher::KafkaIngressDispatcher;
 use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use rdkafka::error::KafkaError;
+use restate_bifrost::Bifrost;
 use restate_core::{cancellation_watcher, task_center};
 use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
@@ -39,19 +41,19 @@ pub enum Error {
 // For simplicity of the current implementation, this currently lives in this module
 // In future versions, we should either pull this out in a separate process, or generify it and move it to the worker, or an ad-hoc module
 pub struct Service {
-    dispatcher: IngressDispatcher,
+    dispatcher: KafkaIngressDispatcher,
 
     commands_tx: SubscriptionCommandSender,
     commands_rx: SubscriptionCommandReceiver,
 }
 
 impl Service {
-    pub fn new(dispatcher: IngressDispatcher) -> Service {
+    pub fn new(bifrost: Bifrost) -> Service {
         metric_definitions::describe_metrics();
         let (commands_tx, commands_rx) = mpsc::channel(10);
 
         Service {
-            dispatcher,
+            dispatcher: KafkaIngressDispatcher::new(bifrost),
             commands_tx,
             commands_rx,
         }
