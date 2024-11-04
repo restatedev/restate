@@ -8,19 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
-use std::fmt::{Debug, Formatter};
-use std::ops::RangeInclusive;
-use std::sync::{Arc, Mutex, OnceLock};
-
 use anyhow::bail;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
-
-use restate_core::metadata;
 use restate_core::partitions::PartitionRouting;
+use restate_core::{metadata, TaskCenter};
 use restate_types::identifiers::{PartitionId, PartitionKey};
-use restate_types::{GenerationalNodeId, NodeId};
+use restate_types::NodeId;
+use std::collections::BTreeMap;
+use std::fmt::{Debug, Formatter};
+use std::ops::RangeInclusive;
+use std::sync::{Arc, Mutex};
 
 use crate::remote_query_scanner_client::{remote_scan_as_datafusion_stream, RemoteScannerService};
 use crate::table_providers::ScanPartition;
@@ -54,8 +52,7 @@ impl LocalPartitionScannerRegistry {
 
 #[derive(Clone)]
 pub struct RemoteScannerManager {
-    my_node_id: OnceLock<GenerationalNodeId>,
-    partition_routing: PartitionRouting,
+    partition_locator: Arc<dyn PartitionLocator>,
     remote_scanner: Arc<dyn RemoteScannerService>,
     local_store_scanners: LocalPartitionScannerRegistry,
 }
@@ -67,32 +64,67 @@ impl Debug for RemoteScannerManager {
 }
 
 pub enum PartitionLocation {
-    Local { scanner: Arc<dyn ScanPartition> },
+    Local,
     Remote { node_id: NodeId },
+}
+
+pub trait PartitionLocator: Send + Sync + 'static {
+    fn get_partition_target_node(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<PartitionLocation>;
+}
+
+#[derive(Clone)]
+struct TaskCenterAwarePartitionLocator {
+    partition_routing: PartitionRouting,
+    task_center: TaskCenter,
+}
+
+pub fn create_partition_locator(
+    partition_routing: PartitionRouting,
+    task_center: TaskCenter,
+) -> Arc<dyn PartitionLocator> {
+    Arc::new(TaskCenterAwarePartitionLocator {
+        partition_routing,
+        task_center,
+    })
+}
+
+impl PartitionLocator for TaskCenterAwarePartitionLocator {
+    fn get_partition_target_node(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<PartitionLocation> {
+        self.task_center.run_in_scope_sync(
+            "TaskCenterAwarePartitionLocator::get_partition_target_node",
+            None,
+            || {
+                let my_node_id = metadata().my_node_id();
+                match self.partition_routing.get_node_by_partition(partition_id) {
+                    None => {
+                        self.partition_routing.request_refresh();
+                        bail!("node lookup for partition {} failed", partition_id)
+                    }
+                    Some(node_id)
+                        if node_id.as_generational().is_some_and(|id| id == my_node_id) =>
+                    {
+                        Ok(PartitionLocation::Local)
+                    }
+                    Some(node_id) => Ok(PartitionLocation::Remote { node_id }),
+                }
+            },
+        )
+    }
 }
 
 impl RemoteScannerManager {
     pub fn new(
-        partition_routing: PartitionRouting,
         remote_scanner: Arc<dyn RemoteScannerService>,
+        partition_locator: Arc<dyn PartitionLocator>,
     ) -> Self {
         Self {
-            my_node_id: OnceLock::new(),
-            partition_routing,
-            remote_scanner,
-            local_store_scanners: LocalPartitionScannerRegistry::default(),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn with_local_node_id(
-        my_node_id: GenerationalNodeId,
-        partition_routing: PartitionRouting,
-        remote_scanner: Arc<dyn RemoteScannerService>,
-    ) -> Self {
-        Self {
-            my_node_id: OnceLock::from(my_node_id),
-            partition_routing,
+            partition_locator,
             remote_scanner,
             local_store_scanners: LocalPartitionScannerRegistry::default(),
         }
@@ -125,38 +157,25 @@ impl RemoteScannerManager {
 
     pub fn get_partition_target_node(
         &self,
-        table: &str,
         partition_id: PartitionId,
     ) -> anyhow::Result<PartitionLocation> {
-        let my_node_id = self.my_node_id();
-
-        match self.partition_routing.get_node_by_partition(partition_id) {
-            None => {
-                self.partition_routing.request_refresh();
-                bail!("node lookup for partition {} failed", partition_id)
-            }
-            Some(node_id)
-                if node_id
-                    .as_generational()
-                    .is_some_and(|id| id == *my_node_id) =>
-            {
-                Ok(PartitionLocation::Local {
-                    scanner: self
-                        .local_partition_scanner(table)
-                        .expect("should be present"),
-                })
-            }
-            Some(node_id) => Ok(PartitionLocation::Remote { node_id }),
-        }
-    }
-
-    // Note: we initialize my_node_id lazily as it is not available at construction time. We should
-    // be careful since the call to metadata().my_node_id() will panic if the system configuration
-    // isn't fully initialized yet, but we shouldn't be able to accept queries until that is in fact
-    // the case.
-    #[inline]
-    fn my_node_id(&self) -> &GenerationalNodeId {
-        self.my_node_id.get_or_init(|| metadata().my_node_id())
+        self.partition_locator
+            .get_partition_target_node(partition_id)
+        // let my_node_id = metadata().my_node_id();
+        // match self.partition_routing.get_node_by_partition(partition_id) {
+        //     None => {
+        //         self.partition_routing.request_refresh();
+        //         bail!("node lookup for partition {} failed", partition_id)
+        //     }
+        //     Some(node_id)
+        //         if node_id
+        //             .as_generational()
+        //             .is_some_and(|id| id == my_node_id) =>
+        //     {
+        //         Ok(PartitionLocation::Local)
+        //     }
+        //     Some(node_id) => Ok(PartitionLocation::Remote { node_id }),
+        // }
     }
 }
 
@@ -184,11 +203,12 @@ impl ScanPartition for RemotePartitionsScanner {
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        match self
-            .manager
-            .get_partition_target_node(&self.table_name, partition_id)?
-        {
-            PartitionLocation::Local { scanner } => {
+        match self.manager.get_partition_target_node(partition_id)? {
+            PartitionLocation::Local => {
+                let scanner = self
+                    .manager
+                    .local_partition_scanner(&self.table_name)
+                    .expect("This is local");
                 Ok(scanner.scan_partition(partition_id, range, projection)?)
             }
             PartitionLocation::Remote { node_id } => Ok(remote_scan_as_datafusion_stream(

@@ -26,9 +26,11 @@ use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
-use restate_storage_query_datafusion::remote_invoker_status_handle::RemoteInvokerStatusHandle;
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
-use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
+use restate_storage_query_datafusion::remote_query_scanner_manager::{
+    create_partition_locator, RemoteScannerManager,
+};
+use restate_storage_query_datafusion::NotImplementedStatusHandle;
 use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
@@ -87,12 +89,12 @@ impl<T: TransportConnect> AdminRole<T> {
             query_context
         } else {
             let remote_scanner_manager = RemoteScannerManager::new(
-                partition_routing,
                 create_remote_scanner_service(
                     networking.clone(),
                     task_center.clone(),
                     router_builder,
                 ),
+                create_partition_locator(partition_routing, task_center.clone()),
             );
 
             // need to create a remote query context since we are not co-located with a worker role
@@ -100,7 +102,7 @@ impl<T: TransportConnect> AdminRole<T> {
                 &config.admin.query_engine,
                 SelectPartitionsFromMetadata::new(metadata.clone()),
                 None,
-                RemoteInvokerStatusHandle,
+                Option::<NotImplementedStatusHandle>::None,
                 metadata.updateable_schema(),
                 remote_scanner_manager,
             )

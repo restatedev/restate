@@ -37,15 +37,28 @@ use datafusion::arrow::ipc::convert::IpcSchemaEncoder;
 use datafusion::arrow::ipc::writer::DictionaryTracker;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
+use restate_invoker_api::{InvocationStatusReport, StatusHandle};
+use restate_types::identifiers::PartitionKey;
+use std::ops::RangeInclusive;
 
 #[cfg(test)]
 pub(crate) mod mocks;
 
-pub mod remote_invoker_status_handle;
 pub mod remote_query_scanner_client;
 pub mod remote_query_scanner_manager;
 #[cfg(test)]
 mod tests;
+
+#[derive(Debug, Clone)]
+pub struct NotImplementedStatusHandle;
+
+impl StatusHandle for NotImplementedStatusHandle {
+    type Iterator = std::vec::IntoIter<InvocationStatusReport>;
+
+    async fn read_status(&self, _keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
+        panic!("this should not be used");
+    }
+}
 
 pub(crate) fn encode_schema(schema: &Schema) -> Vec<u8> {
     let mut dictionary_tracker = DictionaryTracker::new(true);

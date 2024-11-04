@@ -41,7 +41,9 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
-use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
+use restate_storage_query_datafusion::remote_query_scanner_manager::{
+    create_partition_locator, RemoteScannerManager,
+};
 use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_types::config::Configuration;
@@ -175,14 +177,14 @@ impl<T: TransportConnect> Worker<T> {
         router_builder.add_message_handler(partition_processor_manager.message_handler());
 
         let remote_scanner_manager = RemoteScannerManager::new(
-            partition_routing,
             create_remote_scanner_service(networking, task_center(), router_builder),
+            create_partition_locator(partition_routing, task_center()),
         );
         let storage_query_context = QueryContext::create(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata::new(metadata),
             Some(partition_store_manager.clone()),
-            partition_processor_manager.invokers_status_reader(),
+            Some(partition_processor_manager.invokers_status_reader()),
             schema.clone(),
             remote_scanner_manager,
         )
