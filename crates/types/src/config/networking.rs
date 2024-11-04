@@ -62,14 +62,9 @@ pub struct NetworkingOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub http2_keep_alive_timeout: humantime::Duration,
 
-    // #[serde_as(as = "prefix_http2_keep_alive")]
-    // #[serde(flatten)]
-    // pub http2_keep_alive_options: Http2KeepAliveOptions,
     /// # HTTP/2 Adaptive Window
     pub http2_adaptive_window: bool,
 }
-
-serde_with::with_prefix!(prefix_http2_keep_alive "http2_keep_alive_");
 
 impl Default for NetworkingOptions {
     fn default() -> Self {
