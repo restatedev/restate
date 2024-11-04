@@ -56,7 +56,7 @@ struct RestateArguments {
     )]
     config_file: Option<PathBuf>,
 
-    /// Dumps the loaded configuration (or default if no config-file is set) to stdout and exits.
+    /// Dumps the loaded configuration (or default if no config-file is set) to stdout.
     /// Defaults will include any values overridden by environment variables.
     #[clap(long)]
     dump_config: bool,
@@ -134,7 +134,6 @@ fn main() {
     };
     if cli_args.dump_config {
         println!("{}", config.dump().expect("config is toml serializable"));
-        std::process::exit(0);
     }
     if std::io::stdout().is_terminal() {
         let mut stdout = std::io::stdout().lock();
