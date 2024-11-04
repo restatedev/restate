@@ -26,8 +26,6 @@ pub use service::{Error, LocalMetadataStoreService};
 pub async fn create_client(
     metadata_store_client_options: MetadataStoreClientOptions,
 ) -> Result<MetadataStoreClient, GenericError> {
-    // let connect_timeout = *metadata_store_client_options.connect_timeout.as_ref();
-    let connect_timeout = std::time::Duration::from_secs(5);
     let backoff_policy = Some(
         metadata_store_client_options
             .metadata_store_client_backoff_policy
@@ -36,11 +34,17 @@ pub async fn create_client(
 
     let client = match metadata_store_client_options.metadata_store_client.clone() {
         MetadataStoreClientConfig::Embedded { address } => {
-            let store = LocalMetadataStoreClient::new(address, connect_timeout);
+            let store = LocalMetadataStoreClient::new(address, &metadata_store_client_options);
             MetadataStoreClient::new(store, backoff_policy)
         }
         MetadataStoreClientConfig::Etcd { addresses } => {
-            let store = EtcdMetadataStore::new(addresses, connect_timeout).await?;
+            let store = EtcdMetadataStore::new(
+                addresses,
+                metadata_store_client_options
+                    .metadata_store_connect_timeout
+                    .into(),
+            )
+            .await?;
             MetadataStoreClient::new(store, backoff_policy)
         }
     };

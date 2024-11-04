@@ -27,7 +27,7 @@ use restate_core::network::TransportConnect;
 use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::config::IngressOptions;
 use restate_types::live::Live;
 use restate_types::net::AdvertisedAddress;
@@ -114,7 +114,7 @@ impl<T: TransportConnect> AdminRole<T> {
         bifrost: Bifrost,
         all_partitions_started_tx: oneshot::Sender<()>,
         node_address: AdvertisedAddress,
-        connect_timeout: Duration,
+        networking_options: NetworkingOptions,
     ) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
@@ -135,7 +135,7 @@ impl<T: TransportConnect> AdminRole<T> {
                 self.updateable_config.map(|c| &c.admin),
                 NodeSvcClient::new(create_tonic_channel_from_advertised_address(
                     node_address,
-                    connect_timeout,
+                    &networking_options,
                 )),
                 bifrost,
             ),

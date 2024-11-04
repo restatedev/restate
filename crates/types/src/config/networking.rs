@@ -11,12 +11,15 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+use crate::config::CommonClientConnectionOptions;
+use crate::retries::RetryPolicy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use crate::retries::RetryPolicy;
-
 /// # Networking options
+///
+/// Common network configuration options for communicating with Restate cluster nodes. Note that
+/// similar keys are present in other config sections, such as in Service Client options.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -48,7 +51,25 @@ pub struct NetworkingOptions {
     /// The number of messages that can be queued on the outbound stream of a single
     /// connection.
     pub outbound_queue_length: NonZeroUsize,
+
+    /// # HTTP/2 Keep Alive Interval
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub http2_keep_alive_interval: humantime::Duration,
+
+    /// # HTTP/2 Keep Alive Timeout
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub http2_keep_alive_timeout: humantime::Duration,
+
+    // #[serde_as(as = "prefix_http2_keep_alive")]
+    // #[serde(flatten)]
+    // pub http2_keep_alive_options: Http2KeepAliveOptions,
+    /// # HTTP/2 Adaptive Window
+    pub http2_adaptive_window: bool,
 }
+
+serde_with::with_prefix!(prefix_http2_keep_alive "http2_keep_alive_");
 
 impl Default for NetworkingOptions {
     fn default() -> Self {
@@ -62,6 +83,27 @@ impl Default for NetworkingOptions {
             ),
             handshake_timeout: Duration::from_secs(3).into(),
             outbound_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
+            http2_keep_alive_interval: Duration::from_secs(40).into(),
+            http2_keep_alive_timeout: Duration::from_secs(20).into(),
+            http2_adaptive_window: true,
         }
+    }
+}
+
+impl CommonClientConnectionOptions for NetworkingOptions {
+    fn connect_timeout(&self) -> Duration {
+        self.connect_timeout.into()
+    }
+
+    fn http2_keep_alive_interval(&self) -> Option<Duration> {
+        Some(self.http2_keep_alive_interval.into())
+    }
+
+    fn http2_keep_alive_timeout(&self) -> Option<Duration> {
+        Some(self.http2_keep_alive_timeout.into())
+    }
+
+    fn http2_adaptive_window(&self) -> Option<bool> {
+        Some(self.http2_adaptive_window)
     }
 }

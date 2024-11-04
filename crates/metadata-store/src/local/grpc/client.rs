@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
-
 use async_trait::async_trait;
 use bytestring::ByteString;
 use tonic::transport::Channel;
@@ -19,6 +17,7 @@ use restate_core::metadata_store::{
     MetadataStore, Precondition, ReadError, VersionedValue, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
+use restate_types::config::CommonClientConnectionOptions;
 use restate_types::net::AdvertisedAddress;
 use restate_types::Version;
 
@@ -33,9 +32,9 @@ pub struct LocalMetadataStoreClient {
 }
 
 impl LocalMetadataStoreClient {
-    pub fn new(metadata_store_address: AdvertisedAddress, connect_timeout: Duration) -> Self {
+    pub fn new<T: CommonClientConnectionOptions>(metadata_store_address: AdvertisedAddress, options: &T) -> Self {
         let channel =
-            create_tonic_channel_from_advertised_address(metadata_store_address, connect_timeout);
+            create_tonic_channel_from_advertised_address(metadata_store_address, options);
 
         Self {
             svc_client: MetadataStoreSvcClient::new(channel),

@@ -424,7 +424,7 @@ impl Node {
                     bifrost.clone(),
                     all_partitions_started_tx,
                     config.common.advertised_address.clone(),
-                    config.networking.connect_timeout.into(),
+                    config.networking.clone(),
                 ),
             )?;
 
