@@ -175,6 +175,7 @@ impl<T: TransportConnect> Worker<T> {
         router_builder.add_message_handler(partition_processor_manager.message_handler());
 
         let remote_scanner_manager = RemoteScannerManager::new(
+            metadata.clone(),
             partition_routing,
             create_remote_scanner_service(networking, task_center(), router_builder),
         );

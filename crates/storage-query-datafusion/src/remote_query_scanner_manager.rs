@@ -16,9 +16,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use anyhow::bail;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
-
-use restate_core::metadata;
 use restate_core::partitions::PartitionRouting;
+use restate_core::Metadata;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::{GenerationalNodeId, NodeId};
 
@@ -55,6 +54,7 @@ impl LocalPartitionScannerRegistry {
 #[derive(Clone)]
 pub struct RemoteScannerManager {
     my_node_id: OnceLock<GenerationalNodeId>,
+    metadata: Option<Metadata>,
     partition_routing: PartitionRouting,
     remote_scanner: Arc<dyn RemoteScannerService>,
     local_store_scanners: LocalPartitionScannerRegistry,
@@ -73,11 +73,13 @@ pub enum PartitionLocation {
 
 impl RemoteScannerManager {
     pub fn new(
+        metadata: Metadata,
         partition_routing: PartitionRouting,
         remote_scanner: Arc<dyn RemoteScannerService>,
     ) -> Self {
         Self {
             my_node_id: OnceLock::new(),
+            metadata: Some(metadata),
             partition_routing,
             remote_scanner,
             local_store_scanners: LocalPartitionScannerRegistry::default(),
@@ -92,6 +94,7 @@ impl RemoteScannerManager {
     ) -> Self {
         Self {
             my_node_id: OnceLock::from(my_node_id),
+            metadata: None, // it's okay not to set metadata as long as my_node_id is set upfront
             partition_routing,
             remote_scanner,
             local_store_scanners: LocalPartitionScannerRegistry::default(),
@@ -156,7 +159,12 @@ impl RemoteScannerManager {
     // the case.
     #[inline]
     fn my_node_id(&self) -> &GenerationalNodeId {
-        self.my_node_id.get_or_init(|| metadata().my_node_id())
+        self.my_node_id.get_or_init(|| {
+            self.metadata
+                .as_ref()
+                .expect("must have metadata if no node id is set")
+                .my_node_id()
+        })
     }
 }
 

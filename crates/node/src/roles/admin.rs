@@ -87,6 +87,7 @@ impl<T: TransportConnect> AdminRole<T> {
             query_context
         } else {
             let remote_scanner_manager = RemoteScannerManager::new(
+                metadata.clone(),
                 partition_routing,
                 create_remote_scanner_service(
                     networking.clone(),
