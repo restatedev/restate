@@ -51,12 +51,11 @@ pub struct Node {
                 self.base_config.common.advertised_address = AdvertisedAddress::Uds(node_socket);
             }
 
-            pub fn with_local_embedded_metadata_store(self) {
-                self.base_config.common.metadata_store_client.metadata_store_client = MetadataStoreClient::Embedded { address: self.base_config.common.advertised_address.clone() }
-            }
-
-            pub fn with_embedded_metadata_store(self, address: AdvertisedAddress) {
-                self.base_config.common.metadata_store_client.metadata_store_client = MetadataStoreClient::Embedded { address }
+            #[mutator(requires = [base_dir])]
+            pub fn with_socket_metadata(self) {
+                let metadata_socket: PathBuf = "metadata.sock".into();
+                self.base_config.metadata_store.bind_address = BindAddress::Uds(metadata_socket.clone());
+                self.base_config.common.metadata_store_client.metadata_store_client = MetadataStoreClient::Embedded { address: AdvertisedAddress::Uds(metadata_socket) }
             }
 
             pub fn with_random_ports(self) {
@@ -111,14 +110,6 @@ pub enum NodeStartError {
     SpawnError(io::Error),
 }
 
-/// Configures where the metadata store runs.
-pub enum MetadataStoreLocation {
-    // It should run as part of this node
-    Local,
-    // It runs remotely and can be accessed under this address
-    Remote(AdvertisedAddress),
-}
-
 impl Node {
     pub fn node_name(&self) -> &str {
         self.base_config.node_name()
@@ -140,28 +131,16 @@ impl Node {
         base_config: Configuration,
         binary_source: BinarySource,
         roles: EnumSet<Role>,
-        metadata_store_location: MetadataStoreLocation,
     ) -> Self {
-        let builder = Self::builder()
+        Self::builder()
             .binary_source(binary_source)
             .base_config(base_config)
             .with_node_name(node_name)
             .with_node_socket()
+            .with_socket_metadata()
             .with_random_ports()
-            .with_roles(roles);
-
-        let builder = match metadata_store_location {
-            MetadataStoreLocation::Local => {
-                assert!(
-                    roles.contains(Role::MetadataStore),
-                    "The MetadataStore role is required to run the metadata store locally"
-                );
-                builder.with_local_embedded_metadata_store()
-            }
-            MetadataStoreLocation::Remote(address) => builder.with_embedded_metadata_store(address),
-        };
-
-        builder.build()
+            .with_roles(roles)
+            .build()
     }
 
     // Creates a group of Nodes with a single metadata node "metadata-node" running the
@@ -176,23 +155,18 @@ impl Node {
     ) -> Vec<Self> {
         let mut nodes = Vec::with_capacity((size + 1) as usize);
 
-        let metadata_node_address = {
-            let mut node_config = base_config.clone();
+        {
+            let mut base_config = base_config.clone();
             // let any node write the initial NodesConfiguration
-            node_config.common.allow_bootstrap = true;
-            node_config.common.force_node_id = Some(PlainNodeId::new(0));
-            let metadata_node = Self::new_test_node(
+            base_config.common.allow_bootstrap = true;
+            base_config.common.force_node_id = Some(PlainNodeId::new(0));
+            nodes.push(Self::new_test_node(
                 "metadata-node",
-                node_config,
+                base_config,
                 binary_source.clone(),
                 enum_set!(Role::Admin | Role::MetadataStore),
-                MetadataStoreLocation::Local,
-            );
-            let metadata_node_address = metadata_node.config().common.advertised_address.clone();
-            nodes.push(metadata_node);
-
-            metadata_node_address
-        };
+            ));
+        }
 
         for node in 1..=size {
             let mut base_config = base_config.clone();
@@ -202,7 +176,6 @@ impl Node {
                 base_config,
                 binary_source.clone(),
                 roles,
-                MetadataStoreLocation::Remote(metadata_node_address.clone()),
             ));
         }
 
@@ -229,6 +202,9 @@ impl Node {
             .metadata_store_client
             .metadata_store_client
         {
+            *file = base_dir.join(&*file)
+        }
+        if let BindAddress::Uds(file) = &mut self.base_config.metadata_store.bind_address {
             *file = base_dir.join(&*file)
         }
         if let BindAddress::Uds(file) = &mut self.base_config.common.bind_address {
@@ -651,6 +627,14 @@ impl StartedNode {
     pub fn admin_address(&self) -> Option<&SocketAddr> {
         if self.config().has_role(Role::Admin) {
             Some(&self.config().admin.bind_address)
+        } else {
+            None
+        }
+    }
+
+    pub fn metadata_address(&self) -> Option<&BindAddress> {
+        if self.config().has_role(Role::MetadataStore) {
+            Some(&self.config().metadata_store.bind_address)
         } else {
             None
         }
