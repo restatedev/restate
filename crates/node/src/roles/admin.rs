@@ -19,12 +19,14 @@ use restate_core::network::MessageRouterBuilder;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
+use restate_core::partitions::PartitionRouting;
 use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_invoker_status_handle::RemoteInvokerStatusHandle;
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
+use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
 use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
@@ -62,6 +64,7 @@ impl<T: TransportConnect> AdminRole<T> {
         bifrost: Bifrost,
         updateable_config: Live<Configuration>,
         metadata: Metadata,
+        partition_routing: PartitionRouting,
         networking: Networking<T>,
         metadata_writer: MetadataWriter,
         server_builder: &mut NetworkServerBuilder,
@@ -81,6 +84,16 @@ impl<T: TransportConnect> AdminRole<T> {
         let query_context = if let Some(query_context) = local_query_context {
             query_context
         } else {
+            let remote_scanner_manager = RemoteScannerManager::new(
+                metadata.clone(),
+                partition_routing,
+                create_remote_scanner_service(
+                    networking.clone(),
+                    task_center.clone(),
+                    router_builder,
+                ),
+            );
+
             // need to create a remote query context since we are not co-located with a worker role
             QueryContext::create(
                 &config.admin.query_engine,
@@ -88,11 +101,7 @@ impl<T: TransportConnect> AdminRole<T> {
                 None,
                 RemoteInvokerStatusHandle,
                 metadata.updateable_schema(),
-                create_remote_scanner_service(
-                    networking.clone(),
-                    task_center.clone(),
-                    router_builder,
-                ),
+                remote_scanner_manager,
             )
             .await?
         };

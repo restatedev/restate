@@ -23,6 +23,7 @@ use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
+
 use restate_core::Metadata;
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
@@ -33,7 +34,6 @@ use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
-use crate::remote_query_scanner_client::RemoteScannerService;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::ScanPartition;
 use crate::{analyzer, physical_optimizer};
@@ -105,6 +105,7 @@ pub struct QueryContext {
 }
 
 impl QueryContext {
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         options: &QueryEngineOptions,
         partition_selector: impl SelectPartitions + Clone,
@@ -113,10 +114,8 @@ impl QueryContext {
         schemas: Live<
             impl DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
         >,
-        remote_scanner_service: Arc<dyn RemoteScannerService>,
+        remote_scanner_manager: RemoteScannerManager,
     ) -> Result<QueryContext, BuildError> {
-        let remote_scanner_manager = RemoteScannerManager::new(remote_scanner_service);
-
         let ctx = QueryContext::new(
             options.memory_size.get(),
             options.tmp_dir.clone(),

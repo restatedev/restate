@@ -24,19 +24,18 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
-
 use restate_types::identifiers::{PartitionId, PartitionKey};
 
 use crate::context::SelectPartitions;
 use crate::table_util::compute_ordering;
 
-pub(crate) trait ScanPartition: Send + Sync + Debug + 'static {
+pub trait ScanPartition: Send + Sync + Debug + 'static {
     fn scan_partition(
         &self,
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
-    ) -> SendableRecordBatchStream;
+    ) -> anyhow::Result<SendableRecordBatchStream>;
 }
 
 pub(crate) struct PartitionedTableProvider<T, S> {
@@ -180,9 +179,10 @@ where
             .live_partitions
             .get(partition)
             .expect("num_partitions within bounds");
-        let stream =
-            self.scanner
-                .scan_partition(*partition_id, range, self.projected_schema.clone());
+        let stream = self
+            .scanner
+            .scan_partition(*partition_id, range, self.projected_schema.clone())
+            .map_err(|e| DataFusionError::External(e.into()))?;
         Ok(stream)
     }
 }

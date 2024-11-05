@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::pin::pin;
 use std::sync::Arc;
 
@@ -37,9 +38,8 @@ pub enum Command {
     SyncRoutingInformation,
 }
 
-/// Holds a view of the known partition-to-node mappings. Use it to discover which node(s) to route
-/// requests to for a given partition. Compared to the partition table, this view is more dynamic as
-/// it changes based on cluster nodes' operational status. This handle can be cheaply cloned.
+/// Discover cluster nodes for a given partition. Compared to the partition table, this view is more
+/// dynamic as it changes based on cluster nodes' operational status. Can be cheaply cloned.
 #[derive(Clone)]
 pub struct PartitionRouting {
     sender: CommandSender,
@@ -48,28 +48,61 @@ pub struct PartitionRouting {
 }
 
 impl PartitionRouting {
-    /// Look up a suitable node to answer requests for the given partition.
+    /// Look up a suitable node to process requests for a given partition. Answers are authoritative
+    /// though subject to propagation delays through the cluster in distributed deployments.
+    /// Generally, as a consumer of routing information, your options are limited to backing off and
+    /// retrying the request, or returning an error upstream when information is not available.
+    ///
+    /// A `None` response indicates that either we have no knowledge about this partition, or that
+    /// the routing table has not yet been refreshed for the cluster. The latter condition should be
+    /// brief and only on startup, so we can generally treat lack of response as a negative answer.
+    /// An automatic refresh is scheduled any time a `None` response is returned.
     pub fn get_node_by_partition(&self, partition_id: PartitionId) -> Option<NodeId> {
-        self.partition_to_node_mappings
-            .load()
-            .inner
-            .get(&partition_id)
-            .copied()
+        let mappings = self.partition_to_node_mappings.load();
+
+        // This check should ideally be strengthened to make sure we're using reasonably fresh lookup data
+        if mappings.version < Version::MIN {
+            debug!("Partition routing information not available - requesting refresh");
+            self.request_refresh();
+            return None;
+        }
+
+        let maybe_node = mappings.inner.get(&partition_id).cloned();
+        if maybe_node.is_none() {
+            debug!(
+                ?partition_id,
+                "No known node for partition - requesting refresh"
+            );
+            self.request_refresh();
+        }
+        maybe_node
     }
 
-    /// Call this to hint to the background refresher that its view may be outdated. This is useful
-    /// when a caller discovers via some other mechanism that routing infromation may be invalid -
-    /// for example, when a request to a node previously returned by `get_node_by_partition` fails
-    /// with a response that explicitly indicates that it is no longer serving that partition. The
-    /// call returns as soon as the request is enqueued. A refresh is not guaranteed to happen.
-    pub async fn request_refresh(&self) {
-        self.sender
-            .send(Command::SyncRoutingInformation)
-            .await
-            .expect("Failed to send refresh request");
+    /// Provide a hint that the partition-to-nodes view may be outdated. This is useful when a
+    /// caller discovers via some other mechanism that routing information may be invalid - for
+    /// example, when a request to a node previously returned by
+    /// [`PartitionRouting::get_node_by_partition`] indicates that it is no longer serving that
+    /// partition.
+    ///
+    /// This call returns immediately, while the refresh itself is performed asynchronously on a
+    /// best-effort basis. Multiple calls will not result in multiple refresh attempts. You only
+    /// need to call this method if you get a node id, and later discover it's incorrect; a `None`
+    /// response to a lookup triggers a refresh automatically.
+    pub fn request_refresh(&self) {
+        // if the channel already contains an unconsumed message, it doesn't matter that we can't send another
+        let _ = self.sender.try_send(Command::SyncRoutingInformation).ok();
     }
 }
 
+impl Debug for PartitionRouting {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PartitionNodeResolver(")?;
+        self.partition_to_node_mappings.load().fmt(f)?;
+        f.write_str(")")
+    }
+}
+
+#[derive(Debug)]
 struct PartitionToNodesRoutingTable {
     version: Version,
     /// A mapping of partition IDs to node IDs that are believed to be authoritative for that
@@ -158,7 +191,7 @@ impl PartitionRoutingRefresher {
             let metadata_store_client = self.metadata_store_client.clone();
 
             let task = task_center().spawn_unmanaged(
-                crate::TaskKind::Disposable,
+                TaskKind::Disposable,
                 "refresh-routing-information",
                 None,
                 {
@@ -227,4 +260,37 @@ async fn sync_routing_information(
             inner: partition_nodes,
         }),
     );
+}
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod mocks {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
+    use tokio::sync::mpsc;
+
+    use crate::partitions::PartitionRouting;
+    use restate_types::identifiers::PartitionId;
+    use restate_types::{GenerationalNodeId, NodeId, Version};
+
+    pub fn fixed_single_node(
+        node_id: GenerationalNodeId,
+        partition_id: PartitionId,
+    ) -> PartitionRouting {
+        let (sender, _) = mpsc::channel(1);
+
+        let mut mappings = HashMap::default();
+        mappings.insert(partition_id, NodeId::Generational(node_id));
+
+        PartitionRouting {
+            sender,
+            partition_to_node_mappings: Arc::new(ArcSwap::new(Arc::new(
+                super::PartitionToNodesRoutingTable {
+                    version: Version::MIN,
+                    inner: mappings,
+                },
+            ))),
+        }
+    }
 }
