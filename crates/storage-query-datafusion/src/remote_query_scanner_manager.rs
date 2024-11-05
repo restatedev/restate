@@ -135,7 +135,6 @@ impl RemoteScannerManager {
 
         match self.partition_routing.get_node_by_partition(partition_id) {
             None => {
-                self.partition_routing.request_refresh();
                 bail!("node lookup for partition {} failed", partition_id)
             }
             Some(node_id)

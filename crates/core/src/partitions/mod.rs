@@ -56,17 +56,26 @@ impl PartitionRouting {
     /// A `None` response indicates that either we have no knowledge about this partition, or that
     /// the routing table has not yet been refreshed for the cluster. The latter condition should be
     /// brief and only on startup, so we can generally treat lack of response as a negative answer.
+    /// An automatic refresh is scheduled any time a `None` response is returned.
     pub fn get_node_by_partition(&self, partition_id: PartitionId) -> Option<NodeId> {
         let mappings = self.partition_to_node_mappings.load();
 
         // This check should ideally be strengthened to make sure we're using reasonably fresh lookup data
         if mappings.version < Version::MIN {
-            debug!("Partition routing information not available - awaiting refresh");
+            debug!("Partition routing information not available - requesting refresh");
             self.request_refresh();
-            None
-        } else {
-            mappings.inner.get(&partition_id).cloned()
+            return None;
         }
+
+        let maybe_node = mappings.inner.get(&partition_id).cloned();
+        if maybe_node.is_none() {
+            debug!(
+                ?partition_id,
+                "No known node for partition - requesting refresh"
+            );
+            self.request_refresh();
+        }
+        maybe_node
     }
 
     /// Provide a hint that the partition-to-nodes view may be outdated. This is useful when a
@@ -76,7 +85,9 @@ impl PartitionRouting {
     /// partition.
     ///
     /// This call returns immediately, while the refresh itself is performed asynchronously on a
-    /// best-effort basis. Multiple calls will not result in multiple refresh attempts.
+    /// best-effort basis. Multiple calls will not result in multiple refresh attempts. You only
+    /// need to call this method if you get a node id, and later discover it's incorrect; a `None`
+    /// response to a lookup triggers a refresh automatically.
     pub fn request_refresh(&self) {
         // if the channel already contains an unconsumed message, it doesn't matter that we can't send another
         let _ = self.sender.try_send(Command::SyncRoutingInformation).ok();
