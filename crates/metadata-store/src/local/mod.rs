@@ -38,13 +38,7 @@ pub async fn create_client(
             MetadataStoreClient::new(store, backoff_policy)
         }
         MetadataStoreClientConfig::Etcd { addresses } => {
-            let store = EtcdMetadataStore::new(
-                addresses,
-                metadata_store_client_options
-                    .metadata_store_connect_timeout
-                    .into(),
-            )
-            .await?;
+            let store = EtcdMetadataStore::new(addresses, &metadata_store_client_options).await?;
             MetadataStoreClient::new(store, backoff_policy)
         }
     };
