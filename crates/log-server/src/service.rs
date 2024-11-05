@@ -9,9 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::Context;
+use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, instrument};
 
-use restate_core::network::MessageRouterBuilder;
+use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::Configuration;
@@ -24,10 +25,12 @@ use restate_types::protobuf::common::LogServerStatus;
 use restate_types::GenerationalNodeId;
 
 use crate::error::LogServerBuildError;
+use crate::grpc_svc_handler::LogServerSvcHandler;
 use crate::logstore::LogStore;
 use crate::metadata::LogStoreMarker;
 use crate::metric_definitions::describe_metrics;
 use crate::network::RequestPump;
+use crate::protobuf::log_server_svc_server::LogServerSvcServer;
 use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
 
 pub struct LogServerService {
@@ -71,7 +74,11 @@ impl LogServerService {
         })
     }
 
-    pub async fn start(self, mut metadata_writer: MetadataWriter) -> anyhow::Result<()> {
+    pub async fn start(
+        self,
+        mut metadata_writer: MetadataWriter,
+        server_builder: &mut NetworkServerBuilder,
+    ) -> anyhow::Result<()> {
         let LogServerService {
             health_status,
             updateable_config,
@@ -87,7 +94,7 @@ impl LogServerService {
         let log_store_builder = RocksDbLogStoreBuilder::create(
             updateable_config.clone().map(|c| &c.log_server).boxed(),
             updateable_config.map(|c| &c.log_server.rocksdb).boxed(),
-            record_cache,
+            record_cache.clone(),
         )
         .await?;
 
@@ -106,12 +113,21 @@ impl LogServerService {
         )
         .await?;
 
-        task_center.spawn_child(
+        // 4. Start the log-server grpc service
+        server_builder.register_grpc_service(
+            LogServerSvcServer::new(LogServerSvcHandler::new(log_store.clone(), record_cache))
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+            crate::protobuf::FILE_DESCRIPTOR_SET,
+        );
+
+        let _ = task_center.spawn_child(
             TaskKind::SystemService,
             "log-server",
             None,
             request_pump.run(health_status, log_store, storage_state),
         )?;
+
         Ok(())
     }
 
