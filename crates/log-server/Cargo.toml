@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+clients = []
 test-util = []
 
 [dependencies]
@@ -19,6 +20,7 @@ restate-rocksdb = { workspace = true }
 restate-types = { workspace = true, features = ["replicated-loglet"] }
 
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -34,13 +36,19 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 smallvec = { workspace = true }
 static_assertions = { workspace = true }
+prost = { workspace = true }
+prost-dto = { workspace = true }
+prost-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true }
+tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
 tracing = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 
+[build-dependencies]
+tonic-build = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }
