@@ -19,7 +19,6 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
-use restate_core::partitions::mocks::fixed_single_node;
 use restate_core::task_center;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::StatusHandle;
@@ -38,12 +37,14 @@ use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
-use restate_types::{GenerationalNodeId, NodeId};
+use restate_types::NodeId;
 
 use super::context::QueryContext;
 use crate::context::SelectPartitions;
 use crate::remote_query_scanner_client::RemoteScannerService;
-use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::remote_query_scanner_manager::{
+    PartitionLocation, PartitionLocator, RemoteScannerManager,
+};
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MockSchemas(
@@ -132,6 +133,17 @@ impl RemoteScannerService for NoopSvc {
     }
 }
 
+struct AlwaysLocalPartitionLocator;
+
+impl PartitionLocator for AlwaysLocalPartitionLocator {
+    fn get_partition_target_node(
+        &self,
+        _partition_id: PartitionId,
+    ) -> anyhow::Result<PartitionLocation> {
+        Ok(PartitionLocation::Local)
+    }
+}
+
 impl MockQueryEngine {
     pub async fn create_with(
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
@@ -166,8 +178,6 @@ impl MockQueryEngine {
             .unwrap();
 
         // Matches MockPartitionSelector's single partition
-        let node_id = GenerationalNodeId::new(0, 1);
-        let partition_resolver = fixed_single_node(node_id, PartitionId::MIN);
         Self(
             manager.clone(),
             partition_store,
@@ -175,13 +185,9 @@ impl MockQueryEngine {
                 &QueryEngineOptions::default(),
                 MockPartitionSelector,
                 Some(manager),
-                status,
+                Some(status),
                 Live::from_value(schemas),
-                RemoteScannerManager::with_local_node_id(
-                    node_id,
-                    partition_resolver,
-                    Arc::new(NoopSvc),
-                ),
+                RemoteScannerManager::new(Arc::new(NoopSvc), Arc::new(AlwaysLocalPartitionLocator)),
             )
             .await
             .unwrap(),

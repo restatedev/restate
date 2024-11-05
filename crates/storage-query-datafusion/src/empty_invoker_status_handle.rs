@@ -14,11 +14,10 @@ use std::future::Future;
 use std::ops::RangeInclusive;
 use std::{future, iter};
 
-// todo implement [`StatusHandle`] for reading the status of remote invokers.
 #[derive(Clone, Debug)]
-pub struct RemoteInvokerStatusHandle;
+pub struct EmptyInvokerStatusHandle;
 
-impl StatusHandle for RemoteInvokerStatusHandle {
+impl StatusHandle for EmptyInvokerStatusHandle {
     type Iterator = iter::Empty<InvocationStatusReport>;
 
     fn read_status(

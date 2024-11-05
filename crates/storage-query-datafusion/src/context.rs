@@ -110,7 +110,7 @@ impl QueryContext {
         options: &QueryEngineOptions,
         partition_selector: impl SelectPartitions + Clone,
         local_partition_store_manager: Option<PartitionStoreManager>,
-        status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
+        status: Option<impl StatusHandle + Send + Sync + Debug + Clone + 'static>,
         schemas: Live<
             impl DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
         >,
@@ -125,8 +125,13 @@ impl QueryContext {
         // ----- non partitioned tables -----
         crate::deployment::register_self(&ctx, schemas.clone())?;
         crate::service::register_self(&ctx, schemas)?;
-        crate::invocation_state::register_self(&ctx, status)?;
         // ----- partition-key-based -----
+        crate::invocation_state::register_self(
+            &ctx,
+            partition_selector.clone(),
+            status,
+            local_partition_store_manager.clone(),
+        )?;
         crate::invocation_status::register_self(
             &ctx,
             partition_selector.clone(),
