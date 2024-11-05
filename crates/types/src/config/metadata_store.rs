@@ -18,6 +18,7 @@ use restate_serde_util::NonZeroByteCount;
 use tracing::warn;
 
 use super::{data_dir, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use crate::net::BindAddress;
 
 /// # Metadata store options
 #[serde_as]
@@ -30,6 +31,12 @@ use super::{data_dir, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct MetadataStoreOptions {
+    /// # Bind address of the metadata store
+    ///
+    /// Address to which the metadata store will bind to.
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub bind_address: BindAddress,
+
     /// # Limit number of in-flight requests
     ///
     /// Number of in-flight metadata store requests.
@@ -99,6 +106,7 @@ impl Default for MetadataStoreOptions {
             .build()
             .expect("valid RocksDbOptions");
         Self {
+            bind_address: "0.0.0.0:5123".parse().expect("valid bind address"),
             request_queue_length: NonZeroUsize::new(32).unwrap(),
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
