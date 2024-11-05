@@ -20,7 +20,7 @@ use restate_core::metadata_store::{retry_on_network_error, ReadWriteError};
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
-use restate_core::routing_info::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
+use restate_core::partitions::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
 };
@@ -212,6 +212,7 @@ impl Node {
                 WorkerRole::create(
                     health.worker_status(),
                     metadata.clone(),
+                    partition_routing_refresher.partition_routing(),
                     updateable_config.clone(),
                     &mut router_builder,
                     networking.clone(),
@@ -233,6 +234,7 @@ impl Node {
                     bifrost.clone(),
                     updateable_config.clone(),
                     metadata,
+                    partition_routing_refresher.partition_routing(),
                     networking.clone(),
                     metadata_manager.writer(),
                     &mut server_builder,
@@ -252,7 +254,7 @@ impl Node {
             &mut router_builder,
             worker_role
                 .as_ref()
-                .map(|role| role.parition_processor_manager_handle()),
+                .map(|role| role.partition_processor_manager_handle()),
         );
 
         // Ensures that message router is updated after all services have registered themselves in
@@ -280,7 +282,7 @@ impl Node {
         })
     }
 
-    pub async fn start(self) -> Result<(), anyhow::Error> {
+    pub async fn start(mut self) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
         let config = self.updateable_config.pinned();
@@ -392,12 +394,9 @@ impl Node {
 
         #[cfg(feature = "replicated-loglet")]
         if let Some(log_server) = self.log_server {
-            tc.spawn(
-                TaskKind::SystemBoot,
-                "log-server-init",
-                None,
-                log_server.start(metadata_writer),
-            )?;
+            log_server
+                .start(metadata_writer, &mut self.server_builder)
+                .await?;
         }
 
         if let Some(admin_role) = self.admin_role {

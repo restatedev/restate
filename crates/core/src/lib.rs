@@ -13,7 +13,7 @@ mod metadata;
 pub mod metadata_store;
 mod metric_definitions;
 pub mod network;
-pub mod routing_info;
+pub mod partitions;
 mod task_center;
 mod task_center_types;
 pub mod worker_api;

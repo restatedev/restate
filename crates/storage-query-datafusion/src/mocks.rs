@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-
+use restate_core::partitions::mocks::fixed_single_node;
 use restate_core::task_center;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::StatusHandle;
@@ -37,11 +38,12 @@ use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
-use restate_types::NodeId;
+use restate_types::{GenerationalNodeId, NodeId};
 
 use super::context::QueryContext;
 use crate::context::SelectPartitions;
 use crate::remote_query_scanner_client::RemoteScannerService;
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MockSchemas(
@@ -163,6 +165,9 @@ impl MockQueryEngine {
             .await
             .unwrap();
 
+        // Matches MockPartitionSelector's single partition
+        let node_id = GenerationalNodeId::new(0, 1);
+        let partition_resolver = fixed_single_node(node_id, PartitionId::MIN);
         Self(
             manager.clone(),
             partition_store,
@@ -172,7 +177,11 @@ impl MockQueryEngine {
                 Some(manager),
                 status,
                 Live::from_value(schemas),
-                Arc::new(NoopSvc),
+                RemoteScannerManager::with_local_node_id(
+                    node_id,
+                    partition_resolver,
+                    Arc::new(NoopSvc),
+                ),
             )
             .await
             .unwrap(),

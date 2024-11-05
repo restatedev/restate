@@ -21,8 +21,8 @@ use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTab
 
 use crate::network::rpc_router::{ConnectionAwareRpcError, ConnectionAwareRpcRouter, RpcError};
 use crate::network::{HasConnection, Networking, Outgoing, TransportConnect};
-use crate::routing_info::PartitionRouting;
-use crate::{metadata, ShutdownError};
+use crate::partitions::PartitionRouting;
+use crate::ShutdownError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PartitionProcessorRpcClientError {
@@ -319,12 +319,11 @@ where
             .pinned()
             .find_partition_id(inner_request.partition_key())?;
 
-        // TODO enable it once https://github.com/restatedev/restate/pull/2172 goes in
-        // let node_id = self
-        //     .partition_routing
-        //     .get_node_by_partition(partition_id)
-        //     .ok_or(PartitionProcessorRpcClientError::UnknownNode(partition_id))?;
-        let node_id = metadata().my_node_id();
+        let node_id = self
+            .partition_routing
+            .get_node_by_partition(partition_id)
+            .ok_or(PartitionProcessorRpcClientError::UnknownNode(partition_id))?;
+
         let response = self
             .rpc_router
             .call(
