@@ -17,7 +17,7 @@ use restate_core::metadata_store::{
     MetadataStore, Precondition, ReadError, VersionedValue, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
-use restate_types::config::CommonClientConnectionOptions;
+use restate_core::network::net_util::CommonClientConnectionOptions;
 use restate_types::net::AdvertisedAddress;
 use restate_types::Version;
 

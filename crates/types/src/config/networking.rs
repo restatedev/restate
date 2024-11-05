@@ -11,7 +11,6 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use crate::config::CommonClientConnectionOptions;
 use crate::retries::RetryPolicy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -46,12 +45,6 @@ pub struct NetworkingOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub handshake_timeout: humantime::Duration,
 
-    /// # Connection Send Buffer
-    ///
-    /// The number of messages that can be queued on the outbound stream of a single
-    /// connection.
-    pub outbound_queue_length: NonZeroUsize,
-
     /// # HTTP/2 Keep Alive Interval
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
@@ -64,6 +57,12 @@ pub struct NetworkingOptions {
 
     /// # HTTP/2 Adaptive Window
     pub http2_adaptive_window: bool,
+
+    /// # Connection Send Buffer
+    ///
+    /// The number of messages that can be queued on the outbound stream of a single
+    /// connection.
+    pub outbound_queue_length: NonZeroUsize,
 }
 
 impl Default for NetworkingOptions {
@@ -82,23 +81,5 @@ impl Default for NetworkingOptions {
             http2_keep_alive_timeout: Duration::from_secs(20).into(),
             http2_adaptive_window: true,
         }
-    }
-}
-
-impl CommonClientConnectionOptions for NetworkingOptions {
-    fn connect_timeout(&self) -> Duration {
-        self.connect_timeout.into()
-    }
-
-    fn http2_keep_alive_interval(&self) -> Option<Duration> {
-        Some(self.http2_keep_alive_interval.into())
-    }
-
-    fn http2_keep_alive_timeout(&self) -> Option<Duration> {
-        Some(self.http2_keep_alive_timeout.into())
-    }
-
-    fn http2_adaptive_window(&self) -> Option<bool> {
-        Some(self.http2_adaptive_window)
     }
 }

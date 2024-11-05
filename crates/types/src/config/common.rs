@@ -421,13 +421,6 @@ pub enum LogFormat {
     Json,
 }
 
-pub trait CommonClientConnectionOptions {
-    fn connect_timeout(&self) -> Duration;
-    fn http2_keep_alive_interval(&self) -> Option<Duration>;
-    fn http2_keep_alive_timeout(&self) -> Option<Duration>;
-    fn http2_adaptive_window(&self) -> Option<bool>;
-}
-
 /// # Service Client options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -451,29 +444,21 @@ pub struct MetadataStoreClientOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub metadata_store_connect_timeout: humantime::Duration,
 
+    /// # Metadata Store Keep Alive Interval
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub metadata_store_keep_alive_interval: humantime::Duration,
+
+    /// # Metadata Store Keep Alive Timeout
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub metadata_store_keep_alive_timeout: humantime::Duration,
+
     /// # Backoff policy used by the metadata store client
     ///
     /// Backoff policy used by the metadata store client when it encounters concurrent
     /// modifications.
     pub metadata_store_client_backoff_policy: RetryPolicy,
-}
-
-impl CommonClientConnectionOptions for MetadataStoreClientOptions {
-    fn connect_timeout(&self) -> Duration {
-        self.metadata_store_connect_timeout.into()
-    }
-
-    fn http2_keep_alive_interval(&self) -> Option<Duration> {
-        None
-    }
-
-    fn http2_keep_alive_timeout(&self) -> Option<Duration> {
-        None
-    }
-
-    fn http2_adaptive_window(&self) -> Option<bool> {
-        None
-    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -513,6 +498,8 @@ impl Default for MetadataStoreClientOptions {
                     .expect("valid metadata store address"),
             },
             metadata_store_connect_timeout: Duration::from_secs(5).into(),
+            metadata_store_keep_alive_interval: Duration::from_secs(40).into(),
+            metadata_store_keep_alive_timeout: Duration::from_secs(20).into(),
             metadata_store_client_backoff_policy: RetryPolicy::exponential(
                 Duration::from_millis(10),
                 2.0,
