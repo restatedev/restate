@@ -25,23 +25,14 @@ derive_builder = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
-hyper = { workspace = true }
-hyper-util = { workspace = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = { workspace = true }
-tokio-util = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
-tonic-reflection = { workspace = true }
-tonic-health = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

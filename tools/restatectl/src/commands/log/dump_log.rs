@@ -76,7 +76,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
 
         let metadata_store_client = metadata_store::start_metadata_store(
             config.common.metadata_store_client.clone(),
-            Live::from_value(config.metadata_store.clone()).boxed(),
+            &config.metadata_store,
             Live::from_value(config.metadata_store.clone())
                 .map(|c| &c.rocksdb)
                 .boxed(),

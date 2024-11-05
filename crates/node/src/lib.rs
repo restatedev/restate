@@ -12,7 +12,6 @@ mod cluster_marker;
 mod network_server;
 mod roles;
 
-use tokio::sync::oneshot;
 use tracing::{debug, error, info, trace};
 
 use codederror::CodedError;
@@ -98,6 +97,10 @@ pub enum BuildError {
     #[error("failed to initialize metadata store client: {0}")]
     #[code(unknown)]
     MetadataStoreClient(GenericError),
+
+    #[error("building metadata store failed: {0}")]
+    #[code(unknown)]
+    MetadataStore(#[from] restate_metadata_store::local::BuildError),
 }
 
 pub struct Node {
@@ -127,16 +130,19 @@ impl Node {
 
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
-        // todo(asoli) move local metadata store to use NetworkServer
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
-            Some(LocalMetadataStoreService::from_options(
-                health.metadata_server_status(),
-                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
-                updateable_config
-                    .clone()
-                    .map(|config| &config.metadata_store.rocksdb)
-                    .boxed(),
-            ))
+            Some(
+                LocalMetadataStoreService::create(
+                    health.metadata_server_status(),
+                    &config.metadata_store,
+                    updateable_config
+                        .clone()
+                        .map(|config| &config.metadata_store.rocksdb)
+                        .boxed(),
+                    &mut server_builder,
+                )
+                .await?,
+            )
         } else {
             None
         };
@@ -288,6 +294,23 @@ impl Node {
 
         let config = self.updateable_config.pinned();
 
+        // spawn the node rpc server first to enable connecting to the metadata store
+        tc.spawn(TaskKind::RpcServer, "node-rpc-server", None, {
+            let health = self.health.clone();
+            let common_options = config.common.clone();
+            let connection_manager = self.networking.connection_manager().clone();
+            async move {
+                NetworkServer::run(
+                    health,
+                    connection_manager,
+                    self.server_builder,
+                    common_options,
+                )
+                .await?;
+                Ok(())
+            }
+        })?;
+
         if let Some(metadata_store) = self.metadata_store_role {
             tc.spawn(
                 TaskKind::MetadataStore,
@@ -403,49 +426,18 @@ impl Node {
             )?;
         }
 
-        let all_partitions_started_rx = if let Some(admin_role) = self.admin_role {
-            // todo: This is a temporary fix for https://github.com/restatedev/restate/issues/1651
-            let (all_partitions_started_tx, all_partitions_started_rx) = oneshot::channel();
-            tc.spawn(
-                TaskKind::SystemBoot,
-                "admin-init",
-                None,
-                admin_role.start(all_partitions_started_tx),
-            )?;
-
-            all_partitions_started_rx
-        } else {
-            // We don't wait for all partitions being the leader if we are not co-located with the
-            // admin role which should not be the normal deployment today.
-            let (all_partitions_started_tx, all_partitions_started_rx) = oneshot::channel();
-            let _ = all_partitions_started_tx.send(());
-            all_partitions_started_rx
-        };
+        if let Some(admin_role) = self.admin_role {
+            tc.spawn(TaskKind::SystemBoot, "admin-init", None, admin_role.start())?;
+        }
 
         if let Some(worker_role) = self.worker_role {
             tc.spawn(
                 TaskKind::SystemBoot,
                 "worker-init",
                 None,
-                worker_role.start(all_partitions_started_rx),
+                worker_role.start(),
             )?;
         }
-
-        tc.spawn(TaskKind::RpcServer, "node-rpc-server", None, {
-            let health = self.health.clone();
-            let common_options = config.common.clone();
-            let connection_manager = self.networking.connection_manager().clone();
-            async move {
-                NetworkServer::run(
-                    health,
-                    connection_manager,
-                    self.server_builder,
-                    common_options,
-                )
-                .await?;
-                Ok(())
-            }
-        })?;
 
         self.base_role.start()?;
 

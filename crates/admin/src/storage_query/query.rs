@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -16,20 +17,18 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::{http, Json};
 use bytes::Bytes;
-use datafusion::arrow::array::{
-    Array, ArrayRef, AsArray, BinaryArray, GenericByteArray, StringArray,
-};
-use datafusion::arrow::buffer::{OffsetBuffer, ScalarBuffer};
-use datafusion::arrow::datatypes::{ByteArrayType, DataType, Field, FieldRef, Schema, SchemaRef};
-use datafusion::arrow::error::ArrowError;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::StreamWriter;
+use datafusion::arrow::json::writer::JsonArray;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
+use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
 use okapi_operation::*;
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
@@ -58,125 +57,152 @@ pub struct QueryRequest {
 )]
 pub async fn query(
     State(state): State<Arc<QueryServiceState>>,
+    headers: HeaderMap,
     #[request_body(required = true)] Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, StorageQueryError> {
     let record_batch_stream = state.query_context.execute(&payload.query).await?;
 
-    // create a stream without LargeUtf8 or LargeBinary columns as JS doesn't support these yet
-    let result_stream = ConvertRecordBatchStream::new(record_batch_stream)?.map_ok(Frame::data);
+    let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
+        Some(v) if v == HeaderValue::from_static("application/json") => (
+            WriteRecordBatchStream::<JsonWriter>::new(record_batch_stream)?
+                .map_ok(Frame::data)
+                .left_stream(),
+            "application/json",
+        ),
+        _ => (
+            WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(record_batch_stream)?
+                .map_ok(Frame::data)
+                .right_stream(),
+            "application/vnd.apache.arrow.stream",
+        ),
+    };
 
     Ok(Response::builder()
-        .header(
-            http::header::CONTENT_TYPE,
-            "application/vnd.apache.arrow.stream",
-        )
+        .header(http::header::CONTENT_TYPE, content_type)
         .body(StreamBody::new(result_stream))
         .expect("content-type header is correct"))
 }
 
-fn convert_schema(schema: SchemaRef) -> SchemaRef {
-    let mut fields = Vec::with_capacity(schema.fields.len());
-    for field in schema.fields.iter() {
-        let data_type = match field.data_type() {
-            // Represent binary as base64
-            DataType::LargeBinary => DataType::Binary,
-            DataType::LargeUtf8 => DataType::Utf8,
-            other => other.clone(),
-        };
-        fields.push(FieldRef::new(Field::new(
-            field.name(),
-            data_type,
-            field.is_nullable(),
-        )));
-    }
-    SchemaRef::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
-}
-
-fn convert_record_batch(
-    converted_schema: SchemaRef,
-    batch: RecordBatch,
-) -> Result<RecordBatch, ArrowError> {
-    let mut columns = Vec::with_capacity(batch.columns().len());
-    for (i, field) in batch.schema().fields.iter().enumerate() {
-        match field.data_type() {
-            // Represent binary as base64
-            DataType::LargeBinary => {
-                let col: BinaryArray = convert_array_offset(batch.column(i).as_binary::<i64>())?;
-                columns.push(ArrayRef::from(Box::new(col) as Box<dyn Array>));
-            }
-            DataType::LargeUtf8 => {
-                let col: StringArray = convert_array_offset(batch.column(i).as_string::<i64>())?;
-                columns.push(ArrayRef::from(Box::new(col) as Box<dyn Array>));
-            }
-            _ => {
-                columns.push(batch.column(i).clone());
-            }
-        };
-    }
-    RecordBatch::try_new(converted_schema, columns)
-}
-
-fn convert_array_offset<Before: ByteArrayType, After: ByteArrayType>(
-    array: &GenericByteArray<Before>,
-) -> Result<GenericByteArray<After>, ArrowError>
+trait RecordBatchWriter
 where
-    After::Offset: TryFrom<Before::Offset>,
+    Self: Sized,
 {
-    let offsets = array
-        .offsets()
-        .iter()
-        .map(|&o| After::Offset::try_from(o))
-        .collect::<Result<ScalarBuffer<After::Offset>, _>>()
-        .map_err(|_| ArrowError::CastError("offset conversion failed".into()))?;
-    GenericByteArray::<After>::try_new(
-        OffsetBuffer::new(offsets),
-        array.values().clone(),
-        array.nulls().cloned(),
-    )
+    // Create the writer
+    fn new(schema: &Schema) -> Result<Self, DataFusionError>;
+
+    /// Write a single batch to the writer.
+    fn write(&mut self, batch: &RecordBatch) -> Result<Bytes, DataFusionError>;
+
+    /// Write footer or termination data, then mark the writer as done.
+    fn finish(&mut self) -> Result<Bytes, DataFusionError>;
 }
 
-/// Convert the record batches so that they don't contain LargeUtf8 or LargeBinary columns as JS doesn't
-/// support these yet.
-struct ConvertRecordBatchStream {
-    done: bool,
-    record_batch_stream: SendableRecordBatchStream,
-    stream_writer: StreamWriter<Vec<u8>>,
-    schema: SchemaRef,
-}
-
-impl ConvertRecordBatchStream {
-    fn new(record_batch_stream: SendableRecordBatchStream) -> Result<Self, DataFusionError> {
-        let converted_schema = convert_schema(record_batch_stream.schema());
-        let stream_writer = StreamWriter::try_new(Vec::new(), converted_schema.as_ref())?;
-
-        Ok(ConvertRecordBatchStream {
-            done: false,
-            record_batch_stream,
-            stream_writer,
-            schema: converted_schema,
-        })
-    }
-}
-
-impl ConvertRecordBatchStream {
-    fn write_batch(&mut self, record_batch: RecordBatch) -> Result<(), ArrowError> {
-        let record_batch = convert_record_batch(self.schema.clone(), record_batch)?;
-        self.stream_writer.write(&record_batch)
+impl RecordBatchWriter for StreamWriter<Vec<u8>> {
+    fn new(schema: &Schema) -> Result<Self, DataFusionError> {
+        Ok(Self::try_new(Vec::new(), schema)?)
     }
 
-    fn process_record(
-        mut self: Pin<&mut Self>,
-        record_batch: Result<RecordBatch, DataFusionError>,
-    ) -> Result<Bytes, DataFusionError> {
-        let record_batch = record_batch?;
-        self.write_batch(record_batch)?;
-        let bytes = Bytes::copy_from_slice(self.stream_writer.get_ref());
-        self.stream_writer.get_mut().clear();
+    fn write(&mut self, batch: &RecordBatch) -> Result<Bytes, DataFusionError> {
+        self.write(batch)?;
+        let bytes = Bytes::copy_from_slice(self.get_ref());
+        self.get_mut().clear();
+        Ok(bytes)
+    }
+
+    fn finish(&mut self) -> Result<Bytes, DataFusionError> {
+        self.finish()?;
+        let bytes = Bytes::copy_from_slice(self.get_ref());
+        self.get_mut().clear();
         Ok(bytes)
     }
 }
 
-impl Stream for ConvertRecordBatchStream {
+#[derive(Clone)]
+// unfortunately the json writer doesnt give a way to get a mutable reference to the underlying writer, so we need another pointer in to its buffer
+// we use a lock here to help make the writer send/sync, despite it being totally uncontended :(
+struct LockWriter(Arc<Mutex<Vec<u8>>>);
+
+impl LockWriter {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(Vec::new())))
+    }
+
+    fn take(&self) -> Vec<u8> {
+        let mut vec = self.0.lock();
+        let new_vec = Vec::with_capacity(vec.capacity());
+        std::mem::replace(&mut vec, new_vec)
+    }
+}
+
+impl Write for LockWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().flush()
+    }
+}
+
+struct JsonWriter {
+    json_writer: datafusion::arrow::json::Writer<LockWriter, JsonArray>,
+    lock_writer: LockWriter,
+    started: bool,
+    finished: bool,
+}
+
+impl RecordBatchWriter for JsonWriter {
+    fn new(_schema: &Schema) -> Result<Self, DataFusionError> {
+        let mut lock_writer = LockWriter::new();
+        // we write out under 'rows' key so that we may add extra keys later (eg 'schema')
+        lock_writer.write_all(br#"{"rows":"#)?;
+        Ok(Self {
+            json_writer: datafusion::arrow::json::Writer::new(lock_writer.clone()),
+            lock_writer,
+            started: false,
+            finished: false,
+        })
+    }
+
+    fn write(&mut self, batch: &RecordBatch) -> Result<Bytes, DataFusionError> {
+        self.started = true;
+        self.json_writer.write(batch)?;
+        Ok(Bytes::from(self.lock_writer.take()))
+    }
+
+    fn finish(&mut self) -> Result<Bytes, DataFusionError> {
+        if !self.finished {
+            self.finished = true;
+            self.json_writer.finish()?;
+            if self.started {
+                // if we've started, json writer has set the tailing ]
+                self.lock_writer.write_all(b"}")?;
+            } else {
+                // if we haven't started, json writer has written nothing, so we must write the []
+                self.lock_writer.write_all(b"[]}")?;
+            }
+        }
+        Ok(Bytes::from(self.lock_writer.take()))
+    }
+}
+
+struct WriteRecordBatchStream<W> {
+    done: bool,
+    record_batch_stream: SendableRecordBatchStream,
+    stream_writer: W,
+}
+
+impl<W: RecordBatchWriter> WriteRecordBatchStream<W> {
+    fn new(record_batch_stream: SendableRecordBatchStream) -> Result<Self, DataFusionError> {
+        Ok(WriteRecordBatchStream {
+            done: false,
+            stream_writer: W::new(&record_batch_stream.schema())?,
+            record_batch_stream,
+        })
+    }
+}
+
+impl<W: RecordBatchWriter + Unpin> Stream for WriteRecordBatchStream<W> {
     type Item = Result<Bytes, DataFusionError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -187,7 +213,7 @@ impl Stream for ConvertRecordBatchStream {
         let record_batch = ready!(self.record_batch_stream.poll_next_unpin(cx));
 
         if let Some(record_batch) = record_batch {
-            match self.as_mut().process_record(record_batch) {
+            match record_batch.and_then(|record_batch| self.stream_writer.write(&record_batch)) {
                 Ok(bytes) => Poll::Ready(Some(Ok(bytes))),
                 Err(err) => {
                     self.done = true;
@@ -196,12 +222,9 @@ impl Stream for ConvertRecordBatchStream {
             }
         } else {
             self.done = true;
-            if let Err(err) = self.stream_writer.finish() {
-                Poll::Ready(Some(Err(err.into())))
-            } else {
-                let bytes = Bytes::copy_from_slice(self.stream_writer.get_ref());
-                self.stream_writer.get_mut().clear();
-                Poll::Ready(Some(Ok(bytes)))
+            match self.stream_writer.finish() {
+                Err(err) => Poll::Ready(Some(Err(err))),
+                Ok(bytes) => Poll::Ready(Some(Ok(bytes))),
             }
         }
     }

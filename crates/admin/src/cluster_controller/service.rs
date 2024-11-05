@@ -48,7 +48,7 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, Version};
 
-use super::cluster_state_refresher::{ClusterStateRefresher, ClusterStateWatcher};
+use super::cluster_state_refresher::ClusterStateRefresher;
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
 use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use crate::cluster_controller::logs_controller::{
@@ -250,10 +250,7 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
-    pub async fn run(
-        mut self,
-        all_partitions_started_tx: Option<oneshot::Sender<()>>,
-    ) -> anyhow::Result<()> {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         self.init_partition_table().await?;
 
         let bifrost_admin = BifrostAdmin::new(
@@ -265,21 +262,6 @@ impl<T: TransportConnect> Service<T> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         let mut config_watcher = Configuration::watcher();
         let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
-
-        // todo: This is a temporary band-aid for https://github.com/restatedev/restate/issues/1651
-        //  Remove once it is properly fixed.
-        if let Some(all_partition_started_tx) = all_partitions_started_tx {
-            self.task_center.spawn_child(
-                TaskKind::SystemBoot,
-                "signal-all-partitions-started",
-                None,
-                signal_all_partitions_started(
-                    cluster_state_watcher.clone(),
-                    self.metadata.clone(),
-                    all_partition_started_tx,
-                ),
-            )?;
-        }
 
         self.task_center.spawn_child(
             TaskKind::SystemService,
@@ -611,51 +593,6 @@ async fn sync_cluster_controller_metadata(metadata: Metadata) -> anyhow::Result<
     Ok(())
 }
 
-async fn signal_all_partitions_started(
-    mut cluster_state_watcher: ClusterStateWatcher,
-    metadata: Metadata,
-    all_partitions_started_tx: oneshot::Sender<()>,
-) -> anyhow::Result<()> {
-    loop {
-        let cluster_state = cluster_state_watcher.next_cluster_state().await?;
-
-        if cluster_state.partition_table_version != metadata.partition_table_version()
-            || metadata.partition_table_version() == Version::INVALID
-        {
-            // syncing of PartitionTable since we obviously don't have up-to-date information
-            metadata
-                .sync(
-                    MetadataKind::PartitionTable,
-                    TargetVersion::Version(cluster_state.partition_table_version.max(Version::MIN)),
-                )
-                .await?;
-        } else {
-            let partition_table = metadata.partition_table_ref();
-
-            let mut pending_partitions_wo_leader = partition_table.num_partitions();
-
-            for alive_node in cluster_state.alive_nodes() {
-                alive_node
-                    .partitions
-                    .iter()
-                    .for_each(|(_, partition_state)| {
-                        // currently, there can only be a single leader per partition
-                        if partition_state.is_effective_leader() {
-                            pending_partitions_wo_leader =
-                                pending_partitions_wo_leader.saturating_sub(1);
-                        }
-                    })
-            }
-
-            if pending_partitions_wo_leader == 0 {
-                // send result can be ignored because rx should only go away in case of a shutdown
-                let _ = all_partitions_started_tx.send(());
-                return Ok(());
-            }
-        }
-    }
-}
-
 #[derive(Clone)]
 struct PartitionProcessorManagerClient<N>
 where
@@ -765,7 +702,7 @@ mod tests {
             TaskKind::SystemService,
             "cluster-controller",
             None,
-            svc.run(None),
+            svc.run(),
         )?;
 
         node_env
@@ -1089,7 +1026,7 @@ mod tests {
             TaskKind::SystemService,
             "cluster-controller",
             None,
-            svc.run(None),
+            svc.run(),
         )?;
 
         Ok((node_env, bifrost))

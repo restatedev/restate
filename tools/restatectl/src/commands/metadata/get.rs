@@ -66,7 +66,7 @@ async fn get_value_direct(opts: &GetValueOpts) -> anyhow::Result<Option<GenericM
 
             let metadata_store_client = metadata_store::start_metadata_store(
                 config.common.metadata_store_client.clone(),
-                Live::from_value(config.metadata_store.clone()).boxed(),
+                &config.metadata_store,
                 Live::from_value(config.metadata_store.clone())
                     .map(|c| &c.rocksdb)
                     .boxed(),

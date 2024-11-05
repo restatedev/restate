@@ -473,7 +473,7 @@ impl Default for MetadataStoreClientOptions {
     fn default() -> Self {
         Self {
             metadata_store_client: MetadataStoreClient::Embedded {
-                address: "http://127.0.0.1:5123"
+                address: "http://127.0.0.1:5122"
                     .parse()
                     .expect("valid metadata store address"),
             },
