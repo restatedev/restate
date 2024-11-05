@@ -306,6 +306,7 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
+    use restate_core::network::NetworkServerBuilder;
     use restate_core::TestCoreEnvBuilder;
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
@@ -335,6 +336,7 @@ mod tests {
 
         let mut node_env =
             TestCoreEnvBuilder::with_incoming_only_connector().add_mock_nodes_config();
+        let mut server_builder = NetworkServerBuilder::default();
 
         let logserver_rpc = LogServersRpc::new(&mut node_env.router_builder);
         let sequencer_rpc = SequencersRpc::new(&mut node_env.router_builder);
@@ -360,7 +362,7 @@ mod tests {
                 RocksDbManager::init(config.clone().map(|c| &c.common));
 
                 log_server
-                    .start(node_env.metadata_writer.clone())
+                    .start(node_env.metadata_writer.clone(), &mut server_builder)
                     .await
                     .into_test_result()?;
 
