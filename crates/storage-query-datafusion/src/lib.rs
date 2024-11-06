@@ -41,7 +41,7 @@ use datafusion::error::DataFusionError;
 #[cfg(test)]
 pub(crate) mod mocks;
 
-pub mod remote_invoker_status_handle;
+pub mod empty_invoker_status_handle;
 pub mod remote_query_scanner_client;
 pub mod remote_query_scanner_manager;
 #[cfg(test)]
