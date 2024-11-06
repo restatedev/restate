@@ -32,7 +32,6 @@ use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{task_center, Metadata, TaskKind};
-use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
@@ -128,7 +127,7 @@ impl<T: TransportConnect> Worker<T> {
         let config = updateable_config.pinned();
 
         // ingress_kafka
-        let ingress_kafka = IngressKafkaService::new(IngressDispatcher::new(bifrost.clone()));
+        let ingress_kafka = IngressKafkaService::new(bifrost.clone());
         let subscription_controller_handle = SubscriptionControllerHandle::new(
             config.ingress.clone(),
             ingress_kafka.create_command_sender(),

@@ -6136,28 +6136,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate-ingress-dispatcher"
-version = "1.1.3"
-dependencies = [
- "anyhow",
- "bytes",
- "bytestring",
- "futures",
- "googletest",
- "restate-bifrost",
- "restate-core",
- "restate-storage-api",
- "restate-test-util",
- "restate-types",
- "restate-wal-protocol",
- "test-log",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "restate-ingress-http"
 version = "1.1.3"
 dependencies = [
@@ -6215,12 +6193,14 @@ dependencies = [
  "metrics",
  "opentelemetry",
  "rdkafka",
+ "restate-bifrost",
  "restate-core",
  "restate-errors",
- "restate-ingress-dispatcher",
+ "restate-storage-api",
  "restate-test-util",
  "restate-timer-queue",
  "restate-types",
+ "restate-wal-protocol",
  "schemars",
  "serde",
  "serde_json",
@@ -6977,7 +6957,6 @@ dependencies = [
  "restate-bifrost",
  "restate-core",
  "restate-errors",
- "restate-ingress-dispatcher",
  "restate-ingress-http",
  "restate-ingress-kafka",
  "restate-invoker-api",

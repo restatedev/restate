@@ -26,15 +26,12 @@ use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use crate::dispatcher::{DispatchKafkaEvent, KafkaIngressDispatcher, KafkaIngressEvent};
+use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 use restate_core::{cancellation_watcher, TaskCenter, TaskId, TaskKind};
-use restate_ingress_dispatcher::{
-    DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
-};
 use restate_types::invocation::{Header, SpanRelation};
 use restate_types::message::MessageIndex;
 use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
-
-use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -75,8 +72,9 @@ impl fmt::Display for KafkaDeduplicationId {
     }
 }
 
-impl DeduplicationId for KafkaDeduplicationId {
-    fn requires_proxying(subscription: &Subscription) -> bool {
+impl KafkaDeduplicationId {
+    pub(crate) fn requires_proxying(subscription: &Subscription) -> bool {
+        // Service event receiver requires proxying because we don't want to scatter deduplication ids (kafka topic/partition offsets) in all the Restate partitions.
         matches!(
             subscription.sink(),
             Sink::Service {
@@ -90,14 +88,14 @@ impl DeduplicationId for KafkaDeduplicationId {
 #[derive(Clone)]
 pub struct MessageSender {
     subscription: Subscription,
-    dispatcher: IngressDispatcher,
+    dispatcher: KafkaIngressDispatcher,
 
     subscription_id: String,
     ingress_request_counter: metrics::Counter,
 }
 
 impl MessageSender {
-    pub fn new(subscription: Subscription, dispatcher: IngressDispatcher) -> Self {
+    pub fn new(subscription: Subscription, dispatcher: KafkaIngressDispatcher) -> Self {
         Self {
             subscription_id: subscription.id().to_string(),
             ingress_request_counter: counter!(
@@ -134,12 +132,15 @@ impl MessageSender {
         };
         let headers = Self::generate_events_attributes(&msg, &self.subscription_id);
 
-        let req = IngressDispatcherRequest::event(
+        let (deduplication_id, deduplication_index) =
+            Self::generate_deduplication_id(consumer_group_id, &msg);
+        let req = KafkaIngressEvent::new(
             &self.subscription,
             key,
             payload,
             SpanRelation::Parent(ingress_span_context),
-            Some(Self::generate_deduplication_id(consumer_group_id, &msg)),
+            deduplication_id,
+            deduplication_index,
             headers,
         )
         .map_err(|cause| Error::Event {
@@ -152,7 +153,7 @@ impl MessageSender {
         self.ingress_request_counter.increment(1);
 
         self.dispatcher
-            .dispatch_ingress_request(req)
+            .dispatch_kafka_event(req)
             .instrument(ingress_span)
             .await
             .map_err(|_| Error::IngressDispatcherClosed)?;
