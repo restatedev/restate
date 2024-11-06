@@ -77,9 +77,16 @@ impl StorageCodec {
         value: &T,
         buf: &mut BytesMut,
     ) -> Result<(), StorageEncodeError> {
-        // write codec
+        // Write codec version byte
         buf.put_u8(value.default_codec().into());
-        // encode value
+
+        // Calculate the exact size required for serialization
+        let size = value.serialized_size();
+
+        // Ensure the buffer has enough capacity
+        buf.reserve(size);
+
+        // Encode the value into the buffer
         value.encode(buf)
     }
 
@@ -119,6 +126,9 @@ pub trait StorageEncode: DowncastSync {
 
     /// Codec which is used when encode new values.
     fn default_codec(&self) -> StorageCodecKind;
+
+    /// Returns the expected serialized size in bytes of the encoded value.
+    fn serialized_size(&self) -> usize;
 }
 impl_downcast!(sync StorageEncode);
 
@@ -153,6 +163,12 @@ macro_rules! flexbuffers_storage_encode_decode {
                 $crate::storage::encode_as_flexbuffers(self, buf)
                     .map_err(|err| $crate::storage::StorageEncodeError::EncodeValue(err.into()))
             }
+
+
+            fn serialized_size(&self) -> usize {
+                bytes::BytesMut::default().len()  // todo: to be calculated
+            }
+
         }
 
         impl $crate::storage::StorageDecode for $name {
@@ -203,6 +219,12 @@ impl StorageEncode for PolyBytes {
 
     fn default_codec(&self) -> StorageCodecKind {
         StorageCodecKind::FlexbuffersSerde
+    }
+    fn serialized_size(&self) -> usize {
+        match self {
+            PolyBytes::Bytes(bytes) => bytes.len(),
+            PolyBytes::Typed(typed) => typed.serialized_size(),
+        }
     }
 }
 
@@ -265,6 +287,10 @@ impl StorageEncode for String {
         }
         buf.put_slice(my_bytes);
         Ok(())
+    }
+
+    fn serialized_size(&self) -> usize {
+        4 + self.len() // 4 bytes for length + string byte length
     }
 }
 impl StorageDecode for String {
@@ -331,6 +357,9 @@ impl StorageEncode for bytes::Bytes {
         }
         buf.put_slice(&self[..]);
         Ok(())
+    }
+    fn serialized_size(&self) -> usize {
+        4 + self.len() // 4 bytes for length + byte slice length
     }
 }
 
