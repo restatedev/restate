@@ -197,7 +197,7 @@ impl LogStore for RocksDbLogStore {
     }
 
     async fn enqueue_store(
-        &mut self,
+        &self,
         store_message: Store,
         set_sequencer_in_metadata: bool,
     ) -> Result<AsyncToken, OperationError> {
@@ -210,16 +210,16 @@ impl LogStore for RocksDbLogStore {
             .await
     }
 
-    async fn enqueue_seal(&mut self, seal_message: Seal) -> Result<AsyncToken, OperationError> {
+    async fn enqueue_seal(&self, seal_message: Seal) -> Result<AsyncToken, OperationError> {
         self.writer_handle.enqueue_seal(seal_message).await
     }
 
-    async fn enqueue_trim(&mut self, trim_message: Trim) -> Result<AsyncToken, OperationError> {
+    async fn enqueue_trim(&self, trim_message: Trim) -> Result<AsyncToken, OperationError> {
         self.writer_handle.enqueue_trim(trim_message).await
     }
 
     async fn read_records(
-        &mut self,
+        &self,
         msg: GetRecords,
         loglet_state: &LogletState,
     ) -> Result<Records, OperationError> {
@@ -359,7 +359,7 @@ impl LogStore for RocksDbLogStore {
     }
 
     async fn get_records_digest(
-        &mut self,
+        &self,
         msg: GetDigest,
         loglet_state: &LogletState,
     ) -> Result<Digest, OperationError> {
@@ -561,7 +561,7 @@ mod tests {
 
     #[test(tokio::test(start_paused = true))]
     async fn test_load_loglet_state() -> Result<()> {
-        let (tc, mut log_store) = setup().await?;
+        let (tc, log_store) = setup().await?;
         // fresh/unknown loglet
         let loglet_id_1 = ReplicatedLogletId::new_unchecked(88);
         let loglet_id_2 = ReplicatedLogletId::new_unchecked(89);
@@ -653,7 +653,7 @@ mod tests {
 
     #[test(tokio::test(start_paused = true))]
     async fn test_digest() -> Result<()> {
-        let (tc, mut log_store) = setup().await?;
+        let (tc, log_store) = setup().await?;
         let loglet_id_1 = ReplicatedLogletId::new_unchecked(88);
         let loglet_id_2 = ReplicatedLogletId::new_unchecked(89);
         let sequencer_1 = GenerationalNodeId::new(5, 213);
