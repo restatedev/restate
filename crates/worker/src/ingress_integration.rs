@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
+use anyhow::anyhow;
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
 };
@@ -61,7 +61,7 @@ impl<C> RpcRequestDispatcher<C> {
             .clone()
             .retry_if(operation, |e| is_idempotent || e.is_safe_to_retry())
             .await
-            .context("error when trying to route the request internally")?)
+            .map_err(|e| anyhow!("Error when trying to route the request internally: {e}"))?)
     }
 }
 
