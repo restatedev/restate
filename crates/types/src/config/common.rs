@@ -8,15 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::time::Duration;
+
 use enumset::EnumSet;
 use once_cell::sync::Lazy;
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::time::Duration;
 
 use super::{AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions};
 use crate::net::{AdvertisedAddress, BindAddress};
@@ -431,8 +432,27 @@ pub enum LogFormat {
 #[builder(default)]
 #[serde(rename_all = "kebab-case")]
 pub struct MetadataStoreClientOptions {
-    /// Metadata store server to bootstrap the node from.
+    /// # Metadata store
+    ///
+    /// Metadata store server kind.
     pub metadata_store_client: MetadataStoreClient,
+
+    /// # Connect timeout
+    ///
+    /// TCP connection timeout for connecting to the metadata store.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub metadata_store_connect_timeout: humantime::Duration,
+
+    /// # Metadata Store Keep Alive Interval
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub metadata_store_keep_alive_interval: humantime::Duration,
+
+    /// # Metadata Store Keep Alive Timeout
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub metadata_store_keep_alive_timeout: humantime::Duration,
 
     /// # Backoff policy used by the metadata store client
     ///
@@ -477,6 +497,9 @@ impl Default for MetadataStoreClientOptions {
                     .parse()
                     .expect("valid metadata store address"),
             },
+            metadata_store_connect_timeout: Duration::from_secs(5).into(),
+            metadata_store_keep_alive_interval: Duration::from_secs(40).into(),
+            metadata_store_keep_alive_timeout: Duration::from_secs(20).into(),
             metadata_store_client_backoff_policy: RetryPolicy::exponential(
                 Duration::from_millis(10),
                 2.0,

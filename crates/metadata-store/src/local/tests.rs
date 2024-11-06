@@ -371,14 +371,14 @@ async fn start_metadata_store(
 
     assert2::let_assert!(
         config::MetadataStoreClient::Embedded { address } =
-            metadata_store_client_options.metadata_store_client
+            metadata_store_client_options.metadata_store_client.clone()
     );
 
     health_status
         .wait_for_value(MetadataServerStatus::Ready)
         .await;
 
-    let rocksdb_client = LocalMetadataStoreClient::new(address);
+    let rocksdb_client = LocalMetadataStoreClient::new(address, &metadata_store_client_options);
     let client = MetadataStoreClient::new(
         rocksdb_client,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),

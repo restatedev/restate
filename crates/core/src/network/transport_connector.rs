@@ -40,14 +40,14 @@ pub trait TransportConnect: Send + Sync + 'static {
 }
 
 pub struct GrpcConnector {
-    _networking_options: NetworkingOptions,
+    networking_options: NetworkingOptions,
     channel_cache: DashMap<AdvertisedAddress, Channel>,
 }
 
 impl GrpcConnector {
-    pub fn new(_networking_options: NetworkingOptions) -> Self {
+    pub fn new(networking_options: NetworkingOptions) -> Self {
         Self {
-            _networking_options,
+            networking_options,
             channel_cache: DashMap::new(),
         }
     }
@@ -72,7 +72,9 @@ impl TransportConnect for GrpcConnector {
             None => self
                 .channel_cache
                 .entry(address.clone())
-                .or_insert_with(|| create_tonic_channel_from_advertised_address(address))
+                .or_insert_with(|| {
+                    create_tonic_channel_from_advertised_address(address, &self.networking_options)
+                })
                 .clone(),
         };
 
@@ -85,7 +87,6 @@ impl TransportConnect for GrpcConnector {
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
-
     use super::*;
 
     use std::sync::Arc;
@@ -156,7 +157,7 @@ pub mod test_util {
             let peer_connection = peer_connection.handshake(nodes_config).await.unwrap();
 
             if self.new_connection_sender.send(peer_connection).is_err() {
-                // reciever has closed. Cannot accept connections
+                // receiver has closed, cannot accept connections
                 return Err(NetworkError::Unavailable(format!(
                     "MockConnector has been terminated, cannot connect to {}",
                     node_id

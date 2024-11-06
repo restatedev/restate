@@ -1,12 +1,15 @@
 use crate::metadata_store::{
     MetadataStore, Precondition, ReadError, Version, VersionedValue, WriteError,
 };
+use crate::network::net_util::CommonClientConnectionOptions;
 use anyhow::Context;
 use bytes::Bytes;
 use bytestring::ByteString;
 use etcd_client::{
-    Client, Compare, CompareOp, Error as EtcdError, GetOptions, KeyValue, KvClient, Txn, TxnOp,
+    Client, Compare, CompareOp, ConnectOptions, Error as EtcdError, GetOptions, KeyValue, KvClient,
+    Txn, TxnOp,
 };
+use restate_types::config::MetadataStoreClientOptions;
 
 impl From<EtcdError> for ReadError {
     fn from(value: EtcdError) -> Self {
@@ -70,9 +73,17 @@ pub struct EtcdMetadataStore {
 }
 
 impl EtcdMetadataStore {
-    pub async fn new<S: AsRef<[A]>, A: AsRef<str>>(addresses: S) -> anyhow::Result<Self> {
-        //todo: maybe expose some of the connection options to the node config
-        let client = Client::connect(addresses, None)
+    pub async fn new<S: AsRef<[A]>, A: AsRef<str>>(
+        addresses: S,
+        metadata_options: &MetadataStoreClientOptions,
+    ) -> anyhow::Result<Self> {
+        let opts = ConnectOptions::new()
+            .with_connect_timeout(metadata_options.connect_timeout())
+            .with_keep_alive(
+                metadata_options.keep_alive_interval(),
+                metadata_options.connect_timeout(),
+            );
+        let client = Client::connect(addresses, Some(opts))
             .await
             .context("failed to connect to etcd cluster")?;
 

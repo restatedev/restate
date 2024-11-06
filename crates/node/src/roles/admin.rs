@@ -27,8 +27,7 @@ use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFr
 use restate_storage_query_datafusion::remote_invoker_status_handle::RemoteInvokerStatusHandle;
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
 use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
-use restate_types::config::Configuration;
-use restate_types::config::IngressOptions;
+use restate_types::config::{Configuration, IngressOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::protobuf::common::AdminStatus;

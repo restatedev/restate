@@ -17,6 +17,7 @@ use restate_core::metadata_store::{
     MetadataStore, Precondition, ReadError, VersionedValue, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
+use restate_core::network::net_util::CommonClientConnectionOptions;
 use restate_types::net::AdvertisedAddress;
 use restate_types::Version;
 
@@ -29,9 +30,13 @@ use crate::local::grpc::pb_conversions::ConversionError;
 pub struct LocalMetadataStoreClient {
     svc_client: MetadataStoreSvcClient<Channel>,
 }
+
 impl LocalMetadataStoreClient {
-    pub fn new(metadata_store_address: AdvertisedAddress) -> Self {
-        let channel = create_tonic_channel_from_advertised_address(metadata_store_address);
+    pub fn new<T: CommonClientConnectionOptions>(
+        metadata_store_address: AdvertisedAddress,
+        options: &T,
+    ) -> Self {
+        let channel = create_tonic_channel_from_advertised_address(metadata_store_address, options);
 
         Self {
             svc_client: MetadataStoreSvcClient::new(channel),

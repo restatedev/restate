@@ -25,10 +25,14 @@ use tokio_util::net::Listener;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, info, instrument, Span};
 
+use restate_types::config::{MetadataStoreClientOptions, NetworkingOptions};
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 
-pub fn create_tonic_channel_from_advertised_address(address: AdvertisedAddress) -> Channel {
+pub fn create_tonic_channel_from_advertised_address<T: CommonClientConnectionOptions>(
+    address: AdvertisedAddress,
+    options: &T,
+) -> Channel {
     match address {
         AdvertisedAddress::Uds(uds_path) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
@@ -41,17 +45,12 @@ pub fn create_tonic_channel_from_advertised_address(address: AdvertisedAddress) 
                     }
                 }))
         }
-        AdvertisedAddress::Http(uri) => {
-            // todo: Make the channel settings configurable
-            Channel::builder(uri)
-                .connect_timeout(Duration::from_secs(5))
-                // todo make http2 keep alive configurable
-                .http2_keep_alive_interval(Duration::from_secs(40))
-                .keep_alive_timeout(Duration::from_secs(20))
-                // todo: configure the channel from configuration file
-                .http2_adaptive_window(true)
-                .connect_lazy()
-        }
+        AdvertisedAddress::Http(uri) => Channel::builder(uri)
+            .connect_timeout(options.connect_timeout())
+            .http2_keep_alive_interval(options.keep_alive_interval())
+            .keep_alive_timeout(options.keep_alive_timeout())
+            .http2_adaptive_window(options.http2_adaptive_window())
+            .connect_lazy(),
     }
 }
 
@@ -254,5 +253,49 @@ where
                     let _ = fut.await;
                     Ok(())
                 });
+    }
+}
+
+/// Helper trait to extract common client connection options from different configuration types.
+pub trait CommonClientConnectionOptions {
+    fn connect_timeout(&self) -> Duration;
+    fn keep_alive_interval(&self) -> Duration;
+    fn keep_alive_timeout(&self) -> Duration;
+    fn http2_adaptive_window(&self) -> bool;
+}
+
+impl CommonClientConnectionOptions for NetworkingOptions {
+    fn connect_timeout(&self) -> Duration {
+        self.connect_timeout.into()
+    }
+
+    fn keep_alive_interval(&self) -> Duration {
+        self.http2_keep_alive_interval.into()
+    }
+
+    fn keep_alive_timeout(&self) -> Duration {
+        self.http2_keep_alive_timeout.into()
+    }
+
+    fn http2_adaptive_window(&self) -> bool {
+        self.http2_adaptive_window
+    }
+}
+
+impl CommonClientConnectionOptions for MetadataStoreClientOptions {
+    fn connect_timeout(&self) -> Duration {
+        self.metadata_store_connect_timeout.into()
+    }
+
+    fn keep_alive_interval(&self) -> Duration {
+        self.metadata_store_keep_alive_interval.into()
+    }
+
+    fn keep_alive_timeout(&self) -> Duration {
+        self.metadata_store_keep_alive_timeout.into()
+    }
+
+    fn http2_adaptive_window(&self) -> bool {
+        true
     }
 }
