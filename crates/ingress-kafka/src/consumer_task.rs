@@ -74,6 +74,7 @@ impl fmt::Display for KafkaDeduplicationId {
 
 impl KafkaDeduplicationId {
     pub(crate) fn requires_proxying(subscription: &Subscription) -> bool {
+        // Service event receiver requires proxying because we don't want to scatter deduplication ids (kafka topic/partition offsets) in all the Restate partitions.
         matches!(
             subscription.sink(),
             Sink::Service {
