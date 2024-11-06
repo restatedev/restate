@@ -171,6 +171,19 @@ impl InvocationTaskError {
         true
     }
 
+    pub(crate) fn should_bump_start_message_retry_count_since_last_stored_entry(&self) -> bool {
+        !matches!(
+            self,
+            InvocationTaskError::JournalReader(_)
+                | InvocationTaskError::StateReader(_)
+                | InvocationTaskError::NoDeploymentForService
+                | InvocationTaskError::BadNegotiatedServiceProtocolVersion(_)
+                | InvocationTaskError::UnknownDeployment(_)
+                | InvocationTaskError::ResumeWithWrongServiceProtocolVersion(_)
+                | InvocationTaskError::IncompatibleServiceEndpoint(_, _)
+        )
+    }
+
     pub(crate) fn next_retry_interval_override(&self) -> Option<Duration> {
         match self {
             InvocationTaskError::ErrorMessageReceived {

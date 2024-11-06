@@ -23,7 +23,9 @@ pub(super) struct InvocationStateMachine {
     pub(super) invocation_target: InvocationTarget,
     invocation_state: InvocationState,
     retry_iter: retries::RetryIter<'static>,
-    pub(super) retry_count_since_last_stored_entry: u32,
+    /// This retry count is passed in the StartMessage.
+    /// For more details of when we bump it, see [`InvocationTaskError::should_bump_start_message_retry_count_since_last_stored_entry`].
+    pub(super) start_message_retry_count_since_last_stored_entry: u32,
 }
 
 /// This struct tracks which entries the invocation task generates,
@@ -136,7 +138,7 @@ impl InvocationStateMachine {
             invocation_target,
             invocation_state: InvocationState::New,
             retry_iter: retry_policy.into_iter(),
-            retry_count_since_last_stored_entry: 0,
+            start_message_retry_count_since_last_stored_entry: 0,
         }
     }
 
@@ -204,7 +206,7 @@ impl InvocationStateMachine {
             InvocationState::InFlight { .. }
         ));
 
-        self.retry_count_since_last_stored_entry = 0;
+        self.start_message_retry_count_since_last_stored_entry = 0;
 
         if let InvocationState::InFlight {
             journal_tracker,
@@ -278,6 +280,7 @@ impl InvocationStateMachine {
     pub(super) fn handle_task_error(
         &mut self,
         next_retry_interval_override: Option<Duration>,
+        should_bump_start_message_retry_count_since_last_stored_entry: bool,
     ) -> Option<Duration> {
         let journal_tracker = match &self.invocation_state {
             InvocationState::InFlight {
@@ -299,7 +302,9 @@ impl InvocationStateMachine {
 
         let next_timer = next_retry_interval_override.or_else(|| self.retry_iter.next());
         if next_timer.is_some() {
-            self.retry_count_since_last_stored_entry += 1;
+            if should_bump_start_message_retry_count_since_last_stored_entry {
+                self.start_message_retry_count_since_last_stored_entry += 1;
+            }
             self.invocation_state = InvocationState::WaitingRetry {
                 timer_fired: false,
                 journal_tracker,
@@ -347,13 +352,17 @@ mod tests {
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 
-        assert!(invocation_state_machine.handle_task_error(None).is_some());
+        assert!(invocation_state_machine
+            .handle_task_error(None, true)
+            .is_some());
         check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         invocation_state_machine.notify_retry_timer_fired();
 
         // We stay in `WaitingForRetry`
-        assert!(invocation_state_machine.handle_task_error(None).is_some());
+        assert!(invocation_state_machine
+            .handle_task_error(None, true)
+            .is_some());
         check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
     }
 
@@ -371,9 +380,11 @@ mod tests {
         );
 
         // Notify error
-        assert!(invocation_state_machine.handle_task_error(None).is_some());
+        assert!(invocation_state_machine
+            .handle_task_error(None, true)
+            .is_some());
         assert_eq!(
-            invocation_state_machine.retry_count_since_last_stored_entry,
+            invocation_state_machine.start_message_retry_count_since_last_stored_entry,
             1
         );
 
@@ -384,9 +395,11 @@ mod tests {
         );
 
         // Get error again
-        assert!(invocation_state_machine.handle_task_error(None).is_some());
+        assert!(invocation_state_machine
+            .handle_task_error(None, true)
+            .is_some());
         assert_eq!(
-            invocation_state_machine.retry_count_since_last_stored_entry,
+            invocation_state_machine.start_message_retry_count_since_last_stored_entry,
             2
         );
 
@@ -396,14 +409,14 @@ mod tests {
             mpsc::unbounded_channel().0,
         );
         assert_eq!(
-            invocation_state_machine.retry_count_since_last_stored_entry,
+            invocation_state_machine.start_message_retry_count_since_last_stored_entry,
             2
         );
 
         // Now complete the entry
         invocation_state_machine.notify_new_entry(1, false);
         assert_eq!(
-            invocation_state_machine.retry_count_since_last_stored_entry,
+            invocation_state_machine.start_message_retry_count_since_last_stored_entry,
             0
         );
     }
