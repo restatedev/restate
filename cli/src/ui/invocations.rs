@@ -149,6 +149,10 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
     );
     table.add_kv_row("Status:", status);
 
+    if let Some(idempotency_key) = &invocation.idempotency_key {
+        table.add_kv_row("Idempotency key:", idempotency_key);
+    }
+
     // Invoked by: TicketDb p4DGRWa7OTJwAYxelm96fFWSV9woYc0MLQ
     if let Some(invoked_by_id) = &invocation.invoked_by_id {
         let invoked_by_msg = format!(
