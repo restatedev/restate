@@ -90,6 +90,7 @@ impl PartitionProcessorRpcError {
             PartitionProcessorRpcError::LostLeadership(_) => true,
             PartitionProcessorRpcError::Busy => false,
             PartitionProcessorRpcError::Internal(_) => false,
+            PartitionProcessorRpcError::Starting => false,
         }
     }
 }
