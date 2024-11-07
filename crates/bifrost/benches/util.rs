@@ -7,6 +7,7 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::sync::Arc;
 
 use tracing::warn;
 
@@ -53,7 +54,7 @@ pub async fn spawn_environment(
         .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
         .await
         .expect("to store bifrost config in metadata store");
-    metadata_writer.submit(logs);
+    metadata_writer.submit(Arc::new(logs));
     spawn_metadata_manager(&tc, metadata_manager).expect("metadata manager starts");
     tc
 }
