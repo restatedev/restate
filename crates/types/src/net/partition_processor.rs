@@ -81,6 +81,17 @@ pub enum PartitionProcessorRpcError {
     Internal(String),
 }
 
+impl PartitionProcessorRpcError {
+    pub fn likely_stale_route(&self) -> bool {
+        match self {
+            PartitionProcessorRpcError::NotLeader(_) => true,
+            PartitionProcessorRpcError::LostLeadership(_) => true,
+            PartitionProcessorRpcError::Busy => false,
+            PartitionProcessorRpcError::Internal(_) => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
     Appended,
