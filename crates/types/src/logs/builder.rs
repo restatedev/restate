@@ -12,9 +12,10 @@ use std::num::NonZeroU32;
 use std::ops::Deref;
 
 use super::metadata::{
-    Chain, LogletConfig, LogletParams, Logs, MaybeSegment, ProviderKind, SegmentIndex,
+    Chain, LogletConfig, LogletParams, Logs, LookupIndex, MaybeSegment, ProviderKind, SegmentIndex,
 };
 use super::{LogId, Lsn};
+use crate::replicated_loglet::ReplicatedLogletParams;
 use crate::Version;
 
 #[derive(Debug, Default, Clone)]
@@ -27,6 +28,8 @@ pub struct LogsBuilder {
 pub enum BuilderError {
     #[error("log {0} already exists")]
     LogAlreadyExists(LogId),
+    #[error("loglet params could not be deserialized: {0}")]
+    ParamsSerde(#[from] serde_json::Error),
     #[error("Segment conflicts with existing (base_lsn={0})")]
     SegmentConflict(Lsn),
 }
@@ -41,15 +44,29 @@ impl LogsBuilder {
         if self.inner.logs.contains_key(&log_id) {
             return Err(BuilderError::LogAlreadyExists(log_id));
         }
+        for loglet_config in chain.chain.values() {
+            if let ProviderKind::Replicated = loglet_config.kind {
+                let params =
+                    ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())?;
+                self.inner.lookup_index.add_replicated_loglet(
+                    log_id,
+                    loglet_config.index(),
+                    params,
+                );
+            }
+        }
         self.inner.logs.insert(log_id, chain);
+        // update replicated loglet index
         self.modified = true;
-        Ok(self.chain(&log_id).unwrap())
+        Ok(self.chain(log_id).unwrap())
     }
 
-    pub fn chain(&mut self, log_id: &LogId) -> Option<ChainBuilder<'_>> {
-        let chain = self.inner.logs.get_mut(log_id)?;
+    pub fn chain(&mut self, log_id: LogId) -> Option<ChainBuilder<'_>> {
+        let chain = self.inner.logs.get_mut(&log_id)?;
         Some(ChainBuilder {
+            log_id,
             inner: chain,
+            lookup_index: &mut self.inner.lookup_index,
             modified: &mut self.modified,
         })
     }
@@ -59,6 +76,7 @@ impl LogsBuilder {
         Logs {
             version: self.inner.version.next(),
             logs: self.inner.logs,
+            lookup_index: self.inner.lookup_index,
         }
     }
 
@@ -73,6 +91,7 @@ impl LogsBuilder {
             Some(Logs {
                 version: self.inner.version.next(),
                 logs: self.inner.logs,
+                lookup_index: self.inner.lookup_index,
             })
         } else {
             None
@@ -97,7 +116,9 @@ impl From<Logs> for LogsBuilder {
 
 #[derive(Debug)]
 pub struct ChainBuilder<'a> {
+    log_id: LogId,
     inner: &'a mut Chain,
+    lookup_index: &'a mut LookupIndex,
     modified: &'a mut bool,
 }
 
@@ -114,7 +135,23 @@ impl<'a> ChainBuilder<'a> {
             MaybeSegment::Trim { .. } => return,
         };
 
-        self.inner.chain = self.inner.chain.split_off(&found_base_lsn);
+        let remaining = self.inner.chain.split_off(&found_base_lsn);
+        for loglet_config in self.inner.chain.values() {
+            if let ProviderKind::Replicated = loglet_config.kind {
+                // if it was inserted correctly before, we shouldn't fail to deserialize it.
+                // validation happens at original insert time.
+                let params =
+                    ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())
+                        .expect("params should be deserializable");
+                self.lookup_index.rm_replicated_loglet_reference(
+                    self.log_id,
+                    loglet_config.index(),
+                    params.loglet_id,
+                );
+            }
+        }
+
+        self.inner.chain = remaining;
         *self.modified = true;
     }
 
@@ -133,10 +170,16 @@ impl<'a> ChainBuilder<'a> {
             .chain
             .last_entry()
             .expect("chain have at least one segment");
+
         match *last_entry.key() {
             key if key < base_lsn => {
                 // append
                 let new_index = SegmentIndex(last_entry.get().index().0 + 1);
+                if let ProviderKind::Replicated = provider {
+                    let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
+                    self.lookup_index
+                        .add_replicated_loglet(self.log_id, new_index, params);
+                }
                 self.inner
                     .chain
                     .insert(base_lsn, LogletConfig::new(new_index, provider, params));
@@ -145,7 +188,24 @@ impl<'a> ChainBuilder<'a> {
             }
             key if key == base_lsn => {
                 // Replace the last segment (empty segment)
+                {
+                    // Let's remove the loglet from the index if it's a replicated loglet
+                    let old = last_entry.get();
+                    if let ProviderKind::Replicated = old.kind {
+                        let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
+                        self.lookup_index.rm_replicated_loglet_reference(
+                            self.log_id,
+                            old.index(),
+                            params.loglet_id,
+                        );
+                    }
+                }
                 let new_index = SegmentIndex(last_entry.get().index().0 + 1);
+                if let ProviderKind::Replicated = provider {
+                    let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
+                    self.lookup_index
+                        .add_replicated_loglet(self.log_id, new_index, params);
+                }
                 last_entry.insert(LogletConfig::new(new_index, provider, params));
                 *self.modified = true;
                 Ok(new_index)
@@ -451,7 +511,7 @@ mod tests {
                 LogletParams::from("test1".to_owned()),
             ),
         )?;
-        let mut chain = builder.chain(&log_id).unwrap();
+        let mut chain = builder.chain(log_id).unwrap();
         // removing the only segment is not allowed (no-op)
         chain.trim_prefix(Lsn::new(10));
         let segment = chain.tail();
