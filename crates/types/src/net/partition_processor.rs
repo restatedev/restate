@@ -79,6 +79,8 @@ pub enum PartitionProcessorRpcError {
     Busy,
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("partition processor starting")]
+    Starting,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -31,5 +31,5 @@ pub struct GetNodeState {}
 pub struct NodeStateResponse {
     /// State of paritions processor per parition. Is set to None if this node is not a `Worker` node
     #[serde_as(as = "Option<serde_with::Seq<(_, _)>>")]
-    pub paritions_processor_state: Option<BTreeMap<PartitionId, PartitionProcessorStatus>>,
+    pub partition_processor_state: Option<BTreeMap<PartitionId, PartitionProcessorStatus>>,
 }

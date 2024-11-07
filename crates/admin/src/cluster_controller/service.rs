@@ -746,7 +746,7 @@ mod tests {
 
             let state = [(PartitionId::MIN, partition_processor_status)].into();
             let response = msg.to_rpc_response(NodeStateResponse {
-                paritions_processor_state: Some(state),
+                partition_processor_state: Some(state),
             });
 
             // We are not really sending something back to target, we just need to provide a known

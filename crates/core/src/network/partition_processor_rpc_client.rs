@@ -46,6 +46,8 @@ pub enum PartitionProcessorRpcClientError {
     Busy,
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("partition processor starting")]
+    Starting,
 }
 
 impl PartitionProcessorRpcClientError {
@@ -60,7 +62,8 @@ impl PartitionProcessorRpcClientError {
             )
             | PartitionProcessorRpcClientError::UnknownPartition(_)
             | PartitionProcessorRpcClientError::UnknownNode(_)
-            | PartitionProcessorRpcClientError::NotLeader(_) => {
+            | PartitionProcessorRpcClientError::NotLeader(_)
+            | PartitionProcessorRpcClientError::Starting => {
                 // These are pre-flight error that we can distinguish,
                 // and for which we know for certain that no message was proposed yet to the log.
                 true
@@ -83,6 +86,7 @@ impl From<PartitionProcessorRpcError> for PartitionProcessorRpcClientError {
             PartitionProcessorRpcError::Internal(msg) => {
                 PartitionProcessorRpcClientError::Internal(msg)
             }
+            PartitionProcessorRpcError::Starting => PartitionProcessorRpcClientError::Starting,
         }
     }
 }

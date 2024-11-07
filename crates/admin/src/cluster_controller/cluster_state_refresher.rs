@@ -170,7 +170,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                             NodeState::Alive(AliveNode {
                                 last_heartbeat_at: MillisSinceEpoch::now(),
                                 generational_node_id: peer,
-                                partitions: msg.paritions_processor_state.unwrap_or_default(),
+                                partitions: msg.partition_processor_state.unwrap_or_default(),
                             }),
                         );
                     }

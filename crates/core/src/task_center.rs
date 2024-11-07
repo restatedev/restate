@@ -634,6 +634,23 @@ impl TaskCenter {
         Ok(result)
     }
 
+    // Spawn a future in its own thread
+    pub fn spawn_blocking_unmanaged<F, O>(
+        &self,
+        name: &'static str,
+        partition_id: Option<PartitionId>,
+        future: F,
+    ) -> tokio::task::JoinHandle<O>
+    where
+        F: Future<Output = O> + Send + 'static,
+        O: Send + 'static,
+    {
+        let tc = self.clone();
+        self.inner
+            .default_runtime_handle
+            .spawn_blocking(move || tc.block_on(name, partition_id, future))
+    }
+
     /// Cancelling the child will not cancel the parent. Note that parent task will not
     /// wait for children tasks. The parent task is allowed to finish before children.
     #[track_caller]
