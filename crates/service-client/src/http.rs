@@ -22,16 +22,25 @@ use hyper::body::Body;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
 use hyper::{HeaderMap, Method, Request, Response, Uri};
-use hyper_rustls::HttpsConnector;
+use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 use hyper_util::client::legacy::connect::HttpConnector;
 use restate_types::config::HttpOptions;
+use rustls::ClientConfig;
 use std::error::Error;
 use std::fmt::Debug;
 use std::future;
 use std::future::Future;
+use std::sync::LazyLock;
 
 type ProxiedHttpsConnector = ProxyConnector<HttpsConnector<HttpConnector>>;
 type ProxiedHttpConnector = ProxyConnector<HttpConnector>;
+
+static TLS_CLIENT_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
+    ClientConfig::builder()
+        .with_native_roots()
+        .expect("Can load native certificates")
+        .with_no_client_auth()
+});
 
 // TODO
 //  for the time being we use BoxBody here to simplify the migration to hyper 1.0.
@@ -70,8 +79,7 @@ impl HttpClient {
         http_connector.set_connect_timeout(Some(options.connect_timeout.into()));
 
         let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .expect("Can build native roots")
+            .with_tls_config(TLS_CLIENT_CONFIG.clone())
             .https_or_http()
             .enable_http1()
             .enable_http2()

@@ -97,7 +97,9 @@ pub struct DeadNode {
     pub last_seen_alive: Option<MillisSinceEpoch>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProto)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProto, derive_more::Display,
+)]
 #[proto(target = "crate::protobuf::cluster::RunMode")]
 pub enum RunMode {
     Leader,

@@ -34,7 +34,7 @@ pub struct ControlProcessor {
     pub command: ProcessorCommand,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, derive_more::Display)]
 pub enum ProcessorCommand {
     Stop,
     Follower,
