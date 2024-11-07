@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-replicated-loglet = ["restate-types/replicated-loglet"]
+replicated-loglet = []
 memory-loglet = ["restate-types/memory-loglet"]
 test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util"]
 

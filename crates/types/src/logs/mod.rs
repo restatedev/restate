@@ -19,12 +19,10 @@ use crate::storage::StorageEncode;
 pub mod builder;
 pub mod metadata;
 mod record;
-#[cfg(feature = "replicated-loglet")]
 mod record_cache;
 mod tail;
 
 pub use record::Record;
-#[cfg(feature = "replicated-loglet")]
 pub use record_cache::RecordCache;
 pub use tail::*;
 

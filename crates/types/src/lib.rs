@@ -38,7 +38,6 @@ pub mod net;
 pub mod nodes_config;
 pub mod partition_table;
 pub mod protobuf;
-#[cfg(feature = "replicated-loglet")]
 pub mod replicated_loglet;
 pub mod retries;
 pub mod schema;

@@ -6874,6 +6874,7 @@ dependencies = [
  "serde_path_to_error",
  "serde_with",
  "sha2",
+ "smallvec",
  "static_assertions",
  "strum 0.26.2",
  "syn 2.0.85",
