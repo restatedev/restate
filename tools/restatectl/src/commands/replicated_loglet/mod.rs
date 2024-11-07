@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod cluster;
-mod display_util;
-pub mod dump;
-pub mod log;
-pub mod metadata;
-pub mod node;
-pub mod partition;
-pub mod replicated_loglet;
-pub mod snapshot;
+mod info;
+
+use cling::prelude::*;
+
+#[derive(Run, Subcommand, Clone)]
+pub enum ReplicatedLoglet {
+    /// View loglet info
+    Info(info::InfoOpts),
+}

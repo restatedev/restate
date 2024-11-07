@@ -21,6 +21,7 @@ use crate::commands::log::Logs;
 use crate::commands::metadata::Metadata;
 use crate::commands::node::Nodes;
 use crate::commands::partition::Partitions;
+use crate::commands::replicated_loglet::ReplicatedLoglet;
 use crate::commands::snapshot::Snapshot;
 
 #[derive(Run, Parser, Clone)]
@@ -67,6 +68,9 @@ pub enum Command {
     /// Partition processor snapshots
     #[clap(subcommand)]
     Snapshots(Snapshot),
+    /// Commands that operate on replicated loglets
+    #[clap(subcommand)]
+    ReplicatedLoglet(ReplicatedLoglet),
 }
 
 fn init(common_opts: &CommonOpts) {
