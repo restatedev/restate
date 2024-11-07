@@ -68,9 +68,22 @@ jobs:
           driver-opts: |
             network=host
 
-      - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.4
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: sccache-cache
+          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Inject sccache-cache into Docker
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          cache-map: |
+            {
+              "sccache-cache": "/var/cache/sccache"
+            }
+          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+
+        
       - name: Log into GitHub container registry
         uses: docker/login-action@v3
         with:
@@ -107,7 +120,7 @@ jobs:
 
       - name: Build${{inputs.uploadImageAsTarball != true && ' and push ' || ' '}}Docker image
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: "docker/Dockerfile"
@@ -119,13 +132,11 @@ jobs:
           network: host
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
-            ACTIONS_CACHE_URL=http://127.0.0.1:49160/
-            ACTIONS_RUNTIME_TOKEN
-            SCCACHE_GHA_ENABLED=true
             RESTATE_FEATURES=${{ inputs.features || '' }}
-          cache-from: type=gha,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
-          cache-to: type=gha,mode=max,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
-
+            SCCACHE_DIR=~/.cache/sccache
+          cache-from: type=gha,url=http://127.0.0.1:49160/
+          cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max
+    
       - name: Save docker image as tar
         if: ${{ inputs.uploadImageAsTarball }}
         run: |
@@ -144,7 +155,7 @@ jobs:
       # This won't actually build again, it'll just use cache
       - name: Push Docker image
         if: ${{ inputs.uploadImageAsTarball && github.ref == 'refs/heads/main' }}
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: "docker/Dockerfile"
@@ -157,9 +168,8 @@ jobs:
           network: host
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
-            ACTIONS_CACHE_URL=http://127.0.0.1:49160/
-            ACTIONS_RUNTIME_TOKEN
-            SCCACHE_GHA_ENABLED=true
             RESTATE_FEATURES=${{ inputs.features || '' }}
-          cache-from: type=gha,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
-          cache-to: type=gha,mode=max,scope=${{ github.workflow }},url=http://127.0.0.1:49160/
+            SCCACHE_DIR=/sccache-cache
+          cache-from: type=gha,url=http://127.0.0.1:49160/
+          cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max
+    

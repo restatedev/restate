@@ -194,7 +194,7 @@ jobs:
           EOF
 
       - name: Build and push multiplatform image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
