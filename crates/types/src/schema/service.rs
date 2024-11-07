@@ -11,16 +11,16 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use serde::Deserialize;
-use serde::Serialize;
-use serde_with::serde_as;
-
 use super::invocation_target::InvocationTargetMetadata;
 use super::Schema;
 use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
+use serde::Deserialize;
+use serde::Serialize;
+use serde_with::serde_as;
+use utoipa::openapi::{Info, OpenApi, PathItem, Paths};
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +171,11 @@ pub struct HandlerMetadata {
 pub trait ServiceMetadataResolver {
     fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata>;
 
+    fn resolve_latest_service_openapi(
+        &self,
+        service_name: impl AsRef<str>,
+    ) -> Option<serde_json::Value>;
+
     fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType>;
 
     fn list_services(&self) -> Vec<ServiceMetadata>;
@@ -179,6 +184,11 @@ pub trait ServiceMetadataResolver {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandlerSchemas {
     pub target_meta: InvocationTargetMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceOpenapi {
+    pub paths: HashMap<String, PathItem>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -191,6 +201,7 @@ pub struct ServiceSchemas {
     pub workflow_completion_retention: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
     pub abort_timeout: Option<Duration>,
+    pub service_openapi: ServiceOpenapi,
 }
 
 impl ServiceSchemas {
@@ -219,6 +230,21 @@ impl ServiceSchemas {
             abort_timeout: self.abort_timeout.map(Into::into),
         }
     }
+
+    pub fn openapi_spec(&self, name: &str) -> serde_json::Value {
+        let mut paths_builder = Paths::builder();
+        for (path, path_item) in &self.service_openapi.paths {
+            paths_builder = paths_builder.path(path, path_item.clone());
+        }
+
+        serde_json::to_value(
+            OpenApi::builder()
+                .info(Info::new(name.to_owned(), self.revision.to_string()))
+                .paths(paths_builder.build())
+                .build(),
+        )
+        .expect("Mapping OpenAPI to JSON should never fail")
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -233,6 +259,14 @@ impl ServiceMetadataResolver for Schema {
         self.use_service_schema(name, |service_schemas| {
             service_schemas.as_service_metadata(name.to_owned())
         })
+    }
+
+    fn resolve_latest_service_openapi(
+        &self,
+        service_name: impl AsRef<str>,
+    ) -> Option<serde_json::Value> {
+        let name = service_name.as_ref();
+        self.use_service_schema(name, |service_schemas| service_schemas.openapi_spec(name))
     }
 
     fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType> {
@@ -254,6 +288,7 @@ impl ServiceMetadataResolver for Schema {
 pub mod test_util {
     use super::*;
 
+    use serde_json::Value;
     use std::collections::HashMap;
 
     #[derive(Debug, Default, Clone)]
@@ -269,6 +304,10 @@ pub mod test_util {
     impl ServiceMetadataResolver for MockServiceMetadataResolver {
         fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
             self.0.get(service_name.as_ref()).cloned()
+        }
+
+        fn resolve_latest_service_openapi(&self, _service_name: impl AsRef<str>) -> Option<Value> {
+            Some(Value::Null)
         }
 
         fn resolve_latest_service_type(

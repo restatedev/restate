@@ -38,6 +38,7 @@ use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::NodeId;
+use serde_json::Value;
 
 use super::context::QueryContext;
 use crate::context::SelectPartitions;
@@ -55,6 +56,10 @@ pub(crate) struct MockSchemas(
 impl ServiceMetadataResolver for MockSchemas {
     fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
         self.0.resolve_latest_service(service_name)
+    }
+
+    fn resolve_latest_service_openapi(&self, _: impl AsRef<str>) -> Option<Value> {
+        todo!()
     }
 
     fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType> {

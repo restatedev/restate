@@ -65,6 +65,7 @@ tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"]
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 xxhash-rust = { workspace = true }
+utoipa = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }
