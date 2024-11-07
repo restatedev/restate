@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::Deref;
+use std::sync::Arc;
 
 use tracing::{info, instrument};
 
@@ -218,7 +219,7 @@ impl<'a> BifrostAdmin<'a> {
             .await
             .map_err(|e| e.transpose())?;
 
-        self.metadata_writer.update(logs).await?;
+        self.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
     }
 }
