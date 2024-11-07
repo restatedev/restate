@@ -73,7 +73,7 @@ impl BaseRole {
         &self,
         msg: Incoming<GetNodeState>,
     ) -> Result<(), ShutdownError> {
-        let parition_state = if let Some(ref handle) = self.processor_manager_handle {
+        let partition_state = if let Some(ref handle) = self.processor_manager_handle {
             Some(handle.get_state().await?)
         } else {
             None
@@ -82,7 +82,7 @@ impl BaseRole {
         // only return error if Shutdown
         if let Err(NetworkError::Shutdown(err)) = msg
             .to_rpc_response(NodeStateResponse {
-                paritions_processor_state: parition_state,
+                partition_processor_state: partition_state,
             })
             .try_send()
             .map_err(|err| err.source)

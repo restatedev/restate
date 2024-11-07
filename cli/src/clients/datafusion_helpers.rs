@@ -259,7 +259,9 @@ pub struct SimpleInvocation {
 
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 struct SimpleInvocationRowResult {
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     id: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     target: Option<String>,
     status: String,
 }
@@ -316,6 +318,7 @@ pub struct Invocation {
     pub status: InvocationState,
     pub completion: Option<InvocationCompletion>,
     pub trace_id: Option<String>,
+    pub idempotency_key: Option<String>,
 
     // If it **requires** this deployment.
     pub pinned_deployment_id: Option<String>,
@@ -772,28 +775,46 @@ arrow_convert::arrow_enable_vec_for_type!(RestateDateTime);
 
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 struct InvocationRowResult {
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     id: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     target: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     target_service_ty: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
+    idempotency_key: Option<String>,
     status: String,
     created_at: Option<RestateDateTime>,
     modified_at: Option<RestateDateTime>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     pinned_deployment_id: Option<String>,
     retry_count: Option<u64>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     last_failure: Option<String>,
     last_failure_related_entry_index: Option<u64>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     last_failure_related_entry_name: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     last_failure_related_entry_type: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     last_attempt_deployment_id: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     last_attempt_server: Option<String>,
     next_retry_at: Option<RestateDateTime>,
     last_start_at: Option<RestateDateTime>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     invoked_by_id: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     invoked_by_target: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     comp_latest_deployment: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     known_deployment_id: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     trace_id: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     completion_result: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     completion_failure: Option<String>,
     full_count: i64,
 }
@@ -819,6 +840,15 @@ pub async fn find_active_invocations(
         "CAST(NULL as STRING) AS completion_result, CAST(NULL as STRING) AS completion_failure"
     };
 
+    let has_restate_1_2_columns = client
+        .check_columns_exists("sys_invocation", &["idempotency_key"])
+        .await?;
+    let select_idempotency_key = if has_restate_1_2_columns {
+        "inv.idempotency_key"
+    } else {
+        "CAST(NULL as STRING) AS idempotency_key"
+    };
+
     let mut full_count = 0;
     let mut active = vec![];
     let query = format!(
@@ -827,6 +857,7 @@ pub async fn find_active_invocations(
             inv.id,
             inv.target,
             inv.target_service_ty,
+            {select_idempotency_key},
             inv.status,
             inv.created_at,
             inv.modified_at,
@@ -849,13 +880,12 @@ pub async fn find_active_invocations(
         FROM sys_invocation inv
         LEFT JOIN sys_service svc ON svc.name = inv.target_service_name
         LEFT JOIN sys_deployment dp ON dp.id = inv.pinned_deployment_id
-        {}
-        {}
+        {filter}
+        {order}
         )
         SELECT *, COUNT(*) OVER() AS full_count from enriched_invocations
-        {}
-        LIMIT {}",
-        filter, order, post_filter, limit,
+        {post_filter}
+        LIMIT {limit}"
     );
     let rows = client
         .run_query_and_map_results::<InvocationRowResult>(query)
@@ -903,6 +933,7 @@ pub async fn find_active_invocations(
                 row.completion_result,
                 row.completion_failure,
             ),
+            idempotency_key: row.idempotency_key,
         });
 
         full_count = row.full_count as usize;
@@ -956,12 +987,17 @@ pub async fn get_invocation(
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 struct JournalRowResult {
     index: Option<u32>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     entry_type: Option<String>,
     completed: Option<bool>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     invoked_id: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     invoked_target: Option<String>,
     sleep_wakeup_at: Option<RestateDateTime>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     name: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     promise_name: Option<String>,
 }
 
@@ -1044,9 +1080,13 @@ pub async fn get_invocation_journal(
 
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 pub struct StateKeysQueryResult {
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     service_name: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     service_key: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     key: Option<String>,
+    #[arrow_field(type = "Option<arrow_convert::field::LargeBinary>")]
     value: Option<Vec<u8>>,
 }
 

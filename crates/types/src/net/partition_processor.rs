@@ -79,6 +79,20 @@ pub enum PartitionProcessorRpcError {
     Busy,
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("partition processor starting")]
+    Starting,
+}
+
+impl PartitionProcessorRpcError {
+    pub fn likely_stale_route(&self) -> bool {
+        match self {
+            PartitionProcessorRpcError::NotLeader(_) => true,
+            PartitionProcessorRpcError::LostLeadership(_) => true,
+            PartitionProcessorRpcError::Busy => false,
+            PartitionProcessorRpcError::Internal(_) => false,
+            PartitionProcessorRpcError::Starting => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

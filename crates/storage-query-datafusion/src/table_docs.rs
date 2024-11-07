@@ -96,6 +96,7 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_status.remove("target_service_key").expect("target_service_key should exist"),
         sys_invocation_status.remove("target_handler_name").expect("target_handler_name should exist"),
         sys_invocation_status.remove("target_service_ty").expect("target_service_ty should exist"),
+        sys_invocation_status.remove("idempotency_key").expect("idempotency_key should exist"),
         sys_invocation_status.remove("invoked_by").expect("invoked_by should exist"),
         sys_invocation_status.remove("invoked_by_service_name").expect("invoked_by_service_name should exist"),
         sys_invocation_status.remove("invoked_by_id").expect("invoked_by_id should exist"),

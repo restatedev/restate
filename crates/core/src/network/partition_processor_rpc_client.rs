@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use assert2::let_assert;
+use tracing::trace;
+
 use restate_types::identifiers::{PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::live::Live;
@@ -46,6 +48,8 @@ pub enum PartitionProcessorRpcClientError {
     Busy,
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("partition processor starting")]
+    Starting,
 }
 
 impl PartitionProcessorRpcClientError {
@@ -60,7 +64,8 @@ impl PartitionProcessorRpcClientError {
             )
             | PartitionProcessorRpcClientError::UnknownPartition(_)
             | PartitionProcessorRpcClientError::UnknownNode(_)
-            | PartitionProcessorRpcClientError::NotLeader(_) => {
+            | PartitionProcessorRpcClientError::NotLeader(_)
+            | PartitionProcessorRpcClientError::Starting => {
                 // These are pre-flight error that we can distinguish,
                 // and for which we know for certain that no message was proposed yet to the log.
                 true
@@ -83,6 +88,7 @@ impl From<PartitionProcessorRpcError> for PartitionProcessorRpcClientError {
             PartitionProcessorRpcError::Internal(msg) => {
                 PartitionProcessorRpcClientError::Internal(msg)
             }
+            PartitionProcessorRpcError::Starting => PartitionProcessorRpcClientError::Starting,
         }
     }
 }
@@ -324,7 +330,7 @@ where
             .get_node_by_partition(partition_id)
             .ok_or(PartitionProcessorRpcClientError::UnknownNode(partition_id))?;
 
-        let response = self
+        let rpc_result = self
             .rpc_router
             .call(
                 &self.networking,
@@ -335,8 +341,18 @@ where
                     inner: inner_request,
                 },
             )
-            .await?;
+            .await?
+            .into_body();
 
-        Ok(response.into_body()?)
+        if rpc_result.is_err() && rpc_result.as_ref().unwrap_err().likely_stale_route() {
+            trace!(
+                ?partition_id,
+                ?node_id,
+                "Received Partition Processor error indicating possible stale route"
+            );
+            self.partition_routing.request_refresh();
+        }
+
+        Ok(rpc_result?)
     }
 }

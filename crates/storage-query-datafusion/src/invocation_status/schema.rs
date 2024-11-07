@@ -47,6 +47,9 @@ define_table!(sys_invocation_status(
     /// The service type. Either `service` or `virtual_object` or `workflow`.
     target_service_ty: DataType::LargeUtf8,
 
+    /// Idempotency key, if any.
+    idempotency_key: DataType::LargeUtf8,
+
     /// Either `ingress` if the service was invoked externally or `service` if the service was
     /// invoked by another Restate service.
     invoked_by: DataType::LargeUtf8,
