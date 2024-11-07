@@ -184,7 +184,8 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
             )
             .await
             .expect("to store nodes config in metadata store");
-        self.metadata_writer.submit(self.nodes_config.clone());
+        self.metadata_writer
+            .submit(Arc::new(self.nodes_config.clone()));
 
         let logs = bootstrap_logs_metadata(
             self.provider_kind,
@@ -195,7 +196,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
             .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
             .await
             .expect("to store bifrost config in metadata store");
-        self.metadata_writer.submit(logs.clone());
+        self.metadata_writer.submit(Arc::new(logs));
 
         self.metadata_store_client
             .put(
@@ -205,7 +206,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
             )
             .await
             .expect("to store partition table in metadata store");
-        self.metadata_writer.submit(self.partition_table);
+        self.metadata_writer.submit(Arc::new(self.partition_table));
 
         self.metadata_store_client
             .put(

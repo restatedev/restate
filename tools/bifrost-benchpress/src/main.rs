@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
@@ -170,7 +171,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (TaskCenter,
             .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
             .await
             .expect("to store bifrost config in metadata store");
-        metadata_writer.submit(logs);
+        metadata_writer.submit(Arc::new(logs));
         spawn_metadata_manager(&task_center, metadata_manager).expect("metadata manager starts");
 
         let bifrost_svc = BifrostService::new(task_center, metadata)

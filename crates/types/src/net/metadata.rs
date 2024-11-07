@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use enum_map::Enum;
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
@@ -69,10 +71,10 @@ pub enum MetadataKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::From)]
 pub enum MetadataContainer {
-    NodesConfiguration(NodesConfiguration),
-    PartitionTable(PartitionTable),
-    Logs(Logs),
-    Schema(Schema),
+    NodesConfiguration(Arc<NodesConfiguration>),
+    PartitionTable(Arc<PartitionTable>),
+    Logs(Arc<Logs>),
+    Schema(Arc<Schema>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
