@@ -196,3 +196,14 @@ pub mod node {
         }
     }
 }
+
+pub mod log_server_common {
+
+    include!(concat!(env!("OUT_DIR"), "/restate.log_server_common.rs"));
+
+    impl std::fmt::Display for RecordStatus {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Display::fmt(&crate::net::log_server::RecordStatus::from(*self as i32), f)
+        }
+    }
+}

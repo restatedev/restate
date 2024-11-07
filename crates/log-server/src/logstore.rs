@@ -36,29 +36,29 @@ pub trait LogStore: Clone + Send + 'static {
     ) -> impl Future<Output = Result<LogletState, OperationError>> + Send;
 
     fn enqueue_store(
-        &mut self,
+        &self,
         store_message: Store,
         set_sequencer_in_metadata: bool,
     ) -> impl Future<Output = Result<AsyncToken, OperationError>> + Send;
 
     fn enqueue_seal(
-        &mut self,
+        &self,
         seal_message: Seal,
     ) -> impl Future<Output = Result<AsyncToken, OperationError>> + Send;
 
     fn enqueue_trim(
-        &mut self,
+        &self,
         trim_message: Trim,
     ) -> impl Future<Output = Result<AsyncToken, OperationError>> + Send;
 
     fn read_records(
-        &mut self,
+        &self,
         get_records_message: GetRecords,
         loglet_state: &LogletState,
     ) -> impl Future<Output = Result<Records, OperationError>> + Send;
 
     fn get_records_digest(
-        &mut self,
+        &self,
         get_records_message: GetDigest,
         loglet_state: &LogletState,
     ) -> impl Future<Output = Result<Digest, OperationError>> + Send;
