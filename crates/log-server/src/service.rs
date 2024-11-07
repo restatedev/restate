@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, instrument};
@@ -241,7 +243,7 @@ impl LogServerService {
             .await
             .map_err(|e| e.transpose())?;
 
-        metadata_writer.update(nodes_config).await?;
+        metadata_writer.update(Arc::new(nodes_config)).await?;
         info!("Log-store self-provisioning is complete, the node's log-store is now in read-write state");
         Ok(target_storage_state)
     }

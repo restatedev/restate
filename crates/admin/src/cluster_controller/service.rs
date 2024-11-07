@@ -391,7 +391,9 @@ impl<T: TransportConnect> Service<T> {
         )
         .await?;
 
-        self.metadata_writer.update(partition_table).await?;
+        self.metadata_writer
+            .update(Arc::new(partition_table))
+            .await?;
 
         Ok(())
     }

@@ -13,7 +13,7 @@ default = []
 [dependencies]
 restate-metadata-store = { workspace = true }
 # nb features here will also affect the compiled restate-server binary in integration tests
-restate-types = { workspace = true, features = ["unsafe-mutable-config", "replicated-loglet"] }
+restate-types = { workspace = true, features = ["unsafe-mutable-config"] }
 
 arc-swap = { workspace = true }
 clap = { workspace = true }

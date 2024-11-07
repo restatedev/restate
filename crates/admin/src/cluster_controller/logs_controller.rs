@@ -739,7 +739,7 @@ impl LogsControllerInner {
                 observed_cluster_state,
                 |seal_lsn, provider_kind, loglet_params| {
                     let mut chain_builder = logs_builder
-                        .chain(log_id)
+                        .chain(*log_id)
                         .expect("Log with '{log_id}' should be present");
 
                     chain_builder.append_segment(seal_lsn, provider_kind, loglet_params)
@@ -761,8 +761,7 @@ impl LogsControllerInner {
         match event {
             Event::WriteLogsSucceeded(version) => {
                 self.on_logs_written(version);
-                // todo prevent clone by adding support for passing in Arcs
-                metadata_writer.submit(self.current_logs.deref().clone());
+                metadata_writer.submit(self.current_logs.clone());
             }
             Event::WriteLogsFailed {
                 logs,
@@ -939,7 +938,7 @@ impl LogsController {
             || metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), Logs::default),
         )
         .await?;
-        metadata_writer.update(logs).await?;
+        metadata_writer.update(Arc::new(logs)).await?;
 
         //todo(azmy): make configurable
         let retry_policy = RetryPolicy::exponential(
@@ -1127,7 +1126,7 @@ impl LogsController {
                                 Ok(result) => {
                                     let logs = result.expect("should be present");
                                     // we are only failing if we are shutting down
-                                    let _ = metadata_writer.update(logs).await;
+                                    let _ = metadata_writer.update(Arc::new(logs)).await;
                                     Event::NewLogs
                                 }
                                 Err(err) => {

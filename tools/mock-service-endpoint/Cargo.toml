@@ -17,7 +17,7 @@ http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["server"] }
 hyper-util = { workspace = true, features = ["full"] }
 restate-service-protocol = { workspace = true, features = ["message", "codec"] }
-restate-types = { workspace = true, features = ["replicated-loglet"] }
+restate-types = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
