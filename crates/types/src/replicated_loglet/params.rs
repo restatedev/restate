@@ -10,6 +10,7 @@
 
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 use super::ReplicationProperty;
 use crate::logs::metadata::SegmentIndex;
@@ -106,6 +107,25 @@ impl ReplicatedLogletId {
 impl Display for ReplicatedLogletId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}_{}", self.log_id(), self.segment_index())
+    }
+}
+
+impl FromStr for ReplicatedLogletId {
+    type Err = <u64 as FromStr>::Err;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.contains('_') {
+            let parts: Vec<&str> = s.split('_').collect();
+            let log_id: u32 = parts[0].parse()?;
+            let segment_index: u32 = parts[1].parse()?;
+            Ok(ReplicatedLogletId::new(
+                LogId::from(log_id),
+                SegmentIndex::from(segment_index),
+            ))
+        } else {
+            // treat the string as raw replicated log-id
+            let id: u64 = s.parse()?;
+            Ok(ReplicatedLogletId(id))
+        }
     }
 }
 
