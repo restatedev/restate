@@ -263,7 +263,6 @@ struct SimpleInvocationRowResult {
     id: Option<String>,
     #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     target: Option<String>,
-    #[arrow_field(type = "arrow_convert::field::LargeString")]
     status: String,
 }
 
