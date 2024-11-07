@@ -739,7 +739,7 @@ impl LogsControllerInner {
                 observed_cluster_state,
                 |seal_lsn, provider_kind, loglet_params| {
                     let mut chain_builder = logs_builder
-                        .chain(log_id)
+                        .chain(*log_id)
                         .expect("Log with '{log_id}' should be present");
 
                     chain_builder.append_segment(seal_lsn, provider_kind, loglet_params)
