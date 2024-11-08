@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{hash_map, BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 
 use bytestring::ByteString;
@@ -16,9 +16,12 @@ use enum_map::Enum;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use smallvec::SmallVec;
+use xxhash_rust::xxh3::Xxh3Builder;
 
 use super::builder::LogsBuilder;
 use crate::logs::{LogId, Lsn, SequenceNumber};
+use crate::replicated_loglet::{ReplicatedLogletId, ReplicatedLogletParams};
 use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 // Starts with 0 being the oldest loglet in the chain.
@@ -54,15 +57,66 @@ impl SegmentIndex {
     }
 }
 
-/// Log metadata is the map of logs known to the system with the corresponding chain.
-/// Metadata updates are versioned and atomic.
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+pub struct LogletRef<P> {
+    pub params: P,
+    pub references: SmallVec<[(LogId, SegmentIndex); 1]>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct LookupIndex {
+    pub(super) replicated_loglets:
+        HashMap<ReplicatedLogletId, LogletRef<ReplicatedLogletParams>, Xxh3Builder>,
+}
+
+impl LookupIndex {
+    pub fn add_replicated_loglet(
+        &mut self,
+        log_id: LogId,
+        segment_index: SegmentIndex,
+        params: ReplicatedLogletParams,
+    ) {
+        self.replicated_loglets
+            .entry(params.loglet_id)
+            .or_insert_with(|| LogletRef {
+                params,
+                references: Default::default(),
+            })
+            .references
+            .push((log_id, segment_index));
+    }
+
+    pub fn rm_replicated_loglet_reference(
+        &mut self,
+        log_id: LogId,
+        segment_index: SegmentIndex,
+        loglet_id: ReplicatedLogletId,
+    ) {
+        if let hash_map::Entry::Occupied(mut entry) = self.replicated_loglets.entry(loglet_id) {
+            entry
+                .get_mut()
+                .references
+                .retain(|(l, s)| *l != log_id && *s != segment_index);
+            if entry.get().references.is_empty() {
+                entry.remove();
+            }
+        }
+    }
+
+    pub fn get_replicated_loglet(
+        &self,
+        loglet_id: &ReplicatedLogletId,
+    ) -> Option<&LogletRef<ReplicatedLogletParams>> {
+        self.replicated_loglets.get(loglet_id)
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "LogsSerde", into = "LogsSerde")]
 pub struct Logs {
     pub(super) version: Version,
-    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
-    #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    pub(super) logs: HashMap<LogId, Chain>,
+    pub(super) logs: HashMap<LogId, Chain, Xxh3Builder>,
+    pub(super) lookup_index: LookupIndex,
 }
 
 impl Default for Logs {
@@ -70,8 +124,54 @@ impl Default for Logs {
         Self {
             version: Version::INVALID,
             logs: Default::default(),
+            lookup_index: Default::default(),
         }
     }
+}
+
+impl From<Logs> for LogsSerde {
+    fn from(value: Logs) -> Self {
+        Self {
+            version: value.version,
+            logs: value.logs.into_iter().collect(),
+        }
+    }
+}
+
+impl TryFrom<LogsSerde> for Logs {
+    type Error = anyhow::Error;
+
+    fn try_from(value: LogsSerde) -> Result<Self, Self::Error> {
+        let mut logs = HashMap::with_capacity_and_hasher(value.logs.len(), Xxh3Builder::new());
+        let mut lookup_index = LookupIndex::default();
+
+        for (log_id, chain) in value.logs {
+            for loglet_config in chain.chain.values() {
+                if let ProviderKind::Replicated = loglet_config.kind {
+                    let params =
+                        ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())?;
+                    lookup_index.add_replicated_loglet(log_id, loglet_config.index, params);
+                }
+            }
+            logs.insert(log_id, chain);
+        }
+        Ok(Self {
+            version: value.version,
+            logs,
+            lookup_index,
+        })
+    }
+}
+
+/// Log metadata is the map of logs known to the system with the corresponding chain.
+/// Metadata updates are versioned and atomic.
+///
+/// This structure is what gets serialized in metadata store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LogsSerde {
+    version: Version,
+    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+    logs: Vec<(LogId, Chain)>,
 }
 
 /// the chain is a list of segments in (from Lsn) order.
@@ -173,8 +273,6 @@ pub enum ProviderKind {
     /// An in-memory loglet, primarily for testing.
     #[cfg(any(test, feature = "memory-loglet"))]
     InMemory,
-    #[cfg(feature = "replicated-loglet")]
-    /// [IN DEVELOPMENT]
     /// Replicated loglet implementation. This requires log-server role to run on
     /// enough nodes in the cluster.
     Replicated,
@@ -187,7 +285,6 @@ impl FromStr for ProviderKind {
             "local" => Ok(Self::Local),
             #[cfg(any(test, feature = "memory-loglet"))]
             "in-memory" | "in_memory" | "memory" => Ok(Self::InMemory),
-            #[cfg(feature = "replicated-loglet")]
             "replicated" => Ok(Self::Replicated),
             _ => Err("Unknown provider kind"),
         }
@@ -209,16 +306,9 @@ impl LogletConfig {
 }
 
 impl Logs {
-    pub fn new(version: Version, logs: HashMap<LogId, Chain>) -> Self {
-        Self { version, logs }
-    }
-
     /// empty metadata with an invalid version
     pub fn empty() -> Self {
-        Self {
-            version: Version::INVALID,
-            logs: Default::default(),
-        }
+        Default::default()
     }
 
     pub fn num_logs(&self) -> usize {
@@ -235,6 +325,13 @@ impl Logs {
 
     pub fn into_builder(self) -> LogsBuilder {
         self.into()
+    }
+
+    pub fn get_replicated_loglet(
+        &self,
+        loglet_id: &ReplicatedLogletId,
+    ) -> Option<&LogletRef<ReplicatedLogletParams>> {
+        self.lookup_index.get_replicated_loglet(loglet_id)
     }
 }
 
@@ -368,7 +465,6 @@ pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletPa
         ProviderKind::Local => LogletParams::from(loglet_id),
         #[cfg(any(test, feature = "memory-loglet"))]
         ProviderKind::InMemory => LogletParams::from(loglet_id),
-        #[cfg(feature = "replicated-loglet")]
         ProviderKind::Replicated => panic!(
             "replicated-loglet is still in development and cannot be used as default-provider in this version. Pleae use 'local' instead."
         ),
