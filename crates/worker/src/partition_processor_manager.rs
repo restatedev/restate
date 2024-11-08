@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
-use std::ops::RangeInclusive;
+use std::ops::{Add, RangeInclusive};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -521,11 +521,17 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         let mut logs_version_watcher = self.metadata.watch(MetadataKind::Logs);
         let mut partition_table_version_watcher = self.metadata.watch(MetadataKind::PartitionTable);
 
+        let mut latest_snapshot_check_interval = tokio::time::interval(Duration::from_secs(5));
+        latest_snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         self.health_status.update(WorkerStatus::Ready);
         loop {
             tokio::select! {
                 Some(command) = self.rx.recv() => {
                     self.on_command(command);
+                }
+                _ = latest_snapshot_check_interval.tick() => {
+                    self.request_partition_snapshots();
                 }
                 Some(control_processors) = self.incoming_update_processors.next() => {
                     self.pending_control_processors = Some(control_processors.into_body());
@@ -743,6 +749,45 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             }
             GetState(sender) => {
                 let _ = sender.send(self.get_state());
+            }
+        }
+    }
+
+    fn request_partition_snapshots(&mut self) {
+        let Some(records_per_snapshot) = self
+            .updateable_config
+            .live_load()
+            .worker
+            .snapshots
+            .records_per_snapshot
+        else {
+            return;
+        };
+
+        for (partition_id, status) in self.running_partition_processors.iter() {
+            let ProcessorStatus::Started(state) = status else {
+                continue;
+            };
+            let status = state.watch_rx.borrow().clone();
+            if status.is_effective_leader()
+                && status.replay_status == ReplayStatus::Active
+                && status.last_applied_log_lsn.unwrap_or(Lsn::INVALID)
+                    >= status
+                        .last_archived_log_lsn
+                        .unwrap_or(Lsn::OLDEST)
+                        .add(Lsn::from(records_per_snapshot))
+            {
+                debug!(%partition_id, "Triggering snapshot on partition leader after records_per_snapshot exceeded (last snapshot: {}, current LSN: {})", status.last_archived_log_lsn.unwrap_or(Lsn::OLDEST), status.last_applied_log_lsn.unwrap_or(Lsn::INVALID));
+                let (tx, _) = oneshot::channel();
+
+                // ignore errors and don't request further snapshots if internal queue is full; we will try again later
+                if self
+                    .tx
+                    .try_send(ProcessorsManagerCommand::CreateSnapshot(*partition_id, tx))
+                    .is_err()
+                {
+                    break;
+                }
             }
         }
     }
@@ -1153,6 +1198,7 @@ impl SpawnPartitionProcessorTask {
         Ok(state)
     }
 }
+
 /// Monitors the persisted log lsns and notifies the partition processor manager about it. The
 /// current approach requires flushing the memtables to make sure that data has been persisted.
 /// An alternative approach could be to register an event listener on flush events and using

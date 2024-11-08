@@ -25,6 +25,7 @@ mod fsm_variable {
     pub(crate) const OUTBOX_SEQ_NUMBER: u64 = 1;
 
     pub(crate) const APPLIED_LSN: u64 = 2;
+    pub(crate) const ARCHIVED_LSN: u64 = 3;
 }
 
 pub trait ReadOnlyFsmTable {
@@ -49,6 +50,14 @@ pub trait ReadOnlyFsmTable {
                     .map(|seq_number| seq_number.map(|seq_number| Lsn::from(u64::from(seq_number))))
             })
     }
+
+    fn get_archived_lsn(&mut self) -> impl Future<Output = Result<Option<Lsn>>> + Send + '_ {
+        self.get::<SequenceNumber>(fsm_variable::ARCHIVED_LSN)
+            .map(|result| {
+                result
+                    .map(|seq_number| seq_number.map(|seq_number| Lsn::from(u64::from(seq_number))))
+            })
+    }
 }
 
 pub trait FsmTable: ReadOnlyFsmTable {
@@ -63,6 +72,13 @@ pub trait FsmTable: ReadOnlyFsmTable {
     fn put_applied_lsn(&mut self, lsn: Lsn) -> impl Future<Output = ()> + Send {
         self.put(
             fsm_variable::APPLIED_LSN,
+            SequenceNumber::from(u64::from(lsn)),
+        )
+    }
+
+    fn put_archived_lsn(&mut self, lsn: Lsn) -> impl Future<Output = ()> + Send {
+        self.put(
+            fsm_variable::ARCHIVED_LSN,
             SequenceNumber::from(u64::from(lsn)),
         )
     }

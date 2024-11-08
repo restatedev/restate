@@ -61,7 +61,10 @@ pub struct WorkerOptions {
     /// value is, the higher the throughput and latency are.
     max_command_batch_size: NonZeroUsize,
 
-    #[serde(flatten)]
+    /// # Snapshots
+    ///
+    /// When using the replicated loglet in a distributed cluster, snapshots provide a mechanism for
+    /// safely trimming the log and for bootstrapping new worker nodes.
     pub snapshots: SnapshotsOptions,
 }
 
@@ -350,12 +353,24 @@ impl Default for StorageOptions {
 /// # Snapshot options.
 /// Configures the worker store partition snapshot mechanism.
 #[serde_as]
-#[derive(Default, Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "SnapshotsOptions", default))]
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
-pub struct SnapshotsOptions {}
+pub struct SnapshotsOptions {
+    /// # Records per snapshot
+    ///
+    /// Number of log records after which a snapshot will be created.
+    ///
+    /// As snapshots are created asynchronously, the actual number of new records that will trigger
+    /// a snapshot will vary. The counter for the subsequent snapshot begins from the LSN at which
+    /// the previous snapshot export was initiated. Only  leader Partition Processors will take
+    /// snapshots for a given partition.
+    ///
+    /// Default: `None`
+    pub records_per_snapshot: Option<u64>,
+}
 
 impl SnapshotsOptions {
     pub fn snapshots_base_dir(&self) -> PathBuf {
@@ -364,5 +379,13 @@ impl SnapshotsOptions {
 
     pub fn snapshots_dir(&self, partition_id: PartitionId) -> PathBuf {
         super::data_dir("db-snapshots").join(partition_id.to_string())
+    }
+}
+
+impl Default for SnapshotsOptions {
+    fn default() -> Self {
+        Self {
+            records_per_snapshot: None,
+        }
     }
 }
