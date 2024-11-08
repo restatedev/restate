@@ -24,6 +24,7 @@ use restate_types::schema::invocation_target::{
     InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
 };
+use restate_types::schema::openapi::ServiceOpenAPI;
 use restate_types::schema::service::{HandlerSchemas, ServiceLocation, ServiceSchemas};
 use restate_types::schema::subscriptions::{
     EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
@@ -141,6 +142,7 @@ impl SchemaUpdater {
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             );
+            let openapi = ServiceOpenAPI::infer(service_name.as_ref(), service_type, &handlers);
 
             // For the time being when updating we overwrite existing data
             let service_schema = if let Some(existing_service) =
@@ -196,6 +198,7 @@ impl SchemaUpdater {
                 service_schemas.ty = service_type;
                 service_schemas.handlers = handlers;
                 service_schemas.location.latest_deployment = deployment_id;
+                service_schemas.service_openapi = openapi;
 
                 service_schemas
             } else {
@@ -215,6 +218,7 @@ impl SchemaUpdater {
                     },
                     inactivity_timeout: None,
                     abort_timeout: None,
+                    service_openapi: openapi,
                 }
             };
 
@@ -412,6 +416,9 @@ impl SchemaUpdater {
                         for h in schemas.handlers.values_mut() {
                             h.target_meta.public = new_public_value;
                         }
+                        // Regenerate OpenAPI
+                        schemas.service_openapi =
+                            ServiceOpenAPI::infer(&name, schemas.ty, &schemas.handlers)
                     }
                     ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
                         schemas.idempotency_retention = new_idempotency_retention;

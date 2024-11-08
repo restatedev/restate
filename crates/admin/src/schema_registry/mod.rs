@@ -280,6 +280,12 @@ impl<V> SchemaRegistry<V> {
         metadata().schema().resolve_latest_service(&service_name)
     }
 
+    pub fn get_service_openapi(&self, service_name: impl AsRef<str>) -> Option<serde_json::Value> {
+        metadata()
+            .schema()
+            .resolve_latest_service_openapi(&service_name)
+    }
+
     pub fn get_deployment(
         &self,
         deployment_id: DeploymentId,

@@ -27,6 +27,7 @@ restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["schemars"] }
+restate-utoipa = { workspace = true }
 restate-wal-protocol = { workspace = true }
 restate-web-ui = { workspace = true, optional = true }
 
