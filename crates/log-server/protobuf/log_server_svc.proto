@@ -9,9 +9,7 @@
 
 syntax = "proto3";
 
-import "google/protobuf/empty.proto";
-import "restate/common.proto";
-import "restate/node.proto";
+import "restate/log_server_common.proto";
 
 package restate.log_server;
 
@@ -21,13 +19,22 @@ service LogServerSvc {
 }
 
 message GetDigestRequest {
-  uint32 loglet_id = 1;
+  uint64 loglet_id = 1;
   // inclusive
   uint32 from_offset = 2;
   // inclusive
   uint32 to_offset = 3;
 }
-message GetDigestResponse {}
 
-message GetLogletInfoRequest { uint32 loglet_id = 1; }
-message GetLogletInfoResponse {}
+message GetDigestResponse {
+  restate.log_server_common.Digest digest = 1;
+}
+
+message GetLogletInfoRequest {
+  uint64 loglet_id = 1;
+
+}
+
+message GetLogletInfoResponse {
+ restate.log_server_common.LogletInfo info = 1;
+}

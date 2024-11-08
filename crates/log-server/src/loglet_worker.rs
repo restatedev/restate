@@ -462,7 +462,7 @@ impl<S: LogStore> LogletWorker<S> {
     }
 
     fn process_get_records(&mut self, msg: Incoming<GetRecords>) {
-        let mut log_store = self.log_store.clone();
+        let log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
         // fails on shutdown, in this case, we ignore the request
         let _ = self.task_center.spawn(
@@ -497,7 +497,7 @@ impl<S: LogStore> LogletWorker<S> {
     }
 
     fn process_get_digest(&mut self, msg: Incoming<GetDigest>) {
-        let mut log_store = self.log_store.clone();
+        let log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
         // fails on shutdown, in this case, we ignore the request
         let _ = self.task_center.spawn(
@@ -537,7 +537,7 @@ impl<S: LogStore> LogletWorker<S> {
         //
         // fails on shutdown, in this case, we ignore the request
         let mut loglet_state = self.loglet_state.clone();
-        let mut log_store = self.log_store.clone();
+        let log_store = self.log_store.clone();
         let _ = self
             .task_center
             .spawn(TaskKind::Disposable, "logserver-trim", None, async move {
@@ -661,7 +661,7 @@ mod tests {
         const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
 
         let (tc, log_store) = setup().await?;
-        let mut loglet_state_map = LogletStateMap::default();
+        let loglet_state_map = LogletStateMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
@@ -738,7 +738,7 @@ mod tests {
         const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
 
         let (tc, log_store) = setup().await?;
-        let mut loglet_state_map = LogletStateMap::default();
+        let loglet_state_map = LogletStateMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
@@ -900,7 +900,7 @@ mod tests {
         const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
 
         let (tc, log_store) = setup().await?;
-        let mut loglet_state_map = LogletStateMap::default();
+        let loglet_state_map = LogletStateMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
@@ -1066,7 +1066,7 @@ mod tests {
         const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
 
         let (tc, log_store) = setup().await?;
-        let mut loglet_state_map = LogletStateMap::default();
+        let loglet_state_map = LogletStateMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
@@ -1284,7 +1284,7 @@ mod tests {
         const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
 
         let (tc, log_store) = setup().await?;
-        let mut loglet_state_map = LogletStateMap::default();
+        let loglet_state_map = LogletStateMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
@@ -1494,7 +1494,7 @@ mod tests {
         assert_that!(gap.to, eq(LogletOffset::new(6)));
 
         // Make sure that we can load the local-tail correctly when loading the loglet_state
-        let mut loglet_state_map = LogletStateMap::default();
+        let loglet_state_map = LogletStateMap::default();
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         assert_that!(loglet_state.trim_point(), eq(LogletOffset::new(6)));
         assert_that!(loglet_state.local_tail().offset(), eq(LogletOffset::new(7)));
