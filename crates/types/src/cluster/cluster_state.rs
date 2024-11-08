@@ -128,6 +128,7 @@ pub struct PartitionProcessorStatus {
     pub num_skipped_records: u64,
     pub replay_status: ReplayStatus,
     pub last_persisted_log_lsn: Option<Lsn>,
+    pub last_archived_log_lsn: Option<Lsn>,
     // Set if replay_status is CatchingUp
     pub target_tail_lsn: Option<Lsn>,
 }
@@ -145,6 +146,7 @@ impl Default for PartitionProcessorStatus {
             num_skipped_records: 0,
             replay_status: ReplayStatus::Starting,
             last_persisted_log_lsn: None,
+            last_archived_log_lsn: None,
             target_tail_lsn: None,
         }
     }

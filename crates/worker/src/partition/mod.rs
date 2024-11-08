@@ -212,6 +212,7 @@ where
             status_watch_tx,
             status,
             inflight_create_snapshot_task: None,
+            last_snapshot_lsn_watch: watch::channel(None),
         })
     }
 
@@ -255,6 +256,7 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
     max_command_batch_size: usize,
     partition_store: PartitionStore,
     inflight_create_snapshot_task: Option<TaskHandle<anyhow::Result<()>>>,
+    last_snapshot_lsn_watch: (watch::Sender<Option<Lsn>>, watch::Receiver<Option<Lsn>>),
 }
 
 impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
@@ -307,6 +309,9 @@ where
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
 
         self.status.last_applied_log_lsn = Some(last_applied_lsn);
+        self.last_snapshot_lsn_watch
+            .0
+            .send(partition_store.get_archived_lsn().await?)?;
 
         // propagate errors and let the PPM handle error retries
         let current_tail = self
@@ -410,6 +415,7 @@ where
                     self.on_rpc(rpc, &mut partition_store).await;
                 }
                 _ = status_update_timer.tick() => {
+                    self.status.last_archived_log_lsn = *self.last_snapshot_lsn_watch.1.borrow();
                     self.status_watch_tx.send_modify(|old| {
                         old.clone_from(&self.status);
                         old.updated_at = MillisSinceEpoch::now();
@@ -526,6 +532,8 @@ where
                 let snapshot_base_path = config.worker.snapshots.snapshots_dir(self.partition_id);
                 let partition_store = self.partition_store.clone();
                 let snapshot_span = tracing::info_span!("create-snapshot");
+                let snapshot_lsn_tx = self.last_snapshot_lsn_watch.0.clone();
+
                 let inflight_create_snapshot_task = restate_core::task_center().spawn_unmanaged(
                     TaskKind::PartitionSnapshotProducer,
                     "create-snapshot",
@@ -537,6 +545,11 @@ where
                             snapshot_base_path,
                         )
                         .await;
+
+                        if let Ok(metadata) = result.as_ref() {
+                            // update the Partition Processor's internal state
+                            let _ = snapshot_lsn_tx.send(Some(metadata.min_applied_lsn));
+                        }
 
                         if let Some(tx) = maybe_sender {
                             tx.send(result.map(|metadata| metadata.snapshot_id)).ok();

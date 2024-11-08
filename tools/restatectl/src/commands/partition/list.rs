@@ -41,9 +41,9 @@ use crate::util::grpc_connect;
 #[command(
     after_long_help = "In addition to partition processors, the command displays the current \
     sequencer for the partition's log when the reported applied LSN falls within the tail a \
-    replicated segment, under the heading SEQNCR. If ANSI color is enabled, the leadership epoch \
-    and the active sequencer will be highlighted in green they are the most recent and co-located \
-    with the leader processor, respectively."
+    replicated segment. If ANSI color is enabled, the leadership epoch and the active sequencer \
+    will be highlighted in green they are the most recent and co-located with the leader \
+    processor, respectively."
 )]
 pub struct ListPartitionsOpts {
     /// Sort order
@@ -139,10 +139,11 @@ pub async fn list_partitions(
         "STATUS",
         "LEADER",
         "EPOCH",
-        "SEQNCR",
-        "APPLIED",
-        "PERSISTED",
-        "SKIPPED",
+        "SEQUENCER",
+        "APPLIED-LSN",
+        "PERSISTED-LSN",
+        "SKIPPED-RECORDS",
+        "ARCHIVED-LSN",
         "LAST-UPDATE",
     ]);
 
@@ -271,6 +272,13 @@ pub async fn list_partitions(
                         .unwrap_or("-".to_owned()),
                 ),
                 Cell::new(processor.status.num_skipped_records),
+                Cell::new(
+                    processor
+                        .status
+                        .last_archived_log_lsn
+                        .map(|x| x.to_string())
+                        .unwrap_or("-".to_owned()),
+                ),
                 render_as_duration(processor.status.updated_at, Tense::Past),
             ]);
         });
