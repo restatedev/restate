@@ -264,6 +264,27 @@ where
 {
     #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<()> {
+        let res = self.run_inner().await;
+
+        // Drain control_rx
+        self.control_rx.close();
+        while self.control_rx.recv().await.is_some() {}
+
+        // Drain rpc_rx
+        self.rpc_rx.close();
+        while let Some(msg) = self.rpc_rx.recv().await {
+            let _ = msg
+                .into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
+                    self.partition_id,
+                )))
+                .send()
+                .await;
+        }
+
+        res
+    }
+
+    async fn run_inner(&mut self) -> anyhow::Result<()> {
         let mut partition_store = self.partition_store.clone();
         let last_applied_lsn = partition_store.get_applied_lsn().await?;
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
