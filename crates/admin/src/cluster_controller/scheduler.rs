@@ -501,12 +501,15 @@ impl<T: TransportConnect> Scheduler<T> {
 
         if let Some(target_state) = target_state {
             for (node_id, run_mode) in target_state.iter() {
-                observed_state.remove(&node_id);
-
-                commands.entry(node_id).or_default().push(ControlProcessor {
-                    partition_id: *partition_id,
-                    command: ProcessorCommand::from(run_mode),
-                });
+                if !observed_state
+                    .remove(&node_id)
+                    .is_some_and(|observed_run_mode| observed_run_mode == run_mode)
+                {
+                    commands.entry(node_id).or_default().push(ControlProcessor {
+                        partition_id: *partition_id,
+                        command: ProcessorCommand::from(run_mode),
+                    });
+                }
             }
         }
 

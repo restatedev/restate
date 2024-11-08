@@ -357,6 +357,10 @@ impl MultiplexedInvokerStatusReader {
     fn push(&mut self, key_range: RangeInclusive<PartitionKey>, reader: ChannelStatusReader) {
         self.readers.write().push((key_range, reader));
     }
+
+    fn remove(&mut self, key_range: &RangeInclusive<PartitionKey>) {
+        self.readers.write().retain(|elem| &elem.0 != key_range);
+    }
 }
 
 impl StatusHandle for MultiplexedInvokerStatusReader {
@@ -648,6 +652,17 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 error!(%partition_id, error=%err, "Starting partition processor failed");
                 self.running_partition_processors.remove(&partition_id);
             }
+            ProcessorEvent::Stopped(err) => {
+                if let Some(err) = err {
+                    warn!(%partition_id, error=%err, "Partition processor exited unexpectedly");
+                }
+
+                if let Some(ProcessorStatus::Started(status)) =
+                    self.running_partition_processors.remove(&partition_id)
+                {
+                    self.invokers_status_reader.remove(&status.key_range);
+                }
+            }
         }
     }
 
@@ -921,6 +936,7 @@ struct ManagerEvent {
 enum ProcessorEvent {
     Started(StartedProcessorStatus),
     StartFailed(anyhow::Error),
+    Stopped(Option<anyhow::Error>),
 }
 
 enum ProcessorStatus {
@@ -992,6 +1008,7 @@ impl SpawnPartitionProcessorTask {
             metadata,
             bifrost,
             partition_store_manager,
+            events.clone(),
         )
         .await
         {
@@ -1030,6 +1047,7 @@ impl SpawnPartitionProcessorTask {
         metadata: Metadata,
         bifrost: Bifrost,
         partition_store_manager: PartitionStoreManager,
+        events: EventSender,
     ) -> anyhow::Result<StartedProcessorStatus> {
         let config = configuration.pinned();
         let schema = metadata.updateable_schema();
@@ -1092,11 +1110,21 @@ impl SpawnPartitionProcessorTask {
                         invoker.run(invoker_config),
                     )?;
 
-                    pp_builder
+                    let err = pp_builder
                         .build::<ProtobufRawEntryCodec>(tc, bifrost, partition_store, configuration)
                         .await?
                         .run()
                         .await
+                        .err();
+
+                    let _ = events
+                        .send(ManagerEvent {
+                            partition_id,
+                            event: ProcessorEvent::Stopped(err),
+                        })
+                        .await;
+
+                    Ok(())
                 }
             },
         );
