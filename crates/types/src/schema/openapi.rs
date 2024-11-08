@@ -231,11 +231,11 @@ const DELAY_PARAMETER_REF_NAME: &str = "delay";
 fn delay_parameter() -> Parameter {
     Parameter::builder()
         .name("delay")
+        .parameter_in(ParameterIn::Query)
         .schema(Some(
             string_json_schema()
         ))
         .required(Required::False)
-        .parameter_in(ParameterIn::Query)
         .description(Some("Specify the delay to execute the operation, for more info check the [delay documentation](https://docs.restate.dev/invoke/http#sending-a-delayed-message-over-http)"))
         .build()
 }
@@ -245,9 +245,9 @@ const KEY_PARAMETER_REF_NAME: &str = "key";
 fn key_parameter() -> Parameter {
     Parameter::builder()
         .name("key")
+        .parameter_in(ParameterIn::Path)
         .schema(Some(string_json_schema()))
         .required(Required::True)
-        .parameter_in(ParameterIn::Path)
         .build()
 }
 
@@ -256,11 +256,11 @@ const IDEMPOTENCY_KEY_PARAMETER_REF_NAME: &str = "idempotencyKey";
 fn idempotency_key_parameter() -> Parameter {
     Parameter::builder()
         .name("idempotency-key")
+        .parameter_in(ParameterIn::Header)
         .schema(Some(
             string_json_schema()
         ))
         .required(Required::False)
-        .parameter_in(ParameterIn::Header)
         .description(Some("Idempotency key to execute the request, for more details checkout the [idempotency key documentation](https://docs.restate.dev/invoke/http#invoke-a-handler-idempotently)."))
         .build()
 }
