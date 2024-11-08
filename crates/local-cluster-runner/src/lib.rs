@@ -53,7 +53,7 @@ pub fn random_socket_address() -> io::Result<SocketAddr> {
             return Err(io::Error::other("Max allocation attempts exahusted"));
         }
 
-        let port = rng.gen_range(1025..u16::MAX);
+        let port = rng.gen_range(10000..30000);
         let port_file = base_path.join(port.to_string());
 
         match fs::OpenOptions::new()
