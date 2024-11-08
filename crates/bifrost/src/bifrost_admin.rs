@@ -195,8 +195,7 @@ impl<'a> BifrostAdmin<'a> {
                 let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
 
                 let mut builder = logs.into_builder();
-                let mut chain_builder =
-                    builder.chain(&log_id).ok_or(Error::UnknownLogId(log_id))?;
+                let mut chain_builder = builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
 
                 if chain_builder.tail().index() != last_segment_index {
                     // tail is not what we expected.

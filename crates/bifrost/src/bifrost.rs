@@ -804,7 +804,7 @@ mod tests {
             let old_version = bifrost.inner.metadata.logs_version();
 
             let mut builder = bifrost.inner.metadata.logs_ref().clone().into_builder();
-            let mut chain_builder = builder.chain(&LOG_ID).unwrap();
+            let mut chain_builder = builder.chain(LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
             // deliberately skips Lsn::from(6) to create a zombie record in segment 1. Segment 1 now has 4 records.

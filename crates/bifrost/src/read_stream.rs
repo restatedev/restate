@@ -761,7 +761,7 @@ mod tests {
             // when it's implemented)
             let old_version = bifrost.inner.metadata.logs_version();
             let mut builder = bifrost.inner.metadata.logs_ref().clone().into_builder();
-            let mut chain_builder = builder.chain(&LOG_ID).unwrap();
+            let mut chain_builder = builder.chain(LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
             chain_builder.append_segment(
@@ -982,7 +982,7 @@ mod tests {
             // prepare a chain that starts from Lsn 10 (we expect trim from OLDEST -> 9)
             let old_version = bifrost.inner.metadata.logs_version();
             let mut builder = bifrost.inner.metadata.logs_ref().clone().into_builder();
-            let mut chain_builder = builder.chain(&LOG_ID).unwrap();
+            let mut chain_builder = builder.chain(LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::Local);
             chain_builder.append_segment(Lsn::new(10), ProviderKind::Local, new_segment_params)?;
