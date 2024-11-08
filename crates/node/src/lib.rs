@@ -12,6 +12,8 @@ mod cluster_marker;
 mod network_server;
 mod roles;
 
+use std::sync::Arc;
+
 use tracing::{debug, error, info, trace};
 
 use codederror::CodedError;
@@ -312,7 +314,7 @@ impl Node {
 
         let nodes_config =
             Self::upsert_node_config(&self.metadata_store_client, &config.common).await?;
-        metadata_writer.update(nodes_config).await?;
+        metadata_writer.update(Arc::new(nodes_config)).await?;
 
         if config.common.allow_bootstrap {
             // todo write bootstrap state

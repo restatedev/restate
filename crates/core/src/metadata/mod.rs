@@ -159,6 +159,10 @@ impl Metadata {
         Pinned::new(&self.inner.schema)
     }
 
+    pub fn schema_snapshot(&self) -> Arc<Schema> {
+        self.inner.schema.load_full()
+    }
+
     pub fn schema_version(&self) -> Version {
         self.inner.schema.load().version()
     }
