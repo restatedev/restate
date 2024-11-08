@@ -21,6 +21,7 @@ restate-base64-util = { workspace = true }
 restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
+restate-utoipa = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
@@ -71,7 +72,6 @@ toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
-utoipa = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]

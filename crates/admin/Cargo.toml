@@ -27,6 +27,7 @@ restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["schemars"] }
+restate-utoipa = { workspace = true }
 restate-wal-protocol = { workspace = true }
 restate-web-ui = { workspace = true, optional = true }
 
@@ -65,7 +66,6 @@ tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"]
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 xxhash-rust = { workspace = true }
-utoipa = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

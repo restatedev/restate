@@ -17,10 +17,10 @@ use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
+use crate::schema::openapi::ServiceOpenAPI;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
-use utoipa::openapi::{Info, OpenApi, PathItem, Paths};
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,11 +186,6 @@ pub struct HandlerSchemas {
     pub target_meta: InvocationTargetMetadata,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceOpenapi {
-    pub paths: HashMap<String, PathItem>,
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServiceSchemas {
     pub revision: ServiceRevision,
@@ -201,7 +196,8 @@ pub struct ServiceSchemas {
     pub workflow_completion_retention: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
     pub abort_timeout: Option<Duration>,
-    pub service_openapi: ServiceOpenapi,
+    #[serde(default = "ServiceOpenAPI::empty")]
+    pub service_openapi: ServiceOpenAPI,
 }
 
 impl ServiceSchemas {
@@ -232,18 +228,14 @@ impl ServiceSchemas {
     }
 
     pub fn openapi_spec(&self, name: &str) -> serde_json::Value {
-        let mut paths_builder = Paths::builder();
-        for (path, path_item) in &self.service_openapi.paths {
-            paths_builder = paths_builder.path(path, path_item.clone());
-        }
+        let service_openapi = if self.service_openapi.is_empty() {
+            // We might be loading from an old ServiceSchemas, so try to re-create ServiceOpenapi
+            ServiceOpenAPI::infer(name, self.ty, &self.handlers)
+        } else {
+            self.service_openapi.clone()
+        };
 
-        serde_json::to_value(
-            OpenApi::builder()
-                .info(Info::new(name.to_owned(), self.revision.to_string()))
-                .paths(paths_builder.build())
-                .build(),
-        )
-        .expect("Mapping OpenAPI to JSON should never fail")
+        service_openapi.to_openapi_contract(name, self.revision)
     }
 }
 

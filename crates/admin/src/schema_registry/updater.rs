@@ -24,16 +24,13 @@ use restate_types::schema::invocation_target::{
     InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
 };
-use restate_types::schema::service::{
-    HandlerSchemas, ServiceLocation, ServiceOpenapi, ServiceSchemas,
-};
+use restate_types::schema::openapi::ServiceOpenAPI;
+use restate_types::schema::service::{HandlerSchemas, ServiceLocation, ServiceSchemas};
 use restate_types::schema::subscriptions::{
     EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
 };
 use restate_types::schema::Schema;
-use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tracing::{info, warn};
@@ -145,7 +142,7 @@ impl SchemaUpdater {
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             );
-            let openapi = generate_openapi_for_service(&service_name, service_type, &handlers);
+            let openapi = ServiceOpenAPI::infer(service_name.as_ref(), service_type, &handlers);
 
             // For the time being when updating we overwrite existing data
             let service_schema = if let Some(existing_service) =
@@ -419,6 +416,9 @@ impl SchemaUpdater {
                         for h in schemas.handlers.values_mut() {
                             h.target_meta.public = new_public_value;
                         }
+                        // Regenerate OpenAPI
+                        schemas.service_openapi =
+                            ServiceOpenAPI::infer(&name, schemas.ty, &schemas.handlers)
                     }
                     ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
                         schemas.idempotency_retention = new_idempotency_retention;
@@ -637,226 +637,6 @@ impl DiscoveredHandlerMetadata {
             })
             .collect()
     }
-}
-
-fn generate_openapi_for_service(
-    service_name: &ServiceName,
-    service_type: ServiceType,
-    handlers: &HashMap<String, HandlerSchemas>,
-) -> ServiceOpenapi {
-    use utoipa::openapi::path::{Operation, Parameter, ParameterIn};
-    use utoipa::openapi::request_body::RequestBody;
-    use utoipa::openapi::*;
-
-    let root_path = if service_type.is_keyed() {
-        format!("/{service_name}/{{key}}/")
-    } else {
-        format!("/{service_name}/")
-    };
-
-    let mut parameters = vec![];
-    parameters.push(
-        Parameter::builder()
-            .name("delay")
-            .schema(Some(Schema::Object(Object::with_type(
-                schema::SchemaType::Type(Type::String),
-            ))))
-            .required(Required::False)
-            .parameter_in(ParameterIn::Query)
-            .description(Some("Specify the delay to execute the operation"))
-            .build(),
-    );
-    if service_type.is_keyed() {
-        parameters.push(
-            Parameter::builder()
-                .name("key")
-                .schema(Some(Schema::Object(Object::with_type(
-                    schema::SchemaType::Type(Type::String),
-                ))))
-                .required(Required::True)
-                .parameter_in(ParameterIn::Path)
-                .description(Some(format!("Key of the {service_type}")))
-                .build(),
-        );
-    }
-    if service_type != ServiceType::Workflow {
-        parameters.push(
-            Parameter::builder()
-                .name("idempotency-key")
-                .schema(Some(Schema::Object(Object::with_type(
-                    schema::SchemaType::Type(Type::String),
-                ))))
-                .required(Required::False)
-                .parameter_in(ParameterIn::Header)
-                .description(Some("Idempotency key to execute the request"))
-                .build(),
-        );
-    }
-
-    let send_response_schema = json!({
-        "type": "object",
-        "properties": {
-            "invocationId": {
-                "type": "string"
-            },
-            "status": {
-                "type": "string",
-                "enum": ["Accepted", "PreviouslyAccepted"]
-            }
-        },
-        "additionalProperties": false
-    });
-    let send_response = Response::builder()
-        .content(
-            "application/json",
-            Content::new(Some(Schema::Object(
-                Object::deserialize(send_response_schema.into_deserializer()).expect("Mapping should work")
-            ))),
-        )
-        .build();
-
-    // TODO!
-    // let _error_response = {};
-
-    let mut paths = HashMap::with_capacity(handlers.len() * 2);
-    for (handler_name, handler_schemas) in handlers {
-        // TODO do a good job at casing this
-        let operation_id = format!("{service_name}-{handler_name}");
-
-        // TODO deal with public flag
-
-        let request_body = {
-            let mut is_required = true;
-            if handler_schemas
-                .target_meta
-                .input_rules
-                .input_validation_rules
-                .contains(&InputValidationRule::NoBodyAndContentType)
-            {
-                is_required = false;
-            }
-
-            let content_type_and_schema = if let Some(r) = handler_schemas
-                .target_meta
-                .input_rules
-                .input_validation_rules
-                .iter()
-                .find(|rule| matches!(rule, InputValidationRule::ContentType { .. }))
-            {
-                match r {
-                    InputValidationRule::ContentType { content_type } => {
-                        Some((content_type.to_string(), Content::new::<Schema>(None)))
-                    }
-                    _ => unreachable!(),
-                }
-            } else if let Some(r) = handler_schemas
-                .target_meta
-                .input_rules
-                .input_validation_rules
-                .iter()
-                .find(|rule| matches!(rule, InputValidationRule::JsonValue { .. }))
-            {
-                match r {
-                    InputValidationRule::JsonValue {
-                        content_type,
-                        schema,
-                    } => {
-                        // Magic mapping
-                        let utoipa_schema = Object::deserialize(schema.into_deserializer())
-                            .expect("Mapping should work");
-                        //TODO propagate error
-
-                        Some((content_type.to_string(), Content::new(Some(utoipa_schema))))
-                    }
-                    _ => unreachable!(),
-                }
-            } else {
-                None
-            };
-
-            if let Some((content_type, content)) = content_type_and_schema {
-                Some(RequestBody::builder()
-                    .required(Some(if is_required {
-                        Required::True
-                    } else {
-                        Required::False
-                    }))
-                    .content(content_type, content)
-                    .build())
-            } else {
-                None
-            }
-        };
-
-        let response = match (
-            &handler_schemas.target_meta.output_rules.json_schema,
-            &handler_schemas.target_meta.output_rules.content_type_rule,
-        ) {
-            (_, OutputContentTypeRule::None) => Response::builder().description("Empty").build(),
-            (None, OutputContentTypeRule::Set { content_type, .. }) => {
-                // TODO DEAL with set content type if empty
-                Response::builder()
-                    .content(
-                        content_type.to_str().expect(
-                            "content_type should have been checked before during registration",
-                        ),
-                        Content::builder().build(),
-                    )
-                    .build()
-            }
-            (Some(schema), OutputContentTypeRule::Set { content_type, .. }) => {
-                // Magic mapping
-                let utoipa_schema =
-                    Object::deserialize(schema.into_deserializer()).expect("Mapping should work");
-                //TODO propagate error
-                Response::builder()
-                    .content(
-                        content_type.to_str().expect(
-                            "content_type should have been checked before during registration",
-                        ),
-                        Content::new(Some(utoipa_schema)),
-                    )
-                    .build()
-            }
-        };
-
-        let call_item = PathItem::builder()
-            .summary(Some(format!(
-                "Invoke {service_name} handler {handler_name} and wait for response"
-            )))
-            .operation(
-                HttpMethod::Post,
-                Operation::builder()
-                    .operation_id(Some(operation_id.clone()))
-                    .parameters(Some(parameters.clone()))
-                    .tag(service_name.to_string())
-                    .request_body(request_body.clone())
-                    .response("200", response)
-                    .build(),
-            )
-            .build();
-        paths.insert(format!("{root_path}{handler_name}"), call_item);
-
-        let send_item = PathItem::builder()
-            .summary(Some(format!(
-                "Send request to {service_name} handler {handler_name}"
-            )))
-            .operation(
-                HttpMethod::Post,
-                Operation::builder()
-                    .operation_id(Some(format!("{operation_id}-send")))
-                    .parameters(Some(parameters.clone()))
-                    .tag(service_name.to_string())
-                    .request_body(request_body)
-                    .response("200", send_response.clone())
-                    .response("202", send_response.clone())
-                    .build(),
-            )
-            .build();
-        paths.insert(format!("{root_path}{handler_name}/send"), send_item);
-    }
-
-    ServiceOpenapi { paths }
 }
 
 #[cfg(test)]
