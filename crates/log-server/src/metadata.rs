@@ -13,6 +13,7 @@ use std::sync::{Arc, OnceLock};
 
 use chrono::Utc;
 use tokio::sync::watch;
+use tokio::sync::Mutex as AsyncMutex;
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_bifrost::loglet::util::TailOffsetWatch;
@@ -62,9 +63,9 @@ impl LogStoreMarker {
 }
 
 /// Caches loglet state in memory
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct LogletStateMap {
-    inner: HashMap<ReplicatedLogletId, LogletState, Xxh3Builder>,
+    inner: Arc<AsyncMutex<HashMap<ReplicatedLogletId, LogletState, Xxh3Builder>>>,
 }
 
 impl LogletStateMap {
@@ -74,18 +75,19 @@ impl LogletStateMap {
     }
 
     pub async fn get_or_load<S: LogStore>(
-        &mut self,
+        &self,
         loglet_id: ReplicatedLogletId,
         log_store: &S,
     ) -> Result<LogletState, OperationError> {
-        if let Some(state) = self.inner.get(&loglet_id) {
+        let mut guard = self.inner.lock().await;
+        if let Some(state) = guard.get(&loglet_id) {
             return Ok(state.clone());
         }
 
         let state = log_store.load_loglet_state(loglet_id).await?;
-        self.inner.insert(loglet_id, state);
+        guard.insert(loglet_id, state);
         // just inserted it, safe to unwrap.
-        Ok(self.inner.get(&loglet_id).cloned().unwrap())
+        Ok(guard.get(&loglet_id).cloned().unwrap())
     }
 }
 

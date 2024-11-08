@@ -27,7 +27,7 @@ use restate_types::GenerationalNodeId;
 use crate::error::LogServerBuildError;
 use crate::grpc_svc_handler::LogServerSvcHandler;
 use crate::logstore::LogStore;
-use crate::metadata::LogStoreMarker;
+use crate::metadata::{LogStoreMarker, LogletStateMap};
 use crate::metric_definitions::describe_metrics;
 use crate::network::RequestPump;
 use crate::protobuf::log_server_svc_server::LogServerSvcServer;
@@ -113,11 +113,20 @@ impl LogServerService {
         )
         .await?;
 
+        // Might fetch all known loglets from disk
+        let state_map = LogletStateMap::load_all(&log_store)
+            .await
+            .context("cannot load loglet state map from logstore")?;
+
         // 4. Start the log-server grpc service
         server_builder.register_grpc_service(
-            LogServerSvcServer::new(LogServerSvcHandler::new(log_store.clone(), record_cache))
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
+            LogServerSvcServer::new(LogServerSvcHandler::new(
+                log_store.clone(),
+                state_map.clone(),
+                record_cache,
+            ))
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip),
             crate::protobuf::FILE_DESCRIPTOR_SET,
         );
 
@@ -125,7 +134,7 @@ impl LogServerService {
             TaskKind::SystemService,
             "log-server",
             None,
-            request_pump.run(health_status, log_store, storage_state),
+            request_pump.run(health_status, log_store, state_map, storage_state),
         )?;
 
         Ok(())
