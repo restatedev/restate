@@ -251,7 +251,7 @@ impl LogStore for RocksDbLogStore {
             records.push((
                 msg.from_offset,
                 MaybeRecord::TrimGap(Gap {
-                    to: read_from.prev(),
+                    to: read_from.prev_unchecked(),
                 }),
             ));
         }
@@ -381,9 +381,13 @@ impl LogStore for RocksDbLogStore {
 
         // Issue a trim gap until the known head
         if read_from > msg.from_offset {
+            println!(
+                "trim_point: {}, read_from: {}, from_offset: {}",
+                trim_point, read_from, msg.from_offset
+            );
             entries.push(DigestEntry {
                 from_offset: msg.from_offset,
-                to_offset: read_from.prev(),
+                to_offset: read_from.prev_unchecked(),
                 status: RecordStatus::Trimmed,
             });
         }
