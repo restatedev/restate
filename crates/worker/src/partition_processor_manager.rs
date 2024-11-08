@@ -10,14 +10,12 @@
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use futures::future::OptionFuture;
 use futures::stream::StreamExt;
-use futures::Stream;
 use metrics::gauge;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -28,7 +26,7 @@ use tracing::{debug, debug_span, error, info, instrument, trace, warn, Instrumen
 
 use restate_bifrost::Bifrost;
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{Incoming, MessageRouterBuilder};
+use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
 use restate_core::network::{MessageHandler, Networking, TransportConnect};
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{cancellation_watcher, task_center, Metadata, ShutdownError, TaskId, TaskKind};
@@ -92,10 +90,8 @@ pub struct PartitionProcessorManager<T> {
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
     attach_router: RpcRouter<AttachRequest>,
-    incoming_update_processors:
-        Pin<Box<dyn Stream<Item = Incoming<ControlProcessors>> + Send + Sync + 'static>>,
-    incoming_partition_processor_rpc:
-        Pin<Box<dyn Stream<Item = Incoming<PartitionProcessorRpcRequest>> + Send + Sync + 'static>>,
+    incoming_update_processors: MessageStream<ControlProcessors>,
+    incoming_partition_processor_rpc: MessageStream<PartitionProcessorRpcRequest>,
     networking: Networking<T>,
     bifrost: Bifrost,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,

@@ -9,14 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
 use codederror::CodedError;
 use futures::future::OptionFuture;
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
@@ -27,7 +26,7 @@ use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{
-    Incoming, MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking,
+    Incoming, MessageRouterBuilder, MessageStream, NetworkSender, NetworkServerBuilder, Networking,
     TransportConnect,
 };
 use restate_core::{
@@ -70,7 +69,7 @@ pub struct Service<T> {
     metadata: Metadata,
     networking: Networking<T>,
     bifrost: Bifrost,
-    incoming_messages: Pin<Box<dyn Stream<Item = Incoming<AttachRequest>> + Send + Sync + 'static>>,
+    incoming_messages: MessageStream<AttachRequest>,
     cluster_state_refresher: ClusterStateRefresher<T>,
     processor_manager_client: PartitionProcessorManagerClient<Networking<T>>,
     command_tx: mpsc::Sender<ClusterControllerCommand>,

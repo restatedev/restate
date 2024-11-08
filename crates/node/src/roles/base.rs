@@ -8,14 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::pin::Pin;
-
 use anyhow::Context;
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 
 use restate_core::{
     cancellation_watcher,
-    network::{Incoming, MessageRouterBuilder, NetworkError},
+    network::{Incoming, MessageRouterBuilder, MessageStream, NetworkError},
     task_center,
     worker_api::ProcessorsManagerHandle,
     ShutdownError, TaskKind,
@@ -24,8 +22,7 @@ use restate_types::net::node::{GetNodeState, NodeStateResponse};
 
 pub struct BaseRole {
     processor_manager_handle: Option<ProcessorsManagerHandle>,
-    incoming_node_state:
-        Pin<Box<dyn Stream<Item = Incoming<GetNodeState>> + Send + Sync + 'static>>,
+    incoming_node_state: MessageStream<GetNodeState>,
 }
 
 impl BaseRole {
