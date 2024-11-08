@@ -7041,6 +7041,7 @@ dependencies = [
  "restate-bifrost",
  "restate-cli-util",
  "restate-core",
+ "restate-log-server",
  "restate-metadata-store",
  "restate-rocksdb",
  "restate-tracing-instrumentation",

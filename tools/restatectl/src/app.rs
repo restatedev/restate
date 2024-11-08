@@ -38,6 +38,7 @@ pub struct CliApp {
 
 #[derive(Parser, Collect, Debug, Clone)]
 pub struct ConnectionInfo {
+    // todo: rename this to be a node address for reusability across commands
     /// Cluster Controller address
     #[clap(
         long,

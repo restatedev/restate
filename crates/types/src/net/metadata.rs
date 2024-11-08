@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use enum_map::Enum;
+use prost_dto::{FromProto, IntoProto};
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 
@@ -61,7 +62,10 @@ define_message! {
     Deserialize,
     derive_more::Display,
     strum::EnumCount,
+    IntoProto,
+    FromProto,
 )]
+#[proto(target = "crate::protobuf::node::MetadataKind")]
 pub enum MetadataKind {
     NodesConfiguration,
     Schema,
