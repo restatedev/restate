@@ -8,65 +8,54 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod message_handler;
+mod persisted_lsn_watchdog;
+mod processor_state;
+mod spawn_processor_task;
+
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use futures::future::OptionFuture;
 use futures::stream::StreamExt;
 use metrics::gauge;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
-use tokio::time;
-use tokio::time::MissedTickBehavior;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, debug_span, error, info, instrument, trace, warn, Instrument};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
-use restate_core::network::{MessageHandler, Networking, TransportConnect};
+use restate_core::network::{Networking, TransportConnect};
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
-use restate_core::{cancellation_watcher, task_center, Metadata, ShutdownError, TaskId, TaskKind};
-use restate_core::{RuntimeError, TaskCenter};
+use restate_core::TaskCenter;
+use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskKind};
 use restate_invoker_api::StatusHandle;
-use restate_invoker_impl::Service as InvokerService;
 use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
-use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_storage_api::StorageError;
+use restate_partition_store::PartitionStoreManager;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use restate_types::config::{Configuration, StorageOptions};
-use restate_types::epoch::EpochMetadata;
+use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
+use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
-use restate_types::live::LiveLoad;
 use restate_types::logs::Lsn;
-use restate_types::logs::SequenceNumber;
-use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::cluster_controller::AttachRequest;
 use restate_types::net::cluster_controller::{Action, AttachResponse};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcRequest,
 };
-use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
 use restate_types::net::partition_processor_manager::{
-    ControlProcessor, ControlProcessors, CreateSnapshotResponse, ProcessorCommand, SnapshotError,
+    ControlProcessor, ControlProcessors, ProcessorCommand,
 };
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
-use restate_types::schema::Schema;
-use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 
-use crate::invoker_integration::EntryEnricher;
 use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
 use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
@@ -75,15 +64,18 @@ use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
 use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::PartitionProcessorControlCommand;
-use crate::PartitionProcessorBuilder;
+use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
+use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
+use crate::partition_processor_manager::processor_state::{
+    PartitionProcessorHandleError, ProcessorState, StartedProcessor,
+};
+use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 
 pub struct PartitionProcessorManager<T> {
     task_center: TaskCenter,
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
-    running_partition_processors: BTreeMap<PartitionId, ProcessorStatus>,
+    running_partition_processors: BTreeMap<PartitionId, ProcessorState>,
     name_cache: BTreeMap<PartitionId, &'static str>,
 
     metadata: Metadata,
@@ -123,222 +115,12 @@ enum AttachError {
     ShutdownError(#[from] ShutdownError),
 }
 
-struct StartedProcessorStatus {
-    partition_id: PartitionId,
-    task_id: TaskId,
-    _created_at: MillisSinceEpoch,
-    key_range: RangeInclusive<PartitionKey>,
-    planned_mode: RunMode,
-    running_for_leadership_with_epoch: Option<LeaderEpoch>,
-    handle: PartitionProcessorHandle,
-    status_reader: ChannelStatusReader,
-    rpc_tx: mpsc::Sender<Incoming<PartitionProcessorRpcRequest>>,
-    watch_rx: watch::Receiver<PartitionProcessorStatus>,
-}
-
-impl StartedProcessorStatus {
-    fn new(
-        partition_id: PartitionId,
-        task_id: TaskId,
-        key_range: RangeInclusive<PartitionKey>,
-        handle: PartitionProcessorHandle,
-        status_reader: ChannelStatusReader,
-        rpc_tx: mpsc::Sender<Incoming<PartitionProcessorRpcRequest>>,
-        watch_rx: watch::Receiver<PartitionProcessorStatus>,
-    ) -> Self {
-        Self {
-            partition_id,
-            task_id,
-            _created_at: MillisSinceEpoch::now(),
-            key_range,
-            planned_mode: RunMode::Follower,
-            running_for_leadership_with_epoch: None,
-            handle,
-            status_reader,
-            rpc_tx,
-            watch_rx,
-        }
-    }
-
-    fn step_down(&mut self) -> Result<(), Error> {
-        if self.planned_mode != RunMode::Follower {
-            debug!("Asked by cluster-controller to demote partition to follower");
-            self.handle.step_down()?;
-        }
-
-        self.running_for_leadership_with_epoch = None;
-        self.planned_mode = RunMode::Follower;
-
-        Ok(())
-    }
-
-    async fn run_for_leader(
-        &mut self,
-        metadata_store_client: MetadataStoreClient,
-        node_id: GenerationalNodeId,
-    ) -> Result<(), Error> {
-        // run for leadership if there is no ongoing attempt or our current attempt is proven to be
-        // unsuccessful because we have already seen a higher leader epoch.
-        if self.running_for_leadership_with_epoch.is_none()
-            || self
-                .running_for_leadership_with_epoch
-                .is_some_and(|my_leader_epoch| {
-                    my_leader_epoch
-                        < self
-                            .watch_rx
-                            .borrow()
-                            .last_observed_leader_epoch
-                            .unwrap_or(LeaderEpoch::INITIAL)
-                })
-        {
-            // todo alternative could be to let the CC decide the leader epoch
-            let leader_epoch =
-                Self::obtain_next_epoch(metadata_store_client, self.partition_id, node_id).await?;
-            debug!(%leader_epoch, "Asked by cluster-controller to promote partition to leader");
-            self.running_for_leadership_with_epoch = Some(leader_epoch);
-            self.handle.run_for_leader(leader_epoch)?;
-        }
-
-        self.planned_mode = RunMode::Leader;
-
-        Ok(())
-    }
-
-    async fn obtain_next_epoch(
-        metadata_store_client: MetadataStoreClient,
-        partition_id: PartitionId,
-        node_id: GenerationalNodeId,
-    ) -> Result<LeaderEpoch, ReadModifyWriteError> {
-        let epoch: EpochMetadata = metadata_store_client
-            .read_modify_write(partition_processor_epoch_key(partition_id), |epoch| {
-                let next_epoch = epoch
-                    .map(|epoch: EpochMetadata| epoch.claim_leadership(node_id, partition_id))
-                    .unwrap_or_else(|| EpochMetadata::new(node_id, partition_id));
-
-                Ok(next_epoch)
-            })
-            .await?;
-        Ok(epoch.epoch())
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-enum PartitionProcessorHandleError {
-    #[error(transparent)]
-    Shutdown(#[from] ShutdownError),
-    #[error("command could not be sent")]
-    FailedSend,
-}
-
-impl<T> From<TrySendError<T>> for PartitionProcessorHandleError {
-    fn from(value: TrySendError<T>) -> Self {
-        match value {
-            TrySendError::Full(_) => PartitionProcessorHandleError::FailedSend,
-            TrySendError::Closed(_) => PartitionProcessorHandleError::Shutdown(ShutdownError),
-        }
-    }
-}
-
 impl From<PartitionProcessorHandleError> for Error {
     fn from(value: PartitionProcessorHandleError) -> Self {
         match value {
             PartitionProcessorHandleError::Shutdown(err) => Error::Shutdown(err),
             PartitionProcessorHandleError::FailedSend => Error::PartitionProcessorBusy,
         }
-    }
-}
-
-struct PartitionProcessorHandle {
-    control_tx: mpsc::Sender<PartitionProcessorControlCommand>,
-}
-
-impl PartitionProcessorHandle {
-    fn new(control_tx: mpsc::Sender<PartitionProcessorControlCommand>) -> Self {
-        Self { control_tx }
-    }
-
-    fn step_down(&self) -> Result<(), PartitionProcessorHandleError> {
-        self.control_tx
-            .try_send(PartitionProcessorControlCommand::StepDown)?;
-        Ok(())
-    }
-
-    fn run_for_leader(
-        &self,
-        leader_epoch: LeaderEpoch,
-    ) -> Result<(), PartitionProcessorHandleError> {
-        self.control_tx
-            .try_send(PartitionProcessorControlCommand::RunForLeader(leader_epoch))?;
-        Ok(())
-    }
-
-    fn create_snapshot(
-        &self,
-        sender: Option<oneshot::Sender<anyhow::Result<SnapshotId>>>,
-    ) -> Result<(), PartitionProcessorHandleError> {
-        self.control_tx
-            .try_send(PartitionProcessorControlCommand::CreateSnapshot(sender))?;
-        Ok(())
-    }
-}
-
-/// RPC message handler for Partition Processor management operations.
-pub struct PartitionProcessorManagerMessageHandler {
-    processors_manager_handle: ProcessorsManagerHandle,
-}
-
-impl PartitionProcessorManagerMessageHandler {
-    fn new(
-        processors_manager_handle: ProcessorsManagerHandle,
-    ) -> PartitionProcessorManagerMessageHandler {
-        Self {
-            processors_manager_handle,
-        }
-    }
-}
-
-impl MessageHandler for PartitionProcessorManagerMessageHandler {
-    type MessageType = CreateSnapshotRequest;
-
-    async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-        debug!("Received '{:?}' from {}", msg.body(), msg.peer());
-
-        let processors_manager_handle = self.processors_manager_handle.clone();
-        task_center()
-            .spawn_child(
-                TaskKind::Disposable,
-                "create-snapshot-request-rpc",
-                None,
-                async move {
-                    let create_snapshot_result = processors_manager_handle
-                        .create_snapshot(msg.body().partition_id)
-                        .await;
-                    debug!(
-                        partition_id = ?msg.body().partition_id,
-                        result = ?create_snapshot_result,
-                        "Create snapshot completed",
-                    );
-
-                    match create_snapshot_result.as_ref() {
-                        Ok(snapshot_id) => msg.to_rpc_response(CreateSnapshotResponse {
-                            result: Ok(*snapshot_id),
-                        }),
-                        Err(error) => msg.to_rpc_response(CreateSnapshotResponse {
-                            result: Err(SnapshotError::SnapshotCreationFailed(error.to_string())),
-                        }),
-                    }
-                    .send()
-                    .await
-                    .map_err(|e| {
-                        warn!(result = ?create_snapshot_result, "Failed to send response: {}", e);
-                        anyhow::anyhow!("Failed to send response to create snapshot request: {}", e)
-                    })
-                },
-            )
-            .map_err(|e| {
-                warn!("Failed to spawn request handler: {}", e);
-            })
-            .ok();
     }
 }
 
@@ -580,8 +362,8 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     },
                 );
             }
-            Some(ProcessorStatus::Started(partition_processor)) => {
-                if let Err(err) = partition_processor.rpc_tx.try_send(partition_processor_rpc) {
+            Some(ProcessorState::Started(partition_processor)) => {
+                if let Err(err) = partition_processor.try_send_rpc(partition_processor_rpc) {
                     match err {
                         TrySendError::Full(req) => {
                             let _ = self.task_center.spawn(
@@ -614,7 +396,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     }
                 }
             }
-            Some(ProcessorStatus::Starting(_)) => {
+            Some(ProcessorState::Starting(_)) => {
                 let _ = self.task_center.spawn(
                     TaskKind::Disposable,
                     "partition-processor-rpc",
@@ -639,10 +421,12 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
 
         match event {
             ProcessorEvent::Started(state) => {
-                self.invokers_status_reader
-                    .push(state.key_range.clone(), state.status_reader.clone());
+                self.invokers_status_reader.push(
+                    state.key_range().clone(),
+                    state.invoker_status_reader().clone(),
+                );
                 self.running_partition_processors
-                    .insert(partition_id, ProcessorStatus::Started(state));
+                    .insert(partition_id, ProcessorState::Started(state));
             }
             ProcessorEvent::StartFailed(err) => {
                 error!(%partition_id, error=%err, "Starting partition processor failed");
@@ -653,10 +437,10 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     warn!(%partition_id, error=%err, "Partition processor exited unexpectedly");
                 }
 
-                if let Some(ProcessorStatus::Started(status)) =
+                if let Some(ProcessorState::Started(status)) =
                     self.running_partition_processors.remove(&partition_id)
                 {
-                    self.invokers_status_reader.remove(&status.key_range);
+                    self.invokers_status_reader.remove(status.key_range());
                 }
             }
         }
@@ -669,11 +453,11 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         self.running_partition_processors
             .iter()
             .filter_map(|(partition_id, status)| {
-                let ProcessorStatus::Started(state) = status else {
+                let ProcessorState::Started(state) = status else {
                     return None;
                 };
 
-                let mut status = state.watch_rx.borrow().clone();
+                let mut status = state.partition_processor_status();
                 gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
                     PARTITION_LABEL => partition_id.to_string())
                 .set(status.updated_at.elapsed());
@@ -714,7 +498,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
 
                 // it is a bit unfortunate that we share PartitionProcessorStatus between the
                 // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
-                status.planned_mode = state.planned_mode;
+                status.planned_mode = state.planned_mode();
                 status.last_persisted_log_lsn = persisted_lsns
                     .as_ref()
                     .and_then(|lsns| lsns.get(partition_id).cloned());
@@ -730,11 +514,11 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 self.running_partition_processors
                     .get(&partition_id)
                     .map(|store| {
-                        let ProcessorStatus::Started(state) = store else {
+                        let ProcessorState::Started(state) = store else {
                             return None;
                         };
 
-                        Some(state.handle.create_snapshot(Some(sender)))
+                        Some(state.create_snapshot(sender))
                     });
             }
             GetState(sender) => {
@@ -794,7 +578,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 };
 
                 if let Some(status) = self.running_partition_processors.get_mut(&partition_id) {
-                    if let ProcessorStatus::Started(state) = status {
+                    if let ProcessorState::Started(state) = status {
                         // if we error here, then the system is shutting down
                         if run_mode == RunMode::Follower {
                             state.step_down()?;
@@ -833,7 +617,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     );
 
                     self.running_partition_processors
-                        .insert(partition_id, ProcessorStatus::Starting(handle));
+                        .insert(partition_id, ProcessorState::Starting(handle));
                 } else {
                     debug!(
                         "Unknown partition id '{partition_id}'. Ignoring {} command.",
@@ -873,7 +657,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                         );
 
                         self.running_partition_processors
-                            .insert(action.partition_id, ProcessorStatus::Starting(handle));
+                            .insert(action.partition_id, ProcessorState::Starting(handle));
                     } else {
                         debug!(
                             "Partition processor for partition id '{}' is already running.",
@@ -906,19 +690,19 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             .entry(partition_id)
             .or_insert_with(|| Box::leak(Box::new(format!("pp-{}", partition_id))));
 
-        SpawnPartitionProcessorTask {
+        SpawnPartitionProcessorTask::new(
             task_name,
-            node_id: self.metadata.my_node_id(),
+            self.metadata.my_node_id(),
             partition_id,
             run_mode,
             key_range,
-            configuration: self.updateable_config.clone(),
-            metadata: self.metadata.clone(),
-            bifrost: self.bifrost.clone(),
-            partition_store_manager: self.partition_store_manager.clone(),
-            metadata_store_client: self.metadata_store_client.clone(),
+            self.updateable_config.clone(),
+            self.metadata.clone(),
+            self.bifrost.clone(),
+            self.partition_store_manager.clone(),
+            self.metadata_store_client.clone(),
             events,
-        }
+        )
     }
 }
 
@@ -930,464 +714,7 @@ struct ManagerEvent {
 }
 
 enum ProcessorEvent {
-    Started(StartedProcessorStatus),
+    Started(StartedProcessor),
     StartFailed(anyhow::Error),
     Stopped(Option<anyhow::Error>),
-}
-
-enum ProcessorStatus {
-    Starting(JoinHandle<()>),
-    Started(StartedProcessorStatus),
-}
-
-impl ProcessorStatus {
-    async fn stop(self, task_center: &TaskCenter) {
-        match self {
-            Self::Started(processor) => {
-                let handle = task_center.cancel_task(processor.task_id);
-
-                if let Some(handle) = handle {
-                    debug!("Asked by cluster-controller to stop partition");
-                    if let Err(err) = handle.await {
-                        warn!("Partition processor crashed while shutting down: {err}");
-                    }
-                }
-            }
-            Self::Starting(handle) => handle.abort(),
-        };
-    }
-}
-
-struct SpawnPartitionProcessorTask {
-    task_name: &'static str,
-    node_id: GenerationalNodeId,
-    partition_id: PartitionId,
-    run_mode: RunMode,
-    key_range: RangeInclusive<PartitionKey>,
-    configuration: Live<Configuration>,
-    metadata: Metadata,
-    bifrost: Bifrost,
-    partition_store_manager: PartitionStoreManager,
-    metadata_store_client: MetadataStoreClient,
-    events: EventSender,
-}
-
-impl SpawnPartitionProcessorTask {
-    #[instrument(
-        skip_all,
-        fields(
-            partition_id=%self.partition_id,
-            run_mode=%self.run_mode,
-        )
-    )]
-    async fn run(self) {
-        let Self {
-            task_name,
-            node_id,
-            partition_id,
-            run_mode,
-            key_range,
-            configuration,
-            metadata,
-            bifrost,
-            partition_store_manager,
-            metadata_store_client,
-            events,
-        } = self;
-
-        let mut status = match Self::start(
-            task_name,
-            node_id,
-            partition_id,
-            key_range,
-            configuration,
-            metadata,
-            bifrost,
-            partition_store_manager,
-            events.clone(),
-        )
-        .await
-        {
-            Ok(status) => status,
-            Err(err) => {
-                let _ = events
-                    .send(ManagerEvent {
-                        partition_id,
-                        event: ProcessorEvent::StartFailed(err),
-                    })
-                    .await;
-
-                return;
-            }
-        };
-
-        if run_mode == RunMode::Leader {
-            let _ = status.run_for_leader(metadata_store_client, node_id).await;
-        }
-
-        let _ = events
-            .send(ManagerEvent {
-                partition_id: status.partition_id,
-                event: ProcessorEvent::Started(status),
-            })
-            .await;
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn start(
-        task_name: &'static str,
-        node_id: GenerationalNodeId,
-        partition_id: PartitionId,
-        key_range: RangeInclusive<PartitionKey>,
-        configuration: Live<Configuration>,
-        metadata: Metadata,
-        bifrost: Bifrost,
-        partition_store_manager: PartitionStoreManager,
-        events: EventSender,
-    ) -> anyhow::Result<StartedProcessorStatus> {
-        let config = configuration.pinned();
-        let schema = metadata.updateable_schema();
-        let invoker: InvokerService<
-            InvokerStorageReader<PartitionStore>,
-            EntryEnricher<Schema, ProtobufRawEntryCodec>,
-            Schema,
-        > = InvokerService::from_options(
-            &config.common.service_client,
-            &config.worker.invoker,
-            EntryEnricher::new(schema.clone()),
-            schema,
-        )?;
-
-        let status_reader = invoker.status_reader();
-
-        let (control_tx, control_rx) = mpsc::channel(2);
-        let (rpc_tx, rpc_rx) = mpsc::channel(128);
-        let status = PartitionProcessorStatus::new();
-        let (watch_tx, watch_rx) = watch::channel(status.clone());
-
-        let options = &configuration.pinned().worker;
-
-        let pp_builder = PartitionProcessorBuilder::new(
-            node_id,
-            partition_id,
-            key_range.clone(),
-            status,
-            options,
-            control_rx,
-            rpc_rx,
-            watch_tx,
-            invoker.handle(),
-        );
-
-        let invoker_name = Box::leak(Box::new(format!("invoker-{}", partition_id)));
-        let invoker_config = configuration.clone().map(|c| &c.worker.invoker);
-
-        let tc = task_center();
-        let maybe_task_id: Result<TaskId, RuntimeError> = tc.clone().start_runtime(
-            TaskKind::PartitionProcessor,
-            task_name,
-            Some(pp_builder.partition_id),
-            {
-                let options = options.clone();
-                let key_range = key_range.clone();
-                let partition_store = partition_store_manager
-                    .open_partition_store(
-                        partition_id,
-                        key_range,
-                        OpenMode::CreateIfMissing,
-                        &options.storage.rocksdb,
-                    )
-                    .await?;
-                move || async move {
-                    tc.spawn_child(
-                        TaskKind::SystemService,
-                        invoker_name,
-                        Some(pp_builder.partition_id),
-                        invoker.run(invoker_config),
-                    )?;
-
-                    let err = pp_builder
-                        .build::<ProtobufRawEntryCodec>(tc, bifrost, partition_store, configuration)
-                        .await?
-                        .run()
-                        .await
-                        .err();
-
-                    let _ = events
-                        .send(ManagerEvent {
-                            partition_id,
-                            event: ProcessorEvent::Stopped(err),
-                        })
-                        .await;
-
-                    Ok(())
-                }
-            },
-        );
-
-        let task_id = match maybe_task_id {
-            Ok(task_id) => Ok(task_id),
-            Err(RuntimeError::AlreadyExists(name)) => {
-                panic!(
-                    "The partition processor runtime {} is already running!",
-                    name
-                )
-            }
-            Err(RuntimeError::Shutdown(e)) => Err(e),
-        }?;
-
-        let state = StartedProcessorStatus::new(
-            partition_id,
-            task_id,
-            key_range,
-            PartitionProcessorHandle::new(control_tx),
-            status_reader,
-            rpc_tx,
-            watch_rx,
-        );
-
-        Ok(state)
-    }
-}
-/// Monitors the persisted log lsns and notifies the partition processor manager about it. The
-/// current approach requires flushing the memtables to make sure that data has been persisted.
-/// An alternative approach could be to register an event listener on flush events and using
-/// table properties to retrieve the flushed log lsn. However, this requires that we update our
-/// RocksDB binding to expose event listeners and table properties :-(
-struct PersistedLogLsnWatchdog {
-    configuration: Box<dyn LiveLoad<StorageOptions> + Send + Sync + 'static>,
-    partition_store_manager: PartitionStoreManager,
-    watch_tx: watch::Sender<BTreeMap<PartitionId, Lsn>>,
-    persisted_lsns: BTreeMap<PartitionId, Lsn>,
-    persist_lsn_interval: Option<time::Interval>,
-    persist_lsn_threshold: Lsn,
-}
-
-impl PersistedLogLsnWatchdog {
-    fn new(
-        mut configuration: impl LiveLoad<StorageOptions> + Send + Sync + 'static,
-        partition_store_manager: PartitionStoreManager,
-        watch_tx: watch::Sender<BTreeMap<PartitionId, Lsn>>,
-    ) -> Self {
-        let options = configuration.live_load();
-
-        let (persist_lsn_interval, persist_lsn_threshold) = Self::create_persist_lsn(options);
-
-        PersistedLogLsnWatchdog {
-            configuration: Box::new(configuration),
-            partition_store_manager,
-            watch_tx,
-            persisted_lsns: BTreeMap::default(),
-            persist_lsn_interval,
-            persist_lsn_threshold,
-        }
-    }
-
-    fn create_persist_lsn(options: &StorageOptions) -> (Option<time::Interval>, Lsn) {
-        let persist_lsn_interval = options.persist_lsn_interval.map(|duration| {
-            let mut interval = time::interval(duration.into());
-            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            interval
-        });
-
-        let persist_lsn_threshold = Lsn::from(options.persist_lsn_threshold);
-
-        (persist_lsn_interval, persist_lsn_threshold)
-    }
-
-    async fn run(mut self) -> anyhow::Result<()> {
-        debug!("Start running persisted lsn watchdog");
-
-        let mut shutdown = std::pin::pin!(cancellation_watcher());
-        let mut config_watcher = Configuration::watcher();
-
-        loop {
-            tokio::select! {
-                _ = &mut shutdown => {
-                    break;
-                },
-                _ = OptionFuture::from(self.persist_lsn_interval.as_mut().map(|interval| interval.tick())) => {
-                    let result = self.update_persisted_lsns().await;
-
-                    if let Err(err) = result {
-                        warn!("Failed updating the persisted applied lsns. This might prevent the log from being trimmed: {err}");
-                    }
-                }
-                _ = config_watcher.changed() => {
-                    self.on_config_update();
-                }
-            }
-        }
-
-        debug!("Stop persisted lsn watchdog");
-        Ok(())
-    }
-
-    fn on_config_update(&mut self) {
-        debug!("Updating the persisted log lsn watchdog");
-        let options = self.configuration.live_load();
-
-        (self.persist_lsn_interval, self.persist_lsn_threshold) = Self::create_persist_lsn(options);
-    }
-
-    async fn update_persisted_lsns(&mut self) -> Result<(), StorageError> {
-        let partition_stores = self
-            .partition_store_manager
-            .get_all_partition_stores()
-            .await;
-
-        let mut new_persisted_lsns = BTreeMap::new();
-        let mut modified = false;
-
-        for mut partition_store in partition_stores {
-            let partition_id = partition_store.partition_id();
-
-            let applied_lsn = partition_store.get_applied_lsn().await?;
-
-            if let Some(applied_lsn) = applied_lsn {
-                let previously_applied_lsn = self
-                    .persisted_lsns
-                    .get(&partition_id)
-                    .cloned()
-                    .unwrap_or(Lsn::INVALID);
-
-                // only flush if there was some activity compared to the last check
-                if applied_lsn >= previously_applied_lsn + self.persist_lsn_threshold {
-                    // since we cannot be sure that we have read the applied lsn from disk, we need
-                    // to flush the memtables to be sure that it is persisted
-                    trace!(
-                        partition_id = %partition_id,
-                        applied_lsn = %applied_lsn,
-                        "Flush partition store to persist applied lsn"
-                    );
-                    partition_store.flush_memtables(true).await?;
-                    new_persisted_lsns.insert(partition_id, applied_lsn);
-                    modified = true;
-                } else {
-                    new_persisted_lsns.insert(partition_id, previously_applied_lsn);
-                }
-            }
-        }
-
-        if modified {
-            self.persisted_lsns = new_persisted_lsns.clone();
-            // ignore send failures which should only occur during shutdown
-            let _ = self.watch_tx.send(new_persisted_lsns);
-        }
-
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::partition_processor_manager::PersistedLogLsnWatchdog;
-    use restate_core::{TaskKind, TestCoreEnv};
-    use restate_partition_store::{OpenMode, PartitionStoreManager};
-    use restate_rocksdb::RocksDbManager;
-    use restate_storage_api::fsm_table::FsmTable;
-    use restate_storage_api::Transaction;
-    use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
-    use restate_types::identifiers::{PartitionId, PartitionKey};
-    use restate_types::live::Constant;
-    use restate_types::logs::{Lsn, SequenceNumber};
-    use std::collections::BTreeMap;
-    use std::ops::RangeInclusive;
-    use std::time::Duration;
-    use test_log::test;
-    use tokio::sync::watch;
-    use tokio::time::Instant;
-
-    #[test(tokio::test(start_paused = true))]
-    async fn persisted_log_lsn_watchdog_detects_applied_lsns() -> anyhow::Result<()> {
-        let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
-        let storage_options = StorageOptions::default();
-        let rocksdb_options = RocksDbOptions::default();
-
-        node_env.tc.run_in_scope_sync("db-manager-init", None, || {
-            RocksDbManager::init(Constant::new(CommonOptions::default()))
-        });
-
-        let all_partition_keys = RangeInclusive::new(0, PartitionKey::MAX);
-        let partition_store_manager = PartitionStoreManager::create(
-            Constant::new(storage_options.clone()).boxed(),
-            Constant::new(rocksdb_options.clone()).boxed(),
-            &[(PartitionId::MIN, all_partition_keys.clone())],
-        )
-        .await?;
-
-        let mut partition_store = partition_store_manager
-            .open_partition_store(
-                PartitionId::MIN,
-                all_partition_keys,
-                OpenMode::CreateIfMissing,
-                &rocksdb_options,
-            )
-            .await
-            .expect("partition store present");
-
-        let (watch_tx, mut watch_rx) = watch::channel(BTreeMap::default());
-
-        let watchdog = PersistedLogLsnWatchdog::new(
-            Constant::new(storage_options.clone()),
-            partition_store_manager.clone(),
-            watch_tx,
-        );
-
-        let now = Instant::now();
-
-        node_env.tc.spawn(
-            TaskKind::Watchdog,
-            "persiste-log-lsn-test",
-            None,
-            watchdog.run(),
-        )?;
-
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), watch_rx.changed())
-                .await
-                .is_err()
-        );
-        let mut txn = partition_store.transaction();
-        let lsn = Lsn::OLDEST + Lsn::from(storage_options.persist_lsn_threshold);
-        txn.put_applied_lsn(lsn).await;
-        txn.commit().await?;
-
-        watch_rx.changed().await?;
-        assert_eq!(watch_rx.borrow().get(&PartitionId::MIN), Some(&lsn));
-        let persist_lsn_interval: Duration = storage_options
-            .persist_lsn_interval
-            .expect("should be enabled")
-            .into();
-        assert!(now.elapsed() >= persist_lsn_interval);
-
-        // we are short by one to hit the persist lsn threshold
-        let next_lsn = lsn.prev() + Lsn::from(storage_options.persist_lsn_threshold);
-        let mut txn = partition_store.transaction();
-        txn.put_applied_lsn(next_lsn).await;
-        txn.commit().await?;
-
-        // await the persist lsn interval so that we have a chance to see the update
-        tokio::time::sleep(persist_lsn_interval).await;
-
-        // we should not receive a new notification because we haven't reached the threshold yet
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), watch_rx.changed())
-                .await
-                .is_err()
-        );
-
-        let next_persisted_lsn = next_lsn + Lsn::from(1);
-        let mut txn = partition_store.transaction();
-        txn.put_applied_lsn(next_persisted_lsn).await;
-        txn.commit().await?;
-
-        watch_rx.changed().await?;
-        assert_eq!(
-            watch_rx.borrow().get(&PartitionId::MIN),
-            Some(&next_persisted_lsn)
-        );
-
-        Ok(())
-    }
 }
