@@ -515,15 +515,25 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         use ProcessorsManagerCommand::*;
         match command {
             CreateSnapshot(partition_id, sender) => {
-                self.running_partition_processors
-                    .get(&partition_id)
-                    .map(|store| {
-                        let ProcessorState::Started(state) = store else {
-                            return None;
-                        };
-
-                        Some(state.create_snapshot(sender))
-                    });
+                if let Some(processor_state) = self.running_partition_processors.get(&partition_id)
+                {
+                    match processor_state {
+                        ProcessorState::Starting(_) => {
+                            let _ = sender.send(Err(anyhow::anyhow!(
+                                "Partition processors '{}' is still starting",
+                                partition_id
+                            )));
+                        }
+                        ProcessorState::Started(started_processor) => {
+                            started_processor.create_snapshot(sender);
+                        }
+                    }
+                } else {
+                    let _ = sender.send(Err(anyhow::anyhow!(
+                        "Partition processor '{}' not found",
+                        partition_id
+                    )));
+                }
             }
             GetState(sender) => {
                 let _ = sender.send(self.get_state());
