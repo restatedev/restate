@@ -459,27 +459,30 @@ impl<T: TransportConnect> Scheduler<T> {
         }
 
         for (node_id, commands) in commands.into_iter() {
-            let control_processors = ControlProcessors {
-                // todo: Maybe remove unneeded partition table version
-                min_partition_table_version: metadata().partition_table_version(),
-                min_logs_table_version: metadata().logs_version(),
-                commands,
-            };
+            // only send control processors message if there are commands to send
+            if !commands.is_empty() {
+                let control_processors = ControlProcessors {
+                    // todo: Maybe remove unneeded partition table version
+                    min_partition_table_version: metadata().partition_table_version(),
+                    min_logs_table_version: metadata().logs_version(),
+                    commands,
+                };
 
-            self.task_center.spawn_child(
-                TaskKind::Disposable,
-                "send-control-processors-to-node",
-                None,
-                {
-                    let networking = self.networking.clone();
-                    async move {
-                        networking
-                            .send(Outgoing::new(node_id, control_processors))
-                            .await?;
-                        Ok(())
-                    }
-                },
-            )?;
+                self.task_center.spawn_child(
+                    TaskKind::Disposable,
+                    "send-control-processors-to-node",
+                    None,
+                    {
+                        let networking = self.networking.clone();
+                        async move {
+                            networking
+                                .send(Outgoing::new(node_id, control_processors))
+                                .await?;
+                            Ok(())
+                        }
+                    },
+                )?;
+            }
         }
 
         Ok(())
