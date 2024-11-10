@@ -180,11 +180,37 @@ impl StartedProcessor {
         self.rpc_tx.try_send(rpc)
     }
 
-    pub fn create_snapshot(
-        &self,
-        result_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
-    ) -> Result<(), PartitionProcessorHandleError> {
-        self.handle.create_snapshot(Some(result_tx))
+    pub fn create_snapshot(&self, result_tx: oneshot::Sender<anyhow::Result<SnapshotId>>) {
+        if let Err(err) =
+            self.handle
+                .control_tx
+                .try_send(PartitionProcessorControlCommand::CreateSnapshot(Some(
+                    result_tx,
+                )))
+        {
+            match err {
+                TrySendError::Full(msg) => {
+                    let_assert!(
+                        PartitionProcessorControlCommand::CreateSnapshot(Some(result_tx)) = msg
+                    );
+                    // if the caller is no longer interested in the result, we can ignore the error
+                    let _ = result_tx.send(Err(anyhow::anyhow!(
+                        "Partition processor '{}' is busy",
+                        self.partition_id
+                    )));
+                }
+                TrySendError::Closed(msg) => {
+                    let_assert!(
+                        PartitionProcessorControlCommand::CreateSnapshot(Some(result_tx)) = msg
+                    );
+                    // if the caller is no longer interested in the result, we can ignore the error
+                    let _ = result_tx.send(Err(anyhow::anyhow!(
+                        "Partition processor '{}' is shutting down",
+                        self.partition_id
+                    )));
+                }
+            }
+        }
     }
 }
 
@@ -226,15 +252,6 @@ impl PartitionProcessorHandle {
     ) -> Result<(), PartitionProcessorHandleError> {
         self.control_tx
             .try_send(PartitionProcessorControlCommand::RunForLeader(leader_epoch))?;
-        Ok(())
-    }
-
-    fn create_snapshot(
-        &self,
-        sender: Option<oneshot::Sender<anyhow::Result<SnapshotId>>>,
-    ) -> Result<(), PartitionProcessorHandleError> {
-        self.control_tx
-            .try_send(PartitionProcessorControlCommand::CreateSnapshot(sender))?;
         Ok(())
     }
 }
