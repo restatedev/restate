@@ -41,6 +41,16 @@ pub enum ProcessorCommand {
     Leader,
 }
 
+impl ProcessorCommand {
+    pub fn as_run_mode(&self) -> Option<RunMode> {
+        match self {
+            ProcessorCommand::Stop => None,
+            ProcessorCommand::Follower => Some(RunMode::Follower),
+            ProcessorCommand::Leader => Some(RunMode::Leader),
+        }
+    }
+}
+
 impl From<RunMode> for ProcessorCommand {
     fn from(value: RunMode) -> Self {
         match value {
