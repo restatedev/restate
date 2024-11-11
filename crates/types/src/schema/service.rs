@@ -269,7 +269,7 @@ impl ServiceSchemas {
             self.service_openapi.clone()
         };
 
-        service_openapi.to_openapi_contract(name, self.revision)
+        service_openapi.to_openapi_contract(name, self.documentation.as_deref(), self.revision)
     }
 }
 
