@@ -407,6 +407,14 @@ message EnrichedEntryHeader {
     bool is_completed = 1;
   }
 
+  message AttachInvocation {
+    bool is_completed = 1;
+  }
+
+  message GetInvocationOutput {
+    bool is_completed = 1;
+  }
+
   message Custom {
     uint32 code = 1;
   }
@@ -431,6 +439,8 @@ message EnrichedEntryHeader {
     SideEffect side_effect = 14;
     CancelInvocation cancel_invocation = 18;
     GetCallInvocationId get_call_invocation_id = 19;
+    AttachInvocation attach_invocation = 20;
+    GetInvocationOutput get_invocation_output = 21;
   }
 }
 

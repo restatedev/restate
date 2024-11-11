@@ -147,6 +147,12 @@ pub enum EntryHeader<CallEnrichmentResult, AwakeableEnrichmentResult> {
     GetCallInvocationId {
         is_completed: bool,
     },
+    AttachInvocation {
+        is_completed: bool,
+    },
+    GetInvocationOutput {
+        is_completed: bool,
+    },
     Custom {
         code: u16,
     },
@@ -176,6 +182,8 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::CompletePromise { is_completed } => Some(*is_completed),
             EntryHeader::CancelInvocation => None,
             EntryHeader::GetCallInvocationId { is_completed } => Some(*is_completed),
+            EntryHeader::AttachInvocation { is_completed } => Some(*is_completed),
+            EntryHeader::GetInvocationOutput { is_completed } => Some(*is_completed),
         }
     }
 
@@ -200,6 +208,8 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::CompletePromise { is_completed } => *is_completed = true,
             EntryHeader::CancelInvocation => {}
             EntryHeader::GetCallInvocationId { is_completed } => *is_completed = true,
+            EntryHeader::AttachInvocation { is_completed } => *is_completed = true,
+            EntryHeader::GetInvocationOutput { is_completed } => *is_completed = true,
         }
     }
 
@@ -224,6 +234,8 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::CompletePromise { .. } => EntryType::CompletePromise,
             EntryHeader::CancelInvocation => EntryType::CancelInvocation,
             EntryHeader::GetCallInvocationId { .. } => EntryType::GetCallInvocationId,
+            EntryHeader::AttachInvocation { .. } => EntryType::AttachInvocation,
+            EntryHeader::GetInvocationOutput { .. } => EntryType::GetInvocationOutput,
         }
     }
 
@@ -260,6 +272,12 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::CancelInvocation => EntryHeader::CancelInvocation,
             EntryHeader::GetCallInvocationId { is_completed } => {
                 EntryHeader::GetCallInvocationId { is_completed }
+            }
+            EntryHeader::AttachInvocation { is_completed } => {
+                EntryHeader::AttachInvocation { is_completed }
+            }
+            EntryHeader::GetInvocationOutput { is_completed } => {
+                EntryHeader::GetInvocationOutput { is_completed }
             }
         }
     }

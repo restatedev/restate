@@ -97,7 +97,9 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
             CompleteAwakeable,
             Run,
             CancelInvocation,
-            GetCallInvocationId
+            GetCallInvocationId,
+            AttachInvocation,
+            GetInvocationOutput
         })
     }
 

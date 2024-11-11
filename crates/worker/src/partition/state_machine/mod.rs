@@ -2329,6 +2329,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     }
                 }
             }
+            EnrichedEntryHeader::AttachInvocation { .. } => {}
+            EnrichedEntryHeader::GetInvocationOutput { .. } => {}
         }
 
         Self::append_journal_entry(

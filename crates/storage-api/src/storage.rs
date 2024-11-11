@@ -82,9 +82,10 @@ pub mod v1 {
 
         use crate::storage::v1::dedup_sequence_number::Variant;
         use crate::storage::v1::enriched_entry_header::{
-            Awakeable, BackgroundCall, CancelInvocation, ClearAllState, ClearState,
-            CompleteAwakeable, CompletePromise, Custom, GetCallInvocationId, GetPromise, GetState,
-            GetStateKeys, Input, Invoke, Output, PeekPromise, SetState, SideEffect, Sleep,
+            AttachInvocation, Awakeable, BackgroundCall, CancelInvocation, ClearAllState,
+            ClearState, CompleteAwakeable, CompletePromise, Custom, GetCallInvocationId,
+            GetInvocationOutput, GetPromise, GetState, GetStateKeys, Input, Invoke, Output,
+            PeekPromise, SetState, SideEffect, Sleep,
         };
         use crate::storage::v1::invocation_status::{Completed, Free, Inboxed, Invoked, Suspended};
         use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
@@ -2200,6 +2201,16 @@ pub mod v1 {
                             is_completed: entry.is_completed,
                         }
                     }
+                    enriched_entry_header::Kind::AttachInvocation(entry) => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::AttachInvocation {
+                            is_completed: entry.is_completed,
+                        }
+                    }
+                    enriched_entry_header::Kind::GetInvocationOutput(entry) => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::GetInvocationOutput {
+                            is_completed: entry.is_completed,
+                        }
+                    }
                     enriched_entry_header::Kind::Custom(custom) => {
                         restate_types::journal::enriched::EnrichedEntryHeader::Custom {
                             code: u16::try_from(custom.code)
@@ -2303,6 +2314,14 @@ pub mod v1 {
                         is_completed,
                         ..
                     } => enriched_entry_header::Kind::GetCallInvocationId(GetCallInvocationId { is_completed }),
+                    restate_types::journal::enriched::EnrichedEntryHeader::AttachInvocation {
+                        is_completed,
+                        ..
+                    } => enriched_entry_header::Kind::AttachInvocation(AttachInvocation { is_completed }),
+                    restate_types::journal::enriched::EnrichedEntryHeader::GetInvocationOutput {
+                        is_completed,
+                        ..
+                    } => enriched_entry_header::Kind::GetInvocationOutput(GetInvocationOutput { is_completed }),
                 };
 
                 EnrichedEntryHeader { kind: Some(kind) }

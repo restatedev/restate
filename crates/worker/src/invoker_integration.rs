@@ -28,8 +28,8 @@ use restate_types::journal::enriched::{
 };
 use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec};
 use restate_types::journal::{
-    CancelInvocationEntry, CancelInvocationTarget, CompleteAwakeableEntry, Entry, InvokeEntry,
-    OneWayCallEntry,
+    AttachInvocationEntry, AttachInvocationTarget, CancelInvocationEntry, CancelInvocationTarget,
+    CompleteAwakeableEntry, Entry, GetInvocationOutputEntry, InvokeEntry, OneWayCallEntry,
 };
 use restate_types::journal::{EntryType, InvokeRequest};
 use restate_types::live::Live;
@@ -283,6 +283,48 @@ where
                 }
 
                 EnrichedEntryHeader::CancelInvocation {}
+            }
+            PlainEntryHeader::AttachInvocation { is_completed } => {
+                // Validate the invocation id is valid
+                let entry =
+                    Codec::deserialize(EntryType::AttachInvocation, serialized_entry.clone())
+                        .map_err(InvocationError::internal)?;
+                let_assert!(Entry::AttachInvocation(AttachInvocationEntry { target, .. }) = entry);
+                if let AttachInvocationTarget::InvocationId(id) = target {
+                    if let Err(e) = id.parse::<InvocationId>() {
+                        return Err(InvocationError::new(
+                            codes::BAD_REQUEST,
+                            format!(
+                                "The given invocation id '{}' to attach is invalid: {}",
+                                id, e
+                            ),
+                        ));
+                    }
+                }
+
+                EnrichedEntryHeader::AttachInvocation { is_completed }
+            }
+            PlainEntryHeader::GetInvocationOutput { is_completed } => {
+                // Validate the invocation id is valid
+                let entry =
+                    Codec::deserialize(EntryType::GetInvocationOutput, serialized_entry.clone())
+                        .map_err(InvocationError::internal)?;
+                let_assert!(
+                    Entry::GetInvocationOutput(GetInvocationOutputEntry { target, .. }) = entry
+                );
+                if let AttachInvocationTarget::InvocationId(id) = target {
+                    if let Err(e) = id.parse::<InvocationId>() {
+                        return Err(InvocationError::new(
+                            codes::BAD_REQUEST,
+                            format!(
+                                "The given invocation id '{}' to get output is invalid: {}",
+                                id, e
+                            ),
+                        ));
+                    }
+                }
+
+                EnrichedEntryHeader::GetInvocationOutput { is_completed }
             }
             PlainEntryHeader::GetCallInvocationId { is_completed } => {
                 EnrichedEntryHeader::GetCallInvocationId { is_completed }
