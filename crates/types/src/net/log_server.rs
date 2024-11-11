@@ -22,7 +22,7 @@ use crate::replicated_loglet::ReplicatedLogletId;
 use crate::time::MillisSinceEpoch;
 use crate::GenerationalNodeId;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, IntoProto)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, IntoProto, FromProto)]
 #[proto(target = "crate::protobuf::log_server_common::Status")]
 #[repr(u8)]
 pub enum Status {
@@ -133,7 +133,7 @@ impl LogServerRequestHeader {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProto)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProto, FromProto)]
 #[proto(target = "crate::protobuf::log_server_common::ResponseHeader")]
 pub struct LogServerResponseHeader {
     /// The position after the last locally committed record on this node
@@ -623,7 +623,9 @@ pub struct GetDigest {
     pub to_offset: LogletOffset,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize, IntoProto)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize, IntoProto, FromProto,
+)]
 #[proto(target = "crate::protobuf::log_server_common::DigestEntry")]
 #[display("[{from_offset}..{to_offset}] -> {status} ({})",  self.len())]
 pub struct DigestEntry {
@@ -663,7 +665,7 @@ impl DigestEntry {
 }
 
 /// Response to a `GetDigest` request
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProto)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProto, FromProto)]
 #[proto(target = "crate::protobuf::log_server_common::Digest")]
 pub struct Digest {
     #[serde(flatten)]
