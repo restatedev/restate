@@ -340,6 +340,11 @@ impl LogletOffset {
         self.encode(buf);
         buf.split()
     }
+
+    // allows going back to INVALID
+    pub fn prev_unchecked(self) -> Self {
+        Self(self.0.saturating_sub(1))
+    }
 }
 
 impl From<LogletOffset> for u64 {
