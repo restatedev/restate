@@ -46,6 +46,8 @@ const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server")
 
 const SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v1+json";
+const SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE: &str =
+    "application/vnd.restate.endpointmanifest.v2+json";
 static SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS: Lazy<HeaderValue> = Lazy::new(|| {
     let supported_versions = ServiceDiscoveryProtocolVersion::iter()
         .skip_while(|version| version < &MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION)
@@ -66,6 +68,7 @@ fn service_discovery_protocol_to_content_type(
             unreachable!("unspecified protocol version should never be used")
         }
         ServiceDiscoveryProtocolVersion::V1 => SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE,
+        ServiceDiscoveryProtocolVersion::V2 => SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE,
     }
 }
 
@@ -74,6 +77,7 @@ fn parse_service_discovery_protocol_version_from_content_type(
 ) -> Option<ServiceDiscoveryProtocolVersion> {
     match content_type {
         SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V1),
+        SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V2),
         _ => None,
     }
 }
@@ -234,7 +238,7 @@ impl ServiceDiscovery {
             ServiceDiscoveryProtocolVersion::Unspecified => {
                 unreachable!("unspecified service discovery protocol should not be chosen")
             }
-            ServiceDiscoveryProtocolVersion::V1 => {
+            ServiceDiscoveryProtocolVersion::V1 | ServiceDiscoveryProtocolVersion::V2 => {
                 serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?
             }
         };
