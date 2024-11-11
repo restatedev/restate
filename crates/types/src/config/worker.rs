@@ -353,7 +353,7 @@ impl Default for StorageOptions {
 /// # Snapshot options.
 /// Configures the worker store partition snapshot mechanism.
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "SnapshotsOptions", default))]
 #[serde(rename_all = "kebab-case")]
@@ -379,13 +379,5 @@ impl SnapshotsOptions {
 
     pub fn snapshots_dir(&self, partition_id: PartitionId) -> PathBuf {
         super::data_dir("db-snapshots").join(partition_id.to_string())
-    }
-}
-
-impl Default for SnapshotsOptions {
-    fn default() -> Self {
-        Self {
-            records_per_snapshot: None,
-        }
     }
 }
