@@ -13,8 +13,8 @@ options_schema = ["dep:schemars", "restate-types/schemars"]
 
 [dependencies]
 arc-swap = { workspace = true }
-aws-config = { version = "1.5.4", default-features = false, features = ["rt-tokio", "sso"] }
-aws-credential-types = {version = "1.2.0", default-features = false}
+aws-config = { workspace = true }
+aws-credential-types = { workspace = true }
 aws-sdk-lambda = {version = "1.36.0", default-features = false, features = ["rt-tokio"]}
 aws-sdk-sts = {version = "1.35.0", default-features = false, features = ["rt-tokio"]}
 base64 = { workspace = true }

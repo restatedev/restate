@@ -559,9 +559,14 @@ where
                             let _ = snapshot_lsn_tx.send(Some(metadata.min_applied_lsn));
                         }
 
+                        if let Err(err) = &result {
+                            error!("Failed to create snapshot: {}", err);
+                        }
+
                         if let Some(tx) = maybe_sender {
                             tx.send(result.map(|metadata| metadata.snapshot_id)).ok();
                         }
+
                         Ok(())
                     }
                     .instrument(snapshot_span),
