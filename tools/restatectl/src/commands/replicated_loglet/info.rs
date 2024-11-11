@@ -11,9 +11,10 @@
 use anyhow::Context;
 use cling::prelude::*;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::ListLogsRequest;
 use restate_cli_util::{c_indentln, c_println};
+use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
+use restate_core::network::protobuf::node_svc::GetMetadataRequest;
+use restate_core::MetadataKind;
 use restate_types::logs::metadata::Logs;
 use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::storage::StorageCodec;
@@ -28,6 +29,9 @@ use crate::util::grpc_connect;
 pub struct InfoOpts {
     /// The replicated loglet id
     loglet_id: ReplicatedLogletId,
+    /// Sync metadata from metadata store first
+    #[arg(long)]
+    sync_metadata: bool,
 }
 
 async fn get_info(connection: &ConnectionInfo, opts: &InfoOpts) -> anyhow::Result<()> {
@@ -35,18 +39,19 @@ async fn get_info(connection: &ConnectionInfo, opts: &InfoOpts) -> anyhow::Resul
         .await
         .with_context(|| {
             format!(
-                "cannot connect to cluster controller at {}",
+                "cannot connect to node at {}",
                 connection.cluster_controller
             )
         })?;
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let mut client = NodeSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    let req = ListLogsRequest::default();
-    let response = client.list_logs(req).await?.into_inner();
+    let req = GetMetadataRequest {
+        kind: MetadataKind::Logs.into(),
+        sync: opts.sync_metadata,
+    };
+    let mut response = client.get_metadata(req).await?.into_inner();
 
-    let mut buf = response.logs;
-    let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
+    let logs = StorageCodec::decode::<Logs, _>(&mut response.encoded)?;
     c_println!("Log Configuration ({})", logs.version());
 
     let Some(loglet_ref) = logs.get_replicated_loglet(&opts.loglet_id) else {
