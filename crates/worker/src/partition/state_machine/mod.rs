@@ -2906,6 +2906,16 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 e,
                 entry_index
             ),
+            OutboxMessage::AttachInvocation(AttachInvocationRequest {
+                invocation_query, ..
+            }) => {
+                debug_if_leader!(
+                    ctx.is_leader,
+                    restate.outbox.seq = seq_number,
+                    "Effect: Enqueuing attach invocation request to '{:?}'",
+                    invocation_query,
+                )
+            }
         };
 
         ctx.storage.put_outbox_message(seq_number, &message).await;

@@ -9,7 +9,9 @@
 // by the Apache License, Version 2.0.
 use crate::{protobuf_storage_encode_decode, Result};
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
-use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
+use restate_types::invocation::{
+    AttachInvocationRequest, InvocationResponse, InvocationTermination, ServiceInvocation,
+};
 use std::future::Future;
 use std::ops::RangeInclusive;
 
@@ -24,6 +26,9 @@ pub enum OutboxMessage {
 
     /// Terminate invocation to send to another partition processor
     InvocationTermination(InvocationTermination),
+
+    /// Attach invocation
+    AttachInvocation(AttachInvocationRequest),
 }
 
 protobuf_storage_encode_decode!(OutboxMessage);
@@ -34,6 +39,7 @@ impl WithPartitionKey for OutboxMessage {
             OutboxMessage::ServiceInvocation(si) => si.invocation_id.partition_key(),
             OutboxMessage::ServiceResponse(sr) => sr.id.partition_key(),
             OutboxMessage::InvocationTermination(it) => it.invocation_id.partition_key(),
+            OutboxMessage::AttachInvocation(ai) => ai.invocation_query.partition_key(),
         }
     }
 }

@@ -101,10 +101,10 @@ pub mod v1 {
             invocation_status, invocation_status_v2, invocation_target, outbox_message, promise,
             response_result, source, span_relation, submit_notification_sink, timer,
             virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
-            EnrichedEntryHeader, EntryResult, EpochSequenceNumber, Header, IdempotencyMetadata,
-            InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
-            InvocationStatusV2, InvocationTarget, JournalEntry, JournalEntryId, JournalMeta,
-            KvPair, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
+            EnrichedEntryHeader, EntryResult, EpochSequenceNumber, Header, IdempotencyId,
+            IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
+            InvocationStatus, InvocationStatusV2, InvocationTarget, JournalEntry, JournalEntryId,
+            JournalMeta, KvPair, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
             ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext, SpanRelation,
             StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
         };
@@ -220,6 +220,30 @@ pub mod v1 {
                 Ok(restate_types::identifiers::InvocationId::from_parts(
                     value.partition_key,
                     try_bytes_into_invocation_uuid(value.invocation_uuid)?,
+                ))
+            }
+        }
+
+        impl From<restate_types::identifiers::IdempotencyId> for IdempotencyId {
+            fn from(value: restate_types::identifiers::IdempotencyId) -> Self {
+                IdempotencyId {
+                    service_name: value.service_name.into(),
+                    service_key: value.service_key.map(Into::into),
+                    handler_name: value.service_handler.into(),
+                    idempotency_key: value.idempotency_key.into(),
+                }
+            }
+        }
+
+        impl TryFrom<IdempotencyId> for restate_types::identifiers::IdempotencyId {
+            type Error = ConversionError;
+
+            fn try_from(value: IdempotencyId) -> Result<Self, Self::Error> {
+                Ok(restate_types::identifiers::IdempotencyId::new(
+                    value.service_name.into(),
+                    value.service_key.map(Into::into),
+                    value.handler_name.into(),
+                    value.idempotency_key.into(),
                 ))
             }
         }
@@ -2516,6 +2540,44 @@ pub mod v1 {
                             ),
                         )
                     }
+                    outbox_message::OutboxMessage::AttachInvocationRequest(
+                        outbox_message::AttachInvocationRequest {
+                            block_on_inflight,
+                            response_sink,
+                            query,
+                        },
+                    ) => crate::outbox_table::OutboxMessage::AttachInvocation(
+                        restate_types::invocation::AttachInvocationRequest {
+                            invocation_query: match query
+                                .ok_or(ConversionError::missing_field("query"))?
+                            {
+                                outbox_message::attach_invocation_request::Query::InvocationId(
+                                    id,
+                                ) => restate_types::invocation::InvocationQuery::Invocation(
+                                    id.try_into()?,
+                                ),
+                                outbox_message::attach_invocation_request::Query::IdempotencyId(
+                                    id,
+                                ) => restate_types::invocation::InvocationQuery::IdempotencyId(
+                                    id.try_into()?,
+                                ),
+                                outbox_message::attach_invocation_request::Query::WorkflowId(
+                                    id,
+                                ) => restate_types::invocation::InvocationQuery::Workflow(
+                                    id.try_into()?,
+                                ),
+                            },
+                            block_on_inflight,
+                            response_sink: Option::<
+                                restate_types::invocation::ServiceInvocationResponseSink,
+                            >::try_from(
+                                response_sink
+                                    .ok_or(ConversionError::missing_field("response_sink"))?,
+                            )
+                            .transpose()
+                            .ok_or(ConversionError::missing_field("response_sink"))??,
+                        },
+                    ),
                 };
 
                 Ok(result)
@@ -2563,6 +2625,35 @@ pub mod v1 {
                             })
                         }
                     },
+                    crate::outbox_table::OutboxMessage::AttachInvocation(
+                        restate_types::invocation::AttachInvocationRequest {
+                            invocation_query,
+                            block_on_inflight,
+                            response_sink,
+                        },
+                    ) => outbox_message::OutboxMessage::AttachInvocationRequest(
+                        outbox_message::AttachInvocationRequest {
+                            block_on_inflight,
+                            query: Some(match invocation_query {
+                                restate_types::invocation::InvocationQuery::Invocation(id) => {
+                                    outbox_message::attach_invocation_request::Query::InvocationId(
+                                        id.into(),
+                                    )
+                                }
+                                restate_types::invocation::InvocationQuery::IdempotencyId(id) => {
+                                    outbox_message::attach_invocation_request::Query::IdempotencyId(
+                                        id.into(),
+                                    )
+                                }
+                                restate_types::invocation::InvocationQuery::Workflow(id) => {
+                                    outbox_message::attach_invocation_request::Query::WorkflowId(
+                                        id.into(),
+                                    )
+                                }
+                            }),
+                            response_sink: Some(Some(response_sink).into()),
+                        },
+                    ),
                 };
 
                 OutboxMessage {
