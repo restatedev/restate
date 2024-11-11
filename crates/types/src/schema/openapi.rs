@@ -48,9 +48,17 @@ impl ServiceOpenAPI {
 
             let call_item = PathItem::builder()
                 .summary(Some(format!("Call {service_name}/{handler_name}")))
-                .description(Some(format!(
-                    "Invoke {service_name} handler {handler_name} and wait for response"
-                )))
+                .description(Some(
+                    handler_schemas
+                        .documentation
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            format!(
+                                "Call {service_name} handler {handler_name} and wait for response"
+                            )
+                        }),
+                ))
                 .operation(
                     HttpMethod::Post,
                     Operation::builder()
@@ -66,10 +74,16 @@ impl ServiceOpenAPI {
             paths = paths.path(format!("{root_path}{handler_name}"), call_item);
 
             let send_item = PathItem::builder()
-                .summary(Some(format!("Call {service_name}/{handler_name}")))
-                .description(Some(format!(
-                    "Send request to {service_name} handler {handler_name}"
-                )))
+                .summary(Some(format!("Send to {service_name}/{handler_name}")))
+                .description(Some(
+                    handler_schemas
+                        .documentation
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            format!("Send request to {service_name} handler {handler_name}")
+                        }),
+                ))
                 .operation(
                     HttpMethod::Post,
                     Operation::builder()
@@ -96,12 +110,19 @@ impl ServiceOpenAPI {
     pub(crate) fn to_openapi_contract(
         &self,
         service_name: &str,
+        documentation: Option<&str>,
         revision: ServiceRevision,
     ) -> serde_json::Value {
         // TODO how to add servers?! :(
         serde_json::to_value(
             OpenApi::builder()
-                .info(Info::new(service_name.to_owned(), revision.to_string()))
+                .info(
+                    Info::builder()
+                        .title(service_name.to_owned())
+                        .version(revision.to_string())
+                        .description(documentation)
+                        .build(),
+                )
                 .paths(self.paths.clone())
                 .components(Some(restate_components()))
                 .build(),
