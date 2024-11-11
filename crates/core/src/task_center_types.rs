@@ -98,7 +98,7 @@ pub enum TaskKind {
     /// graceful cancellation on shutdown.
     #[strum(props(OnCancel = "wait", OnError = "log"))]
     BifrostAppender,
-    #[strum(props(OnCancel = "abort", OnError = "log"))]
+    #[strum(props(OnCancel = "abort", OnError = "log", runtime = "default"))]
     Disposable,
     LogletProvider,
     #[strum(props(OnCancel = "abort"))]
