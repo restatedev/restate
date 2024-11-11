@@ -763,7 +763,7 @@ async fn attach_command_without_blocking_inflight() {
             contains(invocation_response_to_partition_processor(
                 caller_invocation_id,
                 1,
-                eq(ResponseResult::from(NOT_READY_ERROR))
+                eq(ResponseResult::from(NOT_READY_INVOCATION_ERROR))
             )),
             not(contains(pat!(Action::IngressResponse { .. })))
         )

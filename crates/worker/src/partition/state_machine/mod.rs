@@ -47,7 +47,8 @@ use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
     ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
-    NOT_FOUND_INVOCATION_ERROR, NOT_READY_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
+    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
@@ -2329,8 +2330,66 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     }
                 }
             }
-            EnrichedEntryHeader::AttachInvocation { .. } => {}
-            EnrichedEntryHeader::GetInvocationOutput { .. } => {}
+            EnrichedEntryHeader::AttachInvocation { is_completed } => {
+                if !is_completed {
+                    let_assert!(
+                        Entry::AttachInvocation(entry) =
+                            journal_entry.deserialize_entry_ref::<Codec>()?
+                    );
+
+                    if let Some(invocation_query) =
+                        Self::get_invocation_query_from_attach_invocation_target(
+                            ctx,
+                            &invocation_id,
+                            entry.target,
+                        )
+                        .await?
+                    {
+                        self.handle_outgoing_message(
+                            ctx,
+                            OutboxMessage::AttachInvocation(AttachInvocationRequest {
+                                invocation_query,
+                                block_on_inflight: true,
+                                response_sink: ServiceInvocationResponseSink::partition_processor(
+                                    invocation_id,
+                                    entry_index,
+                                ),
+                            }),
+                        )
+                        .await?;
+                    }
+                }
+            }
+            EnrichedEntryHeader::GetInvocationOutput { is_completed } => {
+                if !is_completed {
+                    let_assert!(
+                        Entry::GetInvocationOutput(entry) =
+                            journal_entry.deserialize_entry_ref::<Codec>()?
+                    );
+
+                    if let Some(invocation_query) =
+                        Self::get_invocation_query_from_attach_invocation_target(
+                            ctx,
+                            &invocation_id,
+                            entry.target,
+                        )
+                        .await?
+                    {
+                        self.handle_outgoing_message(
+                            ctx,
+                            OutboxMessage::AttachInvocation(AttachInvocationRequest {
+                                invocation_query,
+                                block_on_inflight: false,
+                                response_sink: ServiceInvocationResponseSink::partition_processor(
+                                    invocation_id,
+                                    entry_index,
+                                ),
+                            }),
+                        )
+                        .await?;
+                    }
+                }
+            }
         }
 
         Self::append_journal_entry(
@@ -2388,6 +2447,39 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .await?;
         }
         Ok(())
+    }
+
+    async fn get_invocation_query_from_attach_invocation_target<State: ReadOnlyJournalTable>(
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: &InvocationId,
+        target: AttachInvocationTarget,
+    ) -> Result<Option<InvocationQuery>, Error> {
+        Ok(match target {
+            AttachInvocationTarget::InvocationId(id) => {
+                if let Ok(id) = id.parse::<InvocationId>() {
+                    Some(InvocationQuery::Invocation(id))
+                } else {
+                    warn!(
+                        "Error when trying to parse the invocation id '{}' of attach/get output. \
+                                This should have been previously checked by the invoker.",
+                        id
+                    );
+                    None
+                }
+            }
+            AttachInvocationTarget::CallEntryIndex(call_entry_index) => {
+                // Look for the given entry index, then resolve the invocation id.
+                Self::get_journal_entry_callee_invocation_id(ctx, invocation_id, call_entry_index)
+                    .await?
+                    .map(InvocationQuery::Invocation)
+            }
+            AttachInvocationTarget::IdempotentRequest(idempotency_id) => {
+                Some(InvocationQuery::IdempotencyId(idempotency_id))
+            }
+            AttachInvocationTarget::Workflow(service_id) => {
+                Some(InvocationQuery::Workflow(service_id))
+            }
+        })
     }
 
     async fn get_journal_entry_callee_invocation_id<State: ReadOnlyJournalTable>(
@@ -2669,7 +2761,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     self.send_response_to_sinks(
                         ctx,
                         vec![attach_invocation_request.response_sink],
-                        NOT_READY_ERROR,
+                        NOT_READY_INVOCATION_ERROR,
                         Some(invocation_id),
                         None,
                         is.invocation_target(),
@@ -3250,7 +3342,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 return Ok(None);
             }
             if journal_entry.ty() == EntryType::GetInvocationOutput
-                && completion.result == CompletionResult::from(&NOT_READY_ERROR)
+                && completion.result == CompletionResult::from(&NOT_READY_INVOCATION_ERROR)
             {
                 // For GetInvocationOutput, we convert the not ready error in an empty response.
                 // This is a byproduct of the fact that for now we keep simple the invocation response contract.

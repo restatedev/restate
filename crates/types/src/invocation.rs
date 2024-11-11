@@ -923,7 +923,7 @@ impl WithPartitionKey for InvocationQuery {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AttachInvocationRequest {
     pub invocation_query: InvocationQuery,
-    /// If the invocation is still in-flight when the command is processed, this command will block if this flag is true. Otherwise, the failure [crate::errors::NOT_READY_ERROR] is sent instead as soon as the command is processed.
+    /// If the invocation is still in-flight when the command is processed, this command will block if this flag is true. Otherwise, the failure [crate::errors::NOT_READY_INVOCATION_ERROR] is sent instead as soon as the command is processed.
     #[serde(default = "restate_serde_util::default::bool::<true>")]
     pub block_on_inflight: bool,
     pub response_sink: ServiceInvocationResponseSink,

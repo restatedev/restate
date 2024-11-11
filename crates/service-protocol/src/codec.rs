@@ -178,18 +178,22 @@ mod test_util {
         AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
     };
     use restate_types::journal::{
-        AwakeableEntry, CancelInvocationEntry, CancelInvocationTarget, CompletableEntry,
-        CompleteAwakeableEntry, EntryResult, GetCallInvocationIdEntry, GetCallInvocationIdResult,
+        AttachInvocationEntry, AttachInvocationTarget, AwakeableEntry, CancelInvocationEntry,
+        CancelInvocationTarget, CompletableEntry, CompleteAwakeableEntry, EntryResult,
+        GetCallInvocationIdEntry, GetCallInvocationIdResult, GetInvocationOutputEntry,
         GetStateKeysEntry, GetStateKeysResult, InputEntry, OutputEntry,
     };
     use restate_types::service_protocol::{
-        awakeable_entry_message, call_entry_message, cancel_invocation_entry_message,
-        complete_awakeable_entry_message, get_call_invocation_id_entry_message,
+        attach_invocation_entry_message, awakeable_entry_message, call_entry_message,
+        cancel_invocation_entry_message, complete_awakeable_entry_message,
+        get_call_invocation_id_entry_message, get_invocation_output_entry_message,
         get_state_entry_message, get_state_keys_entry_message, output_entry_message,
-        AwakeableEntryMessage, CallEntryMessage, CancelInvocationEntryMessage,
-        ClearAllStateEntryMessage, ClearStateEntryMessage, CompleteAwakeableEntryMessage, Failure,
-        GetCallInvocationIdEntryMessage, GetStateEntryMessage, GetStateKeysEntryMessage,
-        InputEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, SetStateEntryMessage,
+        AttachInvocationEntryMessage, AwakeableEntryMessage, CallEntryMessage,
+        CancelInvocationEntryMessage, ClearAllStateEntryMessage, ClearStateEntryMessage,
+        CompleteAwakeableEntryMessage, Failure, GetCallInvocationIdEntryMessage,
+        GetInvocationOutputEntryMessage, GetStateEntryMessage, GetStateKeysEntryMessage,
+        IdempotentRequestTarget, InputEntryMessage, OneWayCallEntryMessage, OutputEntryMessage,
+        SetStateEntryMessage, WorkflowTarget,
     };
 
     impl ProtobufRawEntryCodec {
@@ -362,6 +366,18 @@ mod test_util {
                     },
                     Self::serialize_get_call_invocation_id_entry(entry),
                 ),
+                Entry::AttachInvocation(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::AttachInvocation {
+                        is_completed: entry.is_completed(),
+                    },
+                    Self::serialize_attach_invocation_entry(entry),
+                ),
+                Entry::GetInvocationOutput(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::GetInvocationOutput {
+                        is_completed: entry.is_completed(),
+                    },
+                    Self::serialize_get_invocation_output_entry(entry),
+                ),
                 _ => unimplemented!(),
             }
         }
@@ -487,6 +503,101 @@ mod test_util {
                     }
                     GetCallInvocationIdResult::Failure(code, reason) => {
                         get_call_invocation_id_entry_message::Result::Failure(Failure {
+                            code: code.into(),
+                            message: reason.to_string(),
+                        })
+                    }
+                }),
+                ..Default::default()
+            }
+            .encode_to_vec()
+            .into()
+        }
+
+        fn serialize_attach_invocation_entry(
+            AttachInvocationEntry { target, result }: AttachInvocationEntry,
+        ) -> Bytes {
+            AttachInvocationEntryMessage {
+                target: Some(match target {
+                    AttachInvocationTarget::InvocationId(id) => {
+                        attach_invocation_entry_message::Target::InvocationId(id.to_string())
+                    }
+                    AttachInvocationTarget::CallEntryIndex(idx) => {
+                        attach_invocation_entry_message::Target::CallEntryIndex(idx)
+                    }
+                    AttachInvocationTarget::IdempotentRequest(id) => {
+                        attach_invocation_entry_message::Target::IdempotentRequestTarget(
+                            IdempotentRequestTarget {
+                                service_name: id.service_name.into(),
+                                service_key: id.service_key.map(Into::into),
+                                handler_name: id.service_handler.into(),
+                                idempotency_key: id.idempotency_key.into(),
+                            },
+                        )
+                    }
+                    AttachInvocationTarget::Workflow(id) => {
+                        attach_invocation_entry_message::Target::WorkflowTarget(WorkflowTarget {
+                            workflow_name: id.service_name.into(),
+                            workflow_key: id.key.into(),
+                        })
+                    }
+                }),
+                result: result.map(|r| match r {
+                    EntryResult::Success(success) => {
+                        attach_invocation_entry_message::Result::Value(success)
+                    }
+                    EntryResult::Failure(code, reason) => {
+                        attach_invocation_entry_message::Result::Failure(Failure {
+                            code: code.into(),
+                            message: reason.to_string(),
+                        })
+                    }
+                }),
+                ..Default::default()
+            }
+            .encode_to_vec()
+            .into()
+        }
+
+        fn serialize_get_invocation_output_entry(
+            GetInvocationOutputEntry { target, result }: GetInvocationOutputEntry,
+        ) -> Bytes {
+            GetInvocationOutputEntryMessage {
+                target: Some(match target {
+                    AttachInvocationTarget::InvocationId(id) => {
+                        get_invocation_output_entry_message::Target::InvocationId(id.to_string())
+                    }
+                    AttachInvocationTarget::CallEntryIndex(idx) => {
+                        get_invocation_output_entry_message::Target::CallEntryIndex(idx)
+                    }
+                    AttachInvocationTarget::IdempotentRequest(id) => {
+                        get_invocation_output_entry_message::Target::IdempotentRequestTarget(
+                            IdempotentRequestTarget {
+                                service_name: id.service_name.into(),
+                                service_key: id.service_key.map(Into::into),
+                                handler_name: id.service_handler.into(),
+                                idempotency_key: id.idempotency_key.into(),
+                            },
+                        )
+                    }
+                    AttachInvocationTarget::Workflow(id) => {
+                        get_invocation_output_entry_message::Target::WorkflowTarget(
+                            WorkflowTarget {
+                                workflow_name: id.service_name.into(),
+                                workflow_key: id.key.into(),
+                            },
+                        )
+                    }
+                }),
+                result: result.map(|value| match value {
+                    CompletionResult::Empty => get_invocation_output_entry_message::Result::Empty(
+                        service_protocol::Empty {},
+                    ),
+                    CompletionResult::Success(v) => {
+                        get_invocation_output_entry_message::Result::Value(v)
+                    }
+                    CompletionResult::Failure(code, reason) => {
+                        get_invocation_output_entry_message::Result::Failure(Failure {
                             code: code.into(),
                             message: reason.to_string(),
                         })

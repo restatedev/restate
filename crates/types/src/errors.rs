@@ -289,7 +289,7 @@ pub const ALREADY_COMPLETED_INVOCATION_ERROR: InvocationError =
 pub const WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::CONFLICT, "the workflow method was already invoked");
 
-pub const NOT_READY_ERROR: InvocationError =
+pub const NOT_READY_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::NOT_READY, "the response is not ready yet");
 
 /// Error parsing/decoding a resource ID.
