@@ -23,6 +23,7 @@ use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocat
 use restate_types::retries::RetryPolicy;
 use std::future::Future;
 use std::time::Duration;
+use tracing::debug;
 
 pub struct RpcRequestDispatcher<C> {
     partition_processor_rpc_client: PartitionProcessorRpcClient<C>,
@@ -59,7 +60,11 @@ impl<C> RpcRequestDispatcher<C> {
         Ok(self
             .retry_policy
             .clone()
-            .retry_if(operation, |e| is_idempotent || e.is_safe_to_retry())
+            .retry_if(operation, |e| {
+                let retrying = is_idempotent || e.is_safe_to_retry();
+                debug!("Operation failed because of {e}. Retrying: {retrying}");
+                retrying
+            })
             .await
             .map_err(|e| anyhow!("Error when trying to route the request internally: {e}"))?)
     }
@@ -92,6 +97,7 @@ where
         let request_id = PartitionProcessorRpcRequestId::default();
         let is_idempotent = invocation_request.is_idempotent();
         self.execute_rpc(is_idempotent, || {
+            debug!("Invoking service: {invocation_request:?} with request_id: {request_id}");
             self.partition_processor_rpc_client
                 .append_invocation_and_wait_output(request_id, invocation_request.clone())
         })

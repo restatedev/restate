@@ -281,6 +281,7 @@ impl ProcessorState {
     ) {
         match self {
             ProcessorState::Starting { .. } => {
+                debug!(%partition_id, "Ignoring rpc request {:?} because partition processor is starting", partition_processor_rpc.body());
                 let _ = task_center.spawn(
                     TaskKind::Disposable,
                     "partition-processor-rpc",
@@ -302,6 +303,7 @@ impl ProcessorState {
                 {
                     match err {
                         TrySendError::Full(req) => {
+                            debug!(%partition_id, "Ignoring rpc request {:?} because partition processor is busy", req.body());
                             let _ = task_center.spawn(
                                 TaskKind::Disposable,
                                 "partition-processor-rpc",
@@ -315,6 +317,7 @@ impl ProcessorState {
                             );
                         }
                         TrySendError::Closed(req) => {
+                            debug!(%partition_id, "Ignoring rpc request {:?} because rpc channel has been closed", req.body());
                             let _ = task_center.spawn(
                                 TaskKind::Disposable,
                                 "partition-processor-rpc",
@@ -333,6 +336,7 @@ impl ProcessorState {
                 }
             }
             ProcessorState::Stopping { .. } => {
+                debug!(%partition_id, "Ignoring rpc request {:?} because partition processor is shutting down", partition_processor_rpc.body());
                 let _ = task_center.spawn(
                     TaskKind::Disposable,
                     "partition-processor-rpc",

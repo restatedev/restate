@@ -273,8 +273,12 @@ where
         // Drain rpc_rx
         self.rpc_rx.close();
         while let Some(msg) = self.rpc_rx.recv().await {
-            let _ = msg
-                .into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
+            let (reciprocal, body) = msg.split();
+
+            debug!("Draining RPC: {:?}", body);
+
+            let _ = reciprocal
+                .prepare(Err(PartitionProcessorRpcError::NotLeader(
                     self.partition_id,
                 )))
                 .send()
@@ -569,12 +573,15 @@ where
         rpc: Incoming<PartitionProcessorRpcRequest>,
         partition_store: &mut PartitionStore,
     ) {
+        debug!("Processing rpc request {:?}", rpc.body());
+
         let (
             response_tx,
             PartitionProcessorRpcRequest {
                 request_id, inner, ..
             },
         ) = rpc.split();
+
         match inner {
             PartitionProcessorRpcRequestInner::AppendInvocation(
                 invocation_request,

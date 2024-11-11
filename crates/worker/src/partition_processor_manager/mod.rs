@@ -266,6 +266,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
 
         match self.processor_states.get(&partition_id) {
             None => {
+                debug!("Partition processor '{partition_id}' not found for rpc request '{:?}'. Replying with NotLeader.", partition_processor_rpc.body());
                 // ignore shutdown errors
                 let _ = self.task_center.spawn(
                     TaskKind::Disposable,
