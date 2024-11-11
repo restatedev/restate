@@ -3,11 +3,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "title": "Endpoint",
-  "description": "Restate endpoint manifest v1",
+  "description": "Restate endpoint manifest v2",
   "properties": {
     "protocolMode": {
       "title": "ProtocolMode",
-      "enum": ["BIDI_STREAM", "REQUEST_RESPONSE"]
+      "enum": [
+        "BIDI_STREAM",
+        "REQUEST_RESPONSE"
+      ]
     },
     "minProtocolVersion": {
       "type": "integer",
@@ -31,9 +34,17 @@
             "type": "string",
             "pattern": "^([a-zA-Z]|_[a-zA-Z0-9])[a-zA-Z0-9._-]*$"
           },
+          "documentation": {
+            "type": "string",
+            "description": "Documentation for this service definition. No format is enforced, but generally Markdown is assumed."
+          },
           "ty": {
             "title": "ServiceType",
-            "enum": ["VIRTUAL_OBJECT", "SERVICE", "WORKFLOW"]
+            "enum": [
+              "VIRTUAL_OBJECT",
+              "SERVICE",
+              "WORKFLOW"
+            ]
           },
           "handlers": {
             "type": "array",
@@ -45,9 +56,17 @@
                   "type": "string",
                   "pattern": "^([a-zA-Z]|_[a-zA-Z0-9])[a-zA-Z0-9_]*$"
                 },
+                "documentation": {
+                  "type": "string",
+                  "description": "Documentation for this handler definition. No format is enforced, but generally Markdown is assumed."
+                },
                 "ty": {
                   "title": "HandlerType",
-                  "enum": ["WORKFLOW", "EXCLUSIVE", "SHARED"],
+                  "enum": [
+                    "WORKFLOW",
+                    "EXCLUSIVE",
+                    "SHARED"
+                  ],
                   "description": "If unspecified, defaults to EXCLUSIVE for Virtual Object or WORKFLOW for Workflows. This should be unset for Services."
                 },
                 "input": {
@@ -122,18 +141,42 @@
                       "setContentTypeIfEmpty": true
                     }
                   }
+                },
+                "metadata": {
+                  "type": "object",
+                  "description": "Custom metadata of this handler definition. This metadata is shown on the Admin API when querying the service/handler definition.",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
                 }
               },
-              "required": ["name"],
+              "required": [
+                "name"
+              ],
               "additionalProperties": false
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Custom metadata of this service definition. This metadata is shown on the Admin API when querying the service definition.",
+            "additionalProperties": {
+              "type": "string"
             }
           }
         },
-        "required": ["name", "ty", "handlers"],
+        "required": [
+          "name",
+          "ty",
+          "handlers"
+        ],
         "additionalProperties": false
       }
     }
   },
-  "required": ["minProtocolVersion", "maxProtocolVersion", "services"],
+  "required": [
+    "minProtocolVersion",
+    "maxProtocolVersion",
+    "services"
+  ],
   "additionalProperties": false
 }
