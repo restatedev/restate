@@ -6,6 +6,7 @@ version = 2
 yanked = "deny"
 ignore = [
     { id = "RUSTSEC-2024-0370", reason = "crate is unmaintained. This needs `arrow_convert` to use an alternative to `err-derive`" },
+    { id = "RUSTSEC-2024-0384", reason = "`instant` crate is unmaintained. The dependency comes from datafusion" },
 ]
 
 
