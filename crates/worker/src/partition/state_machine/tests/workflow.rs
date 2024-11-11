@@ -222,6 +222,7 @@ async fn attach_by_workflow_key(#[case] disable_idempotency_table: bool) {
             invocation_query: InvocationQuery::Workflow(
                 invocation_target.as_keyed_service_id().unwrap(),
             ),
+            block_on_inflight: true,
             response_sink: ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_2,
             },
@@ -300,6 +301,7 @@ async fn attach_by_workflow_key(#[case] disable_idempotency_table: bool) {
             invocation_query: InvocationQuery::Workflow(
                 invocation_target.as_keyed_service_id().unwrap(),
             ),
+            block_on_inflight: true,
             response_sink: ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_3,
             },

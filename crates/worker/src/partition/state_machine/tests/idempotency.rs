@@ -10,6 +10,7 @@
 
 use super::*;
 
+use crate::partition::state_machine::tests::matchers::actions::invocation_response_to_partition_processor;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
@@ -658,6 +659,7 @@ async fn attach_command(#[case] disable_idempotency_table: bool) {
     let actions = test_env
         .apply(Command::AttachInvocation(AttachInvocationRequest {
             invocation_query: InvocationQuery::Invocation(invocation_id),
+            block_on_inflight: true,
             response_sink: ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_2,
             },
@@ -710,6 +712,63 @@ async fn attach_command(#[case] disable_idempotency_table: bool) {
             }))
         )
     );
+    test_env.shutdown().await;
+}
+
+#[tokio::test]
+async fn attach_command_without_blocking_inflight() {
+    let mut test_env = TestEnv::create().await;
+
+    let idempotency_key = ByteString::from_static("my-idempotency-key");
+    let completion_retention = Duration::from_secs(60) * 60 * 24;
+    let invocation_target = InvocationTarget::mock_virtual_object();
+    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
+
+    // Send fresh invocation with idempotency key
+    let actions = test_env
+        .apply(Command::Invoke(ServiceInvocation {
+            invocation_id,
+            invocation_target: invocation_target.clone(),
+            response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                request_id: PartitionProcessorRpcRequestId::default(),
+            }),
+            idempotency_key: Some(idempotency_key.clone()),
+            completion_retention_duration: Some(completion_retention),
+            ..ServiceInvocation::mock()
+        }))
+        .await;
+    assert_that!(
+        actions,
+        contains(pat!(Action::Invoke {
+            invocation_id: eq(invocation_id),
+            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+        }))
+    );
+
+    // Latch to existing invocation without blocking on inflight invocation
+    let caller_invocation_id = InvocationId::mock_random();
+    let actions = test_env
+        .apply(Command::AttachInvocation(AttachInvocationRequest {
+            invocation_query: InvocationQuery::Invocation(invocation_id),
+            block_on_inflight: false,
+            response_sink: ServiceInvocationResponseSink::PartitionProcessor {
+                caller: caller_invocation_id,
+                entry_index: 1,
+            },
+        }))
+        .await;
+    assert_that!(
+        actions,
+        all!(
+            contains(invocation_response_to_partition_processor(
+                caller_invocation_id,
+                1,
+                eq(ResponseResult::from(NOT_READY_ERROR))
+            )),
+            not(contains(pat!(Action::IngressResponse { .. })))
+        )
+    );
+
     test_env.shutdown().await;
 }
 

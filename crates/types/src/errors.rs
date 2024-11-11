@@ -149,6 +149,7 @@ pub mod codes {
     pub const JOURNAL_MISMATCH: InvocationErrorCode = InvocationErrorCode(570);
     pub const PROTOCOL_VIOLATION: InvocationErrorCode = InvocationErrorCode(571);
     pub const CONFLICT: InvocationErrorCode = InvocationErrorCode(409);
+    pub const NOT_READY: InvocationErrorCode = InvocationErrorCode(470);
 }
 
 /// This struct represents errors arisen when processing a service invocation.
@@ -287,6 +288,9 @@ pub const ALREADY_COMPLETED_INVOCATION_ERROR: InvocationError =
 
 pub const WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::CONFLICT, "the workflow method was already invoked");
+
+pub const NOT_READY_ERROR: InvocationError =
+    InvocationError::new_static(codes::NOT_READY, "the response is not ready yet");
 
 /// Error parsing/decoding a resource ID.
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
