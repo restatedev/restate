@@ -17,14 +17,14 @@ use opentelemetry::{Key, KeyValue, StringValue, Value};
 use opentelemetry_sdk::export::trace::{SpanData, SpanExporter};
 use opentelemetry_sdk::Resource;
 use opentelemetry_semantic_conventions::attribute::{RPC_SERVICE, SERVICE_NAME};
-use tokio::sync::OnceCell;
+use std::sync::OnceLock;
 
 use restate_types::GenerationalNodeId;
 
 /// `RPC_SERVICE` is used to override `service.name` on the `SpanBuilder`
 const RPC_SERVICE_KEY: Key = Key::from_static_str(RPC_SERVICE);
 
-static GLOBAL_NODE_ID: OnceCell<GenerationalNodeId> = OnceCell::const_new();
+static GLOBAL_NODE_ID: OnceLock<GenerationalNodeId> = OnceLock::new();
 
 pub fn set_global_node_id(node_id: GenerationalNodeId) {
     GLOBAL_NODE_ID
@@ -198,7 +198,7 @@ mod service_per_binary {
             &mut self,
             batch: Vec<SpanData>,
         ) -> BoxFuture<'static, opentelemetry_sdk::export::trace::ExportResult> {
-            if !self.injected && GLOBAL_NODE_ID.initialized() {
+            if !self.injected && GLOBAL_NODE_ID.get().is_some() {
                 self.injected = true;
                 let node_id = GLOBAL_NODE_ID.get().expect("is initialized");
 
@@ -300,7 +300,7 @@ mod service_per_crate {
                 }
             };
 
-            if !self.injected && GLOBAL_NODE_ID.initialized() {
+            if !self.injected && GLOBAL_NODE_ID.get().is_some() {
                 self.injected = true;
                 let resource = self.resource.load();
                 let resource = resource.merge(&Resource::new(vec![KeyValue::new(
