@@ -16,45 +16,12 @@ mod spawn_processor_task;
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-use std::time::Duration;
 
-use anyhow::Context;
 use futures::stream::StreamExt;
 use metrics::gauge;
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, debug_span, error, info, instrument, trace, warn, Instrument};
-
-use restate_bifrost::Bifrost;
-use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
-use restate_core::network::{Networking, TransportConnect};
-use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
-use restate_core::TaskCenter;
-use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskKind};
-use restate_invoker_api::StatusHandle;
-use restate_invoker_impl::{BuildError, ChannelStatusReader};
-use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
-use restate_partition_store::PartitionStoreManager;
-use restate_types::cluster::cluster_state::ReplayStatus;
-use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use restate_types::config::Configuration;
-use restate_types::health::HealthStatus;
-use restate_types::identifiers::{PartitionId, PartitionKey};
-use restate_types::live::Live;
-use restate_types::logs::Lsn;
-use restate_types::net::cluster_controller::AttachRequest;
-use restate_types::net::cluster_controller::{Action, AttachResponse};
-use restate_types::net::metadata::MetadataKind;
-use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-};
-use restate_types::net::partition_processor_manager::{
-    ControlProcessor, ControlProcessors, ProcessorCommand,
-};
-use restate_types::partition_table::PartitionTable;
-use restate_types::protobuf::common::WorkerStatus;
-use restate_types::GenerationalNodeId;
+use tokio::task::JoinSet;
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
@@ -67,32 +34,61 @@ use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
 use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
 use crate::partition_processor_manager::processor_state::{
-    PartitionProcessorHandleError, ProcessorState, StartedProcessor,
+    LeaderEpochToken, ProcessorState, StartedProcessor,
 };
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
+use restate_bifrost::Bifrost;
+use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
+use restate_core::network::{Networking, TransportConnect};
+use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
+use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskKind};
+use restate_core::{RuntimeRootTaskHandle, TaskCenter};
+use restate_invoker_api::StatusHandle;
+use restate_invoker_impl::{BuildError, ChannelStatusReader};
+use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
+use restate_partition_store::PartitionStoreManager;
+use restate_types::cluster::cluster_state::ReplayStatus;
+use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
+use restate_types::config::Configuration;
+use restate_types::epoch::EpochMetadata;
+use restate_types::health::HealthStatus;
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::live::Live;
+use restate_types::logs::Lsn;
+use restate_types::metadata_store::keys::partition_processor_epoch_key;
+use restate_types::net::metadata::MetadataKind;
+use restate_types::net::partition_processor::{
+    PartitionProcessorRpcError, PartitionProcessorRpcRequest,
+};
+use restate_types::net::partition_processor_manager::{
+    ControlProcessor, ControlProcessors, ProcessorCommand,
+};
+use restate_types::partition_table::PartitionTable;
+use restate_types::protobuf::common::WorkerStatus;
+use restate_types::GenerationalNodeId;
 
 pub struct PartitionProcessorManager<T> {
     task_center: TaskCenter,
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
-    running_partition_processors: BTreeMap<PartitionId, ProcessorState>,
+    processor_states: BTreeMap<PartitionId, ProcessorState>,
     name_cache: BTreeMap<PartitionId, &'static str>,
 
     metadata: Metadata,
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
-    attach_router: RpcRouter<AttachRequest>,
     incoming_update_processors: MessageStream<ControlProcessors>,
     incoming_partition_processor_rpc: MessageStream<PartitionProcessorRpcRequest>,
-    networking: Networking<T>,
+    _networking: Networking<T>,
     bifrost: Bifrost,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
-    latest_attach_response: Option<(GenerationalNodeId, AttachResponse)>,
 
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
     pending_control_processors: Option<ControlProcessors>,
+
+    asynchronous_operations: JoinSet<AsynchronousEvent>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -101,27 +97,8 @@ pub enum Error {
     Shutdown(#[from] ShutdownError),
     #[error("failed updating the metadata store: {0}")]
     MetadataStore(#[from] ReadModifyWriteError),
-    #[error("could not send command to partition processor since it is busy")]
-    PartitionProcessorBusy,
     #[error(transparent)]
     InvokerBuild(#[from] BuildError),
-}
-
-#[derive(Debug, thiserror::Error)]
-enum AttachError {
-    #[error("No cluster controller found in nodes configuration")]
-    NoClusterController,
-    #[error(transparent)]
-    ShutdownError(#[from] ShutdownError),
-}
-
-impl From<PartitionProcessorHandleError> for Error {
-    fn from(value: PartitionProcessorHandleError) -> Self {
-        match value {
-            PartitionProcessorHandleError::Shutdown(err) => Error::Shutdown(err),
-            PartitionProcessorHandleError::FailedSend => Error::PartitionProcessorBusy,
-        }
-    }
 }
 
 type ChannelStatusReaderList = Vec<(RangeInclusive<PartitionKey>, ChannelStatusReader)>;
@@ -177,10 +154,9 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         metadata_store_client: MetadataStoreClient,
         partition_store_manager: PartitionStoreManager,
         router_builder: &mut MessageRouterBuilder,
-        networking: Networking<T>,
+        _networking: Networking<T>,
         bifrost: Bifrost,
     ) -> Self {
-        let attach_router = RpcRouter::new(router_builder);
         let incoming_update_processors = router_builder.subscribe_to_stream(2);
         let incoming_partition_processor_rpc = router_builder.subscribe_to_stream(128);
 
@@ -189,22 +165,21 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             task_center,
             health_status,
             updateable_config,
-            running_partition_processors: BTreeMap::default(),
+            processor_states: BTreeMap::default(),
             name_cache: Default::default(),
             metadata,
             metadata_store_client,
             partition_store_manager,
             incoming_update_processors,
             incoming_partition_processor_rpc,
-            networking,
+            _networking,
             bifrost,
-            attach_router,
             rx,
             tx,
-            latest_attach_response: None,
             persisted_lsns_rx: None,
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
             pending_control_processors: None,
+            asynchronous_operations: JoinSet::default(),
         }
     }
 
@@ -220,64 +195,9 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         PartitionProcessorManagerMessageHandler::new(self.handle())
     }
 
-    async fn attach(&mut self) -> Result<Incoming<AttachResponse>, AttachError> {
-        loop {
-            // We try to get the admin node on every retry since it might change between retries.
-            let admin_node = self
-                .metadata
-                .nodes_config_ref()
-                .get_admin_node()
-                .ok_or(AttachError::NoClusterController)?
-                .current_generation;
-
-            debug!(
-                "Attempting to attach to cluster controller '{}'",
-                admin_node
-            );
-            if admin_node == self.metadata.my_node_id() {
-                // If this node is running the cluster controller, we need to wait a little to give cluster
-                // controller time to start up. This is only done to reduce the chances of observing
-                // connection errors in log. Such logs are benign since we retry, but it's still not nice
-                // to print, specially in a single-node setup.
-                trace!("This node is the cluster controller, giving cluster controller service time to start");
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-
-            match self
-                .attach_router
-                .call(&self.networking, admin_node, AttachRequest::default())
-                .await
-            {
-                Ok(response) => return Ok(response),
-                Err(RpcError::Shutdown(e)) => return Err(AttachError::ShutdownError(e)),
-                Err(e) => {
-                    warn!(
-                        "Failed to send attach message to cluster controller: {}, retrying....",
-                        e
-                    );
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
-        }
-    }
-
     pub async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
-
-        let (processor_mgr_event_tx, mut processor_mgr_event_rx) = mpsc::channel(128);
-
-        // Initial attach
-        let response = tokio::time::timeout(Duration::from_secs(10), self.attach())
-            .await
-            .context("Timeout waiting to attach to a cluster controller")??;
-
-        let from = *response.peer();
-        let msg = response.into_body();
-        self.apply_plan(&msg.actions, processor_mgr_event_tx.clone())
-            .await?;
-        self.latest_attach_response = Some((from, msg));
-        info!("Plan applied from attaching to controller {}", from);
 
         let (persisted_lsns_tx, persisted_lsns_rx) = watch::channel(BTreeMap::default());
         self.persisted_lsns_rx = Some(persisted_lsns_rx);
@@ -307,25 +227,22 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 }
                 Some(control_processors) = self.incoming_update_processors.next() => {
                     self.pending_control_processors = Some(control_processors.into_body());
-                    self.on_control_processors(
-                        processor_mgr_event_tx.clone()).await?;
+                    self.on_control_processors();
                 }
                 _ = logs_version_watcher.changed(), if self.pending_control_processors.is_some() => {
                     // logs version has changed. and we have a control_processors message
                     // waiting for processing. We can check now if logs version matches
                     // and if we can apply this now.
-                    self.on_control_processors(
-                        processor_mgr_event_tx.clone()).await?;
+                    self.on_control_processors();
                 }
                 _ = partition_table_version_watcher.changed(), if self.pending_control_processors.is_some() => {
                     // partition table version has changed. and we have a control_processors message
                     // waiting for processing. We can check now if logs version matches
                     // and if we can apply this now.
-                    self.on_control_processors(
-                        processor_mgr_event_tx.clone()).await?;
+                    self.on_control_processors();
                 }
-                Some(event) = processor_mgr_event_rx.recv() => {
-                    self.on_processor_mgr_event(event);
+                Some(event) = self.asynchronous_operations.join_next() => {
+                    self.on_asynchronous_event(event.expect("asynchronous operations must not panic"));
                 }
                 Some(partition_processor_rpc) = self.incoming_partition_processor_rpc.next() => {
                     self.on_partition_processor_rpc(partition_processor_rpc);
@@ -344,7 +261,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
     ) {
         let partition_id = partition_processor_rpc.body().partition_id;
 
-        match self.running_partition_processors.get(&partition_id) {
+        match self.processor_states.get(&partition_id) {
             None => {
                 // ignore shutdown errors
                 let _ = self.task_center.spawn(
@@ -362,147 +279,256 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     },
                 );
             }
-            Some(ProcessorState::Started(partition_processor)) => {
-                if let Err(err) = partition_processor.try_send_rpc(partition_processor_rpc) {
-                    match err {
-                        TrySendError::Full(req) => {
-                            let _ = self.task_center.spawn(
-                                TaskKind::Disposable,
-                                "partition-processor-rpc",
-                                None,
-                                async move {
-                                    req.into_outgoing(Err(PartitionProcessorRpcError::Busy))
-                                        .send()
-                                        .await
-                                        .map_err(Into::into)
-                                },
-                            );
-                        }
-                        TrySendError::Closed(req) => {
-                            let _ = self.task_center.spawn(
-                                TaskKind::Disposable,
-                                "partition-processor-rpc",
-                                None,
-                                async move {
-                                    req.into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
-                                        partition_id,
-                                    )))
-                                    .send()
-                                    .await
-                                    .map_err(Into::into)
-                                },
-                            );
-                        }
-                    }
-                }
-            }
-            Some(ProcessorState::Starting(_)) => {
-                let _ = self.task_center.spawn(
-                    TaskKind::Disposable,
-                    "partition-processor-rpc",
-                    None,
-                    async move {
-                        partition_processor_rpc
-                            .into_outgoing(Err(PartitionProcessorRpcError::Starting))
-                            .send()
-                            .await
-                            .map_err(Into::into)
-                    },
+            Some(processor_state) => {
+                processor_state.try_send_rpc(
+                    partition_id,
+                    partition_processor_rpc,
+                    &self.task_center,
                 );
             }
         }
     }
 
-    fn on_processor_mgr_event(&mut self, event: ManagerEvent) {
-        let ManagerEvent {
+    #[instrument(level = "debug", skip_all, fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner)))]
+    fn on_asynchronous_event(&mut self, event: AsynchronousEvent) {
+        let AsynchronousEvent {
             partition_id,
-            event,
+            inner,
         } = event;
 
-        match event {
-            ProcessorEvent::Started(state) => {
-                self.invokers_status_reader.push(
-                    state.key_range().clone(),
-                    state.invoker_status_reader().clone(),
-                );
-                self.running_partition_processors
-                    .insert(partition_id, ProcessorState::Started(state));
+        match inner {
+            EventKind::Started(result) => {
+                match result {
+                    Ok((started_processor, runtime_handle)) => {
+                        if let Some(processor_state) = self.processor_states.get_mut(&partition_id)
+                        {
+                            match processor_state {
+                                ProcessorState::Starting { target_run_mode } => {
+                                    debug!(%target_run_mode, "Partition processor was successfully created.");
+                                    self.invokers_status_reader.push(
+                                        started_processor.key_range().clone(),
+                                        started_processor.invoker_status_reader().clone(),
+                                    );
+
+                                    let mut new_state = ProcessorState::started(started_processor);
+                                    // check whether we need to obtain a new leader epoch
+                                    if *target_run_mode == RunMode::Leader {
+                                        if let Some(leader_epoch_token) = new_state.run_as_leader()
+                                        {
+                                            Self::obtain_new_leader_epoch(
+                                                partition_id,
+                                                leader_epoch_token,
+                                                self.task_center.clone(),
+                                                self.metadata_store_client.clone(),
+                                                self.metadata.my_node_id(),
+                                                &mut self.asynchronous_operations,
+                                            );
+                                        }
+                                    }
+
+                                    *processor_state = new_state;
+
+                                    self.await_runtime_task_result(partition_id, runtime_handle);
+                                }
+                                ProcessorState::Started { .. } => {
+                                    panic!("Started two processors for the same partition '{partition_id}'");
+                                }
+                                ProcessorState::Stopping { processor, .. } => {
+                                    assert!(processor.is_none(), "Started two processor for the same partition '{partition_id}'");
+
+                                    debug!("Started partition processor is no longer needed. Stopping it.");
+                                    *processor = Some(started_processor);
+
+                                    runtime_handle.cancel();
+                                    self.await_runtime_task_result(partition_id, runtime_handle);
+                                }
+                            }
+                        } else {
+                            debug!("Started partition processor is no longer needed. Stopping it.");
+                            self.processor_states
+                                .insert(partition_id, ProcessorState::stopping(started_processor));
+                            runtime_handle.cancel();
+                            self.await_runtime_task_result(partition_id, runtime_handle);
+                            gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
+                        }
+                    }
+                    Err(err) => {
+                        info!(%partition_id, "Partition processor failed to start: {err}");
+                        self.processor_states.remove(&partition_id);
+                    }
+                }
             }
-            ProcessorEvent::StartFailed(err) => {
-                error!(%partition_id, error=%err, "Starting partition processor failed");
-                self.running_partition_processors.remove(&partition_id);
-            }
-            ProcessorEvent::Stopped(err) => {
-                if let Some(err) = err {
-                    warn!(%partition_id, error=%err, "Partition processor exited unexpectedly");
+            EventKind::Stopped(result) => {
+                match self.processor_states.remove(&partition_id) {
+                    None => {
+                        debug!("Stopped partition processor which is no longer running.");
+                    }
+                    Some(processor_state) => match processor_state {
+                        ProcessorState::Starting { .. } => {
+                            warn!(%partition_id, "Partition processor failed to start: {result:?}");
+                        }
+                        ProcessorState::Started { processor, .. } => {
+                            self.invokers_status_reader
+                                .remove(processor.as_ref().expect("must be some").key_range());
+                            warn!(%partition_id, "Partition processor exited unexpectedly: {result:?}");
+                        }
+                        ProcessorState::Stopping {
+                            processor,
+                            restart_as,
+                        } => {
+                            if let Some(processor) = processor {
+                                self.invokers_status_reader.remove(processor.key_range());
+                            }
+                            debug!("Partition processor stopped: {result:?}");
+
+                            if let Some(restart_as) = restart_as {
+                                self.on_control_processor(
+                                    ControlProcessor {
+                                        partition_id,
+                                        command: ProcessorCommand::from(restart_as),
+                                    },
+                                    &self.metadata.partition_table_ref(),
+                                );
+                            }
+                        }
+                    },
                 }
 
-                if let Some(ProcessorState::Started(status)) =
-                    self.running_partition_processors.remove(&partition_id)
-                {
-                    self.invokers_status_reader.remove(status.key_range());
+                gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
+            }
+            EventKind::NewLeaderEpoch {
+                leader_epoch_token,
+                result,
+            } => {
+                if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
+                    match result {
+                        Ok(leader_epoch) => {
+                            if let Err(err) = processor_state
+                                .on_leader_epoch_obtained(leader_epoch, leader_epoch_token)
+                            {
+                                info!(%partition_id, "Partition processor failed to process new leader epoch: {err}. Stopping it now.");
+                                processor_state.stop();
+                            }
+                        }
+                        Err(err) => {
+                            if processor_state.is_valid_leader_epoch_token(leader_epoch_token) {
+                                info!(%partition_id, "Failed obtaining new leader epoch: {err}. Continue running as follower.");
+                                if let Err(err) = processor_state.run_as_follower() {
+                                    info!(%partition_id, "Partition processor failed to run as follower: {err}. Stopping it now.");
+                                    processor_state.stop();
+                                }
+                            } else {
+                                debug!("Received outdated new leader epoch. Ignoring it.");
+                            }
+                        }
+                    }
+                } else {
+                    debug!("Partition processor is no longer running. Ignoring new leader epoch result.");
                 }
             }
         }
+    }
+
+    fn await_runtime_task_result(
+        &mut self,
+        partition_id: PartitionId,
+        runtime_task_handle: RuntimeRootTaskHandle<anyhow::Result<()>>,
+    ) {
+        let tc = self.task_center.clone();
+        self.asynchronous_operations.spawn(async move {
+            tc.run_in_scope("await-runtime-task-result", Some(partition_id), async {
+                let result = runtime_task_handle.await;
+                AsynchronousEvent {
+                    partition_id,
+                    inner: EventKind::Stopped(result),
+                }
+            })
+            .await
+        });
+    }
+
+    fn obtain_new_leader_epoch(
+        partition_id: PartitionId,
+        leader_epoch_token: LeaderEpochToken,
+        task_center: TaskCenter,
+        metadata_store_client: MetadataStoreClient,
+        my_node_id: GenerationalNodeId,
+        asynchronous_operations: &mut JoinSet<AsynchronousEvent>,
+    ) {
+        asynchronous_operations.spawn(async move {
+            task_center
+                .run_in_scope(
+                    "obtain-new-leader-epoch",
+                    Some(partition_id),
+                    Self::obtain_new_leader_epoch_task(
+                        leader_epoch_token,
+                        partition_id,
+                        metadata_store_client,
+                        my_node_id,
+                    ),
+                )
+                .await
+        });
     }
 
     fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
         let persisted_lsns = self.persisted_lsns_rx.as_ref().map(|w| w.borrow());
 
         // For all running partitions, collect state, enrich it, and send it back.
-        self.running_partition_processors
+        self.processor_states
             .iter()
-            .filter_map(|(partition_id, status)| {
-                let ProcessorState::Started(state) = status else {
-                    return None;
-                };
+            .filter_map(|(partition_id, processor_state)| {
+                let status = processor_state.partition_processor_status();
 
-                let mut status = state.partition_processor_status();
-                gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
-                    PARTITION_LABEL => partition_id.to_string())
-                .set(status.updated_at.elapsed());
+                if let Some(mut status) = status {
+                    gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
+                        PARTITION_LABEL => partition_id.to_string())
+                    .set(status.updated_at.elapsed());
 
-                gauge!(PARTITION_IS_EFFECTIVE_LEADER,
-                    PARTITION_LABEL => partition_id.to_string())
-                .set(if status.is_effective_leader() {
-                    1.0
+                    gauge!(PARTITION_IS_EFFECTIVE_LEADER,
+                        PARTITION_LABEL => partition_id.to_string())
+                    .set(if status.is_effective_leader() {
+                        1.0
+                    } else {
+                        0.0
+                    });
+
+                    gauge!(PARTITION_IS_ACTIVE,
+                        PARTITION_LABEL => partition_id.to_string())
+                    .set(if status.replay_status == ReplayStatus::Active {
+                        1.0
+                    } else {
+                        0.0
+                    });
+
+                    if let Some(last_applied_log_lsn) = status.last_applied_log_lsn {
+                        gauge!(PARTITION_LAST_APPLIED_LOG_LSN,
+                        PARTITION_LABEL => partition_id.to_string())
+                        .set(last_applied_log_lsn.as_u64() as f64);
+                    }
+
+                    if let Some(last_persisted_log_lsn) = status.last_persisted_log_lsn {
+                        gauge!(PARTITION_LAST_PERSISTED_LOG_LSN,
+                        PARTITION_LABEL => partition_id.to_string())
+                        .set(last_persisted_log_lsn.as_u64() as f64);
+                    }
+
+                    if let Some(last_record_applied_at) = status.last_record_applied_at {
+                        gauge!(PARTITION_TIME_SINCE_LAST_RECORD,
+                        PARTITION_LABEL => partition_id.to_string())
+                        .set(last_record_applied_at.elapsed());
+                    }
+
+                    // it is a bit unfortunate that we share PartitionProcessorStatus between the
+                    // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
+                    status.last_persisted_log_lsn = persisted_lsns
+                        .as_ref()
+                        .and_then(|lsns| lsns.get(partition_id).cloned());
+
+                    Some((*partition_id, status))
                 } else {
-                    0.0
-                });
-
-                gauge!(PARTITION_IS_ACTIVE,
-                    PARTITION_LABEL => partition_id.to_string())
-                .set(if status.replay_status == ReplayStatus::Active {
-                    1.0
-                } else {
-                    0.0
-                });
-
-                if let Some(last_applied_log_lsn) = status.last_applied_log_lsn {
-                    gauge!(PARTITION_LAST_APPLIED_LOG_LSN,
-                    PARTITION_LABEL => partition_id.to_string())
-                    .set(last_applied_log_lsn.as_u64() as f64);
+                    None
                 }
-
-                if let Some(last_persisted_log_lsn) = status.last_persisted_log_lsn {
-                    gauge!(PARTITION_LAST_PERSISTED_LOG_LSN,
-                    PARTITION_LABEL => partition_id.to_string())
-                    .set(last_persisted_log_lsn.as_u64() as f64);
-                }
-
-                if let Some(last_record_applied_at) = status.last_record_applied_at {
-                    gauge!(PARTITION_TIME_SINCE_LAST_RECORD,
-                    PARTITION_LABEL => partition_id.to_string())
-                    .set(last_record_applied_at.elapsed());
-                }
-
-                // it is a bit unfortunate that we share PartitionProcessorStatus between the
-                // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
-                status.planned_mode = state.planned_mode();
-                status.last_persisted_log_lsn = persisted_lsns
-                    .as_ref()
-                    .and_then(|lsns| lsns.get(partition_id).cloned());
-                Some((*partition_id, status))
             })
             .collect()
     }
@@ -511,19 +537,8 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         use ProcessorsManagerCommand::*;
         match command {
             CreateSnapshot(partition_id, sender) => {
-                if let Some(processor_state) = self.running_partition_processors.get(&partition_id)
-                {
-                    match processor_state {
-                        ProcessorState::Starting(_) => {
-                            let _ = sender.send(Err(anyhow::anyhow!(
-                                "Partition processors '{}' is still starting",
-                                partition_id
-                            )));
-                        }
-                        ProcessorState::Started(started_processor) => {
-                            started_processor.create_snapshot(sender);
-                        }
-                    }
+                if let Some(processor_state) = self.processor_states.get(&partition_id) {
+                    processor_state.create_snapshot(sender);
                 } else {
                     let _ = sender.send(Err(anyhow::anyhow!(
                         "Partition processor '{}' not found",
@@ -537,8 +552,7 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         }
     }
 
-    #[instrument(parent=None, skip_all)]
-    async fn on_control_processors(&mut self, events: EventSender) -> Result<(), Error> {
+    fn on_control_processors(&mut self) {
         if self
             .pending_control_processors
             .as_ref()
@@ -555,65 +569,49 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             let partition_table = self.metadata.partition_table_snapshot();
 
             for control_processor in control_processors.commands {
-                self.on_control_processor(control_processor, &partition_table, events.clone())
-                    .await?;
+                self.on_control_processor(control_processor, &partition_table);
             }
         }
-
-        Ok(())
     }
 
-    #[instrument(level = "debug", skip_all, fields(partition_id = %control_processor.partition_id))]
-    async fn on_control_processor(
+    fn on_control_processor(
         &mut self,
         control_processor: ControlProcessor,
         partition_table: &PartitionTable,
-        events: EventSender,
-    ) -> Result<(), Error> {
+    ) {
         let partition_id = control_processor.partition_id;
 
         match control_processor.command {
             ProcessorCommand::Stop => {
-                if let Some(status) = self.running_partition_processors.remove(&partition_id) {
-                    status.stop(&self.task_center).await;
+                if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
+                    processor_state.stop();
                 }
             }
             ProcessorCommand::Follower | ProcessorCommand::Leader => {
-                let run_mode = if control_processor.command == ProcessorCommand::Leader {
-                    RunMode::Leader
-                } else if control_processor.command == ProcessorCommand::Follower {
-                    RunMode::Follower
-                } else {
-                    unreachable!()
-                };
-
-                if let Some(status) = self.running_partition_processors.get_mut(&partition_id) {
-                    if let ProcessorState::Started(state) = status {
-                        // if we error here, then the system is shutting down
-                        if run_mode == RunMode::Follower {
-                            state.step_down()?;
-                        } else if run_mode == RunMode::Leader {
-                            state
-                                .run_for_leader(
-                                    self.metadata_store_client.clone(),
-                                    self.metadata.my_node_id(),
-                                )
-                                .await?;
+                if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
+                    if control_processor.command == ProcessorCommand::Leader {
+                        if let Some(leader_epoch_token) = processor_state.run_as_leader() {
+                            Self::obtain_new_leader_epoch(
+                                partition_id,
+                                leader_epoch_token,
+                                self.task_center.clone(),
+                                self.metadata_store_client.clone(),
+                                self.metadata.my_node_id(),
+                                &mut self.asynchronous_operations,
+                            );
                         }
-                    } else {
-                        // otherwise if it's still starting we can't control it yet
-                        debug!(%partition_id, "Ignoring control partition processor message. Partition processor is still starting");
+                    } else if control_processor.command == ProcessorCommand::Follower {
+                        if let Err(err) = processor_state.run_as_follower() {
+                            info!("Partition processor '{partition_id}' failed to run as follower: {err}. Stopping it now.");
+                            processor_state.stop();
+                        }
                     }
                 } else if let Some(partition_key_range) = partition_table
                     .get_partition(&partition_id)
                     .map(|partition| &partition.key_range)
                 {
-                    let starting_task = self.start_partition_processor_task(
-                        partition_id,
-                        partition_key_range.clone(),
-                        run_mode,
-                        events,
-                    );
+                    let starting_task = self
+                        .start_partition_processor_task(partition_id, partition_key_range.clone());
 
                     // note: We starting each task on it's own thread due to an issue that shows up on MacOS
                     // where spawning many tasks of this kind causes a lock contention in tokio which leads to
@@ -621,13 +619,28 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                     let handle = self.task_center.spawn_blocking_unmanaged(
                         "starting-partition-processor",
                         Some(partition_id),
-                        starting_task.run().instrument(
-                            debug_span!("starting_partition_processor", partition_id=%partition_id),
+                        starting_task.run(),
+                    );
+
+                    self.asynchronous_operations.spawn(async move {
+                        let result = handle.await.expect("task must not panic");
+                        AsynchronousEvent {
+                            partition_id,
+                            inner: EventKind::Started(result),
+                        }
+                    });
+
+                    self.processor_states.insert(
+                        partition_id,
+                        ProcessorState::starting(
+                            control_processor
+                                .command
+                                .as_run_mode()
+                                .expect("to be follower/leader command"),
                         ),
                     );
 
-                    self.running_partition_processors
-                        .insert(partition_id, ProcessorState::Starting(handle));
+                    gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
                 } else {
                     debug!(
                         "Unknown partition id '{partition_id}'. Ignoring {} command.",
@@ -636,50 +649,6 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
                 }
             }
         }
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn apply_plan(&mut self, actions: &[Action], events: EventSender) -> Result<(), Error> {
-        for action in actions {
-            match action {
-                Action::RunPartition(action) => {
-                    #[allow(clippy::map_entry)]
-                    if !self
-                        .running_partition_processors
-                        .contains_key(&action.partition_id)
-                    {
-                        let starting_task = self.start_partition_processor_task(
-                            action.partition_id,
-                            action.key_range_inclusive.clone().into(),
-                            action.mode,
-                            events.clone(),
-                        );
-
-                        // note: We starting each task on it's own thread due to an issue that shows up on MacOS
-                        // where spawning many tasks of this kind causes a lock contention in tokio which leads to
-                        // starvation of the event loop.
-                        let handle = self.task_center.spawn_blocking_unmanaged(
-                            "starting-partition-processor",
-                            Some(action.partition_id),
-                            starting_task.run().instrument(debug_span!("starting_partition_processor", partition_id=%action.partition_id)),
-                        );
-
-                        self.running_partition_processors
-                            .insert(action.partition_id, ProcessorState::Starting(handle));
-                    } else {
-                        debug!(
-                            "Partition processor for partition id '{}' is already running.",
-                            action.partition_id
-                        );
-                    }
-                }
-            }
-        }
-
-        gauge!(NUM_ACTIVE_PARTITIONS).set(self.running_partition_processors.len() as f64);
-        Ok(())
     }
 
     /// Creates a task that when started will spawn a new partition processor.
@@ -690,8 +659,6 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         &mut self,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
-        run_mode: RunMode,
-        events: EventSender,
     ) -> SpawnPartitionProcessorTask {
         // the name is also used as thread names for the corresponding tokio runtimes, let's keep
         // it short.
@@ -704,27 +671,216 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             task_name,
             self.metadata.my_node_id(),
             partition_id,
-            run_mode,
             key_range,
             self.updateable_config.clone(),
             self.metadata.clone(),
             self.bifrost.clone(),
             self.partition_store_manager.clone(),
-            self.metadata_store_client.clone(),
-            events,
         )
+    }
+
+    async fn obtain_new_leader_epoch_task(
+        leader_epoch_token: LeaderEpochToken,
+        partition_id: PartitionId,
+        metadata_store_client: MetadataStoreClient,
+        node_id: GenerationalNodeId,
+    ) -> AsynchronousEvent {
+        AsynchronousEvent {
+            partition_id,
+            inner: EventKind::NewLeaderEpoch {
+                leader_epoch_token,
+                result: Self::obtain_next_epoch(metadata_store_client, partition_id, node_id)
+                    .await
+                    .map_err(Into::into),
+            },
+        }
+    }
+
+    async fn obtain_next_epoch(
+        metadata_store_client: MetadataStoreClient,
+        partition_id: PartitionId,
+        node_id: GenerationalNodeId,
+    ) -> Result<LeaderEpoch, ReadModifyWriteError> {
+        let epoch: EpochMetadata = metadata_store_client
+            .read_modify_write(partition_processor_epoch_key(partition_id), |epoch| {
+                let next_epoch = epoch
+                    .map(|epoch: EpochMetadata| epoch.claim_leadership(node_id, partition_id))
+                    .unwrap_or_else(|| EpochMetadata::new(node_id, partition_id));
+
+                Ok(next_epoch)
+            })
+            .await?;
+        Ok(epoch.epoch())
     }
 }
 
-type EventSender = mpsc::Sender<ManagerEvent>;
-
-struct ManagerEvent {
+struct AsynchronousEvent {
     partition_id: PartitionId,
-    event: ProcessorEvent,
+    inner: EventKind,
 }
 
-enum ProcessorEvent {
-    Started(StartedProcessor),
-    StartFailed(anyhow::Error),
-    Stopped(Option<anyhow::Error>),
+#[derive(strum::IntoStaticStr)]
+enum EventKind {
+    Started(anyhow::Result<(StartedProcessor, RuntimeRootTaskHandle<anyhow::Result<()>>)>),
+    Stopped(anyhow::Result<()>),
+    NewLeaderEpoch {
+        leader_epoch_token: LeaderEpochToken,
+        result: anyhow::Result<LeaderEpoch>,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::partition_processor_manager::PartitionProcessorManager;
+    use googletest::IntoTestResult;
+    use restate_bifrost::providers::memory_loglet;
+    use restate_bifrost::BifrostService;
+    use restate_core::network::MockPeerConnection;
+    use restate_core::{TaskKind, TestCoreEnvBuilder};
+    use restate_partition_store::PartitionStoreManager;
+    use restate_rocksdb::RocksDbManager;
+    use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StorageOptions};
+    use restate_types::health::HealthStatus;
+    use restate_types::identifiers::{PartitionId, PartitionKey};
+    use restate_types::live::{Constant, Live};
+    use restate_types::net::partition_processor_manager::{
+        ControlProcessor, ControlProcessors, ProcessorCommand,
+    };
+    use restate_types::net::AdvertisedAddress;
+    use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
+    use restate_types::protobuf::node::Header;
+    use restate_types::{GenerationalNodeId, Version};
+    use std::time::Duration;
+    use test_log::test;
+
+    /// This test ensures that the lifecycle of partition processors is properly managed by the
+    /// [`PartitionProcessorManager`]. See https://github.com/restatedev/restate/issues/2258 for
+    /// more details.
+    #[test(tokio::test)]
+    async fn proper_partition_processor_lifecycle() -> googletest::Result<()> {
+        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let node_id = GenerationalNodeId::new(42, 42);
+        let node_config = NodeConfig::new(
+            "42".to_owned(),
+            node_id,
+            AdvertisedAddress::Uds("foobar1".into()),
+            Role::Worker | Role::Admin,
+            LogServerConfig::default(),
+        );
+        nodes_config.upsert_node(node_config);
+
+        let mut env_builder =
+            TestCoreEnvBuilder::with_incoming_only_connector().set_nodes_config(nodes_config);
+        let health_status = HealthStatus::default();
+
+        env_builder
+            .tc
+            .run_in_scope_sync("db-manager-init", None, || {
+                RocksDbManager::init(Constant::new(CommonOptions::default()));
+            });
+
+        let bifrost_svc = BifrostService::new(env_builder.tc.clone(), env_builder.metadata.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let bifrost = bifrost_svc.handle();
+
+        let partition_store_manager = PartitionStoreManager::create(
+            Constant::new(StorageOptions::default()),
+            Constant::new(RocksDbOptions::default()).boxed(),
+            &[(PartitionId::MIN, 0..=PartitionKey::MAX)],
+        )
+        .await?;
+
+        let partition_processor_manager = PartitionProcessorManager::new(
+            env_builder.tc.clone(),
+            health_status,
+            Live::from_value(Configuration::default()),
+            env_builder.metadata.clone(),
+            env_builder.metadata_store_client.clone(),
+            partition_store_manager,
+            &mut env_builder.router_builder,
+            env_builder.networking.clone(),
+            bifrost,
+        );
+
+        let env = env_builder.build().await;
+        let processors_manager_handle = partition_processor_manager.handle();
+
+        env.tc
+            .run_in_scope("init-bifrost", None, bifrost_svc.start())
+            .await
+            .into_test_result()?;
+        env.tc.spawn(
+            TaskKind::SystemService,
+            "partition-processor-manager",
+            None,
+            partition_processor_manager.run(),
+        )?;
+        let tc = env.tc.clone();
+        tc.run_in_scope("test", None, async move {
+            let connection = MockPeerConnection::connect(
+                node_id,
+                env.metadata.nodes_config_version(),
+                env.metadata.nodes_config_ref().cluster_name().to_owned(),
+                env.networking.connection_manager(),
+                10,
+            )
+            .await
+            .into_test_result()?;
+
+            let start_processor_command = ControlProcessors {
+                min_logs_table_version: Version::MIN,
+                min_partition_table_version: Version::MIN,
+                commands: vec![ControlProcessor {
+                    partition_id: PartitionId::MIN,
+                    command: ProcessorCommand::Follower,
+                }],
+            };
+            let stop_processor_command = ControlProcessors {
+                min_logs_table_version: Version::MIN,
+                min_partition_table_version: Version::MIN,
+                commands: vec![ControlProcessor {
+                    partition_id: PartitionId::MIN,
+                    command: ProcessorCommand::Stop,
+                }],
+            };
+
+            // let's check whether we can start and stop the partition processor multiple times
+            for i in 0..=10 {
+                connection
+                    .send_raw(
+                        if i % 2 == 0 {
+                            start_processor_command.clone()
+                        } else {
+                            stop_processor_command.clone()
+                        },
+                        Header::default(),
+                    )
+                    .await
+                    .into_test_result()?;
+            }
+
+            loop {
+                let current_state = processors_manager_handle.get_state().await?;
+
+                if current_state.contains_key(&PartitionId::MIN) {
+                    // wait until we see the PartitionId::MIN partition processor running
+                    break;
+                } else {
+                    // make sure that we eventually start the partition processor
+                    connection
+                        .send_raw(start_processor_command.clone(), Header::default())
+                        .await
+                        .into_test_result()?;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+
+            googletest::Result::Ok(())
+        })
+        .await?;
+
+        tc.shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
 }

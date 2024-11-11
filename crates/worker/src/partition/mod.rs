@@ -265,6 +265,7 @@ where
 {
     #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<()> {
+        debug!("Starting the partition processor");
         let res = self.run_inner().await;
 
         // Drain control_rx

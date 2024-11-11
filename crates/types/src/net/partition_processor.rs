@@ -81,6 +81,8 @@ pub enum PartitionProcessorRpcError {
     Internal(String),
     #[error("partition processor starting")]
     Starting,
+    #[error("partition processor stopping")]
+    Stopping,
 }
 
 impl PartitionProcessorRpcError {
@@ -91,6 +93,7 @@ impl PartitionProcessorRpcError {
             PartitionProcessorRpcError::Busy => false,
             PartitionProcessorRpcError::Internal(_) => false,
             PartitionProcessorRpcError::Starting => false,
+            PartitionProcessorRpcError::Stopping => false,
         }
     }
 }
