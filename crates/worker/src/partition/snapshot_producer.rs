@@ -18,6 +18,7 @@ use aws_credential_types::provider::ProvideCredentials;
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path;
 use object_store::{ObjectStore, PutPayload};
+use tempfile::NamedTempFile;
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -85,78 +86,61 @@ impl SnapshotProducer {
         let credentials_provider = DefaultCredentialsChain::builder().build().await;
         let creds = credentials_provider.provide_credentials().await?;
 
-        let url = Url::parse("s3://pavel-restate-snapshots-test/test-cluster-snapshots")?;
+        let url = Url::parse("s3://pavel-restate-snapshots-test/test-cluster-snapshots/")?;
+        // let url = Url::parse("file:///Users/pavel/restate/restate/snapshots")?;
+        // let (store, path) = object_store::parse_url(&url)?;
 
-        let object_store = AmazonS3Builder::new()
+        let mut store = AmazonS3Builder::new()
             .with_url(url.clone())
-            .with_region(
-                aws_config
-                    .region()
-                    .expect("region is configured")
-                    .to_string(),
-            )
+            .with_region(aws_config.region().expect("region is set").to_string())
             .with_access_key_id(creds.access_key_id())
-            .with_secret_access_key(creds.secret_access_key())
-            .with_token(creds.session_token().unwrap())
-            .build()?;
+            .with_secret_access_key(creds.secret_access_key());
 
-        // The object store key prefix is: <base_prefix>/<partition_id>/<sort_key>/<snapshot_id>/*
-        let inverted_sort_key = format!("{:016x}", u64::MAX - snapshot_lsn.as_u64());
-        let snapshot_upload_prefix = format!(
-            "{}/{}/{}/{}",
-            url.path(),
-            partition_store.partition_id(),
-            inverted_sort_key,
-            snapshot_lsn
-        );
-
-        for file in snapshot_meta.files.iter() {
-            // RocksDB returns SST file names with a leading slash.
-            let filename = file.name.strip_prefix("/").unwrap_or(file.name.as_str());
-            let local_file_path = snapshot_path.join(filename);
-            debug!(
-                %snapshot_id,
-                ?local_file_path,
-                ?snapshot_upload_prefix,
-                "Uploading snapshot component file to prefix"
-            );
-            let data = tokio::fs::read(local_file_path).await?;
-            let object_key = format!("{}/{}", snapshot_upload_prefix, filename);
-            debug!(
-                %snapshot_id,
-                ?object_key,
-                "Starting snapshot component file upload"
-            );
-            let result = object_store
-                .put(&Path::from(object_key.as_str()), PutPayload::from(data))
-                .await?;
-            debug!(%snapshot_id, ?object_key, ?result, "Uploaded snapshot component file");
+        if let Some(token) = creds.session_token() {
+            store = store.with_token(token);
         }
-        let metadata_body = tokio::fs::read(metadata_path).await?;
-        let metadata_key = format!("{}/{}", snapshot_upload_prefix, "metadata.json");
-        let _ = object_store
-            .put(&Path::from(metadata_key), PutPayload::from(metadata_body))
-            .await?;
+        let store = store.build()?;
 
-        let snapshot_id_marker_key =
-            format!("{}/{}", snapshot_upload_prefix, snapshot_id.to_string());
-        let _ = object_store
-            .put(
-                &Path::from(snapshot_id_marker_key),
-                PutPayload::from_static(b""),
-            )
-            .await?;
+        let inverted_sort_key = format!("{:016x}", u64::MAX - snapshot_lsn.as_u64());
 
-        info!(
+        let mut tarball =
+            tar::Builder::new(NamedTempFile::new_in(partition_snapshots_path.as_path())?);
+        tarball.append_dir_all(".", &snapshot_path.as_os_str())?;
+        tarball.finish()?;
+        debug!("Created snapshot: {:?}", tarball.get_ref());
+
+        // The snapshot data / metadata key format is: [<base_prefix>/]<partition_id>/<sort_key>/<snapshot_id>_<lsn>.tar
+        let snapshot_key = match url.path() {
+            "" | "/" => format!(
+                "{partition_id}/{sk}/{snapshot_id}_{lsn}.tar",
+                partition_id = partition_store.partition_id(),
+                sk = inverted_sort_key,
+                lsn = snapshot_lsn,
+            ),
+            prefix => format!(
+                "{trimmed_prefix}/{partition_id}/{sk}/{snapshot_id}_{lsn}.tar",
+                trimmed_prefix = prefix.trim_start_matches('/').trim_end_matches('/'),
+                partition_id = partition_store.partition_id(),
+                sk = inverted_sort_key,
+                lsn = snapshot_lsn,
+            ),
+        };
+        let data = tokio::fs::read(tarball.get_ref().path()).await?;
+        let upload = store
+            .put(&Path::from(snapshot_key.clone()), PutPayload::from(data))
+            .await?;
+        debug!(
             %snapshot_id,
-            "Successfully uploaded complete snapshot to: {}",
-            snapshot_upload_prefix
+            "Successfully uploaded snapshot archive to: {} ({:?})",
+            snapshot_key,
+            upload.e_tag
         );
 
         let previous_archived_snapshot_lsn = partition_store.get_archived_lsn().await?;
         let mut tx = partition_store.transaction();
         tx.put_archived_lsn(snapshot_lsn).await;
         tx.commit().await?;
+
         debug!(
             %snapshot_id,
             previous_archived_lsn = ?previous_archived_snapshot_lsn,
