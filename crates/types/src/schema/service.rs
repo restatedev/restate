@@ -132,17 +132,17 @@ pub enum HandlerMetadataType {
     Workflow,
 }
 
-impl From<InvocationTargetType> for HandlerMetadataType {
+impl From<InvocationTargetType> for Option<HandlerMetadataType> {
     fn from(value: InvocationTargetType) -> Self {
         match value {
-            InvocationTargetType::Service => HandlerMetadataType::Shared,
+            InvocationTargetType::Service => None,
             InvocationTargetType::VirtualObject(h_ty) => match h_ty {
-                VirtualObjectHandlerType::Exclusive => HandlerMetadataType::Exclusive,
-                VirtualObjectHandlerType::Shared => HandlerMetadataType::Shared,
+                VirtualObjectHandlerType::Exclusive => Some(HandlerMetadataType::Exclusive),
+                VirtualObjectHandlerType::Shared => Some(HandlerMetadataType::Shared),
             },
             InvocationTargetType::Workflow(h_ty) => match h_ty {
-                WorkflowHandlerType::Workflow => HandlerMetadataType::Workflow,
-                WorkflowHandlerType::Shared => HandlerMetadataType::Shared,
+                WorkflowHandlerType::Workflow => Some(HandlerMetadataType::Workflow),
+                WorkflowHandlerType::Shared => Some(HandlerMetadataType::Shared),
             },
         }
     }
@@ -153,7 +153,8 @@ impl From<InvocationTargetType> for HandlerMetadataType {
 pub struct HandlerMetadata {
     pub name: String,
 
-    pub ty: HandlerMetadataType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ty: Option<HandlerMetadataType>,
 
     /// # Documentation
     ///
@@ -359,7 +360,7 @@ pub mod test_util {
                     .into_iter()
                     .map(|s| HandlerMetadata {
                         name: s.as_ref().to_string(),
-                        ty: HandlerMetadataType::Shared,
+                        ty: None,
                         documentation: None,
                         metadata: Default::default(),
                         input_description: "any".to_string(),
@@ -391,7 +392,7 @@ pub mod test_util {
                     .into_iter()
                     .map(|s| HandlerMetadata {
                         name: s.as_ref().to_string(),
-                        ty: HandlerMetadataType::Exclusive,
+                        ty: Some(HandlerMetadataType::Exclusive),
                         documentation: None,
                         metadata: Default::default(),
                         input_description: "any".to_string(),
