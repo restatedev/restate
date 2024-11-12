@@ -68,20 +68,20 @@ jobs:
           driver-opts: |
             network=host
 
-      - name: Cache sccache
-        uses: actions/cache@v4
-        with:
-          path: sccache-cache
-          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
+      # - name: Cache sccache
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: sccache-cache
+      #     key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Inject sccache-cache into Docker
-        uses: reproducible-containers/buildkit-cache-dance@v3
-        with:
-          cache-map: |
-            {
-              "sccache-cache": "/var/cache/sccache"
-            }
-          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+      # - name: Inject sccache-cache into Docker
+      #   uses: reproducible-containers/buildkit-cache-dance@v3
+      #   with:
+      #     cache-map: |
+      #       {
+      #         "sccache-cache": "/var/cache/sccache"
+      #       }
+      #     skip-extraction: ${{ steps.cache.outputs.cache-hit }}
 
         
       - name: Log into GitHub container registry
@@ -133,7 +133,6 @@ jobs:
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
             RESTATE_FEATURES=${{ inputs.features || '' }}
-            SCCACHE_DIR=~/.cache/sccache
           cache-from: type=gha,url=http://127.0.0.1:49160/
           cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max
     
