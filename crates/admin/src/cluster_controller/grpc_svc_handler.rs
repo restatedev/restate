@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use tonic::{async_trait, Request, Response, Status};
-use tracing::{debug, info};
+use tracing::info;
 
 use restate_bifrost::{Bifrost, BifrostAdmin, Error as BiforstError};
 use restate_core::MetadataWriter;
@@ -119,7 +119,6 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
         let trim_point = trim_point
             .map_err(|err| Status::internal(format!("Failed to find log trim point: {:?}", err)))?;
-        debug!(?log_id, ?trim_point, "Retrieved log information");
 
         let nodes_config = nodes_config
             .map_err(|error| {
