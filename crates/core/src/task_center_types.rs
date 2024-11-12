@@ -90,10 +90,14 @@ pub enum TaskKind {
     Shuffle,
     Cleaner,
     MetadataStore,
+    Background,
     // -- Bifrost Tasks
     /// A background task that the system needs for its operation. The task requires a system
     /// shutdown on errors and the system will wait for its graceful cancellation on shutdown.
+    #[strum(props(runtime = "default"))]
     BifrostBackgroundHighPriority,
+    #[strum(props(OnCancel = "abort", runtime = "default"))]
+    BifrostBackgroundLowPriority,
     /// A background appender. The task will log on errors but the system will wait for its
     /// graceful cancellation on shutdown.
     #[strum(props(OnCancel = "wait", OnError = "log"))]
@@ -103,14 +107,16 @@ pub enum TaskKind {
     LogletProvider,
     #[strum(props(OnCancel = "abort"))]
     Watchdog,
+    #[strum(props(OnCancel = "wait", runtime = "default"))]
+    SequencerAppender,
+    // -- Replicated loglet tasks
+    /// Receives messages from remote sequencers on nodes with local sequencer.
+    #[strum(props(OnCancel = "abort", runtime = "default"))]
     NetworkMessageHandler,
-    // Replicated loglet tasks
     ReplicatedLogletReadStream,
     #[strum(props(OnCancel = "abort"))]
-    /// Log-server tasks
+    // -- Log-server tasks
     LogletWriter,
-    /// Background task which should not fail
-    Background,
 }
 
 impl TaskKind {
