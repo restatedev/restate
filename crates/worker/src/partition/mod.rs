@@ -71,14 +71,14 @@ use crate::metric_definitions::{
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
-use crate::partition::snapshot_producer::{SnapshotProducer, SnapshotRepository};
+use crate::partition::snapshots::{SnapshotProducer, SnapshotRepository};
 use crate::partition::state_machine::{ActionCollector, StateMachine};
 
 mod cleaner;
 pub mod invoker_storage_reader;
 mod leadership;
 pub mod shuffle;
-mod snapshot_producer;
+mod snapshots;
 mod state_machine;
 pub mod types;
 
