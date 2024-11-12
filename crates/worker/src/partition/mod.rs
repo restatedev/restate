@@ -184,6 +184,7 @@ where
             });
 
         let leadership_state = LeadershipState::new(
+            task_center.clone(),
             PartitionProcessorMetadata::new(
                 self.node_id,
                 partition_id,
@@ -273,12 +274,12 @@ where
         // Drain rpc_rx
         self.rpc_rx.close();
         while let Some(msg) = self.rpc_rx.recv().await {
-            let _ = msg
-                .into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
+            respond_to_rpc(
+                &self.task_center,
+                msg.into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
                     self.partition_id,
-                )))
-                .send()
-                .await;
+                ))),
+            );
         }
 
         res
@@ -646,7 +647,7 @@ where
                     )
                     .await
                 {
-                    self.respond_to_rpc(response_tx.prepare(Ok(ready_result)));
+                    respond_to_rpc(&self.task_center, response_tx.prepare(Ok(ready_result)));
                     return;
                 }
 
@@ -666,7 +667,8 @@ where
                 invocation_query,
                 GetInvocationOutputResponseMode::ReplyIfNotReady,
             ) => {
-                self.respond_to_rpc(
+                respond_to_rpc(
+                    &self.task_center,
                     response_tx.prepare(
                         self.handle_rpc_get_invocation_output(
                             request_id,
@@ -688,22 +690,6 @@ where
                     .await;
             }
         };
-    }
-
-    fn respond_to_rpc(
-        &self,
-        outgoing: Outgoing<
-            Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
-            HasConnection,
-        >,
-    ) {
-        // ignore shutdown errors
-        let _ = self.task_center.spawn(
-            TaskKind::Disposable,
-            "partition-processor-rpc-response",
-            None,
-            async move { outgoing.send().await.map_err(Into::into) },
-        );
     }
 
     async fn handle_rpc_get_invocation_output(
@@ -915,4 +901,24 @@ where
 
         Ok(())
     }
+}
+
+fn respond_to_rpc(
+    task_center: &TaskCenter,
+    outgoing: Outgoing<
+        Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
+        HasConnection,
+    >,
+) {
+    // ignore shutdown errors
+    let _ = task_center.spawn(
+        // Use RpcResponse kind to make sure that the response is sent on the default runtime and
+        // not the partition processor runtime which might be dropped. Otherwise we risk that the
+        // response is never sent even though the connection is still open. If the default runtime is
+        // dropped, then the process is shutting down which would also close all open connections.
+        TaskKind::RpcResponse,
+        "partition-processor-rpc-response",
+        None,
+        async move { outgoing.send().await.map_err(Into::into) },
+    );
 }
