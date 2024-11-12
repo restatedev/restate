@@ -96,7 +96,7 @@ impl AdvertisedAddress {
                 let port = uri
                     .authority()
                     .and_then(|auth| auth.port_u16())
-                    .unwrap_or(5122); // Default to 5122 if no port is specified
+                    .unwrap_or(80); // HTTP default port is 80 if unspecified
 
                 let ip = if uri.host().unwrap_or("").contains(':') {
                     IpAddr::V6(Ipv6Addr::UNSPECIFIED)
@@ -332,13 +332,13 @@ mod tests {
 
     #[test]
     fn test_derive_bind_address_fallback_port() {
-        // Case with no port specified, should fallback to 5122
+        // Case with no port specified, should fallback to 80
         let advertised_address = AdvertisedAddress::from_str("http://example.com").unwrap();
         let bind_address = advertised_address.derive_bind_address();
 
         match bind_address {
             BindAddress::Socket(socket_addr) => {
-                assert_eq!(socket_addr.port(), 5122, "Expected port 5122 for fallback");
+                assert_eq!(socket_addr.port(), 80, "Expected port 80 for fallback");
                 assert_eq!(
                     socket_addr.ip(),
                     IpAddr::V4(Ipv4Addr::UNSPECIFIED),
