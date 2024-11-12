@@ -20,7 +20,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
     let partition_id = partition_store.partition_id();
     let path_buf = snapshots_dir.path().to_path_buf().join("sn1");
 
-    let snapshot = partition_store.create_snapshot(path_buf).await.unwrap();
+    let snapshot = partition_store.export_snapshot(path_buf).await.unwrap();
 
     let snapshot_meta = PartitionSnapshotMetadata {
         version: SnapshotFormatVersion::V1,

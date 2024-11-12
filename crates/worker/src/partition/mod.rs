@@ -71,7 +71,7 @@ use crate::metric_definitions::{
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
-use crate::partition::snapshot_producer::{SnapshotProducer, SnapshotSource};
+use crate::partition::snapshot_producer::{SnapshotProducer, SnapshotRepository};
 use crate::partition::state_machine::{ActionCollector, StateMachine};
 
 mod cleaner;
@@ -197,6 +197,14 @@ where
             last_seen_leader_epoch,
         );
 
+        let config = configuration.pinned();
+        let snapshot_producer = SnapshotProducer::create(
+            partition_store.clone(),
+            configuration,
+            SnapshotRepository::create(config.common.base_dir(), &config.worker.snapshots).await?,
+        )
+        .await?;
+
         Ok(PartitionProcessor {
             task_center,
             partition_id,
@@ -206,11 +214,11 @@ where
             max_command_batch_size,
             partition_store,
             bifrost,
-            configuration,
             control_rx,
             rpc_rx,
             status_watch_tx,
             status,
+            snapshot_producer,
             inflight_create_snapshot_task: None,
             last_snapshot_lsn_watch: watch::channel(None),
         })
@@ -246,12 +254,12 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
     leadership_state: LeadershipState<InvokerSender>,
     state_machine: StateMachine<Codec>,
     bifrost: Bifrost,
-    configuration: Live<Configuration>,
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
     rpc_rx: mpsc::Receiver<Incoming<PartitionProcessorRpcRequest>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     status: PartitionProcessorStatus,
     task_center: TaskCenter,
+    snapshot_producer: SnapshotProducer,
 
     max_command_batch_size: usize,
     partition_store: PartitionStore,
@@ -532,27 +540,16 @@ where
                     return Ok(());
                 }
 
-                let config = self.configuration.live_load();
-                let snapshot_source = SnapshotSource {
-                    cluster_name: config.common.cluster_name().into(),
-                    node_name: config.common.node_name().into(),
-                };
-                let snapshot_base_path = config.worker.snapshots.snapshots_dir(self.partition_id);
-                let partition_store = self.partition_store.clone();
                 let snapshot_span = tracing::info_span!("create-snapshot");
                 let snapshot_lsn_tx = self.last_snapshot_lsn_watch.0.clone();
+                let mut snapshot_producer = self.snapshot_producer.clone();
 
                 let inflight_create_snapshot_task = restate_core::task_center().spawn_unmanaged(
                     TaskKind::PartitionSnapshotProducer,
                     "create-snapshot",
                     Some(self.partition_id),
                     async move {
-                        let result = SnapshotProducer::create(
-                            snapshot_source,
-                            partition_store,
-                            snapshot_base_path,
-                        )
-                        .await;
+                        let result = snapshot_producer.create_snapshot().await;
 
                         if let Ok(metadata) = result.as_ref() {
                             // update the Partition Processor's internal state

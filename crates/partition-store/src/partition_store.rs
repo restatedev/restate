@@ -429,7 +429,7 @@ impl PartitionStore {
     /// *NB:* Creating a snapshot causes an implicit flush of the column family!
     ///
     /// See [rocksdb::checkpoint::Checkpoint::export_column_family] for additional implementation details.
-    pub async fn create_snapshot(
+    pub async fn export_snapshot(
         &mut self,
         snapshot_dir: PathBuf,
     ) -> Result<LocalPartitionSnapshot> {

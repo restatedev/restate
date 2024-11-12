@@ -73,6 +73,7 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
+url = "2.5.3"
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
