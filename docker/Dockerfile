@@ -39,7 +39,11 @@ RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --releas
 
 COPY . .
 
-RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release --bin restate-server && \
+# Mount the sccache directory as a cache to leverage sccache during build
+# Caching layer if nothing has changed
+# Use sccache during the main build
+RUN --mount=type=cache,target=/var/cache/sccache \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release --bin restate-server && \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server
 

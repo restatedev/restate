@@ -67,7 +67,22 @@ jobs:
           # https://docs.warpbuild.com/cache/docker-layer-caching#step-1-set-up-docker-buildx-action
           driver-opts: |
             network=host
-        
+      
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: sccache-cache
+          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Inject sccache-cache into Docker
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          cache-map: |
+            {
+              "sccache-cache": "/var/cache/sccache"
+            }
+          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+          
       - name: Log into GitHub container registry
         uses: docker/login-action@v3
         with:
