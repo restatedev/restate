@@ -59,7 +59,6 @@ use restate_types::net::partition_processor::{
     InvocationOutput, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
-use restate_types::retries::RetryPolicy;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{invocation, GenerationalNodeId};
 use restate_wal_protocol::control::AnnounceLeader;
@@ -265,7 +264,7 @@ where
 {
     #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<()> {
-        debug!("Starting the partition processor");
+        info!("Starting the partition processor");
         let res = self.run_inner().await;
 
         // Drain control_rx
@@ -293,25 +292,14 @@ where
 
         self.status.last_applied_log_lsn = Some(last_applied_lsn);
 
-        // todo make this configurable
-        let find_tail_retry_policy = RetryPolicy::exponential(
-            Duration::from_millis(100),
-            2.0,
-            None,
-            Some(Duration::from_secs(10)),
-        );
-
-        // It can happen that the log is currently unavailable. That's why we need to retry.
-        // todo if being stuck expose the state to the controller to allow it to make a control decision
-        let current_tail = find_tail_retry_policy
-            .retry(|| {
-                self.bifrost.find_tail(
-                    LogId::from(self.partition_id),
-                    FindTailAttributes::default(),
-                )
-            })
-            .await
-            .expect("we should be retrying indefinitely");
+        // propagate errors and let the PPM handle error retries
+        let current_tail = self
+            .bifrost
+            .find_tail(
+                LogId::from(self.partition_id),
+                FindTailAttributes::default(),
+            )
+            .await?;
 
         debug!(
             last_applied_lsn = %last_applied_lsn,
@@ -379,8 +367,6 @@ where
                     .is_ok_and(|(_, envelope)| envelope.matches_key_query(&key_query))))
             });
 
-        info!("PartitionProcessor starting up.");
-
         // avoid synchronized timers. We pick a randomised timer between 500 and 1023 millis.
         let mut status_update_timer =
             tokio::time::interval(Duration::from_millis(500 + rand::random::<u64>() % 524));
@@ -398,6 +384,8 @@ where
 
         let mut action_collector = ActionCollector::default();
         let mut command_buffer = Vec::with_capacity(self.max_command_batch_size);
+
+        info!("PartitionProcessor starting event loop.");
 
         loop {
             tokio::select! {

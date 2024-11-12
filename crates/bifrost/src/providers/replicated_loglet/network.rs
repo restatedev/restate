@@ -181,7 +181,7 @@ impl RequestPump {
         let _ = reciprocal.prepare(sequencer_state).try_send();
     }
 
-    /// Infailable handle_append method
+    /// Infallible handle_append method
     #[instrument(
         level="trace",
         skip_all,
