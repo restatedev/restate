@@ -22,6 +22,8 @@ service NodeSvc {
   // Create a bidirectional node-to-node stream
   rpc CreateConnection(stream restate.node.Message)
       returns (stream restate.node.Message);
+
+  rpc GetMetadata(GetMetadataRequest) returns (GetMetadataResponse);
 }
 
 message IdentResponse {
@@ -41,4 +43,16 @@ message IdentResponse {
   uint32 logs_version = 11;
   uint32 schema_version = 12;
   uint32 partition_table_version = 13;
+}
+
+message GetMetadataRequest {
+  // If set, we'll first sync with metadata store to esnure we are returning the latest value.
+  // Otherwise, we'll return the local value on this node.
+  bool sync = 1;
+  restate.node.MetadataKind kind = 2;
+}
+
+message GetMetadataResponse {
+  // polymorphic. The value depends on the MetadataKind requested
+  bytes encoded = 1;
 }

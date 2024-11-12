@@ -1031,6 +1031,7 @@ mod tests {
     use restate_invoker_api::test_util::EmptyStorageReader;
     use restate_types::config::InvokerOptionsBuilder;
     use restate_types::live::Constant;
+    use schemars::_serde_json::Value;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -1154,6 +1155,10 @@ mod tests {
     impl ServiceMetadataResolver for MockSchemas {
         fn resolve_latest_service(&self, _: impl AsRef<str>) -> Option<ServiceMetadata> {
             None
+        }
+
+        fn resolve_latest_service_openapi(&self, _: impl AsRef<str>) -> Option<Value> {
+            todo!()
         }
 
         fn resolve_latest_service_type(&self, _: impl AsRef<str>) -> Option<ServiceType> {

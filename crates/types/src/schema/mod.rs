@@ -10,6 +10,7 @@
 
 pub mod deployment;
 pub mod invocation_target;
+pub mod openapi;
 pub mod service;
 pub mod subscriptions;
 

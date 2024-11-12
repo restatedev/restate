@@ -66,6 +66,35 @@ pub async fn get_service<V>(
         .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
 }
 
+/// Get service OpenAPI definition
+#[openapi(
+    summary = "Get service OpenAPI",
+    description = "Get the service OpenAPI 3.1 contract.",
+    operation_id = "get_service_openapi",
+    tags = "service",
+    responses(
+        ignore_return_type = true,
+        response(
+            status = "200",
+            description = "OpenAPI 3.1 of the service",
+            content = "Json<serde_json::Value>",
+        ),
+        from_type = "MetaApiError",
+    )
+)]
+pub async fn get_service_openapi<V>(
+    State(state): State<AdminServiceState<V>>,
+    Path(service_name): Path<String>,
+) -> Result<Json<serde_json::Value>, MetaApiError> {
+    // TODO return correct vnd type
+    // TODO accept content negotiation for yaml
+    state
+        .schema_registry
+        .get_service_openapi(&service_name)
+        .map(Into::into)
+        .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
+}
+
 /// Modify a service
 #[openapi(
     summary = "Modify a service",

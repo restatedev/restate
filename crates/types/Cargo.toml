@@ -10,7 +10,6 @@ publish = false
 [features]
 default = []
 
-replicated-loglet = []
 memory-loglet = []
 schemars = ["dep:schemars", "restate-serde-util/schema"]
 unsafe-mutable-config = []
@@ -21,6 +20,7 @@ restate-base64-util = { workspace = true }
 restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
+restate-utoipa = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
@@ -60,6 +60,7 @@ serde_json = { workspace = true }
 serde_path_to_error = { version = "0.1" }
 serde_with = { workspace = true }
 sha2 = { workspace = true }
+smallvec = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 sync_wrapper = { workspace = true }

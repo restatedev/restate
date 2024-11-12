@@ -19,4 +19,6 @@ enum ServiceDiscoveryProtocolVersion {
   SERVICE_DISCOVERY_PROTOCOL_VERSION_UNSPECIFIED = 0;
   // initial service discovery protocol version using endpoint_manifest_schema.json
   V1 = 1;
+  // add custom metadata and documentation for services/handlers
+  V2 = 2;
 }

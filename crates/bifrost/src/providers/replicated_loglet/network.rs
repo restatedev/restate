@@ -11,16 +11,16 @@
 // todo(asoli): remove when fleshed out
 #![allow(dead_code)]
 
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use restate_types::errors::MaybeRetryableError;
 use tracing::{instrument, trace};
 
 use restate_core::network::{
-    Incoming, MessageRouterBuilder, PeerMetadataVersion, Reciprocal, TransportConnect,
+    Incoming, MessageRouterBuilder, MessageStream, PeerMetadataVersion, Reciprocal,
+    TransportConnect,
 };
 use restate_core::{
     cancellation_watcher, task_center, Metadata, MetadataKind, SyncError, TargetVersion, TaskKind,
@@ -37,8 +37,6 @@ use super::loglet::ReplicatedLoglet;
 use super::provider::ReplicatedLogletProvider;
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{AppendError, Loglet, LogletCommit, OperationError};
-
-type MessageStream<T> = Pin<Box<dyn Stream<Item = Incoming<T>> + Send + Sync + 'static>>;
 
 macro_rules! return_error_status {
     ($reciprocal:expr, $status:expr, $tail:expr) => {{

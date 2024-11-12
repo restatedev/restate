@@ -21,6 +21,7 @@ use crate::commands::log::Logs;
 use crate::commands::metadata::Metadata;
 use crate::commands::node::Nodes;
 use crate::commands::partition::Partitions;
+use crate::commands::replicated_loglet::ReplicatedLoglet;
 use crate::commands::snapshot::Snapshot;
 
 #[derive(Run, Parser, Clone)]
@@ -37,6 +38,7 @@ pub struct CliApp {
 
 #[derive(Parser, Collect, Debug, Clone)]
 pub struct ConnectionInfo {
+    // todo: rename this to be a node address for reusability across commands
     /// Cluster Controller address
     #[clap(
         long,
@@ -67,6 +69,9 @@ pub enum Command {
     /// Partition processor snapshots
     #[clap(subcommand)]
     Snapshots(Snapshot),
+    /// Commands that operate on replicated loglets
+    #[clap(subcommand)]
+    ReplicatedLoglet(ReplicatedLoglet),
 }
 
 fn init(common_opts: &CommonOpts) {

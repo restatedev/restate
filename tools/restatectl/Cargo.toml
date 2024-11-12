@@ -10,7 +10,6 @@ publish = false
 [features]
 default = ["replicated-loglet", "memory-loglet"]
 replicated-loglet = [
-    "restate-types/replicated-loglet",
     "restate-bifrost/replicated-loglet",
 ]
 memory-loglet = ["restate-types/memory-loglet", "restate-bifrost/memory-loglet", "restate-admin/memory-loglet"]
@@ -20,6 +19,7 @@ restate-admin = { workspace = true, features = ["clients"] }
 restate-bifrost = { workspace = true }
 restate-cli-util = { workspace = true }
 restate-core = { workspace = true }
+restate-log-server = { workspace = true, features = ["clients"] }
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-tracing-instrumentation = { workspace = true }

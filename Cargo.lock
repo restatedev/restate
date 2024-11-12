@@ -426,6 +426,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "assert-json-diff"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e4f2b81832e72834d7518d8487a0396a28cc408186a2e8854c0f98011faf12"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "assert2"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3795,9 +3805,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.26.0"
+version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39ae663abb3bb9e77538ee88a0eb69cbd3f62a8bf2018f848fbc60c2cdec024d"
+checksum = "893d6229c7315763ca0df9b29ab7661ee419f286577a02847c5521b462e071af"
 dependencies = [
  "ahash 0.8.11",
  "base64 0.22.0",
@@ -5653,9 +5663,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.26.0"
+version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c152a23ee0e5947ee31d9cfebc873a5aa3a249da9e59d2e76cd7416a13cc9a5d"
+checksum = "eb853437e467c693ac1dc8c1520105a31b8c2588544ff2f3cfa5a7c706c6c069"
 dependencies = [
  "ahash 0.8.11",
  "fluent-uri 0.3.2",
@@ -5837,6 +5847,7 @@ dependencies = [
  "restate-storage-query-datafusion",
  "restate-test-util",
  "restate-types",
+ "restate-utoipa",
  "restate-wal-protocol",
  "restate-web-ui",
  "schemars",
@@ -6868,12 +6879,14 @@ dependencies = [
  "restate-errors",
  "restate-serde-util",
  "restate-test-util",
+ "restate-utoipa",
  "schemars",
  "serde",
  "serde_json",
  "serde_path_to_error",
  "serde_with",
  "sha2",
+ "smallvec",
  "static_assertions",
  "strum 0.26.2",
  "syn 2.0.85",
@@ -6889,6 +6902,17 @@ dependencies = [
  "typify",
  "ulid",
  "xxhash-rust",
+]
+
+[[package]]
+name = "restate-utoipa"
+version = "1.1.3"
+dependencies = [
+ "assert-json-diff",
+ "indexmap 2.2.6",
+ "restate-utoipa",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -7017,6 +7041,7 @@ dependencies = [
  "restate-bifrost",
  "restate-cli-util",
  "restate-core",
+ "restate-log-server",
  "restate-metadata-store",
  "restate-rocksdb",
  "restate-tracing-instrumentation",

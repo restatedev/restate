@@ -8,16 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytes::BytesMut;
 use enumset::EnumSet;
 use futures::stream::BoxStream;
+use restate_types::storage::StorageCodec;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvc;
-use restate_core::network::protobuf::node_svc::IdentResponse;
+use restate_core::network::protobuf::node_svc::{
+    GetMetadataRequest, GetMetadataResponse, IdentResponse,
+};
 use restate_core::network::ConnectionManager;
 use restate_core::network::{ProtocolError, TransportConnect};
-use restate_core::{metadata, TaskCenter};
+use restate_core::{metadata, MetadataKind, TargetVersion, TaskCenter};
 use restate_types::health::Health;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::node::Message;
@@ -106,5 +110,42 @@ impl<T: TransportConnect> NodeSvc for NodeSvcHandler<T> {
         // sending tonic::Status errors explicitly. We use ConnectionControl frames to communicate
         // errors and/or drop the stream when necessary.
         Ok(Response::new(Box::pin(output_stream.map(Ok))))
+    }
+
+    async fn get_metadata(
+        &self,
+        request: Request<GetMetadataRequest>,
+    ) -> Result<Response<GetMetadataResponse>, Status> {
+        let request = request.into_inner();
+        let metadata = metadata();
+        let kind = request.kind.into();
+        if request.sync {
+            metadata
+                .sync(kind, TargetVersion::Latest)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
+        let mut encoded = BytesMut::new();
+        match kind {
+            MetadataKind::NodesConfiguration => {
+                StorageCodec::encode(metadata.nodes_config_ref().as_ref(), &mut encoded)
+                    .expect("We can always serialize");
+            }
+            MetadataKind::Schema => {
+                StorageCodec::encode(metadata.schema_ref().as_ref(), &mut encoded)
+                    .expect("We can always serialize");
+            }
+            MetadataKind::PartitionTable => {
+                StorageCodec::encode(metadata.partition_table_ref().as_ref(), &mut encoded)
+                    .expect("We can always serialize");
+            }
+            MetadataKind::Logs => {
+                StorageCodec::encode(metadata.logs_ref().as_ref(), &mut encoded)
+                    .expect("We can always serialize");
+            }
+        }
+        Ok(Response::new(GetMetadataResponse {
+            encoded: encoded.freeze(),
+        }))
     }
 }

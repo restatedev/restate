@@ -113,7 +113,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
             otel.name="replicated_loglet::sequencer::appender: run"
         )
     )]
-    pub async fn run(mut self) {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         let mut wave = 0;
         // initial wave has 0 replicated and 0 gray listed node
         let mut state = SequencerAppenderState::Wave {
@@ -200,6 +200,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 unreachable!()
             }
         }
+        Ok(())
     }
 
     async fn wave(&mut self, mut graylist: NodeSet, wave: usize) -> SequencerAppenderState {

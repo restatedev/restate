@@ -11,16 +11,16 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use serde::Deserialize;
-use serde::Serialize;
-use serde_with::serde_as;
-
 use super::invocation_target::InvocationTargetMetadata;
 use super::Schema;
 use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
+use crate::schema::openapi::ServiceOpenAPI;
+use serde::Deserialize;
+use serde::Serialize;
+use serde_with::serde_as;
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +34,17 @@ pub struct ServiceMetadata {
     pub handlers: Vec<HandlerMetadata>,
 
     pub ty: ServiceType,
+
+    /// # Documentation
+    ///
+    /// Documentation of the service, as propagated by the SDKs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
+    /// # Metadata
+    ///
+    /// Additional service metadata, as propagated by the SDKs.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
 
     /// # Deployment Id
     ///
@@ -144,6 +155,17 @@ pub struct HandlerMetadata {
 
     pub ty: HandlerMetadataType,
 
+    /// # Documentation
+    ///
+    /// Documentation of the handler, as propagated by the SDKs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
+    /// # Metadata
+    ///
+    /// Additional handler metadata, as propagated by the SDKs.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
+
     /// # Human readable input description
     ///
     /// If empty, no schema was provided by the user at discovery time.
@@ -171,6 +193,11 @@ pub struct HandlerMetadata {
 pub trait ServiceMetadataResolver {
     fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata>;
 
+    fn resolve_latest_service_openapi(
+        &self,
+        service_name: impl AsRef<str>,
+    ) -> Option<serde_json::Value>;
+
     fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType>;
 
     fn list_services(&self) -> Vec<ServiceMetadata>;
@@ -179,6 +206,10 @@ pub trait ServiceMetadataResolver {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandlerSchemas {
     pub target_meta: InvocationTargetMetadata,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -191,6 +222,12 @@ pub struct ServiceSchemas {
     pub workflow_completion_retention: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
     pub abort_timeout: Option<Duration>,
+    #[serde(default = "ServiceOpenAPI::empty")]
+    pub service_openapi: ServiceOpenAPI,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
 }
 
 impl ServiceSchemas {
@@ -203,6 +240,8 @@ impl ServiceSchemas {
                 .map(|(h_name, h_schemas)| HandlerMetadata {
                     name: h_name.clone(),
                     ty: h_schemas.target_meta.target_ty.into(),
+                    documentation: h_schemas.documentation.clone(),
+                    metadata: h_schemas.metadata.clone(),
                     input_description: h_schemas.target_meta.input_rules.to_string(),
                     output_description: h_schemas.target_meta.output_rules.to_string(),
                     input_json_schema: h_schemas.target_meta.input_rules.json_schema(),
@@ -210,6 +249,8 @@ impl ServiceSchemas {
                 })
                 .collect(),
             ty: self.ty,
+            documentation: self.documentation.clone(),
+            metadata: self.metadata.clone(),
             deployment_id: self.location.latest_deployment,
             revision: self.revision,
             public: self.location.public,
@@ -218,6 +259,17 @@ impl ServiceSchemas {
             inactivity_timeout: self.inactivity_timeout.map(Into::into),
             abort_timeout: self.abort_timeout.map(Into::into),
         }
+    }
+
+    pub fn openapi_spec(&self, name: &str) -> serde_json::Value {
+        let service_openapi = if self.service_openapi.is_empty() {
+            // We might be loading from an old ServiceSchemas, so try to re-create ServiceOpenapi
+            ServiceOpenAPI::infer(name, self.ty, &self.handlers)
+        } else {
+            self.service_openapi.clone()
+        };
+
+        service_openapi.to_openapi_contract(name, self.documentation.as_deref(), self.revision)
     }
 }
 
@@ -233,6 +285,14 @@ impl ServiceMetadataResolver for Schema {
         self.use_service_schema(name, |service_schemas| {
             service_schemas.as_service_metadata(name.to_owned())
         })
+    }
+
+    fn resolve_latest_service_openapi(
+        &self,
+        service_name: impl AsRef<str>,
+    ) -> Option<serde_json::Value> {
+        let name = service_name.as_ref();
+        self.use_service_schema(name, |service_schemas| service_schemas.openapi_spec(name))
     }
 
     fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType> {
@@ -254,6 +314,7 @@ impl ServiceMetadataResolver for Schema {
 pub mod test_util {
     use super::*;
 
+    use serde_json::Value;
     use std::collections::HashMap;
 
     #[derive(Debug, Default, Clone)]
@@ -269,6 +330,10 @@ pub mod test_util {
     impl ServiceMetadataResolver for MockServiceMetadataResolver {
         fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
             self.0.get(service_name.as_ref()).cloned()
+        }
+
+        fn resolve_latest_service_openapi(&self, _service_name: impl AsRef<str>) -> Option<Value> {
+            Some(Value::Null)
         }
 
         fn resolve_latest_service_type(
@@ -295,6 +360,8 @@ pub mod test_util {
                     .map(|s| HandlerMetadata {
                         name: s.as_ref().to_string(),
                         ty: HandlerMetadataType::Shared,
+                        documentation: None,
+                        metadata: Default::default(),
                         input_description: "any".to_string(),
                         output_description: "any".to_string(),
                         input_json_schema: None,
@@ -302,6 +369,8 @@ pub mod test_util {
                     })
                     .collect(),
                 ty: ServiceType::Service,
+                documentation: None,
+                metadata: Default::default(),
                 deployment_id: Default::default(),
                 revision: 0,
                 public: true,
@@ -323,6 +392,8 @@ pub mod test_util {
                     .map(|s| HandlerMetadata {
                         name: s.as_ref().to_string(),
                         ty: HandlerMetadataType::Exclusive,
+                        documentation: None,
+                        metadata: Default::default(),
                         input_description: "any".to_string(),
                         output_description: "any".to_string(),
                         input_json_schema: None,
@@ -330,6 +401,8 @@ pub mod test_util {
                     })
                     .collect(),
                 ty: ServiceType::VirtualObject,
+                documentation: None,
+                metadata: Default::default(),
                 deployment_id: Default::default(),
                 revision: 0,
                 public: true,

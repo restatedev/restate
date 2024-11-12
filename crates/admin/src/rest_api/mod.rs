@@ -55,6 +55,10 @@ where
             get(openapi_handler!(services::get_service)),
         )
         .route(
+            "/services/:service/openapi",
+            get(openapi_handler!(services::get_service_openapi)),
+        )
+        .route(
             "/services/:service",
             patch(openapi_handler!(services::modify_service)),
         )

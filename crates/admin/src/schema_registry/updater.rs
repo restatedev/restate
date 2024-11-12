@@ -24,12 +24,12 @@ use restate_types::schema::invocation_target::{
     InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
 };
+use restate_types::schema::openapi::ServiceOpenAPI;
 use restate_types::schema::service::{HandlerSchemas, ServiceLocation, ServiceSchemas};
 use restate_types::schema::subscriptions::{
     EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
 };
 use restate_types::schema::Schema;
-use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tracing::{info, warn};
@@ -141,6 +141,7 @@ impl SchemaUpdater {
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             );
+            let openapi = ServiceOpenAPI::infer(service_name.as_ref(), service_type, &handlers);
 
             // For the time being when updating we overwrite existing data
             let service_schema = if let Some(existing_service) =
@@ -196,6 +197,9 @@ impl SchemaUpdater {
                 service_schemas.ty = service_type;
                 service_schemas.handlers = handlers;
                 service_schemas.location.latest_deployment = deployment_id;
+                service_schemas.service_openapi = openapi;
+                service_schemas.documentation = service.documentation;
+                service_schemas.metadata = service.metadata;
 
                 service_schemas
             } else {
@@ -215,6 +219,9 @@ impl SchemaUpdater {
                     },
                     inactivity_timeout: None,
                     abort_timeout: None,
+                    service_openapi: openapi,
+                    documentation: service.documentation,
+                    metadata: service.metadata,
                 }
             };
 
@@ -412,6 +419,9 @@ impl SchemaUpdater {
                         for h in schemas.handlers.values_mut() {
                             h.target_meta.public = new_public_value;
                         }
+                        // Regenerate OpenAPI
+                        schemas.service_openapi =
+                            ServiceOpenAPI::infer(&name, schemas.ty, &schemas.handlers)
                     }
                     ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
                         schemas.idempotency_retention = new_idempotency_retention;
@@ -453,10 +463,12 @@ impl SchemaUpdater {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct DiscoveredHandlerMetadata {
     name: String,
     ty: InvocationTargetType,
+    documentation: Option<String>,
+    metadata: HashMap<String, String>,
     input: InputRules,
     output: OutputRules,
 }
@@ -495,6 +507,8 @@ impl DiscoveredHandlerMetadata {
         Ok(Self {
             name: handler.name.to_string(),
             ty,
+            documentation: handler.documentation,
+            metadata: handler.metadata,
             input: handler
                 .input
                 .map(|input_payload| {
@@ -625,6 +639,8 @@ impl DiscoveredHandlerMetadata {
                             input_rules: handler.input,
                             output_rules: handler.output,
                         },
+                        documentation: handler.documentation,
+                        metadata: handler.metadata,
                     },
                 )
             })
@@ -648,40 +664,52 @@ mod tests {
 
     fn greeter_service() -> endpoint_manifest::Service {
         endpoint_manifest::Service {
+            documentation: None,
             ty: endpoint_manifest::ServiceType::Service,
             name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![endpoint_manifest::Handler {
+                documentation: None,
                 name: "greet".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
+                metadata: Default::default(),
             }],
+            metadata: Default::default(),
         }
     }
 
     fn greeter_virtual_object() -> endpoint_manifest::Service {
         endpoint_manifest::Service {
+            documentation: None,
             ty: endpoint_manifest::ServiceType::VirtualObject,
             name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![endpoint_manifest::Handler {
+                documentation: None,
                 name: "greet".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
+                metadata: Default::default(),
             }],
+            metadata: Default::default(),
         }
     }
 
     fn another_greeter_service() -> endpoint_manifest::Service {
         endpoint_manifest::Service {
+            documentation: None,
             ty: endpoint_manifest::ServiceType::Service,
             name: ANOTHER_GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![endpoint_manifest::Handler {
+                documentation: None,
                 name: "another_greeter".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
+                metadata: Default::default(),
             }],
+            metadata: Default::default(),
         }
     }
 
@@ -977,35 +1005,45 @@ mod tests {
 
         fn greeter_v1_service() -> endpoint_manifest::Service {
             endpoint_manifest::Service {
+                documentation: None,
                 ty: endpoint_manifest::ServiceType::Service,
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![
                     endpoint_manifest::Handler {
+                        documentation: None,
                         name: "greet".parse().unwrap(),
                         ty: None,
                         input: None,
                         output: None,
+                        metadata: Default::default(),
                     },
                     endpoint_manifest::Handler {
+                        documentation: None,
                         name: "doSomething".parse().unwrap(),
                         ty: None,
                         input: None,
                         output: None,
+                        metadata: Default::default(),
                     },
                 ],
+                metadata: Default::default(),
             }
         }
 
         fn greeter_v2_service() -> endpoint_manifest::Service {
             endpoint_manifest::Service {
+                documentation: None,
                 ty: endpoint_manifest::ServiceType::Service,
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![endpoint_manifest::Handler {
+                    documentation: None,
                     name: "greet".parse().unwrap(),
                     ty: None,
                     input: None,
                     output: None,
+                    metadata: Default::default(),
                 }],
+                metadata: Default::default(),
             }
         }
 

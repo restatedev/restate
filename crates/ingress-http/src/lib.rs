@@ -86,9 +86,6 @@ pub trait RequestDispatcher {
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
-    use serde::{Deserialize, Serialize};
-    use std::sync::Arc;
-
     use restate_types::identifiers::DeploymentId;
     use restate_types::invocation::{
         InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
@@ -102,6 +99,9 @@ mod mocks {
     use restate_types::schema::service::{
         HandlerMetadata, ServiceMetadata, ServiceMetadataResolver,
     };
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    use std::sync::Arc;
 
     use super::*;
 
@@ -133,12 +133,16 @@ mod mocks {
                 handlers: vec![HandlerMetadata {
                     name: handler_name.to_string(),
                     ty: invocation_target_metadata.target_ty.into(),
+                    documentation: None,
+                    metadata: Default::default(),
                     input_description: "any".to_string(),
                     output_description: "any".to_string(),
                     input_json_schema: None,
                     output_json_schema: None,
                 }],
                 ty: invocation_target_metadata.target_ty.into(),
+                documentation: None,
+                metadata: Default::default(),
                 deployment_id: DeploymentId::default(),
                 revision: 0,
                 public: invocation_target_metadata.public,
@@ -165,6 +169,10 @@ mod mocks {
     impl ServiceMetadataResolver for MockSchemas {
         fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
             self.0.resolve_latest_service(service_name)
+        }
+
+        fn resolve_latest_service_openapi(&self, _: impl AsRef<str>) -> Option<Value> {
+            todo!()
         }
 
         fn resolve_latest_service_type(

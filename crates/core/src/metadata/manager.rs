@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::Deref;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -106,26 +105,30 @@ impl MetadataMessageHandler {
     }
 
     fn send_nodes_config(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
-        let config = self.metadata.nodes_config_snapshot();
-        self.send_metadata_internal(to, version, config.deref(), "nodes_config");
+        if self.metadata.nodes_config_version() != Version::INVALID {
+            let config = self.metadata.nodes_config_snapshot();
+            self.send_metadata_internal(to, version, config, "nodes_config");
+        }
     }
 
     fn send_partition_table(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
-        let partition_table = self.metadata.partition_table_snapshot();
-        self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
+        if self.metadata.partition_table_version() != Version::INVALID {
+            let partition_table = self.metadata.partition_table_snapshot();
+            self.send_metadata_internal(to, version, partition_table, "partition_table");
+        }
     }
 
     fn send_logs(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
-        let logs = self.metadata.logs_ref();
-        if logs.version() != Version::INVALID {
-            self.send_metadata_internal(to, version, logs.deref(), "logs");
+        if self.metadata.logs_version() != Version::INVALID {
+            let logs = self.metadata.logs_snapshot();
+            self.send_metadata_internal(to, version, logs, "logs");
         }
     }
 
     fn send_schema(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
-        let schema = self.metadata.schema();
-        if schema.version != Version::INVALID {
-            self.send_metadata_internal(to, version, schema.deref(), "schema");
+        if self.metadata.schema_version() != Version::INVALID {
+            let schema = self.metadata.schema_snapshot();
+            self.send_metadata_internal(to, version, schema, "schema");
         }
     }
 
@@ -133,11 +136,11 @@ impl MetadataMessageHandler {
         &self,
         to: Reciprocal<MetadataMessage>,
         version: Option<Version>,
-        metadata: &T,
+        metadata: Arc<T>,
         metadata_name: &str,
     ) where
         T: Versioned + Clone + Send + Sync + 'static,
-        MetadataContainer: From<T>,
+        MetadataContainer: From<Arc<T>>,
     {
         if version.is_some_and(|min_version| min_version > metadata.version()) {
             // We don't have the version that the peer is asking for. Just ignore.
@@ -155,7 +158,6 @@ impl MetadataMessageHandler {
             requested_min_version = ?version,
             "Sending metadata to peer",
         );
-        let metadata = metadata.clone();
         let outgoing = to.prepare(MetadataMessage::MetadataUpdate(MetadataUpdate {
             container: MetadataContainer::from(metadata),
         }));
@@ -346,7 +348,7 @@ impl MetadataManager {
                     .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
                     .await?
                 {
-                    self.update_nodes_configuration(nodes_config);
+                    self.update_nodes_configuration(Arc::new(nodes_config));
                 }
             }
             MetadataKind::PartitionTable => {
@@ -355,7 +357,7 @@ impl MetadataManager {
                     .get::<PartitionTable>(PARTITION_TABLE_KEY.clone())
                     .await?
                 {
-                    self.update_partition_table(partition_table);
+                    self.update_partition_table(Arc::new(partition_table));
                 }
             }
             MetadataKind::Logs => {
@@ -364,7 +366,7 @@ impl MetadataManager {
                     .get::<Logs>(BIFROST_CONFIG_KEY.clone())
                     .await?
                 {
-                    self.update_logs(logs);
+                    self.update_logs(Arc::new(logs));
                 }
             }
             MetadataKind::Schema => {
@@ -373,7 +375,7 @@ impl MetadataManager {
                     .get::<Schema>(SCHEMA_INFORMATION_KEY.clone())
                     .await?
                 {
-                    self.update_schema(schema)
+                    self.update_schema(Arc::new(schema))
                 }
             }
         }
@@ -401,37 +403,37 @@ impl MetadataManager {
         }
     }
 
-    fn update_nodes_configuration(&mut self, config: NodesConfiguration) {
+    fn update_nodes_configuration(&mut self, config: Arc<NodesConfiguration>) {
         let maybe_new_version = Self::update_internal(&self.metadata.inner.nodes_config, config);
 
         self.update_task_and_notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
     }
 
-    fn update_partition_table(&mut self, partition_table: PartitionTable) {
+    fn update_partition_table(&mut self, partition_table: Arc<PartitionTable>) {
         let maybe_new_version =
             Self::update_internal(&self.metadata.inner.partition_table, partition_table);
 
         self.update_task_and_notify_watches(maybe_new_version, MetadataKind::PartitionTable);
     }
 
-    fn update_logs(&mut self, logs: Logs) {
+    fn update_logs(&mut self, logs: Arc<Logs>) {
         let maybe_new_version = Self::update_internal(&self.metadata.inner.logs, logs);
 
         self.update_task_and_notify_watches(maybe_new_version, MetadataKind::Logs);
     }
 
-    fn update_schema(&mut self, schema: Schema) {
+    fn update_schema(&mut self, schema: Arc<Schema>) {
         let maybe_new_version = Self::update_internal(&self.metadata.inner.schema, schema);
 
         self.update_task_and_notify_watches(maybe_new_version, MetadataKind::Schema);
     }
 
-    fn update_internal<M: Versioned>(container: &ArcSwap<M>, new_value: M) -> Version {
+    fn update_internal<M: Versioned>(container: &ArcSwap<M>, new_value: Arc<M>) -> Version {
         let current_value = container.load();
         let mut maybe_new_version = new_value.version();
 
         if new_value.version() > current_value.version() {
-            container.store(Arc::new(new_value));
+            container.store(new_value);
         } else {
             /* Do nothing, current is already newer */
             trace!(
@@ -609,7 +611,8 @@ mod tests {
         set_version_to: S,
     ) -> Result<()>
     where
-        T: Into<MetadataContainer> + Versioned + Clone,
+        Arc<T>: Into<MetadataContainer>,
+        T: Versioned + Clone,
         F: Fn(&Metadata) -> Version,
         S: Fn(&mut T, Version),
     {
@@ -625,7 +628,7 @@ mod tests {
 
             assert_eq!(Version::MIN, value.version());
             // updates happening before metadata manager start should not get lost.
-            metadata_writer.submit(value.clone());
+            metadata_writer.submit(Arc::new(value.clone()));
 
             let tc = task_center();
             // start metadata manager
@@ -642,9 +645,9 @@ mod tests {
             assert_eq!(version, version2);
 
             // let's set the version to 3
-            let mut update_value = value.clone();
+            let mut update_value = value;
             set_version_to(&mut update_value, Version::from(3));
-            metadata_writer.update(update_value).await?;
+            metadata_writer.update(Arc::new(update_value)).await?;
 
             let _ = metadata.wait_for_version(kind, Version::from(3)).await;
 
@@ -680,7 +683,8 @@ mod tests {
         increment_version: I,
     ) -> Result<()>
     where
-        T: Into<MetadataContainer> + Versioned + Clone,
+        Arc<T>: Into<MetadataContainer>,
+        T: Versioned + Clone,
         F: Fn(&Metadata) -> Version,
         I: Fn(&mut T),
     {
@@ -705,22 +709,22 @@ mod tests {
             let mut watcher2 = metadata.watch(kind);
             assert_eq!(Version::INVALID, *watcher2.borrow());
 
-            metadata_writer.update(value.clone()).await?;
+            metadata_writer.update(Arc::new(value.clone())).await?;
             watcher1.changed().await?;
 
             assert_eq!(Version::MIN, *watcher1.borrow());
             assert_eq!(Version::MIN, *watcher2.borrow());
 
             // let's push multiple updates
-            let mut value = value.clone();
+            let mut value = value;
             increment_version(&mut value);
-            metadata_writer.update(value.clone()).await?;
+            metadata_writer.update(Arc::new(value.clone())).await?;
             increment_version(&mut value);
-            metadata_writer.update(value.clone()).await?;
+            metadata_writer.update(Arc::new(value.clone())).await?;
             increment_version(&mut value);
-            metadata_writer.update(value.clone()).await?;
+            metadata_writer.update(Arc::new(value.clone())).await?;
             increment_version(&mut value);
-            metadata_writer.update(value.clone()).await?;
+            metadata_writer.update(Arc::new(value)).await?;
 
             // Watcher sees the latest value only.
             watcher2.changed().await?;

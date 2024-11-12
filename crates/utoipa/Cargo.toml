@@ -1,0 +1,23 @@
+[package]
+name = "restate-utoipa"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+publish = false
+
+[features]
+default = ["debug"]
+debug = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+assert-json-diff = "2"
+restate-utoipa = { path = ".", features = ["debug"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(doc_cfg)'] }

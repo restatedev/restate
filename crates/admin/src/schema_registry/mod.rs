@@ -11,9 +11,15 @@
 pub mod error;
 mod updater;
 
-use crate::schema_registry::error::{SchemaError, SchemaRegistryError, ServiceError};
-use crate::schema_registry::updater::SchemaUpdater;
 use http::Uri;
+
+use std::borrow::Borrow;
+use std::collections::HashMap;
+use std::ops::Deref;
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::subscriber::NoSubscriber;
+
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{metadata, MetadataWriter};
 use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
@@ -27,11 +33,9 @@ use restate_types::schema::subscriptions::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
 };
 use restate_types::schema::Schema;
-use std::borrow::Borrow;
-use std::collections::HashMap;
-use std::ops::Deref;
-use std::time::Duration;
-use tracing::subscriber::NoSubscriber;
+
+use crate::schema_registry::error::{SchemaError, SchemaRegistryError, ServiceError};
+use crate::schema_registry::updater::SchemaUpdater;
 
 /// Whether to force the registration of an existing endpoint or not
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -167,7 +171,9 @@ impl<V> SchemaRegistry<V> {
                 .get_deployment_and_services(&new_deployment_id)
                 .expect("deployment was just added");
 
-            self.metadata_writer.update(schema_information).await?;
+            self.metadata_writer
+                .update(Arc::new(schema_information))
+                .await?;
 
             (new_deployment_id, services)
         };
@@ -198,7 +204,9 @@ impl<V> SchemaRegistry<V> {
                 },
             )
             .await?;
-        self.metadata_writer.update(schema_registry).await?;
+        self.metadata_writer
+            .update(Arc::new(schema_registry))
+            .await?;
 
         Ok(())
     }
@@ -235,7 +243,9 @@ impl<V> SchemaRegistry<V> {
             .resolve_latest_service(&service_name)
             .expect("service was just modified");
 
-        self.metadata_writer.update(schema_information).await?;
+        self.metadata_writer
+            .update(Arc::new(schema_information))
+            .await?;
 
         Ok(response)
     }
@@ -267,7 +277,9 @@ impl<V> SchemaRegistry<V> {
             )
             .await?;
 
-        self.metadata_writer.update(schema_information).await?;
+        self.metadata_writer
+            .update(Arc::new(schema_information))
+            .await?;
 
         Ok(())
     }
@@ -278,6 +290,12 @@ impl<V> SchemaRegistry<V> {
 
     pub fn get_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
         metadata().schema().resolve_latest_service(&service_name)
+    }
+
+    pub fn get_service_openapi(&self, service_name: impl AsRef<str>) -> Option<serde_json::Value> {
+        metadata()
+            .schema()
+            .resolve_latest_service_openapi(&service_name)
     }
 
     pub fn get_deployment(
@@ -361,7 +379,9 @@ where
         let subscription = schema_information
             .get_subscription(subscription_id.expect("subscription was just added"))
             .expect("subscription was just added");
-        self.metadata_writer.update(schema_information).await?;
+        self.metadata_writer
+            .update(Arc::new(schema_information))
+            .await?;
 
         Ok(subscription)
     }
