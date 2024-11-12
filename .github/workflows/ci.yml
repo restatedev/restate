@@ -96,7 +96,7 @@ jobs:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
       envVars: |
         RESTATE_WORKER__EXPERIMENTAL_FEATURE_DISABLE_IDEMPOTENCY_TABLE=true
-        RUST_LOG=info,restate_invoker=trace,restate_ingress_http=trace, restate_bifrost=trace,restate_log_server=trace,restate_core::partitions=trace,restate=debug
+        RUST_LOG=info,restate_invoker=trace,restate_ingress_http=trace,restate_bifrost=trace,restate_log_server=trace,restate_core::partitions=trace,restate=debug
       testArtifactOutput: sdk-java-disable-idempotency-table-integration-test-report
 
   sdk-python:
