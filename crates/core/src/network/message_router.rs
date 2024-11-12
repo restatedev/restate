@@ -28,6 +28,8 @@ use crate::is_cancellation_requested;
 
 use super::{Incoming, RouterError};
 
+pub type MessageStream<T> = Pin<Box<dyn Stream<Item = Incoming<T>> + Send + Sync + 'static>>;
+
 /// Implement this trait to process network messages for a specific target
 /// (e.g. TargetName = METADATA_MANAGER).
 pub trait MessageHandler {
@@ -175,10 +177,7 @@ impl MessageRouterBuilder {
     /// to use async stream API to process messages of a given target as an alternative to the
     /// message callback-style API as in `add_message_handler`.
     #[track_caller]
-    pub fn subscribe_to_stream<M>(
-        &mut self,
-        buffer_size: usize,
-    ) -> Pin<Box<dyn Stream<Item = Incoming<M>> + Send + Sync + 'static>>
+    pub fn subscribe_to_stream<M>(&mut self, buffer_size: usize) -> MessageStream<M>
     where
         M: WireDecode + Targeted + Send + Sync + 'static,
     {

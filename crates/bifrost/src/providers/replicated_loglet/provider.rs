@@ -187,13 +187,12 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                 let key_value = entry.insert(Arc::new(loglet));
                 let loglet = Arc::downgrade(key_value.value());
                 let _ = self.task_center.spawn(
-                    TaskKind::Watchdog,
+                    TaskKind::BifrostBackgroundLowPriority,
                     "periodic-tail-checker",
                     None,
-                    async move {
-                        // todo: configuration
-                        PeriodicTailChecker::run(loglet_id, loglet, Duration::from_secs(2)).await
-                    },
+                    // async move {
+                    // todo: configuration
+                    PeriodicTailChecker::run(loglet_id, loglet, Duration::from_secs(2)), // },
                 );
                 Arc::clone(key_value.value())
             }

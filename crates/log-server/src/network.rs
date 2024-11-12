@@ -13,16 +13,14 @@
 //! We maintain a stream per message type for fine-grain per-message-type control over the queue
 //! depth, head-of-line blocking issues, and priority of consumption.
 use std::collections::{hash_map, HashMap};
-use std::pin::Pin;
 
 use anyhow::Context;
 use futures::stream::FuturesUnordered;
-use futures::Stream;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, trace};
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_core::network::{Incoming, MessageRouterBuilder};
+use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
 use restate_core::{cancellation_watcher, Metadata, TaskCenter};
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
@@ -37,8 +35,6 @@ use crate::logstore::LogStore;
 use crate::metadata::LogletStateMap;
 
 const DEFAULT_WRITERS_CAPACITY: usize = 128;
-
-type MessageStream<T> = Pin<Box<dyn Stream<Item = Incoming<T>> + Send + Sync + 'static>>;
 
 type LogletWorkerMap = HashMap<ReplicatedLogletId, LogletWorkerHandle, Xxh3Builder>;
 

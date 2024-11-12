@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::pin;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,20 +18,17 @@ use ahash::HashMap;
 use anyhow::Context;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
-use futures::Stream;
 use tokio::time;
 use tokio::time::Instant;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::warn;
 
-use restate_core::network::{Incoming, MessageRouterBuilder};
+use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
 use restate_core::{cancellation_watcher, my_node_id};
 use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
     RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened, ScannerId,
 };
-
-type MessageStream<T> = Pin<Box<dyn Stream<Item = Incoming<T>> + Send + Sync + 'static>>;
 
 struct Scanner {
     stream: SendableRecordBatchStream,
