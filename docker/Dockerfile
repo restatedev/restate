@@ -46,6 +46,9 @@ RUN --mount=type=cache,target=/var/cache/sccache \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server
 
+
+RUN sccache --show-stats
+
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:bookworm-slim AS runtime
 COPY --from=builder /restate/target/restate-server /usr/local/bin
