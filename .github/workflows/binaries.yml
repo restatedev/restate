@@ -76,7 +76,7 @@ jobs:
         run: rustup target add aarch64-apple-darwin
 
       - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.4
+        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
