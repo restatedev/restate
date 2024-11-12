@@ -17,11 +17,11 @@ use std::sync::{
 
 use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
-use tracing::{debug, instrument, trace, trace_span, Instrument};
+use tracing::{debug, instrument, trace};
 
 use restate_core::{
     network::{rpc_router::RpcRouter, Networking, TransportConnect},
-    task_center, ShutdownError,
+    task_center, ShutdownError, TaskKind,
 };
 use restate_types::{
     config::Configuration,
@@ -226,7 +226,7 @@ impl<T: TransportConnect> Sequencer<T> {
         level="trace",
         skip_all,
         fields(
-            otel.name = "replicatged_loglet::sequencer: enqueue_batch",
+            otel.name = "replicated_loglet::sequencer: enqueue_batch",
         )
     )]
     pub async fn enqueue_batch(
@@ -267,14 +267,9 @@ impl<T: TransportConnect> Sequencer<T> {
             commit_resolver,
         );
 
-        self.in_flight.spawn({
-            let tc = task_center();
-            async move {
-                tc.run_in_scope("sequencer-appender", None, appender.run())
-                    .await
-            }
-            .instrument(trace_span!("replicated_loglet::sequencer::appender"))
-        });
+        let fut = self.in_flight.track_future(appender.run());
+
+        task_center().spawn(TaskKind::SequencerAppender, "sequencer-appender", None, fut)?;
 
         Ok(loglet_commit)
     }
