@@ -17,6 +17,8 @@ use http::Uri;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+use restate_serde_util::authority::AuthoritySerde;
+
 /// # HTTP client options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -37,6 +39,16 @@ pub struct HttpOptions {
     /// Can be overridden by the `HTTP_PROXY` environment variable.
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub http_proxy: Option<ProxyUri>,
+
+    /// # No proxy
+    ///
+    /// HTTP authorities eg `localhost`, `restate.dev`, `127.0.0.1` that should not be proxied by the http_proxy.
+    /// Ports are ignored. Subdomains are also matched. An entry “*” matches all hostnames.
+    /// Can be overridden by the `NO_PROXY` environment variable, which supports comma separated values.
+    #[serde_as(as = "Vec<AuthoritySerde>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
+    pub no_proxy: Vec<http::uri::Authority>,
+
     /// # Connect timeout
     ///
     /// How long to wait for a TCP connection to be established before considering
@@ -51,6 +63,7 @@ impl Default for HttpOptions {
         Self {
             http_keep_alive_options: Http2KeepAliveOptions::default(),
             http_proxy: None,
+            no_proxy: Vec::new(),
             connect_timeout: HttpOptions::default_connect_timeout(),
         }
     }

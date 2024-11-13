@@ -65,7 +65,7 @@ impl ConfigLoader {
     }
 
     fn merge_with_env(figment: Figment) -> Figment {
-        figment
+        let fig = figment
             .merge(
                 Env::prefixed("RESTATE_")
                     .split("__")
@@ -78,6 +78,7 @@ impl ConfigLoader {
                     .only(&["HTTP_PROXY"])
                     .map(|_| "http-proxy".into()),
             )
+            .merge(Env::raw().only(&["NO_PROXY"]).map(|_| "no-proxy".into()))
             .merge(
                 Env::raw()
                     .only(&["AWS_EXTERNAL_ID"])
@@ -87,7 +88,16 @@ impl ConfigLoader {
                 Env::raw()
                     .only(&["MEMORY_LIMIT"])
                     .map(|_| "rocksdb-total-memory-limit".into()),
-            )
+            );
+
+        if let Some(no_proxy) = Env::var("NO_PROXY") {
+            fig.join((
+                "no-proxy",
+                no_proxy.split(',').map(str::trim).collect::<Vec<_>>(),
+            ))
+        } else {
+            fig
+        }
     }
 
     pub fn start(self) {

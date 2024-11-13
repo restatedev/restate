@@ -13,6 +13,7 @@ mod header_map;
 #[cfg(feature = "proto")]
 mod proto;
 
+pub mod authority;
 pub mod default;
 mod duration;
 pub mod header_value;
