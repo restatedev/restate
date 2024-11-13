@@ -107,7 +107,7 @@ pub struct Worker<T> {
     external_client_ingress: ExternalClientIngress<T>,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
-    partition_processor_manager: PartitionProcessorManager<T>,
+    partition_processor_manager: PartitionProcessorManager,
 }
 
 impl<T: TransportConnect> Worker<T> {
@@ -167,7 +167,6 @@ impl<T: TransportConnect> Worker<T> {
             metadata_store_client,
             partition_store_manager.clone(),
             router_builder,
-            networking.clone(),
             bifrost,
         );
 

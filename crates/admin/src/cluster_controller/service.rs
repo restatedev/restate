@@ -15,7 +15,6 @@ use std::time::Duration;
 use anyhow::anyhow;
 use codederror::CodedError;
 use futures::future::OptionFuture;
-use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
@@ -26,8 +25,7 @@ use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{
-    Incoming, MessageRouterBuilder, MessageStream, NetworkSender, NetworkServerBuilder, Networking,
-    TransportConnect,
+    MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking, TransportConnect,
 };
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
@@ -40,7 +38,6 @@ use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
-use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
 use restate_types::partition_table::PartitionTable;
@@ -69,7 +66,6 @@ pub struct Service<T> {
     metadata: Metadata,
     networking: Networking<T>,
     bifrost: Bifrost,
-    incoming_messages: MessageStream<AttachRequest>,
     cluster_state_refresher: ClusterStateRefresher<T>,
     processor_manager_client: PartitionProcessorManagerClient<Networking<T>>,
     command_tx: mpsc::Sender<ClusterControllerCommand>,
@@ -100,7 +96,6 @@ where
         metadata_writer: MetadataWriter,
         metadata_store_client: MetadataStoreClient,
     ) -> Self {
-        let incoming_messages = router_builder.subscribe_to_stream(10);
         let (command_tx, command_rx) = mpsc::channel(2);
 
         let cluster_state_refresher = ClusterStateRefresher::new(
@@ -140,7 +135,6 @@ where
             metadata,
             networking,
             bifrost,
-            incoming_messages,
             cluster_state_refresher,
             metadata_writer,
             metadata_store_client,
@@ -347,9 +341,6 @@ impl<T: TransportConnect> Service<T> {
                 Some(cmd) = self.command_rx.recv() => {
                     self.on_cluster_cmd(cmd, bifrost_admin).await;
                 }
-                Some(message) = self.incoming_messages.next() => {
-                    self.on_attach_request(&mut scheduler, message).await?;
-                }
                 _ = config_watcher.changed() => {
                     debug!("Updating the cluster controller settings.");
                     let options = &self.configuration.live_load().admin;
@@ -542,26 +533,6 @@ impl<T: TransportConnect> Service<T> {
                     .await;
             }
         }
-    }
-
-    async fn on_attach_request(
-        &self,
-        scheduler: &mut Scheduler<T>,
-        request: Incoming<AttachRequest>,
-    ) -> Result<(), ShutdownError> {
-        let actions = scheduler.on_attach_node(request.peer()).await?;
-        self.task_center.spawn(
-            TaskKind::Disposable,
-            "attachment-response",
-            None,
-            async move {
-                Ok(request
-                    .to_rpc_response(AttachResponse { actions })
-                    .send()
-                    .await?)
-            },
-        )?;
-        Ok(())
     }
 }
 
