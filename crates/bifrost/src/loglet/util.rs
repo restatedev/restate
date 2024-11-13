@@ -8,17 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_core::ShutdownError;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
+use restate_core::ShutdownError;
 use restate_types::logs::TailState;
 
 use super::LogletOffset;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TailOffsetWatch {
     sender: watch::Sender<TailState<LogletOffset>>,
+}
+
+// Passthrough Debug to TailState
+impl std::fmt::Debug for TailOffsetWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&*self.sender.borrow(), f)
+    }
+}
+
+// Passthrough Display to TailState
+impl std::fmt::Display for TailOffsetWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&*self.sender.borrow(), f)
+    }
 }
 
 impl TailOffsetWatch {

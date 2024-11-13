@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tracing::trace;
+use tracing::debug;
 
 use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
 use restate_core::{TaskCenter, TaskKind};
@@ -163,13 +163,13 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                         ReplicatedLogletError::LogletParamsParsingError(log_id, segment_index, e)
                     })?;
 
-                trace!(
+                debug!(
                     log_id = %log_id,
                     segment_index = %segment_index,
                     loglet_id = %params.loglet_id,
-                    nodeset = ?params.nodeset,
+                    nodeset = %params.nodeset,
                     sequencer = %params.sequencer,
-                    replication = ?params.replication,
+                    replication = %params.replication,
                     "Creating a replicated loglet client"
                 );
 
