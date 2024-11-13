@@ -33,13 +33,6 @@ pub struct ReplicatedLogletParams {
     /// Replication properties of this loglet
     pub replication: ReplicationProperty,
     pub nodeset: NodeSet,
-    /// The set of nodes the sequencer has been considering for writes after the last
-    /// known_global_tail advance.
-    ///
-    /// If unset, the entire nodeset is considered as part of the write set
-    /// If set, tail repair will attempt reading only from this set.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub write_set: Option<NodeSet>,
 }
 
 impl ReplicatedLogletParams {

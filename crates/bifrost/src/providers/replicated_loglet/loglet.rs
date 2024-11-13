@@ -400,7 +400,6 @@ mod tests {
             sequencer: GenerationalNodeId::new(1, 1),
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
-            write_set: None,
         };
 
         run_in_test_env(params, |env| async move {
@@ -438,7 +437,6 @@ mod tests {
             sequencer: GenerationalNodeId::new(1, 1),
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
-            write_set: None,
         };
 
         run_in_test_env(params, |env| async move {
@@ -480,7 +478,6 @@ mod tests {
             sequencer: GenerationalNodeId::new(1, 1),
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
-            write_set: None,
         };
         run_in_test_env(params, |env| {
             crate::loglet::loglet_tests::single_loglet_readstream(env.loglet)
@@ -496,7 +493,6 @@ mod tests {
             sequencer: GenerationalNodeId::new(1, 1),
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
-            write_set: None,
         };
         run_in_test_env(params, |env| {
             crate::loglet::loglet_tests::append_after_seal(env.loglet)
@@ -512,7 +508,6 @@ mod tests {
             sequencer: GenerationalNodeId::new(1, 1),
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
-            write_set: None,
         };
         run_in_test_env(params, |env| {
             crate::loglet::loglet_tests::append_after_seal_concurrent(env.loglet)
@@ -528,7 +523,6 @@ mod tests {
             sequencer: GenerationalNodeId::new(1, 1),
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
-            write_set: None,
         };
         run_in_test_env(params, |env| {
             crate::loglet::loglet_tests::seal_empty(env.loglet)

@@ -583,7 +583,6 @@ mod test {
             nodeset: NodeSet::empty(),
             replication: ReplicationProperty::new(1.try_into().unwrap()),
             sequencer: GenerationalNodeId::new(1, 1),
-            write_set: None,
         };
         let known_global_tail = TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST));
         let remote_sequencer = RemoteSequencer::new(
