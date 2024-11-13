@@ -239,7 +239,7 @@ impl RemoteSequencerConnection {
         let (tx, rx) = mpsc::unbounded_channel();
 
         task_center().spawn(
-            TaskKind::Disposable,
+            TaskKind::NetworkMessageHandler,
             "remote-sequencer-connection",
             None,
             Self::handle_appended_responses(known_global_tail, connection.clone(), rx),
