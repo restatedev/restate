@@ -32,7 +32,7 @@ enum LogletWrapperError {
 }
 
 /// Wraps loglets with the base LSN of the segment
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct LogletWrapper {
     segment_index: SegmentIndex,
     /// The offset of the first record in the segment (if exists).
@@ -42,6 +42,7 @@ pub struct LogletWrapper {
     pub(crate) base_lsn: Lsn,
     /// If set, it points to the first first LSN outside the boundary of this loglet (bifrost's tail semantics)
     pub(crate) tail_lsn: Option<Lsn>,
+    #[debug(skip)]
     pub(crate) config: LogletConfig,
     loglet: Arc<dyn Loglet>,
 }
@@ -156,13 +157,9 @@ impl LogletWrapper {
 
     #[instrument(
         level = "trace",
-        skip(self, payloads),
+        skip(payloads),
         ret,
-        fields(
-            segment_index = %self.segment_index,
-            loglet = ?self.loglet,
-            count = payloads.len(),
-        )
+        fields(batch_size = payloads.len())
     )]
     pub async fn append_batch(&self, payloads: Arc<[Record]>) -> Result<Lsn, AppendError> {
         self.enqueue_batch(payloads).await?.await

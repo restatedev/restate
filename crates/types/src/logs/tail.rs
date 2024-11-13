@@ -7,15 +7,28 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-/// Represents the state of the tail of the loglet.
+
+use std::fmt::Display;
+
 use super::{Lsn, SequenceNumber};
 
+/// Represents the state of the tail of the loglet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TailState<Offset = Lsn> {
     /// Loglet is open for appends
     Open(Offset),
     /// Loglet is sealed. This offset if the durable tail.
     Sealed(Offset),
+}
+
+/// "(S)" denotes that tail is sealed
+impl<O: Display> Display for TailState<O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Open(n) => write!(f, "{}", n),
+            Self::Sealed(n) => write!(f, "{} (S)", n),
+        }
+    }
 }
 
 impl<Offset: SequenceNumber> TailState<Offset> {
