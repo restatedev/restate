@@ -23,6 +23,7 @@ assert2 = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+ciborium = { workspace = true}
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
@@ -40,6 +41,7 @@ hyper-util = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 once_cell = { workspace = true }
+object_store = { workspace = true, features = ["aws"] }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 prost = { workspace = true }

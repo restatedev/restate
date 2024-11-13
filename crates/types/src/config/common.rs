@@ -494,6 +494,27 @@ pub struct MetadataStoreClientOptions {
         description = "Definition of a bootstrap metadata store"
     )
 )]
+pub enum ObjectStoreCredentials {
+    /// # Use standard AWS environment variables
+    ///
+    /// Configure the object store by setting the standard AWS env variables (prefixed with AWS_)
+    AwsEnv,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "kebab-case"
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(
+        title = "Metadata Store",
+        description = "Definition of a bootstrap metadata store"
+    )
+)]
 pub enum MetadataStoreClient {
     /// Connects to an embedded metadata store that is run by nodes that run with the MetadataStore role.
     Embedded {
@@ -505,6 +526,14 @@ pub enum MetadataStoreClient {
     Etcd {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         addresses: Vec<String>,
+    },
+    /// Uses an object store as a metadata store.
+    ObjectStore {
+        credentials: ObjectStoreCredentials,
+
+        /// # The bucket name to use for storage
+        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+        bucket: String,
     },
 }
 
