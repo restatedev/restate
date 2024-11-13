@@ -303,13 +303,13 @@ where
 
         debug!(
             last_applied_lsn = %last_applied_lsn,
-            current_log_tail = ?current_tail,
+            current_log_tail = %current_tail,
             "PartitionProcessor creating log reader",
         );
         if current_tail.offset() == last_applied_lsn.next() {
             if self.status.replay_status != ReplayStatus::Active {
                 debug!(
-                    ?last_applied_lsn,
+                    %last_applied_lsn,
                     "Processor has caught up with the log tail."
                 );
                 self.status.replay_status = ReplayStatus::Active;
@@ -324,8 +324,8 @@ where
         // that the log has reverted backwards.
         if last_applied_lsn >= current_tail.offset() {
             error!(
-                ?last_applied_lsn,
-                log_tail_lsn = ?current_tail.offset(),
+                %last_applied_lsn,
+                log_tail_lsn = %current_tail.offset(),
                 "Processor has applied log entries beyond the log tail. This indicates data-loss in the log!"
             );
             // todo: declare unhealthy state to cluster controller, or raise a flare.

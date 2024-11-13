@@ -171,20 +171,21 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
             }
 
             let sender = {
-                match self
-                    .connections
-                    .get_or_connect(peer_as_generational.unwrap())
-                    .await
-                {
+                let peer_as_generational = peer_as_generational.unwrap();
+                match self.connections.get_or_connect(peer_as_generational).await {
                     Ok(sender) => sender,
                     // retryable errors
                     Err(
-                        e @ NetworkError::Timeout(_)
-                        | e @ NetworkError::ConnectError(_)
-                        | e @ NetworkError::ConnectionClosed,
+                        err @ NetworkError::Timeout(_)
+                        | err @ NetworkError::ConnectError(_)
+                        | err @ NetworkError::ConnectionClosed(_),
                     ) => {
                         if next_attempt >= max_attempts {
-                            trace!("Connection to node {} failed with {}", msg.peer(), e);
+                            trace!(
+                                peer = %peer_as_generational,
+                                ?err,
+                                "Exhausted attempts to connect to node",
+                            );
                         }
                         continue;
                     }
@@ -198,7 +199,10 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                             ));
                         }
                         if next_attempt >= max_attempts {
-                            trace!("Connection to node {} failed with {}", msg.peer(), e);
+                            trace!(
+                                peer = %peer_as_generational,
+                                "Exhausted attempts to connect to node",
+                            );
                         }
                         continue;
                     }
@@ -218,7 +222,7 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                 Ok(_) => return Ok(()),
                 Err(NetworkSendError {
                     original,
-                    source: NetworkError::ConnectionClosed,
+                    source: NetworkError::ConnectionClosed(_),
                 }) => {
                     if next_attempt >= max_attempts {
                         debug!(
@@ -242,7 +246,7 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
 }
 
 impl<T: TransportConnect> NetworkSender<HasConnection> for Networking<T> {
-    #[instrument(level = "trace", skip(self, msg), fields(to = %msg.peer(), msg = ?msg.body().target()))]
+    #[instrument(level = "error", skip(self, msg), fields(to = %msg.peer(), msg = ?msg.body().target()))]
     async fn send<M>(
         &self,
         msg: Outgoing<M, HasConnection>,
