@@ -217,7 +217,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
                     return Ok(latest_tail);
                 }
                 // We might have been sealed by external node and the sequencer is unaware. In this
-                // case, we run the a check seal task to determine if we suspect that sealing is
+                // case, we run a check seal task to determine if we suspect that sealing is
                 // happening.
                 let result = CheckSealTask::run(
                     &self.my_params,

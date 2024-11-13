@@ -308,7 +308,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 Ok(Some(result)) => result,
                 Ok(None) => break, // no more tasks
                 Err(elapsed) => {
-                    // if we have already ackowledged this append, it's okay to retire.
+                    // if we have already acknowledged this append, it's okay to retire.
                     if self.commit_resolver.is_none() {
                         tracing::debug!(%pending_servers, %wave, ?spread, ?elapsed, responses=?checker, "Some servers didn't store this batch, but append was committed, giving up");
                         return SequencerAppenderState::Done;
