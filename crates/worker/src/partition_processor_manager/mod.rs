@@ -39,7 +39,6 @@ use crate::partition_processor_manager::processor_state::{
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 use restate_bifrost::Bifrost;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
-use restate_core::network::{Networking, TransportConnect};
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskKind};
 use restate_core::{RuntimeRootTaskHandle, TaskCenter};
@@ -67,7 +66,7 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::GenerationalNodeId;
 
-pub struct PartitionProcessorManager<T> {
+pub struct PartitionProcessorManager {
     task_center: TaskCenter,
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
@@ -79,7 +78,6 @@ pub struct PartitionProcessorManager<T> {
     partition_store_manager: PartitionStoreManager,
     incoming_update_processors: MessageStream<ControlProcessors>,
     incoming_partition_processor_rpc: MessageStream<PartitionProcessorRpcRequest>,
-    _networking: Networking<T>,
     bifrost: Bifrost,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
@@ -144,7 +142,7 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
     }
 }
 
-impl<T: TransportConnect> PartitionProcessorManager<T> {
+impl PartitionProcessorManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_center: TaskCenter,
@@ -154,7 +152,6 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
         metadata_store_client: MetadataStoreClient,
         partition_store_manager: PartitionStoreManager,
         router_builder: &mut MessageRouterBuilder,
-        _networking: Networking<T>,
         bifrost: Bifrost,
     ) -> Self {
         let incoming_update_processors = router_builder.subscribe_to_stream(2);
@@ -172,7 +169,6 @@ impl<T: TransportConnect> PartitionProcessorManager<T> {
             partition_store_manager,
             incoming_update_processors,
             incoming_partition_processor_rpc,
-            _networking,
             bifrost,
             rx,
             tx,
@@ -798,7 +794,6 @@ mod tests {
             env_builder.metadata_store_client.clone(),
             partition_store_manager,
             &mut env_builder.router_builder,
-            env_builder.networking.clone(),
             bifrost,
         );
 
