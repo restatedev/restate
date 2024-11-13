@@ -53,7 +53,6 @@ async fn generate_log_metadata(opts: &GenerateLogMetadataOpts) -> anyhow::Result
             sequencer: opts.sequencer,
             replication: ReplicationProperty::new(opts.replication_factor),
             nodeset: NodeSet::from_iter(opts.nodeset.clone()),
-            write_set: None,
         };
         let params = LogletParams::from(loglet_params.serialize()?);
 

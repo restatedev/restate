@@ -170,7 +170,6 @@ async fn replicated_loglet_params(
                 .map(ReplicationProperty::new)
                 .unwrap_or(last_params.replication.clone()),
             sequencer: opts.sequencer.unwrap_or(last_params.sequencer),
-            write_set: None,
         }
     } else {
         ReplicatedLogletParams {
@@ -184,7 +183,6 @@ async fn replicated_loglet_params(
                 opts.replication_factor_nodes.context("Missing replication-factor. Replication factor is required if last segment is not of replicated type")?,
             ),
             sequencer: opts.sequencer.context("Missing sequencer. Sequencer is required if last segment is not of replicated type")?,
-            write_set: None,
         }
     };
 

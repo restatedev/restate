@@ -26,7 +26,7 @@ use crate::background_appender::BackgroundAppender;
 use crate::loglet::LogletProvider;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
-use crate::{Error, FindTailAttributes, InputRecord, LogReadStream, Result};
+use crate::{Error, InputRecord, LogReadStream, Result};
 
 /// Bifrost is Restate's durable interconnect system
 ///
@@ -151,7 +151,7 @@ impl Bifrost {
     /// follows:
     ///
     /// ```no_run
-    /// use restate_bifrost::{Bifrost, FindTailAttributes, LogReadStream};
+    /// use restate_bifrost::{Bifrost, LogReadStream};
     /// use restate_types::logs::{KeyFilter, LogId, SequenceNumber};
     ///
     /// async fn reader(bifrost: &Bifrost, log_id: LogId) -> LogReadStream {
@@ -159,7 +159,7 @@ impl Bifrost {
     ///        log_id,
     ///        KeyFilter::Any,
     ///        bifrost.get_trim_point(log_id).await.unwrap(),
-    ///        bifrost.find_tail(log_id, FindTailAttributes::default()).await.unwrap().offset().prev(),
+    ///        bifrost.find_tail(log_id).await.unwrap().offset().prev(),
     ///     ).unwrap()
     /// }
     /// ```
@@ -206,30 +206,16 @@ impl Bifrost {
     /// If the log is empty, it returns TailState::Open(Lsn::OLDEST).
     /// This should never return Err(Error::LogSealed). Sealed state is represented as
     /// TailState::Sealed(..)
-    pub async fn find_tail(
-        &self,
-        log_id: LogId,
-        attributes: FindTailAttributes,
-    ) -> Result<TailState> {
+    pub async fn find_tail(&self, log_id: LogId) -> Result<TailState> {
         self.inner.fail_if_shutting_down()?;
-        Ok(self.inner.find_tail(log_id, attributes).await?.1)
+        Ok(self.inner.find_tail(log_id).await?.1)
     }
 
     // Get the loglet currently serving the tail of the chain, for use in integration tests.
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn find_tail_loglet(
-        &self,
-        log_id: LogId,
-        attributes: FindTailAttributes,
-    ) -> Result<Arc<dyn crate::loglet::Loglet>> {
+    pub async fn find_tail_loglet(&self, log_id: LogId) -> Result<Arc<dyn crate::loglet::Loglet>> {
         self.inner.fail_if_shutting_down()?;
-        Ok(self
-            .inner
-            .find_tail(log_id, attributes)
-            .await?
-            .0
-            .inner()
-            .clone())
+        Ok(self.inner.find_tail(log_id).await?.0.inner().clone())
     }
 
     /// The lsn of the slot **before** the first readable record (if it exists), or the offset
@@ -254,9 +240,7 @@ impl Bifrost {
 
         self.inner.fail_if_shutting_down()?;
 
-        let current_tail = self
-            .find_tail(log_id, FindTailAttributes::default())
-            .await?;
+        let current_tail = self.find_tail(log_id).await?;
 
         if current_tail.offset() <= Lsn::OLDEST {
             return Ok(Vec::default());
@@ -330,9 +314,7 @@ impl BifrostInner {
         from: Lsn,
     ) -> Result<Option<crate::LogEntry>> {
         use futures::StreamExt;
-        let (_, tail_state) = self
-            .find_tail(log_id, FindTailAttributes::default())
-            .await?;
+        let (_, tail_state) = self.find_tail(log_id).await?;
         if from >= tail_state.offset() {
             // Can't use this function to read future records.
             return Ok(None);
@@ -349,11 +331,7 @@ impl BifrostInner {
         stream.next().await.transpose()
     }
 
-    pub async fn find_tail(
-        &self,
-        log_id: LogId,
-        _attributes: FindTailAttributes,
-    ) -> Result<(LogletWrapper, TailState)> {
+    pub async fn find_tail(&self, log_id: LogId) -> Result<(LogletWrapper, TailState)> {
         let loglet = self.writeable_loglet(log_id).await?;
         let tail = loglet.find_tail().await?;
         Ok((loglet, tail))
@@ -606,9 +584,7 @@ mod tests {
             assert_eq!(max_lsn + Lsn::from(1), lsn);
             max_lsn = lsn;
 
-            let tail = bifrost
-                .find_tail(LogId::new(0), FindTailAttributes::default())
-                .await?;
+            let tail = bifrost.find_tail(LogId::new(0)).await?;
             assert_eq!(max_lsn.next(), tail.offset());
 
             // Initiate shutdown
@@ -664,13 +640,7 @@ mod tests {
                     &node_env.metadata_store_client,
                 );
 
-                assert_eq!(
-                    Lsn::OLDEST,
-                    bifrost
-                        .find_tail(LOG_ID, FindTailAttributes::default())
-                        .await?
-                        .offset()
-                );
+                assert_eq!(Lsn::OLDEST, bifrost.find_tail(LOG_ID).await?.offset());
 
                 assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
@@ -682,9 +652,7 @@ mod tests {
 
                 bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
 
-                let tail = bifrost
-                    .find_tail(LOG_ID, FindTailAttributes::default())
-                    .await?;
+                let tail = bifrost.find_tail(LOG_ID).await?;
                 assert_eq!(tail.offset(), Lsn::from(11));
                 assert!(!tail.is_sealed());
                 assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
@@ -706,13 +674,7 @@ mod tests {
                 // trimming beyond the release point will fall back to the release point
                 bifrost_admin.trim(LOG_ID, Lsn::MAX).await?;
 
-                assert_eq!(
-                    Lsn::from(11),
-                    bifrost
-                        .find_tail(LOG_ID, FindTailAttributes::default())
-                        .await?
-                        .offset()
-                );
+                assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
                 let new_trim_point = bifrost.get_trim_point(LOG_ID).await?;
                 assert_eq!(Lsn::from(10), new_trim_point);
 
@@ -765,9 +727,7 @@ mod tests {
 
             // not sealed, tail is what we expect
             assert_that!(
-                bifrost
-                    .find_tail(LOG_ID, FindTailAttributes::default())
-                    .await?,
+                bifrost.find_tail(LOG_ID).await?,
                 pat!(TailState::Open(eq(Lsn::new(6))))
             );
 
@@ -784,9 +744,7 @@ mod tests {
 
             // sealed, tail is what we expect
             assert_that!(
-                bifrost
-                    .find_tail(LOG_ID, FindTailAttributes::default())
-                    .await?,
+                bifrost.find_tail(LOG_ID).await?,
                 pat!(TailState::Sealed(eq(Lsn::new(6))))
             );
 
@@ -842,9 +800,7 @@ mod tests {
             // find_tail() on the underlying loglet returns (6) but for bifrost it should be (5) after
             // the new segment was created at tail of the chain with base_lsn=5
             assert_that!(
-                bifrost
-                    .find_tail(LOG_ID, FindTailAttributes::default())
-                    .await?,
+                bifrost.find_tail(LOG_ID).await?,
                 pat!(TailState::Open(eq(Lsn::new(5))))
             );
 
@@ -859,9 +815,7 @@ mod tests {
 
             // tail is now 8 and open.
             assert_that!(
-                bifrost
-                    .find_tail(LOG_ID, FindTailAttributes::default())
-                    .await?,
+                bifrost.find_tail(LOG_ID).await?,
                 pat!(TailState::Open(eq(Lsn::new(8))))
             );
 
