@@ -8,29 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
-use anyhow::{anyhow, bail, Context};
-use async_trait::async_trait;
-use aws_config::default_provider::credentials::DefaultCredentialsChain;
-use aws_config::BehaviorVersion;
-use aws_credential_types::provider::ProvideCredentials;
-use object_store::aws::AmazonS3Builder;
-use object_store::{ObjectStore, PutPayload};
-use tempfile::NamedTempFile;
-use tracing::{debug, error, info, trace, trace_span, warn};
-use url::Url;
+use anyhow::{bail, Context};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::partition::snapshots::repository::SnapshotRepository;
-use restate_core::task_center;
 use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
 use restate_partition_store::PartitionStore;
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_storage_api::Transaction;
-use restate_types::config::{Configuration, SnapshotsOptions};
-use restate_types::identifiers::{PartitionId, SnapshotId};
+use restate_types::config::Configuration;
+use restate_types::identifiers::SnapshotId;
 use restate_types::live::Live;
 
 /// Encapsulates exporting and publishing partition snapshots.
