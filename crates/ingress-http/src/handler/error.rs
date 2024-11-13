@@ -86,6 +86,7 @@ pub(crate) enum HandlerError {
     DispatcherError(#[from] RequestDispatcherError),
 }
 
+// IMPORTANT! If you touch this, please update crates/types/src/schema/openapi.rs too
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum ErrorResponse {
