@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use restate_types::storage::StorageEncode;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use restate_types::config::Configuration;
 use restate_types::live::Live;
@@ -119,8 +119,28 @@ impl Appender {
 
                     self.loglet_cache = Some(new_loglet);
                 }
-                Err(AppendError::Shutdown(e)) => return Err(Error::Shutdown(e)),
-                Err(AppendError::Other(e)) => return Err(Error::LogletError(e)),
+                Err(AppendError::Other(err)) if err.retryable() => {
+                    if let Some(retry_dur) = retry_iter.next() {
+                        info!(
+                            ?err,
+                            attempt = attempt,
+                            segment_index = %loglet.segment_index(),
+                            "Failed to append this batch. Since underlying error is retryable, will retry in {:?}",
+                            retry_dur
+                        );
+                        tokio::time::sleep(retry_dur).await;
+                    } else {
+                        warn!(
+                            ?err,
+                            attempt = attempt,
+                            segment_index = %loglet.segment_index(),
+                            "Failed to append this batch and exhausted all attempts to retry",
+                        );
+                        return Err(Error::LogletError(err));
+                    }
+                }
+                Err(AppendError::Other(err)) => return Err(Error::LogletError(err)),
+                Err(AppendError::Shutdown(err)) => return Err(Error::Shutdown(err)),
             }
         }
     }
