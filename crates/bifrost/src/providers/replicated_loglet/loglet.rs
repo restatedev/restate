@@ -38,7 +38,9 @@ use super::tasks::{CheckSealOutcome, CheckSealTask, FindTailResult};
 
 #[derive(derive_more::Debug)]
 pub(super) struct ReplicatedLoglet<T> {
+    #[debug(skip)]
     log_id: LogId,
+    #[debug(skip)]
     segment_index: SegmentIndex,
     my_params: ReplicatedLogletParams,
     #[debug(skip)]
