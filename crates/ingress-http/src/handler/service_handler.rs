@@ -47,6 +47,7 @@ pub(crate) enum SendStatus {
     PreviouslyAccepted,
 }
 
+// IMPORTANT! If you touch this, please update crates/types/src/schema/openapi.rs too
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "camelCase")]

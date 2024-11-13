@@ -256,6 +256,7 @@ fn delay_parameter() -> Parameter {
         .schema(Some(
             string_json_schema()
         ))
+        .example(Some(serde_json::Value::String("10s".to_string())))
         .required(Required::False)
         .description(Some("Specify the delay to execute the operation, for more info check the [delay documentation](https://docs.restate.dev/invoke/http#sending-a-delayed-message-over-http)"))
         .build()
@@ -295,28 +296,48 @@ const ERROR_RESPONSE_REF_NAME: &str = "Error";
 fn error_response() -> Response {
     Response::builder()
         .description("Error response")
-        .content("application/json", Content::new(Some(Schema::new(json!({
-            "type": "object",
-            "title": "Error",
-            "description": "Generic error used by Restate to propagate Terminal errors/exceptions back to callers",
-            "properties": {
-                "code": {
-                    "type": "number",
-                    "title": "error code"
-                },
-                "message": {
-                    "type": "string",
-                    "title": "Error message"
-                },
-                "description": {
-                    "type": "string",
-                    "title": "Verbose error description"
-                }
-            },
-            "required": ["message"],
-            "additionalProperties": false
-        })))))
+        .content(
+            "application/json",
+            ContentBuilder::new()
+                .schema(Some(Schema::new(error_response_json_schema())))
+                .example(Some(error_response_example()))
+                .build(),
+        )
         .build()
+}
+
+// Ideally we code generate this
+fn error_response_json_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "title": "Error",
+        "description": "Generic error used by Restate to propagate Terminal errors/exceptions back to callers",
+        "properties": {
+            "code": {
+                "type": "number",
+                "title": "error code"
+            },
+            "message": {
+                "type": "string",
+                "title": "Error message"
+            },
+            "description": {
+                "type": "string",
+                "title": "Verbose error description"
+            }
+        },
+        "required": ["message"],
+        "additionalProperties": false
+    })
+}
+
+// Ideally we code generate this
+fn error_response_example() -> serde_json::Value {
+    json!({
+        "code": 500,
+        "message": "Internal server error",
+        "description": "Very bad error happened"
+    })
 }
 
 const SEND_RESPONSE_REF_NAME: &str = "Send";
@@ -326,26 +347,43 @@ fn send_response() -> Response {
         .description("Send response")
         .content(
             "application/json",
-            Content::new(Some(Schema::new(json!({
-                "type": "object",
-                "properties": {
-                    "invocationId": {
-                        "type": "string"
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["Accepted", "PreviouslyAccepted"]
-                    },
-                    "executionTime": {
-                        "type": "string",
-                        "format": "date-time"
-                    }
-                },
-                "required": ["invocationId", "status"],
-                "additionalProperties": false
-            })))),
+            ContentBuilder::new()
+                .schema(Some(Schema::new(send_response_json_schema())))
+                .example(Some(send_response_example()))
+                .build(),
         )
         .build()
+}
+
+// Ideally we code generate this
+fn send_response_json_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "invocationId": {
+                "type": "string"
+            },
+            "status": {
+                "type": "string",
+                "enum": ["Accepted", "PreviouslyAccepted"]
+            },
+            "executionTime": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Time when the invocation will be executed, in case 'delay' is used"
+            }
+        },
+        "required": ["invocationId", "status"],
+        "additionalProperties": false
+    })
+}
+
+// Ideally we code generate this
+fn send_response_example() -> serde_json::Value {
+    json!({
+        "invocationId": "inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz",
+        "status": "Accepted",
+    })
 }
 
 fn string_json_schema() -> Schema {
