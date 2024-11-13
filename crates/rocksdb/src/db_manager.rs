@@ -14,13 +14,15 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use parking_lot::RwLock;
-use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
+use rocksdb::{BlockBasedOptions, Cache, LogLevel, WriteBufferManager};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_serde_util::ByteCount;
-use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StatisticsLevel};
+use restate_types::config::{
+    CommonOptions, Configuration, RocksDbLogLevel, RocksDbOptions, StatisticsLevel,
+};
 use restate_types::live::{BoxedLiveLoad, LiveLoad};
 
 use crate::background::ReadyStorageTask;
@@ -305,6 +307,22 @@ impl RocksDbManager {
         db_options.set_use_direct_io_for_flush_and_compaction(
             !opts.rocksdb_disable_direct_io_for_flush_and_compaction(),
         );
+
+        // Configure info logs
+        db_options.set_keep_log_file_num(opts.rocksdb_log_keep_file_num());
+        db_options.set_max_log_file_size(opts.rocksdb_log_max_file_size().as_usize());
+        db_options.set_log_level(self.get_log_level(opts));
+    }
+
+    fn get_log_level(&self, opts: &RocksDbOptions) -> LogLevel {
+        match opts.rocksdb_log_level() {
+            RocksDbLogLevel::Debug => LogLevel::Debug,
+            RocksDbLogLevel::Error => LogLevel::Error,
+            RocksDbLogLevel::Fatal => LogLevel::Fatal,
+            RocksDbLogLevel::Header => LogLevel::Header,
+            RocksDbLogLevel::Info => LogLevel::Info,
+            RocksDbLogLevel::Warn => LogLevel::Warn,
+        }
     }
 
     pub(crate) fn stall_detection_duration(&self) -> std::time::Duration {
