@@ -10,6 +10,7 @@
 
 use restate_types::net::{CodecError, MIN_SUPPORTED_PROTOCOL_VERSION};
 use restate_types::nodes_config::NodesConfigError;
+use restate_types::GenerationalNodeId;
 
 use crate::{ShutdownError, SyncError};
 
@@ -49,8 +50,8 @@ pub enum NetworkError {
     ConnectError(#[from] tonic::Status),
     #[error("new node generation exists: {0}")]
     OldPeerGeneration(String),
-    #[error("peer is not connected")]
-    ConnectionClosed,
+    #[error("connection lost to peer {0}")]
+    ConnectionClosed(GenerationalNodeId),
     #[error("cannot send messages to this node: {0}")]
     Unavailable(String),
     #[error("failed syncing metadata: {0}")]

@@ -582,7 +582,7 @@ mod test {
 
         let msg = token.recv().await.unwrap();
         assert_eq!(Some(1), msg.in_response_to());
-        assert_eq!(GenerationalNodeId::new(1, 1), *msg.peer());
+        assert_eq!(GenerationalNodeId::new(1, 1), msg.peer());
         assert_eq!("a very real message", msg.body().text);
     }
 

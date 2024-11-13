@@ -149,7 +149,7 @@ where
                 Err(err) => {
                     match err.source {
                         NetworkError::ConnectError(_)
-                        | NetworkError::ConnectionClosed
+                        | NetworkError::ConnectionClosed(_)
                         | NetworkError::Timeout(_) => {
                             // we retry to re-connect one time
                             connection = self.renew_connection(connection).await?;
@@ -285,7 +285,9 @@ impl RemoteSequencerConnection {
             // then we need to notify the caller
             err.0
                 .commit_resolver
-                .error(AppendError::retryable(NetworkError::ConnectionClosed));
+                .error(AppendError::retryable(NetworkError::ConnectionClosed(
+                    self.inner.peer(),
+                )));
         }
     }
 
@@ -313,13 +315,13 @@ impl RemoteSequencerConnection {
                     inflight
                 }
                 _ = &mut closed => {
-                    break AppendError::retryable(NetworkError::ConnectionClosed);
+                    break AppendError::retryable(NetworkError::ConnectionClosed(connection.peer()));
                 }
             };
 
             let Some(inflight) = inflight else {
                 // connection was dropped.
-                break AppendError::retryable(NetworkError::ConnectionClosed);
+                break AppendError::retryable(NetworkError::ConnectionClosed(connection.peer()));
             };
 
             let RemoteInflightAppend {
@@ -333,7 +335,7 @@ impl RemoteSequencerConnection {
                     incoming.map_err(AppendError::Shutdown)
                 },
                 _ = &mut closed => {
-                    Err(AppendError::retryable(NetworkError::ConnectionClosed))
+                    Err(AppendError::retryable(NetworkError::ConnectionClosed(connection.peer())))
                 }
             };
 

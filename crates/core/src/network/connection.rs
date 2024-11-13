@@ -124,6 +124,11 @@ impl OwnedConnection {
         Arc::new(Self::new(peer, protocol_version, sender))
     }
 
+    /// The node id at the other end of this connection
+    pub fn peer(&self) -> GenerationalNodeId {
+        self.peer
+    }
+
     /// The current negotiated protocol version of the connection
     pub fn protocol_version(&self) -> ProtocolVersion {
         self.protocol_version
@@ -179,7 +184,7 @@ impl OwnedConnection {
             .map_err(|_| {
                 NetworkError::Timeout("deadline exceeded while waiting for network send capacity")
             })?
-            .map_err(|_| NetworkError::ConnectionClosed)?;
+            .map_err(|_| NetworkError::ConnectionClosed(self.peer))?;
         Ok(SendPermit {
             permit,
             protocol_version: self.protocol_version,
@@ -202,7 +207,7 @@ impl OwnedConnection {
         let permit = match self.sender.try_reserve() {
             Ok(permit) => permit,
             Err(TrySendError::Full(_)) => return Err(NetworkError::Full),
-            Err(TrySendError::Closed(_)) => return Err(NetworkError::ConnectionClosed),
+            Err(TrySendError::Closed(_)) => return Err(NetworkError::ConnectionClosed(self.peer)),
         };
 
         Ok(SendPermit {
@@ -268,8 +273,9 @@ impl WeakConnection {
         }
     }
 
-    pub fn peer(&self) -> &GenerationalNodeId {
-        &self.peer
+    /// The node id at the other end of this connection
+    pub fn peer(&self) -> GenerationalNodeId {
+        self.peer
     }
 
     pub fn is_closed(&self) -> bool {
@@ -458,7 +464,9 @@ pub mod test_util {
             let permit = match self.sender.try_reserve() {
                 Ok(permit) => permit,
                 Err(TrySendError::Full(_)) => return Err(NetworkError::Full),
-                Err(TrySendError::Closed(_)) => return Err(NetworkError::ConnectionClosed),
+                Err(TrySendError::Closed(_)) => {
+                    return Err(NetworkError::ConnectionClosed(self.peer))
+                }
             };
 
             Ok(SendPermit {

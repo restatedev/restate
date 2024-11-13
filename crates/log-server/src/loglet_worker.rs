@@ -239,7 +239,7 @@ impl<S: LogStore> LogletWorker<S> {
                 Some(msg) = get_loglet_info_rx.recv() => {
                     self.loglet_state.notify_known_global_tail(msg.body().header.known_global_tail);
                     // drop response if connection is lost/congested
-                    let peer = *msg.peer();
+                    let peer = msg.peer();
                     if let Err(e) = msg.to_rpc_response(LogletInfo::new(self.loglet_state.local_tail(), self.loglet_state.trim_point(), self.loglet_state.known_global_tail())).try_send() {
                         debug!(?e.source, peer = %peer, "Failed to respond to GetLogletInfo message due to peer channel capacity being full");
                     } else {
@@ -266,7 +266,7 @@ impl<S: LogStore> LogletWorker<S> {
                     // this message might be telling us about a higher `known_global_tail`
                     self.loglet_state.notify_known_global_tail(msg.header.known_global_tail);
                     let next_ok_offset = std::cmp::max(staging_local_tail, self.loglet_state.known_global_tail());
-                    let peer = *reciprocal.peer();
+                    let peer = reciprocal.peer();
                     let (status, maybe_store_token) = self.process_store(peer, msg, &mut staging_local_tail, next_ok_offset, &sealing_in_progress).await;
                     // if this store is complete, the last committed is updated to this value.
                     let future_last_committed = staging_local_tail;

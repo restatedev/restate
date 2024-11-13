@@ -595,7 +595,7 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
                     msg = err.original.forget_connection();
 
                     match err.source {
-                        NetworkError::ConnectionClosed
+                        NetworkError::ConnectionClosed(_)
                         | NetworkError::ConnectError(_)
                         | NetworkError::Timeout(_) => {
                             trace!(

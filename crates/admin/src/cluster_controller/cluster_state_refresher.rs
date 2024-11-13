@@ -163,7 +163,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             while let Some(Ok((node_id, result))) = join_set.join_next().await {
                 match result {
                     Ok(response) => {
-                        let peer = *response.peer();
+                        let peer = response.peer();
                         let msg = response.into_body();
                         nodes.insert(
                             node_id,
