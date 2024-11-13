@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::pin::Pin;
-use std::task::{ready, Poll};
-
 use futures::FutureExt;
+use std::pin::Pin;
+use std::task::{ready, Context, Poll};
 use strum::EnumProperty;
 use tokio::runtime::RuntimeMetrics;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::ShutdownError;
@@ -72,6 +72,11 @@ pub enum TaskKind {
     RpcServer,
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     RpcConnection,
+    /// A task that handles a single RPC request. The task is executed on the default runtime to
+    /// decouple it from the lifetime of the originating runtime. Use this task kind if you want to
+    /// make sure that the rpc response is sent even if the originating runtime is dropped.
+    #[strum(props(OnCancel = "abort", OnError = "log", runtime = "default"))]
+    RpcResponse,
     /// A type for ingress until we start enforcing timeouts for inflight requests. This enables us
     /// to shut down cleanly without waiting indefinitely.
     #[strum(props(OnCancel = "abort", runtime = "ingress"))]
@@ -230,5 +235,32 @@ impl RuntimeHandle {
     /// the runtime has been terminated.
     pub fn is_cancellation_requested(&self) -> bool {
         self.cancellation_token.is_cancelled()
+    }
+}
+
+pub struct RuntimeRootTaskHandle<T> {
+    pub(crate) cancellation_token: CancellationToken,
+    pub(crate) inner_handle: oneshot::Receiver<T>,
+}
+
+impl<T> RuntimeRootTaskHandle<T> {
+    /// Trigger graceful shutdown of the runtime root task. Shutdown is not guaranteed, it depends
+    /// on whether the root task awaits the cancellation token or not.
+    pub fn cancel(&self) {
+        self.cancellation_token.cancel()
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation_token.clone()
+    }
+}
+
+impl<T> std::future::Future for RuntimeRootTaskHandle<T> {
+    type Output = T;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(
+            ready!(self.inner_handle.poll_unpin(cx)).expect("runtime panicked unexpectedly"),
+        )
     }
 }

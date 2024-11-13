@@ -29,8 +29,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, instrument, trace, warn};
 
 use restate_bifrost::{Bifrost, CommitToken};
-use restate_core::network::{HasConnection, Outgoing, Reciprocal};
-use restate_core::{metadata, task_center, Metadata, ShutdownError, TaskHandle, TaskId, TaskKind};
+use restate_core::network::Reciprocal;
+use restate_core::{
+    metadata, task_center, Metadata, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind,
+};
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
@@ -59,9 +61,9 @@ use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
 use crate::partition::cleaner::Cleaner;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::shuffle;
 use crate::partition::shuffle::{HintSender, OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
+use crate::partition::{respond_to_rpc, shuffle};
 
 const BATCH_READY_UP_TO: usize = 10;
 
@@ -160,6 +162,7 @@ pub(crate) struct LeadershipState<I> {
     channel_size: usize,
     invoker_tx: I,
     bifrost: Bifrost,
+    task_center: TaskCenter,
 }
 
 impl<I> LeadershipState<I>
@@ -168,6 +171,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        task_center: TaskCenter,
         partition_processor_metadata: PartitionProcessorMetadata,
         num_timers_in_memory_limit: Option<usize>,
         cleanup_interval: Duration,
@@ -177,6 +181,7 @@ where
         last_seen_leader_epoch: Option<LeaderEpoch>,
     ) -> Self {
         Self {
+            task_center,
             state: State::Follower,
             partition_processor_metadata,
             num_timers_in_memory_limit,
@@ -525,11 +530,12 @@ where
 
                 // Reply to all RPCs with not a leader
                 for (_, reciprocal) in awaiting_rpc_actions.drain() {
-                    respond_to_rpc(reciprocal.prepare(Err(
-                        PartitionProcessorRpcError::LostLeadership(
+                    respond_to_rpc(
+                        &self.task_center,
+                        reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
                             self.partition_processor_metadata.partition_id,
-                        ),
-                    )));
+                        ))),
+                    );
                 }
                 for fut in awaiting_rpc_self_appends.iter_mut() {
                     fut.fail_with_lost_leadership(self.partition_processor_metadata.partition_id);
@@ -557,6 +563,7 @@ where
                         action.name())
                     .increment(1);
                     Self::handle_action(
+                        &self.task_center,
                         action,
                         (
                             self.partition_processor_metadata.partition_id,
@@ -578,6 +585,7 @@ where
 
     #[allow(clippy::too_many_arguments)]
     async fn handle_action(
+        task_center: &TaskCenter,
         action: Action,
         partition_leader_epoch: PartitionLeaderEpoch,
         invoker_tx: &mut I,
@@ -638,6 +646,7 @@ where
             } => {
                 if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
                     respond_to_rpc(
+                        task_center,
                         response_tx.prepare(Ok(PartitionProcessorRpcResponse::Output(
                             InvocationOutput {
                                 request_id,
@@ -655,12 +664,15 @@ where
                 ..
             } => {
                 if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
-                    respond_to_rpc(response_tx.prepare(Ok(
-                        PartitionProcessorRpcResponse::Submitted(SubmittedInvocationNotification {
-                            request_id,
-                            is_new_invocation,
-                        }),
-                    )));
+                    respond_to_rpc(
+                        task_center,
+                        response_tx.prepare(Ok(PartitionProcessorRpcResponse::Submitted(
+                            SubmittedInvocationNotification {
+                                request_id,
+                                is_new_invocation,
+                            },
+                        ))),
+                    );
                 }
             }
             Action::ScheduleInvocationStatusCleanup {
@@ -795,6 +807,7 @@ where
             State::Follower | State::Candidate { .. } => {
                 // Just fail the rpc
                 respond_to_rpc(
+                    &self.task_center,
                     reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
                         self.partition_processor_metadata.partition_id,
                     ))),
@@ -806,9 +819,12 @@ where
                         // In this case, someone already proposed this command,
                         // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
                         let old_reciprocal = o.remove();
-                        respond_to_rpc(old_reciprocal.prepare(Err(
-                            PartitionProcessorRpcError::Internal("retried".to_string()),
-                        )));
+                        respond_to_rpc(
+                            &self.task_center,
+                            old_reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
+                                "retried".to_string(),
+                            ))),
+                        );
                         leader_state
                             .awaiting_rpc_actions
                             .insert(request_id, reciprocal);
@@ -818,6 +834,7 @@ where
                         if let Err(e) = leader_state.self_proposer.propose(partition_key, cmd).await
                         {
                             respond_to_rpc(
+                                &self.task_center,
                                 reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
                                     e.to_string(),
                                 ))),
@@ -839,11 +856,12 @@ where
         reciprocal: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
     ) {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => respond_to_rpc(reciprocal.prepare(Err(
-                PartitionProcessorRpcError::NotLeader(
+            State::Follower | State::Candidate { .. } => respond_to_rpc(
+                &self.task_center,
+                reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
                     self.partition_processor_metadata.partition_id,
-                ),
-            ))),
+                ))),
+            ),
             State::Leader(leader_state) => {
                 match leader_state
                     .self_proposer
@@ -853,10 +871,15 @@ where
                     Ok(commit_token) => {
                         leader_state
                             .awaiting_rpc_self_propose
-                            .push(SelfAppendFuture(commit_token, Some(reciprocal)));
+                            .push(SelfAppendFuture::new(
+                                self.task_center.clone(),
+                                commit_token,
+                                reciprocal,
+                            ));
                     }
                     Err(e) => {
                         respond_to_rpc(
+                            &self.task_center,
                             reciprocal
                                 .prepare(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
                         );
@@ -867,38 +890,40 @@ where
     }
 }
 
-fn respond_to_rpc(
-    outgoing: Outgoing<
-        Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
-        HasConnection,
-    >,
-) {
-    // ignore shutdown errors
-    let _ = task_center().spawn(
-        TaskKind::Disposable,
-        "partition-processor-rpc-response",
-        None,
-        async move { outgoing.send().await.map_err(Into::into) },
-    );
+struct SelfAppendFuture {
+    task_center: TaskCenter,
+    commit_token: CommitToken,
+    response: Option<Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>,
 }
 
-struct SelfAppendFuture(
-    CommitToken,
-    Option<Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>,
-);
-
 impl SelfAppendFuture {
+    fn new(
+        task_center: TaskCenter,
+        commit_token: CommitToken,
+        response: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+    ) -> Self {
+        Self {
+            task_center,
+            commit_token,
+            response: Some(response),
+        }
+    }
+
     fn fail_with_internal(&mut self) {
-        if let Some(reciprocal) = self.1.take() {
-            respond_to_rpc(reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
-                "error when proposing to bifrost".to_string(),
-            ))));
+        if let Some(reciprocal) = self.response.take() {
+            respond_to_rpc(
+                &self.task_center,
+                reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
+                    "error when proposing to bifrost".to_string(),
+                ))),
+            );
         }
     }
 
     fn fail_with_lost_leadership(&mut self, this_partition_id: PartitionId) {
-        if let Some(reciprocal) = self.1.take() {
+        if let Some(reciprocal) = self.response.take() {
             respond_to_rpc(
+                &self.task_center,
                 reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
                     this_partition_id,
                 ))),
@@ -907,8 +932,11 @@ impl SelfAppendFuture {
     }
 
     fn succeed_with_appended(&mut self) {
-        if let Some(reciprocal) = self.1.take() {
-            respond_to_rpc(reciprocal.prepare(Ok(PartitionProcessorRpcResponse::Appended)));
+        if let Some(reciprocal) = self.response.take() {
+            respond_to_rpc(
+                &self.task_center,
+                reciprocal.prepare(Ok(PartitionProcessorRpcResponse::Appended)),
+            );
         }
     }
 }
@@ -917,7 +945,7 @@ impl Future for SelfAppendFuture {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let append_result = ready!(self.0.poll_unpin(cx));
+        let append_result = ready!(self.commit_token.poll_unpin(cx));
 
         if append_result.is_err() {
             self.get_mut().fail_with_internal();
@@ -1070,7 +1098,7 @@ mod tests {
     use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
-    use restate_core::TestCoreEnv;
+    use restate_core::{task_center, TestCoreEnv};
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
@@ -1121,6 +1149,7 @@ mod tests {
 
             let invoker_tx = MockInvokerHandle::default();
             let mut state = LeadershipState::new(
+                task_center(),
                 PARTITION_PROCESSOR_METADATA,
                 None,
                 Duration::from_secs(60 * 60),

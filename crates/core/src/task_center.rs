@@ -18,6 +18,7 @@ use futures::{Future, FutureExt};
 use metrics::{counter, gauge};
 use parking_lot::Mutex;
 use tokio::runtime::RuntimeMetrics;
+use tokio::sync::oneshot;
 use tokio::task::LocalSet;
 use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
@@ -29,8 +30,8 @@ use restate_types::GenerationalNodeId;
 
 use crate::metric_definitions::{TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED};
 use crate::{
-    metric_definitions, Metadata, RuntimeHandle, ShutdownError, ShutdownSourceErr, TaskHandle,
-    TaskId, TaskKind,
+    metric_definitions, Metadata, RuntimeHandle, RuntimeRootTaskHandle, ShutdownError,
+    ShutdownSourceErr, TaskHandle, TaskId, TaskKind,
 };
 
 static WORKER_ID: AtomicUsize = const { AtomicUsize::new(0) };
@@ -470,56 +471,50 @@ impl TaskCenter {
             id,
             name,
             kind,
-            cancellation_token,
+            cancellation_token: cancellation_token.clone(),
             // We must be within task-context already. let's get inherit partition_id
             partition_id: CONTEXT.with(|c| c.partition_id),
             metadata: Some(metadata()),
         };
 
-        Self::spawn_local_inner(self, context, future);
-        Ok(id)
-    }
-
-    fn spawn_local_inner<F>(tc: &TaskCenter, context: TaskContext, future: F)
-    where
-        F: Future<Output = anyhow::Result<()>> + 'static,
-    {
-        let cancel = context.cancellation_token.clone();
-        let name = context.name;
         let task = Arc::new(Task {
             context: context.clone(),
             handle: Mutex::new(None),
         });
 
-        let inner = tc.inner.clone();
+        let inner = self.inner.clone();
         inner
             .managed_tasks
             .lock()
             .insert(context.id, Arc::clone(&task));
         let mut handle_mut = task.handle.lock();
 
-        let fut = wrapper(tc.clone(), context, future);
+        let fut = wrapper(self.clone(), context, future);
 
         let tokio_task = tokio::task::Builder::new().name(name);
         let inner_handle = tokio_task
             .spawn_local(fut)
             .expect("must run from a LocalSet");
         *handle_mut = Some(TaskHandle {
-            cancellation_token: cancel,
+            cancellation_token,
             inner_handle,
         });
 
         // drop the lock
         drop(handle_mut);
+
+        Ok(id)
     }
 
+    /// Starts the `root_future` on a new runtime. The runtime is stopped once the root future
+    /// completes.
     pub fn start_runtime<F>(
         &self,
         root_task_kind: TaskKind,
         runtime_name: &'static str,
         partition_id: Option<PartitionId>,
-        run: impl FnOnce() -> F + Send + 'static,
-    ) -> Result<TaskId, RuntimeError>
+        root_future: impl FnOnce() -> F + Send + 'static,
+    ) -> Result<RuntimeRootTaskHandle<anyhow::Result<()>>, RuntimeError>
     where
         F: Future<Output = anyhow::Result<()>> + 'static,
     {
@@ -528,7 +523,6 @@ impl TaskCenter {
         }
 
         let cancel = CancellationToken::new();
-        let metadata = self.clone_metadata();
 
         // hold a lock while creating the runtime to avoid concurrent runtimes with the same name
         let mut runtimes_guard = self.inner.managed_runtimes.lock();
@@ -564,26 +558,38 @@ impl TaskCenter {
             id,
             name: runtime_name,
             kind: root_task_kind,
-            cancellation_token: cancel,
+            cancellation_token: cancel.clone(),
             partition_id,
-            metadata,
+            metadata: Some(metadata()),
         };
+
+        let (result_tx, result_rx) = oneshot::channel();
 
         // start the work on the runtime
         let _ = thread_builder
             .spawn(move || {
-                let localset = LocalSet::new();
-                {
-                    let _local_guard = localset.enter();
-                    Self::spawn_local_inner(&tc, context, run()); // , &localset);
-                    rt_handle.inner.block_on(localset);
-                }
+                let local_set = LocalSet::new();
+                let result = rt_handle
+                    .inner
+                    .block_on(local_set.run_until(unmanaged_wrapper(
+                        tc.clone(),
+                        context,
+                        root_future(),
+                    )));
+
                 debug!("Runtime {} completed", runtime_name);
+                drop(rt_handle);
                 tc.drop_runtime(runtime_name);
+
+                // need to use an oneshot here since we cannot await a thread::JoinHandle :-(
+                let _ = result_tx.send(result);
             })
             .unwrap();
 
-        Ok(id)
+        Ok(RuntimeRootTaskHandle {
+            inner_handle: result_rx,
+            cancellation_token: cancel,
+        })
     }
 
     fn drop_runtime(&self, name: &'static str) {

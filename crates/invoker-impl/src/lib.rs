@@ -251,6 +251,7 @@ where
         self,
         mut updateable_options: impl LiveLoad<InvokerOptions> + Send + 'static,
     ) -> anyhow::Result<()> {
+        debug!("Starting the invoker");
         let Service {
             tmp_dir,
             inner: mut service,
