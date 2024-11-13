@@ -19,11 +19,12 @@ use aws_credential_types::provider::ProvideCredentials;
 use object_store::aws::AmazonS3Builder;
 use object_store::{ObjectStore, PutPayload};
 use tempfile::NamedTempFile;
-use tracing::{debug, trace_span, warn};
+use tokio_util::io::{StreamReader, SyncIoBridge};
+use tracing::{debug, trace, trace_span, warn};
 use url::Url;
 
 use restate_core::task_center;
-use restate_partition_store::snapshots::PartitionSnapshotMetadata;
+use restate_partition_store::snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata};
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::PartitionId;
 
@@ -156,7 +157,6 @@ impl SnapshotRepository {
 
         let upload = self
             .object_store
-            .put(&object_store::path::Path::from(snapshot_key), payload)
             .put(
                 &object_store::path::Path::from(snapshot_key.clone()),
                 payload,
@@ -171,6 +171,80 @@ impl SnapshotRepository {
             snapshot_key,
         );
         Ok(())
+    }
+
+    pub(crate) async fn find_latest(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
+        let list_prefix = match self.prefix.as_str() {
+            "" | "/" => format!("{}/", partition_id),
+            prefix => format!("{}/{}/", prefix, partition_id),
+        };
+        let list_prefix = object_store::path::Path::from(list_prefix.as_str());
+
+        let list = self
+            .object_store
+            .list_with_delimiter(Some(&list_prefix))
+            .await?;
+
+        let latest = list.objects.first();
+
+        let Some(snapshot_entry) = latest else {
+            debug!(%partition_id, "No snapshots found in the snapshots repository");
+            return Ok(None);
+        };
+
+        let snapshot_object = self
+            .object_store
+            .get(&snapshot_entry.location)
+            .await
+            .context("Failed to get snapshot from repository")?;
+
+        // construct the bridge in a Tokio context, before moving to blocking pool
+        let snapshot_reader = SyncIoBridge::new(StreamReader::new(snapshot_object.into_stream()));
+
+        let snapshot_name = snapshot_entry.location.filename().expect("has a name");
+        let snapshot_base_path = &self.staging_path.join(snapshot_name);
+        tokio::fs::create_dir_all(snapshot_base_path).await?;
+
+        let snapshot_dir = snapshot_base_path.clone();
+        trace!(%partition_id, "Unpacking snapshot {} to: {:?}", snapshot_entry.location, snapshot_dir);
+        task_center()
+            .spawn_blocking_fn_unmanaged("unpack-snapshot", Some(partition_id), move || {
+                let mut tarball = tar::Archive::new(snapshot_reader);
+                for file in tarball.entries()? {
+                    let mut file = file?;
+                    trace!("Unpacking snapshot file: {:?}", file.header().path()?);
+                    file.unpack_in(&snapshot_dir)?;
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await??;
+
+        let metadata = tokio::fs::read(snapshot_base_path.join("metadata.json")).await?;
+        let mut metadata: PartitionSnapshotMetadata = serde_json::from_slice(metadata.as_slice())?;
+
+        // Patch the file paths in the snapshot metadata to point to the correct staging directory on the local node.
+        let snapshot_base_path = snapshot_base_path
+            .to_path_buf()
+            .into_os_string()
+            .into_string()
+            .map_err(|path| anyhow::anyhow!("Invalid string: {:?}", path))?
+            .trim_end_matches('/')
+            .to_owned();
+        metadata
+            .files
+            .iter_mut()
+            .for_each(|f| f.directory = snapshot_base_path.clone());
+        trace!(%partition_id, "Restoring from snapshot metadata: {:?}", metadata);
+
+        Ok(Some(LocalPartitionSnapshot {
+            base_dir: self.staging_path.clone(),
+            min_applied_lsn: metadata.min_applied_lsn,
+            db_comparator_name: metadata.db_comparator_name,
+            files: metadata.files,
+        }))
     }
 }
 

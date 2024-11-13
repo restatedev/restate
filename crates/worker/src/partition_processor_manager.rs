@@ -76,6 +76,7 @@ use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
+use crate::partition::snapshots::SnapshotRepository;
 use crate::partition::PartitionProcessorControlCommand;
 use crate::PartitionProcessorBuilder;
 
@@ -1124,6 +1125,9 @@ impl SpawnPartitionProcessorTask {
             invoker.handle(),
         );
 
+        let snapshot_repository =
+            SnapshotRepository::create(config.common.base_dir(), &config.worker.snapshots).await?;
+
         let invoker_name = Box::leak(Box::new(format!("invoker-{}", partition_id)));
         let invoker_config = configuration.clone().map(|c| &c.worker.invoker);
 
@@ -1135,14 +1139,54 @@ impl SpawnPartitionProcessorTask {
             {
                 let options = options.clone();
                 let key_range = key_range.clone();
-                let partition_store = partition_store_manager
-                    .open_partition_store(
-                        partition_id,
-                        key_range,
-                        OpenMode::CreateIfMissing,
-                        &options.storage.rocksdb,
-                    )
-                    .await?;
+
+                let partition_store = if !partition_store_manager
+                    .has_partition(pp_builder.partition_id)
+                    .await
+                {
+                    info!(
+                        partition_id = %partition_id,
+                        "Looking for store snapshot to bootstrap partition",
+                    );
+                    let snapshot = snapshot_repository.find_latest(partition_id).await?;
+                    if let Some(snapshot) = snapshot {
+                        info!(
+                            partition_id = %partition_id,
+                            "Found snapshot to bootstrap partition, restoring it",
+                        );
+                        partition_store_manager
+                            .restore_partition_store_snapshot(
+                                partition_id,
+                                key_range.clone(),
+                                snapshot,
+                                &options.storage.rocksdb,
+                            )
+                            .await?
+                    } else {
+                        info!(
+                            partition_id = %partition_id,
+                            "No snapshot found to bootstrap partition, creating new store",
+                        );
+                        partition_store_manager
+                            .open_partition_store(
+                                partition_id,
+                                key_range,
+                                OpenMode::CreateIfMissing,
+                                &options.storage.rocksdb,
+                            )
+                            .await?
+                    }
+                } else {
+                    partition_store_manager
+                        .open_partition_store(
+                            partition_id,
+                            key_range,
+                            OpenMode::OpenExisting,
+                            &options.storage.rocksdb,
+                        )
+                        .await?
+                };
+
                 move || async move {
                     tc.spawn_child(
                         TaskKind::SystemService,
@@ -1152,7 +1196,13 @@ impl SpawnPartitionProcessorTask {
                     )?;
 
                     let err = pp_builder
-                        .build::<ProtobufRawEntryCodec>(tc, bifrost, partition_store, configuration)
+                        .build::<ProtobufRawEntryCodec>(
+                            tc,
+                            bifrost,
+                            partition_store,
+                            configuration,
+                            snapshot_repository,
+                        )
                         .await?
                         .run()
                         .await

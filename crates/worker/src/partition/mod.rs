@@ -78,7 +78,7 @@ mod cleaner;
 pub mod invoker_storage_reader;
 mod leadership;
 pub mod shuffle;
-mod snapshots;
+pub mod snapshots;
 mod state_machine;
 pub mod types;
 
@@ -148,6 +148,7 @@ where
         bifrost: Bifrost,
         mut partition_store: PartitionStore,
         configuration: Live<Configuration>,
+        snapshot_repository: SnapshotRepository,
     ) -> Result<PartitionProcessor<Codec, InvokerInputSender>, StorageError> {
         let PartitionProcessorBuilder {
             partition_id,
@@ -197,13 +198,9 @@ where
             last_seen_leader_epoch,
         );
 
-        let config = configuration.pinned();
-        let snapshot_producer = SnapshotProducer::create(
-            partition_store.clone(),
-            configuration,
-            SnapshotRepository::create(config.common.base_dir(), &config.worker.snapshots).await?,
-        )
-        .await?;
+        let snapshot_producer =
+            SnapshotProducer::create(partition_store.clone(), configuration, snapshot_repository)
+                .await?;
 
         Ok(PartitionProcessor {
             task_center,
