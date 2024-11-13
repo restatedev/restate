@@ -127,7 +127,7 @@ impl<T: TransportConnect> Scheduler<T> {
 
     pub async fn on_attach_node(
         &mut self,
-        node: &GenerationalNodeId,
+        node: GenerationalNodeId,
     ) -> Result<Vec<Action>, ShutdownError> {
         trace!(node = %node, "Node is attaching to cluster");
         // the convergence loop will make sure that the node receives its instructions
