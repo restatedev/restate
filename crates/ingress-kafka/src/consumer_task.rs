@@ -115,7 +115,9 @@ impl MessageSender {
             messaging.system = "kafka",
             messaging.operation = "receive",
             messaging.source.name = msg.topic(),
-            messaging.destination.name = %self.subscription.sink()
+            messaging.destination.name = %self.subscription.sink(),
+            restate.subscription.id = %self.subscription.id(),
+            messaging.consumer.group.name = consumer_group_id
         );
         info!(parent: &ingress_span, "Processing Kafka ingress request");
         let ingress_span_context = ingress_span.context().span().span_context().clone();
@@ -229,6 +231,8 @@ impl ConsumerTask {
             .expect("group.id must be set")
             .to_string();
         debug!(
+            restate.subscription.id = %self.sender.subscription.id(),
+            messaging.consumer.group.name = consumer_group_id,
             "Starting consumer for topics {:?} with configuration {:?}",
             self.topics, self.client_config
         );
@@ -236,6 +240,13 @@ impl ConsumerTask {
         let consumer: Arc<MessageConsumer> = Arc::new(self.client_config.create()?);
         let topics: Vec<&str> = self.topics.iter().map(|x| &**x).collect();
         consumer.subscribe(&topics)?;
+
+        debug!(
+            restate.subscription.id = %self.sender.subscription.id(),
+            messaging.consumer.group.name = consumer_group_id,
+            "Assigned topic/partitions/offset: {:?}",
+            consumer.assignment()?
+        );
 
         let mut topic_partition_tasks: HashMap<(String, i32), TaskId> = Default::default();
 
