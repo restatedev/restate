@@ -115,7 +115,8 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "wait", runtime = "default"))]
     SequencerAppender,
     // -- Replicated loglet tasks
-    /// Receives messages from remote sequencers on nodes with local sequencer.
+    /// Receives messages from remote sequencers on nodes with local sequencer. This is also used
+    /// in remote sequencer to handle responses of rpc messages.
     #[strum(props(OnCancel = "abort", runtime = "default"))]
     NetworkMessageHandler,
     ReplicatedLogletReadStream,
