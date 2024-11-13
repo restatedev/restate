@@ -13,7 +13,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_serde_util::{ByteCount, NonZeroByteCount};
 
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder)]
@@ -76,6 +76,44 @@ pub struct RocksDbOptions {
     /// Default: "except-detailed-timers"
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_statistics_level: Option<StatisticsLevel>,
+
+    /// # RocksDB log level
+    ///
+    /// Verbosity of the LOG.
+    ///
+    /// Default: "error"
+    rocksdb_log_level: Option<RocksDbLogLevel>,
+
+    /// # RocksDB log keep file num
+    ///
+    /// Number of info LOG files to keep
+    ///
+    /// Default: 1
+    rocksdb_log_keep_file_num: Option<usize>,
+
+    /// # RocksDB log max file size
+    ///
+    /// Max size of info LOG file
+    ///
+    /// Default: 64MB
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<ByteCount>"))]
+    rocksdb_log_max_file_size: Option<NonZeroByteCount>,
+}
+
+/// Verbosity of the LOG.
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[derive(Debug, Clone, Copy, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+#[repr(i32)]
+pub enum RocksDbLogLevel {
+    Debug = 0,
+    Info,
+    Warn,
+    #[default]
+    Error,
+    Fatal,
+    Header,
 }
 
 impl RocksDbOptions {
@@ -106,6 +144,15 @@ impl RocksDbOptions {
         }
         if self.rocksdb_statistics_level.is_none() {
             self.rocksdb_statistics_level = Some(common.rocksdb_statistics_level());
+        }
+        if self.rocksdb_log_level.is_none() {
+            self.rocksdb_log_level = Some(common.rocksdb_log_level());
+        }
+        if self.rocksdb_log_keep_file_num.is_none() {
+            self.rocksdb_log_keep_file_num = Some(common.rocksdb_log_keep_file_num());
+        }
+        if self.rocksdb_log_max_file_size.is_none() {
+            self.rocksdb_log_max_file_size = Some(common.rocksdb_log_max_file_size());
         }
     }
 
@@ -142,6 +189,21 @@ impl RocksDbOptions {
     pub fn rocksdb_statistics_level(&self) -> StatisticsLevel {
         self.rocksdb_statistics_level
             .unwrap_or(StatisticsLevel::ExceptTimers)
+    }
+
+    pub fn rocksdb_log_level(&self) -> RocksDbLogLevel {
+        self.rocksdb_log_level.unwrap_or_default()
+    }
+
+    pub fn rocksdb_log_keep_file_num(&self) -> usize {
+        self.rocksdb_log_keep_file_num.unwrap_or(1)
+    }
+
+    pub fn rocksdb_log_max_file_size(&self) -> NonZeroByteCount {
+        self.rocksdb_log_max_file_size
+            .unwrap_or(NonZeroByteCount::new(
+                NonZeroUsize::new(64_000_000).expect("is valid size"),
+            ))
     }
 }
 
