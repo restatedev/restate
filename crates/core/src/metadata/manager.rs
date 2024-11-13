@@ -495,7 +495,7 @@ impl MetadataManager {
                             connection.peer()
                         );
                         let outgoing = Outgoing::new(
-                            *connection.peer(),
+                            connection.peer(),
                             MetadataMessage::GetMetadataRequest(GetMetadataRequest {
                                 metadata_kind,
                                 min_version: Some(task.version),

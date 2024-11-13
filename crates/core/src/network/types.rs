@@ -174,7 +174,7 @@ impl<M> Incoming<M> {
         }
     }
 
-    pub fn peer(&self) -> &GenerationalNodeId {
+    pub fn peer(&self) -> GenerationalNodeId {
         self.connection.peer()
     }
 
@@ -268,7 +268,7 @@ impl<O> Reciprocal<O> {
         }
     }
 
-    pub fn peer(&self) -> &GenerationalNodeId {
+    pub fn peer(&self) -> GenerationalNodeId {
         self.connection.peer()
     }
 
@@ -348,7 +348,7 @@ impl<M, S> Outgoing<M, S> {
 
 /// Only available if this outgoing is pinned to a connection
 impl<M> Outgoing<M, HasConnection> {
-    pub fn peer(&self) -> &GenerationalNodeId {
+    pub fn peer(&self) -> GenerationalNodeId {
         self.connection.0.peer()
     }
 
@@ -357,7 +357,7 @@ impl<M> Outgoing<M, HasConnection> {
     /// the peer to use any generation. Call `to_any_generation()` on the returned Outgoing value.
     pub fn forget_connection(self) -> Outgoing<M, NoConnection> {
         Outgoing {
-            connection: NoConnection((*self.peer()).into()),
+            connection: NoConnection(self.peer().into()),
             body: self.body,
             meta: self.meta,
         }
@@ -422,7 +422,7 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
         let permit = bail_on_none!(
             self,
             connection.reserve().await,
-            NetworkError::ConnectionClosed
+            NetworkError::ConnectionClosed(connection.peer())
         );
 
         with_metadata(|metadata| {
@@ -470,7 +470,7 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
     fn try_upgrade(&self) -> Result<Arc<OwnedConnection>, NetworkError> {
         match self.connection.0.connection.upgrade() {
             Some(connection) => Ok(connection),
-            None => Err(NetworkError::ConnectionClosed),
+            None => Err(NetworkError::ConnectionClosed(self.connection.0.peer())),
         }
     }
 }

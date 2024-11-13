@@ -707,7 +707,7 @@ mod tests {
         type MessageType = GetNodeState;
 
         async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-            if self.block_list.contains(msg.peer()) {
+            if self.block_list.contains(&msg.peer()) {
                 return;
             }
 
