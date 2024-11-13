@@ -1027,29 +1027,30 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use restate_core::TaskKind;
-    use restate_core::TestCoreEnv;
-    use restate_invoker_api::test_util::EmptyStorageReader;
-    use restate_types::config::InvokerOptionsBuilder;
-    use restate_types::live::Constant;
-    use schemars::_serde_json::Value;
+    use serde_json::Value;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use crate::invocation_task::InvocationTaskError;
-    use crate::quota::InvokerConcurrencyQuota;
+    use restate_core::TaskKind;
+    use restate_core::TestCoreEnv;
     use restate_invoker_api::entry_enricher;
+    use restate_invoker_api::test_util::EmptyStorageReader;
     use restate_invoker_api::InvokerHandle;
     use restate_test_util::{check, let_assert};
+    use restate_types::config::InvokerOptionsBuilder;
     use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceRevision};
     use restate_types::invocation::ServiceType;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
+    use restate_types::live::Constant;
     use restate_types::retries::RetryPolicy;
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::service::ServiceMetadata;
+
+    use crate::invocation_task::InvocationTaskError;
+    use crate::quota::InvokerConcurrencyQuota;
 
     // -- Mocks
 
