@@ -8,5 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod producer;
-pub mod repository;
+mod producer;
+mod repository;
+
+pub use producer::SnapshotProducer;
+pub use repository::SnapshotRepository;

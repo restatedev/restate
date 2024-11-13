@@ -60,7 +60,7 @@ impl SnapshotRepository {
         // detected region and default credentials provider. This makes object_store behave
         // similarly to the Lambda invoker, respecting AWS_PROFILE and available session creds.
         let object_store: Arc<dyn ObjectStore> = if destination.scheme() == "s3"
-            && !destination.query().is_some()
+            && destination.query().is_none()
             && snapshots_options.additional_options.is_empty()
         {
             let aws_region = aws_config::load_defaults(BehaviorVersion::v2024_03_28())
