@@ -89,7 +89,7 @@ impl SnapshotRepository {
             object_store,
             destination,
             prefix,
-            staging_path: base_dir.clone(),
+            staging_path: base_dir.clone().join("snapshot-staging"),
         })
     }
 
@@ -115,20 +115,16 @@ impl SnapshotRepository {
         // reverse order. We inject an explicit sort key into the snapshot prefix to make sure that
         // the latest snapshot is always first.
         let inverted_sort_key = format!("{:016x}", u64::MAX - lsn.as_u64());
-        let key = format!(
-            "{partition_id}/{sk}/{snapshot_id}_{lsn}.tar",
-            sk = inverted_sort_key,
-        );
 
-        // The snapshot data / metadata key format is: [<base_prefix>/]<partition_id>/<sort_key>/<snapshot_id>_<lsn>.tar
+        // The snapshot data / metadata key format is: [<base_prefix>/]<partition_id>/<sort_key>_<lsn>_<snapshot_id>.tar
         let snapshot_key = match self.prefix.as_str() {
             "" | "/" => format!(
-                "{partition_id}/{sk}/{snapshot_id}_{lsn}.tar",
+                "{partition_id}/{sk}_{lsn}_{snapshot_id}.tar",
                 sk = inverted_sort_key,
                 lsn = metadata.min_applied_lsn,
             ),
             prefix => format!(
-                "{trimmed_prefix}/{partition_id}/{sk}/{snapshot_id}_{lsn}.tar",
+                "{trimmed_prefix}/{partition_id}/{sk}_{lsn}_{snapshot_id}.tar",
                 trimmed_prefix = prefix.trim_start_matches('/').trim_end_matches('/'),
                 sk = inverted_sort_key,
             ),
@@ -161,6 +157,10 @@ impl SnapshotRepository {
         let upload = self
             .object_store
             .put(&object_store::path::Path::from(snapshot_key), payload)
+            .put(
+                &object_store::path::Path::from(snapshot_key.clone()),
+                payload,
+            )
             .await
             .context("Failed to put snapshot in repository")?;
 
@@ -168,7 +168,7 @@ impl SnapshotRepository {
             %snapshot_id,
             etag = upload.e_tag.unwrap_or_default(),
             "Successfully published snapshot to repository as: {}",
-            key,
+            snapshot_key,
         );
         Ok(())
     }
