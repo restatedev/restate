@@ -63,7 +63,7 @@ impl NetworkServer {
         );
 
         server_builder
-            .run(node_health, axum_router, &options.bind_address)
+            .run(node_health, axum_router, &options.bind_address.unwrap())
             .await?;
 
         Ok(())
