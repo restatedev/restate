@@ -241,13 +241,6 @@ impl ConsumerTask {
         let topics: Vec<&str> = self.topics.iter().map(|x| &**x).collect();
         consumer.subscribe(&topics)?;
 
-        debug!(
-            restate.subscription.id = %self.sender.subscription.id(),
-            messaging.consumer.group.name = consumer_group_id,
-            "Assigned topic/partitions/offset: {:?}",
-            consumer.assignment()?
-        );
-
         let mut topic_partition_tasks: HashMap<(String, i32), TaskId> = Default::default();
 
         let result = loop {
@@ -268,6 +261,12 @@ impl ConsumerTask {
                             Some(q) => q,
                             None => break Err(Error::TopicPartitionSplit(topic.clone(), partition))
                         };
+
+                        debug!(
+                            restate.subscription.id = %self.sender.subscription.id(),
+                            messaging.consumer.group.name = consumer_group_id,
+                            "Starting topic '{topic}' partition '{partition}' consumption loop from offset '{offset}'"
+                        );
 
                         let task = topic_partition_queue_consumption_loop(
                             self.sender.clone(),
