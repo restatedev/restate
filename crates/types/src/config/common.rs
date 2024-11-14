@@ -65,7 +65,7 @@ pub struct CommonOptions {
     pub metadata_store_client: MetadataStoreClientOptions,
 
     /// Address to bind for the Node server. Derived from the advertised address, defaulting
-    /// to `0.0.0.0:$PORT` (or `0.0.0.0:80` if advertised address does not specify port).
+    /// to `0.0.0.0:$PORT` (where the port will be inferred from the URL scheme).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub bind_address: Option<BindAddress>,
