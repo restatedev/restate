@@ -41,6 +41,7 @@ figment = { version = "0.10.8", features = ["env", "toml"] }
 flexbuffers = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
+http-serde = { workspace = true }
 humantime = { workspace = true }
 itertools = { workspace = true }
 moka = { workspace = true, features = ["sync", "logging"] }

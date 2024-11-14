@@ -6860,6 +6860,7 @@ dependencies = [
  "googletest",
  "hostname",
  "http 1.1.0",
+ "http-serde",
  "humantime",
  "itertools 0.13.0",
  "jsonptr",

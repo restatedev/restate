@@ -88,12 +88,14 @@ impl HttpClient {
         HttpClient {
             client: builder.clone().build::<_, BoxBody>(ProxyConnector::new(
                 options.http_proxy.clone(),
+                options.no_proxy.clone(),
                 https_connector,
             )),
             h2c_prior_knowledge_client: {
                 builder.http2_only(true);
                 builder.build::<_, BoxBody>(ProxyConnector::new(
                     options.http_proxy.clone(),
+                    options.no_proxy.clone(),
                     http_connector,
                 ))
             },
