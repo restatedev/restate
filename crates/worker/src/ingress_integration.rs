@@ -17,12 +17,13 @@ use restate_core::network::partition_processor_rpc_client::{
 };
 use restate_core::network::TransportConnect;
 use restate_ingress_http::{RequestDispatcher, RequestDispatcherError};
-use restate_types::identifiers::PartitionProcessorRpcRequestId;
+use restate_types::identifiers::{PartitionProcessorRpcRequestId, WithInvocationId};
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::retries::RetryPolicy;
 use std::future::Future;
 use std::time::Duration;
+use tracing::{debug_span, trace, Instrument};
 
 pub struct RpcRequestDispatcher<C> {
     partition_processor_rpc_client: PartitionProcessorRpcClient<C>,
@@ -59,7 +60,17 @@ impl<C> RpcRequestDispatcher<C> {
         Ok(self
             .retry_policy
             .clone()
-            .retry_if(operation, |e| is_idempotent || e.is_safe_to_retry())
+            .retry_if(operation, |e| {
+                let retry = is_idempotent || e.is_safe_to_retry();
+
+                if retry {
+                    trace!("Retrying rpc because of error: {e}.");
+                } else {
+                    trace!("Rpc failed: {e}");
+                }
+
+                retry
+            })
             .await
             .map_err(|e| anyhow!("Error when trying to route the request internally: {e}"))?)
     }
@@ -82,6 +93,7 @@ where
                     invocation_request.clone(),
                 )
         })
+        .instrument(debug_span!("send invocation", %request_id, invocation_id = %invocation_request.invocation_id()))
         .await
     }
 
@@ -95,6 +107,7 @@ where
             self.partition_processor_rpc_client
                 .append_invocation_and_wait_output(request_id, invocation_request.clone())
         })
+        .instrument(debug_span!("call invocation", %request_id, invocation_id = %invocation_request.invocation_id()))
         .await
     }
 
@@ -107,6 +120,7 @@ where
             self.partition_processor_rpc_client
                 .attach_invocation(request_id, invocation_query.clone())
         })
+        .instrument(debug_span!("attach to invocation", %request_id, invocation_id = %invocation_query.to_invocation_id()))
         .await
     }
 
@@ -119,6 +133,7 @@ where
             self.partition_processor_rpc_client
                 .get_invocation_output(request_id, invocation_query.clone())
         })
+        .instrument(debug_span!("get invocation output", %request_id, invocation_id = %invocation_query.to_invocation_id()))
         .await
     }
 
@@ -131,6 +146,7 @@ where
             self.partition_processor_rpc_client
                 .append_invocation_response(request_id, invocation_response.clone())
         })
+        .instrument(debug_span!("send invocation response", %request_id, invocation_id = %invocation_response.id))
         .await
     }
 }

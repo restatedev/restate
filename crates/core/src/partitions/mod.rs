@@ -202,7 +202,9 @@ impl PartitionRoutingRefresher {
                 },
             );
             self.inflight_refresh_task = task.ok();
-        };
+        } else {
+            trace!("Skipping refresh as a refresh task is already in progress");
+        }
     }
 }
 

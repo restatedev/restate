@@ -493,7 +493,9 @@ where
 
     async fn become_follower(&mut self) {
         match &mut self.state {
-            State::Follower => {}
+            State::Follower => {
+                // nothing to do :-)
+            }
             State::Candidate { appender_task, .. } => {
                 appender_task.abort();
             }
@@ -530,7 +532,11 @@ where
                 }
 
                 // Reply to all RPCs with not a leader
-                for (_, reciprocal) in awaiting_rpc_actions.drain() {
+                for (request_id, reciprocal) in awaiting_rpc_actions.drain() {
+                    trace!(
+                        %request_id,
+                        "Failing rpc because I lost leadership",
+                    );
                     respond_to_rpc(
                         &self.task_center,
                         reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
@@ -656,6 +662,8 @@ where
                             },
                         ))),
                     );
+                } else {
+                    debug!(%request_id, "Ignoring sending ingress response because there is no awaiting rpc");
                 }
             }
             Action::IngressSubmitNotification {
@@ -819,6 +827,7 @@ where
                         // In this case, someone already proposed this command,
                         // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
                         let old_reciprocal = o.remove();
+                        trace!(%request_id, "Replacing rpc with newer request");
                         respond_to_rpc(
                             &self.task_center,
                             old_reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
