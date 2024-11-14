@@ -50,7 +50,7 @@ impl<C> ProxyConnector<C> {
     fn no_proxy(&self, host: &str) -> bool {
         // According to RFC3986, raw IPv6 hosts will be wrapped in []. So we need to strip those off
         // the end in order to parse correctly
-        let authority = if host.starts_with('[') && host.ends_with('[') {
+        let authority = if host.starts_with('[') && host.ends_with(']') {
             &host[1..host.len() - 1]
         } else {
             host
