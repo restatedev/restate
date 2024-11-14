@@ -9,7 +9,7 @@ docker_repo := "localhost/restatedev/restate"
 docker_tag := if path_exists(justfile_directory() / ".git") == "true" {
         `git rev-parse --abbrev-ref HEAD | sed 's|/|.|g'` + "." + `git rev-parse --short HEAD`
     } else {
-        "unknown"
+        "latest"
     }
 docker_image := docker_repo + ":" + docker_tag
 
@@ -135,7 +135,10 @@ verify: lint test doctest
 
 docker:
     # podman builds do not work without --platform set, even though it claims to default to host arch
-    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
+    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/release.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
+
+debug-docker:
+    docker buildx build . --file docker/debug.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
 
 notice-file:
     cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2024 Restate Software, Inc., Restate GmbH <code@restate.dev>\n" && cat) > NOTICE

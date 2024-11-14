@@ -110,7 +110,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: "docker/Dockerfile"
+          file: "docker/release.Dockerfile"
           push: ${{ inputs.uploadImageAsTarball != true }}
           tags: ${{ steps.meta.outputs.tags }}
           load: ${{ inputs.uploadImageAsTarball == true }}
@@ -147,7 +147,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: "docker/Dockerfile"
+          file: "docker/release.Dockerfile"
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           load: false
