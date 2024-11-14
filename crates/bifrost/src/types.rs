@@ -71,13 +71,6 @@ where
 
 impl LsnExt for Lsn {}
 
-#[derive(Debug, Clone, Default)]
-pub struct FindTailAttributes {
-    // Ensure that we are reading the most recent metadata. This should be used when
-    // linearizable metadata reads are required.
-    // TODO: consistent_read: bool,
-}
-
 /// A future that resolves to the Lsn of the last Lsn in a committed batch.
 ///
 /// Note: dropping this future doesn't cancel or stop the underlying enqueued append.

@@ -5,7 +5,7 @@ use enumset::{enum_set, EnumSet};
 use googletest::internal::test_outcome::TestAssertionFailure;
 use googletest::IntoTestResult;
 
-use restate_bifrost::{loglet::Loglet, Bifrost, BifrostAdmin, FindTailAttributes};
+use restate_bifrost::{loglet::Loglet, Bifrost, BifrostAdmin};
 use restate_core::metadata_store::Precondition;
 use restate_core::{metadata_store::MetadataStoreClient, MetadataWriter, TaskCenterBuilder};
 use restate_local_cluster_runner::{
@@ -68,9 +68,7 @@ async fn replicated_loglet_client(
 
     node.start().await.into_test_result()?;
 
-    let loglet = bifrost
-        .find_tail_loglet(LogId::MIN, FindTailAttributes::default())
-        .await?;
+    let loglet = bifrost.find_tail_loglet(LogId::MIN).await?;
 
     Ok((bifrost, loglet, metadata_writer, metadata_store_client))
 }
@@ -141,7 +139,6 @@ where
             replication,
             // node 1 is the metadata, 2..=count+1 are logservers
             nodeset: (2..=log_server_count + 1).collect(),
-            write_set: None,
         };
         let loglet_params = loglet_params.serialize()?;
 

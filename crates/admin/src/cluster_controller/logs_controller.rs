@@ -379,7 +379,6 @@ fn build_new_replicated_loglet_configuration(
             sequencer,
             replication,
             nodeset,
-            write_set: None,
         }),
 
         Err(NodeSelectionError::InsufficientWriteableNodes) => {
@@ -402,7 +401,6 @@ fn build_new_replicated_loglet_configuration(
                     sequencer,
                     replication,
                     nodeset: previous_configuration.expect("to exist").nodeset.clone(),
-                    write_set: None,
                 }
             })
         }
@@ -1490,7 +1488,6 @@ pub mod tests {
             sequencer: GenerationalNodeId::new(0, 1),
             replication: ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             nodeset: NodeSet::from([0, 1, 2]),
-            write_set: None,
         };
 
         let sequencer_replacement = LogletConfiguration::Replicated(ReplicatedLogletParams {
