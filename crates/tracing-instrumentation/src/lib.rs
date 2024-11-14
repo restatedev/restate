@@ -369,14 +369,13 @@ macro_rules! invocation_span {
             $crate::invocation_span!(
                 level = $lvl,
                 relation = $relation,
-                prefix = $prefix,
                 name = format!("{} {}", $prefix, $target.short()),
                 attributes=attributes,
                 fields=($($field = $field_value),*)
             )
         }
     };
-    (level= $lvl:expr, relation = $relation:expr, prefix= $prefix:expr, id= $id:expr, name= $name:expr, tags=($($($key:ident).+ = $value:expr),*), fields=($($field:ident = $field_value:expr),*)) => {
+    (level= $lvl:expr, relation = $relation:expr, id= $id:expr, name= $name:expr, tags=($($($key:ident).+ = $value:expr),*), fields=($($field:ident = $field_value:expr),*)) => {
         {
             use opentelemetry::KeyValue;
 
@@ -388,14 +387,13 @@ macro_rules! invocation_span {
             $crate::invocation_span!(
                 level = $lvl,
                 relation = $relation,
-                prefix = $prefix,
-                name = format!("{} {}", $prefix, $name),
+                name = $name,
                 attributes=attributes,
                 fields=($($field = $field_value),*)
             )
         }
     };
-    (level= $lvl:expr, relation=$relation:expr, prefix= $prefix:expr, name= $name:expr, attributes=$attributes:ident, fields=($($field:ident = $field_value:expr),*)) => {
+    (level= $lvl:expr, relation=$relation:expr, name= $name:expr, attributes=$attributes:ident, fields=($($field:ident = $field_value:expr),*)) => {
         {
             use opentelemetry::{KeyValue, Context, trace::{Tracer, Link, TracerProvider, TraceContextExt}};
             use restate_types::invocation::SpanRelation;
@@ -475,6 +473,16 @@ macro_rules! info_invocation_span {
             level = ::tracing::Level::INFO,
             relation = $relation,
             prefix = $prefix,
+            id = $id,
+            name = $name,
+            tags = ($($($key).+ = $value),*),
+            fields = ()
+        )
+    };
+    (relation=$relation:expr, id= $id:expr, name= $name:expr, tags=($($($key:ident).+ = $value:expr),*)) => {
+        $crate::invocation_span!(
+            level = ::tracing::Level::INFO,
+            relation = $relation,
             id = $id,
             name = $name,
             tags = ($($($key).+ = $value),*),

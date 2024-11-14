@@ -81,6 +81,7 @@ use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::Command;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
@@ -1877,7 +1878,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .journal_metadata
                         .span_context
                         .as_parent(),
-                    prefix = "set-state",
                     id = invocation_id,
                     name = format!("set-state {key:?}"),
                     tags = (rpc.service = invocation_metadata
@@ -1908,7 +1908,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .journal_metadata
                         .span_context
                         .as_parent(),
-                    prefix = "clear-state",
                     id = invocation_id,
                     name = "clear-state",
                     tags = (rpc.service = invocation_metadata
@@ -1934,7 +1933,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .journal_metadata
                         .span_context
                         .as_parent(),
-                    prefix = "clear-all-state",
                     id = invocation_id,
                     name = "clear-all-state",
                     tags = (rpc.service = invocation_metadata
@@ -2190,7 +2188,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .journal_metadata
                         .span_context
                         .as_parent(),
-                    prefix = "sleep",
                     id = invocation_id,
                     name = "sleep",
                     tags = (rpc.service = invocation_metadata
@@ -2368,7 +2365,26 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 )
                 .await?;
             }
-            EnrichedEntryHeader::Run { .. } | EnrichedEntryHeader::Custom { .. } => {
+            EnrichedEntryHeader::Run { .. } => {
+                let _span = instrumentation::info_invocation_span!(
+                    relation = invocation_metadata
+                        .journal_metadata
+                        .span_context
+                        .as_parent(),
+                    id = invocation_id,
+                    name = match journal_entry.deserialize_name::<Codec>()?.as_deref() {
+                        None | Some("") => Cow::Borrowed("run"),
+                        Some(name) => Cow::Owned(format!("run {}", name)),
+                    },
+                    tags = (rpc.service = invocation_metadata
+                        .invocation_target
+                        .service_name()
+                        .to_string())
+                );
+
+                // We just store it
+            }
+            EnrichedEntryHeader::Custom { .. } => {
                 // We just store it
             }
         }
@@ -2735,8 +2751,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     #[tracing::instrument(
         skip_all,
-        level="info", 
-        name="suspend", 
+        level="info",
+        name="suspend",
         fields(
             metadata.journal.length = metadata.journal_metadata.length,
             restate.invocation.id = %invocation_id)
@@ -2910,8 +2926,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     #[tracing::instrument(
         skip_all,
-        level="info", 
-        name="set_state", 
+        level="info",
+        name="set_state",
         fields(
             restate.invocation.id = %invocation_id,
             restate.state.key = ?key,
@@ -2936,8 +2952,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     #[tracing::instrument(
         skip_all,
-        level="info", 
-        name="clear_state", 
+        level="info",
+        name="clear_state",
         fields(
             restate.invocation.id = %invocation_id,
             restate.state.key = ?key,
@@ -2961,8 +2977,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     #[tracing::instrument(
         skip_all,
-        level="info", 
-        name="clear_all_state", 
+        level="info",
+        name="clear_all_state",
         fields(
             restate.invocation.id = %invocation_id,
             rpc.service = %service_id.service_name

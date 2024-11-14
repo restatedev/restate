@@ -116,7 +116,7 @@ pub struct CommonOptionCliOverride {
     /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
     ///
     /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
-    #[clap(long, env = "RESTATE_SERVICES_RUNTIME_ENDPOINT", global = true)]
+    #[clap(long, env = "RESTATE_TRACING_SERVICES_ENDPOINT", global = true)]
     pub tracing_services_endpoint: Option<String>,
 
     /// # Distributed Tracing JSON Export Path
