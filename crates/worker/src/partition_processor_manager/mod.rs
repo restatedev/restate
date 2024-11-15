@@ -227,7 +227,7 @@ impl PartitionProcessorManager {
                     self.on_command(command);
                 }
                 _ = latest_snapshot_check_interval.tick() => {
-                    self.request_partition_snapshots();
+                    self.trigger_periodic_partition_snapshots();
                 }
                 Some(control_processors) = self.incoming_update_processors.next() => {
                     self.pending_control_processors = Some(control_processors.into_body());
@@ -655,7 +655,7 @@ impl PartitionProcessorManager {
         }
     }
 
-    fn request_partition_snapshots(&mut self) {
+    fn trigger_periodic_partition_snapshots(&mut self) {
         let Some(records_per_snapshot) = self
             .updateable_config
             .live_load()
@@ -670,7 +670,8 @@ impl PartitionProcessorManager {
             let status = state.partition_processor_status();
             match status {
                 Some(status)
-                    if status.replay_status == ReplayStatus::Active
+                    if status.effective_mode == RunMode::Leader
+                        && status.replay_status == ReplayStatus::Active
                         && status.last_applied_log_lsn.unwrap_or(Lsn::INVALID)
                             >= status
                                 .last_archived_log_lsn
