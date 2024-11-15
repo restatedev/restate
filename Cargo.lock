@@ -6849,6 +6849,7 @@ dependencies = [
  "bytestring",
  "clap",
  "codederror",
+ "convert_case",
  "derive_builder",
  "derive_more",
  "downcast-rs",

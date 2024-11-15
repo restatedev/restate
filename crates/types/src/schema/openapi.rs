@@ -8,10 +8,12 @@ use restate_utoipa::openapi::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use convert_case::{Case, Casing};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceOpenAPI {
     paths: Paths,
+    components: Components
 }
 
 impl ServiceOpenAPI {
@@ -36,7 +38,11 @@ impl ServiceOpenAPI {
 
         let mut paths = Paths::builder();
         for (handler_name, handler_schemas) in handlers {
-            let operation_id = format!("{service_name}-{handler_name}");
+            let operation_id = format!(
+                "{}{}",
+                service_name.to_case(Case::Pascal),
+                handler_name.to_case(Case::Pascal)
+            );
 
             if !handler_schemas.target_meta.public {
                 // We don't generate the OpenAPI route for that.
@@ -78,7 +84,7 @@ impl ServiceOpenAPI {
                 .operation(
                     HttpMethod::Post,
                     Operation::builder()
-                        .operation_id(Some(format!("{operation_id}-send")))
+                        .operation_id(Some(format!("{operation_id}Send")))
                         .description(Some(
                             handler_schemas
                                 .documentation
@@ -103,6 +109,7 @@ impl ServiceOpenAPI {
 
         ServiceOpenAPI {
             paths: paths.build(),
+            components: Default::default(),
         }
     }
 
@@ -135,6 +142,7 @@ impl ServiceOpenAPI {
     pub fn empty() -> Self {
         Self {
             paths: Default::default(),
+            components: Default::default(),
         }
     }
 

@@ -37,7 +37,7 @@ clap-verbosity-flag = { workspace = true }
 cling = { workspace = true }
 comfy-table = { workspace = true }
 const_format = "0.2.32"
-convert_case = "0.6"
+convert_case = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = { version = "3.4.1" }
 dialoguer = { workspace = true }
