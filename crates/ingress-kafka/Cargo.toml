@@ -26,7 +26,7 @@ bytes = { workspace = true }
 derive_builder = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
-rdkafka = { version = "0.35", features = ["libz-static", "cmake-build", "ssl-vendored"] }
+rdkafka = { git = "https://github.com/restatedev/rust-rdkafka", rev = "4b5946309bdb669eb0c884cd9b7ad05578a0f6c6", features = ["libz-static", "cmake-build", "ssl-vendored"] }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
