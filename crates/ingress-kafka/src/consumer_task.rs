@@ -89,13 +89,18 @@ impl KafkaDeduplicationId {
 pub struct MessageSender {
     subscription: Subscription,
     dispatcher: KafkaIngressDispatcher,
+    experimental_feature_kafka_ingress_next: bool,
 
     subscription_id: String,
     ingress_request_counter: metrics::Counter,
 }
 
 impl MessageSender {
-    pub fn new(subscription: Subscription, dispatcher: KafkaIngressDispatcher) -> Self {
+    pub fn new(
+        subscription: Subscription,
+        dispatcher: KafkaIngressDispatcher,
+        experimental_feature_kafka_ingress_next: bool,
+    ) -> Self {
         Self {
             subscription_id: subscription.id().to_string(),
             ingress_request_counter: counter!(
@@ -104,6 +109,7 @@ impl MessageSender {
             ),
             subscription,
             dispatcher,
+            experimental_feature_kafka_ingress_next,
         }
     }
 
@@ -144,6 +150,7 @@ impl MessageSender {
             deduplication_id,
             deduplication_index,
             headers,
+            self.experimental_feature_kafka_ingress_next,
         )
         .map_err(|cause| Error::Event {
             topic: msg.topic().to_string(),

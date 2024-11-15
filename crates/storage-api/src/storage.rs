@@ -1343,6 +1343,14 @@ pub mod v1 {
                             // TODO this should become an hard error in Restate 1.3
                             .unwrap_or_default(),
                     ),
+                    source::Source::Subscription(subscription) => {
+                        restate_types::invocation::Source::Subscription(
+                            restate_types::identifiers::SubscriptionId::from_slice(
+                                &subscription.subscription_id,
+                            )
+                            .map_err(|e| ConversionError::invalid_data(e))?,
+                        )
+                    }
                     source::Source::Service(service) => restate_types::invocation::Source::Service(
                         restate_types::identifiers::InvocationId::try_from(
                             service
@@ -1368,6 +1376,11 @@ pub mod v1 {
                     restate_types::invocation::Source::Ingress(rpc_id) => {
                         source::Source::Ingress(source::Ingress {
                             rpc_id: rpc_id.to_bytes().to_vec().into(),
+                        })
+                    }
+                    restate_types::invocation::Source::Subscription(sub_id) => {
+                        source::Source::Subscription(source::Subscription {
+                            subscription_id: sub_id.to_bytes().to_vec().into(),
                         })
                     }
                     restate_types::invocation::Source::Service(

@@ -50,19 +50,22 @@ define_table!(sys_invocation_status(
     /// Idempotency key, if any.
     idempotency_key: DataType::LargeUtf8,
 
-    /// Either `ingress` if the service was invoked externally or `service` if the service was
-    /// invoked by another Restate service.
+    /// Either:
+    /// * `ingress` if the invocation was created externally.
+    /// * `service` if the invocation was created by another Restate service.
+    /// * `subscription` if the invocation was created by a subscription (e.g. Kafka).
     invoked_by: DataType::LargeUtf8,
 
-    /// The name of the invoking service. Or `null` if invoked externally.
-    invoked_by_service_name: DataType::LargeUtf8,
-
-    /// The caller [Invocation ID](/operate/invocation#invocation-identifier) if the service was
-    /// invoked by another Restate service. Or `null` if invoked externally.
+    /// The caller [Invocation ID](/operate/invocation#invocation-identifier) if `invoked_by = 'service'`.
     invoked_by_id: DataType::LargeUtf8,
 
-    /// The caller invocation target if the service was invoked by another Restate service. Or
-    /// `null` if invoked externally.
+    /// The subscription id if `invoked_by = 'subscription'`.
+    invoked_by_subscription_id: DataType::LargeUtf8,
+
+    /// The name of caller service if `invoked_by = 'service'`.
+    invoked_by_service_name: DataType::LargeUtf8,
+
+    /// The caller invocation target if `invoked_by = 'service'`.
     invoked_by_target: DataType::LargeUtf8,
 
     /// The ID of the service deployment that started processing this invocation, and will continue

@@ -98,10 +98,15 @@ message Source {
     InvocationTarget invocation_target = 2;
   }
 
+  message Subscription {
+    bytes subscription_id = 1;
+  }
+
   oneof source {
     Ingress ingress = 9;
     Service service = 10;
     google.protobuf.Empty internal = 11;
+    Subscription subscription = 12;
   }
 }
 

@@ -137,7 +137,11 @@ impl Service {
             task_center(),
             client_config,
             vec![topic.to_string()],
-            MessageSender::new(subscription, self.dispatcher.clone()),
+            MessageSender::new(
+                subscription,
+                self.dispatcher.clone(),
+                options.experimental_feature_kafka_ingress_next(),
+            ),
         );
 
         task_orchestrator.start(subscription_id, consumer_task);
