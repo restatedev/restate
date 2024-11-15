@@ -334,6 +334,12 @@ where
             .get_node_by_partition(partition_id)
             .ok_or(PartitionProcessorRpcClientError::UnknownNode(partition_id))?;
 
+        trace!(
+            %partition_id,
+            "Sending PartitionProcessor RPC request to node: {}",
+            node_id
+        );
+
         let rpc_result = self
             .rpc_router
             .call(
