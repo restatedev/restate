@@ -13,14 +13,16 @@ mod persisted_lsn_watchdog;
 mod processor_state;
 mod spawn_processor_task;
 
-use std::collections::BTreeMap;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-
 use futures::stream::StreamExt;
 use metrics::gauge;
+use std::collections::BTreeMap;
+use std::ops::{Add, RangeInclusive};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::oneshot;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
+use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
@@ -53,7 +55,7 @@ use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
-use restate_types::logs::Lsn;
+use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor::{
@@ -215,11 +217,17 @@ impl PartitionProcessorManager {
         let mut logs_version_watcher = self.metadata.watch(MetadataKind::Logs);
         let mut partition_table_version_watcher = self.metadata.watch(MetadataKind::PartitionTable);
 
+        let mut latest_snapshot_check_interval = tokio::time::interval(Duration::from_secs(5));
+        latest_snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         self.health_status.update(WorkerStatus::Ready);
         loop {
             tokio::select! {
                 Some(command) = self.rx.recv() => {
                     self.on_command(command);
+                }
+                _ = latest_snapshot_check_interval.tick() => {
+                    self.trigger_periodic_partition_snapshots();
                 }
                 Some(control_processors) = self.incoming_update_processors.next() => {
                     self.pending_control_processors = Some(control_processors.into_body());
@@ -642,6 +650,53 @@ impl PartitionProcessorManager {
                         "Unknown partition id '{partition_id}'. Ignoring {} command.",
                         control_processor.command
                     );
+                }
+            }
+        }
+    }
+
+    fn trigger_periodic_partition_snapshots(&mut self) {
+        let Some(records_per_snapshot) = self
+            .updateable_config
+            .live_load()
+            .worker
+            .snapshots
+            .snapshot_interval_num_records
+        else {
+            return;
+        };
+
+        for (partition_id, state) in self.processor_states.iter() {
+            let status = state.partition_processor_status();
+            match status {
+                Some(status)
+                    if status.effective_mode == RunMode::Leader
+                        && status.replay_status == ReplayStatus::Active
+                        && status.last_applied_log_lsn.unwrap_or(Lsn::INVALID)
+                            >= status
+                                .last_archived_log_lsn
+                                .unwrap_or(Lsn::OLDEST)
+                                .add(Lsn::from(records_per_snapshot.get())) =>
+                {
+                    debug!(
+                        %partition_id,
+                        last_archived_lsn = %status.last_archived_log_lsn.unwrap_or(SequenceNumber::OLDEST),
+                        last_applied_lsn = %status.last_applied_log_lsn.unwrap_or(SequenceNumber::INVALID),
+                        "Creating partition snapshot",
+                    );
+                    let (tx, _) = oneshot::channel();
+
+                    // ignore errors and don't request further snapshots if internal queue is full; we will try again later
+                    if self
+                        .tx
+                        .try_send(ProcessorsManagerCommand::CreateSnapshot(*partition_id, tx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                _ => {
+                    continue;
                 }
             }
         }

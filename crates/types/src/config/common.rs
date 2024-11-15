@@ -233,7 +233,7 @@ static HOSTNAME: Lazy<String> = Lazy::new(|| {
 });
 
 impl CommonOptions {
-    pub fn shutdown_grace_period(&self) -> std::time::Duration {
+    pub fn shutdown_grace_period(&self) -> Duration {
         self.shutdown_timeout.into()
     }
     // todo: It's imperative that the node doesn't change its name after start. Move this to a
@@ -354,7 +354,7 @@ impl Default for CommonOptions {
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
             service_client: Default::default(),
-            shutdown_timeout: std::time::Duration::from_secs(60).into(),
+            shutdown_timeout: Duration::from_secs(60).into(),
             tracing: TracingOptions::default(),
             log_filter: "warn,restate=info".to_string(),
             log_format: Default::default(),
@@ -366,11 +366,11 @@ impl Default for CommonOptions {
             rocksdb_total_memory_size: NonZeroUsize::new(6_000_000_000).unwrap(), // 4GB
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
-            rocksdb_write_stall_threshold: std::time::Duration::from_secs(3).into(),
+            rocksdb_write_stall_threshold: Duration::from_secs(3).into(),
             rocksdb_enable_stall_on_memory_limit: false,
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
-            metadata_update_interval: std::time::Duration::from_secs(3).into(),
+            metadata_update_interval: Duration::from_secs(3).into(),
             network_error_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(10),
                 2.0,
@@ -599,6 +599,7 @@ impl Default for TracingOptions {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use crate::nodes_config::Role;

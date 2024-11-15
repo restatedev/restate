@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::num::{NonZeroU16, NonZeroUsize};
+use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::warn;
@@ -61,7 +61,10 @@ pub struct WorkerOptions {
     /// value is, the higher the throughput and latency are.
     max_command_batch_size: NonZeroUsize,
 
-    #[serde(flatten)]
+    /// # Snapshots
+    ///
+    /// Snapshots provide a mechanism for safely trimming the log and efficient bootstrapping of new
+    /// worker nodes.
     pub snapshots: SnapshotsOptions,
 }
 
@@ -355,7 +358,21 @@ impl Default for StorageOptions {
 #[cfg_attr(feature = "schemars", schemars(rename = "SnapshotsOptions", default))]
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
-pub struct SnapshotsOptions {}
+pub struct SnapshotsOptions {
+    /// # Automatic snapshot creation frequency
+    ///
+    /// Number of log records that trigger a snapshot to be created.
+    ///
+    /// As snapshots are created asynchronously, the actual number of new records that will trigger
+    /// a snapshot will vary. The counter for the subsequent snapshot begins from the LSN at which
+    /// the previous snapshot export was initiated. Only leader Partition Processors will take
+    /// snapshots for a given partition.
+    ///
+    /// This setting does not influence explicitly requested snapshots triggered using `restatectl`.
+    ///
+    /// Default: `None` - automatic snapshots are disabled by default
+    pub snapshot_interval_num_records: Option<NonZeroU64>,
+}
 
 impl SnapshotsOptions {
     pub fn snapshots_base_dir(&self) -> PathBuf {
