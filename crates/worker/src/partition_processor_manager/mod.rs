@@ -72,6 +72,8 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::GenerationalNodeId;
 
+type LsnWatchChannel = (watch::Sender<Option<Lsn>>, watch::Receiver<Option<Lsn>>);
+
 pub struct PartitionProcessorManager {
     task_center: TaskCenter,
     health_status: HealthStatus<WorkerStatus>,
@@ -89,8 +91,7 @@ pub struct PartitionProcessorManager {
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
-    archived_lsn_channels:
-        HashMap<PartitionId, (watch::Sender<Option<Lsn>>, watch::Receiver<Option<Lsn>>)>,
+    archived_lsn_channels: HashMap<PartitionId, LsnWatchChannel>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
     pending_control_processors: Option<ControlProcessors>,
 
@@ -801,7 +802,6 @@ impl PartitionProcessorManager {
                     _ = self
                         .pending_snapshot_export_tasks
                         .insert(partition_id, task);
-                    debug!("In-progress create snapshto task...");
                 }
                 Err(err) => {
                     // todo(pavel): how do we solve the ownership of sender moving to the (now failed) task?

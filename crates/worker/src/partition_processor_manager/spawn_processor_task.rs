@@ -147,11 +147,7 @@ impl SpawnPartitionProcessorTask {
                     )?;
 
                     pp_builder
-                        .build::<ProtobufRawEntryCodec>(
-                            tc,
-                            bifrost,
-                            partition_store,
-                        )
+                        .build::<ProtobufRawEntryCodec>(tc, bifrost, partition_store)
                         .await?
                         .run()
                         .await
