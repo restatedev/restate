@@ -23,7 +23,7 @@ use crate::LsnExt;
 ///
 /// The entry might represent a data record or a placeholder for a trim gap if the log is trimmed
 /// at this position.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LogEntry<S = Lsn> {
     offset: S,
     record: MaybeRecord<S>,
@@ -125,7 +125,7 @@ impl<S: Copy> LogEntry<S> {
     }
 }
 
-#[derive(Debug, derive_more::IsVariant)]
+#[derive(Debug, Clone, derive_more::IsVariant)]
 enum MaybeRecord<S = Lsn> {
     TrimGap(TrimGap<S>),
     Data(Record),
