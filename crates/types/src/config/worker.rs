@@ -374,9 +374,6 @@ pub struct SnapshotsOptions {
     pub snapshot_interval_num_records: Option<NonZeroU64>,
 }
 
-// [worker.snapshots]
-// snapshot-interval-num-records = 100_000
-
 impl SnapshotsOptions {
     pub fn snapshots_base_dir(&self) -> PathBuf {
         super::data_dir("db-snapshots")
