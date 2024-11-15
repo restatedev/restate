@@ -12,12 +12,10 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use anyhow::bail;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
 use restate_partition_store::PartitionStore;
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
-use restate_storage_api::Transaction;
 use restate_types::identifiers::SnapshotId;
 
 /// Encapsulates producing a Restate partition snapshot out of a partition store.
@@ -69,16 +67,6 @@ impl SnapshotProducer {
             lsn = %snapshot.min_applied_lsn,
             metadata = ?metadata_path,
             "Partition snapshot written"
-        );
-
-        let previous_archived_snapshot_lsn = partition_store.get_archived_lsn().await?;
-        let mut tx = partition_store.transaction();
-        tx.put_archived_lsn(snapshot.min_applied_lsn).await;
-        tx.commit().await?;
-        debug!(
-            previous_archived_lsn = ?previous_archived_snapshot_lsn,
-            updated_archived_lsn = ?snapshot.min_applied_lsn,
-            "Updated persisted archived snapshot LSN"
         );
 
         Ok(snapshot_meta)

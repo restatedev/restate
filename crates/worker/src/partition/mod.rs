@@ -309,9 +309,6 @@ where
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
 
         self.status.last_applied_log_lsn = Some(last_applied_lsn);
-        self.last_snapshot_lsn_watch
-            .0
-            .send(partition_store.get_archived_lsn().await?)?;
 
         // propagate errors and let the PPM handle error retries
         let current_tail = self
