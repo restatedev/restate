@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use restate_types::net::{CodecError, MIN_SUPPORTED_PROTOCOL_VERSION};
 use restate_types::nodes_config::NodesConfigError;
 use restate_types::GenerationalNodeId;
@@ -42,8 +44,8 @@ pub enum NetworkError {
     UnknownNode(#[from] NodesConfigError),
     #[error("operation aborted, node is shutting down")]
     Shutdown(#[from] ShutdownError),
-    #[error("timeout: {0}")]
-    Timeout(&'static str),
+    #[error("exceeded deadline after spending {0:?}")]
+    Timeout(Duration),
     #[error("protocol error: {0}")]
     ProtocolError(#[from] ProtocolError),
     #[error("cannot connect: {} {}", tonic::Status::code(.0), tonic::Status::message(.0))]
@@ -99,7 +101,7 @@ impl From<NetworkError> for tonic::Status {
         match value {
             NetworkError::Shutdown(_) => tonic::Status::unavailable(value.to_string()),
             NetworkError::ProtocolError(e) => e.into(),
-            NetworkError::Timeout(e) => tonic::Status::deadline_exceeded(e),
+            NetworkError::Timeout(_) => tonic::Status::deadline_exceeded(value.to_string()),
             NetworkError::OldPeerGeneration(e) => tonic::Status::already_exists(e),
             NetworkError::ConnectError(s) => s,
             e => tonic::Status::internal(e.to_string()),
