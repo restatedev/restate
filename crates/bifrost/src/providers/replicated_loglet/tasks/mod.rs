@@ -11,15 +11,20 @@
 mod check_seal;
 mod digests;
 mod find_tail;
+mod get_trim_point;
 mod periodic_tail_checker;
 mod repair_tail;
 mod seal;
+mod trim;
+mod util;
 
 pub use check_seal::*;
 pub use find_tail::*;
+pub use get_trim_point::*;
 pub use periodic_tail_checker::*;
 pub use repair_tail::*;
 pub use seal::*;
+pub use trim::*;
 
 use restate_types::logs::LogletOffset;
 use restate_types::Merge;
