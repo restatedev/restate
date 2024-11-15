@@ -2811,17 +2811,21 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         response: IngressResponseResult,
     ) {
         match &response {
-            IngressResponseResult::Success(_, _) => debug_if_leader!(
-                ctx.is_leader,
-                "Send response to ingress with request id '{:?}': Success",
-                request_id
-            ),
-            IngressResponseResult::Failure(e) => debug_if_leader!(
-                ctx.is_leader,
-                "Send response to ingress with request id '{:?}': Failure({})",
-                request_id,
-                e
-            ),
+            IngressResponseResult::Success(_, _) => {
+                debug_if_leader!(
+                    ctx.is_leader,
+                    "Send response to ingress with request id '{:?}': Success",
+                    request_id
+                )
+            }
+            IngressResponseResult::Failure(e) => {
+                debug_if_leader!(
+                    ctx.is_leader,
+                    "Send response to ingress with request id '{:?}': Failure({})",
+                    request_id,
+                    e
+                )
+            }
         };
 
         ctx.action_collector.push(Action::IngressResponse {
@@ -2973,15 +2977,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         message: OutboxMessage,
     ) -> Result<(), Error> {
         match &message {
-            OutboxMessage::ServiceInvocation(service_invocation) => debug_if_leader!(
-                ctx.is_leader,
-                rpc.service = %service_invocation.invocation_target.service_name(),
-                rpc.method = %service_invocation.invocation_target.handler_name(),
-                restate.invocation.id = %service_invocation.invocation_id,
-                restate.invocation.target = %service_invocation.invocation_target,
-                restate.outbox.seq = seq_number,
-                "Effect: Send service invocation to partition processor"
-            ),
+            OutboxMessage::ServiceInvocation(service_invocation) => {
+                debug_if_leader!(
+                    ctx.is_leader,
+                    rpc.service = %service_invocation.invocation_target.service_name(),
+                    rpc.method = %service_invocation.invocation_target.handler_name(),
+                    restate.invocation.id = %service_invocation.invocation_id,
+                    restate.invocation.target = %service_invocation.invocation_target,
+                    restate.outbox.seq = seq_number,
+                    "Effect: Send service invocation to partition processor"
+                )
+            }
             OutboxMessage::ServiceResponse(InvocationResponse {
                 result: ResponseResult::Success(_),
                 entry_index,
@@ -2995,25 +3001,29 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     entry_index
                 )
             }
-            OutboxMessage::InvocationTermination(invocation_termination) => debug_if_leader!(
-                ctx.is_leader,
-                restate.invocation.id = %invocation_termination.invocation_id,
-                restate.outbox.seq = seq_number,
-                "Effect: Send invocation termination command '{:?}' to partition processor",
-                invocation_termination.flavor
-            ),
+            OutboxMessage::InvocationTermination(invocation_termination) => {
+                debug_if_leader!(
+                    ctx.is_leader,
+                    restate.invocation.id = %invocation_termination.invocation_id,
+                    restate.outbox.seq = seq_number,
+                    "Effect: Send invocation termination command '{:?}' to partition processor",
+                    invocation_termination.flavor
+                )
+            }
             OutboxMessage::ServiceResponse(InvocationResponse {
                 result: ResponseResult::Failure(e),
                 entry_index,
                 id,
-            }) => debug_if_leader!(
-                ctx.is_leader,
-                restate.invocation.id = %id,
-                restate.outbox.seq = seq_number,
-                "Effect: Send failure '{}' response to another invocation, completing entry index {}",
-                e,
-                entry_index
-            ),
+            }) => {
+                debug_if_leader!(
+                    ctx.is_leader,
+                    restate.invocation.id = %id,
+                    restate.outbox.seq = seq_number,
+                    "Effect: Send failure '{}' response to another invocation, completing entry index {}",
+                    e,
+                    entry_index
+                )
+            }
             OutboxMessage::AttachInvocation(AttachInvocationRequest {
                 invocation_query, ..
             }) => {
@@ -3515,9 +3525,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         service_id: ServiceId,
     ) -> Result<(), Error> {
         debug_if_leader!(
-                    ctx.is_leader,
-                    rpc.service = %service_id.service_name,
-                    "Effect: Clear all promises");
+            ctx.is_leader,
+            rpc.service = %service_id.service_name,
+            "Effect: Clear all promises"
+        );
 
         ctx.storage.delete_all_promises(&service_id).await;
 
