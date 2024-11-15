@@ -47,7 +47,8 @@ use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
     ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
-    NOT_FOUND_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
+    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
@@ -79,6 +80,7 @@ use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::Command;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
@@ -1793,7 +1795,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .journal_metadata
                         .span_context
                         .as_parent(),
-                    prefix = "set-state",
                     id = invocation_id,
                     name = format!("set-state {key:?}"),
                     tags = (rpc.service = invocation_metadata
@@ -1824,7 +1825,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .journal_metadata
                         .span_context
                         .as_parent(),
-                    prefix = "clear-state",
                     id = invocation_id,
                     name = "clear-state",
                     tags = (rpc.service = invocation_metadata
@@ -1850,7 +1850,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .journal_metadata
                         .span_context
                         .as_parent(),
-                    prefix = "clear-all-state",
                     id = invocation_id,
                     name = "clear-all-state",
                     tags = (rpc.service = invocation_metadata
@@ -2106,7 +2105,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .journal_metadata
                         .span_context
                         .as_parent(),
-                    prefix = "sleep",
                     id = invocation_id,
                     name = "sleep",
                     tags = (rpc.service = invocation_metadata
@@ -2284,7 +2282,26 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 )
                 .await?;
             }
-            EnrichedEntryHeader::Run { .. } | EnrichedEntryHeader::Custom { .. } => {
+            EnrichedEntryHeader::Run { .. } => {
+                let _span = instrumentation::info_invocation_span!(
+                    relation = invocation_metadata
+                        .journal_metadata
+                        .span_context
+                        .as_parent(),
+                    id = invocation_id,
+                    name = match journal_entry.deserialize_name::<Codec>()?.as_deref() {
+                        None | Some("") => Cow::Borrowed("run"),
+                        Some(name) => Cow::Owned(format!("run {}", name)),
+                    },
+                    tags = (rpc.service = invocation_metadata
+                        .invocation_target
+                        .service_name()
+                        .to_string())
+                );
+
+                // We just store it
+            }
+            EnrichedEntryHeader::Custom { .. } => {
                 // We just store it
             }
             EntryHeader::CancelInvocation => {
@@ -2326,6 +2343,66 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             invocation_id,
                             Completion::new(entry_index, CompletionResult::Empty),
                         );
+                    }
+                }
+            }
+            EnrichedEntryHeader::AttachInvocation { is_completed } => {
+                if !is_completed {
+                    let_assert!(
+                        Entry::AttachInvocation(entry) =
+                            journal_entry.deserialize_entry_ref::<Codec>()?
+                    );
+
+                    if let Some(invocation_query) =
+                        Self::get_invocation_query_from_attach_invocation_target(
+                            ctx,
+                            &invocation_id,
+                            entry.target,
+                        )
+                        .await?
+                    {
+                        self.handle_outgoing_message(
+                            ctx,
+                            OutboxMessage::AttachInvocation(AttachInvocationRequest {
+                                invocation_query,
+                                block_on_inflight: true,
+                                response_sink: ServiceInvocationResponseSink::partition_processor(
+                                    invocation_id,
+                                    entry_index,
+                                ),
+                            }),
+                        )
+                        .await?;
+                    }
+                }
+            }
+            EnrichedEntryHeader::GetInvocationOutput { is_completed } => {
+                if !is_completed {
+                    let_assert!(
+                        Entry::GetInvocationOutput(entry) =
+                            journal_entry.deserialize_entry_ref::<Codec>()?
+                    );
+
+                    if let Some(invocation_query) =
+                        Self::get_invocation_query_from_attach_invocation_target(
+                            ctx,
+                            &invocation_id,
+                            entry.target,
+                        )
+                        .await?
+                    {
+                        self.handle_outgoing_message(
+                            ctx,
+                            OutboxMessage::AttachInvocation(AttachInvocationRequest {
+                                invocation_query,
+                                block_on_inflight: false,
+                                response_sink: ServiceInvocationResponseSink::partition_processor(
+                                    invocation_id,
+                                    entry_index,
+                                ),
+                            }),
+                        )
+                        .await?;
                     }
                 }
             }
@@ -2386,6 +2463,39 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .await?;
         }
         Ok(())
+    }
+
+    async fn get_invocation_query_from_attach_invocation_target<State: ReadOnlyJournalTable>(
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: &InvocationId,
+        target: AttachInvocationTarget,
+    ) -> Result<Option<InvocationQuery>, Error> {
+        Ok(match target {
+            AttachInvocationTarget::InvocationId(id) => {
+                if let Ok(id) = id.parse::<InvocationId>() {
+                    Some(InvocationQuery::Invocation(id))
+                } else {
+                    warn!(
+                        "Error when trying to parse the invocation id '{}' of attach/get output. \
+                                This should have been previously checked by the invoker.",
+                        id
+                    );
+                    None
+                }
+            }
+            AttachInvocationTarget::CallEntryIndex(call_entry_index) => {
+                // Look for the given entry index, then resolve the invocation id.
+                Self::get_journal_entry_callee_invocation_id(ctx, invocation_id, call_entry_index)
+                    .await?
+                    .map(InvocationQuery::Invocation)
+            }
+            AttachInvocationTarget::IdempotentRequest(idempotency_id) => {
+                Some(InvocationQuery::IdempotencyId(idempotency_id))
+            }
+            AttachInvocationTarget::Workflow(service_id) => {
+                Some(InvocationQuery::Workflow(service_id))
+            }
+        })
     }
 
     async fn get_journal_entry_callee_invocation_id<State: ReadOnlyJournalTable>(
@@ -2490,7 +2600,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         invocation_id: InvocationId,
         completion: Completion,
     ) -> Result<(), Error> {
-        if Self::store_completion(ctx, invocation_id, completion.clone()).await? {
+        if let Some(completion) = Self::store_completion(ctx, invocation_id, completion).await? {
             Self::forward_completion(ctx, invocation_id, completion);
         }
         Ok(())
@@ -2655,13 +2765,25 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             | is @ InvocationStatus::Suspended { .. }
             | is @ InvocationStatus::Inboxed(_)
             | is @ InvocationStatus::Scheduled(_) => {
-                Self::do_append_response_sink(
-                    ctx,
-                    invocation_id,
-                    is,
-                    attach_invocation_request.response_sink,
-                )
-                .await?;
+                if attach_invocation_request.block_on_inflight {
+                    Self::do_append_response_sink(
+                        ctx,
+                        invocation_id,
+                        is,
+                        attach_invocation_request.response_sink,
+                    )
+                    .await?;
+                } else {
+                    self.send_response_to_sinks(
+                        ctx,
+                        vec![attach_invocation_request.response_sink],
+                        NOT_READY_INVOCATION_ERROR,
+                        Some(invocation_id),
+                        None,
+                        is.invocation_target(),
+                    )
+                    .await?;
+                }
             }
             InvocationStatus::Completed(completed) => {
                 // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
@@ -2760,8 +2882,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     #[tracing::instrument(
         skip_all,
-        level="info", 
-        name="suspend", 
+        level="info",
+        name="suspend",
         fields(
             metadata.journal.length = metadata.journal_metadata.length,
             restate.invocation.id = %invocation_id)
@@ -2892,6 +3014,16 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 e,
                 entry_index
             ),
+            OutboxMessage::AttachInvocation(AttachInvocationRequest {
+                invocation_query, ..
+            }) => {
+                debug_if_leader!(
+                    ctx.is_leader,
+                    restate.outbox.seq = seq_number,
+                    "Effect: Enqueuing attach invocation request to '{:?}'",
+                    invocation_query,
+                )
+            }
         };
 
         ctx.storage.put_outbox_message(seq_number, &message).await;
@@ -2925,8 +3057,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     #[tracing::instrument(
         skip_all,
-        level="info", 
-        name="set_state", 
+        level="info",
+        name="set_state",
         fields(
             restate.invocation.id = %invocation_id,
             restate.state.key = ?key,
@@ -2951,8 +3083,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     #[tracing::instrument(
         skip_all,
-        level="info", 
-        name="clear_state", 
+        level="info",
+        name="clear_state",
         fields(
             restate.invocation.id = %invocation_id,
             restate.state.key = ?key,
@@ -2976,8 +3108,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
     #[tracing::instrument(
         skip_all,
-        level="info", 
-        name="clear_all_state", 
+        level="info",
+        name="clear_all_state",
         fields(
             restate.invocation.id = %invocation_id,
             rpc.service = %service_id.service_name
@@ -3179,25 +3311,22 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    /// Returns `true` if the completion should be forwarded.
+    /// Returns the completion if it should be forwarded.
     async fn store_completion<State: JournalTable>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
-        Completion {
-            entry_index,
-            result,
-        }: Completion,
-    ) -> Result<bool, Error> {
+        mut completion: Completion,
+    ) -> Result<Option<Completion>, Error> {
         debug_if_leader!(
             ctx.is_leader,
-            restate.journal.index = entry_index,
+            restate.journal.index = completion.entry_index,
             "Store completion {}",
-            CompletionResultFmt(&result)
+            CompletionResultFmt(&completion.result)
         );
 
         if let Some(mut journal_entry) = ctx
             .storage
-            .get_journal_entry(&invocation_id, entry_index)
+            .get_journal_entry(&invocation_id, completion.entry_index)
             .await?
             .and_then(|journal_entry| match journal_entry {
                 JournalEntry::Entry(entry) => Some(entry),
@@ -3213,42 +3342,50 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 // after it has been completed for the first time can cause non-deterministic execution.
                 warn!(
                     restate.invocation.id = %invocation_id,
-                    restate.journal.index = entry_index,
+                    restate.journal.index = completion.entry_index,
                     "Trying to complete an awakeable already completed. Ignoring this completion");
-                debug!("Discarded awakeable completion: {:?}", result);
-                return Ok(false);
+                debug!("Discarded awakeable completion: {:?}", completion.result);
+                return Ok(None);
             }
             if journal_entry.header().is_completed() == Some(true) {
                 // We use error level here as this can happen only in case there is some bug
                 // in the Partition Processor/Invoker.
                 error!(
                     restate.invocation.id = %invocation_id,
-                    restate.journal.index = entry_index,
+                    restate.journal.index = completion.entry_index,
                     "Trying to complete the entry {:?}, but it's already completed. This is a bug.",
                     journal_entry.ty());
-                return Ok(false);
+                return Ok(None);
+            }
+            if journal_entry.ty() == EntryType::GetInvocationOutput
+                && completion.result == CompletionResult::from(&NOT_READY_INVOCATION_ERROR)
+            {
+                // For GetInvocationOutput, we convert the not ready error in an empty response.
+                // This is a byproduct of the fact that for now we keep simple the invocation response contract.
+                // This should be re-evaluated when we'll rework the journal with the immutable log
+                completion.result = CompletionResult::Empty;
             }
 
-            Codec::write_completion(&mut journal_entry, result)?;
+            Codec::write_completion(&mut journal_entry, completion.result.clone())?;
             ctx.storage
                 .put_journal_entry(
                     &invocation_id,
-                    entry_index,
+                    completion.entry_index,
                     &JournalEntry::Entry(journal_entry),
                 )
                 .await;
-            Ok(true)
+            Ok(Some(completion))
         } else {
             // In case we don't have the journal entry (only awakeables case),
             // we'll send the completion afterward once we receive the entry.
             ctx.storage
                 .put_journal_entry(
                     &invocation_id,
-                    entry_index,
-                    &JournalEntry::Completion(result),
+                    completion.entry_index,
+                    &JournalEntry::Completion(completion.result),
                 )
                 .await;
-            Ok(false)
+            Ok(None)
         }
     }
 

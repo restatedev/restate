@@ -115,6 +115,12 @@ pub mod test_util {
                 PlainEntryHeader::GetCallInvocationId { is_completed } => {
                     EnrichedEntryHeader::GetCallInvocationId { is_completed }
                 }
+                PlainEntryHeader::AttachInvocation { is_completed } => {
+                    EnrichedEntryHeader::AttachInvocation { is_completed }
+                }
+                PlainEntryHeader::GetInvocationOutput { is_completed } => {
+                    EnrichedEntryHeader::GetInvocationOutput { is_completed }
+                }
             };
 
             Ok(RawEntry::new(enriched_header, entry))

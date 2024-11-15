@@ -48,21 +48,21 @@ impl ServiceOpenAPI {
 
             let call_item = PathItem::builder()
                 .summary(Some(format!("Call {service_name}/{handler_name}")))
-                .description(Some(
-                    handler_schemas
-                        .documentation
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            format!(
-                                "Call {service_name} handler {handler_name} and wait for response"
-                            )
-                        }),
-                ))
                 .operation(
                     HttpMethod::Post,
                     Operation::builder()
                         .operation_id(Some(operation_id.clone()))
+                        .description(Some(
+                            handler_schemas
+                                .documentation
+                                .as_ref()
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "Call {service_name} handler {handler_name} and wait for response"
+                                    )
+                                }),
+                        ))
                         .parameters(Some(parameters.clone()))
                         .tag(service_name.to_string())
                         .request_body(request_body.clone())
@@ -75,19 +75,19 @@ impl ServiceOpenAPI {
 
             let send_item = PathItem::builder()
                 .summary(Some(format!("Send to {service_name}/{handler_name}")))
-                .description(Some(
-                    handler_schemas
-                        .documentation
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            format!("Send request to {service_name} handler {handler_name}")
-                        }),
-                ))
                 .operation(
                     HttpMethod::Post,
                     Operation::builder()
                         .operation_id(Some(format!("{operation_id}-send")))
+                        .description(Some(
+                            handler_schemas
+                                .documentation
+                                .as_ref()
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    format!("Send request to {service_name} handler {handler_name}")
+                                }),
+                        ))
                         .parameters(Some(parameters.clone()))
                         .parameter(parameters_ref(DELAY_PARAMETER_REF_NAME))
                         .tag(service_name.to_string())

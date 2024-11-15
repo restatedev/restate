@@ -332,6 +332,12 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
         MessageType::GetCallInvocationIdEntry => PlainEntryHeader::GetCallInvocationId {
             is_completed: expect_flag!(message_header, completed),
         },
+        MessageType::AttachInvocationEntry => PlainEntryHeader::AttachInvocation {
+            is_completed: expect_flag!(message_header, completed),
+        },
+        MessageType::GetInvocationOutputEntry => PlainEntryHeader::GetInvocationOutput {
+            is_completed: expect_flag!(message_header, completed),
+        },
         MessageType::CustomEntry(code) => PlainEntryHeader::Custom { code },
     }
 }
@@ -356,6 +362,8 @@ fn raw_header_to_message_type(entry_header: &PlainEntryHeader) -> MessageType {
         PlainEntryHeader::Run { .. } => MessageType::SideEffectEntry,
         PlainEntryHeader::CancelInvocation => MessageType::CancelInvocationEntry,
         PlainEntryHeader::GetCallInvocationId { .. } => MessageType::GetCallInvocationIdEntry,
+        PlainEntryHeader::AttachInvocation { .. } => MessageType::AttachInvocationEntry,
+        PlainEntryHeader::GetInvocationOutput { .. } => MessageType::GetInvocationOutputEntry,
         PlainEntryHeader::Custom { code, .. } => MessageType::CustomEntry(*code),
     }
 }

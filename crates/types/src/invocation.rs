@@ -467,15 +467,6 @@ impl From<Result<Bytes, InvocationError>> for ResponseResult {
     }
 }
 
-impl From<ResponseResult> for Result<Bytes, InvocationError> {
-    fn from(value: ResponseResult) -> Self {
-        match value {
-            ResponseResult::Success(bytes) => Ok(bytes),
-            ResponseResult::Failure(e) => Err(e),
-        }
-    }
-}
-
 impl From<InvocationError> for ResponseResult {
     fn from(e: InvocationError) -> Self {
         ResponseResult::Failure(e)
@@ -932,6 +923,9 @@ impl WithPartitionKey for InvocationQuery {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AttachInvocationRequest {
     pub invocation_query: InvocationQuery,
+    /// If the invocation is still in-flight when the command is processed, this command will block if this flag is true. Otherwise, the failure [crate::errors::NOT_READY_INVOCATION_ERROR] is sent instead as soon as the command is processed.
+    #[serde(default = "restate_serde_util::default::bool::<true>")]
+    pub block_on_inflight: bool,
     pub response_sink: ServiceInvocationResponseSink,
 }
 

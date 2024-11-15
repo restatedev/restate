@@ -13,7 +13,7 @@
 use super::*;
 
 use crate::errors::{InvocationError, InvocationErrorCode};
-use crate::identifiers::EntryIndex;
+use crate::identifiers::{EntryIndex, IdempotencyId, ServiceId};
 use crate::invocation::Header;
 use crate::time::MillisSinceEpoch;
 use std::fmt;
@@ -43,6 +43,8 @@ pub enum Entry {
     Run(RunEntry),
     CancelInvocation(CancelInvocationEntry),
     GetCallInvocationId(GetCallInvocationIdEntry),
+    AttachInvocation(AttachInvocationEntry),
+    GetInvocationOutput(GetInvocationOutputEntry),
     Custom(Bytes),
 }
 
@@ -189,6 +191,8 @@ pub enum EntryType {
     Run,
     CancelInvocation,
     GetCallInvocationId,
+    AttachInvocation,
+    GetInvocationOutput,
     Custom,
 }
 
@@ -233,6 +237,8 @@ mod private {
     impl Sealed for InvokeEntry {}
     impl Sealed for AwakeableEntry {}
     impl Sealed for GetCallInvocationIdEntry {}
+    impl Sealed for AttachInvocationEntry {}
+    impl Sealed for GetInvocationOutputEntry {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +429,38 @@ pub struct GetCallInvocationIdEntry {
 }
 
 impl CompletableEntry for GetCallInvocationIdEntry {
+    fn is_completed(&self) -> bool {
+        self.result.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachInvocationEntry {
+    pub target: AttachInvocationTarget,
+    pub result: Option<EntryResult>,
+}
+
+impl CompletableEntry for AttachInvocationEntry {
+    fn is_completed(&self) -> bool {
+        self.result.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachInvocationTarget {
+    InvocationId(ByteString),
+    CallEntryIndex(EntryIndex),
+    IdempotentRequest(IdempotencyId),
+    Workflow(ServiceId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetInvocationOutputEntry {
+    pub target: AttachInvocationTarget,
+    pub result: Option<CompletionResult>,
+}
+
+impl CompletableEntry for GetInvocationOutputEntry {
     fn is_completed(&self) -> bool {
         self.result.is_some()
     }

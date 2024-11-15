@@ -721,6 +721,111 @@ async fn get_invocation_id_entry() {
     test_env.shutdown().await;
 }
 
+#[tokio::test]
+async fn attach_invocation_entry() {
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+
+    let callee_invocation_id = InvocationId::mock_random();
+
+    let actions = test_env
+        .apply(Command::InvokerEffect(InvokerEffect {
+            invocation_id,
+            kind: EffectKind::JournalEntry {
+                entry_index: 1,
+                entry: ProtobufRawEntryCodec::serialize_enriched(Entry::AttachInvocation(
+                    AttachInvocationEntry {
+                        target: AttachInvocationTarget::InvocationId(
+                            callee_invocation_id.to_string().into(),
+                        ),
+                        result: None,
+                    },
+                )),
+            },
+        }))
+        .await;
+    assert_that!(
+        actions,
+        contains(pat!(Action::NewOutboxMessage {
+            message: pat!(
+                restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(pat!(
+                    restate_types::invocation::AttachInvocationRequest {
+                        invocation_query: eq(InvocationQuery::Invocation(callee_invocation_id)),
+                        block_on_inflight: eq(true),
+                        response_sink: eq(ServiceInvocationResponseSink::partition_processor(
+                            invocation_id,
+                            1
+                        )),
+                    }
+                ))
+            )
+        }))
+    );
+
+    test_env.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_invocation_output_entry() {
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+
+    let callee_invocation_id = InvocationId::mock_random();
+
+    let actions = test_env
+        .apply(Command::InvokerEffect(InvokerEffect {
+            invocation_id,
+            kind: EffectKind::JournalEntry {
+                entry_index: 1,
+                entry: ProtobufRawEntryCodec::serialize_enriched(Entry::GetInvocationOutput(
+                    GetInvocationOutputEntry {
+                        target: AttachInvocationTarget::InvocationId(
+                            callee_invocation_id.to_string().into(),
+                        ),
+                        result: None,
+                    },
+                )),
+            },
+        }))
+        .await;
+
+    assert_that!(
+        actions,
+        contains(pat!(Action::NewOutboxMessage {
+            message: pat!(
+                restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(pat!(
+                    restate_types::invocation::AttachInvocationRequest {
+                        invocation_query: eq(InvocationQuery::Invocation(callee_invocation_id)),
+                        block_on_inflight: eq(false),
+                        response_sink: eq(ServiceInvocationResponseSink::partition_processor(
+                            invocation_id,
+                            1
+                        )),
+                    }
+                ))
+            )
+        }))
+    );
+
+    // Let's try to complete it with not ready, this should forward empty
+    let actions = test_env
+        .apply(Command::InvocationResponse(InvocationResponse {
+            id: invocation_id,
+            entry_index: 1,
+            result: NOT_READY_INVOCATION_ERROR.into(),
+        }))
+        .await;
+    assert_that!(
+        actions,
+        contains(matchers::actions::forward_completion(
+            invocation_id,
+            eq(Completion::new(1, CompletionResult::Empty))
+        ))
+    );
+
+    test_env.shutdown().await;
+}
+
 #[test(tokio::test)]
 async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let mut test_env = TestEnv::create().await;
