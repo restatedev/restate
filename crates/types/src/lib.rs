@@ -45,7 +45,6 @@ pub mod service_discovery;
 pub mod service_protocol;
 pub mod state_mut;
 pub mod storage;
-pub mod subscription;
 pub mod time;
 pub mod timer;
 

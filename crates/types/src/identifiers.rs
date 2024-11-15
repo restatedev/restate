@@ -29,6 +29,7 @@ use crate::id_util::IdEncoder;
 use crate::id_util::IdResourceType;
 use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
 use crate::time::MillisSinceEpoch;
+use crate::uuid_backed_id;
 
 /// Identifying the leader epoch of a partition processor
 #[derive(
@@ -125,68 +126,6 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 
 // Just an alias
 pub type EntryIndex = u32;
-
-/// Unique Id of a deployment.
-#[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    Clone,
-    Copy,
-    Hash,
-    PartialOrd,
-    Ord,
-    serde_with::SerializeDisplay,
-    serde_with::DeserializeFromStr,
-)]
-pub struct DeploymentId(pub(crate) Ulid);
-
-impl DeploymentId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-
-    pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
-        Self(Ulid::from_parts(timestamp_ms, random))
-    }
-}
-
-impl Default for DeploymentId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Unique Id of a subscription.
-#[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    Clone,
-    Copy,
-    Hash,
-    PartialOrd,
-    Ord,
-    serde_with::SerializeDisplay,
-    serde_with::DeserializeFromStr,
-)]
-pub struct SubscriptionId(pub(crate) Ulid);
-
-impl SubscriptionId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-
-    pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
-        Self(Ulid::from_parts(timestamp_ms, random))
-    }
-}
-
-impl Default for SubscriptionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.
@@ -855,144 +794,10 @@ impl FromStr for LambdaARN {
     }
 }
 
-#[derive(
-    PartialOrd,
-    PartialEq,
-    Eq,
-    Hash,
-    Clone,
-    Copy,
-    serde_with::SerializeDisplay,
-    serde_with::DeserializeFromStr,
-)]
-pub struct PartitionProcessorRpcRequestId(Ulid);
-
-impl PartitionProcessorRpcRequestId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-
-    pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
-        let ulid = Ulid::from_bytes(b.try_into().map_err(|_| IdDecodeError::Length)?);
-        debug_assert!(!ulid.is_nil());
-        Ok(Self(ulid))
-    }
-
-    pub fn from_bytes(bytes: [u8; 16]) -> Self {
-        let ulid = Ulid::from_bytes(bytes);
-        debug_assert!(!ulid.is_nil());
-        Self(ulid)
-    }
-
-    pub fn to_bytes(&self) -> [u8; 16] {
-        self.0.to_bytes()
-    }
-}
-
-impl Default for PartitionProcessorRpcRequestId {
-    fn default() -> Self {
-        PartitionProcessorRpcRequestId::new()
-    }
-}
-
-impl fmt::Display for PartitionProcessorRpcRequestId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl fmt::Debug for PartitionProcessorRpcRequestId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        // use the same formatting for debug and display to show a consistent representation
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl FromStr for PartitionProcessorRpcRequestId {
-    type Err = ulid::DecodeError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(Ulid::from_string(s)?))
-    }
-}
-
-/// Unique Id of a partition snapshot.
-#[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    Clone,
-    Copy,
-    Hash,
-    PartialOrd,
-    Ord,
-    serde_with::SerializeDisplay,
-    serde_with::DeserializeFromStr,
-)]
-pub struct SnapshotId(pub(crate) Ulid);
-
-impl SnapshotId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-
-    pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
-        Self(Ulid::from_parts(timestamp_ms, random))
-    }
-}
-
-impl Default for SnapshotId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ResourceId for SnapshotId {
-    const SIZE_IN_BYTES: usize = size_of::<Ulid>();
-    const RESOURCE_TYPE: IdResourceType = IdResourceType::Snapshot;
-    const STRING_CAPACITY_HINT: usize = base62_max_length_for_type::<u128>();
-
-    fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
-        let raw: u128 = self.0.into();
-        encoder.encode_fixed_width(raw);
-    }
-}
-
-impl TimestampAwareId for SnapshotId {
-    fn timestamp(&self) -> MillisSinceEpoch {
-        self.0.timestamp_ms().into()
-    }
-}
-
-impl FromStr for SnapshotId {
-    type Err = IdDecodeError;
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let mut decoder = IdDecoder::new(input)?;
-        // Ensure we are decoding the correct resource type
-        if decoder.resource_type != Self::RESOURCE_TYPE {
-            return Err(IdDecodeError::TypeMismatch);
-        }
-
-        // ulid (u128)
-        let raw_ulid: u128 = decoder.cursor.decode_next()?;
-        Ok(Self::from(raw_ulid))
-    }
-}
-
-impl fmt::Display for SnapshotId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut encoder = IdEncoder::<Self>::new();
-        self.push_contents_to_encoder(&mut encoder);
-        fmt::Display::fmt(&encoder.finalize(), f)
-    }
-}
-
-impl From<u128> for SnapshotId {
-    fn from(value: u128) -> Self {
-        Self(Ulid::from(value))
-    }
-}
+uuid_backed_id!(Deployment);
+uuid_backed_id!(Subscription);
+uuid_backed_id!(PartitionProcessorRpcRequest);
+uuid_backed_id!(Snapshot);
 
 #[cfg(any(test, feature = "test-util"))]
 mod mocks {
@@ -1185,5 +990,21 @@ mod tests {
             InvocationId::mock_generate(&invocation_target),
             InvocationId::mock_generate(&invocation_target)
         );
+    }
+
+    #[test]
+    fn test_subscription_id_format() {
+        let a = SubscriptionId::new();
+        assert!(a.timestamp().as_u64() > 0);
+        let a_str = a.to_string();
+        assert!(a_str.starts_with("sub_"));
+    }
+
+    #[test]
+    fn test_subscription_roundtrip() {
+        let a = SubscriptionId::new();
+        let b: SubscriptionId = a.to_string().parse().unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.to_string(), b.to_string());
     }
 }

@@ -13,7 +13,7 @@
 use crate::errors::InvocationError;
 use crate::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, PartitionKey, PartitionProcessorRpcRequestId,
-    ServiceId, WithInvocationId, WithPartitionKey,
+    ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
 };
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
@@ -510,6 +510,7 @@ impl ServiceInvocationResponseSink {
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
     Ingress(PartitionProcessorRpcRequestId),
+    Subscription(SubscriptionId),
     Service(InvocationId, InvocationTarget),
     /// Internal calls for the non-deterministic built-in services
     Internal,
