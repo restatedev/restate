@@ -8,6 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
+use tokio::sync::{mpsc, watch};
+use tracing::instrument;
+
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::processor_state::StartedProcessor;
@@ -21,11 +26,9 @@ use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
+use restate_types::logs::Lsn;
 use restate_types::schema::Schema;
 use restate_types::GenerationalNodeId;
-use std::ops::RangeInclusive;
-use tokio::sync::{mpsc, watch};
-use tracing::instrument;
 
 pub struct SpawnPartitionProcessorTask {
     task_name: &'static str,
@@ -36,6 +39,7 @@ pub struct SpawnPartitionProcessorTask {
     metadata: Metadata,
     bifrost: Bifrost,
     partition_store_manager: PartitionStoreManager,
+    archived_lsn_receiver: watch::Receiver<Option<Lsn>>,
 }
 
 impl SpawnPartitionProcessorTask {
@@ -49,6 +53,7 @@ impl SpawnPartitionProcessorTask {
         metadata: Metadata,
         bifrost: Bifrost,
         partition_store_manager: PartitionStoreManager,
+        archived_lsn_receiver: watch::Receiver<Option<Lsn>>,
     ) -> Self {
         Self {
             task_name,
@@ -59,6 +64,7 @@ impl SpawnPartitionProcessorTask {
             metadata,
             bifrost,
             partition_store_manager,
+            archived_lsn_receiver,
         }
     }
 
@@ -80,6 +86,7 @@ impl SpawnPartitionProcessorTask {
             metadata,
             bifrost,
             partition_store_manager,
+            archived_lsn_receiver,
         } = self;
 
         let config = configuration.pinned();
@@ -135,6 +142,7 @@ impl SpawnPartitionProcessorTask {
                         &options.storage.rocksdb,
                     )
                     .await?;
+
                 move || async move {
                     tc.spawn_child(
                         TaskKind::SystemService,
@@ -144,7 +152,12 @@ impl SpawnPartitionProcessorTask {
                     )?;
 
                     pp_builder
-                        .build::<ProtobufRawEntryCodec>(tc, bifrost, partition_store, configuration)
+                        .build::<ProtobufRawEntryCodec>(
+                            tc,
+                            bifrost,
+                            partition_store,
+                            archived_lsn_receiver,
+                        )
                         .await?
                         .run()
                         .await
@@ -154,7 +167,6 @@ impl SpawnPartitionProcessorTask {
 
         let state = StartedProcessor::new(
             root_task_handle.cancellation_token(),
-            partition_id,
             key_range,
             control_tx,
             status_reader,

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use bytes::BytesMut;
 use codederror::CodedError;
+use enum_map::Enum;
 use restate_rocksdb::CfName;
 use restate_rocksdb::IoMode;
 use restate_rocksdb::Priority;
@@ -28,8 +29,8 @@ use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::{BoundColumnFamily, SliceTransform};
 use static_assertions::const_assert_eq;
+use tracing::trace;
 
-use enum_map::Enum;
 use restate_core::ShutdownError;
 use restate_rocksdb::{RocksDb, RocksError};
 use restate_storage_api::{Storage, StorageError, Transaction};
@@ -444,11 +445,19 @@ impl PartitionStore {
             .await
             .map_err(|err| StorageError::Generic(err.into()))?;
 
+        trace!(
+            cf_name = ?self.data_cf_name,
+            %applied_lsn,
+            "Exported column family snapshot to {:?}",
+            snapshot_dir
+        );
+
         Ok(LocalPartitionSnapshot {
             base_dir: snapshot_dir,
             files: metadata.get_files(),
             db_comparator_name: metadata.get_db_comparator_name(),
             min_applied_lsn: applied_lsn,
+            key_range: self.key_range.clone(),
         })
     }
 }
@@ -474,8 +483,9 @@ impl Storage for PartitionStore {
 
 impl StorageAccess for PartitionStore {
     type DBAccess<'a>
-    = DB where
-        Self: 'a,;
+        = DB
+    where
+        Self: 'a;
 
     fn iterator_from<K: TableKey>(
         &self,
@@ -646,7 +656,10 @@ impl<'a> Transaction for PartitionStoreTransaction<'a> {
 }
 
 impl<'a> StorageAccess for PartitionStoreTransaction<'a> {
-    type DBAccess<'b> = DB where Self: 'b;
+    type DBAccess<'b>
+        = DB
+    where
+        Self: 'b;
 
     fn iterator_from<K: TableKey>(
         &self,

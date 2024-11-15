@@ -35,8 +35,6 @@ impl MessageHandler for PartitionProcessorManagerMessageHandler {
     type MessageType = CreateSnapshotRequest;
 
     async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-        debug!("Received '{:?}' from {}", msg.body(), msg.peer());
-
         let processors_manager_handle = self.processors_manager_handle.clone();
         task_center()
             .spawn_child(
@@ -47,19 +45,28 @@ impl MessageHandler for PartitionProcessorManagerMessageHandler {
                     let create_snapshot_result = processors_manager_handle
                         .create_snapshot(msg.body().partition_id)
                         .await;
-                    debug!(
-                        partition_id = ?msg.body().partition_id,
-                        result = ?create_snapshot_result,
-                        "Create snapshot completed",
-                    );
 
                     match create_snapshot_result.as_ref() {
-                        Ok(snapshot_id) => msg.to_rpc_response(CreateSnapshotResponse {
-                            result: Ok(*snapshot_id),
-                        }),
-                        Err(error) => msg.to_rpc_response(CreateSnapshotResponse {
-                            result: Err(SnapshotError::SnapshotCreationFailed(error.to_string())),
-                        }),
+                        Ok(snapshot_id) => {
+                            debug!(
+                                partition_id = %msg.body().partition_id,
+                                %snapshot_id,
+                                "Create snapshot successfully completed",
+                            );
+                            msg.to_rpc_response(CreateSnapshotResponse {
+                                result: Ok(*snapshot_id),
+                            })
+                        }
+                        Err(err) => {
+                            warn!(
+                                partition_id = %msg.body().partition_id,
+                                "Create snapshot failed: {}",
+                                err
+                            );
+                            msg.to_rpc_response(CreateSnapshotResponse {
+                                result: Err(SnapshotError::SnapshotCreationFailed(err.to_string())),
+                            })
+                        }
                     }
                     .send()
                     .await

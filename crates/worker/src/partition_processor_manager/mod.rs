@@ -11,19 +11,22 @@
 mod message_handler;
 mod persisted_lsn_watchdog;
 mod processor_state;
+mod snapshot_task;
 mod spawn_processor_task;
 
-use futures::stream::StreamExt;
-use metrics::gauge;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
+
+use anyhow::anyhow;
+use futures::stream::StreamExt;
+use metrics::gauge;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn, Instrument};
 
 use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
@@ -38,11 +41,12 @@ use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnW
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
+use crate::partition_processor_manager::snapshot_task::SnapshotPartitionTask;
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 use restate_bifrost::Bifrost;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
-use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskKind};
+use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskHandle, TaskKind};
 use restate_core::{RuntimeRootTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_invoker_impl::{BuildError, ChannelStatusReader};
@@ -53,7 +57,7 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::Live;
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -85,10 +89,13 @@ pub struct PartitionProcessorManager {
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
+    archived_lsns_tx: HashMap<PartitionId, watch::Sender<Option<Lsn>>>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
     pending_control_processors: Option<ControlProcessors>,
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
+
+    pending_snapshot_export_tasks: BTreeMap<PartitionId, TaskHandle<anyhow::Result<SnapshotId>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -175,9 +182,11 @@ impl PartitionProcessorManager {
             rx,
             tx,
             persisted_lsns_rx: None,
+            archived_lsns_tx: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
             pending_control_processors: None,
             asynchronous_operations: JoinSet::default(),
+            pending_snapshot_export_tasks: BTreeMap::default(),
         }
     }
 
@@ -541,19 +550,50 @@ impl PartitionProcessorManager {
         use ProcessorsManagerCommand::*;
         match command {
             CreateSnapshot(partition_id, sender) => {
-                if let Some(processor_state) = self.processor_states.get(&partition_id) {
-                    processor_state.create_snapshot(sender);
-                } else {
-                    let _ = sender.send(Err(anyhow::anyhow!(
-                        "Partition processor '{}' not found",
-                        partition_id
-                    )));
-                }
+                self.handle_create_snapshot(partition_id, sender);
             }
             GetState(sender) => {
                 let _ = sender.send(self.get_state());
             }
         }
+    }
+
+    fn handle_create_snapshot(
+        &mut self,
+        partition_id: PartitionId,
+        sender: oneshot::Sender<anyhow::Result<SnapshotId>>,
+    ) {
+        let processor_state = match self.processor_states.get(&partition_id) {
+            Some(state) => state,
+            None => {
+                let _ = sender.send(Err(anyhow::anyhow!(
+                    "Partition processor '{}' not found",
+                    partition_id
+                )));
+                return;
+            }
+        };
+
+        if !processor_state.can_create_snapshot() {
+            let _ = sender.send(Err(anyhow::anyhow!(
+                "Partition processor '{}' is not in a state that allows snapshot creation",
+                partition_id
+            )));
+            return;
+        }
+
+        let archived_lsn_sender = match self.archived_lsns_tx.get(&partition_id).cloned() {
+            Some(sender) => sender,
+            None => {
+                let _ = sender.send(Err(anyhow::anyhow!(
+                    "No archived LSNs channel found for partition: {}",
+                    partition_id
+                )));
+                return;
+            }
+        };
+
+        self.spawn_create_snapshot_task(partition_id, sender, archived_lsn_sender);
     }
 
     fn on_control_processors(&mut self) {
@@ -702,6 +742,73 @@ impl PartitionProcessorManager {
         }
     }
 
+    fn spawn_create_snapshot_task(
+        &mut self,
+        partition_id: PartitionId,
+        result_sender: oneshot::Sender<anyhow::Result<SnapshotId>>,
+        archived_lsn_sender: watch::Sender<Option<Lsn>>,
+    ) {
+        debug!("In spawn create snapshot task...");
+
+        if self
+            .pending_snapshot_export_tasks
+            .get(&partition_id)
+            .is_some_and(|task| !task.is_finished())
+        {
+            warn!(%partition_id, "Snapshot creation already in progress, rejecting request");
+            result_sender
+                .send(Err(anyhow!("Snapshot creation already in progress")))
+                .ok();
+        } else {
+            let config = self.updateable_config.live_load();
+
+            let snapshot_base_path = config.worker.snapshots.snapshots_dir(partition_id);
+
+            let create_snapshot_task = SnapshotPartitionTask {
+                cluster_name: config.common.cluster_name().into(),
+                node_name: config.common.node_name().into(),
+                partition_id,
+                partition_store_manager: self.partition_store_manager.clone(),
+                snapshot_base_path,
+                result_sender,
+                archived_lsn_sender,
+            };
+            let snapshot_span = tracing::info_span!("create-snapshot");
+
+            let spawn_task_result = restate_core::task_center().spawn_unmanaged(
+                TaskKind::PartitionSnapshotProducer,
+                "create-snapshot",
+                Some(partition_id),
+                async move {
+                    create_snapshot_task
+                        .create_snapshot()
+                        .await
+                        .inspect_err(|err| {
+                            warn!("Unhandled error in create_snapshot task: {}", err)
+                        })
+                }
+                .instrument(snapshot_span),
+            );
+
+            match spawn_task_result {
+                Ok(task) => {
+                    _ = self
+                        .pending_snapshot_export_tasks
+                        .insert(partition_id, task);
+                    debug!("In-progress create snapshto task...");
+                }
+                Err(err) => {
+                    // todo(pavel): how do we solve the ownership of sender moving to the (now failed) task?
+                    // sender.send(Err(anyhow!("Shutting down"))).ok();
+                    warn!(
+                        "Failed to spawn task but lost track of the sender :-( - {}",
+                        err
+                    );
+                }
+            }
+        }
+    }
+
     /// Creates a task that when started will spawn a new partition processor.
     ///
     /// This allows multiple partition processors to be started concurrently without holding
@@ -718,6 +825,9 @@ impl PartitionProcessorManager {
             .entry(partition_id)
             .or_insert_with(|| Box::leak(Box::new(format!("pp-{}", partition_id))));
 
+        let (archived_lsn_tx, archived_lsn_rx) = watch::channel(None);
+        self.archived_lsns_tx.insert(partition_id, archived_lsn_tx);
+
         SpawnPartitionProcessorTask::new(
             task_name,
             self.metadata.my_node_id(),
@@ -727,6 +837,7 @@ impl PartitionProcessorManager {
             self.metadata.clone(),
             self.bifrost.clone(),
             self.partition_store_manager.clone(),
+            archived_lsn_rx,
         )
     }
 
