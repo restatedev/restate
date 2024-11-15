@@ -207,7 +207,6 @@ macro_rules! define_message {
 //       @response_target = TargetName::AttachResponse,
 //   }
 // ```
-#[allow(unused_macros)]
 macro_rules! define_rpc {
     (
         @request = $request:ty,

@@ -179,11 +179,10 @@ impl OwnedConnection {
         &self,
         timeout: Duration,
     ) -> Result<SendPermit<'_, M>, NetworkError> {
+        let start = Instant::now();
         let permit = tokio::time::timeout(timeout, self.sender.reserve())
             .await
-            .map_err(|_| {
-                NetworkError::Timeout("deadline exceeded while waiting for network send capacity")
-            })?
+            .map_err(|_| NetworkError::Timeout(start.elapsed()))?
             .map_err(|_| NetworkError::ConnectionClosed(self.peer))?;
         Ok(SendPermit {
             permit,

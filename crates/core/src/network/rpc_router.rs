@@ -104,9 +104,7 @@ where
         let peer = peer.into();
         let connection = tokio::time::timeout(timeout, networking.node_connection(peer))
             .await
-            .map_err(|_| {
-                NetworkError::Timeout("deadline exceeded while waiting to establish connection")
-            })??;
+            .map_err(|_| NetworkError::Timeout(start.elapsed()))??;
         let outgoing = Outgoing::new(peer, msg).assign_connection(connection);
         self.call_outgoing_timeout(outgoing, timeout - start.elapsed())
             .await
@@ -148,7 +146,7 @@ where
         let remaining = timeout - start.elapsed();
         tokio::time::timeout(remaining, token.recv())
             .await
-            .map_err(|_| NetworkError::Timeout("deadline exceeded while waiting for rpc response"))?
+            .map_err(|_| NetworkError::Timeout(start.elapsed()))?
             // We only fail here if the response tracker was dropped.
             .map_err(NetworkError::Shutdown)
     }
