@@ -201,7 +201,10 @@ impl PartitionStoreManager {
         snapshot_id: SnapshotId,
         snapshot_base_path: PathBuf,
     ) -> anyhow::Result<LocalPartitionSnapshot> {
-        let mut partition_store = self.lookup.lock().await
+        let mut partition_store = self
+            .lookup
+            .lock()
+            .await
             .live
             .get_mut(&partition_id)
             .ok_or(anyhow!("Unknown partition: {}", partition_id))?

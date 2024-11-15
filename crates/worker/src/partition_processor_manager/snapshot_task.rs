@@ -10,7 +10,6 @@
 
 use std::path::PathBuf;
 use std::time::SystemTime;
-
 use tokio::sync::{oneshot, watch};
 use tracing::{debug, warn};
 
@@ -39,49 +38,80 @@ impl SnapshotPartitionTask {
             "Creating partition snapshot"
         );
 
-        let snapshot_id = SnapshotId::new();
-        let snapshot = self
-            .partition_store_manager
-            .export_partition_snapshot(self.partition_id, snapshot_id, self.snapshot_base_path)
-            .await?;
-
-        let metadata = write_snapshot_metadata_header(
-            snapshot_id,
+        let result = create_snapshot_inner(
+            self.partition_store_manager,
             self.cluster_name,
             self.node_name,
             self.partition_id,
-            snapshot,
+            self.snapshot_base_path,
+            self.archived_lsn_sender,
         )
-        .await?;
+        .await;
 
-        // todo(pavel): SnapshotRepository integration will go in here in a future PR
+        match result {
+            Ok(metadata) => {
+                let _ = self
+                    .result_sender
+                    .send(Ok(metadata.snapshot_id))
+                    .inspect_err(|err| {
+                        warn!(
+                        "Failed to send snapshot acknowledgement after snapshot {} was successfully created: {:?}",
+                        metadata.snapshot_id,
+                        err
+                    )
+                    });
 
-        self.archived_lsn_sender
-            .send(Some(metadata.min_applied_lsn))?;
-
-        let _ = self
-            .result_sender
-            .send(Ok(metadata.snapshot_id))
-            .inspect_err(|err| {
+                debug!(
+                    partition_id = %self.partition_id,
+                    snapshot_id = %metadata.snapshot_id,
+                    archived_lsn = %metadata.min_applied_lsn,
+                    "Partition snapshot created"
+                );
+                Ok(metadata.snapshot_id)
+            }
+            Err(err) => {
                 warn!(
-                    "Failed to send snapshot acknowledgement after snapshot {} was successfully created: {:?}",
-                    metadata.snapshot_id,
+                    partition_id = %self.partition_id,
+                    "Failed to create partition snapshot: {}",
                     err
-                )
-            });
+                );
 
-        debug!(
-            partition_id = %self.partition_id,
-            snapshot_id = %metadata.snapshot_id,
-            archived_lsn = %metadata.min_applied_lsn,
-            "Partition snapshot created"
-        );
-
-        Ok(metadata.snapshot_id)
+                Err(err)
+            }
+        }
     }
 }
 
-pub async fn write_snapshot_metadata_header(
+async fn create_snapshot_inner(
+    partition_store_manager: PartitionStoreManager,
+    cluster_name: String,
+    node_name: String,
+    partition_id: PartitionId,
+    snapshot_base_path: PathBuf,
+    archived_lsn_sender: watch::Sender<Option<Lsn>>,
+) -> anyhow::Result<PartitionSnapshotMetadata> {
+    let snapshot_id = SnapshotId::new();
+    let snapshot = partition_store_manager
+        .export_partition_snapshot(partition_id, snapshot_id, snapshot_base_path.clone())
+        .await?;
+
+    let metadata = write_snapshot_metadata_header(
+        snapshot_id,
+        cluster_name,
+        node_name,
+        partition_id,
+        snapshot,
+    )
+    .await?;
+
+    // todo(pavel): SnapshotRepository integration will go in here in a future PR
+
+    archived_lsn_sender.send(Some(metadata.min_applied_lsn))?;
+
+    Ok(metadata)
+}
+
+async fn write_snapshot_metadata_header(
     snapshot_id: SnapshotId,
     cluster_name: String,
     node_name: String,

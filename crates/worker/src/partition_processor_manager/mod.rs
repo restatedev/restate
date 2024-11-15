@@ -304,7 +304,8 @@ impl PartitionProcessorManager {
         }
     }
 
-    #[instrument(level = "debug", skip_all, fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner)))]
+    #[instrument(level = "debug", skip_all, fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner)
+    ))]
     fn on_asynchronous_event(&mut self, event: AsynchronousEvent) {
         let AsynchronousEvent {
             partition_id,
@@ -543,7 +544,7 @@ impl PartitionProcessorManager {
                     status.last_archived_log_lsn = self
                         .archived_lsn_channels
                         .get(partition_id)
-                        .and_then(|(_, rx)| rx.borrow().clone());
+                        .and_then(|(_, rx)| *rx.borrow());
 
                     Some((*partition_id, status))
                 } else {
@@ -786,15 +787,8 @@ impl PartitionProcessorManager {
                 TaskKind::PartitionSnapshotProducer,
                 "create-snapshot",
                 Some(partition_id),
-                async move {
-                    create_snapshot_task
-                        .create_snapshot()
-                        .await
-                        .inspect_err(|err| {
-                            warn!("Unhandled error in create_snapshot task: {}", err)
-                        })
-                }
-                .instrument(snapshot_span),
+                async move { create_snapshot_task.create_snapshot().await }
+                    .instrument(snapshot_span),
             );
 
             match spawn_task_result {
