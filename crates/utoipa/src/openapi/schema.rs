@@ -215,7 +215,7 @@ impl ComponentsBuilder {
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[cfg_attr(feature = "debug", derive(Debug))]
 #[serde(transparent)]
-pub struct Schema(serde_json::Value);
+pub struct Schema(pub serde_json::Value);
 
 impl Default for Schema {
     fn default() -> Self {

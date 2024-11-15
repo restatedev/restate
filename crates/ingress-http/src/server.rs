@@ -19,7 +19,9 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
 use restate_types::config::IngressOptions;
+use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use std::convert::Infallible;
@@ -60,6 +62,7 @@ pub struct HyperServerIngress<Schemas, Dispatcher> {
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
+    health: HealthStatus<IngressStatus>,
 }
 
 impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
@@ -71,6 +74,7 @@ where
         ingress_options: &IngressOptions,
         dispatcher: Dispatcher,
         schemas: Live<Schemas>,
+        health: HealthStatus<IngressStatus>,
     ) -> HyperServerIngress<Schemas, Dispatcher> {
         crate::metric_definitions::describe_metrics();
         let (hyper_ingress_server, _) = HyperServerIngress::new(
@@ -78,6 +82,7 @@ where
             ingress_options.concurrent_api_requests_limit(),
             schemas,
             dispatcher,
+            health,
         );
 
         hyper_ingress_server
@@ -94,7 +99,9 @@ where
         concurrency_limit: usize,
         schemas: Live<Schemas>,
         dispatcher: Dispatcher,
+        health: HealthStatus<IngressStatus>,
     ) -> (Self, StartSignal) {
+        health.update(IngressStatus::StartingUp);
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
 
         let ingress = Self {
@@ -102,6 +109,7 @@ where
             concurrency_limit,
             schemas,
             dispatcher,
+            health,
             start_signal_tx,
         };
 
@@ -114,6 +122,7 @@ where
             concurrency_limit,
             schemas,
             dispatcher,
+            health,
             start_signal_tx,
         } = self;
 
@@ -151,6 +160,7 @@ where
 
         // Send start signal
         let _ = start_signal_tx.send(local_addr);
+        health.update(IngressStatus::Ready);
 
         // We start a loop to continuously accept incoming connections
         loop {
@@ -239,6 +249,7 @@ mod tests {
     use hyper_util::rt::TokioExecutor;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
     use restate_test_util::assert_eq;
+    use restate_types::health::Health;
     use restate_types::identifiers::WithInvocationId;
     use restate_types::invocation::InvocationTarget;
     use restate_types::net::partition_processor::IngressResponseResult;
@@ -328,6 +339,7 @@ mod tests {
         mock_request_dispatcher: MockRequestDispatcher,
     ) -> (SocketAddr, TestHandle) {
         let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let health = Health::default();
 
         // Create the ingress and start it
         let (ingress, start_signal) = HyperServerIngress::new(
@@ -335,6 +347,7 @@ mod tests {
             Semaphore::MAX_PERMITS,
             Live::from_value(mock_schemas()),
             Arc::new(mock_request_dispatcher),
+            health.ingress_status(),
         );
         node_env
             .tc

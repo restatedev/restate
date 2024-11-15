@@ -23,7 +23,7 @@ use tracing::{debug, error, info, instrument, trace, warn, Instrument, Span};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{HasConnection, Incoming, Outgoing};
-use restate_core::{cancellation_watcher, metadata, TaskCenter, TaskHandle, TaskKind};
+use restate_core::{cancellation_watcher, TaskCenter, TaskHandle, TaskKind};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -264,8 +264,24 @@ where
 {
     #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<()> {
-        info!("Starting the partition processor");
-        let res = self.run_inner().await;
+        info!("Starting the partition processor.");
+
+        let res = tokio::select! {
+            res = self.run_inner() => {
+                match res.as_ref() {
+                    Ok(_) => warn!("Shutting partition processor down because it stopped unexpectedly."),
+                    Err(err) => warn!("Shutting partition processor down because it failed: {err}"),
+                }
+                res
+            },
+            _ = cancellation_watcher() => {
+                debug!("Shutting partition processor down because it was cancelled.");
+                Ok(())
+            },
+        };
+
+        // clean up pending rpcs and stop child tasks
+        self.leadership_state.step_down().await;
 
         // Drain control_rx
         self.control_rx.close();
@@ -369,7 +385,6 @@ where
             tokio::time::interval(Duration::from_millis(500 + rand::random::<u64>() % 524));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let mut cancellation = std::pin::pin!(cancellation_watcher());
         let partition_id_str: &'static str = Box::leak(Box::new(self.partition_id.to_string()));
         // Telemetry setup
         let apply_command_latency =
@@ -386,7 +401,6 @@ where
 
         loop {
             tokio::select! {
-                _ = &mut cancellation => break,
                 Some(command) = self.control_rx.recv() => {
                     if let Err(err) = self.on_command(command).await {
                         warn!("Failed executing command: {err}");
@@ -473,12 +487,6 @@ where
             // budget.
             tokio::task::consume_budget().await;
         }
-
-        debug!(restate.node = %metadata().my_node_id(), %self.partition_id, "Shutting partition processor down.");
-        // ignore errors that happen during shut down
-        let _ = self.leadership_state.step_down().await;
-
-        Ok(())
     }
 
     async fn on_command(
@@ -495,10 +503,7 @@ where
             }
             PartitionProcessorControlCommand::StepDown => {
                 self.status.planned_mode = RunMode::Follower;
-                self.leadership_state
-                    .step_down()
-                    .await
-                    .context("failed handling StepDown command")?;
+                self.leadership_state.step_down().await;
                 self.status.effective_mode = RunMode::Follower;
             }
             PartitionProcessorControlCommand::CreateSnapshot(maybe_sender) => {

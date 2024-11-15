@@ -15,6 +15,7 @@ use bytestring::ByteString;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::fmt;
+use std::fmt::Formatter;
 use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
@@ -855,7 +856,6 @@ impl FromStr for LambdaARN {
 }
 
 #[derive(
-    Debug,
     PartialOrd,
     PartialEq,
     Eq,
@@ -897,7 +897,14 @@ impl Default for PartitionProcessorRpcRequestId {
 
 impl fmt::Display for PartitionProcessorRpcRequestId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Debug for PartitionProcessorRpcRequestId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        // use the same formatting for debug and display to show a consistent representation
+        fmt::Display::fmt(self, f)
     }
 }
 

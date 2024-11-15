@@ -11,6 +11,7 @@
 mod handler;
 mod layers;
 mod metric_definitions;
+pub mod rpc_request_dispatcher;
 mod server;
 
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};

@@ -48,6 +48,7 @@ pub enum Role {
     MetadataStore,
     /// [IN DEVELOPMENT] Serves a log server for replicated loglets
     LogServer,
+    HttpIngress,
 }
 
 #[serde_as]

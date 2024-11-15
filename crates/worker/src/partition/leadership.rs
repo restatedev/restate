@@ -208,7 +208,7 @@ where
     #[instrument(level = "debug", skip_all, fields(leader_epoch = %leader_epoch))]
     pub async fn run_for_leader(&mut self, leader_epoch: LeaderEpoch) -> Result<(), Error> {
         if self.is_new_leader_epoch(leader_epoch) {
-            self.become_follower().await?;
+            self.become_follower().await;
             self.announce_leadership(leader_epoch).await?;
             debug!("Running for leadership.");
         } else {
@@ -305,7 +305,7 @@ where
         Ok(())
     }
 
-    pub async fn step_down(&mut self) -> Result<(), Error> {
+    pub async fn step_down(&mut self) {
         debug!("Stepping down. Being a role model for Joe.");
         self.become_follower().await
     }
@@ -326,7 +326,7 @@ where
                 match leader_epoch.cmp(&announce_leader.leader_epoch) {
                     Ordering::Less => {
                         debug!("Lost leadership campaign. Becoming an obedient follower.");
-                        self.become_follower().await?;
+                        self.become_follower().await;
                     }
                     Ordering::Equal => {
                         debug!("Won the leadership campaign. Becoming the strong leader now.");
@@ -345,7 +345,7 @@ where
                             new_leader_epoch = %announce_leader.leader_epoch,
                             "Every reign must end. Stepping down and becoming an obedient follower."
                         );
-                        self.become_follower().await?;
+                        self.become_follower().await;
                     }
                     Ordering::Equal => {
                         warn!("Observed another leadership announcement for my own leadership. This should never happen and indicates a bug!");
@@ -491,9 +491,11 @@ where
         Ok(invoker_rx)
     }
 
-    async fn become_follower(&mut self) -> Result<(), Error> {
+    async fn become_follower(&mut self) {
         match &mut self.state {
-            State::Follower => {}
+            State::Follower => {
+                // nothing to do :-)
+            }
             State::Candidate { appender_task, .. } => {
                 appender_task.abort();
             }
@@ -510,7 +512,10 @@ where
                 let cleaner_handle =
                     OptionFuture::from(task_center().cancel_task(*cleaner_task_id));
 
-                let (shuffle_result, cleaner_result, abort_result) = tokio::join!(
+                // It's ok to not check the abort_result because either it succeeded or the invoker
+                // is not running. If the invoker is not running, and we are not shutting down, then
+                // we will fail the next time we try to invoke.
+                let (shuffle_result, cleaner_result, _abort_result) = tokio::join!(
                     shuffle_handle,
                     cleaner_handle,
                     self.invoker_tx.abort_all_partition((
@@ -518,8 +523,6 @@ where
                         *leader_epoch
                     )),
                 );
-
-                abort_result.map_err(Error::Invoker)?;
 
                 if let Some(shuffle_result) = shuffle_result {
                     shuffle_result.expect("graceful termination of shuffle task");
@@ -529,7 +532,11 @@ where
                 }
 
                 // Reply to all RPCs with not a leader
-                for (_, reciprocal) in awaiting_rpc_actions.drain() {
+                for (request_id, reciprocal) in awaiting_rpc_actions.drain() {
+                    trace!(
+                        %request_id,
+                        "Failing rpc because I lost leadership",
+                    );
                     respond_to_rpc(
                         &self.task_center,
                         reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
@@ -545,7 +552,6 @@ where
         }
 
         self.state = State::Follower;
-        Ok(())
     }
 
     pub async fn handle_actions(
@@ -656,6 +662,8 @@ where
                             },
                         ))),
                     );
+                } else {
+                    debug!(%request_id, "Ignoring sending ingress response because there is no awaiting rpc");
                 }
             }
             Action::IngressSubmitNotification {
@@ -819,6 +827,7 @@ where
                         // In this case, someone already proposed this command,
                         // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
                         let old_reciprocal = o.remove();
+                        trace!(%request_id, "Replacing rpc with newer request");
                         respond_to_rpc(
                             &self.task_center,
                             old_reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
@@ -1199,7 +1208,7 @@ mod tests {
 
             assert!(matches!(state.state, State::Leader(_)));
 
-            state.step_down().await?;
+            state.step_down().await;
 
             assert!(matches!(state.state, State::Follower));
 

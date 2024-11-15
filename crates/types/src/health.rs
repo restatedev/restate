@@ -11,7 +11,7 @@
 use tokio::sync::watch;
 
 use crate::protobuf::common::{
-    AdminStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
+    AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
 };
 use crate::Merge;
 
@@ -23,6 +23,7 @@ pub struct Health {
     admin_status: watch::Sender<AdminStatus>,
     log_server_status: watch::Sender<LogServerStatus>,
     metadata_server_status: watch::Sender<MetadataServerStatus>,
+    ingress_status: watch::Sender<IngressStatus>,
 }
 
 impl Default for Health {
@@ -38,6 +39,7 @@ impl Health {
         let admin_status = watch::Sender::new(AdminStatus::Unknown);
         let log_server_status = watch::Sender::new(LogServerStatus::Unknown);
         let metadata_server_status = watch::Sender::new(MetadataServerStatus::Unknown);
+        let ingress_status = watch::Sender::new(IngressStatus::Unknown);
 
         Self {
             node_status,
@@ -45,6 +47,7 @@ impl Health {
             admin_status,
             log_server_status,
             metadata_server_status,
+            ingress_status,
         }
     }
 
@@ -82,6 +85,10 @@ impl Health {
 
     pub fn log_server_status(&self) -> HealthStatus<LogServerStatus> {
         HealthStatus(self.log_server_status.clone())
+    }
+
+    pub fn ingress_status(&self) -> HealthStatus<IngressStatus> {
+        HealthStatus(self.ingress_status.clone())
     }
 
     pub fn metadata_server_status(&self) -> HealthStatus<MetadataServerStatus> {

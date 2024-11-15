@@ -25,7 +25,6 @@ use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::subscriptions::SubscriptionResolver;
-use restate_types::schema::Schema;
 use restate_types::Version;
 use restate_worker::SubscriptionController;
 use restate_worker::Worker;
@@ -63,14 +62,14 @@ pub enum WorkerRoleBuildError {
     ),
 }
 
-pub struct WorkerRole<T> {
+pub struct WorkerRole {
     metadata: Metadata,
-    worker: Worker<T>,
+    worker: Worker,
 }
 
-impl<T: TransportConnect> WorkerRole<T> {
+impl WorkerRole {
     #[allow(clippy::too_many_arguments)]
-    pub async fn create(
+    pub async fn create<T: TransportConnect>(
         health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
         partition_routing: PartitionRouting,
@@ -79,7 +78,6 @@ impl<T: TransportConnect> WorkerRole<T> {
         networking: Networking<T>,
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
-        updating_schema_information: Live<Schema>,
     ) -> Result<Self, WorkerRoleBuildError> {
         let worker = Worker::create(
             updateable_config,
@@ -89,7 +87,6 @@ impl<T: TransportConnect> WorkerRole<T> {
             networking,
             bifrost,
             router_builder,
-            updating_schema_information,
             metadata_store_client,
         )
         .await?;

@@ -36,6 +36,15 @@ pub struct IngressOptions {
     concurrent_api_requests_limit: Option<NonZeroUsize>,
 
     kafka_clusters: Vec<KafkaClusterOptions>,
+
+    /// # Experimental feature to run the ingress independent of the worker role
+    ///
+    /// This feature is experimental and should be used with caution. It allows to run the ingress
+    /// role independent of the worker role. It requires that you configure the [`Role::Ingress`]
+    /// role for nodes explicitly. If you enable this feature, then you might not be able to roll
+    /// back to a previous version.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub experimental_feature_enable_separate_ingress_role: bool,
 }
 
 impl IngressOptions {
@@ -65,6 +74,7 @@ impl Default for IngressOptions {
             // max is limited by Tower's LoadShedLayer.
             concurrent_api_requests_limit: None,
             kafka_clusters: Default::default(),
+            experimental_feature_enable_separate_ingress_role: false,
         }
     }
 }

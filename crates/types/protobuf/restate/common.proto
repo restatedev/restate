@@ -118,3 +118,9 @@ enum MetadataServerStatus {
   MetadataServerStatus_READY = 1;
   MetadataServerStatus_STARTING_UP = 2;
 }
+
+enum IngressStatus {
+  IngressStatus_UNKNOWN = 0;
+  IngressStatus_READY = 1;
+  IngressStatus_STARTING_UP = 2;
+}

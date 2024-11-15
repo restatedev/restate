@@ -12,7 +12,6 @@ extern crate core;
 
 mod error;
 mod handle;
-mod ingress_integration;
 mod invoker_integration;
 mod metric_definitions;
 mod partition;
@@ -24,15 +23,12 @@ use codederror::CodedError;
 use std::time::Duration;
 
 use restate_bifrost::Bifrost;
-use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
-use restate_core::network::rpc_router::ConnectionAwareRpcRouter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{task_center, Metadata, TaskKind};
-use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_metadata_store::MetadataStoreClient;
@@ -48,9 +44,7 @@ use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::protobuf::common::WorkerStatus;
-use restate_types::schema::Schema;
 
-use crate::ingress_integration::RpcRequestDispatcher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
@@ -62,8 +56,6 @@ pub use crate::subscription_integration::SubscriptionControllerHandle;
 type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
 >;
-
-type ExternalClientIngress<T> = HyperServerIngress<Schema, RpcRequestDispatcher<T>>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -99,20 +91,19 @@ pub enum Error {
     },
 }
 
-pub struct Worker<T> {
+pub struct Worker {
     updateable_config: Live<Configuration>,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
     datafusion_remote_scanner: RemoteQueryScannerServer,
-    external_client_ingress: ExternalClientIngress<T>,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
     partition_processor_manager: PartitionProcessorManager,
 }
 
-impl<T: TransportConnect> Worker<T> {
+impl Worker {
     #[allow(clippy::too_many_arguments)]
-    pub async fn create(
+    pub async fn create<T: TransportConnect>(
         updateable_config: Live<Configuration>,
         health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
@@ -120,7 +111,6 @@ impl<T: TransportConnect> Worker<T> {
         networking: Networking<T>,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
-        schema: Live<Schema>,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
@@ -145,20 +135,6 @@ impl<T: TransportConnect> Worker<T> {
         )
         .await?;
 
-        let rpc_router = ConnectionAwareRpcRouter::new(router_builder);
-        let partition_table = metadata.updateable_partition_table();
-        // http ingress
-        let ingress_http = HyperServerIngress::from_options(
-            &config.ingress,
-            RpcRequestDispatcher::new(PartitionProcessorRpcClient::new(
-                networking.clone(),
-                rpc_router,
-                partition_table,
-                partition_routing.clone(),
-            )),
-            schema.clone(),
-        );
-
         let partition_processor_manager = PartitionProcessorManager::new(
             task_center(),
             health_status,
@@ -177,12 +153,13 @@ impl<T: TransportConnect> Worker<T> {
             create_remote_scanner_service(networking, task_center(), router_builder),
             create_partition_locator(partition_routing, metadata.clone()),
         );
+        let schema = metadata.updateable_schema();
         let storage_query_context = QueryContext::create(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata::new(metadata),
             Some(partition_store_manager.clone()),
             Some(partition_processor_manager.invokers_status_reader()),
-            schema.clone(),
+            schema,
             remote_scanner_manager,
         )
         .await?;
@@ -203,7 +180,6 @@ impl<T: TransportConnect> Worker<T> {
             storage_query_context,
             storage_query_postgres,
             datafusion_remote_scanner,
-            external_client_ingress: ingress_http,
             ingress_kafka,
             subscription_controller_handle,
             partition_processor_manager,
@@ -224,14 +200,6 @@ impl<T: TransportConnect> Worker<T> {
 
     pub async fn run(self) -> anyhow::Result<()> {
         let tc = task_center();
-
-        // Ingress RPC server
-        tc.spawn_child(
-            TaskKind::IngressServer,
-            "ingress-rpc-server",
-            None,
-            self.external_client_ingress.run(),
-        )?;
 
         // Postgres external server
         tc.spawn_child(
