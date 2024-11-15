@@ -89,7 +89,8 @@ pub struct PartitionProcessorManager {
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
-    archived_lsns_tx: HashMap<PartitionId, watch::Sender<Option<Lsn>>>,
+    archived_lsn_channels:
+        HashMap<PartitionId, (watch::Sender<Option<Lsn>>, watch::Receiver<Option<Lsn>>)>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
     pending_control_processors: Option<ControlProcessors>,
 
@@ -182,7 +183,7 @@ impl PartitionProcessorManager {
             rx,
             tx,
             persisted_lsns_rx: None,
-            archived_lsns_tx: HashMap::default(),
+            archived_lsn_channels: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
             pending_control_processors: None,
             asynchronous_operations: JoinSet::default(),
@@ -538,6 +539,11 @@ impl PartitionProcessorManager {
                         .as_ref()
                         .and_then(|lsns| lsns.get(partition_id).cloned());
 
+                    status.last_archived_log_lsn = self
+                        .archived_lsn_channels
+                        .get(partition_id)
+                        .and_then(|(_, rx)| rx.borrow().clone());
+
                     Some((*partition_id, status))
                 } else {
                     None
@@ -582,8 +588,8 @@ impl PartitionProcessorManager {
             return;
         }
 
-        let archived_lsn_sender = match self.archived_lsns_tx.get(&partition_id).cloned() {
-            Some(sender) => sender,
+        let archived_lsn_sender = match self.archived_lsn_channels.get(&partition_id).cloned() {
+            Some(watch) => watch.0.clone(),
             None => {
                 let _ = sender.send(Err(anyhow::anyhow!(
                     "No archived LSNs channel found for partition: {}",
@@ -825,8 +831,8 @@ impl PartitionProcessorManager {
             .entry(partition_id)
             .or_insert_with(|| Box::leak(Box::new(format!("pp-{}", partition_id))));
 
-        let (archived_lsn_tx, archived_lsn_rx) = watch::channel(None);
-        self.archived_lsns_tx.insert(partition_id, archived_lsn_tx);
+        self.archived_lsn_channels
+            .insert(partition_id, watch::channel(None));
 
         SpawnPartitionProcessorTask::new(
             task_name,
@@ -837,7 +843,6 @@ impl PartitionProcessorManager {
             self.metadata.clone(),
             self.bifrost.clone(),
             self.partition_store_manager.clone(),
-            archived_lsn_rx,
         )
     }
 

@@ -26,7 +26,6 @@ use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
-use restate_types::logs::Lsn;
 use restate_types::schema::Schema;
 use restate_types::GenerationalNodeId;
 
@@ -39,7 +38,6 @@ pub struct SpawnPartitionProcessorTask {
     metadata: Metadata,
     bifrost: Bifrost,
     partition_store_manager: PartitionStoreManager,
-    archived_lsn_receiver: watch::Receiver<Option<Lsn>>,
 }
 
 impl SpawnPartitionProcessorTask {
@@ -53,7 +51,6 @@ impl SpawnPartitionProcessorTask {
         metadata: Metadata,
         bifrost: Bifrost,
         partition_store_manager: PartitionStoreManager,
-        archived_lsn_receiver: watch::Receiver<Option<Lsn>>,
     ) -> Self {
         Self {
             task_name,
@@ -64,7 +61,6 @@ impl SpawnPartitionProcessorTask {
             metadata,
             bifrost,
             partition_store_manager,
-            archived_lsn_receiver,
         }
     }
 
@@ -86,7 +82,6 @@ impl SpawnPartitionProcessorTask {
             metadata,
             bifrost,
             partition_store_manager,
-            archived_lsn_receiver,
         } = self;
 
         let config = configuration.pinned();
@@ -156,7 +151,6 @@ impl SpawnPartitionProcessorTask {
                             tc,
                             bifrost,
                             partition_store,
-                            archived_lsn_receiver,
                         )
                         .await?
                         .run()

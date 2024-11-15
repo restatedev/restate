@@ -141,7 +141,6 @@ where
         task_center: TaskCenter,
         bifrost: Bifrost,
         mut partition_store: PartitionStore,
-        archived_lsn_receiver: watch::Receiver<Option<Lsn>>,
     ) -> Result<PartitionProcessor<Codec, InvokerInputSender>, StorageError> {
         let PartitionProcessorBuilder {
             partition_id,
@@ -205,7 +204,6 @@ where
             rpc_rx,
             status_watch_tx,
             status,
-            archived_lsn_receiver,
         })
     }
 
@@ -247,7 +245,6 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
 
     max_command_batch_size: usize,
     partition_store: PartitionStore,
-    archived_lsn_receiver: watch::Receiver<Option<Lsn>>,
 }
 
 impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
@@ -403,7 +400,6 @@ where
                     self.on_rpc(rpc, &mut partition_store).await;
                 }
                 _ = status_update_timer.tick() => {
-                    self.status.last_archived_log_lsn = *self.archived_lsn_receiver.borrow();
                     self.status_watch_tx.send_modify(|old| {
                         old.clone_from(&self.status);
                         old.updated_at = MillisSinceEpoch::now();
@@ -487,16 +483,15 @@ where
         &mut self,
         command: PartitionProcessorControlCommand,
     ) -> anyhow::Result<()> {
-        use PartitionProcessorControlCommand::*;
         match command {
-            RunForLeader(leader_epoch) => {
+            PartitionProcessorControlCommand::RunForLeader(leader_epoch) => {
                 self.status.planned_mode = RunMode::Leader;
                 self.leadership_state
                     .run_for_leader(leader_epoch)
                     .await
                     .context("failed handling RunForLeader command")?;
             }
-            StepDown => {
+            PartitionProcessorControlCommand::StepDown => {
                 self.status.planned_mode = RunMode::Follower;
                 self.leadership_state.step_down().await;
                 self.status.effective_mode = RunMode::Follower;
