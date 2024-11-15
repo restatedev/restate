@@ -340,9 +340,9 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU8;
-
     use super::*;
+
+    use std::num::{NonZeroU8, NonZeroUsize};
 
     use googletest::prelude::*;
     use test_log::test;
@@ -351,7 +351,7 @@ mod tests {
     use restate_core::TestCoreEnvBuilder;
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
+    use restate_types::config::{set_current_config, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::live::Live;
     use restate_types::logs::Keys;
@@ -366,14 +366,17 @@ mod tests {
     }
 
     async fn run_in_test_env<F, O>(
+        config: Configuration,
         loglet_params: ReplicatedLogletParams,
+        record_cache: RecordCache,
         mut future: F,
     ) -> googletest::Result<()>
     where
         F: FnMut(TestEnv) -> O,
         O: std::future::Future<Output = googletest::Result<()>>,
     {
-        let config = Live::from_value(Configuration::default());
+        set_current_config(config.clone());
+        let config = Live::from_value(config);
 
         let mut node_env =
             TestCoreEnvBuilder::with_incoming_only_connector().add_mock_nodes_config();
@@ -381,7 +384,6 @@ mod tests {
 
         let logserver_rpc = LogServersRpc::new(&mut node_env.router_builder);
         let sequencer_rpc = SequencersRpc::new(&mut node_env.router_builder);
-        let record_cache = RecordCache::new(1_000_000);
 
         let log_server = LogServerService::create(
             HealthStatus::default(),
@@ -440,30 +442,36 @@ mod tests {
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
         };
+        let record_cache = RecordCache::new(1_000_000);
 
-        run_in_test_env(params, |env| async move {
-            let batch: Arc<[Record]> = vec![
-                ("record-1", Keys::Single(1)).into(),
-                ("record-2", Keys::Single(2)).into(),
-                ("record-3", Keys::Single(3)).into(),
-            ]
-            .into();
-            let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
-            assert_that!(offset, eq(LogletOffset::new(3)));
-            let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
-            assert_that!(offset, eq(LogletOffset::new(6)));
-            let tail = env.loglet.find_tail().await?;
-            assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
+        run_in_test_env(
+            Configuration::default(),
+            params,
+            record_cache,
+            |env| async move {
+                let batch: Arc<[Record]> = vec![
+                    ("record-1", Keys::Single(1)).into(),
+                    ("record-2", Keys::Single(2)).into(),
+                    ("record-3", Keys::Single(3)).into(),
+                ]
+                .into();
+                let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
+                assert_that!(offset, eq(LogletOffset::new(3)));
+                let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
+                assert_that!(offset, eq(LogletOffset::new(6)));
+                let tail = env.loglet.find_tail().await?;
+                assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
 
-            let cached_record = env.record_cache.get(loglet_id, 1.into());
-            assert!(cached_record.is_some());
-            assert_that!(
-                cached_record.unwrap().keys().clone(),
-                matches_pattern!(Keys::Single(eq(1)))
-            );
+                let cached_record = env.record_cache.get(loglet_id, 1.into());
+                assert!(cached_record.is_some());
+                assert_that!(
+                    cached_record.unwrap().keys().clone(),
+                    matches_pattern!(Keys::Single(eq(1)))
+                );
 
-            Ok(())
-        })
+                Ok(())
+            },
+        )
         .await
     }
 
@@ -478,39 +486,47 @@ mod tests {
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
         };
 
-        run_in_test_env(params, |env| async move {
-            let batch: Arc<[Record]> = vec![
-                ("record-1", Keys::Single(1)).into(),
-                ("record-2", Keys::Single(2)).into(),
-                ("record-3", Keys::Single(3)).into(),
-            ]
-            .into();
-            let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
-            assert_that!(offset, eq(LogletOffset::new(3)));
-            let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
-            assert_that!(offset, eq(LogletOffset::new(6)));
-            let tail = env.loglet.find_tail().await?;
-            assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
+        let record_cache = RecordCache::new(1_000_000);
+        run_in_test_env(
+            Configuration::default(),
+            params,
+            record_cache,
+            |env| async move {
+                let batch: Arc<[Record]> = vec![
+                    ("record-1", Keys::Single(1)).into(),
+                    ("record-2", Keys::Single(2)).into(),
+                    ("record-3", Keys::Single(3)).into(),
+                ]
+                .into();
+                let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
+                assert_that!(offset, eq(LogletOffset::new(3)));
+                let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
+                assert_that!(offset, eq(LogletOffset::new(6)));
+                let tail = env.loglet.find_tail().await?;
+                assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
 
-            env.loglet.seal().await?;
-            let batch: Arc<[Record]> = vec![
-                ("record-4", Keys::Single(4)).into(),
-                ("record-5", Keys::Single(5)).into(),
-            ]
-            .into();
-            let not_appended = env.loglet.enqueue_batch(batch).await?.await;
-            assert_that!(not_appended, err(pat!(AppendError::Sealed)));
-            let tail = env.loglet.find_tail().await?;
-            assert_that!(tail, eq(TailState::Sealed(LogletOffset::new(7))));
+                env.loglet.seal().await?;
+                let batch: Arc<[Record]> = vec![
+                    ("record-4", Keys::Single(4)).into(),
+                    ("record-5", Keys::Single(5)).into(),
+                ]
+                .into();
+                let not_appended = env.loglet.enqueue_batch(batch).await?.await;
+                assert_that!(not_appended, err(pat!(AppendError::Sealed)));
+                let tail = env.loglet.find_tail().await?;
+                assert_that!(tail, eq(TailState::Sealed(LogletOffset::new(7))));
 
-            Ok(())
-        })
+                Ok(())
+            },
+        )
         .await
     }
 
-    // ** Single-node replicated-loglet read-stream **
+    // # Loglet Spec Tests On Single Node
+    // ** Single-node replicated-loglet **
     #[test(tokio::test(start_paused = true))]
-    async fn replicated_loglet_single_loglet_readstream() -> Result<()> {
+    async fn single_node_gapless_loglet_smoke_test() -> Result<()> {
+        let record_cache = RecordCache::new(1_000_000);
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
@@ -518,14 +534,30 @@ mod tests {
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
         };
-        run_in_test_env(params, |env| {
+        run_in_test_env(Configuration::default(), params, record_cache, |env| {
+            crate::loglet::loglet_tests::gapless_loglet_smoke_test(env.loglet)
+        })
+        .await
+    }
+
+    #[test(tokio::test(start_paused = true))]
+    async fn single_node_single_loglet_readstream() -> Result<()> {
+        let loglet_id = ReplicatedLogletId::new_unchecked(122);
+        let params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+        };
+        let record_cache = RecordCache::new(1_000_000);
+        run_in_test_env(Configuration::default(), params, record_cache, |env| {
             crate::loglet::loglet_tests::single_loglet_readstream(env.loglet)
         })
         .await
     }
 
     #[test(tokio::test(start_paused = true))]
-    async fn replicated_loglet_single_append_after_seal() -> Result<()> {
+    async fn single_node_single_loglet_readstream_with_trims() -> Result<()> {
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
@@ -533,14 +565,38 @@ mod tests {
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
         };
-        run_in_test_env(params, |env| {
+        // For this test to work, we need to disable the record cache to ensure we
+        // observer the moving trimpoint.
+        let mut config = Configuration::default();
+        // disable read-ahead to avoid reading records from log-servers before the trim taking
+        // place.
+        config.bifrost.replicated_loglet.readahead_records = NonZeroUsize::new(1).unwrap();
+        config.bifrost.replicated_loglet.readahead_trigger_ratio = 1.0;
+        let record_cache = RecordCache::new(0);
+        run_in_test_env(config, params, record_cache, |env| {
+            crate::loglet::loglet_tests::single_loglet_readstream_with_trims(env.loglet)
+        })
+        .await
+    }
+
+    #[test(tokio::test(start_paused = true))]
+    async fn single_node_append_after_seal() -> Result<()> {
+        let loglet_id = ReplicatedLogletId::new_unchecked(122);
+        let params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+        };
+        let record_cache = RecordCache::new(1_000_000);
+        run_in_test_env(Configuration::default(), params, record_cache, |env| {
             crate::loglet::loglet_tests::append_after_seal(env.loglet)
         })
         .await
     }
 
     #[test(tokio::test(start_paused = true))]
-    async fn replicated_loglet_single_append_after_seal_concurrent() -> Result<()> {
+    async fn single_node_append_after_seal_concurrent() -> Result<()> {
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
@@ -548,14 +604,16 @@ mod tests {
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
         };
-        run_in_test_env(params, |env| {
+
+        let record_cache = RecordCache::new(1_000_000);
+        run_in_test_env(Configuration::default(), params, record_cache, |env| {
             crate::loglet::loglet_tests::append_after_seal_concurrent(env.loglet)
         })
         .await
     }
 
     #[test(tokio::test(start_paused = true))]
-    async fn replicated_loglet_single_seal_empty() -> Result<()> {
+    async fn single_node_seal_empty() -> Result<()> {
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
@@ -563,7 +621,8 @@ mod tests {
             replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
         };
-        run_in_test_env(params, |env| {
+        let record_cache = RecordCache::new(1_000_000);
+        run_in_test_env(Configuration::default(), params, record_cache, |env| {
             crate::loglet::loglet_tests::seal_empty(env.loglet)
         })
         .await

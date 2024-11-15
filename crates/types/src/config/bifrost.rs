@@ -230,10 +230,35 @@ pub struct ReplicatedLogletOptions {
     /// Timeout waiting on log server response
     pub log_server_rpc_timeout: Duration,
 
-    /// log_server RPC retry policy
+    /// Log Server RPC retry policy
     ///
     /// Retry policy for log server RPCs
     pub log_server_retry_policy: RetryPolicy,
+
+    /// Maximum number of records to prefetch from log servers
+    ///
+    /// The number of records bifrost will attempt to prefetch from replicated loglet's log-servers
+    /// for every loglet reader (e.g. partition processor). Note that this mainly impacts readers
+    /// that are not co-located with the loglet sequencer (i.e. partition processor followers).
+    pub readahead_records: NonZeroUsize,
+
+    /// Trigger to prefetch more records
+    ///
+    /// When readahead is used (readhead-records), this value (percentage in float) will determine when
+    /// readers should trigger a prefetch for another batch to fill up the buffer. For instance, if
+    /// this value is 0.3, then bifrost will trigger a prefetch when 30% or more of the readahead
+    /// slots become available (e.g. partition processor consumed records and freed up enough slots).
+    ///
+    /// The higher the value is, the longer bifrost will wait before it triggers the next fetch, potentially
+    /// fetching more records as a result.
+    ///
+    /// To illustrate, if readahead-records is set to 100 and readahead-trigger-ratio is 1.0. Then
+    /// bifrost will prefetch up to 100 records from log-servers and will not trigger the next
+    /// prefetch unless the consumer consumes 100% of this buffer. This means that bifrost will
+    /// read in batches but will not do while the consumer is still reading the previous batch.
+    ///
+    /// Value must be between 0 and 1. It will be clamped at `1.0`.
+    pub readahead_trigger_ratio: f32,
 }
 
 impl Default for ReplicatedLogletOptions {
@@ -254,6 +279,8 @@ impl Default for ReplicatedLogletOptions {
                 Some(10),
                 Some(Duration::from_millis(2000)),
             ),
+            readahead_records: NonZeroUsize::new(100).unwrap(),
+            readahead_trigger_ratio: 0.5,
         }
     }
 }
