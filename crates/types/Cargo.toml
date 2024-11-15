@@ -31,7 +31,6 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
 codederror = { workspace = true }
-convert_case = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 downcast-rs = { workspace = true }

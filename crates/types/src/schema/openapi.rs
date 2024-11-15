@@ -2,7 +2,6 @@ use crate::identifiers::ServiceRevision;
 use crate::invocation::ServiceType;
 use crate::schema::invocation_target::{InputValidationRule, OutputContentTypeRule};
 use crate::schema::service::HandlerSchemas;
-use convert_case::{Case, Casing};
 use restate_utoipa::openapi::path::{Operation, Parameter, ParameterIn};
 use restate_utoipa::openapi::request_body::RequestBody;
 use restate_utoipa::openapi::*;
@@ -40,11 +39,7 @@ impl ServiceOpenAPI {
 
         let mut paths = Paths::builder();
         for (handler_name, handler_schemas) in handlers {
-            let operation_id = format!(
-                "{}{}",
-                service_name.to_case(Case::Pascal),
-                handler_name.to_case(Case::Pascal)
-            );
+            let operation_id = handler_name;
 
             if !handler_schemas.target_meta.public {
                 // We don't generate the OpenAPI route for that.
@@ -52,9 +47,9 @@ impl ServiceOpenAPI {
             }
 
             let request_body =
-                infer_handler_request_body(&operation_id, handler_schemas, &mut schemas_collector);
+                infer_handler_request_body(operation_id, handler_schemas, &mut schemas_collector);
             let response =
-                infer_handler_response(&operation_id, handler_schemas, &mut schemas_collector);
+                infer_handler_response(operation_id, handler_schemas, &mut schemas_collector);
 
             let call_item = PathItem::builder()
                 .summary(Some(format!("Call {service_name}/{handler_name}")))
