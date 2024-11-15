@@ -52,6 +52,7 @@ pub mod actions {
 
     use crate::partition::state_machine::Action;
     use restate_types::identifiers::InvocationId;
+    use restate_types::invocation::{InvocationResponse, ResponseResult};
 
     pub fn invoke_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
         pat!(Action::Invoke {
@@ -99,6 +100,24 @@ pub mod actions {
         pat!(Action::ForwardCompletion {
             invocation_id: eq(invocation_id),
             completion: inner,
+        })
+    }
+
+    pub fn invocation_response_to_partition_processor(
+        caller_invocation_id: InvocationId,
+        caller_entry_index: EntryIndex,
+        response_result_matcher: impl Matcher<ActualT = ResponseResult> + 'static,
+    ) -> impl Matcher<ActualT = Action> {
+        pat!(Action::NewOutboxMessage {
+            message: pat!(
+                restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(pat!(
+                    InvocationResponse {
+                        id: eq(caller_invocation_id),
+                        entry_index: eq(caller_entry_index),
+                        result: response_result_matcher
+                    }
+                ))
+            )
         })
     }
 }

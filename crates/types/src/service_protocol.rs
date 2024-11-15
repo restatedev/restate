@@ -77,14 +77,16 @@ impl From<crate::invocation::Header> for Header {
 /// These are used by the [`codec::ProtobufRawEntryCodec`].
 mod pb_into {
     use super::*;
+    use crate::identifiers::{IdempotencyId, ServiceId};
 
     use crate::journal::{
-        AwakeableEntry, CancelInvocationEntry, CancelInvocationTarget, ClearStateEntry,
-        CompleteAwakeableEntry, CompletePromiseEntry, CompleteResult, CompletionResult, Entry,
-        EntryResult, GetCallInvocationIdEntry, GetCallInvocationIdResult, GetPromiseEntry,
-        GetStateEntry, GetStateKeysEntry, GetStateKeysResult, InputEntry, InvokeEntry,
-        InvokeRequest, OneWayCallEntry, OutputEntry, PeekPromiseEntry, RunEntry, SetStateEntry,
-        SleepEntry, SleepResult,
+        AttachInvocationEntry, AttachInvocationTarget, AwakeableEntry, CancelInvocationEntry,
+        CancelInvocationTarget, ClearStateEntry, CompleteAwakeableEntry, CompletePromiseEntry,
+        CompleteResult, CompletionResult, Entry, EntryResult, GetCallInvocationIdEntry,
+        GetCallInvocationIdResult, GetInvocationOutputEntry, GetPromiseEntry, GetStateEntry,
+        GetStateKeysEntry, GetStateKeysResult, InputEntry, InvokeEntry, InvokeRequest,
+        OneWayCallEntry, OutputEntry, PeekPromiseEntry, RunEntry, SetStateEntry, SleepEntry,
+        SleepResult,
     };
 
     impl TryFrom<InputEntryMessage> for Entry {
@@ -365,6 +367,103 @@ mod pb_into {
                     }) => GetCallInvocationIdResult::Failure(code.into(), message.into()),
                 }),
             }))
+        }
+    }
+
+    impl TryFrom<AttachInvocationEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(
+            AttachInvocationEntryMessage { target, result, .. }: AttachInvocationEntryMessage,
+        ) -> Result<Self, Self::Error> {
+            Ok(Self::AttachInvocation(AttachInvocationEntry {
+                target: match target.ok_or("target")? {
+                    attach_invocation_entry_message::Target::InvocationId(id) => {
+                        AttachInvocationTarget::InvocationId(id.into())
+                    }
+                    attach_invocation_entry_message::Target::CallEntryIndex(idx) => {
+                        AttachInvocationTarget::CallEntryIndex(idx)
+                    }
+                    attach_invocation_entry_message::Target::IdempotentRequestTarget(id) => {
+                        AttachInvocationTarget::IdempotentRequest(id.into())
+                    }
+                    attach_invocation_entry_message::Target::WorkflowTarget(id) => {
+                        AttachInvocationTarget::Workflow(id.into())
+                    }
+                },
+                result: result.map(|v| match v {
+                    attach_invocation_entry_message::Result::Value(r) => EntryResult::Success(r),
+                    attach_invocation_entry_message::Result::Failure(Failure { code, message }) => {
+                        EntryResult::Failure(code.into(), message.into())
+                    }
+                }),
+            }))
+        }
+    }
+
+    impl TryFrom<GetInvocationOutputEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(
+            GetInvocationOutputEntryMessage { target, result, .. }: GetInvocationOutputEntryMessage,
+        ) -> Result<Self, Self::Error> {
+            Ok(Self::GetInvocationOutput(GetInvocationOutputEntry {
+                target: match target.ok_or("target")? {
+                    get_invocation_output_entry_message::Target::InvocationId(id) => {
+                        AttachInvocationTarget::InvocationId(id.into())
+                    }
+                    get_invocation_output_entry_message::Target::CallEntryIndex(idx) => {
+                        AttachInvocationTarget::CallEntryIndex(idx)
+                    }
+                    get_invocation_output_entry_message::Target::IdempotentRequestTarget(id) => {
+                        AttachInvocationTarget::IdempotentRequest(id.into())
+                    }
+                    get_invocation_output_entry_message::Target::WorkflowTarget(id) => {
+                        AttachInvocationTarget::Workflow(id.into())
+                    }
+                },
+                result: result.map(|v| match v {
+                    get_invocation_output_entry_message::Result::Empty(_) => {
+                        CompletionResult::Empty
+                    }
+                    get_invocation_output_entry_message::Result::Value(r) => {
+                        CompletionResult::Success(r)
+                    }
+                    get_invocation_output_entry_message::Result::Failure(Failure {
+                        code,
+                        message,
+                    }) => CompletionResult::Failure(code.into(), message.into()),
+                }),
+            }))
+        }
+    }
+
+    impl From<IdempotentRequestTarget> for IdempotencyId {
+        fn from(
+            IdempotentRequestTarget {
+                service_name,
+                service_key,
+                handler_name,
+                idempotency_key,
+            }: IdempotentRequestTarget,
+        ) -> Self {
+            IdempotencyId::new(
+                service_name.into(),
+                service_key.map(Into::into),
+                handler_name.into(),
+                idempotency_key.into(),
+            )
+        }
+    }
+
+    impl From<WorkflowTarget> for ServiceId {
+        fn from(
+            WorkflowTarget {
+                workflow_name,
+                workflow_key,
+            }: WorkflowTarget,
+        ) -> Self {
+            ServiceId::new(workflow_name, workflow_key)
         }
     }
 }

@@ -644,6 +644,7 @@ where
                         invocation_query.partition_key(),
                         Command::AttachInvocation(AttachInvocationRequest {
                             invocation_query,
+                            block_on_inflight: true,
                             response_sink: ServiceInvocationResponseSink::Ingress { request_id },
                         }),
                     )

@@ -51,6 +51,8 @@ pub enum MessageType {
     CompletePromiseEntry,
     CancelInvocationEntry,
     GetCallInvocationIdEntry,
+    AttachInvocationEntry,
+    GetInvocationOutputEntry,
     CustomEntry(u16),
 }
 
@@ -81,6 +83,8 @@ impl MessageType {
             MessageType::CompletePromiseEntry => MessageKind::State,
             MessageType::CancelInvocationEntry => MessageKind::Syscall,
             MessageType::GetCallInvocationIdEntry => MessageKind::Syscall,
+            MessageType::AttachInvocationEntry => MessageKind::Syscall,
+            MessageType::GetInvocationOutputEntry => MessageKind::Syscall,
             MessageType::CustomEntry(_) => MessageKind::CustomEntry,
         }
     }
@@ -97,6 +101,8 @@ impl MessageType {
                 | MessageType::PeekPromiseEntry
                 | MessageType::CompletePromiseEntry
                 | MessageType::GetCallInvocationIdEntry
+                | MessageType::AttachInvocationEntry
+                | MessageType::GetInvocationOutputEntry
         )
     }
 
@@ -132,6 +138,8 @@ const COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C04;
 const SIDE_EFFECT_ENTRY_MESSAGE_TYPE: u16 = 0x0C05;
 const CANCEL_INVOCATION_ENTRY_MESSAGE_TYPE: u16 = 0x0C06;
 const GET_CALL_INVOCATION_ID_ENTRY_MESSAGE_TYPE: u16 = 0x0C07;
+const ATTACH_INVOCATION_ENTRY_MESSAGE_TYPE: u16 = 0x0C08;
+const GET_INVOCATION_OUTPUT_ENTRY_MESSAGE_TYPE: u16 = 0x0C09;
 
 impl From<MessageType> for MessageTypeId {
     fn from(mt: MessageType) -> Self {
@@ -160,6 +168,8 @@ impl From<MessageType> for MessageTypeId {
             MessageType::CompletePromiseEntry => COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE,
             MessageType::CancelInvocationEntry => CANCEL_INVOCATION_ENTRY_MESSAGE_TYPE,
             MessageType::GetCallInvocationIdEntry => GET_CALL_INVOCATION_ID_ENTRY_MESSAGE_TYPE,
+            MessageType::AttachInvocationEntry => ATTACH_INVOCATION_ENTRY_MESSAGE_TYPE,
+            MessageType::GetInvocationOutputEntry => GET_INVOCATION_OUTPUT_ENTRY_MESSAGE_TYPE,
             MessageType::CustomEntry(id) => id,
         }
     }
@@ -198,6 +208,8 @@ impl TryFrom<MessageTypeId> for MessageType {
             SIDE_EFFECT_ENTRY_MESSAGE_TYPE => Ok(MessageType::SideEffectEntry),
             CANCEL_INVOCATION_ENTRY_MESSAGE_TYPE => Ok(MessageType::CancelInvocationEntry),
             GET_CALL_INVOCATION_ID_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetCallInvocationIdEntry),
+            ATTACH_INVOCATION_ENTRY_MESSAGE_TYPE => Ok(MessageType::AttachInvocationEntry),
+            GET_INVOCATION_OUTPUT_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetInvocationOutputEntry),
             v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::CustomEntry(v)),
             v => Err(UnknownMessageType(v)),
         }
@@ -227,6 +239,8 @@ impl TryFrom<MessageType> for EntryType {
             MessageType::CompletePromiseEntry => Ok(EntryType::CompletePromise),
             MessageType::CancelInvocationEntry => Ok(EntryType::CancelInvocation),
             MessageType::GetCallInvocationIdEntry => Ok(EntryType::GetCallInvocationId),
+            MessageType::AttachInvocationEntry => Ok(EntryType::AttachInvocation),
+            MessageType::GetInvocationOutputEntry => Ok(EntryType::GetInvocationOutput),
             MessageType::CustomEntry(_) => Ok(EntryType::Custom),
             MessageType::Start
             | MessageType::Completion

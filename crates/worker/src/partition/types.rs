@@ -45,6 +45,7 @@ impl OutboxMessageExt for OutboxMessage {
             OutboxMessage::ServiceInvocation(si) => Command::Invoke(si),
             OutboxMessage::ServiceResponse(sr) => Command::InvocationResponse(sr),
             OutboxMessage::InvocationTermination(it) => Command::TerminateInvocation(it),
+            OutboxMessage::AttachInvocation(ai) => Command::AttachInvocation(ai),
         }
     }
 }
