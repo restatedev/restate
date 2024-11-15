@@ -2,7 +2,12 @@ mod common;
 
 #[cfg(feature = "replicated-loglet")]
 mod tests {
-    use std::{collections::BTreeSet, num::NonZeroU8, sync::Arc, time::Duration};
+    use std::{
+        collections::BTreeSet,
+        num::{NonZeroU8, NonZeroUsize},
+        sync::Arc,
+        time::Duration,
+    };
 
     use futures_util::StreamExt;
     use googletest::prelude::*;
@@ -100,7 +105,6 @@ mod tests {
     }
 
     #[test(tokio::test)]
-    #[ignore = "requires trim"]
     async fn three_logserver_gapless_smoke_test() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
@@ -129,10 +133,17 @@ mod tests {
     }
 
     #[test(tokio::test)]
-    #[ignore = "requires trim"]
     async fn three_logserver_readstream_with_trims() -> googletest::Result<()> {
+        // For this test to work, we need to disable the record cache to ensure we
+        // observer the moving trimpoint.
+        let mut config = Configuration::default();
+        // disable read-ahead to avoid reading records from log-servers before the trim taking
+        // place.
+        config.bifrost.replicated_loglet.readahead_records = NonZeroUsize::new(1).unwrap();
+        config.bifrost.replicated_loglet.readahead_trigger_ratio = 1.0;
+        config.bifrost.record_cache_memory_size = (0 as u64).into();
         run_in_test_env(
-            Configuration::default(),
+            config,
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,

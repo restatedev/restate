@@ -27,6 +27,7 @@ use restate_types::{
 };
 
 async fn replicated_loglet_client(
+    mut config: Configuration,
     cluster: &StartedCluster,
     node_id: PlainNodeId,
 ) -> googletest::Result<(
@@ -39,8 +40,6 @@ async fn replicated_loglet_client(
     let node_dir = cluster.base_dir().join(&node_name);
     std::fs::create_dir_all(&node_dir)?;
     let node_socket = node_dir.join("node.sock");
-
-    let mut config = Configuration::default();
 
     config.common.roles = EnumSet::empty();
     config.common.allow_bootstrap = false;
@@ -105,7 +104,7 @@ where
     // disable the cluster controller to allow us to manually set the logs configuration
     base_config.admin.disable_cluster_controller = true;
     let nodes = Node::new_test_nodes_with_metadata(
-        base_config,
+        base_config.clone(),
         BinarySource::CargoTest,
         enum_set!(Role::LogServer),
         log_server_count,
@@ -160,8 +159,12 @@ where
 
         // join a new node to the cluster solely to act as a bifrost client
         // it will have node id log_server_count+2
-        let (bifrost, loglet, metadata_writer, metadata_store_client) =
-            replicated_loglet_client(&cluster, PlainNodeId::new(log_server_count + 2)).await?;
+        let (bifrost, loglet, metadata_writer, metadata_store_client) = replicated_loglet_client(
+            base_config,
+            &cluster,
+            PlainNodeId::new(log_server_count + 2),
+        )
+        .await?;
 
         // global metadata should now be set, running in scope sets it in the task center context
         tc.run_in_scope(
