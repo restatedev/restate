@@ -88,8 +88,7 @@ async fn create_snapshot_inner(
     let snapshot_id = SnapshotId::new();
     let snapshot = partition_store_manager
         .export_partition_snapshot(partition_id, snapshot_id, snapshot_base_path.clone())
-        .await
-        .map_err(|e| SnapshotError::SnapshotExportError(partition_id, e))?;
+        .await?;
 
     let metadata = write_snapshot_metadata_header(
         snapshot_id,
