@@ -10,15 +10,23 @@
 
 use std::path::PathBuf;
 use std::time::SystemTime;
+
 use tokio::sync::{oneshot, watch};
 use tracing::{debug, warn};
 
+use restate_core::worker_api::{SnapshotError, SnapshotResult};
 use restate_partition_store::snapshots::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
 };
 use restate_partition_store::PartitionStoreManager;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
+
+/// Handle to an outstanding [`SnapshotPartitionTask`] that has been spawned, including a reference
+/// to notify the requester.
+pub struct PendingSnapshotTask {
+    pub sender: oneshot::Sender<SnapshotResult>,
+}
 
 /// Creates a partition store snapshot along with Restate snapshot metadata.
 pub struct SnapshotPartitionTask {
@@ -28,11 +36,10 @@ pub struct SnapshotPartitionTask {
     pub snapshot_base_path: PathBuf,
     pub partition_store_manager: PartitionStoreManager,
     pub archived_lsn_sender: watch::Sender<Option<Lsn>>,
-    pub result_sender: oneshot::Sender<anyhow::Result<SnapshotId>>,
 }
 
 impl SnapshotPartitionTask {
-    pub async fn create_snapshot(self) -> anyhow::Result<SnapshotId> {
+    pub async fn create_snapshot(self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
         debug!(
             partition_id = %self.partition_id,
             "Creating partition snapshot"
@@ -50,24 +57,13 @@ impl SnapshotPartitionTask {
 
         match result {
             Ok(metadata) => {
-                let _ = self
-                    .result_sender
-                    .send(Ok(metadata.snapshot_id))
-                    .inspect_err(|err| {
-                        warn!(
-                        "Failed to send snapshot acknowledgement after snapshot {} was successfully created: {:?}",
-                        metadata.snapshot_id,
-                        err
-                    )
-                    });
-
                 debug!(
                     partition_id = %self.partition_id,
                     snapshot_id = %metadata.snapshot_id,
                     archived_lsn = %metadata.min_applied_lsn,
                     "Partition snapshot created"
                 );
-                Ok(metadata.snapshot_id)
+                Ok(metadata)
             }
             Err(err) => {
                 warn!(
@@ -75,7 +71,6 @@ impl SnapshotPartitionTask {
                     "Failed to create partition snapshot: {}",
                     err
                 );
-
                 Err(err)
             }
         }
@@ -89,11 +84,12 @@ async fn create_snapshot_inner(
     partition_id: PartitionId,
     snapshot_base_path: PathBuf,
     archived_lsn_sender: watch::Sender<Option<Lsn>>,
-) -> anyhow::Result<PartitionSnapshotMetadata> {
+) -> Result<PartitionSnapshotMetadata, SnapshotError> {
     let snapshot_id = SnapshotId::new();
     let snapshot = partition_store_manager
         .export_partition_snapshot(partition_id, snapshot_id, snapshot_base_path.clone())
-        .await?;
+        .await
+        .map_err(|e| SnapshotError::SnapshotExportError(partition_id, e))?;
 
     let metadata = write_snapshot_metadata_header(
         snapshot_id,
@@ -106,7 +102,11 @@ async fn create_snapshot_inner(
 
     // todo(pavel): SnapshotRepository integration will go in here in a future PR
 
-    archived_lsn_sender.send(Some(metadata.min_applied_lsn))?;
+    archived_lsn_sender
+        .send(Some(metadata.min_applied_lsn))
+        .map_err(|_| {
+            SnapshotError::Internal(partition_id, "Failed to send archived LSN".to_string())
+        })?;
 
     Ok(metadata)
 }
@@ -117,7 +117,7 @@ async fn write_snapshot_metadata_header(
     node_name: String,
     partition_id: PartitionId,
     snapshot: LocalPartitionSnapshot,
-) -> anyhow::Result<PartitionSnapshotMetadata> {
+) -> Result<PartitionSnapshotMetadata, SnapshotError> {
     let snapshot_meta = PartitionSnapshotMetadata {
         version: SnapshotFormatVersion::V1,
         cluster_name,
@@ -130,10 +130,14 @@ async fn write_snapshot_metadata_header(
         db_comparator_name: snapshot.db_comparator_name.clone(),
         files: snapshot.files.clone(),
     };
-    let metadata_json = serde_json::to_string_pretty(&snapshot_meta)?;
+    let metadata_json =
+        serde_json::to_string_pretty(&snapshot_meta).expect("Can always serialize JSON");
 
     let metadata_path = snapshot.base_dir.join("metadata.json");
-    tokio::fs::write(metadata_path.clone(), metadata_json).await?;
+    tokio::fs::write(metadata_path.clone(), metadata_json)
+        .await
+        .map_err(|e| SnapshotError::SnapshotMetadataHeaderError(partition_id, e))?;
+
     debug!(
         %snapshot_id,
         lsn = %snapshot.min_applied_lsn,

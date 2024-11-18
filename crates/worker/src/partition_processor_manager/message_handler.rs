@@ -47,14 +47,14 @@ impl MessageHandler for PartitionProcessorManagerMessageHandler {
                         .await;
 
                     match create_snapshot_result.as_ref() {
-                        Ok(snapshot_id) => {
+                        Ok(snapshot) => {
                             debug!(
                                 partition_id = %msg.body().partition_id,
-                                %snapshot_id,
+                                %snapshot,
                                 "Create snapshot successfully completed",
                             );
                             msg.to_rpc_response(CreateSnapshotResponse {
-                                result: Ok(*snapshot_id),
+                                result: Ok(snapshot.snapshot_id),
                             })
                         }
                         Err(err) => {
