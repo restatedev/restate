@@ -14,19 +14,13 @@ use std::time::SystemTime;
 use tokio::sync::{oneshot, watch};
 use tracing::{debug, warn};
 
-use restate_core::worker_api::{SnapshotError, SnapshotResult};
+use restate_core::worker_api::SnapshotError;
 use restate_partition_store::snapshots::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
 };
 use restate_partition_store::PartitionStoreManager;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
-
-/// Handle to an outstanding [`SnapshotPartitionTask`] that has been spawned, including a reference
-/// to notify the requester.
-pub struct PendingSnapshotTask {
-    pub sender: oneshot::Sender<SnapshotResult>,
-}
 
 /// Creates a partition store snapshot along with Restate snapshot metadata.
 pub struct SnapshotPartitionTask {
@@ -39,7 +33,10 @@ pub struct SnapshotPartitionTask {
 }
 
 impl SnapshotPartitionTask {
-    pub async fn create_snapshot(self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
+    pub async fn create_snapshot(
+        self,
+        tx: oneshot::Sender<Result<PartitionSnapshotMetadata, SnapshotError>>,
+    ) {
         debug!(
             partition_id = %self.partition_id,
             "Creating partition snapshot"
@@ -55,7 +52,7 @@ impl SnapshotPartitionTask {
         )
         .await;
 
-        match result {
+        let _ = tx.send(match result {
             Ok(metadata) => {
                 debug!(
                     partition_id = %self.partition_id,
@@ -73,7 +70,7 @@ impl SnapshotPartitionTask {
                 );
                 Err(err)
             }
-        }
+        });
     }
 }
 

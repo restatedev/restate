@@ -41,9 +41,7 @@ use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnW
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
-use crate::partition_processor_manager::snapshot_task::{
-    PendingSnapshotTask, SnapshotPartitionTask,
-};
+use crate::partition_processor_manager::snapshot_task::SnapshotPartitionTask;
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 use restate_bifrost::Bifrost;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
@@ -78,8 +76,6 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::GenerationalNodeId;
 
-type LsnWatchChannel = (watch::Sender<Option<Lsn>>, watch::Receiver<Option<Lsn>>);
-
 pub struct PartitionProcessorManager {
     task_center: TaskCenter,
     health_status: HealthStatus<WorkerStatus>,
@@ -104,8 +100,17 @@ pub struct PartitionProcessorManager {
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
-    snapshot_export_tasks:
-        FuturesUnordered<TaskHandle<Result<PartitionSnapshotMetadata, SnapshotError>>>,
+    snapshot_export_tasks: FuturesUnordered<oneshot::Receiver<SnapshotResultInternal>>,
+}
+
+type LsnWatchChannel = (watch::Sender<Option<Lsn>>, watch::Receiver<Option<Lsn>>);
+type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
+
+/// Handle to an outstanding [`SnapshotPartitionTask`] that has been spawned, including a reference
+/// to notify the requester.
+pub struct PendingSnapshotTask {
+    pub handle: TaskHandle<()>,
+    pub sender: oneshot::Sender<SnapshotResult>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -272,10 +277,17 @@ impl PartitionProcessorManager {
                     self.on_partition_processor_rpc(partition_processor_rpc);
                 }
                 Some(result) = self.snapshot_export_tasks.next() => {
-                    self.on_snapshot_task_result(result.expect("export task ok??"));
+                    if let Ok(result) = result {
+                        self.on_snapshot_task_result(result);
+                    } else {
+                        debug!("Snapshot creation task failed: {}", result.unwrap_err()); // shutdown
+                    }
                 }
                 _ = &mut shutdown => {
                     self.health_status.update(WorkerStatus::Unknown);
+                    for task in self.pending_snapshots.values() {
+                        task.handle.cancel();
+                    }
                     return Ok(());
                 }
             }
@@ -708,27 +720,22 @@ impl PartitionProcessorManager {
         }
     }
 
-    fn on_snapshot_task_result(
-        &mut self,
-        result: Result<PartitionSnapshotMetadata, SnapshotError>,
-    ) {
-        match result {
-            Ok(metadata) => {
-                if let Some(pending) = self.pending_snapshots.remove(&metadata.partition_id) {
-                    let _ = pending.sender.send(Ok(SnapshotCreated {
-                        snapshot_id: metadata.snapshot_id,
-                        partition_id: metadata.partition_id,
-                    }));
-                }
-            }
-            Err(snapshot_error) => {
-                if let Some(pending) = self
-                    .pending_snapshots
-                    .remove(&snapshot_error.partition_id())
-                {
-                    let _ = pending.sender.send(Err(snapshot_error));
-                }
-            }
+    fn on_snapshot_task_result(&mut self, result: SnapshotResultInternal) {
+        let (partition_id, response) = match result {
+            Ok(metadata) => (
+                metadata.partition_id,
+                Ok(SnapshotCreated {
+                    snapshot_id: metadata.snapshot_id,
+                    partition_id: metadata.partition_id,
+                }),
+            ),
+            Err(snapshot_error) => (snapshot_error.partition_id(), Err(snapshot_error)),
+        };
+
+        if let Some(pending) = self.pending_snapshots.remove(&partition_id) {
+            let _ = pending.sender.send(response);
+        } else {
+            error!("Snapshot task result received, but there was no pending sender found!")
         }
     }
 
@@ -799,19 +806,25 @@ impl PartitionProcessorManager {
                 archived_lsn_sender,
             };
 
+            let (snapshot_metadata_tx, snapshot_metadata_rx) = oneshot::channel();
             let snapshot_span = tracing::info_span!("create-snapshot");
             let spawn_task_result = restate_core::task_center().spawn_unmanaged(
                 TaskKind::PartitionSnapshotProducer,
                 "create-snapshot",
                 Some(partition_id),
-                async move { create_snapshot_task.create_snapshot().await }
-                    .instrument(snapshot_span),
+                async move {
+                    create_snapshot_task
+                        .create_snapshot(snapshot_metadata_tx)
+                        .await
+                }
+                .instrument(snapshot_span),
             );
 
             match spawn_task_result {
-                Ok(task) => {
-                    self.snapshot_export_tasks.push(task);
+                Ok(handle) => {
+                    self.snapshot_export_tasks.push(snapshot_metadata_rx);
                     entry.insert(PendingSnapshotTask {
+                        handle,
                         sender: result_sender,
                     });
                 }
