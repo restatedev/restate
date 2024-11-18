@@ -13,7 +13,7 @@ mod network_server;
 mod roles;
 
 use std::sync::Arc;
-
+use std::time::Duration;
 use tracing::{debug, error, info, trace};
 
 use codederror::CodedError;
@@ -42,6 +42,7 @@ use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguratio
 use restate_types::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
 };
+use restate_types::retries::RetryPolicy;
 use restate_types::Version;
 
 use crate::cluster_marker::ClusterValidationError;
@@ -404,14 +405,18 @@ impl Node {
                 let admin_node_id = admin_node.current_generation;
                 let networking = self.networking.clone();
 
-                tc.spawn_unmanaged(TaskKind::Disposable, "announce-node-at-admin-node", None, async move {
-                    if let Err(err) = networking
-                        .node_connection(admin_node_id)
-                        .await
-                    {
-                        info!("Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}");
+                tc.spawn(
+                    TaskKind::Disposable,
+                    "announce-node-at-admin-node",
+                    None,
+                    async move {
+                        let announce_retry_policy = RetryPolicy::exponential(Duration::from_millis(100), 2.0, Some(10), None);
+                        if let Err(err) = announce_retry_policy.retry(|| networking.node_connection(admin_node_id)).await {
+                            info!("Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}");
+                        }
+                        Ok(())
                     }
-                })?;
+                )?;
             }
         }
 
