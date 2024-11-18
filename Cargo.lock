@@ -6871,6 +6871,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "opentelemetry",
+ "paste",
  "prettyplease",
  "prost",
  "prost-build",

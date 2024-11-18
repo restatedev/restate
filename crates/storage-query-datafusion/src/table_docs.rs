@@ -100,6 +100,7 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_status.remove("invoked_by").expect("invoked_by should exist"),
         sys_invocation_status.remove("invoked_by_service_name").expect("invoked_by_service_name should exist"),
         sys_invocation_status.remove("invoked_by_id").expect("invoked_by_id should exist"),
+        sys_invocation_status.remove("invoked_by_subscription_id").expect("invoked_by_subscription_id should exist"),
         sys_invocation_status.remove("invoked_by_target").expect("invoked_by_target should exist"),
         sys_invocation_status.remove("pinned_deployment_id").expect("pinned_deployment_id should exist"),
         sys_invocation_status.remove("pinned_service_protocol_version").expect("pinned_service_protocol_version should exist"),

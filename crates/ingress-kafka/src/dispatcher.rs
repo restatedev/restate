@@ -39,6 +39,7 @@ pub struct KafkaIngressEvent {
 }
 
 impl KafkaIngressEvent {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         subscription: &Subscription,
         key: Bytes,
@@ -47,6 +48,7 @@ impl KafkaIngressEvent {
         deduplication_id: KafkaDeduplicationId,
         deduplication_index: MessageIndex,
         headers: Vec<restate_types::invocation::Header>,
+        experimental_feature_kafka_ingress_next: bool,
     ) -> Result<Self, anyhow::Error> {
         // Check if we need to proxy or not
         let proxying_partition_key = if KafkaDeduplicationId::requires_proxying(subscription) {
@@ -94,7 +96,11 @@ impl KafkaIngressEvent {
         let mut service_invocation = ServiceInvocation::initialize(
             invocation_id,
             invocation_target,
-            restate_types::invocation::Source::Ingress(PartitionProcessorRpcRequestId::new()),
+            if experimental_feature_kafka_ingress_next {
+                restate_types::invocation::Source::Subscription(subscription.id())
+            } else {
+                restate_types::invocation::Source::Ingress(PartitionProcessorRpcRequestId::new())
+            },
         );
         service_invocation.with_related_span(related_span);
         service_invocation.argument = argument;

@@ -45,6 +45,10 @@ pub struct IngressOptions {
     /// back to a previous version.
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub experimental_feature_enable_separate_ingress_role: bool,
+
+    /// Cluster of new features for the kafka ingress.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    experimental_feature_kafka_ingress_next: bool,
 }
 
 impl IngressOptions {
@@ -65,6 +69,10 @@ impl IngressOptions {
             Semaphore::MAX_PERMITS - 1,
         )
     }
+
+    pub fn experimental_feature_kafka_ingress_next(&self) -> bool {
+        self.experimental_feature_kafka_ingress_next
+    }
 }
 
 impl Default for IngressOptions {
@@ -75,6 +83,7 @@ impl Default for IngressOptions {
             concurrent_api_requests_limit: None,
             kafka_clusters: Default::default(),
             experimental_feature_enable_separate_ingress_role: false,
+            experimental_feature_kafka_ingress_next: false,
         }
     }
 }

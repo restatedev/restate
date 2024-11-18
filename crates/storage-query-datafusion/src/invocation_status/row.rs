@@ -143,6 +143,10 @@ fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, output: &mut String,
         Source::Internal => {
             row.invoked_by("restate");
         }
+        Source::Subscription(sub_id) => {
+            row.invoked_by("subscription");
+            row.invoked_by_subscription_id(format_using(output, &sub_id))
+        }
     }
 }
 
