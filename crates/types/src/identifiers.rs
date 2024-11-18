@@ -795,7 +795,10 @@ impl FromStr for LambdaARN {
 
 /// Generate an identifier backed by ULID.
 ///
-/// This generates the struct macro plus bunch of common methods. To use:
+/// This generates the Id struct and some associated methods: `new`, `from_parts`, `from_slice`, `from_bytes`, `to_bytes`,
+/// plus implements `Default`, `Display`, `Debug`, `FromStr`, `JsonSchema` and `TimestampAwareId`.
+///
+/// To use:
 ///
 /// ```ignore
 /// ulid_backed_id!(MyResource);
