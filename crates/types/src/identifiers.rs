@@ -29,7 +29,6 @@ use crate::id_util::IdEncoder;
 use crate::id_util::IdResourceType;
 use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
 use crate::time::MillisSinceEpoch;
-use crate::uuid_backed_id;
 
 /// Identifying the leader epoch of a partition processor
 #[derive(
@@ -794,10 +793,165 @@ impl FromStr for LambdaARN {
     }
 }
 
-uuid_backed_id!(Deployment);
-uuid_backed_id!(Subscription);
-uuid_backed_id!(PartitionProcessorRpcRequest);
-uuid_backed_id!(Snapshot);
+/// Generate an identifier backed by ULID.
+///
+/// This generates the struct macro plus bunch of common methods. To use:
+///
+/// ```rust,skip
+/// ulid_backed_id!(MyResource);
+/// ```
+///
+/// If the resource has an associated [`ResourceId`]:
+///
+/// ```rust,skip
+/// ulid_backed_id!(MyResource @with_resource_id);
+/// ```
+///
+/// The difference between the two will be the usage of ResourceId for serde and string representations.
+macro_rules! ulid_backed_id {
+    ($res_name:ident) => {
+        ulid_backed_id!(@common $res_name);
+
+        paste::paste! {
+            impl fmt::Display for [< $res_name Id >] {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    fmt::Display::fmt(&self.0, f)
+                }
+            }
+
+            impl FromStr for [< $res_name Id >] {
+                type Err = ulid::DecodeError;
+
+                fn from_str(s: &str) -> Result<Self, Self::Err> {
+                    Ok(Self(Ulid::from_string(s)?))
+                }
+            }
+        }
+    };
+    ($res_name:ident @with_resource_id) => {
+        ulid_backed_id!(@common $res_name);
+
+        paste::paste! {
+            impl ResourceId for [< $res_name Id >] {
+                const SIZE_IN_BYTES: usize = size_of::<Ulid>();
+                const RESOURCE_TYPE: IdResourceType = IdResourceType::$res_name;
+                const STRING_CAPACITY_HINT: usize = base62_max_length_for_type::<u128>();
+
+                fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+                    let raw: u128 = self.0.into();
+                    encoder.encode_fixed_width(raw);
+                }
+            }
+
+            impl FromStr for [< $res_name Id >] {
+                type Err = IdDecodeError;
+
+                fn from_str(input: &str) -> Result<Self, Self::Err> {
+                    let mut decoder = IdDecoder::new(input)?;
+                    // Ensure we are decoding the correct resource type
+                    if decoder.resource_type != Self::RESOURCE_TYPE {
+                        return Err(IdDecodeError::TypeMismatch);
+                    }
+
+                    // ulid (u128)
+                    let raw_ulid: u128 = decoder.cursor.decode_next()?;
+                    Ok(Self::from(raw_ulid))
+                }
+            }
+
+            impl fmt::Display for [< $res_name Id >] {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    let mut encoder = IdEncoder::<Self>::new();
+                    self.push_contents_to_encoder(&mut encoder);
+                    fmt::Display::fmt(&encoder.finalize(), f)
+                }
+            }
+        }
+    };
+    (@common $res_name:ident) => {
+        paste::paste! {
+            #[derive(
+                PartialEq,
+                Eq,
+                Clone,
+                Copy,
+                Hash,
+                PartialOrd,
+                Ord,
+                serde_with::SerializeDisplay,
+                serde_with::DeserializeFromStr,
+            )]
+            pub struct [< $res_name Id >](pub(crate) Ulid);
+
+            impl [< $res_name Id >] {
+                pub fn new() -> Self {
+                    Self(Ulid::new())
+                }
+
+                pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
+                    Self(Ulid::from_parts(timestamp_ms, random))
+                }
+
+                pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
+                    let ulid = Ulid::from_bytes(b.try_into().map_err(|_| IdDecodeError::Length)?);
+                    debug_assert!(!ulid.is_nil());
+                    Ok(Self(ulid))
+                }
+
+                pub fn from_bytes(bytes: [u8; 16]) -> Self {
+                    let ulid = Ulid::from_bytes(bytes);
+                    debug_assert!(!ulid.is_nil());
+                    Self(ulid)
+                }
+
+                pub fn to_bytes(&self) -> [u8; 16] {
+                    self.0.to_bytes()
+                }
+            }
+
+            impl Default for [< $res_name Id >] {
+                fn default() -> Self {
+                    Self::new()
+                }
+            }
+
+            impl TimestampAwareId for [< $res_name Id >] {
+                fn timestamp(&self) -> MillisSinceEpoch {
+                    self.0.timestamp_ms().into()
+                }
+            }
+
+            impl fmt::Debug for [< $res_name Id >] {
+                fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+                    // use the same formatting for debug and display to show a consistent representation
+                    fmt::Display::fmt(self, f)
+                }
+            }
+
+            impl From<u128> for [< $res_name Id >] {
+                fn from(value: u128) -> Self {
+                    Self(Ulid::from(value))
+                }
+            }
+
+            #[cfg(feature = "schemars")]
+            impl schemars::JsonSchema for [< $res_name Id >] {
+                fn schema_name() -> String {
+                    <String as schemars::JsonSchema>::schema_name()
+                }
+
+                fn json_schema(g: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+                    <String as schemars::JsonSchema>::json_schema(g)
+                }
+            }
+        }
+    };
+}
+
+ulid_backed_id!(Deployment @with_resource_id);
+ulid_backed_id!(Subscription @with_resource_id);
+ulid_backed_id!(PartitionProcessorRpcRequest);
+ulid_backed_id!(Snapshot @with_resource_id);
 
 #[cfg(any(test, feature = "test-util"))]
 mod mocks {
