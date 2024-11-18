@@ -797,13 +797,13 @@ impl FromStr for LambdaARN {
 ///
 /// This generates the struct macro plus bunch of common methods. To use:
 ///
-/// ```rust,skip
+/// ```ignore
 /// ulid_backed_id!(MyResource);
 /// ```
 ///
 /// If the resource has an associated [`ResourceId`]:
 ///
-/// ```rust,skip
+/// ```ignore
 /// ulid_backed_id!(MyResource @with_resource_id);
 /// ```
 ///
