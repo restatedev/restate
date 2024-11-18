@@ -74,6 +74,7 @@ async fn call_service() {
         assert_eq!(
             service_invocation.headers,
             vec![
+                Header::new("x-restate-ingress-path", "/greeter.Greeter/greet"),
                 Header::new("content-type", "application/json"),
                 Header::new("my-header", "my-value")
             ]

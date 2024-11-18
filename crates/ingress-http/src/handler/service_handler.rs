@@ -39,6 +39,7 @@ use crate::metric_definitions::{INGRESS_REQUESTS, INGRESS_REQUEST_DURATION, REQU
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const DELAY_QUERY_PARAM: &str = "delay";
+const X_RESTATE_INGRESS_PATH: ByteString = ByteString::from_static("x-restate-ingress-path");
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
@@ -176,11 +177,11 @@ where
                 &body,
             )?;
 
-            // Get headers
-            let headers = parse_headers(parts.headers)?;
-
             // Parse delay query parameter
             let delay = parse_delay(parts.uri.query())?;
+
+            // Get headers
+            let headers = parse_headers(parts)?;
 
             // Prepare service invocation
             let mut service_invocation =
@@ -324,24 +325,33 @@ where
     }
 }
 
-fn parse_headers(headers: HeaderMap) -> Result<Vec<Header>, HandlerError> {
-    headers
-        .into_iter()
-        .filter_map(|(k, v)| k.map(|k| (k, v)))
-        // Filter out Connection, Host and idempotency headers
-        .filter(|(k, _)| {
-            k != header::CONNECTION
-                && k != header::HOST
-                && k != IDEMPOTENCY_KEY
-                && k != IDEMPOTENCY_EXPIRES
-        })
-        .map(|(k, v)| {
-            let value = v
-                .to_str()
-                .map_err(|e| HandlerError::BadHeader(k.clone(), e))?;
-            Ok(Header::new(k.as_str(), value))
-        })
-        .collect()
+fn parse_headers(parts: http::request::Parts) -> Result<Vec<Header>, HandlerError> {
+    let mut headers = Vec::with_capacity(1 + parts.headers.keys_len());
+
+    if let Some(path_and_query) = parts.uri.path_and_query() {
+        headers.push(Header::new(X_RESTATE_INGRESS_PATH, path_and_query.as_str()));
+    }
+
+    for (k, v) in parts.headers {
+        let Some(k) = k else {
+            continue;
+        };
+
+        if k == header::CONNECTION
+            || k == header::HOST
+            || k == IDEMPOTENCY_KEY
+            || k == IDEMPOTENCY_EXPIRES
+        {
+            continue;
+        }
+
+        let value = v
+            .to_str()
+            .map_err(|e| HandlerError::BadHeader(k.clone(), e))?;
+        headers.push(Header::new(k.as_str(), value))
+    }
+
+    Ok(headers)
 }
 
 #[serde_as]
