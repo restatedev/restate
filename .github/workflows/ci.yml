@@ -80,7 +80,7 @@ jobs:
       actions: read
     secrets: inherit
     needs: docker
-    uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
+    uses: restatedev/sdk-java/.github/workflows/integration.yaml@9ad09503abb44f1e00e61e1a6fc6ec2da0f38fb2
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -94,7 +94,7 @@ jobs:
       actions: read
     secrets: inherit
     needs: docker
-    uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
+    uses: restatedev/sdk-java/.github/workflows/integration.yaml@9ad09503abb44f1e00e61e1a6fc6ec2da0f38fb2
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
       envVars: |
