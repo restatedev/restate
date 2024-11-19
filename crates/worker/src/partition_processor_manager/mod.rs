@@ -698,7 +698,7 @@ impl PartitionProcessorManager {
             }
         };
 
-        if !processor_state.should_publish_snapshot() {
+        if !processor_state.should_publish_snapshots() {
             let _ = sender.send(Err(SnapshotError::InvalidState(partition_id)));
             return;
         }
