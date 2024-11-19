@@ -160,11 +160,6 @@ skip = [
     {name = "ring"}
 ]
 
-deny = [
-    # Use rustls instead of openssl-sys since it is assumed to be more secure
-    { name = "openssl-sys" }
-]
-
 [sources]
 unknown-registry = "deny"
 # Lint level for what to happen when a crate from a git repository that is not
