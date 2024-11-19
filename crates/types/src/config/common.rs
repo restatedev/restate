@@ -224,6 +224,13 @@ pub struct CommonOptions {
     /// If this option is set to `false`, then one needs to manually write a partition table to
     /// the metadata store. Without a partition table, the cluster will not start.
     pub auto_provision_partitions: bool,
+
+    ///  # Controller heartbeats
+    ///
+    /// Controls the interval at which cluster controller polls nodes of the cluster.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub heartbeat_interval: humantime::Duration,
 }
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| {
@@ -378,6 +385,7 @@ impl Default for CommonOptions {
                 Some(Duration::from_secs(5)),
             ),
             auto_provision_partitions: true,
+            heartbeat_interval: Duration::from_millis(1500).into(),
         }
     }
 }

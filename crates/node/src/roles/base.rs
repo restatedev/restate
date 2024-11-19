@@ -9,83 +9,59 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::Context;
-use futures::StreamExt;
 
 use restate_core::{
-    cancellation_watcher,
-    network::{Incoming, MessageRouterBuilder, MessageStream, NetworkError},
+    network::{MessageRouterBuilder, Networking, TransportConnect},
     task_center,
     worker_api::ProcessorsManagerHandle,
-    ShutdownError, TaskKind,
+    Metadata, TaskKind,
 };
-use restate_types::net::node::{GetNodeState, NodeStateResponse};
+use restate_types::cluster::cluster_state::ClusterStateWatch;
 
-pub struct BaseRole {
+use crate::gossip::{self, Gossip};
+
+pub struct BaseRole<T> {
     processor_manager_handle: Option<ProcessorsManagerHandle>,
-    incoming_node_state: MessageStream<GetNodeState>,
+    gossip: Option<Gossip<T>>,
 }
 
-impl BaseRole {
+impl<T> BaseRole<T>
+where
+    T: TransportConnect,
+{
     pub fn create(
+        metadata: Metadata,
+        networking: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
-        processor_manager_handle: Option<ProcessorsManagerHandle>,
     ) -> Self {
-        let incoming_node_state = router_builder.subscribe_to_stream(2);
+        let gossip = gossip::Gossip::new(metadata, networking, router_builder);
 
         Self {
-            processor_manager_handle,
-            incoming_node_state,
+            processor_manager_handle: None,
+            gossip: Some(gossip),
         }
     }
 
-    pub fn start(self) -> anyhow::Result<()> {
+    pub fn cluster_state_watch(&self) -> ClusterStateWatch {
+        self.gossip.as_ref().expect("is set").cluster_state_watch()
+    }
+
+    pub fn with_processor_manager_handle(&mut self, handle: ProcessorsManagerHandle) -> &mut Self {
+        self.gossip
+            .as_mut()
+            .expect("is set")
+            .with_processor_manager_handle(handle.clone());
+
+        self.processor_manager_handle = Some(handle);
+        self
+    }
+
+    pub fn start(mut self) -> anyhow::Result<()> {
         let tc = task_center();
-        tc.spawn_child(TaskKind::RoleRunner, "base-role-service", None, async {
-            let cancelled = cancellation_watcher();
 
-            tokio::select! {
-                result = self.run() => {
-                    result
-                }
-                _ = cancelled =>{
-                    Ok(())
-                }
-            }
-        })
-        .context("Failed to start base service")?;
-
-        Ok(())
-    }
-
-    async fn run(mut self) -> anyhow::Result<()> {
-        while let Some(request) = self.incoming_node_state.next().await {
-            // handle request
-            self.handle_get_node_state(request).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn handle_get_node_state(
-        &self,
-        msg: Incoming<GetNodeState>,
-    ) -> Result<(), ShutdownError> {
-        let partition_state = if let Some(ref handle) = self.processor_manager_handle {
-            Some(handle.get_state().await?)
-        } else {
-            None
-        };
-
-        // only return error if Shutdown
-        if let Err(NetworkError::Shutdown(err)) = msg
-            .to_rpc_response(NodeStateResponse {
-                partition_processor_state: partition_state,
-            })
-            .try_send()
-            .map_err(|err| err.source)
-        {
-            return Err(err);
-        }
+        let gossip = self.gossip.take().expect("is set");
+        tc.spawn_child(TaskKind::SystemService, "gossip", None, gossip.run())
+            .context("Failed to start gossiping")?;
 
         Ok(())
     }

@@ -10,6 +10,7 @@
 
 pub mod codec;
 mod error;
+pub mod gossip;
 pub mod log_server;
 pub mod metadata;
 pub mod node;

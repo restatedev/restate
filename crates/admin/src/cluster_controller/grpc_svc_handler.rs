@@ -80,7 +80,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .map_err(|_| Status::aborted("Node is shutting down"))?;
 
         let resp = ClusterStateResponse {
-            cluster_state: Some((*cluster_state).clone().into()),
+            cluster_state: Some(cluster_state.into()),
         };
         Ok(Response::new(resp))
     }

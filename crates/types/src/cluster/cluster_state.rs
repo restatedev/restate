@@ -9,15 +9,20 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Instant;
 
 use prost_dto::IntoProto;
 use serde::{Deserialize, Serialize};
+use serde_with::{serde_as, DisplayFromStr};
+use tokio::sync::watch;
 
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::Lsn;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, PlainNodeId, Version};
+
+pub type ClusterStateWatch = watch::Receiver<ClusterState>;
 
 /// A container for health information about every node and partition in the
 /// cluster.
@@ -58,7 +63,6 @@ impl ClusterState {
         })
     }
 
-    #[cfg(any(test, feature = "test-util"))]
     pub fn empty() -> Self {
         ClusterState {
             last_refreshed: None,
@@ -70,35 +74,89 @@ impl ClusterState {
     }
 }
 
+// Note:
+// implementation of the Hash trait here is done in a way
+// so we can easily compare two cluster state ignoring changes in timestamps
+// or lsn. Hash is based only on the state (dead/alive) and the state of partition
+// tables
+// changes in timestamps, or values of lsn don't change the hash.
+impl Hash for ClusterState {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.nodes_config_version.hash(state);
+        self.partition_table_version.hash(state);
+        self.logs_metadata_version.hash(state);
+        for (node_id, node_state) in self.nodes.iter() {
+            node_id.hash(state);
+            node_state.hash(state);
+        }
+    }
+}
+
+impl PartialEq for ClusterState {
+    fn eq(&self, other: &Self) -> bool {
+        // todo(azmy): Try different hashers?
+        let mut left_hasher = DefaultHasher::new();
+        let mut right_hasher = DefaultHasher::new();
+        self.hash(&mut left_hasher);
+        other.hash(&mut right_hasher);
+
+        left_hasher.finish() == right_hasher.finish()
+    }
+}
 fn instant_to_proto(t: Instant) -> prost_types::Duration {
     t.elapsed().try_into().unwrap()
 }
 
-#[derive(Debug, Clone, IntoProto)]
+#[derive(Debug, Clone, IntoProto, Serialize, Hash, Deserialize, strum::EnumIs)]
 #[proto(target = "crate::protobuf::cluster::NodeState", oneof = "state")]
 pub enum NodeState {
     Alive(AliveNode),
     Dead(DeadNode),
 }
 
-#[derive(Debug, Clone, IntoProto)]
+impl NodeState {
+    pub fn last_seen(&self) -> Option<MillisSinceEpoch> {
+        match self {
+            Self::Alive(alive) => Some(alive.last_heartbeat_at),
+            Self::Dead(dead) => dead.last_seen_alive,
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Debug, Clone, IntoProto, Serialize, Deserialize)]
 #[proto(target = "crate::protobuf::cluster::AliveNode")]
 pub struct AliveNode {
     #[proto(required)]
     pub last_heartbeat_at: MillisSinceEpoch,
     #[proto(required)]
     pub generational_node_id: GenerationalNodeId,
+    #[serde_as(as = "serde_with::Seq<(DisplayFromStr, _)>")]
     pub partitions: BTreeMap<PartitionId, PartitionProcessorStatus>,
 }
 
-#[derive(Debug, Clone, IntoProto)]
+impl Hash for AliveNode {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.generational_node_id.hash(state);
+        for (partition_id, partition_status) in self.partitions.iter() {
+            partition_id.hash(state);
+            partition_status.hash(state);
+        }
+    }
+}
+
+#[derive(Debug, Clone, IntoProto, Serialize, Deserialize)]
 #[proto(target = "crate::protobuf::cluster::DeadNode")]
 pub struct DeadNode {
     pub last_seen_alive: Option<MillisSinceEpoch>,
 }
 
+impl Hash for DeadNode {
+    fn hash<H: Hasher>(&self, _state: &mut H) {}
+}
+
 #[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProto, derive_more::Display,
+    Debug, Clone, Copy, Serialize, Hash, Deserialize, Eq, PartialEq, IntoProto, derive_more::Display,
 )]
 #[proto(target = "crate::protobuf::cluster::RunMode")]
 pub enum RunMode {
@@ -106,7 +164,7 @@ pub enum RunMode {
     Follower,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoProto)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, IntoProto)]
 #[proto(target = "crate::protobuf::cluster::ReplayStatus")]
 pub enum ReplayStatus {
     Starting,
@@ -149,6 +207,32 @@ impl Default for PartitionProcessorStatus {
             last_archived_log_lsn: None,
             target_tail_lsn: None,
         }
+    }
+}
+
+impl Hash for PartitionProcessorStatus {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.planned_mode.hash(state);
+        self.effective_mode.hash(state);
+        if let Some(ref epoch) = self.last_observed_leader_epoch {
+            epoch.hash(state);
+        }
+        if let Some(ref leader_node) = self.last_observed_leader_node {
+            leader_node.hash(state);
+        }
+        self.replay_status.hash(state);
+        // NOTE:
+        // we intentionally ignoring fields like
+        // - updated_at
+        // - last_applied_log_lsn
+        // - last_record_applied_at
+        // - num_skipped_records
+        // - last_persisted_log_lsn
+        // - target_tail_lsn
+        //
+        // because we are only interested
+        // in attributes that describe the structure
+        // of the cluster state and partition processors
     }
 }
 

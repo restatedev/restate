@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod cluster_marker;
+mod gossip;
 mod network_server;
 mod roles;
 
@@ -110,7 +111,7 @@ pub struct Node {
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
     metadata_store_role: Option<LocalMetadataStoreService>,
-    base_role: BaseRole,
+    base_role: BaseRole<GrpcConnector>,
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole>,
     ingress_role: Option<IngressRole<GrpcConnector>>,
@@ -158,6 +159,8 @@ impl Node {
         metadata_manager.register_in_message_router(&mut router_builder);
         let partition_routing_refresher =
             PartitionRoutingRefresher::new(metadata_store_client.clone());
+        let mut base_role =
+            BaseRole::create(metadata.clone(), networking.clone(), &mut router_builder);
 
         #[cfg(feature = "replicated-loglet")]
         let record_cache = RecordCache::new(
@@ -210,19 +213,22 @@ impl Node {
         };
 
         let worker_role = if config.has_role(Role::Worker) {
-            Some(
-                WorkerRole::create(
-                    health.worker_status(),
-                    metadata.clone(),
-                    partition_routing_refresher.partition_routing(),
-                    updateable_config.clone(),
-                    &mut router_builder,
-                    networking.clone(),
-                    bifrost_svc.handle(),
-                    metadata_store_client.clone(),
-                )
-                .await?,
+            let worker_role = WorkerRole::create(
+                health.worker_status(),
+                metadata.clone(),
+                partition_routing_refresher.partition_routing(),
+                updateable_config.clone(),
+                &mut router_builder,
+                networking.clone(),
+                bifrost_svc.handle(),
+                metadata_store_client.clone(),
             )
+            .await?;
+
+            base_role
+                .with_processor_manager_handle(worker_role.partition_processor_manager_handle());
+
+            Some(worker_role)
         } else {
             None
         };
@@ -270,19 +276,13 @@ impl Node {
                     worker_role
                         .as_ref()
                         .map(|worker_role| worker_role.storage_query_context().clone()),
+                    base_role.cluster_state_watch(),
                 )
                 .await?,
             )
         } else {
             None
         };
-
-        let base_role = BaseRole::create(
-            &mut router_builder,
-            worker_role
-                .as_ref()
-                .map(|role| role.partition_processor_manager_handle()),
-        );
 
         // Ensures that message router is updated after all services have registered themselves in
         // the builder.

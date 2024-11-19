@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// TODO(azmy): deprecate
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

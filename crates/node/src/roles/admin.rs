@@ -29,6 +29,7 @@ use restate_storage_query_datafusion::remote_query_scanner_client::create_remote
 use restate_storage_query_datafusion::remote_query_scanner_manager::{
     create_partition_locator, RemoteScannerManager,
 };
+use restate_types::cluster::cluster_state::ClusterStateWatch;
 use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
@@ -73,6 +74,7 @@ impl<T: TransportConnect> AdminRole<T> {
         router_builder: &mut MessageRouterBuilder,
         metadata_store_client: MetadataStoreClient,
         local_query_context: Option<QueryContext>,
+        cluster_state_watch: ClusterStateWatch,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
         let config = updateable_config.pinned();
@@ -128,6 +130,7 @@ impl<T: TransportConnect> AdminRole<T> {
                 server_builder,
                 metadata_writer,
                 metadata_store_client,
+                cluster_state_watch,
             ))
         } else {
             None
