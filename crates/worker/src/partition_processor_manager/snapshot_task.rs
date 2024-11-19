@@ -24,50 +24,41 @@ use restate_types::logs::Lsn;
 
 /// Creates a partition store snapshot along with Restate snapshot metadata.
 pub struct SnapshotPartitionTask {
-    pub cluster_name: String,
-    pub node_name: String,
+    pub snapshot_id: SnapshotId,
     pub partition_id: PartitionId,
     pub snapshot_base_path: PathBuf,
     pub partition_store_manager: PartitionStoreManager,
+    pub result_sender: oneshot::Sender<Result<PartitionSnapshotMetadata, SnapshotError>>,
     pub archived_lsn_sender: watch::Sender<Option<Lsn>>,
+    pub cluster_name: String,
+    pub node_name: String,
 }
 
 impl SnapshotPartitionTask {
-    pub async fn create_snapshot(
-        self,
-        tx: oneshot::Sender<Result<PartitionSnapshotMetadata, SnapshotError>>,
-    ) {
-        debug!(
-            partition_id = %self.partition_id,
-            "Creating partition snapshot"
-        );
+    pub async fn run(self) {
+        debug!("Creating partition snapshot");
 
         let result = create_snapshot_inner(
-            self.partition_store_manager,
-            self.cluster_name,
-            self.node_name,
+            self.snapshot_id,
             self.partition_id,
+            self.partition_store_manager,
             self.snapshot_base_path,
             self.archived_lsn_sender,
+            self.cluster_name,
+            self.node_name,
         )
         .await;
 
-        let _ = tx.send(match result {
+        let _ = self.result_sender.send(match result {
             Ok(metadata) => {
                 debug!(
-                    partition_id = %self.partition_id,
-                    snapshot_id = %metadata.snapshot_id,
                     archived_lsn = %metadata.min_applied_lsn,
                     "Partition snapshot created"
                 );
                 Ok(metadata)
             }
             Err(err) => {
-                warn!(
-                    partition_id = %self.partition_id,
-                    "Failed to create partition snapshot: {}",
-                    err
-                );
+                warn!("Failed to create partition snapshot: {}", err);
                 Err(err)
             }
         });
@@ -75,14 +66,14 @@ impl SnapshotPartitionTask {
 }
 
 async fn create_snapshot_inner(
-    partition_store_manager: PartitionStoreManager,
-    cluster_name: String,
-    node_name: String,
+    snapshot_id: SnapshotId,
     partition_id: PartitionId,
+    partition_store_manager: PartitionStoreManager,
     snapshot_base_path: PathBuf,
     archived_lsn_sender: watch::Sender<Option<Lsn>>,
+    cluster_name: String,
+    node_name: String,
 ) -> Result<PartitionSnapshotMetadata, SnapshotError> {
-    let snapshot_id = SnapshotId::new();
     let snapshot = partition_store_manager
         .export_partition_snapshot(partition_id, snapshot_id, snapshot_base_path.clone())
         .await?;
@@ -135,7 +126,6 @@ async fn write_snapshot_metadata_header(
         .map_err(|e| SnapshotError::SnapshotMetadataHeaderError(partition_id, e))?;
 
     debug!(
-        %snapshot_id,
         lsn = %snapshot.min_applied_lsn,
         "Partition snapshot metadata written to {:?}",
         metadata_path

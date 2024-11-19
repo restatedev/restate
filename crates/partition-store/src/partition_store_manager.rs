@@ -202,13 +202,9 @@ impl PartitionStoreManager {
         snapshot_base_path: PathBuf,
     ) -> Result<LocalPartitionSnapshot, SnapshotError> {
         let mut partition_store = self
-            .lookup
-            .lock()
+            .get_partition_store(partition_id)
             .await
-            .live
-            .get_mut(&partition_id)
-            .ok_or(SnapshotError::PartitionNotFound(partition_id))?
-            .clone();
+            .ok_or(SnapshotError::PartitionNotFound(partition_id))?;
 
         // RocksDB will create the snapshot directory but the parent must exist first:
         tokio::fs::create_dir_all(&snapshot_base_path)
