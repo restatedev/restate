@@ -387,11 +387,26 @@ pub async fn single_loglet_readstream_with_trims(
         loglet.append(format!("record{}", i).into()).await?;
     }
 
+    // When reading record 8, it's acceptable to observe the record, or the trim gap. Both are
+    // acceptable because replicated loglet read stream's read-head cannot be completely disabled.
+    // Its minimum is to immediately read the next record after consuming the last one, so we'll
+    // see record8 because it's already cached.
+    //
     // read stream should send a gap from 8->10
     let record = read_stream.next().await.unwrap()?;
     assert_that!(record.sequence_number(), eq(Lsn::new(8)));
-    assert!(record.is_trim_gap());
-    assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
+    if record.is_trim_gap() {
+        assert!(record.is_trim_gap());
+        assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
+    } else {
+        // data record.
+        assert_that!(record.decode_unchecked::<String>(), eq("record8"));
+        // next record should be the trim gap
+        let record = read_stream.next().await.unwrap()?;
+        assert_that!(record.sequence_number(), eq(Lsn::new(9)));
+        assert!(record.is_trim_gap());
+        assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
+    }
 
     for i in 11..=20 {
         let record = read_stream.next().await.unwrap()?;

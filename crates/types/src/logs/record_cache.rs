@@ -30,7 +30,7 @@ pub struct RecordCache {
 }
 
 impl RecordCache {
-    /// Creates a new instance of RecordCache. If memory budget is None
+    /// Creates a new instance of RecordCache. If memory budget is 0
     /// cache will be disabled
     pub fn new(memory_budget_bytes: usize) -> Self {
         let inner = if memory_budget_bytes > 0 {

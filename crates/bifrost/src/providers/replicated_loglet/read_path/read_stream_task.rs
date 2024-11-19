@@ -29,6 +29,7 @@ use crate::providers::replicated_loglet::metric_definitions::{
     BIFROST_REPLICATED_READ_TOTAL,
 };
 use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
+use crate::providers::replicated_loglet::tasks::GetTrimPointTask;
 use crate::LogEntry;
 
 #[derive(Debug, thiserror::Error)]
@@ -98,8 +99,13 @@ impl ReadStreamTask {
         if move_beyond_global_tail && read_to.is_none() {
             panic!("read_to must be set if move_beyond_global_tail=true");
         }
-        // todo(asoli): configuration
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel(
+            Configuration::pinned()
+                .bifrost
+                .replicated_loglet
+                .readahead_records
+                .into(),
+        );
         // Reading from INVALID resets to OLDEST.
         let from_offset = from_offset.max(LogletOffset::OLDEST);
 
@@ -139,12 +145,19 @@ impl ReadStreamTask {
         // Channel size. This is the largest number of records we will try to readahead, if we can
         // acquire the capacity for it.
         //
-        // clamped to the channel capacity, ideally, the same value should be used to configure the
-        let readahead_max = 100.min(self.tx.max_capacity());
+        let readahead_max = self.tx.max_capacity();
         debug_assert!(readahead_max <= u16::MAX.into());
         // This is automatically capped. This is the minimum number of slots that needs to be
         // available in order to trigger fetching a new batch.
-        let readahead_trigger = 50;
+        let readahead_trigger = {
+            let ratio = Configuration::pinned()
+                .bifrost
+                .replicated_loglet
+                .readahead_trigger_ratio
+                .clamp(0.0, 1.0) as f64;
+            let trigger = (readahead_max as f64 * ratio).ceil() as usize;
+            1.max(trigger)
+        };
         debug_assert!(readahead_trigger >= 1 && readahead_trigger <= self.tx.max_capacity());
 
         let mut tail_subscriber = self.global_tail_watch.subscribe();
@@ -162,9 +175,35 @@ impl ReadStreamTask {
             self.last_known_tail = tail_subscriber.borrow_and_update().offset();
         }
 
-        // todo(asoli): [important] Need to fire up a FindTail task in the background? It depends on whether we
-        // are on the sequencer node or not. We might ask Bifrost's watchdog instead to dedupe
-        // FindTails and time-throttle them.
+        // Our initial knowledge of the trim point is determined by this request. Note that we
+        // might not observe some of the future trim point updates if we already have the records
+        // in the record cache. If we failed to determine the trim point, we'll ignore it and
+        // continue.
+        let trim_point = match GetTrimPointTask::new(
+            &self.my_params,
+            self.logservers_rpc.clone(),
+            self.global_tail_watch.clone(),
+        )
+        .run(networking.clone())
+        .await
+        {
+            Ok(trim_point) => trim_point,
+            Err(e) => {
+                info!(
+                    loglet_id = %self.my_params.loglet_id,
+                    offset = %self.read_pointer,
+                    "Could not determine the trim point while creating the read stream: {e}. \
+                        This should not impact reading if records are cached in memory or if \
+                        log-servers came back alive later.",
+                );
+                None
+            }
+        };
+
+        // [important]
+        // We rely on the periodic task owned by the provider to refresh our view of the tail.
+        // This is our fallback mechanism to get observer updates to the global tail if we are not
+        // the sequencer, and if no network messages came through with updates recently.
         'main: loop {
             // Read and ship records to the tx channel if there is capacity. We do not attempt to
             // read records if we cannot reserve capacity to avoid wasting resources.
@@ -224,7 +263,6 @@ impl ReadStreamTask {
             if !self.can_advance() && !self.move_beyond_global_tail {
                 // HODL.
                 // todo(asoli): Measure tail-change wait time in histogram
-                // todo(asoli): (who's going to change this? - background FindTail?)
                 tail_subscriber
                     .changed()
                     .await
@@ -236,7 +274,6 @@ impl ReadStreamTask {
             }
             // We are only here because we should attempt to read something
             debug_assert!(self.last_known_tail > self.read_pointer);
-            // todo(asoli): do we need to check for trim point?
 
             // Do we have capacity for the next read?
             // - capacity is 100, watermark is 50; we reserve 100; but if readahead_max is 80, we
@@ -248,6 +285,23 @@ impl ReadStreamTask {
                 // fails if receiver is dropped (no more read stream)
                 .await
                 .map_err(OperationError::terminal)?;
+
+            // check for trim point
+            if trim_point.is_some_and(|trim_point| self.read_pointer <= trim_point) {
+                let trim_point = trim_point.unwrap();
+                let permit = permits.next().expect("must have at least one permit");
+                trace!(
+                    loglet_id = %self.my_params.loglet_id,
+                    offset = %self.read_pointer,
+                    "Shipping a trim gap since we are reading before the trim point. Trim gap from offset {} to offset {}",
+                    self.read_pointer,
+                    trim_point,
+                );
+                permit.send(Ok(LogEntry::new_trim_gap(self.read_pointer, trim_point)));
+                // fast-forward
+                self.read_pointer = trim_point.next();
+                continue 'main;
+            }
 
             // Read from logservers
             let effective_nodeset =
