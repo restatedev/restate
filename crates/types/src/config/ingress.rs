@@ -46,7 +46,10 @@ pub struct IngressOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub experimental_feature_enable_separate_ingress_role: bool,
 
-    /// Cluster of new features for the kafka ingress.
+    /// Cluster of new features for the kafka ingress, including:
+    ///
+    /// * New Source::Subscription
+    /// * Shared handlers can now receive events https://github.com/restatedev/restate/issues/2100
     #[cfg_attr(feature = "schemars", schemars(skip))]
     experimental_feature_kafka_ingress_next: bool,
 }
