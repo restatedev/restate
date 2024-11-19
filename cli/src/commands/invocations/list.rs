@@ -117,7 +117,9 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     }
 
     // This is a post-filter as we filter by calculated column
-    if !statuses.is_empty() {
+    if statuses.is_empty() {
+        post_filters.push("status != 'completed'".to_owned());
+    } else {
         post_filters.push(format!(
             "status IN ({})",
             statuses.iter().map(|x| format!("'{}'", x)).format(",")
