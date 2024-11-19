@@ -93,7 +93,7 @@ pub struct PartitionProcessorManager {
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
-    archived_lsn_channels: HashMap<PartitionId, LsnWatchChannel>,
+    archived_lsns: HashMap<PartitionId, Lsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
     pending_control_processors: Option<ControlProcessors>,
 
@@ -103,7 +103,6 @@ pub struct PartitionProcessorManager {
     snapshot_export_tasks: FuturesUnordered<oneshot::Receiver<SnapshotResultInternal>>,
 }
 
-type LsnWatchChannel = (watch::Sender<Option<Lsn>>, watch::Receiver<Option<Lsn>>);
 type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
 
 /// Handle to an outstanding [`SnapshotPartitionTask`] that has been spawned, including a reference
@@ -197,7 +196,7 @@ impl PartitionProcessorManager {
             rx,
             tx,
             persisted_lsns_rx: None,
-            archived_lsn_channels: HashMap::default(),
+            archived_lsns: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
             pending_control_processors: None,
             asynchronous_operations: JoinSet::default(),
@@ -564,10 +563,7 @@ impl PartitionProcessorManager {
                         .as_ref()
                         .and_then(|lsns| lsns.get(partition_id).cloned());
 
-                    status.last_archived_log_lsn = self
-                        .archived_lsn_channels
-                        .get(partition_id)
-                        .and_then(|(_, rx)| *rx.borrow());
+                    status.last_archived_log_lsn = self.archived_lsns.get(partition_id).cloned();
 
                     Some((*partition_id, status))
                 } else {
@@ -623,9 +619,8 @@ impl PartitionProcessorManager {
                     processor_state.stop();
                 }
                 if self.pending_snapshots.contains_key(&partition_id) {
-                    warn!(%partition_id, "Partition processor stopping while snapshot task is still pending.");
+                    warn!(%partition_id, "Partition processor stopped while snapshot task is still pending.");
                 }
-                self.archived_lsn_channels.remove(&partition_id);
             }
             ProcessorCommand::Follower | ProcessorCommand::Leader => {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
@@ -703,39 +698,32 @@ impl PartitionProcessorManager {
             }
         };
 
-        if !processor_state.can_create_snapshot() {
+        if !processor_state.should_publish_snapshot() {
             let _ = sender.send(Err(SnapshotError::InvalidState(partition_id)));
             return;
         }
 
-        let archived_lsn_sender = match self.archived_lsn_channels.get(&partition_id).cloned() {
-            Some(watch) => watch.0.clone(),
-            None => {
-                let _ = sender.send(Err(SnapshotError::Internal(
-                    partition_id,
-                    "No archived LSNs channel found! Partition Processor may be stopped.".to_string(),
-                )));
-                return;
-            }
-        };
-
-        self.spawn_create_snapshot_task(partition_id, sender, archived_lsn_sender);
+        self.spawn_create_snapshot_task(partition_id, sender);
     }
 
     fn on_create_snapshot_task_completed(&mut self, result: SnapshotResultInternal) {
         let (partition_id, response) = match result {
-            Ok(metadata) => (
-                metadata.partition_id,
-                Ok(SnapshotCreated {
-                    snapshot_id: metadata.snapshot_id,
-                    partition_id: metadata.partition_id,
-                }),
-            ),
+            Ok(metadata) => {
+                self.archived_lsns
+                    .insert(metadata.partition_id, metadata.min_applied_lsn);
+
+                (
+                    metadata.partition_id,
+                    Ok(SnapshotCreated {
+                        snapshot_id: metadata.snapshot_id,
+                        partition_id: metadata.partition_id,
+                    }),
+                )
+            }
             Err(snapshot_error) => (snapshot_error.partition_id(), Err(snapshot_error)),
         };
 
         if let Some(pending) = self.pending_snapshots.remove(&partition_id) {
-            // todo: update archived LSN status directly
             let _ = pending.sender.send(response);
         } else {
             error!("Snapshot task result received, but there was no pending sender found!")
@@ -793,7 +781,6 @@ impl PartitionProcessorManager {
         &mut self,
         partition_id: PartitionId,
         sender: oneshot::Sender<SnapshotResult>,
-        archived_lsn_sender: watch::Sender<Option<Lsn>>,
     ) {
         if let Entry::Vacant(entry) = self.pending_snapshots.entry(partition_id) {
             let config = self.updateable_config.live_load();
@@ -809,7 +796,6 @@ impl PartitionProcessorManager {
                 partition_store_manager: self.partition_store_manager.clone(),
                 snapshot_base_path,
                 result_sender: snapshot_metadata_tx,
-                archived_lsn_sender,
                 cluster_name: config.common.cluster_name().into(),
                 node_name: config.common.node_name().into(),
             };
@@ -855,9 +841,6 @@ impl PartitionProcessorManager {
             .name_cache
             .entry(partition_id)
             .or_insert_with(|| Box::leak(Box::new(format!("pp-{}", partition_id))));
-
-        self.archived_lsn_channels
-            .insert(partition_id, watch::channel(None));
 
         SpawnPartitionProcessorTask::new(
             task_name,

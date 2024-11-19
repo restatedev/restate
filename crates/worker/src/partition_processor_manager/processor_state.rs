@@ -352,10 +352,10 @@ impl ProcessorState {
         }
     }
 
-    /// Partition Processor is in a state that is allowed to create and publish snapshots. Since we
-    /// don't want snapshots to move backwards in applied LSN, the implementation checks whether the
-    /// processor is fully caught up with the log.
-    pub fn can_create_snapshot(&self) -> bool {
+    /// The Partition Processor is in a state in which it is acceptable to create and publish
+    /// snapshots. Since we don't want newer snapshots to move backwards in applied LSN, the current
+    /// implementation checks whether the processor is fully caught up with the log.
+    pub fn should_publish_snapshot(&self) -> bool {
         match self {
             ProcessorState::Started {
                 processor: Some(started_processor),

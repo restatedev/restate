@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 use tracing::{debug, warn};
 
 use restate_core::worker_api::SnapshotError;
@@ -20,7 +20,6 @@ use restate_partition_store::snapshots::{
 };
 use restate_partition_store::PartitionStoreManager;
 use restate_types::identifiers::{PartitionId, SnapshotId};
-use restate_types::logs::Lsn;
 
 /// Creates a partition store snapshot along with Restate snapshot metadata.
 pub struct SnapshotPartitionTask {
@@ -29,7 +28,6 @@ pub struct SnapshotPartitionTask {
     pub snapshot_base_path: PathBuf,
     pub partition_store_manager: PartitionStoreManager,
     pub result_sender: oneshot::Sender<Result<PartitionSnapshotMetadata, SnapshotError>>,
-    pub archived_lsn_sender: watch::Sender<Option<Lsn>>,
     pub cluster_name: String,
     pub node_name: String,
 }
@@ -43,7 +41,6 @@ impl SnapshotPartitionTask {
             self.partition_id,
             self.partition_store_manager,
             self.snapshot_base_path,
-            self.archived_lsn_sender,
             self.cluster_name,
             self.node_name,
         )
@@ -70,7 +67,6 @@ async fn create_snapshot_inner(
     partition_id: PartitionId,
     partition_store_manager: PartitionStoreManager,
     snapshot_base_path: PathBuf,
-    archived_lsn_sender: watch::Sender<Option<Lsn>>,
     cluster_name: String,
     node_name: String,
 ) -> Result<PartitionSnapshotMetadata, SnapshotError> {
@@ -88,12 +84,6 @@ async fn create_snapshot_inner(
     .await?;
 
     // todo(pavel): SnapshotRepository integration will go in here in a future PR
-
-    archived_lsn_sender
-        .send(Some(metadata.min_applied_lsn))
-        .map_err(|_| {
-            SnapshotError::Internal(partition_id, "Failed to send archived LSN".to_string())
-        })?;
 
     Ok(metadata)
 }
