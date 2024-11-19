@@ -89,12 +89,20 @@ impl SealTask {
                 networking: networking.clone(),
                 known_global_tail: self.known_global_tail.clone(),
             };
-            self.task_center.spawn_child(
-                TaskKind::Disposable,
-                "send-seal-request",
-                None,
-                task.run(tx.clone(), retry_policy.clone()),
-            )?;
+            self.task_center
+                .spawn_child(TaskKind::Disposable, "send-seal-request", None, {
+                    let retry_policy = retry_policy.clone();
+                    let tx = tx.clone();
+                    async move {
+                        if let Err(e) = task.run(tx, retry_policy).await {
+                            // We only want to trace-log if an individual seal request fails.
+                            // If we leave the task to fail, task-center will log a scary error-level log
+                            // which can be misleading to users.
+                            trace!("Seal: {e}");
+                        }
+                        Ok(())
+                    }
+                })?;
         }
         drop(tx);
 
