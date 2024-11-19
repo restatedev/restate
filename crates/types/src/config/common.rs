@@ -15,9 +15,10 @@ use std::time::Duration;
 
 use enumset::EnumSet;
 use once_cell::sync::Lazy;
-use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+
+use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 
 use super::{AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions};
 use crate::net::{AdvertisedAddress, BindAddress};
@@ -120,6 +121,12 @@ pub struct CommonOptions {
     ///
     /// Disable ANSI terminal codes for logs. This is useful when the log collector doesn't support processing ANSI terminal codes.
     pub log_disable_ansi_codes: bool,
+
+    /// Address to bind for the tokio-console tracing subscriber. If unset and restate-server is
+    /// built with tokio-console support, it'll listen on `0.0.0.0:6669`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub tokio_console_bind_address: Option<BindAddress>,
 
     /// Timeout for idle histograms.
     ///
@@ -359,6 +366,7 @@ impl Default for CommonOptions {
             log_filter: "warn,restate=info".to_string(),
             log_format: Default::default(),
             log_disable_ansi_codes: false,
+            tokio_console_bind_address: Some(BindAddress::Socket("0.0.0.0:6669".parse().unwrap())),
             default_thread_pool_size: None,
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
