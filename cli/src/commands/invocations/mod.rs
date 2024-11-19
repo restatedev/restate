@@ -17,7 +17,7 @@ use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Invocations {
-    /// List invocations of a service
+    /// List invocations
     List(list::List),
     /// Prints detailed information about a given invocation
     Describe(describe::Describe),

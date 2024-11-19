@@ -35,6 +35,9 @@ pub struct List {
     /// Filter by invocation on this handler name
     #[clap(long, value_delimiter = ',')]
     handler: Vec<String>,
+    /// Show all invocations, including the completed ones that are hidden by default. This overrides the `status` filter.
+    #[clap(long)]
+    all: bool,
     /// Filter by status(es)
     #[clap(long, ignore_case = true, value_delimiter = ',')]
     status: Vec<InvocationState>,
@@ -117,9 +120,13 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     }
 
     // This is a post-filter as we filter by calculated column
-    if statuses.is_empty() {
+    if opts.all {
+        // No filter
+    } else if statuses.is_empty() {
+        // Default hide completed invocations
         post_filters.push("status != 'completed'".to_owned());
     } else {
+        // Apply status filters
         post_filters.push(format!(
             "status IN ({})",
             statuses.iter().map(|x| format!("'{}'", x)).format(",")
