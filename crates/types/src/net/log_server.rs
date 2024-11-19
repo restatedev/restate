@@ -15,12 +15,60 @@ use bitflags::bitflags;
 use prost_dto::{FromProto, IntoProto};
 use serde::{Deserialize, Serialize};
 
-use super::TargetName;
+use super::codec::{WireDecode, WireEncode};
+use super::{RpcRequest, TargetName};
 use crate::logs::{KeyFilter, LogletOffset, Record, SequenceNumber, TailState};
-use crate::net::define_rpc;
 use crate::replicated_loglet::ReplicatedLogletId;
 use crate::time::MillisSinceEpoch;
 use crate::GenerationalNodeId;
+
+pub trait LogServerRequest: RpcRequest + WireEncode + Sync + Send + 'static {
+    fn header(&self) -> &LogServerRequestHeader;
+    fn header_mut(&mut self) -> &mut LogServerRequestHeader;
+    fn refresh_header(&mut self, known_global_tail: LogletOffset) {
+        let loglet_id = self.header().loglet_id;
+        *self.header_mut() = LogServerRequestHeader {
+            loglet_id,
+            known_global_tail,
+        }
+    }
+}
+
+pub trait LogServerResponse: WireDecode + Sync + Send {
+    fn header(&self) -> &LogServerResponseHeader;
+}
+
+macro_rules! define_logserver_rpc {
+    (
+        @request = $request:ty,
+        @response = $response:ty,
+        @request_target = $request_target:expr,
+        @response_target = $response_target:expr,
+    ) => {
+        crate::net::define_rpc! {
+            @request = $request,
+            @response = $response,
+            @request_target = $request_target,
+            @response_target = $response_target,
+        }
+
+        impl LogServerRequest for $request {
+            fn header(&self) -> &LogServerRequestHeader {
+                &self.header
+            }
+
+            fn header_mut(&mut self) -> &mut LogServerRequestHeader {
+                &mut self.header
+            }
+        }
+
+        impl LogServerResponse for $response {
+            fn header(&self) -> &LogServerResponseHeader {
+                &self.header
+            }
+        }
+    };
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, IntoProto, FromProto)]
 #[proto(target = "crate::protobuf::log_server_common::Status")]
@@ -53,7 +101,7 @@ pub enum Status {
 // Responses LogServer -> Bifrost //
 
 // Store
-define_rpc! {
+define_logserver_rpc! {
     @request = Store,
     @response = Stored,
     @request_target = TargetName::LogServerStore,
@@ -61,7 +109,7 @@ define_rpc! {
 }
 
 // Release
-define_rpc! {
+define_logserver_rpc! {
     @request = Release,
     @response = Released,
     @request_target = TargetName::LogServerRelease,
@@ -69,7 +117,7 @@ define_rpc! {
 }
 
 // Seal
-define_rpc! {
+define_logserver_rpc! {
     @request = Seal,
     @response = Sealed,
     @request_target = TargetName::LogServerSeal,
@@ -77,7 +125,7 @@ define_rpc! {
 }
 
 // GetLogletInfo
-define_rpc! {
+define_logserver_rpc! {
     @request = GetLogletInfo,
     @response = LogletInfo,
     @request_target = TargetName::LogServerGetLogletInfo,
@@ -85,7 +133,7 @@ define_rpc! {
 }
 
 // Trim
-define_rpc! {
+define_logserver_rpc! {
     @request = Trim,
     @response = Trimmed,
     @request_target = TargetName::LogServerTrim,
@@ -93,7 +141,7 @@ define_rpc! {
 }
 
 // GetRecords
-define_rpc! {
+define_logserver_rpc! {
     @request = GetRecords,
     @response = Records,
     @request_target = TargetName::LogServerGetRecords,
@@ -101,7 +149,7 @@ define_rpc! {
 }
 
 // WaitForTail
-define_rpc! {
+define_logserver_rpc! {
     @request = WaitForTail,
     @response = TailUpdated,
     @request_target = TargetName::LogServerWaitForTail,
@@ -109,7 +157,7 @@ define_rpc! {
 }
 
 // GetDigest
-define_rpc! {
+define_logserver_rpc! {
     @request = GetDigest,
     @response = Digest,
     @request_target = TargetName::LogServerGetDigest,

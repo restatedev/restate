@@ -178,7 +178,7 @@ impl LogStore for RocksDbLogStore {
         // If the loglet is trimmed (all records were removed) and we know the trim_point, then we
         // use the trim_point.next() as the local_tail.
         //
-        // Another way to describe this is `if trim_point => local_tail` but at this stage, I
+        // Another way to describe this is `if trim_point >= local_tail` but at this stage, I
         // prefer to be conservative and explicit to catch unintended corner cases.
         if local_tail == LogletOffset::OLDEST && trim_point > LogletOffset::INVALID {
             local_tail = trim_point.next();

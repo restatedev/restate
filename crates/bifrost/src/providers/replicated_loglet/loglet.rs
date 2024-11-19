@@ -26,7 +26,9 @@ use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
 use crate::providers::replicated_loglet::replication::spread_selector::SelectorStrategy;
 use crate::providers::replicated_loglet::sequencer::Sequencer;
-use crate::providers::replicated_loglet::tasks::{FindTailTask, SealTask};
+use crate::providers::replicated_loglet::tasks::{
+    FindTailTask, GetTrimPointTask, SealTask, TrimTask,
+};
 
 use super::error::ReplicatedLogletError;
 use super::log_server_manager::RemoteLogServerManager;
@@ -265,15 +267,52 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         }
     }
 
+    #[instrument(
+        level="error",
+        skip_all,
+        fields(
+            loglet_id = %self.my_params.loglet_id,
+            otel.name = "replicated_loglet: get_trim_point",
+        )
+    )]
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
-        // todo(asoli): Implement trim
-        Ok(None)
+        GetTrimPointTask::new(
+            &self.my_params,
+            self.logservers_rpc.clone(),
+            self.known_global_tail.clone(),
+        )
+        .run(self.networking.clone())
+        .await
+        .map_err(Into::into)
     }
 
-    /// Trim the log to the minimum of new_trim_point and last_committed_offset
-    /// new_trim_point is inclusive (will be trimmed)
-    async fn trim(&self, _new_trim_point: LogletOffset) -> Result<(), OperationError> {
-        todo!()
+    #[instrument(
+        level="error",
+        skip_all,
+        fields(
+            loglet_id = %self.my_params.loglet_id,
+            new_trim_point,
+            otel.name = "replicated_loglet: trim",
+        )
+    )]
+    /// Trim the log to the min(trim_point, last_committed_offset)
+    /// trim_point is inclusive (will be trimmed)
+    async fn trim(&self, trim_point: LogletOffset) -> Result<(), OperationError> {
+        let trim_point = trim_point.min(self.known_global_tail.latest_offset().prev_unchecked());
+
+        TrimTask::new(
+            &self.my_params,
+            self.logservers_rpc.clone(),
+            self.known_global_tail.clone(),
+        )
+        .run(trim_point, self.networking.clone())
+        .await?;
+        info!(
+            loglet_id=%self.my_params.loglet_id,
+            ?trim_point,
+            "Loglet has been trimmed successfully"
+        );
+        Ok(())
     }
 
     async fn seal(&self) -> Result<(), OperationError> {
