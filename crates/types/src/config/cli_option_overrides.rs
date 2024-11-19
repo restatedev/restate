@@ -30,7 +30,10 @@ use super::LogFormat;
 pub struct CommonOptionCliOverride {
     /// Defines the roles which this Restate node should run, by default the node
     /// starts with all roles.
-    #[clap(long, alias = "role", global = true)]
+    ///
+    /// Roles can be comma-separated list without spaces (`--roles=worker,admin,log-server`),
+    /// or a repeated option like `--roles=worker --roles=admin`.
+    #[clap(long, alias = "role", global = true, value_delimiter=',', num_args = 0..)]
     pub roles: Option<Vec<Role>>,
 
     /// Unique name for this node in the cluster. The node must not change unless
