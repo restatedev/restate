@@ -48,6 +48,7 @@ where
         bifrost: Bifrost,
         subscription_validator: V,
         service_discovery: ServiceDiscovery,
+        experimental_feature_kafka_ingress_next: bool,
         query_context: Option<QueryContext>,
     ) -> Self {
         Self {
@@ -57,6 +58,7 @@ where
                 metadata_writer,
                 service_discovery,
                 subscription_validator,
+                experimental_feature_kafka_ingress_next,
             ),
             query_context,
         }
