@@ -25,6 +25,7 @@ async fn serve_web_ui(uri: Uri) -> impl IntoResponse {
                     header::CONTENT_TYPE,
                     HeaderValue::from_str(mime_type.as_ref()).unwrap(),
                 )
+                .header("Service-Worker-Allowed", "/")
                 .body(Full::from(file.contents()))
                 .unwrap()
         }
@@ -34,6 +35,7 @@ async fn serve_web_ui(uri: Uri) -> impl IntoResponse {
                 header::CONTENT_TYPE,
                 HeaderValue::from_str(mime_guess::mime::TEXT_HTML_UTF_8.as_ref()).unwrap(),
             )
+            .header("Service-Worker-Allowed", "/")
             .body(Full::from(
                 restate_web_ui::ASSETS
                     .get_file("index.html")
