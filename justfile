@@ -137,6 +137,10 @@ docker:
     # podman builds do not work without --platform set, even though it claims to default to host arch
     docker buildx build . --platform linux/{{ _docker_arch }} --file docker/Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
 
+docker-debug:
+    # podman builds do not work without --platform set, even though it claims to default to host arch
+    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/debug.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
+
 notice-file:
     cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2024 Restate Software, Inc., Restate GmbH <code@restate.dev>\n" && cat) > NOTICE
 
