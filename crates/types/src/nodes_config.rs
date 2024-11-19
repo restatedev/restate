@@ -37,6 +37,7 @@ pub enum NodesConfigError {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[enumset(serialize_repr = "list")]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
 pub enum Role {
