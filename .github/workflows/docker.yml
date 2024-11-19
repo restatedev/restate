@@ -167,7 +167,6 @@ jobs:
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
             RESTATE_FEATURES=${{ inputs.features || '' }}
-            SCCACHE_DIR=/sccache-cache
           cache-from: type=gha,url=http://127.0.0.1:49160/
           cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max
     
