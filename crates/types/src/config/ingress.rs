@@ -61,6 +61,13 @@ impl IngressOptions {
         self.kafka_clusters.iter().find(|c| c.name == name)
     }
 
+    pub fn available_kafka_clusters(&self) -> Vec<&str> {
+        self.kafka_clusters
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect()
+    }
+
     pub fn concurrent_api_requests_limit(&self) -> usize {
         std::cmp::min(
             self.concurrent_api_requests_limit
