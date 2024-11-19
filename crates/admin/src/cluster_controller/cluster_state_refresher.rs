@@ -235,4 +235,8 @@ impl ClusterStateWatcher {
             .map_err(|_| ShutdownError)?;
         Ok(Arc::clone(&self.cluster_state_watcher.borrow_and_update()))
     }
+
+    pub fn current(&self) -> Arc<ClusterState> {
+        Arc::clone(&self.cluster_state_watcher.borrow())
+    }
 }
