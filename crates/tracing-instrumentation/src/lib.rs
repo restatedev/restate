@@ -37,6 +37,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, Registry};
 
 use restate_types::config::{CommonOptions, LogFormat};
+#[cfg(feature = "console-subscriber")]
+use restate_types::net::BindAddress;
 
 use crate::exporter::UserServiceModifierSpanExporter;
 use crate::pretty::PrettyFields;
@@ -271,7 +273,22 @@ pub fn init_tracing_and_logging(
 
     // Console subscriber layer
     #[cfg(feature = "console-subscriber")]
-    let layers = layers.with(console_subscriber::spawn());
+    let layers = {
+        let tokio_console_bind_address = match common_opts
+            .tokio_console_bind_address
+            .clone()
+            .expect("falls back to default value")
+        {
+            BindAddress::Uds(p) => console_subscriber::ServerAddr::Unix(p),
+            BindAddress::Socket(s) => console_subscriber::ServerAddr::Tcp(s),
+        };
+
+        layers.with(
+            console_subscriber::ConsoleLayer::builder()
+                .server_addr(tokio_console_bind_address)
+                .spawn(),
+        )
+    };
 
     build_services_tracing(common_opts)?;
 
