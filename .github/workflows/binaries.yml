@@ -76,7 +76,7 @@ jobs:
         run: rustup target add aarch64-apple-darwin
 
       - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.4
+        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -194,7 +194,7 @@ jobs:
           EOF
 
       - name: Build and push multiplatform image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
