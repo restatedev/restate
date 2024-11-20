@@ -11,7 +11,6 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use tokio::sync::oneshot;
 use tracing::{debug, instrument, warn};
 
 use restate_core::worker_api::SnapshotError;
@@ -27,14 +26,13 @@ pub struct SnapshotPartitionTask {
     pub partition_id: PartitionId,
     pub snapshot_base_path: PathBuf,
     pub partition_store_manager: PartitionStoreManager,
-    pub result_sender: oneshot::Sender<Result<PartitionSnapshotMetadata, SnapshotError>>,
     pub cluster_name: String,
     pub node_name: String,
 }
 
 impl SnapshotPartitionTask {
     #[instrument(level = "info", skip_all, fields(snapshot_id = %self.snapshot_id, partition_id = %self.partition_id))]
-    pub async fn run(self) {
+    pub async fn run(self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
         debug!("Creating partition snapshot");
 
         let result = create_snapshot_inner(
@@ -47,19 +45,16 @@ impl SnapshotPartitionTask {
         )
         .await;
 
-        let _ = self.result_sender.send(match result {
-            Ok(metadata) => {
+        result
+            .inspect(|metadata| {
                 debug!(
                     archived_lsn = %metadata.min_applied_lsn,
                     "Partition snapshot created"
                 );
-                Ok(metadata)
-            }
-            Err(err) => {
+            })
+            .inspect_err(|err| {
                 warn!("Failed to create partition snapshot: {}", err);
-                Err(err)
-            }
-        });
+            })
     }
 }
 
