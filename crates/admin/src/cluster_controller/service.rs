@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod state;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
 use codederror::CodedError;
-use itertools::Itertools;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
@@ -43,12 +44,11 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, Version};
 
-use super::cluster_controller_state::ClusterControllerState;
 use super::cluster_state_refresher::ClusterStateRefresher;
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
 use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
-use crate::cluster_controller::cluster_controller_state::Leader;
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use state::ClusterControllerState;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -58,14 +58,14 @@ pub enum Error {
 }
 
 pub struct Service<T> {
-    pub(crate) task_center: TaskCenter,
-    pub(crate) metadata: Metadata,
-    pub(crate) networking: Networking<T>,
-    pub(crate) bifrost: Bifrost,
-    pub(crate) cluster_state_refresher: ClusterStateRefresher<T>,
-    pub(crate) configuration: Live<Configuration>,
-    pub(crate) metadata_writer: MetadataWriter,
-    pub(crate) metadata_store_client: MetadataStoreClient,
+    task_center: TaskCenter,
+    metadata: Metadata,
+    networking: Networking<T>,
+    bifrost: Bifrost,
+    cluster_state_refresher: ClusterStateRefresher<T>,
+    configuration: Live<Configuration>,
+    metadata_writer: MetadataWriter,
+    metadata_store_client: MetadataStoreClient,
 
     processor_manager_client: PartitionProcessorManagerClient<Networking<T>>,
     command_tx: mpsc::Sender<ClusterControllerCommand>,
@@ -224,47 +224,6 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
-    async fn next_cluster_state(
-        &self,
-        state: &mut ClusterControllerState<T>,
-    ) -> anyhow::Result<()> {
-        let nodes_config = self.metadata.nodes_config_ref();
-        let maybe_leader = nodes_config
-            .get_admin_nodes()
-            .filter(|node| {
-                self.observed_cluster_state
-                    .is_node_alive(node.current_generation)
-            })
-            .map(|node| node.current_generation)
-            .sorted()
-            .next();
-
-        // A Cluster Controller is a leader if the node holds the smallest PlainNodeID
-        // If no other node was found to take leadership, we assume leadership
-
-        let is_leader = match maybe_leader {
-            None => true,
-            Some(leader) => leader == self.metadata.my_node_id(),
-        };
-
-        match (is_leader, &state) {
-            (true, ClusterControllerState::Leader(_))
-            | (false, ClusterControllerState::Follower) => {
-                // nothing to do
-            }
-            (true, ClusterControllerState::Follower) => {
-                info!("Cluster controller switching to leader mode");
-                *state = ClusterControllerState::Leader(Leader::from_service(self).await?);
-            }
-            (false, ClusterControllerState::Leader(_)) => {
-                info!("Cluster controller switching to follower mode");
-                *state = ClusterControllerState::Follower;
-            }
-        };
-
-        Ok(())
-    }
-
     pub async fn run(mut self) -> anyhow::Result<()> {
         self.init_partition_table().await?;
 
@@ -298,7 +257,7 @@ impl<T: TransportConnect> Service<T> {
                 },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     self.observed_cluster_state.update(&cluster_state);
-                    self.next_cluster_state(&mut state).await?;
+                    state.update(&self).await?;
 
                     state.on_observed_cluster_state(&self.observed_cluster_state).await?;
                 }

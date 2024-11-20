@@ -52,6 +52,11 @@ impl ObservedClusterState {
                     self.alive_nodes
                         .insert(*node_id, alive_node.generational_node_id);
                 }
+                NodeState::Suspect(maybe_node) => {
+                    self.dead_nodes.remove(node_id);
+                    self.alive_nodes
+                        .insert(*node_id, maybe_node.generational_node_id);
+                }
                 NodeState::Dead(_) => {
                     self.alive_nodes.remove(node_id);
                     self.dead_nodes.insert(*node_id);

@@ -25,7 +25,7 @@ use restate_cli_util::ui::Tense;
 use restate_types::logs::metadata::{Chain, Logs};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::protobuf::cluster::{
-    node_state, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode,
+    node_state, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode, SuspectNode,
 };
 use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
@@ -100,9 +100,13 @@ pub async fn list_partitions(
 
     let mut partitions: Vec<(u32, PartitionListEntry)> = vec![];
     let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
+    let mut suspect_nodes: BTreeMap<PlainNodeId, SuspectNode> = BTreeMap::new();
     let mut max_epoch_per_partition: HashMap<u32, u64> = HashMap::new();
     for (node_id, node_state) in cluster_state.nodes {
         match node_state.state.expect("node state is set") {
+            node_state::State::Suspect(suspect_node) => {
+                suspect_nodes.insert(PlainNodeId::from(node_id), suspect_node);
+            }
             node_state::State::Dead(dead_node) => {
                 dead_nodes.insert(PlainNodeId::from(node_id), dead_node);
             }
@@ -308,6 +312,20 @@ pub async fn list_partitions(
             ]);
         }
         c_println!("{}", dead_nodes_table);
+    }
+
+    if !suspect_nodes.is_empty() {
+        c_println!();
+        c_println!("🕵 Suspect nodes");
+        let mut suspect_nodes_table = Table::new_styled();
+        suspect_nodes_table.set_styled_header(vec!["NODE", "LAST-ATTEMPTS"]);
+        for (node_id, suspect_node) in suspect_nodes {
+            suspect_nodes_table.add_row(vec![
+                Cell::new(node_id),
+                render_as_duration(suspect_node.last_attempt, Tense::Past),
+            ]);
+        }
+        c_println!("{}", suspect_nodes_table);
     }
 
     Ok(())
