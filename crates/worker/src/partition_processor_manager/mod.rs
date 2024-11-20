@@ -26,7 +26,7 @@ use tokio::sync::oneshot;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, error, info, instrument, warn, Instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
@@ -619,7 +619,7 @@ impl PartitionProcessorManager {
                     processor_state.stop();
                 }
                 if self.pending_snapshots.contains_key(&partition_id) {
-                    warn!(%partition_id, "Partition processor stopped while snapshot task is still pending.");
+                    warn!(%partition_id, "Partition processor requested to stop while a snapshot task is still outstanding.");
                 }
             }
             ProcessorCommand::Follower | ProcessorCommand::Leader => {
@@ -726,7 +726,7 @@ impl PartitionProcessorManager {
         if let Some(pending) = self.pending_snapshots.remove(&partition_id) {
             let _ = pending.sender.send(response);
         } else {
-            error!("Snapshot task result received, but there was no pending sender found!")
+            warn!("Snapshot task result received, but there was no pending sender found!")
         }
     }
 
@@ -800,12 +800,11 @@ impl PartitionProcessorManager {
                 node_name: config.common.node_name().into(),
             };
 
-            let snapshot_span = tracing::info_span!("create-snapshot", %snapshot_id, %partition_id);
             let spawn_task_result = restate_core::task_center().spawn_unmanaged(
                 TaskKind::PartitionSnapshotProducer,
                 "create-snapshot",
                 Some(partition_id),
-                async move { create_snapshot_task.run().await }.instrument(snapshot_span),
+                create_snapshot_task.run(),
             );
 
             match spawn_task_result {

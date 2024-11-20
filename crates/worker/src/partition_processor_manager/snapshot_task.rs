@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use tokio::sync::oneshot;
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 
 use restate_core::worker_api::SnapshotError;
 use restate_partition_store::snapshots::{
@@ -33,6 +33,7 @@ pub struct SnapshotPartitionTask {
 }
 
 impl SnapshotPartitionTask {
+    #[instrument(level = "info", skip_all, fields(snapshot_id = %self.snapshot_id, partition_id = %self.partition_id))]
     pub async fn run(self) {
         debug!("Creating partition snapshot");
 
