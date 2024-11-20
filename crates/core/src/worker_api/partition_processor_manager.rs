@@ -48,7 +48,7 @@ impl ProcessorsManagerHandle {
         self.0
             .send(ProcessorsManagerCommand::GetState(tx))
             .await
-            .unwrap();
+            .map_err(|_| ShutdownError)?;
         rx.await.map_err(|_| ShutdownError)
     }
 }

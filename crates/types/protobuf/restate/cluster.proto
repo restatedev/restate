@@ -29,13 +29,20 @@ message NodeState {
   oneof state {
     AliveNode alive = 1;
     DeadNode dead = 2;
+    SuspectNode suspect = 3;
   }
+}
+
+message SuspectNode {
+  restate.common.NodeId generational_node_id = 1;
+  google.protobuf.Timestamp last_attempt = 2;
 }
 
 message AliveNode {
   restate.common.NodeId generational_node_id = 1;
   google.protobuf.Timestamp last_heartbeat_at = 2;
-  // partition id is u16 but protobuf doesn't support u16. This must be a value that's safe to convert to u16
+  // partition id is u16 but protobuf doesn't support u16. This must be a value
+  // that's safe to convert to u16
   map<uint32, PartitionProcessorStatus> partitions = 3;
 }
 
