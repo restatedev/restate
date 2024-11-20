@@ -1,4 +1,4 @@
-// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2025  Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,9 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod builder;
+mod runtime;
+mod task;
+mod task_kind;
+
+pub use builder::*;
+pub use runtime::*;
+pub use task::*;
+pub use task_kind::*;
+
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -24,39 +34,21 @@ use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use restate_types::config::CommonOptions;
 use restate_types::identifiers::PartitionId;
 use restate_types::GenerationalNodeId;
 
-use crate::metric_definitions::{TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED};
-use crate::{
-    metric_definitions, Metadata, RuntimeHandle, RuntimeRootTaskHandle, ShutdownError,
-    ShutdownSourceErr, TaskHandle, TaskId, TaskKind,
+use crate::metric_definitions::{
+    self, TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED,
 };
+use crate::{Metadata, ShutdownError, ShutdownSourceErr};
 
-static WORKER_ID: AtomicUsize = const { AtomicUsize::new(0) };
-static NEXT_TASK_ID: AtomicU64 = const { AtomicU64::new(0) };
 const EXIT_CODE_FAILURE: i32 = 1;
 
-#[derive(Clone)]
-pub struct TaskContext {
-    /// It's nice to have a unique ID for each task.
-    id: TaskId,
-    name: &'static str,
-    kind: TaskKind,
-    /// cancel this token to request cancelling this task.
-    cancellation_token: CancellationToken,
-    /// Tasks associated with a specific partition ID will have this set. This allows
-    /// for cancellation of tasks associated with that partition.
-    partition_id: Option<PartitionId>,
-    /// Access to a locally-cached metadata view.
-    metadata: Option<Metadata>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum TaskCenterBuildError {
-    #[error(transparent)]
-    Tokio(#[from] tokio::io::Error),
+task_local! {
+    // Current task center
+    static CURRENT_TASK_CENTER: TaskCenter;
+    // Tasks provide access to their context
+    static CONTEXT: TaskContext;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -65,121 +57,6 @@ pub enum RuntimeError {
     AlreadyExists(String),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
-}
-
-/// Used to create a new task center. In practice, there should be a single task center for the
-/// entire process but we might need to create more than one in integration test scenarios.
-#[derive(Default)]
-pub struct TaskCenterBuilder {
-    default_runtime_handle: Option<tokio::runtime::Handle>,
-    default_runtime: Option<tokio::runtime::Runtime>,
-    ingress_runtime_handle: Option<tokio::runtime::Handle>,
-    ingress_runtime: Option<tokio::runtime::Runtime>,
-    options: Option<CommonOptions>,
-    #[cfg(any(test, feature = "test-util"))]
-    pause_time: bool,
-}
-
-impl TaskCenterBuilder {
-    pub fn default_runtime_handle(mut self, handle: tokio::runtime::Handle) -> Self {
-        self.default_runtime_handle = Some(handle);
-        self.default_runtime = None;
-        self
-    }
-
-    pub fn ingress_runtime_handle(mut self, handle: tokio::runtime::Handle) -> Self {
-        self.ingress_runtime_handle = Some(handle);
-        self.ingress_runtime = None;
-        self
-    }
-
-    pub fn options(mut self, options: CommonOptions) -> Self {
-        self.options = Some(options);
-        self
-    }
-
-    pub fn default_runtime(mut self, runtime: tokio::runtime::Runtime) -> Self {
-        self.default_runtime_handle = Some(runtime.handle().clone());
-        self.default_runtime = Some(runtime);
-        self
-    }
-
-    pub fn ingress_runtime(mut self, runtime: tokio::runtime::Runtime) -> Self {
-        self.ingress_runtime_handle = Some(runtime.handle().clone());
-        self.ingress_runtime = Some(runtime);
-        self
-    }
-
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn pause_time(mut self, pause_time: bool) -> Self {
-        self.pause_time = pause_time;
-        self
-    }
-
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn default_for_tests() -> Self {
-        Self::default()
-            .ingress_runtime_handle(tokio::runtime::Handle::current())
-            .default_runtime_handle(tokio::runtime::Handle::current())
-            .pause_time(true)
-    }
-
-    pub fn build(mut self) -> Result<TaskCenter, TaskCenterBuildError> {
-        let options = self.options.unwrap_or_default();
-        if self.default_runtime_handle.is_none() {
-            let mut default_runtime_builder = tokio_builder("worker", &options);
-            #[cfg(any(test, feature = "test-util"))]
-            if self.pause_time {
-                default_runtime_builder.start_paused(self.pause_time);
-            }
-            let default_runtime = default_runtime_builder.build()?;
-            self.default_runtime_handle = Some(default_runtime.handle().clone());
-            self.default_runtime = Some(default_runtime);
-        }
-
-        if self.ingress_runtime_handle.is_none() {
-            let mut ingress_runtime_builder = tokio_builder("ingress", &options);
-            #[cfg(any(test, feature = "test-util"))]
-            if self.pause_time {
-                ingress_runtime_builder.start_paused(self.pause_time);
-            }
-            let ingress_runtime = ingress_runtime_builder.build()?;
-            self.ingress_runtime_handle = Some(ingress_runtime.handle().clone());
-            self.ingress_runtime = Some(ingress_runtime);
-        }
-
-        if cfg!(any(test, feature = "test-util")) {
-            eprintln!("!!!! Runnning with test-util enabled !!!!");
-        }
-        metric_definitions::describe_metrics();
-        Ok(TaskCenter {
-            inner: Arc::new(TaskCenterInner {
-                start_time: Instant::now(),
-                default_runtime_handle: self.default_runtime_handle.unwrap(),
-                default_runtime: self.default_runtime,
-                ingress_runtime_handle: self.ingress_runtime_handle.unwrap(),
-                ingress_runtime: self.ingress_runtime,
-                global_cancel_token: CancellationToken::new(),
-                shutdown_requested: AtomicBool::new(false),
-                current_exit_code: AtomicI32::new(0),
-                managed_tasks: Mutex::new(HashMap::new()),
-                global_metadata: OnceLock::new(),
-                managed_runtimes: Mutex::new(HashMap::with_capacity(64)),
-            }),
-        })
-    }
-}
-
-fn tokio_builder(prefix: &'static str, common_opts: &CommonOptions) -> tokio::runtime::Builder {
-    let mut builder = tokio::runtime::Builder::new_multi_thread();
-    builder.enable_all().thread_name_fn(move || {
-        let id = WORKER_ID.fetch_add(1, Ordering::Relaxed);
-        format!("rs:{}-{}", prefix, id)
-    });
-
-    builder.worker_threads(common_opts.default_thread_pool_size());
-
-    builder
 }
 
 /// Task center is used to manage long-running and background tasks and their lifecycle.
@@ -191,6 +68,30 @@ pub struct TaskCenter {
 static_assertions::assert_impl_all!(TaskCenter: Send, Sync, Clone);
 
 impl TaskCenter {
+    fn new(
+        default_runtime_handle: tokio::runtime::Handle,
+        ingress_runtime_handle: tokio::runtime::Handle,
+        default_runtime: Option<tokio::runtime::Runtime>,
+        ingress_runtime: Option<tokio::runtime::Runtime>,
+    ) -> Self {
+        metric_definitions::describe_metrics();
+        Self {
+            inner: Arc::new(TaskCenterInner {
+                start_time: Instant::now(),
+                default_runtime_handle,
+                default_runtime,
+                ingress_runtime_handle,
+                ingress_runtime,
+                global_cancel_token: CancellationToken::new(),
+                shutdown_requested: AtomicBool::new(false),
+                current_exit_code: AtomicI32::new(0),
+                managed_tasks: Mutex::new(HashMap::new()),
+                global_metadata: OnceLock::new(),
+                managed_runtimes: Mutex::new(HashMap::with_capacity(64)),
+            }),
+        }
+    }
+
     pub fn default_runtime_metrics(&self) -> RuntimeMetrics {
         self.inner.default_runtime_handle.metrics()
     }
@@ -329,7 +230,7 @@ impl TaskCenter {
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let inner = self.inner.clone();
-        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
+        let id = TaskId::default();
         let metadata = self.clone_metadata();
         let context = TaskContext {
             id,
@@ -421,7 +322,7 @@ impl TaskCenter {
         }
 
         let cancel = CancellationToken::new();
-        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
+        let id = TaskId::default();
         let metadata = self.clone_metadata();
         let context = TaskContext {
             id,
@@ -466,7 +367,7 @@ impl TaskCenter {
         F: Future<Output = anyhow::Result<()>> + 'static,
     {
         let cancellation_token = CancellationToken::new();
-        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
+        let id = TaskId::default();
         let context = TaskContext {
             id,
             name,
@@ -543,17 +444,14 @@ impl TaskCenter {
             .expect("runtime builder succeeds");
         let tc = self.clone();
 
-        let rt_handle = Arc::new(RuntimeHandle {
-            cancellation_token: cancel.clone(),
-            inner: rt,
-        });
+        let rt_handle = Arc::new(rt);
 
         runtimes_guard.insert(runtime_name, rt_handle.clone());
 
         // release the lock.
         drop(runtimes_guard);
 
-        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
+        let id = TaskId::default();
         let context = TaskContext {
             id,
             name: runtime_name,
@@ -569,13 +467,11 @@ impl TaskCenter {
         let _ = thread_builder
             .spawn(move || {
                 let local_set = LocalSet::new();
-                let result = rt_handle
-                    .inner
-                    .block_on(local_set.run_until(unmanaged_wrapper(
-                        tc.clone(),
-                        context,
-                        root_future(),
-                    )));
+                let result = rt_handle.block_on(local_set.run_until(unmanaged_wrapper(
+                    tc.clone(),
+                    context,
+                    root_future(),
+                )));
 
                 debug!("Runtime {} completed", runtime_name);
                 drop(rt_handle);
@@ -741,7 +637,7 @@ impl TaskCenter {
         let mut runtimes = self.inner.managed_runtimes.lock();
         for (_, runtime) in runtimes.drain() {
             if let Some(runtime) = Arc::into_inner(runtime) {
-                runtime.inner.shutdown_background();
+                runtime.shutdown_background();
             }
         }
     }
@@ -774,7 +670,7 @@ impl TaskCenter {
         F: Future<Output = O>,
     {
         let cancel = CancellationToken::new();
-        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
+        let id = TaskId::default();
         let metadata = self.clone_metadata();
         let context = TaskContext {
             id,
@@ -802,7 +698,7 @@ impl TaskCenter {
         F: FnOnce() -> O,
     {
         let cancel = CancellationToken::new();
-        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
+        let id = TaskId::default();
         let metadata = self.clone_metadata();
         let context = TaskContext {
             id,
@@ -925,7 +821,7 @@ impl TaskCenter {
 struct TaskCenterInner {
     default_runtime_handle: tokio::runtime::Handle,
     ingress_runtime_handle: tokio::runtime::Handle,
-    managed_runtimes: Mutex<HashMap<&'static str, Arc<RuntimeHandle>>>,
+    managed_runtimes: Mutex<HashMap<&'static str, Arc<tokio::runtime::Runtime>>>,
     start_time: Instant,
     /// We hold on to the owned Runtime to ensure it's dropped when task center is dropped. If this
     /// is None, it means that it's the responsibility of the Handle owner to correctly drop
@@ -939,41 +835,6 @@ struct TaskCenterInner {
     current_exit_code: AtomicI32,
     managed_tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
     global_metadata: OnceLock<Metadata>,
-}
-
-pub struct Task<R = ()> {
-    context: TaskContext,
-    handle: Mutex<Option<TaskHandle<R>>>,
-}
-
-impl<R> Task<R> {
-    fn id(&self) -> TaskId {
-        self.context.id
-    }
-
-    fn name(&self) -> &'static str {
-        self.context.name
-    }
-
-    fn kind(&self) -> TaskKind {
-        self.context.kind
-    }
-
-    fn partition_id(&self) -> Option<PartitionId> {
-        self.context.partition_id
-    }
-
-    fn cancel(&self) {
-        self.context.cancellation_token.cancel()
-    }
-}
-
-task_local! {
-    // Tasks provide access to their context
-    static CONTEXT: TaskContext;
-
-    // Current task center
-    static CURRENT_TASK_CENTER: TaskCenter;
 }
 
 /// This wrapper function runs in a newly-spawned task. It initializes the

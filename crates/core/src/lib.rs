@@ -15,7 +15,6 @@ mod metric_definitions;
 pub mod network;
 pub mod partitions;
 mod task_center;
-mod task_center_types;
 pub mod worker_api;
 pub use error::*;
 
@@ -24,7 +23,6 @@ pub use metadata::{
     MetadataWriter, SyncError, TargetVersion,
 };
 pub use task_center::*;
-pub use task_center_types::*;
 
 #[cfg(any(test, feature = "test-util"))]
 mod test_env;
