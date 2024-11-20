@@ -44,6 +44,10 @@ impl ObservedClusterState {
         self.update_partitions(cluster_state);
     }
 
+    /// Update observed cluster state with given [`ClusterState`]
+    /// Nodes in [`NodeState::Suspect`] state are treated as [`NodeState::Alive`].
+    /// This means that their `last know` state will not be cleared up yet
+    /// until they are marked as dead by the [`ClusterState`].
     fn update_nodes(&mut self, cluster_state: &ClusterState) {
         for (node_id, node_state) in &cluster_state.nodes {
             match node_state {

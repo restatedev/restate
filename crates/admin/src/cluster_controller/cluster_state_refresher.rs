@@ -201,7 +201,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                         // todo: implement a more robust failure detector
                         // This is a naive mechanism for failure detection and is just a stop-gap measure.
                         // A single connection error or timeout will cause a node to be marked as dead.
-                        trace!("Node {node_id} is marked dead {node_id}: {err}");
+                        trace!("Node {node_id} is marked dead: {err}");
                         let last_seen_alive = last_state.nodes.get(&node_id.as_plain()).and_then(
                             |state| match state {
                                 NodeState::Alive(AliveNode {
