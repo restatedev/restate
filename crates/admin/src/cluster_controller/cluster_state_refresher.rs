@@ -13,11 +13,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::watch;
+use tracing::{debug, trace};
 
 use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{MessageRouterBuilder, Networking, Outgoing, TransportConnect};
+use restate_core::network::{
+    MessageRouterBuilder, NetworkError, Networking, Outgoing, TransportConnect,
+};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle};
-use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState};
+use restate_types::cluster::cluster_state::{
+    AliveNode, ClusterState, DeadNode, NodeState, SuspectNode,
+};
 use restate_types::net::node::GetNodeState;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::Version;
@@ -129,7 +134,8 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
 
             let mut nodes = BTreeMap::new();
             let mut join_set = tokio::task::JoinSet::new();
-            for (node_id, _) in nodes_config.iter() {
+            for (_, node_config) in nodes_config.iter() {
+                let node_id = node_config.current_generation;
                 let rpc_router = get_state_router.clone();
                 let tc = tc.clone();
                 let network_sender = network_sender.clone();
@@ -166,7 +172,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                         let peer = response.peer();
                         let msg = response.into_body();
                         nodes.insert(
-                            node_id,
+                            node_id.as_plain(),
                             NodeState::Alive(AliveNode {
                                 last_heartbeat_at: MillisSinceEpoch::now(),
                                 generational_node_id: peer,
@@ -174,24 +180,42 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                             }),
                         );
                     }
-                    _ => {
+                    Err(NetworkError::RemoteVersionMismatch(msg)) => {
+                        // When **this** node has just started, other peers might not have
+                        // learned about the new metadata version and then they can
+                        // return a RemoteVersionMismatch error.
+                        // In this case we are not sure about the peer state but it's
+                        // definitely not dead!
+                        // Hence we set it as Suspect node. This gives it enough time to update
+                        // its metadata, before we know the exact state
+                        debug!("Node {node_id} is marked as Suspect: {msg}");
+                        nodes.insert(
+                            node_id.as_plain(),
+                            NodeState::Suspect(SuspectNode {
+                                generational_node_id: node_id,
+                                last_attempt: MillisSinceEpoch::now(),
+                            }),
+                        );
+                    }
+                    Err(err) => {
                         // todo: implement a more robust failure detector
                         // This is a naive mechanism for failure detection and is just a stop-gap measure.
                         // A single connection error or timeout will cause a node to be marked as dead.
-                        let last_seen_alive =
-                            last_state
-                                .nodes
-                                .get(&node_id)
-                                .and_then(|state| match state {
-                                    NodeState::Alive(AliveNode {
-                                        last_heartbeat_at, ..
-                                    }) => Some(*last_heartbeat_at),
-                                    NodeState::Dead(DeadNode { last_seen_alive }) => {
-                                        *last_seen_alive
-                                    }
-                                });
+                        trace!("Node {node_id} is marked dead {node_id}: {err}");
+                        let last_seen_alive = last_state.nodes.get(&node_id.as_plain()).and_then(
+                            |state| match state {
+                                NodeState::Alive(AliveNode {
+                                    last_heartbeat_at, ..
+                                }) => Some(*last_heartbeat_at),
+                                NodeState::Dead(DeadNode { last_seen_alive }) => *last_seen_alive,
+                                NodeState::Suspect(_) => None,
+                            },
+                        );
 
-                        nodes.insert(node_id, NodeState::Dead(DeadNode { last_seen_alive }));
+                        nodes.insert(
+                            node_id.as_plain(),
+                            NodeState::Dead(DeadNode { last_seen_alive }),
+                        );
                     }
                 };
             }

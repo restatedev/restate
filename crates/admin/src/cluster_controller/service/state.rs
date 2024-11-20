@@ -11,12 +11,11 @@
 use std::collections::BTreeMap;
 
 use futures::future::OptionFuture;
-use restate_types::logs::metadata::Logs;
-use restate_types::nodes_config::NodesConfiguration;
+use itertools::Itertools;
 use tokio::sync::watch;
 use tokio::time;
 use tokio::time::{Interval, MissedTickBehavior};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::MetadataStoreClient;
@@ -26,12 +25,14 @@ use restate_types::cluster::cluster_state::{AliveNode, NodeState};
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Live;
+use restate_types::logs::metadata::Logs;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, Version};
 
-use super::cluster_state_refresher::ClusterStateWatcher;
+use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
 use crate::cluster_controller::logs_controller::{
     LogsBasedPartitionProcessorPlacementHints, LogsController,
 };
@@ -39,9 +40,53 @@ use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler::{Scheduler, SchedulingPlanNodeSetSelectorHints};
 use crate::cluster_controller::service::Service;
 
-pub(crate) enum ClusterControllerState<T> {
+pub enum ClusterControllerState<T> {
     Follower,
     Leader(Leader<T>),
+}
+
+impl<T> ClusterControllerState<T>
+where
+    T: TransportConnect,
+{
+    pub async fn update(&mut self, service: &Service<T>) -> anyhow::Result<()> {
+        let nodes_config = service.metadata.nodes_config_ref();
+        let maybe_leader = nodes_config
+            .get_admin_nodes()
+            .filter(|node| {
+                service
+                    .observed_cluster_state
+                    .is_node_alive(node.current_generation)
+            })
+            .map(|node| node.current_generation)
+            .sorted()
+            .next();
+
+        // A Cluster Controller is a leader if the node holds the smallest PlainNodeID
+        // If no other node was found to take leadership, we assume leadership
+
+        let is_leader = match maybe_leader {
+            None => true,
+            Some(leader) => leader == service.metadata.my_node_id(),
+        };
+
+        match (is_leader, &self) {
+            (true, ClusterControllerState::Leader(_))
+            | (false, ClusterControllerState::Follower) => {
+                // nothing to do
+            }
+            (true, ClusterControllerState::Follower) => {
+                info!("Cluster controller switching to leader mode");
+                *self = ClusterControllerState::Leader(Leader::from_service(service).await?);
+            }
+            (false, ClusterControllerState::Leader(_)) => {
+                info!("Cluster controller switching to follower mode");
+                *self = ClusterControllerState::Follower;
+            }
+        };
+
+        Ok(())
+    }
 }
 
 impl<T> ClusterControllerState<T>
@@ -80,7 +125,7 @@ where
     }
 }
 
-pub(crate) struct Leader<T> {
+pub struct Leader<T> {
     metadata: Metadata,
     bifrost: Bifrost,
     metadata_store_client: MetadataStoreClient,
@@ -102,7 +147,7 @@ impl<T> Leader<T>
 where
     T: TransportConnect,
 {
-    pub async fn from_service(service: &Service<T>) -> anyhow::Result<Leader<T>> {
+    async fn from_service(service: &Service<T>) -> anyhow::Result<Leader<T>> {
         let configuration = service.configuration.pinned();
 
         let scheduler = Scheduler::init(
@@ -245,7 +290,7 @@ where
                             .insert(*generational_node_id, lsn);
                     }
                 }
-                NodeState::Dead(_) => {
+                NodeState::Dead(_) | NodeState::Suspect(_) => {
                     // nothing to do
                 }
             }
