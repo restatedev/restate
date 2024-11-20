@@ -46,8 +46,14 @@ pub struct Node {
     #[builder(mutators(
             #[mutator(requires = [base_dir])]
             pub fn with_node_socket(self) {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("to get timestamp")
+                    .as_secs();
                 let node_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join("node.sock");
+                let tokio_console_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join(format!("tokio_console-{ts}.sock"));
                 self.base_config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
+                self.base_config.common.tokio_console_bind_address = Some(BindAddress::Uds(tokio_console_socket));
                 self.base_config.common.advertised_address = AdvertisedAddress::Uds(node_socket);
             }
 
@@ -235,6 +241,11 @@ impl Node {
         if let AdvertisedAddress::Uds(file) = &mut self.base_config.common.advertised_address {
             *file = base_dir.join(&*file)
         }
+        if let Some(BindAddress::Uds(file)) =
+            &mut self.base_config.common.tokio_console_bind_address
+        {
+            *file = base_dir.join(&*file)
+        }
 
         self.base_config.common.set_base_dir(base_dir);
         self.base_config.common.set_cluster_name(cluster_name);
@@ -298,12 +309,6 @@ impl Node {
             &mut cmd
         }
         .env("RESTATE_CONFIG", node_config_file)
-        .env(
-            "TOKIO_CONSOLE_BIND",
-            random_socket_address()
-                .expect("to find a random port for tokio console")
-                .to_string(),
-        )
         .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
