@@ -13,13 +13,12 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use enum_map::EnumMap;
+use tracing::instrument;
 
 use restate_core::{Metadata, MetadataKind, TargetVersion};
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
 use restate_types::storage::StorageEncode;
-use restate_types::Version;
-use tracing::instrument;
 
 use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
@@ -44,21 +43,20 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init_in_memory(metadata: Metadata) -> Self {
+    pub async fn init_in_memory() -> Self {
         use crate::providers::memory_loglet;
 
-        Self::init_with_factory(metadata, memory_loglet::Factory::default()).await
+        Self::init_with_factory(memory_loglet::Factory::default()).await
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init_local(metadata: Metadata) -> Self {
+    pub async fn init_local() -> Self {
         use restate_types::config::Configuration;
 
         use crate::BifrostService;
 
         let config = Configuration::updateable();
-        let bifrost_svc =
-            BifrostService::new(restate_core::task_center(), metadata).enable_local_loglet(&config);
+        let bifrost_svc = BifrostService::new().enable_local_loglet(&config);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -70,14 +68,10 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init_with_factory(
-        metadata: Metadata,
-        factory: impl crate::loglet::LogletProviderFactory,
-    ) -> Self {
+    pub async fn init_with_factory(factory: impl crate::loglet::LogletProviderFactory) -> Self {
         use crate::BifrostService;
 
-        let bifrost_svc =
-            BifrostService::new(restate_core::task_center(), metadata).with_factory(factory);
+        let bifrost_svc = BifrostService::new().with_factory(factory);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -228,11 +222,6 @@ impl Bifrost {
         self.inner.get_trim_point(log_id).await
     }
 
-    /// The version of the currently loaded logs metadata
-    pub fn version(&self) -> Version {
-        self.inner.metadata.logs_version()
-    }
-
     /// Read a full log with the given id. To be used only in tests!!!
     #[cfg(any(test, feature = "test-util"))]
     pub async fn read_all(&self, log_id: LogId) -> Result<Vec<crate::LogEntry>> {
@@ -262,7 +251,6 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // Locks in this data-structure are held for very short time and should never be
 // held across an async boundary.
 pub struct BifrostInner {
-    pub(crate) metadata: Metadata,
     #[allow(unused)]
     watchdog: WatchdogSender,
     // Initialized after BifrostService::start completes.
@@ -271,9 +259,8 @@ pub struct BifrostInner {
 }
 
 impl BifrostInner {
-    pub fn new(metadata: Metadata, watchdog: WatchdogSender) -> Self {
+    pub fn new(watchdog: WatchdogSender) -> Self {
         Self {
-            metadata,
             watchdog,
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
@@ -338,7 +325,7 @@ impl BifrostInner {
     }
 
     async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
-        let log_metadata = self.metadata.logs_ref();
+        let log_metadata = Metadata::with_current(|m| m.logs_ref());
 
         let log_chain = log_metadata
             .chain(&log_id)
@@ -366,7 +353,7 @@ impl BifrostInner {
     }
 
     pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
-        let log_metadata = self.metadata.logs_ref();
+        let log_metadata = Metadata::with_current(|m| m.logs_ref());
 
         let log_chain = log_metadata
             .chain(&log_id)
@@ -396,7 +383,7 @@ impl BifrostInner {
 
     /// Immediately fetch new metadata from metadata store.
     pub async fn sync_metadata(&self) -> Result<()> {
-        self.metadata
+        Metadata::current()
             .sync(MetadataKind::Logs, TargetVersion::Latest)
             .await?;
         Ok(())
@@ -419,7 +406,7 @@ impl BifrostInner {
 
     /// Checks if the log_id exists and that the provider is not disabled (can be created).
     pub(crate) fn check_log_id(&self, log_id: LogId) -> Result<(), Error> {
-        let logs = self.metadata.logs_ref();
+        let logs = Metadata::with_current(|metadata| metadata.logs_ref());
         let chain = logs.chain(&log_id).ok_or(Error::UnknownLogId(log_id))?;
 
         let kind = chain.tail().config.kind;
@@ -429,7 +416,7 @@ impl BifrostInner {
     }
 
     pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
-        let log_metadata = self.metadata.logs_ref();
+        let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
         let tail_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
@@ -438,7 +425,7 @@ impl BifrostInner {
     }
 
     pub async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<MaybeLoglet> {
-        let log_metadata = self.metadata.logs_ref();
+        let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
         let maybe_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?

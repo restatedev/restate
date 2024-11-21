@@ -11,14 +11,15 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use restate_types::storage::StorageEncode;
 use tracing::{debug, info, instrument, warn};
 
+use restate_core::Metadata;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn, Record};
 use restate_types::retries::RetryIter;
+use restate_types::storage::StorageEncode;
 
 use crate::bifrost::BifrostInner;
 use crate::loglet::AppendError;
@@ -167,8 +168,9 @@ impl Appender {
                 );
                 return Ok(loglet);
             } else {
+                let log_version = Metadata::with_current(|m| m.logs_version());
                 debug!(
-                    log_version = %bifrost_inner.metadata.logs_version(),
+                    log_version = %log_version,
                     "Still waiting for sealing to complete. Elapsed={:?}",
                     start.elapsed(),
                 );
