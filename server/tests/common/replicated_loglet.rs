@@ -7,6 +7,7 @@ use googletest::IntoTestResult;
 
 use restate_bifrost::{loglet::Loglet, Bifrost, BifrostAdmin};
 use restate_core::metadata_store::Precondition;
+use restate_core::TaskCenterFutureExt;
 use restate_core::{metadata_store::MetadataStoreClient, MetadataWriter, TaskCenterBuilder};
 use restate_local_cluster_runner::{
     cluster::{Cluster, MaybeTempDir, StartedCluster},
@@ -120,7 +121,7 @@ where
     // this will still respect LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true
     let base_dir: MaybeTempDir = tempfile::tempdir()?.into();
 
-    tc.run_in_scope("test", None, async {
+    async {
         RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
 
         let cluster = Cluster::builder()
@@ -167,19 +168,16 @@ where
         .await?;
 
         // global metadata should now be set, running in scope sets it in the task center context
-        tc.run_in_scope(
-            "test-fn",
-            None,
-            future(TestEnv {
-                bifrost,
-                loglet,
-                cluster,
-                metadata_writer,
-                metadata_store_client,
-            }),
-        )
+        future(TestEnv {
+            bifrost,
+            loglet,
+            cluster,
+            metadata_writer,
+            metadata_store_client,
+        })
         .await
-    })
+    }
+    .with_task_center(&tc)
     .await?;
 
     tc.shutdown_node("test completed", 0).await;
