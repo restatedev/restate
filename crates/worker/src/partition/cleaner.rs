@@ -171,9 +171,9 @@ mod tests {
     use restate_core::{Metadata, TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
+        InvokedOrKilledInvocationStatusLite,
     };
     use restate_types::identifiers::{InvocationId, InvocationUuid};
-    use restate_types::invocation::InvocationTarget;
     use restate_types::partition_table::{FindPartition, PartitionTable};
     use restate_types::Version;
     use std::future::Future;
@@ -192,9 +192,9 @@ mod tests {
             std::future::pending()
         }
 
-        fn all_invoked_invocations(
+        fn all_invoked_or_killed_invocations(
             &mut self,
-        ) -> impl Stream<Item = restate_storage_api::Result<(InvocationId, InvocationTarget)>> + Send
+        ) -> impl Stream<Item = restate_storage_api::Result<InvokedOrKilledInvocationStatusLite>> + Send
         {
             todo!();
             #[allow(unreachable_code)]
