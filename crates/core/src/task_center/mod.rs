@@ -9,22 +9,25 @@
 // by the Apache License, Version 2.0.
 
 mod builder;
+mod extensions;
 mod runtime;
 mod task;
 mod task_kind;
 
 pub use builder::*;
+pub use extensions::*;
 pub use runtime::*;
 pub use task::*;
 pub use task_kind::*;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use futures::{Future, FutureExt};
+use futures::FutureExt;
 use metrics::{counter, gauge};
 use parking_lot::Mutex;
 use tokio::runtime::RuntimeMetrics;
@@ -46,9 +49,18 @@ const EXIT_CODE_FAILURE: i32 = 1;
 
 task_local! {
     // Current task center
-    static CURRENT_TASK_CENTER: TaskCenter;
+    pub(self) static CURRENT_TASK_CENTER: TaskCenter;
     // Tasks provide access to their context
-    static CONTEXT: TaskContext;
+    static TASK_CONTEXT: TaskContext;
+
+    /// Access to a task-level global overrides.
+    static OVERRIDES: GlobalOverrides;
+}
+
+#[derive(Default, Clone)]
+struct GlobalOverrides {
+    metadata: Option<Metadata>,
+    //config: Arc<Configuration>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -75,6 +87,13 @@ impl TaskCenter {
         ingress_runtime: Option<tokio::runtime::Runtime>,
     ) -> Self {
         metric_definitions::describe_metrics();
+        let root_task_context = TaskContext {
+            id: TaskId::ROOT,
+            name: "::",
+            kind: TaskKind::InPlace,
+            cancellation_token: CancellationToken::new(),
+            partition_id: None,
+        };
         Self {
             inner: Arc::new(TaskCenterInner {
                 start_time: Instant::now(),
@@ -88,8 +107,37 @@ impl TaskCenter {
                 managed_tasks: Mutex::new(HashMap::new()),
                 global_metadata: OnceLock::new(),
                 managed_runtimes: Mutex::new(HashMap::with_capacity(64)),
+                root_task_context,
             }),
         }
+    }
+
+    pub fn try_current() -> Option<TaskCenter> {
+        Self::try_with_current(Clone::clone)
+    }
+
+    pub fn try_with_current<F, R>(f: F) -> Option<R>
+    where
+        F: FnOnce(&TaskCenter) -> R,
+    {
+        CURRENT_TASK_CENTER.try_with(|tc| f(tc)).ok()
+    }
+
+    /// Get the current task center. Use this to spawn tasks on the current task center.
+    /// This must be called from within a task-center task.
+    #[track_caller]
+    pub fn current() -> TaskCenter {
+        Self::with_current(Clone::clone)
+    }
+
+    #[track_caller]
+    pub fn with_current<F, R>(f: F) -> R
+    where
+        F: FnOnce(&TaskCenter) -> R,
+    {
+        CURRENT_TASK_CENTER
+            .try_with(|tc| f(tc))
+            .expect("called outside task-center task")
     }
 
     pub fn default_runtime_metrics(&self) -> RuntimeMetrics {
@@ -137,10 +185,6 @@ impl TaskCenter {
         self.inner.current_exit_code.load(Ordering::Relaxed)
     }
 
-    pub fn metadata(&self) -> Option<&Metadata> {
-        self.inner.global_metadata.get()
-    }
-
     fn submit_runtime_metrics(runtime: &'static str, stats: RuntimeMetrics) {
         gauge!("restate.tokio.num_workers", "runtime" => runtime).set(stats.num_workers() as f64);
         gauge!("restate.tokio.blocking_threads", "runtime" => runtime)
@@ -173,15 +217,40 @@ impl TaskCenter {
         }
     }
 
-    /// Clone the currently set METADATA (and if Some()). Otherwise falls back to global metadata.
+    pub(crate) fn metadata(&self) -> Option<Metadata> {
+        match OVERRIDES.try_with(|overrides| overrides.metadata.clone()) {
+            Ok(Some(o)) => Some(o),
+            // No metadata override, use task-center-level metadata
+            _ => self.inner.global_metadata.get().cloned(),
+        }
+    }
+
     #[track_caller]
-    fn clone_metadata(&self) -> Option<Metadata> {
-        CONTEXT
-            .try_with(|m| m.metadata.clone())
+    /// Attempt to access task-level overridden metadata first, if we don't have an override,
+    /// fallback to task-center's level metadata.
+    pub(crate) fn with_metadata<F, R>(f: F) -> Option<R>
+    where
+        F: FnOnce(&Metadata) -> R,
+    {
+        OVERRIDES
+            .try_with(|overrides| match &overrides.metadata {
+                Some(m) => Some(f(m)),
+                // No metadata override, use task-center-level metadata
+                None => CURRENT_TASK_CENTER.with(|tc| tc.inner.global_metadata.get().map(f)),
+            })
             .ok()
             .flatten()
-            .or_else(|| self.inner.global_metadata.get().cloned())
     }
+
+    fn with_task_context<F, R>(&self, f: F) -> R
+    where
+        F: Fn(&TaskContext) -> R,
+    {
+        TASK_CONTEXT
+            .try_with(|ctx| f(ctx))
+            .unwrap_or_else(|_| f(&self.inner.root_task_context))
+    }
+
     /// Triggers a shutdown of the system. All running tasks will be asked gracefully
     /// to cancel but we will only wait for tasks with a TaskKind that has the property
     /// "OnCancel" set to "wait".
@@ -231,14 +300,12 @@ impl TaskCenter {
     {
         let inner = self.inner.clone();
         let id = TaskId::default();
-        let metadata = self.clone_metadata();
         let context = TaskContext {
             id,
             name,
             kind,
             partition_id,
             cancellation_token: cancel.clone(),
-            metadata,
         };
         let task = Arc::new(Task {
             context: context.clone(),
@@ -323,14 +390,12 @@ impl TaskCenter {
 
         let cancel = CancellationToken::new();
         let id = TaskId::default();
-        let metadata = self.clone_metadata();
         let context = TaskContext {
             id,
             name,
             kind,
             partition_id,
             cancellation_token: cancel.clone(),
-            metadata,
         };
 
         let fut = unmanaged_wrapper(self.clone(), context, future);
@@ -374,8 +439,7 @@ impl TaskCenter {
             kind,
             cancellation_token: cancellation_token.clone(),
             // We must be within task-context already. let's get inherit partition_id
-            partition_id: CONTEXT.with(|c| c.partition_id),
-            metadata: Some(metadata()),
+            partition_id: self.with_task_context(|c| c.partition_id),
         };
 
         let task = Arc::new(Task {
@@ -458,7 +522,6 @@ impl TaskCenter {
             kind: root_task_kind,
             cancellation_token: cancel.clone(),
             partition_id,
-            metadata: Some(metadata()),
         };
 
         let (result_tx, result_rx) = oneshot::channel();
@@ -513,17 +576,15 @@ impl TaskCenter {
             return Err(ShutdownError);
         }
 
-        let parent_id =
-            current_task_id().expect("spawn_child called outside of a task-center task");
-        // From this point onwards, we unwrap() directly with the assumption that we are in task-center
-        // context and that the previous (expect) guards against reaching this point if we are
-        // outside task-center.
-        let parent_kind = current_task_kind().unwrap();
-        let parent_name = CONTEXT.try_with(|ctx| ctx.name).unwrap();
+        let (parent_id, parent_name, parent_kind, cancel) = self.with_task_context(|ctx| {
+            (
+                ctx.id,
+                ctx.name,
+                ctx.kind,
+                ctx.cancellation_token.child_token(),
+            )
+        });
 
-        let cancel = CONTEXT
-            .try_with(|ctx| ctx.cancellation_token.child_token())
-            .unwrap();
         let result = self.spawn_inner(kind, name, partition_id, cancel, future);
 
         trace!(
@@ -566,9 +627,7 @@ impl TaskCenter {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        let cancel = CONTEXT
-            .try_with(|ctx| ctx.cancellation_token.child_token())
-            .expect("spawning inside task-center context");
+        let cancel = self.with_task_context(|ctx| ctx.cancellation_token.child_token());
         self.spawn_inner(kind, name, partition_id, cancel, future)
     }
 
@@ -671,44 +730,37 @@ impl TaskCenter {
     {
         let cancel = CancellationToken::new();
         let id = TaskId::default();
-        let metadata = self.clone_metadata();
         let context = TaskContext {
             id,
             name,
             kind: TaskKind::InPlace,
             cancellation_token: cancel.clone(),
             partition_id,
-            metadata,
         };
 
+        //todo: revisit, remove context
         CURRENT_TASK_CENTER
-            .scope(self.clone(), CONTEXT.scope(context, future))
+            .scope(
+                self.clone(),
+                OVERRIDES.scope(
+                    OVERRIDES.try_with(Clone::clone).unwrap_or_default(),
+                    TASK_CONTEXT.scope(context, future),
+                ),
+            )
             .await
     }
 
     /// Sets the current task_center but doesn't create a task. Use this when you need to run a
     /// closure within task_center scope.
-    pub fn run_in_scope_sync<F, O>(
-        &self,
-        name: &'static str,
-        partition_id: Option<PartitionId>,
-        f: F,
-    ) -> O
+    pub fn run_in_scope_sync<F, O>(&self, f: F) -> O
     where
         F: FnOnce() -> O,
     {
-        let cancel = CancellationToken::new();
-        let id = TaskId::default();
-        let metadata = self.clone_metadata();
-        let context = TaskContext {
-            id,
-            name,
-            kind: TaskKind::InPlace,
-            partition_id,
-            cancellation_token: cancel.clone(),
-            metadata,
-        };
-        CURRENT_TASK_CENTER.sync_scope(self.clone(), || CONTEXT.sync_scope(context, f))
+        CURRENT_TASK_CENTER.sync_scope(self.clone(), || {
+            OVERRIDES.sync_scope(OVERRIDES.try_with(Clone::clone).unwrap_or_default(), || {
+                TASK_CONTEXT.sync_scope(self.with_task_context(Clone::clone), f)
+            })
+        })
     }
 
     /// Take control over the running task from task-center. This returns None if the task was not
@@ -835,10 +887,11 @@ struct TaskCenterInner {
     current_exit_code: AtomicI32,
     managed_tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
     global_metadata: OnceLock<Metadata>,
+    root_task_context: TaskContext,
 }
 
 /// This wrapper function runs in a newly-spawned task. It initializes the
-/// task-local variables and calls the payload function.
+/// task-local variables and wraps the inner future.
 async fn wrapper<F>(task_center: TaskCenter, context: TaskContext, future: F)
 where
     F: Future<Output = anyhow::Result<()>> + 'static,
@@ -849,12 +902,16 @@ where
     let result = CURRENT_TASK_CENTER
         .scope(
             task_center.clone(),
-            CONTEXT.scope(context, {
-                // We use AssertUnwindSafe here so that the wrapped function
-                // doesn't need to be UnwindSafe. We should not do anything after
-                // unwinding that'd risk us being in unwind-unsafe behavior.
-                AssertUnwindSafe(future).catch_unwind()
-            }),
+            OVERRIDES.scope(
+                OVERRIDES.try_with(Clone::clone).unwrap_or_default(),
+                TASK_CONTEXT.scope(
+                    context,
+                    // We use AssertUnwindSafe here so that the wrapped function
+                    // doesn't need to be UnwindSafe. We should not do anything after
+                    // unwinding that'd risk us being in unwind-unsafe behavior.
+                    AssertUnwindSafe(future).catch_unwind(),
+                ),
+            ),
         )
         .await;
     task_center.on_finish(id, result).await;
@@ -868,29 +925,21 @@ where
     trace!(kind = ?context.kind, name = ?context.name, "Starting task {}", context.id);
 
     CURRENT_TASK_CENTER
-        .scope(task_center.clone(), CONTEXT.scope(context, future))
+        .scope(
+            task_center.clone(),
+            OVERRIDES.scope(
+                OVERRIDES.try_with(Clone::clone).unwrap_or_default(),
+                TASK_CONTEXT.scope(context, future),
+            ),
+        )
         .await
-}
-
-/// The current task-center task kind. This returns None if we are not in the scope
-/// of a task-center task.
-pub fn current_task_kind() -> Option<TaskKind> {
-    CONTEXT.try_with(|ctx| ctx.kind).ok()
-}
-
-/// The current task-center task Id. This returns None if we are not in the scope
-/// of a task-center task.
-pub fn current_task_id() -> Option<TaskId> {
-    CONTEXT.try_with(|ctx| ctx.id).ok()
 }
 
 /// Access to global metadata handle. This is available in task-center tasks only!
 #[track_caller]
 pub fn metadata() -> Metadata {
-    CONTEXT
-        .try_with(|ctx| ctx.metadata.clone())
-        .expect("metadata() called outside task-center scope")
-        .expect("metadata() called before global metadata was set")
+    // todo: migrate call-sites
+    Metadata::current()
 }
 
 #[track_caller]
@@ -898,32 +947,41 @@ pub fn with_metadata<F, R>(f: F) -> R
 where
     F: FnOnce(&Metadata) -> R,
 {
-    CURRENT_TASK_CENTER.with(|tc| {
-        f(tc.metadata()
-            .expect("metadata must be set. Is global metadata set?"))
-    })
+    Metadata::with_current(f)
 }
 
 /// Access to this node id. This is available in task-center tasks only!
 #[track_caller]
 pub fn my_node_id() -> GenerationalNodeId {
-    CONTEXT
-        .try_with(|ctx| ctx.metadata.as_ref().map(|m| m.my_node_id()))
-        .expect("my_node_id() called outside task-center scope")
-        .expect("my_node_id() called before global metadata was set")
+    // todo: migrate call-sites
+    Metadata::with_current(|m| m.my_node_id())
+}
+
+/// The current task-center task Id. This returns None if we are not in the scope
+/// of a task-center task.
+pub fn current_task_id() -> Option<TaskId> {
+    TASK_CONTEXT
+        .try_with(|ctx| Some(ctx.id))
+        .unwrap_or(TaskCenter::try_with_current(|tc| {
+            tc.inner.root_task_context.id
+        }))
 }
 
 /// The current partition Id associated to the running task-center task.
 pub fn current_task_partition_id() -> Option<PartitionId> {
-    CONTEXT.try_with(|ctx| ctx.partition_id).ok().flatten()
+    TASK_CONTEXT
+        .try_with(|ctx| Some(ctx.partition_id))
+        .unwrap_or(TaskCenter::try_with_current(|tc| {
+            tc.inner.root_task_context.partition_id
+        }))
+        .flatten()
 }
 
 /// Get the current task center. Use this to spawn tasks on the current task center.
 /// This must be called from within a task-center task.
 pub fn task_center() -> TaskCenter {
-    CURRENT_TASK_CENTER
-        .try_with(|t| t.clone())
-        .expect("task_center() called in a task-center task")
+    // migrate call-sites
+    TaskCenter::current()
 }
 
 /// A Future that can be used to check if the current task has been requested to
@@ -939,7 +997,7 @@ pub async fn cancellation_watcher() {
 /// cancel_task() call, or if it's a child and the parent is being cancelled by a
 /// cancel_task() call, this cancellation token will be set to cancelled.
 pub fn cancellation_token() -> CancellationToken {
-    let res = CONTEXT.try_with(|ctx| ctx.cancellation_token.clone());
+    let res = TASK_CONTEXT.try_with(|ctx| ctx.cancellation_token.clone());
 
     if cfg!(any(test, feature = "test-util")) {
         // allow in tests to call from non-task-center tasks.
@@ -951,7 +1009,7 @@ pub fn cancellation_token() -> CancellationToken {
 
 /// Has the current task been requested to cancel?
 pub fn is_cancellation_requested() -> bool {
-    CONTEXT
+    TASK_CONTEXT
         .try_with(|ctx| ctx.cancellation_token.is_cancelled())
         .unwrap_or_else(|_| {
             if cfg!(any(test, feature = "test-util")) {
@@ -966,7 +1024,6 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
-    use restate_test_util::assert_eq;
     use restate_types::config::CommonOptionsBuilder;
     use tracing_test::traced_test;
 
@@ -986,7 +1043,6 @@ mod tests {
         tc.spawn(TaskKind::RoleRunner, "worker-role", None, async {
             info!("Hello async");
             tokio::time::sleep(Duration::from_secs(10)).await;
-            assert_eq!(TaskKind::RoleRunner, current_task_kind().unwrap());
             info!("Bye async");
             Ok(())
         })
