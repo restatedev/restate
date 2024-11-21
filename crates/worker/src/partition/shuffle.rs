@@ -460,7 +460,9 @@ mod tests {
 
     use restate_bifrost::{Bifrost, LogEntry};
     use restate_core::network::FailingConnector;
-    use restate_core::{TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+    use restate_core::{
+        TaskCenter, TaskCenterFutureExt, TaskKind, TestCoreEnv, TestCoreEnvBuilder,
+    };
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_storage_api::StorageError;
     use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
@@ -686,14 +688,9 @@ mod tests {
         let shuffle_env = create_shuffle_env(outbox_reader).await;
         let tc = shuffle_env.env.tc.clone();
 
-        tc.run_in_scope("test", None, async {
+        async {
             let partition_id = shuffle_env.shuffle.metadata.partition_id;
-            tc.spawn_child(
-                TaskKind::Shuffle,
-                "shuffle",
-                None,
-                shuffle_env.shuffle.run(),
-            )?;
+            TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
             let reader = shuffle_env.bifrost.create_reader(
                 LogId::from(partition_id),
                 KeyFilter::Any,
@@ -706,7 +703,8 @@ mod tests {
             assert_received_invoke_commands(messages, expected_messages);
 
             Ok::<(), anyhow::Error>(())
-        })
+        }
+        .with_task_center(&tc)
         .await
     }
 
@@ -732,14 +730,9 @@ mod tests {
         let shuffle_env = create_shuffle_env(outbox_reader).await;
         let tc = shuffle_env.env.tc.clone();
 
-        tc.run_in_scope("test", None, async {
+        async {
             let partition_id = shuffle_env.shuffle.metadata.partition_id;
-            tc.spawn_child(
-                TaskKind::Shuffle,
-                "shuffle",
-                None,
-                shuffle_env.shuffle.run(),
-            )?;
+            TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
             let reader = shuffle_env.bifrost.create_reader(
                 LogId::from(partition_id),
                 KeyFilter::Any,
@@ -752,7 +745,8 @@ mod tests {
             assert_received_invoke_commands(messages, expected_messages);
 
             Ok::<(), anyhow::Error>(())
-        })
+        }
+        .with_task_center(&tc)
         .await
     }
 
@@ -775,64 +769,63 @@ mod tests {
         let tc = shuffle_env.env.tc.clone();
         let total_restarts = Arc::new(AtomicUsize::new(0));
 
-        let shuffle_task_id = tc
-            .run_in_scope("test", None, async {
-                let partition_id = shuffle_env.shuffle.metadata.partition_id;
-                let reader = shuffle_env.bifrost.create_reader(
-                    LogId::from(partition_id),
-                    KeyFilter::Any,
-                    Lsn::INVALID,
-                    Lsn::MAX,
-                )?;
-                let total_restarts = Arc::clone(&total_restarts);
+        let shuffle_task_id = async {
+            let partition_id = shuffle_env.shuffle.metadata.partition_id;
+            let reader = shuffle_env.bifrost.create_reader(
+                LogId::from(partition_id),
+                KeyFilter::Any,
+                Lsn::INVALID,
+                Lsn::MAX,
+            )?;
+            let total_restarts = Arc::clone(&total_restarts);
 
-                let shuffle_task =
-                    tc.spawn_child(TaskKind::Shuffle, "shuffle", None, async move {
-                        let mut shuffle = shuffle_env.shuffle;
-                        let metadata = shuffle.metadata;
-                        let truncation_tx = shuffle.truncation_tx.clone();
-                        let mut processed_range = 0;
-                        let mut num_restarts = 0;
+            let shuffle_task = TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", async move {
+                let mut shuffle = shuffle_env.shuffle;
+                let metadata = shuffle.metadata;
+                let truncation_tx = shuffle.truncation_tx.clone();
+                let mut processed_range = 0;
+                let mut num_restarts = 0;
 
-                        // restart shuffle on failures and update failing outbox reader
-                        while shuffle.run().await.is_err() {
-                            num_restarts += 1;
-                            // update the failing outbox reader to make a bit more progress and delete some of the delivered records
-                            {
-                                let outbox_reader = Arc::get_mut(&mut outbox_reader)
-                                    .expect("only one reference should exist");
+                // restart shuffle on failures and update failing outbox reader
+                while shuffle.run().await.is_err() {
+                    num_restarts += 1;
+                    // update the failing outbox reader to make a bit more progress and delete some of the delivered records
+                    {
+                        let outbox_reader = Arc::get_mut(&mut outbox_reader)
+                            .expect("only one reference should exist");
 
-                                // leave the first entry to generate some holes
-                                for idx in (processed_range + 1)..outbox_reader.fail_index {
-                                    outbox_reader.records[usize::try_from(idx)
-                                        .expect("index should fit in usize")] = None;
-                                }
-
-                                processed_range = outbox_reader.fail_index;
-                                outbox_reader.fail_index += 10;
-                            }
-
-                            shuffle = Shuffle::new(
-                                metadata,
-                                Arc::clone(&outbox_reader),
-                                truncation_tx.clone(),
-                                1,
-                                shuffle_env.bifrost.clone(),
-                            );
+                        // leave the first entry to generate some holes
+                        for idx in (processed_range + 1)..outbox_reader.fail_index {
+                            outbox_reader.records
+                                [usize::try_from(idx).expect("index should fit in usize")] = None;
                         }
 
-                        total_restarts.store(num_restarts, Ordering::Relaxed);
+                        processed_range = outbox_reader.fail_index;
+                        outbox_reader.fail_index += 10;
+                    }
 
-                        Ok(())
-                    })?;
+                    shuffle = Shuffle::new(
+                        metadata,
+                        Arc::clone(&outbox_reader),
+                        truncation_tx.clone(),
+                        1,
+                        shuffle_env.bifrost.clone(),
+                    );
+                }
 
-                let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+                total_restarts.store(num_restarts, Ordering::Relaxed);
 
-                assert_received_invoke_commands(messages, expected_messages);
+                Ok(())
+            })?;
 
-                Ok::<_, anyhow::Error>(shuffle_task)
-            })
-            .await?;
+            let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+
+            assert_received_invoke_commands(messages, expected_messages);
+
+            Ok::<_, anyhow::Error>(shuffle_task)
+        }
+        .with_task_center(&tc)
+        .await?;
 
         let shuffle_task = tc.cancel_task(shuffle_task_id).expect("should exist");
         shuffle_task.await?;

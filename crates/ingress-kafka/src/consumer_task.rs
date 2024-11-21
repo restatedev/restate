@@ -287,7 +287,7 @@ impl ConsumerTask {
                             consumer_group_id.clone()
                         );
 
-                        if let Ok(task_id) = self.task_center.spawn_child(TaskKind::Ingress, "partition-queue", None, task) {
+                        if let Ok(task_id) = TaskCenter::spawn_child(TaskKind::Ingress, "partition-queue", task) {
                             e.insert(task_id);
                         } else {
                             break Ok(());

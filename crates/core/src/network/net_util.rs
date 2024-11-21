@@ -14,7 +14,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::{cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskKind};
 use http::Uri;
 use hyper::body::{Body, Incoming};
 use hyper::rt::{Read, Write};
@@ -28,6 +27,8 @@ use tracing::{debug, info, instrument, Span};
 use restate_types::config::{MetadataStoreClientOptions, NetworkingOptions};
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
+
+use crate::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 
 pub fn create_tonic_channel_from_advertised_address<T: CommonClientConnectionOptions>(
     address: AdvertisedAddress,
@@ -161,8 +162,6 @@ where
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let mut shutdown = std::pin::pin!(cancellation_watcher());
-    let tc = task_center();
-    let executor = TaskCenterExecutor::new(tc.clone(), server_name);
     loop {
         tokio::select! {
             biased;
@@ -174,10 +173,10 @@ where
                 let io = TokioIo::new(stream);
                 debug!(?remote_addr, "Accepting incoming connection");
 
-                tc.spawn_child(TaskKind::RpcConnection, server_name, None, handle_connection(
+                TaskCenter::spawn_child(TaskKind::RpcConnection, server_name, handle_connection(
+                    server_name,
                     io,
                     service.clone(),
-                    executor.clone(),
                     remote_addr,
                 ))?;
             }
@@ -188,9 +187,9 @@ where
 }
 
 async fn handle_connection<S, B, I, A>(
+    server_name: &'static str,
     io: I,
     service: S,
-    executor: TaskCenterExecutor,
     remote_addr: A,
 ) -> anyhow::Result<()>
 where
@@ -206,6 +205,8 @@ where
     I: Read + Write + Unpin + 'static,
     A: Send + Debug,
 {
+    // todo: asoli
+    let executor = TaskCenterExecutor::new(TaskCenter::current(), server_name);
     let builder = hyper_util::server::conn::auto::Builder::new(executor);
     let connection = builder.serve_connection(io, service);
 
@@ -246,13 +247,13 @@ where
 {
     fn execute(&self, fut: F) {
         // ignore shutdown error
-        let _ =
-            self.task_center
-                .spawn_child(TaskKind::RpcConnection, self.name, None, async move {
-                    // ignore the future output
-                    let _ = fut.await;
-                    Ok(())
-                });
+        self.task_center.run_in_scope_sync(|| {
+            let _ = TaskCenter::spawn_child(TaskKind::RpcConnection, self.name, async move {
+                // ignore the future output
+                let _ = fut.await;
+                Ok(())
+            });
+        });
     }
 }
 

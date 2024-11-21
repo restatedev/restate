@@ -95,7 +95,7 @@ impl LogStoreWriter {
     }
 
     /// Must be called from task_center context
-    pub fn start(mut self, tc: &TaskCenter) -> Result<RocksDbLogWriterHandle, ShutdownError> {
+    pub fn start(mut self) -> Result<RocksDbLogWriterHandle, ShutdownError> {
         // big enough to allow a second full batch to queue up while the existing one is being processed
         let batch_size = std::cmp::max(
             1,
@@ -107,10 +107,9 @@ impl LogStoreWriter {
         // the backlog while we process this one.
         let (sender, receiver) = mpsc::channel(batch_size * 2);
 
-        tc.spawn_child(
+        TaskCenter::spawn_child(
             TaskKind::SystemService,
             "log-server-rocksdb-writer",
-            None,
             async move {
                 debug!("Start running LogStoreWriter");
                 let mut opts = self.updateable_options.clone();

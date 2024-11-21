@@ -25,6 +25,7 @@ use restate_core::network::{
 use restate_core::partitions::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
+    TaskCenter,
 };
 use restate_core::{task_center, TaskKind};
 #[cfg(feature = "replicated-loglet")]
@@ -197,7 +198,6 @@ impl Node {
                 LogServerService::create(
                     health.log_server_status(),
                     updateable_config.clone(),
-                    tc.clone(),
                     metadata.clone(),
                     metadata_store_client.clone(),
                     record_cache,
@@ -329,11 +329,11 @@ impl Node {
 
         let metadata_writer = self.metadata_manager.writer();
         let metadata = self.metadata_manager.metadata().clone();
-        let is_set = tc.try_set_global_metadata(metadata.clone());
+        let is_set = TaskCenter::try_set_global_metadata(metadata.clone());
         debug_assert!(is_set, "Global metadata was already set");
 
         // Start metadata manager
-        spawn_metadata_manager(&tc, self.metadata_manager)?;
+        spawn_metadata_manager(self.metadata_manager)?;
 
         // Start partition routing information refresher
         spawn_partition_routing_refresher(&tc, self.partition_routing_refresher)?;
@@ -441,7 +441,7 @@ impl Node {
         }
 
         if let Some(ingress_role) = self.ingress_role {
-            tc.spawn_child(TaskKind::Ingress, "ingress-http", None, ingress_role.run())?;
+            TaskCenter::spawn_child(TaskKind::Ingress, "ingress-http", ingress_role.run())?;
         }
 
         tc.spawn(TaskKind::RpcServer, "node-rpc-server", None, {
