@@ -100,8 +100,7 @@ pub struct PartitionProcessorManager {
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
-    snapshot_export_tasks:
-        FuturesUnordered<TaskHandle<Result<PartitionSnapshotMetadata, SnapshotError>>>,
+    snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
 }
 
 struct PendingSnapshotTask {
@@ -278,7 +277,7 @@ impl PartitionProcessorManager {
                     if let Ok(result) = result {
                         self.on_create_snapshot_task_completed(result);
                     } else {
-                        debug!("Create snapshot task failed: {}", result.unwrap_err()); // shutting down
+                        debug!("Create snapshot task failed: {}", result.unwrap_err());
                     }
                 }
                 _ = &mut shutdown => {
