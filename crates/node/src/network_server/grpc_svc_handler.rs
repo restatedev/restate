@@ -21,7 +21,7 @@ use restate_core::network::protobuf::node_svc::{
 };
 use restate_core::network::ConnectionManager;
 use restate_core::network::{ProtocolError, TransportConnect};
-use restate_core::{metadata, MetadataKind, TargetVersion, TaskCenter};
+use restate_core::{metadata, MetadataKind, TargetVersion, TaskCenter, TaskCenterFutureExt};
 use restate_types::health::Health;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::node::Message;
@@ -61,7 +61,7 @@ impl<T: TransportConnect> NodeSvc for NodeSvcHandler<T> {
         let metadata_server_status = self.health.current_metadata_server_status();
         let log_server_status = self.health.current_log_server_status();
         let age_s = self.task_center.age().as_secs();
-        self.task_center.run_in_scope_sync("get_ident", None, || {
+        self.task_center.run_in_scope_sync(|| {
             let metadata = metadata();
             Ok(Response::new(IdentResponse {
                 status: node_status.into(),
@@ -97,13 +97,18 @@ impl<T: TransportConnect> NodeSvc for NodeSvcHandler<T> {
     ) -> Result<Response<Self::CreateConnectionStream>, Status> {
         let incoming = request.into_inner();
         let transformed = incoming.map(|x| x.map_err(ProtocolError::from));
+        // let output_stream = self
+        //     .task_center
+        //     .run_in_scope(
+        //         "accept-connection",
+        //         None,
+        //         self.connections.accept_incoming_connection(transformed),
+        //     )
+        //     .await?;
         let output_stream = self
-            .task_center
-            .run_in_scope(
-                "accept-connection",
-                None,
-                self.connections.accept_incoming_connection(transformed),
-            )
+            .connections
+            .accept_incoming_connection(transformed)
+            .in_current_task_center()
             .await?;
 
         // For uniformity with outbound connections, we map all responses to Ok, we never rely on
