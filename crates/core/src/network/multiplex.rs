@@ -1,4 +1,4 @@
-// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -7,8 +7,6 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-//
-//
 
 //! Mostly copied from axum example: https://github.com/tokio-rs/axum/blob/791d5038a927add3f8ff1d5c1010cd0b24fdda77/examples/rest-grpc-multiplex/src/multiplex_service.rs
 //! License MIT
