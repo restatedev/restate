@@ -180,7 +180,7 @@ impl SnapshotRepository {
                 &key,
                 &self.object_store,
             )
-                .await?;
+            .await?;
             debug!(
                 etag = put_result.e_tag.unwrap_or_default(),
                 ?key,
@@ -219,7 +219,10 @@ impl SnapshotRepository {
             partition_id = partition_id,
         ));
         let latest_json_payload = PutPayload::from(serde_json::to_string_pretty(&latest)?);
-        let put_result = self.object_store.put(&latest_path, latest_json_payload).await?;
+        let put_result = self
+            .object_store
+            .put(&latest_path, latest_json_payload)
+            .await?;
         debug!(
             etag = put_result.e_tag.unwrap_or_default(),
             key = ?latest_path,
