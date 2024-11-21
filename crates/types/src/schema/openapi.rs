@@ -154,10 +154,6 @@ impl ServiceOpenAPI {
             components: Default::default(),
         }
     }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.paths.paths.is_empty()
-    }
 }
 
 fn request_schema_name(operation_id: &str) -> String {

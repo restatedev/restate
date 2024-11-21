@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::time::Duration;
-
 use super::invocation_target::InvocationTargetMetadata;
 use super::Schema;
 use crate::identifiers::{DeploymentId, ServiceRevision};
@@ -18,9 +15,13 @@ use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use crate::schema::openapi::ServiceOpenAPI;
+use arc_swap::ArcSwapOption;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,12 +224,14 @@ pub struct ServiceSchemas {
     pub workflow_completion_retention: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
     pub abort_timeout: Option<Duration>,
-    #[serde(default = "ServiceOpenAPI::empty")]
-    pub service_openapi: ServiceOpenAPI,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
+
+    /// This is a cache for the computed value of ServiceOpenAPI
+    #[serde(skip)]
+    pub service_openapi_cache: Arc<ArcSwapOption<ServiceOpenAPI>>,
 }
 
 impl ServiceSchemas {
@@ -263,11 +266,16 @@ impl ServiceSchemas {
     }
 
     pub fn openapi_spec(&self, name: &str) -> serde_json::Value {
-        let service_openapi = if self.service_openapi.is_empty() {
-            // We might be loading from an old ServiceSchemas, so try to re-create ServiceOpenapi
-            ServiceOpenAPI::infer(name, self.ty, &self.handlers)
-        } else {
-            self.service_openapi.clone()
+        let service_openapi = {
+            let cached_openapi = self.service_openapi_cache.load();
+            if let Some(result) = cached_openapi.as_ref() {
+                Arc::clone(result)
+            } else {
+                // Not present, compute it!
+                let computed = Arc::new(ServiceOpenAPI::infer(name, self.ty, &self.handlers));
+                self.service_openapi_cache.store(Some(computed.clone()));
+                computed
+            }
         };
 
         service_openapi.to_openapi_contract(name, self.documentation.as_deref(), self.revision)
