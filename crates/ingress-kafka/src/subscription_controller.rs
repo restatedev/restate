@@ -191,7 +191,7 @@ impl Service {
 
 mod task_orchestrator {
     use crate::consumer_task;
-    use restate_core::task_center;
+    use restate_core::TaskCenterFutureExt;
     use restate_timer_queue::TimerQueue;
     use restate_types::identifiers::SubscriptionId;
     use restate_types::retries::{RetryIter, RetryPolicy};
@@ -344,12 +344,8 @@ mod task_orchestrator {
             let task_id = self
                 .tasks
                 .spawn({
-                    let tc = task_center();
                     let consumer_task_clone = consumer_task_clone.clone();
-                    async move {
-                        tc.run_in_scope("kafka-consumer-task", None, consumer_task_clone.run(rx))
-                            .await
-                    }
+                    async move { consumer_task_clone.run(rx).in_current_task_center().await }
                 })
                 .id();
 

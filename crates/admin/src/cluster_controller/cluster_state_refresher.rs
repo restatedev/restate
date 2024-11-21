@@ -19,7 +19,7 @@ use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{
     MessageRouterBuilder, NetworkError, Networking, Outgoing, TransportConnect,
 };
-use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle};
 use restate_types::cluster::cluster_state::{
     AliveNode, ClusterState, DeadNode, NodeState, SuspectNode,
 };
@@ -28,7 +28,6 @@ use restate_types::time::MillisSinceEpoch;
 use restate_types::Version;
 
 pub struct ClusterStateRefresher<T> {
-    task_center: TaskCenter,
     metadata: Metadata,
     network_sender: Networking<T>,
     get_state_router: RpcRouter<GetNodeState>,
@@ -39,7 +38,6 @@ pub struct ClusterStateRefresher<T> {
 
 impl<T: TransportConnect> ClusterStateRefresher<T> {
     pub fn new(
-        task_center: TaskCenter,
         metadata: Metadata,
         network_sender: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
@@ -57,7 +55,6 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             watch::channel(Arc::from(initial_state));
 
         Self {
-            task_center,
             metadata,
             network_sender,
             get_state_router,
@@ -97,7 +94,6 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
         }
 
         self.in_flight_refresh = Self::start_refresh_task(
-            self.task_center.clone(),
             self.get_state_router.clone(),
             self.network_sender.clone(),
             Arc::clone(&self.cluster_state_update_tx),
@@ -108,13 +104,11 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
     }
 
     fn start_refresh_task(
-        tc: TaskCenter,
         get_state_router: RpcRouter<GetNodeState>,
         network_sender: Networking<T>,
         cluster_state_tx: Arc<watch::Sender<Arc<ClusterState>>>,
         metadata: Metadata,
     ) -> Result<Option<TaskHandle<anyhow::Result<()>>>, ShutdownError> {
-        let task_center = tc.clone();
         let refresh = async move {
             let last_state = Arc::clone(&cluster_state_tx.borrow());
             // make sure we have a partition table that equals or newer than last refresh
@@ -137,13 +131,12 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             for (_, node_config) in nodes_config.iter() {
                 let node_id = node_config.current_generation;
                 let rpc_router = get_state_router.clone();
-                let tc = tc.clone();
                 let network_sender = network_sender.clone();
                 join_set
                     .build_task()
                     .name("get-nodes-state")
-                    .spawn(async move {
-                        tc.run_in_scope("get-node-state", None, async move {
+                    .spawn(
+                        async move {
                             match network_sender.node_connection(node_id).await {
                                 Ok(connection) => {
                                     let outgoing = Outgoing::new(node_id, GetNodeState::default())
@@ -161,9 +154,9 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                                 }
                                 Err(network_error) => (node_id, Err(network_error)),
                             }
-                        })
-                        .await
-                    })
+                        }
+                        .in_current_task_center(),
+                    )
                     .expect("to spawn task");
             }
             while let Some(Ok((node_id, result))) = join_set.join_next().await {
@@ -233,7 +226,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             Ok(())
         };
 
-        let handle = task_center.spawn_unmanaged(
+        let handle = TaskCenter::current().spawn_unmanaged(
             restate_core::TaskKind::Disposable,
             "cluster-state-refresh",
             None,

@@ -35,7 +35,6 @@ use crate::providers::replicated_loglet::replication::NodeSetChecker;
 /// The seal operation is idempotent. It's safe to seal a loglet if it's already partially or fully
 /// sealed. Note that the seal task ignores the "seal" state in the input known_global_tail watch.
 pub struct SealTask {
-    task_center: TaskCenter,
     my_params: ReplicatedLogletParams,
     seal_router: RpcRouter<Seal>,
     known_global_tail: TailOffsetWatch,
@@ -43,13 +42,11 @@ pub struct SealTask {
 
 impl SealTask {
     pub fn new(
-        task_center: TaskCenter,
         my_params: ReplicatedLogletParams,
         seal_router: RpcRouter<Seal>,
         known_global_tail: TailOffsetWatch,
     ) -> Self {
         Self {
-            task_center,
             my_params,
             seal_router,
             known_global_tail,
@@ -89,20 +86,19 @@ impl SealTask {
                 networking: networking.clone(),
                 known_global_tail: self.known_global_tail.clone(),
             };
-            self.task_center
-                .spawn_child(TaskKind::Disposable, "send-seal-request", None, {
-                    let retry_policy = retry_policy.clone();
-                    let tx = tx.clone();
-                    async move {
-                        if let Err(e) = task.run(tx, retry_policy).await {
-                            // We only want to trace-log if an individual seal request fails.
-                            // If we leave the task to fail, task-center will log a scary error-level log
-                            // which can be misleading to users.
-                            trace!("Seal: {e}");
-                        }
-                        Ok(())
+            TaskCenter::spawn_child(TaskKind::Disposable, "send-seal-request", {
+                let retry_policy = retry_policy.clone();
+                let tx = tx.clone();
+                async move {
+                    if let Err(e) = task.run(tx, retry_policy).await {
+                        // We only want to trace-log if an individual seal request fails.
+                        // If we leave the task to fail, task-center will log a scary error-level log
+                        // which can be misleading to users.
+                        trace!("Seal: {e}");
                     }
-                })?;
+                    Ok(())
+                }
+            })?;
         }
         drop(tx);
 

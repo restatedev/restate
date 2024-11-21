@@ -58,7 +58,6 @@ pub enum Error {
 }
 
 pub struct Service<T> {
-    task_center: TaskCenter,
     metadata: Metadata,
     networking: Networking<T>,
     bifrost: Bifrost,
@@ -84,7 +83,6 @@ where
         mut configuration: Live<Configuration>,
         health_status: HealthStatus<AdminStatus>,
         bifrost: Bifrost,
-        task_center: TaskCenter,
         metadata: Metadata,
         networking: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
@@ -94,12 +92,8 @@ where
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(2);
 
-        let cluster_state_refresher = ClusterStateRefresher::new(
-            task_center.clone(),
-            metadata.clone(),
-            networking.clone(),
-            router_builder,
-        );
+        let cluster_state_refresher =
+            ClusterStateRefresher::new(metadata.clone(), networking.clone(), router_builder);
 
         let processor_manager_client =
             PartitionProcessorManagerClient::new(networking.clone(), router_builder);
@@ -125,7 +119,6 @@ where
         Service {
             configuration,
             health_status,
-            task_center,
             metadata,
             networking,
             bifrost,
@@ -230,10 +223,9 @@ impl<T: TransportConnect> Service<T> {
         let mut config_watcher = Configuration::watcher();
         let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
 
-        self.task_center.spawn_child(
+        TaskCenter::spawn_child(
             TaskKind::SystemService,
             "cluster-controller-metadata-sync",
-            None,
             sync_cluster_controller_metadata(self.metadata.clone()),
         )?;
 
@@ -345,10 +337,9 @@ impl<T: TransportConnect> Service<T> {
                 );
 
                 let mut node_rpc_client = self.processor_manager_client.clone();
-                let _ = self.task_center.spawn_child(
+                let _ = TaskCenter::spawn_child(
                     TaskKind::Disposable,
                     "create-snapshot-response",
-                    Some(partition_id),
                     async move {
                         let _ = response_tx.send(
                             node_rpc_client
@@ -520,7 +511,6 @@ mod tests {
             Live::from_value(Configuration::default()),
             HealthStatus::default(),
             bifrost.clone(),
-            builder.tc.clone(),
             builder.metadata.clone(),
             builder.networking.clone(),
             &mut builder.router_builder,
@@ -840,7 +830,6 @@ mod tests {
             Live::from_value(config),
             HealthStatus::default(),
             bifrost.clone(),
-            builder.tc.clone(),
             builder.metadata.clone(),
             builder.networking.clone(),
             &mut builder.router_builder,
