@@ -99,9 +99,14 @@ pub struct PartitionProcessorManager {
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
-    pending_snapshots: HashMap<PartitionId, oneshot::Sender<SnapshotResult>>,
+    pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
     snapshot_export_tasks:
         FuturesUnordered<TaskHandle<Result<PartitionSnapshotMetadata, SnapshotError>>>,
+}
+
+struct PendingSnapshotTask {
+    snapshot_id: SnapshotId,
+    sender: Option<oneshot::Sender<SnapshotResult>>,
 }
 
 type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
@@ -718,8 +723,15 @@ impl PartitionProcessorManager {
             Err(snapshot_error) => (snapshot_error.partition_id(), Err(snapshot_error)),
         };
 
-        if let Some(sender) = self.pending_snapshots.remove(&partition_id) {
-            let _ = sender.send(response);
+        if let Some(pending_task) = self.pending_snapshots.remove(&partition_id) {
+            if let Some(sender) = pending_task.sender {
+                let _ = sender.send(response);
+            }
+        } else {
+            info!(
+                result = ?response,
+                "Snapshot task result received without a pending task!",
+            )
         }
     }
 
@@ -771,45 +783,54 @@ impl PartitionProcessorManager {
         partition_id: PartitionId,
         sender: Option<oneshot::Sender<SnapshotResult>>,
     ) {
-        if let Entry::Vacant(entry) = self.pending_snapshots.entry(partition_id) {
-            let config = self.updateable_config.live_load();
+        match self.pending_snapshots.entry(partition_id) {
+            Entry::Vacant(entry) => {
+                let config = self.updateable_config.live_load();
 
-            let snapshot_base_path = config.worker.snapshots.snapshots_dir(partition_id);
-            let snapshot_id = SnapshotId::new();
+                let snapshot_base_path = config.worker.snapshots.snapshots_dir(partition_id);
+                let snapshot_id = SnapshotId::new();
 
-            let create_snapshot_task = SnapshotPartitionTask {
-                snapshot_id,
-                partition_id,
-                snapshot_base_path,
-                partition_store_manager: self.partition_store_manager.clone(),
-                cluster_name: config.common.cluster_name().into(),
-                node_name: config.common.node_name().into(),
-            };
+                let create_snapshot_task = SnapshotPartitionTask {
+                    snapshot_id,
+                    partition_id,
+                    snapshot_base_path,
+                    partition_store_manager: self.partition_store_manager.clone(),
+                    cluster_name: config.common.cluster_name().into(),
+                    node_name: config.common.node_name().into(),
+                };
 
-            let spawn_task_result = restate_core::task_center().spawn_unmanaged(
-                TaskKind::PartitionSnapshotProducer,
-                "create-snapshot",
-                Some(partition_id),
-                create_snapshot_task.run(),
-            );
+                let spawn_task_result = restate_core::task_center().spawn_unmanaged(
+                    TaskKind::PartitionSnapshotProducer,
+                    "create-snapshot",
+                    Some(partition_id),
+                    create_snapshot_task.run(),
+                );
 
-            match spawn_task_result {
-                Ok(handle) => {
-                    self.snapshot_export_tasks.push(handle);
-                    if let Some(sender) = sender {
-                        entry.insert(sender);
+                match spawn_task_result {
+                    Ok(handle) => {
+                        self.snapshot_export_tasks.push(handle);
+                        entry.insert(PendingSnapshotTask {
+                            snapshot_id,
+                            sender,
+                        });
                     }
-                }
-                Err(_shutdown) => {
-                    if let Some(sender) = sender {
-                        let _ = sender.send(Err(SnapshotError::InvalidState(partition_id)));
+                    Err(_shutdown) => {
+                        if let Some(sender) = sender {
+                            let _ = sender.send(Err(SnapshotError::InvalidState(partition_id)));
+                        }
                     }
                 }
             }
-        } else if let Some(sender) = sender {
-            let _ = sender.send(Err(SnapshotError::SnapshotInProgress(partition_id)));
-        } else {
-            warn!(%partition_id, "Snapshot task not started: another snapshot is already in progress")
+            Entry::Occupied(pending) => {
+                info!(
+                    %partition_id,
+                    snapshot_id = %pending.get().snapshot_id,
+                    "A snapshot export is already in progress, refusing to start a new export"
+                );
+                if let Some(sender) = sender {
+                    let _ = sender.send(Err(SnapshotError::SnapshotInProgress(partition_id)));
+                }
+            }
         }
     }
 
