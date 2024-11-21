@@ -22,6 +22,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
 
     let snapshot = partition_store.create_snapshot(path_buf).await.unwrap();
 
+    let key_range = partition_store.partition_key_range().clone();
     let snapshot_meta = PartitionSnapshotMetadata {
         version: SnapshotFormatVersion::V1,
         cluster_name: "cluster_name".to_string(),
@@ -29,7 +30,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
         node_name: "node".to_string(),
         created_at: humantime::Timestamp::from(SystemTime::from(MillisSinceEpoch::new(0))),
         snapshot_id: SnapshotId::from_parts(0, 0),
-        key_range: partition_store.partition_key_range().clone(),
+        key_range: key_range.clone(),
         min_applied_lsn: snapshot.min_applied_lsn,
         db_comparator_name: snapshot.db_comparator_name.clone(),
         files: snapshot.files.clone(),
@@ -48,12 +49,13 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
         min_applied_lsn: snapshot_meta.min_applied_lsn,
         db_comparator_name: snapshot_meta.db_comparator_name.clone(),
         files: snapshot_meta.files.clone(),
+        key_range,
     };
 
     let worker_options = Live::from_value(WorkerOptions::default());
 
     let mut new_partition_store = manager
-        .restore_partition_store_snapshot(
+        .open_partition_store_from_snapshot(
             partition_id,
             RangeInclusive::new(0, PartitionKey::MAX - 1),
             snapshot,

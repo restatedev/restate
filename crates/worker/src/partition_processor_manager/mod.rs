@@ -11,14 +11,17 @@
 mod message_handler;
 mod persisted_lsn_watchdog;
 mod processor_state;
+mod snapshot_task;
 mod spawn_processor_task;
 
-use futures::stream::StreamExt;
-use metrics::gauge;
-use std::collections::BTreeMap;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::stream::{FuturesUnordered, StreamExt};
+use metrics::gauge;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
@@ -38,22 +41,27 @@ use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnW
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
+use crate::partition_processor_manager::snapshot_task::SnapshotPartitionTask;
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 use restate_bifrost::Bifrost;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
-use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
-use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskKind};
+use restate_core::worker_api::{
+    ProcessorsManagerCommand, ProcessorsManagerHandle, SnapshotCreated, SnapshotError,
+    SnapshotResult,
+};
+use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskHandle, TaskKind};
 use restate_core::{RuntimeRootTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
+use restate_partition_store::snapshots::PartitionSnapshotMetadata;
 use restate_partition_store::PartitionStoreManager;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::Live;
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -85,11 +93,22 @@ pub struct PartitionProcessorManager {
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
+    archived_lsns: HashMap<PartitionId, Lsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
     pending_control_processors: Option<ControlProcessors>,
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
+
+    pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
+    snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
 }
+
+struct PendingSnapshotTask {
+    snapshot_id: SnapshotId,
+    sender: Option<oneshot::Sender<SnapshotResult>>,
+}
+
+type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -175,9 +194,12 @@ impl PartitionProcessorManager {
             rx,
             tx,
             persisted_lsns_rx: None,
+            archived_lsns: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
             pending_control_processors: None,
             asynchronous_operations: JoinSet::default(),
+            snapshot_export_tasks: FuturesUnordered::default(),
+            pending_snapshots: HashMap::default(),
         }
     }
 
@@ -251,8 +273,18 @@ impl PartitionProcessorManager {
                 Some(partition_processor_rpc) = self.incoming_partition_processor_rpc.next() => {
                     self.on_partition_processor_rpc(partition_processor_rpc);
                 }
+                Some(result) = self.snapshot_export_tasks.next() => {
+                    if let Ok(result) = result {
+                        self.on_create_snapshot_task_completed(result);
+                    } else {
+                        debug!("Create snapshot task failed: {}", result.unwrap_err());
+                    }
+                }
                 _ = &mut shutdown => {
                     self.health_status.update(WorkerStatus::Unknown);
+                    for task in self.snapshot_export_tasks.iter() {
+                        task.cancel();
+                    }
                     return Ok(());
                 }
             }
@@ -293,7 +325,8 @@ impl PartitionProcessorManager {
         }
     }
 
-    #[instrument(level = "debug", skip_all, fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner)))]
+    #[instrument(level = "debug", skip_all, fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner)
+    ))]
     fn on_asynchronous_event(&mut self, event: AsynchronousEvent) {
         let AsynchronousEvent {
             partition_id,
@@ -529,6 +562,8 @@ impl PartitionProcessorManager {
                         .as_ref()
                         .and_then(|lsns| lsns.get(partition_id).cloned());
 
+                    status.last_archived_log_lsn = self.archived_lsns.get(partition_id).cloned();
+
                     Some((*partition_id, status))
                 } else {
                     None
@@ -538,19 +573,11 @@ impl PartitionProcessorManager {
     }
 
     fn on_command(&mut self, command: ProcessorsManagerCommand) {
-        use ProcessorsManagerCommand::*;
         match command {
-            CreateSnapshot(partition_id, sender) => {
-                if let Some(processor_state) = self.processor_states.get(&partition_id) {
-                    processor_state.create_snapshot(sender);
-                } else {
-                    let _ = sender.send(Err(anyhow::anyhow!(
-                        "Partition processor '{}' not found",
-                        partition_id
-                    )));
-                }
+            ProcessorsManagerCommand::CreateSnapshot(partition_id, sender) => {
+                self.on_create_snapshot(partition_id, sender);
             }
-            GetState(sender) => {
+            ProcessorsManagerCommand::GetState(sender) => {
                 let _ = sender.send(self.get_state());
             }
         }
@@ -590,6 +617,9 @@ impl PartitionProcessorManager {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
                     processor_state.stop();
                 }
+                if self.pending_snapshots.contains_key(&partition_id) {
+                    info!(%partition_id, "Partition processor stop requested with snapshot task result outstanding.");
+                }
             }
             ProcessorCommand::Follower | ProcessorCommand::Leader => {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
@@ -617,9 +647,8 @@ impl PartitionProcessorManager {
                     let starting_task = self
                         .start_partition_processor_task(partition_id, partition_key_range.clone());
 
-                    // note: We starting each task on it's own thread due to an issue that shows up on MacOS
-                    // where spawning many tasks of this kind causes a lock contention in tokio which leads to
-                    // starvation of the event loop.
+                    // We spawn the partition processors start tasks on the blocking thread pool due to a macOS issue
+                    // where doing otherwise appears to starve the Tokio event loop, causing very slow startup.
                     let handle = self.task_center.spawn_blocking_unmanaged(
                         "starting-partition-processor",
                         Some(partition_id),
@@ -655,6 +684,56 @@ impl PartitionProcessorManager {
         }
     }
 
+    fn on_create_snapshot(
+        &mut self,
+        partition_id: PartitionId,
+        sender: oneshot::Sender<SnapshotResult>,
+    ) {
+        let processor_state = match self.processor_states.get(&partition_id) {
+            Some(state) => state,
+            None => {
+                let _ = sender.send(Err(SnapshotError::PartitionNotFound(partition_id)));
+                return;
+            }
+        };
+
+        if !processor_state.should_publish_snapshots() {
+            let _ = sender.send(Err(SnapshotError::InvalidState(partition_id)));
+            return;
+        }
+
+        self.spawn_create_snapshot_task(partition_id, Some(sender));
+    }
+
+    fn on_create_snapshot_task_completed(&mut self, result: SnapshotResultInternal) {
+        let (partition_id, response) = match result {
+            Ok(metadata) => {
+                self.archived_lsns
+                    .insert(metadata.partition_id, metadata.min_applied_lsn);
+
+                (
+                    metadata.partition_id,
+                    Ok(SnapshotCreated {
+                        snapshot_id: metadata.snapshot_id,
+                        partition_id: metadata.partition_id,
+                    }),
+                )
+            }
+            Err(snapshot_error) => (snapshot_error.partition_id(), Err(snapshot_error)),
+        };
+
+        if let Some(pending_task) = self.pending_snapshots.remove(&partition_id) {
+            if let Some(sender) = pending_task.sender {
+                let _ = sender.send(response);
+            }
+        } else {
+            info!(
+                result = ?response,
+                "Snapshot task result received without a pending task!",
+            )
+        }
+    }
+
     fn trigger_periodic_partition_snapshots(&mut self) {
         let Some(records_per_snapshot) = self
             .updateable_config
@@ -666,37 +745,89 @@ impl PartitionProcessorManager {
             return;
         };
 
-        for (partition_id, state) in self.processor_states.iter() {
-            let status = state.partition_processor_status();
-            match status {
-                Some(status)
-                    if status.effective_mode == RunMode::Leader
-                        && status.replay_status == ReplayStatus::Active
-                        && status.last_applied_log_lsn.unwrap_or(Lsn::INVALID)
-                            >= status
-                                .last_archived_log_lsn
-                                .unwrap_or(Lsn::OLDEST)
-                                .add(Lsn::from(records_per_snapshot.get())) =>
-                {
-                    debug!(
-                        %partition_id,
-                        last_archived_lsn = %status.last_archived_log_lsn.unwrap_or(SequenceNumber::OLDEST),
-                        last_applied_lsn = %status.last_applied_log_lsn.unwrap_or(SequenceNumber::INVALID),
-                        "Creating partition snapshot",
-                    );
-                    let (tx, _) = oneshot::channel();
+        let snapshot_partitions: Vec<_> = self
+            .processor_states
+            .iter()
+            .filter_map(|(partition_id, state)| {
+                state
+                    .partition_processor_status()
+                    .map(|status| (*partition_id, status))
+            })
+            .filter(|(_, status)| {
+                status.effective_mode == RunMode::Leader
+                    && status.replay_status == ReplayStatus::Active
+                    && status.last_applied_log_lsn.unwrap_or(Lsn::INVALID)
+                        >= status
+                            .last_archived_log_lsn
+                            .unwrap_or(Lsn::OLDEST)
+                            .add(Lsn::from(records_per_snapshot.get()))
+            })
+            .collect();
 
-                    // ignore errors and don't request further snapshots if internal queue is full; we will try again later
-                    if self
-                        .tx
-                        .try_send(ProcessorsManagerCommand::CreateSnapshot(*partition_id, tx))
-                        .is_err()
-                    {
-                        break;
+        for (partition_id, status) in snapshot_partitions {
+            debug!(
+                %partition_id,
+                last_archived_lsn = %status.last_archived_log_lsn.unwrap_or(SequenceNumber::OLDEST),
+                last_applied_lsn = %status.last_applied_log_lsn.unwrap_or(SequenceNumber::INVALID),
+                "Requesting partition snapshot",
+            );
+            self.spawn_create_snapshot_task(partition_id, None);
+        }
+    }
+
+    /// Spawn a task to create a snapshot of the given partition. Optionally, a sender will be
+    /// notified of the result on completion.
+    fn spawn_create_snapshot_task(
+        &mut self,
+        partition_id: PartitionId,
+        sender: Option<oneshot::Sender<SnapshotResult>>,
+    ) {
+        match self.pending_snapshots.entry(partition_id) {
+            Entry::Vacant(entry) => {
+                let config = self.updateable_config.live_load();
+
+                let snapshot_base_path = config.worker.snapshots.snapshots_dir(partition_id);
+                let snapshot_id = SnapshotId::new();
+
+                let create_snapshot_task = SnapshotPartitionTask {
+                    snapshot_id,
+                    partition_id,
+                    snapshot_base_path,
+                    partition_store_manager: self.partition_store_manager.clone(),
+                    cluster_name: config.common.cluster_name().into(),
+                    node_name: config.common.node_name().into(),
+                };
+
+                let spawn_task_result = restate_core::task_center().spawn_unmanaged(
+                    TaskKind::PartitionSnapshotProducer,
+                    "create-snapshot",
+                    Some(partition_id),
+                    create_snapshot_task.run(),
+                );
+
+                match spawn_task_result {
+                    Ok(handle) => {
+                        self.snapshot_export_tasks.push(handle);
+                        entry.insert(PendingSnapshotTask {
+                            snapshot_id,
+                            sender,
+                        });
+                    }
+                    Err(_shutdown) => {
+                        if let Some(sender) = sender {
+                            let _ = sender.send(Err(SnapshotError::InvalidState(partition_id)));
+                        }
                     }
                 }
-                _ => {
-                    continue;
+            }
+            Entry::Occupied(pending) => {
+                info!(
+                    %partition_id,
+                    snapshot_id = %pending.get().snapshot_id,
+                    "A snapshot export is already in progress, refusing to start a new export"
+                );
+                if let Some(sender) = sender {
+                    let _ = sender.send(Err(SnapshotError::SnapshotInProgress(partition_id)));
                 }
             }
         }

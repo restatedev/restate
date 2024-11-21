@@ -8,23 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::PartitionProcessorControlCommand;
-use assert2::let_assert;
-use restate_core::network::Incoming;
-use restate_core::{TaskCenter, TaskKind};
-use restate_invoker_impl::ChannelStatusReader;
-use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
-use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-};
-use restate_types::time::MillisSinceEpoch;
 use std::ops::RangeInclusive;
+
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use ulid::Ulid;
+
+use crate::partition::PartitionProcessorControlCommand;
+use restate_core::network::Incoming;
+use restate_core::{TaskCenter, TaskKind};
+use restate_invoker_impl::ChannelStatusReader;
+use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::net::partition_processor::{
+    PartitionProcessorRpcError, PartitionProcessorRpcRequest,
+};
+
+use restate_types::time::MillisSinceEpoch;
 
 pub type LeaderEpochToken = Ulid;
 
@@ -350,20 +352,19 @@ impl ProcessorState {
         }
     }
 
-    pub fn create_snapshot(&self, result_tx: oneshot::Sender<anyhow::Result<SnapshotId>>) {
+    /// The Partition Processor is in a state in which it is acceptable to create and publish
+    /// snapshots. Since we generally don't want newer snapshots to move backwards in applied LSN,
+    /// the current implementation checks whether the processor is fully caught up with the log.
+    pub fn should_publish_snapshots(&self) -> bool {
         match self {
-            ProcessorState::Starting { .. } => {
-                let _ = result_tx.send(Err(anyhow::anyhow!("Partition processor is starting")));
+            ProcessorState::Started {
+                processor: Some(started_processor),
+                ..
+            } if started_processor.watch_rx.borrow().replay_status == ReplayStatus::Active => {
+                // At this point we don't care about leadership status, only that the processor is up to date
+                true
             }
-            ProcessorState::Started { processor, .. } => {
-                processor
-                    .as_ref()
-                    .expect("must be some")
-                    .create_snapshot(result_tx);
-            }
-            ProcessorState::Stopping { .. } => {
-                let _ = result_tx.send(Err(anyhow::anyhow!("Partition processor is stopping")));
-            }
+            _ => false,
         }
     }
 }
@@ -371,7 +372,6 @@ impl ProcessorState {
 #[derive(Debug)]
 pub struct StartedProcessor {
     cancellation_token: CancellationToken,
-    partition_id: PartitionId,
     _created_at: MillisSinceEpoch,
     key_range: RangeInclusive<PartitionKey>,
     control_tx: mpsc::Sender<PartitionProcessorControlCommand>,
@@ -383,7 +383,6 @@ pub struct StartedProcessor {
 impl StartedProcessor {
     pub fn new(
         cancellation_token: CancellationToken,
-        partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
         control_tx: mpsc::Sender<PartitionProcessorControlCommand>,
         status_reader: ChannelStatusReader,
@@ -392,7 +391,6 @@ impl StartedProcessor {
     ) -> Self {
         Self {
             cancellation_token,
-            partition_id,
             _created_at: MillisSinceEpoch::now(),
             key_range,
             control_tx,
@@ -438,37 +436,5 @@ impl StartedProcessor {
         rpc: Incoming<PartitionProcessorRpcRequest>,
     ) -> Result<(), TrySendError<Incoming<PartitionProcessorRpcRequest>>> {
         self.rpc_tx.try_send(rpc)
-    }
-
-    pub fn create_snapshot(&self, result_tx: oneshot::Sender<anyhow::Result<SnapshotId>>) {
-        if let Err(err) =
-            self.control_tx
-                .try_send(PartitionProcessorControlCommand::CreateSnapshot(Some(
-                    result_tx,
-                )))
-        {
-            match err {
-                TrySendError::Full(msg) => {
-                    let_assert!(
-                        PartitionProcessorControlCommand::CreateSnapshot(Some(result_tx)) = msg
-                    );
-                    // if the caller is no longer interested in the result, we can ignore the error
-                    let _ = result_tx.send(Err(anyhow::anyhow!(
-                        "Partition processor '{}' is busy",
-                        self.partition_id
-                    )));
-                }
-                TrySendError::Closed(msg) => {
-                    let_assert!(
-                        PartitionProcessorControlCommand::CreateSnapshot(Some(result_tx)) = msg
-                    );
-                    // if the caller is no longer interested in the result, we can ignore the error
-                    let _ = result_tx.send(Err(anyhow::anyhow!(
-                        "Partition processor '{}' is shutting down",
-                        self.partition_id
-                    )));
-                }
-            }
-        }
     }
 }

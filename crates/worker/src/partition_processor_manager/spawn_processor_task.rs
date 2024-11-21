@@ -8,6 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
+use tokio::sync::{mpsc, watch};
+use tracing::instrument;
+
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::processor_state::StartedProcessor;
@@ -23,9 +28,6 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::schema::Schema;
 use restate_types::GenerationalNodeId;
-use std::ops::RangeInclusive;
-use tokio::sync::{mpsc, watch};
-use tracing::instrument;
 
 pub struct SpawnPartitionProcessorTask {
     task_name: &'static str,
@@ -135,6 +137,7 @@ impl SpawnPartitionProcessorTask {
                         &options.storage.rocksdb,
                     )
                     .await?;
+
                 move || async move {
                     tc.spawn_child(
                         TaskKind::SystemService,
@@ -144,7 +147,7 @@ impl SpawnPartitionProcessorTask {
                     )?;
 
                     pp_builder
-                        .build::<ProtobufRawEntryCodec>(tc, bifrost, partition_store, configuration)
+                        .build::<ProtobufRawEntryCodec>(tc, bifrost, partition_store)
                         .await?
                         .run()
                         .await
@@ -154,7 +157,6 @@ impl SpawnPartitionProcessorTask {
 
         let state = StartedProcessor::new(
             root_task_handle.cancellation_token(),
-            partition_id,
             key_range,
             control_tx,
             status_reader,
