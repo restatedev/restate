@@ -19,6 +19,7 @@ use super::Schema;
 use crate::config::IngressOptions;
 use crate::errors::GenericError;
 use crate::identifiers::SubscriptionId;
+use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -54,17 +55,55 @@ pub enum EventReceiverServiceType {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Sink {
-    Service {
+    // Could not use the Rust built-in deprecated feature because some macros will fail with it and won't apply the #[allow(deprecated)] :(
+    #[serde(rename = "Service")]
+    DeprecatedService {
         name: String,
         handler: String,
         ty: EventReceiverServiceType,
+    },
+    Invocation {
+        event_invocation_target_template: EventInvocationTargetTemplate,
+    },
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum EventInvocationTargetTemplate {
+    Service {
+        name: String,
+        handler: String,
+    },
+    VirtualObject {
+        name: String,
+        handler: String,
+        handler_ty: VirtualObjectHandlerType,
+    },
+    Workflow {
+        name: String,
+        handler: String,
+        handler_ty: WorkflowHandlerType,
     },
 }
 
 impl fmt::Display for Sink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Sink::Service { name, handler, .. } => {
+            Sink::DeprecatedService { name, handler, .. } => {
+                write!(f, "service://{}/{}", name, handler)
+            }
+            Sink::Invocation {
+                event_invocation_target_template:
+                    EventInvocationTargetTemplate::Service { name, handler, .. },
+            }
+            | Sink::Invocation {
+                event_invocation_target_template:
+                    EventInvocationTargetTemplate::VirtualObject { name, handler, .. },
+            }
+            | Sink::Invocation {
+                event_invocation_target_template:
+                    EventInvocationTargetTemplate::Workflow { name, handler, .. },
+            } => {
                 write!(f, "service://{}/{}", name, handler)
             }
         }
@@ -240,10 +279,11 @@ pub mod mocks {
                     cluster: "my-cluster".to_string(),
                     topic: "my-topic".to_string(),
                 },
-                sink: Sink::Service {
-                    name: "MySvc".to_string(),
-                    handler: "MyMethod".to_string(),
-                    ty: EventReceiverServiceType::Service,
+                sink: Sink::Invocation {
+                    event_invocation_target_template: EventInvocationTargetTemplate::Service {
+                        name: "MySvc".to_string(),
+                        handler: "MyMethod".to_string(),
+                    },
                 },
                 metadata: Default::default(),
             }

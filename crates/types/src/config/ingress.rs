@@ -46,7 +46,10 @@ pub struct IngressOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub experimental_feature_enable_separate_ingress_role: bool,
 
-    /// Cluster of new features for the kafka ingress.
+    /// Cluster of new features for the kafka ingress, including:
+    ///
+    /// * New Source::Subscription
+    /// * Shared handlers can now receive events https://github.com/restatedev/restate/issues/2100
     #[cfg_attr(feature = "schemars", schemars(skip))]
     experimental_feature_kafka_ingress_next: bool,
 }
@@ -59,6 +62,13 @@ impl IngressOptions {
     pub fn get_kafka_cluster(&self, name: &str) -> Option<&KafkaClusterOptions> {
         // a cluster is likely to have a very small number of kafka clusters configured.
         self.kafka_clusters.iter().find(|c| c.name == name)
+    }
+
+    pub fn available_kafka_clusters(&self) -> Vec<&str> {
+        self.kafka_clusters
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect()
     }
 
     pub fn concurrent_api_requests_limit(&self) -> usize {

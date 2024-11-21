@@ -22,7 +22,9 @@ use restate_types::invocation::{
 };
 use restate_types::message::MessageIndex;
 use restate_types::partition_table::PartitionTableError;
-use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
+use restate_types::schema::subscriptions::{
+    EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Subscription,
+};
 use restate_types::GenerationalNodeId;
 use restate_wal_protocol::{
     append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
@@ -59,36 +61,65 @@ impl KafkaIngressEvent {
             None
         };
 
-        let (invocation_target, argument) = match subscription.sink() {
-            Sink::Service {
+        let invocation_target = match subscription.sink() {
+            Sink::DeprecatedService {
                 ref name,
                 ref handler,
                 ty,
-            } => {
-                let target_invocation_target = match ty {
-                    EventReceiverServiceType::VirtualObject => InvocationTarget::virtual_object(
-                        &**name,
-                        std::str::from_utf8(&key)
-                            .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
-                            .to_owned(),
-                        &**handler,
-                        VirtualObjectHandlerType::Exclusive,
-                    ),
-                    EventReceiverServiceType::Workflow => InvocationTarget::workflow(
-                        &**name,
-                        std::str::from_utf8(&key)
-                            .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
-                            .to_owned(),
-                        &**handler,
-                        WorkflowHandlerType::Workflow,
-                    ),
-                    EventReceiverServiceType::Service => {
-                        InvocationTarget::service(&**name, &**handler)
-                    }
-                };
-
-                (target_invocation_target, payload.clone())
-            }
+            } => match ty {
+                EventReceiverServiceType::VirtualObject => InvocationTarget::virtual_object(
+                    &**name,
+                    std::str::from_utf8(&key)
+                        .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
+                        .to_owned(),
+                    &**handler,
+                    VirtualObjectHandlerType::Exclusive,
+                ),
+                EventReceiverServiceType::Workflow => InvocationTarget::workflow(
+                    &**name,
+                    std::str::from_utf8(&key)
+                        .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
+                        .to_owned(),
+                    &**handler,
+                    WorkflowHandlerType::Workflow,
+                ),
+                EventReceiverServiceType::Service => InvocationTarget::service(&**name, &**handler),
+            },
+            Sink::Invocation {
+                event_invocation_target_template,
+            } => match event_invocation_target_template {
+                EventInvocationTargetTemplate::Service { name, handler } => {
+                    InvocationTarget::service(name.clone(), handler.clone())
+                }
+                EventInvocationTargetTemplate::VirtualObject {
+                    name,
+                    handler,
+                    handler_ty,
+                } => InvocationTarget::virtual_object(
+                    name.clone(),
+                    std::str::from_utf8(&key)
+                        .map_err(|e| {
+                            anyhow::anyhow!("The Kafka record key must be valid UTF-8: {e}")
+                        })?
+                        .to_owned(),
+                    handler.clone(),
+                    *handler_ty,
+                ),
+                EventInvocationTargetTemplate::Workflow {
+                    name,
+                    handler,
+                    handler_ty,
+                } => InvocationTarget::workflow(
+                    name.clone(),
+                    std::str::from_utf8(&key)
+                        .map_err(|e| {
+                            anyhow::anyhow!("The Kafka record key must be valid UTF-8: {e}")
+                        })?
+                        .to_owned(),
+                    handler.clone(),
+                    *handler_ty,
+                ),
+            },
         };
 
         // Generate service invocation
@@ -103,7 +134,7 @@ impl KafkaIngressEvent {
             },
         );
         service_invocation.with_related_span(related_span);
-        service_invocation.argument = argument;
+        service_invocation.argument = payload;
         service_invocation.headers = headers;
 
         Ok(KafkaIngressEvent {
