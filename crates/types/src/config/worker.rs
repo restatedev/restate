@@ -8,18 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use std::collections::HashMap;
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::warn;
 
-use restate_serde_util::NonZeroByteCount;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+use tracing::warn;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 use crate::identifiers::PartitionId;
 use crate::retries::RetryPolicy;
+use restate_serde_util::NonZeroByteCount;
 
 /// # Worker options
 #[serde_as]
@@ -359,6 +360,32 @@ impl Default for StorageOptions {
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct SnapshotsOptions {
+    /// # Destination
+    ///
+    /// Where snapshots are moved after they get created. This property support URLs with either
+    /// `s3://` or `file://` protocol scheme. The URL is parsed with
+    ///
+    /// Example: `s3://snapshots-bucket/restate/cluster` will send snapshots to the specified
+    /// bucket, prefixing keys with the URL path.
+    ///
+    /// Default: `None`
+    pub destination: Option<String>,
+
+    /// # Additional options
+    ///
+    /// Extra configuration options that will be passed to `object_store`. Supported keys include:
+    ///
+    /// - `region`
+    /// - `access_key_id`
+    /// - `secret_access_key`
+    /// - `session_token`
+    /// - `endpoint_url`
+    ///
+    /// For the full list of available options, please refer to the [Object Store configuration system reference](https://docs.rs/object_store/latest/object_store/index.html#configuration-system)
+    /// and the specific provider's documentation, e.g. [S3](https://docs.rs/object_store/latest/object_store/aws/enum.AmazonS3ConfigKey.html).
+    #[serde(flatten, skip_serializing_if = "HashMap::is_empty")]
+    pub additional_options: HashMap<String, String>,
+
     /// # Automatic snapshot creation frequency
     ///
     /// Number of log records that trigger a snapshot to be created.

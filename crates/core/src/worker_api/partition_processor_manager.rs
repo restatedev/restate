@@ -75,15 +75,19 @@ pub struct SnapshotCreated {
 pub enum SnapshotError {
     #[error("Partition {0} not found")]
     PartitionNotFound(PartitionId),
-    #[error("Snapshot creation already in progress for partition {0}")]
+    #[error("Snapshot creation already in progress")]
     SnapshotInProgress(PartitionId),
-    #[error("Partition processor state does not allow snapshot export {0}")]
+    /// Partition Processor is not fully caught up.
+    #[error("Partition processor state does not permit snapshotting")]
     InvalidState(PartitionId),
-    #[error("Snapshot failed for partition {0}: {1}")]
+    /// Database snapshot export error.
+    #[error("Snapshot export failed: {1}")]
     SnapshotExportError(PartitionId, #[source] anyhow::Error),
-    #[error("Snapshot failed for partition {0}: {1}")]
-    SnapshotMetadataHeaderError(PartitionId, #[source] io::Error),
-    #[error("Internal error creating snapshot for partition {0}: {1}")]
+    #[error("Snapshot IO error: {1}")]
+    SnapshotIoError(PartitionId, #[source] io::Error),
+    #[error("Snapshot repository IO error: {1}")]
+    RepositoryIoError(PartitionId, #[source] anyhow::Error),
+    #[error("Internal error creating snapshot: {1}")]
     Internal(PartitionId, String),
 }
 
@@ -94,7 +98,8 @@ impl SnapshotError {
             SnapshotError::SnapshotInProgress(partition_id) => *partition_id,
             SnapshotError::InvalidState(partition_id) => *partition_id,
             SnapshotError::SnapshotExportError(partition_id, _) => *partition_id,
-            SnapshotError::SnapshotMetadataHeaderError(partition_id, _) => *partition_id,
+            SnapshotError::SnapshotIoError(partition_id, _) => *partition_id,
+            SnapshotError::RepositoryIoError(partition_id, _) => *partition_id,
             SnapshotError::Internal(partition_id, _) => *partition_id,
         }
     }

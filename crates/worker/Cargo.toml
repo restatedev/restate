@@ -45,6 +45,9 @@ restate-wal-protocol = { workspace = true }
 anyhow = { workspace = true }
 assert2 = { workspace = true }
 async-channel = { workspace = true }
+async-trait = { workspace = true }
+aws-config = { workspace = true }
+aws-credential-types = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
@@ -54,6 +57,7 @@ futures = { workspace = true }
 humantime = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
+object_store = { workspace = true }
 opentelemetry = { workspace = true }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }
@@ -70,6 +74,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }

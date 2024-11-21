@@ -98,8 +98,7 @@ pub enum TaskKind {
     /// Kafka ingestion related task
     Kafka,
     PartitionProcessor,
-    /// Longer-running, low-priority tasks that is responsible for the export, and potentially
-    /// upload to remote storage, of partition store snapshots.
+    /// Low-priority tasks responsible for partition snapshot-related I/O.
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     PartitionSnapshotProducer,
     #[strum(props(OnError = "log"))]

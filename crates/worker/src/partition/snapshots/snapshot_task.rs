@@ -20,6 +20,8 @@ use restate_partition_store::snapshots::{
 use restate_partition_store::PartitionStoreManager;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 
+use crate::partition::snapshots::SnapshotRepository;
+
 /// Creates a partition store snapshot along with Restate snapshot metadata.
 pub struct SnapshotPartitionTask {
     pub snapshot_id: SnapshotId,
@@ -28,6 +30,7 @@ pub struct SnapshotPartitionTask {
     pub partition_store_manager: PartitionStoreManager,
     pub cluster_name: String,
     pub node_name: String,
+    pub snapshot_repository: SnapshotRepository,
 }
 
 impl SnapshotPartitionTask {
@@ -59,16 +62,19 @@ impl SnapshotPartitionTask {
             )
             .await?;
 
-        let metadata = self.write_snapshot_metadata_header(snapshot).await?;
+        let metadata = self.write_snapshot_metadata_header(&snapshot).await?;
 
-        // todo(pavel): SnapshotRepository integration will go in here in a future PR
+        self.snapshot_repository
+            .put(&metadata, snapshot.base_dir)
+            .await
+            .map_err(|e| SnapshotError::RepositoryIoError(self.partition_id, e))?;
 
         Ok(metadata)
     }
 
     async fn write_snapshot_metadata_header(
         &self,
-        snapshot: LocalPartitionSnapshot,
+        snapshot: &LocalPartitionSnapshot,
     ) -> Result<PartitionSnapshotMetadata, SnapshotError> {
         let snapshot_meta = PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
@@ -77,7 +83,7 @@ impl SnapshotPartitionTask {
             partition_id: self.partition_id,
             created_at: humantime::Timestamp::from(SystemTime::now()),
             snapshot_id: self.snapshot_id,
-            key_range: snapshot.key_range,
+            key_range: snapshot.key_range.clone(),
             min_applied_lsn: snapshot.min_applied_lsn,
             db_comparator_name: snapshot.db_comparator_name.clone(),
             files: snapshot.files.clone(),
@@ -88,7 +94,7 @@ impl SnapshotPartitionTask {
         let metadata_path = snapshot.base_dir.join("metadata.json");
         tokio::fs::write(metadata_path.clone(), metadata_json)
             .await
-            .map_err(|e| SnapshotError::SnapshotMetadataHeaderError(self.partition_id, e))?;
+            .map_err(|e| SnapshotError::SnapshotIoError(self.partition_id, e))?;
 
         debug!(
             lsn = %snapshot.min_applied_lsn,
