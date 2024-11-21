@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 #
-# Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+# Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+# All rights reserved.
 #
-# This file is part of the Restate load test environment,
-# which is released under the MIT license.
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file.
 #
-# You can find a copy of the license in file LICENSE in the
-# scripts/loadtest-environment directory of this repository, or at
-# https://github.com/restatedev/retate/blob/main/scripts/loadtest-environment/LICENSE
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
 #
 
 # The standard saturation test for larger capacity instances. Make sure that a
