@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use rocksdb::ExportImportFilesMetaData;
@@ -199,7 +199,7 @@ impl PartitionStoreManager {
         &self,
         partition_id: PartitionId,
         snapshot_id: SnapshotId,
-        snapshot_base_path: PathBuf,
+        snapshot_base_path: &Path,
     ) -> Result<LocalPartitionSnapshot, SnapshotError> {
         let mut partition_store = self
             .get_partition_store(partition_id)
@@ -207,7 +207,7 @@ impl PartitionStoreManager {
             .ok_or(SnapshotError::PartitionNotFound(partition_id))?;
 
         // RocksDB will create the snapshot directory but the parent must exist first:
-        tokio::fs::create_dir_all(&snapshot_base_path)
+        tokio::fs::create_dir_all(snapshot_base_path)
             .await
             .map_err(|e| SnapshotError::SnapshotExportError(partition_id, e.into()))?;
         let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
