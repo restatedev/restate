@@ -18,12 +18,16 @@ use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
 use object_store::aws::AmazonS3Builder;
 use object_store::{MultipartUpload, ObjectStore, PutPayload};
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, trace};
 use url::Url;
 
-use restate_partition_store::snapshots::PartitionSnapshotMetadata;
+use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
 use restate_types::config::SnapshotsOptions;
+use restate_types::identifiers::{PartitionId, SnapshotId};
+use restate_types::logs::Lsn;
 
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
@@ -155,12 +159,11 @@ impl SnapshotRepository {
             );
         }
 
-        // todo(pavel): don't write `metadata.json` to disk, serialize it from the struct directly.
-        //  this gives us a chance to include data file checksums into it removes some IO
-        let metadata_json_path = local_snapshot_path.join("metadata.json");
         let metadata_key =
             object_store::path::Path::from(format!("{}/metadata.json", snapshot_prefix.as_str()));
-        let metadata_json_payload = PutPayload::from(tokio::fs::read(metadata_json_path).await?);
+        let metadata_json_payload = PutPayload::from(
+            serde_json::to_string_pretty(snapshot).expect("Can always serialize JSON"),
+        );
         let put_result = self
             .object_store
             .put(&metadata_key, metadata_json_payload)
