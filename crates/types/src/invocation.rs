@@ -773,15 +773,35 @@ impl InvocationTermination {
             flavor: TerminationFlavor::Cancel,
         }
     }
+
+    pub const fn kill_and_restart(invocation_id: InvocationId) -> Self {
+        Self {
+            invocation_id,
+            flavor: TerminationFlavor::KillAndRestart,
+        }
+    }
+
+    pub const fn cancel_and_restart(invocation_id: InvocationId) -> Self {
+        Self {
+            invocation_id,
+            flavor: TerminationFlavor::CancelAndRestart,
+        }
+    }
 }
 
-/// Flavor of the termination. Can be kill (hard stop) or graceful cancel.
+/// Flavor of the termination.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TerminationFlavor {
     /// hard termination, no clean up
     Kill,
+    /// hard termination with restart afterward using same input
+    #[serde(alias = "kill-and-restart")]
+    KillAndRestart,
     /// graceful termination allowing the invocation to clean up
     Cancel,
+    /// graceful termination allowing the invocation to clean up with restart afterward using same input
+    #[serde(alias = "cancel-and-restart")]
+    CancelAndRestart,
 }
 
 /// Message to purge an invocation.
