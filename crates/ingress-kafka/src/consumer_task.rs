@@ -31,7 +31,9 @@ use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 use restate_core::{cancellation_watcher, TaskCenter, TaskId, TaskKind};
 use restate_types::invocation::{Header, SpanRelation};
 use restate_types::message::MessageIndex;
-use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
+use restate_types::schema::subscriptions::{
+    EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Subscription,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -77,9 +79,11 @@ impl KafkaDeduplicationId {
         // Service event receiver requires proxying because we don't want to scatter deduplication ids (kafka topic/partition offsets) in all the Restate partitions.
         matches!(
             subscription.sink(),
-            Sink::Service {
+            Sink::DeprecatedService {
                 ty: EventReceiverServiceType::Service,
                 ..
+            } | Sink::Invocation {
+                event_invocation_target_template: EventInvocationTargetTemplate::Service { .. }
             },
         )
     }

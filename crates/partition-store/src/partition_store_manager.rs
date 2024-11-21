@@ -10,23 +10,24 @@
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
+use std::path::Path;
 use std::sync::Arc;
 
 use rocksdb::ExportImportFilesMetaData;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use restate_rocksdb::{
-    CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
-};
-use restate_types::config::{RocksDbOptions, StorageOptions};
-use restate_types::identifiers::{PartitionId, PartitionKey};
-use restate_types::live::{BoxedLiveLoad, LiveLoad};
-
 use crate::cf_options;
 use crate::snapshots::LocalPartitionSnapshot;
 use crate::PartitionStore;
 use crate::DB;
+use restate_core::worker_api::SnapshotError;
+use restate_rocksdb::{
+    CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
+};
+use restate_types::config::{RocksDbOptions, StorageOptions};
+use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
+use restate_types::live::{BoxedLiveLoad, LiveLoad};
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -133,7 +134,7 @@ impl PartitionStoreManager {
     /// Imports a partition snapshot and opens it as a partition store.
     /// The database must not have an existing column family for the partition id;
     /// it will be created based on the supplied snapshot.
-    pub async fn restore_partition_store_snapshot(
+    pub async fn open_partition_store_from_snapshot(
         &self,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
@@ -192,6 +193,29 @@ impl PartitionStoreManager {
         guard.live.insert(partition_id, partition_store.clone());
 
         Ok(partition_store)
+    }
+
+    pub async fn export_partition_snapshot(
+        &self,
+        partition_id: PartitionId,
+        snapshot_id: SnapshotId,
+        snapshot_base_path: &Path,
+    ) -> Result<LocalPartitionSnapshot, SnapshotError> {
+        let mut partition_store = self
+            .get_partition_store(partition_id)
+            .await
+            .ok_or(SnapshotError::PartitionNotFound(partition_id))?;
+
+        // RocksDB will create the snapshot directory but the parent must exist first:
+        tokio::fs::create_dir_all(snapshot_base_path)
+            .await
+            .map_err(|e| SnapshotError::SnapshotExportError(partition_id, e.into()))?;
+        let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
+
+        partition_store
+            .create_snapshot(snapshot_dir)
+            .await
+            .map_err(|e| SnapshotError::SnapshotExportError(partition_id, e.into()))
     }
 
     pub async fn drop_partition(&self, partition_id: PartitionId) {

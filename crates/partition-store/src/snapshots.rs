@@ -60,6 +60,7 @@ pub struct LocalPartitionSnapshot {
     pub min_applied_lsn: Lsn,
     pub db_comparator_name: String,
     pub files: Vec<LiveFile>,
+    pub key_range: RangeInclusive<PartitionKey>,
 }
 
 /// RocksDB SST file that is part of a snapshot. Serialization wrapper around [LiveFile].

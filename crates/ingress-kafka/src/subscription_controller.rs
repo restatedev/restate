@@ -14,6 +14,7 @@ use std::collections::HashSet;
 
 use crate::dispatcher::KafkaIngressDispatcher;
 use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
+use anyhow::Context;
 use rdkafka::error::KafkaError;
 use restate_bifrost::Bifrost;
 use restate_core::{cancellation_watcher, task_center};
@@ -24,6 +25,7 @@ use restate_types::retries::RetryPolicy;
 use restate_types::schema::subscriptions::{Source, Subscription};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::warn;
 
 #[derive(Debug)]
 pub enum Command {
@@ -85,9 +87,15 @@ impl Service {
             tokio::select! {
                 Some(cmd) = self.commands_rx.recv() => {
                     match cmd {
-                        Command::StartSubscription(sub) => self.handle_start_subscription(options, sub, &mut task_orchestrator),
+                        Command::StartSubscription(sub) => if let Err(e) = self.handle_start_subscription(options, sub, &mut task_orchestrator) {
+                            warn!("Error when starting a subscription: {e:?}");
+                            break;
+                        },
                         Command::StopSubscription(sub_id) => self.handle_stop_subscription(sub_id, &mut task_orchestrator),
-                        Command::UpdateSubscriptions(subscriptions) => self.handle_update_subscriptions(options, subscriptions, &mut task_orchestrator),
+                        Command::UpdateSubscriptions(subscriptions) => if let Err(e) = self.handle_update_subscriptions(options, subscriptions, &mut task_orchestrator) {
+                            warn!("Error when updating subscriptions: {e:?}");
+                            break;
+                        },
                     }
                 }
                 _ = task_orchestrator.poll(), if !task_orchestrator.is_empty() => {},
@@ -107,7 +115,7 @@ impl Service {
         options: &IngressOptions,
         subscription: Subscription,
         task_orchestrator: &mut TaskOrchestrator,
-    ) {
+    ) -> anyhow::Result<()> {
         let mut client_config = rdkafka::ClientConfig::new();
 
         let Source::Kafka { cluster, topic, .. } = subscription.source();
@@ -115,7 +123,7 @@ impl Service {
         // Copy cluster options and subscription metadata into client_config
         let cluster_options = options
             .get_kafka_cluster(cluster)
-            .unwrap_or_else(|| panic!("KafkaOptions should contain the cluster '{}'", cluster));
+            .with_context(|| format!("KafkaOptions is expected to contain the cluster '{}'. This might happen if you registered a subscription with a cluster name, but this cluster is not available anymore in the configuration. Configured Kafka clusters: {:?}", cluster, options.available_kafka_clusters()))?;
 
         client_config.set("metadata.broker.list", cluster_options.brokers.join(","));
         for (k, v) in cluster_options.additional_options.clone() {
@@ -145,6 +153,8 @@ impl Service {
         );
 
         task_orchestrator.start(subscription_id, consumer_task);
+
+        Ok(())
     }
 
     fn handle_stop_subscription(
@@ -160,13 +170,13 @@ impl Service {
         options: &IngressOptions,
         subscriptions: Vec<Subscription>,
         task_orchestrator: &mut TaskOrchestrator,
-    ) {
+    ) -> anyhow::Result<()> {
         let mut running_subscriptions: HashSet<_> =
             task_orchestrator.running_subscriptions().cloned().collect();
 
         for subscription in subscriptions {
             if !running_subscriptions.contains(&subscription.id()) {
-                self.handle_start_subscription(options, subscription, task_orchestrator);
+                self.handle_start_subscription(options, subscription, task_orchestrator)?;
             } else {
                 running_subscriptions.remove(&subscription.id());
             }
@@ -175,6 +185,7 @@ impl Service {
         for subscription_id in running_subscriptions {
             self.handle_stop_subscription(subscription_id, task_orchestrator);
         }
+        Ok(())
     }
 }
 

@@ -563,6 +563,7 @@ mod tests {
 
     struct NodeStateHandler {
         persisted_lsn: Arc<AtomicU64>,
+        archived_lsn: Arc<AtomicU64>,
         // set of node ids for which the handler won't send a response to the caller, this allows to simulate
         // dead nodes
         block_list: BTreeSet<GenerationalNodeId>,
@@ -578,6 +579,7 @@ mod tests {
 
             let partition_processor_status = PartitionProcessorStatus {
                 last_persisted_log_lsn: Some(Lsn::from(self.persisted_lsn.load(Ordering::Relaxed))),
+                last_archived_log_lsn: Some(Lsn::from(self.archived_lsn.load(Ordering::Relaxed))),
                 ..PartitionProcessorStatus::new()
             };
 
@@ -606,8 +608,11 @@ mod tests {
         };
 
         let persisted_lsn = Arc::new(AtomicU64::new(0));
+        let archived_lsn = Arc::new(AtomicU64::new(0));
+
         let get_node_state_handler = Arc::new(NodeStateHandler {
             persisted_lsn: Arc::clone(&persisted_lsn),
+            archived_lsn: Arc::clone(&archived_lsn),
             block_list: BTreeSet::new(),
         });
 
@@ -689,8 +694,11 @@ mod tests {
         };
 
         let persisted_lsn = Arc::new(AtomicU64::new(0));
+        let archived_lsn = Arc::new(AtomicU64::new(0));
+
         let get_node_state_handler = Arc::new(NodeStateHandler {
             persisted_lsn: Arc::clone(&persisted_lsn),
+            archived_lsn: Arc::clone(&archived_lsn),
             block_list: BTreeSet::new(),
         });
         let (node_env, bifrost) = create_test_env(config, |builder| {
@@ -768,6 +776,7 @@ mod tests {
         };
 
         let persisted_lsn = Arc::new(AtomicU64::new(0));
+        let archived_lsn = Arc::new(AtomicU64::new(0));
 
         let (node_env, bifrost) = create_test_env(config, |builder| {
             let black_list = builder
@@ -780,6 +789,7 @@ mod tests {
 
             let get_node_state_handler = NodeStateHandler {
                 persisted_lsn: Arc::clone(&persisted_lsn),
+                archived_lsn: Arc::clone(&archived_lsn),
                 block_list: black_list,
             };
 

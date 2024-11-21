@@ -48,6 +48,7 @@ async fn serve_web_ui(uri: Uri) -> impl IntoResponse {
 
 pub(crate) fn web_ui_router() -> axum::Router {
     axum::Router::new()
+        .route("/", get(|| async { Redirect::permanent("/ui/") }))
         .route("/ui", get(|| async { Redirect::permanent("/ui/") }))
         .route("/ui/", get(serve_web_ui))
         .route("/ui/*path", get(serve_web_ui))

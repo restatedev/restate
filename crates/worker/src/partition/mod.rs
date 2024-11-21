@@ -13,17 +13,17 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use assert2::let_assert;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
 use metrics::{counter, histogram};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, error, info, instrument, trace, warn, Instrument, Span};
+use tracing::{debug, error, info, instrument, trace, warn, Span};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{HasConnection, Incoming, Outgoing};
-use restate_core::{cancellation_watcher, TaskCenter, TaskHandle, TaskKind};
+use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -40,10 +40,9 @@ use restate_storage_api::service_status_table::{
 };
 use restate_storage_api::{StorageError, Transaction};
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
-use restate_types::config::{Configuration, WorkerOptions};
+use restate_types::config::WorkerOptions;
 use restate_types::identifiers::{
-    LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, SnapshotId,
-    WithPartitionKey,
+    LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
@@ -51,7 +50,6 @@ use restate_types::invocation::{
     WorkflowHandlerType,
 };
 use restate_types::journal::raw::RawEntryCodec;
-use restate_types::live::Live;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::net::partition_processor::{
@@ -70,14 +68,12 @@ use crate::metric_definitions::{
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
-use crate::partition::snapshot_producer::{SnapshotProducer, SnapshotSource};
 use crate::partition::state_machine::{ActionCollector, StateMachine};
 
 mod cleaner;
 pub mod invoker_storage_reader;
 mod leadership;
 pub mod shuffle;
-mod snapshot_producer;
 mod state_machine;
 pub mod types;
 
@@ -85,7 +81,6 @@ pub mod types;
 pub enum PartitionProcessorControlCommand {
     RunForLeader(LeaderEpoch),
     StepDown,
-    CreateSnapshot(Option<oneshot::Sender<anyhow::Result<SnapshotId>>>),
 }
 
 #[derive(Debug)]
@@ -146,7 +141,6 @@ where
         task_center: TaskCenter,
         bifrost: Bifrost,
         mut partition_store: PartitionStore,
-        configuration: Live<Configuration>,
     ) -> Result<PartitionProcessor<Codec, InvokerInputSender>, StorageError> {
         let PartitionProcessorBuilder {
             partition_id,
@@ -206,13 +200,10 @@ where
             max_command_batch_size,
             partition_store,
             bifrost,
-            configuration,
             control_rx,
             rpc_rx,
             status_watch_tx,
             status,
-            inflight_create_snapshot_task: None,
-            last_snapshot_lsn_watch: watch::channel(None),
         })
     }
 
@@ -246,7 +237,6 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
     leadership_state: LeadershipState<InvokerSender>,
     state_machine: StateMachine<Codec>,
     bifrost: Bifrost,
-    configuration: Live<Configuration>,
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
     rpc_rx: mpsc::Receiver<Incoming<PartitionProcessorRpcRequest>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
@@ -255,8 +245,6 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
 
     max_command_batch_size: usize,
     partition_store: PartitionStore,
-    inflight_create_snapshot_task: Option<TaskHandle<anyhow::Result<()>>>,
-    last_snapshot_lsn_watch: (watch::Sender<Option<Lsn>>, watch::Receiver<Option<Lsn>>),
 }
 
 impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
@@ -412,7 +400,6 @@ where
                     self.on_rpc(rpc, &mut partition_store).await;
                 }
                 _ = status_update_timer.tick() => {
-                    self.status.last_archived_log_lsn = *self.last_snapshot_lsn_watch.1.borrow();
                     self.status_watch_tx.send_modify(|old| {
                         old.clone_from(&self.status);
                         old.updated_at = MillisSinceEpoch::now();
@@ -508,56 +495,6 @@ where
                 self.status.planned_mode = RunMode::Follower;
                 self.leadership_state.step_down().await;
                 self.status.effective_mode = RunMode::Follower;
-            }
-            PartitionProcessorControlCommand::CreateSnapshot(maybe_sender) => {
-                if self
-                    .inflight_create_snapshot_task
-                    .as_ref()
-                    .is_some_and(|task| !task.is_finished())
-                {
-                    warn!("Snapshot creation already in progress, rejecting request");
-                    maybe_sender
-                        .and_then(|tx| tx.send(Err(anyhow!("Snapshot creation in progress"))).ok());
-                    return Ok(());
-                }
-
-                let config = self.configuration.live_load();
-                let snapshot_source = SnapshotSource {
-                    cluster_name: config.common.cluster_name().into(),
-                    node_name: config.common.node_name().into(),
-                };
-                let snapshot_base_path = config.worker.snapshots.snapshots_dir(self.partition_id);
-                let partition_store = self.partition_store.clone();
-                let snapshot_span = tracing::info_span!("create-snapshot");
-                let snapshot_lsn_tx = self.last_snapshot_lsn_watch.0.clone();
-
-                let inflight_create_snapshot_task = restate_core::task_center().spawn_unmanaged(
-                    TaskKind::PartitionSnapshotProducer,
-                    "create-snapshot",
-                    Some(self.partition_id),
-                    async move {
-                        let result = SnapshotProducer::create(
-                            snapshot_source,
-                            partition_store,
-                            snapshot_base_path,
-                        )
-                        .await;
-
-                        if let Ok(metadata) = result.as_ref() {
-                            // update the Partition Processor's internal state
-                            let _ = snapshot_lsn_tx.send(Some(metadata.min_applied_lsn));
-                        }
-
-                        if let Some(tx) = maybe_sender {
-                            tx.send(result.map(|metadata| metadata.snapshot_id)).ok();
-                        }
-                        Ok(())
-                    }
-                    .instrument(snapshot_span),
-                )?;
-
-                self.inflight_create_snapshot_task
-                    .replace(inflight_create_snapshot_task);
             }
         }
 
@@ -915,7 +852,7 @@ fn respond_to_rpc(
     // ignore shutdown errors
     let _ = task_center.spawn(
         // Use RpcResponse kind to make sure that the response is sent on the default runtime and
-        // not the partition processor runtime which might be dropped. Otherwise we risk that the
+        // not the partition processor runtime which might be dropped. Otherwise, we risk that the
         // response is never sent even though the connection is still open. If the default runtime is
         // dropped, then the process is shutting down which would also close all open connections.
         TaskKind::RpcResponse,

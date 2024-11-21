@@ -113,6 +113,7 @@ impl<T: TransportConnect> AdminRole<T> {
             bifrost.clone(),
             config.ingress.clone(),
             service_discovery,
+            config.ingress.experimental_feature_kafka_ingress_next(),
             Some(query_context),
         );
 
