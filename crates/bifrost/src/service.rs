@@ -13,11 +13,11 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use enum_map::EnumMap;
-use restate_types::config::Configuration;
-use restate_types::live::Live;
 use tracing::{debug, error, trace};
 
-use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
+use restate_core::{cancellation_watcher, TaskCenter, TaskCenterFutureExt, TaskKind};
+use restate_types::config::Configuration;
+use restate_types::live::Live;
 use restate_types::logs::metadata::ProviderKind;
 
 use crate::bifrost::BifrostInner;
@@ -28,7 +28,6 @@ use crate::watchdog::{Watchdog, WatchdogCommand};
 use crate::{loglet::LogletProviderFactory, Bifrost};
 
 pub struct BifrostService {
-    task_center: TaskCenter,
     inner: Arc<BifrostInner>,
     bifrost: Bifrost,
     watchdog: Watchdog,
@@ -36,18 +35,12 @@ pub struct BifrostService {
 }
 
 impl BifrostService {
-    pub fn new(task_center: TaskCenter, metadata: Metadata) -> Self {
+    pub fn new() -> Self {
         let (watchdog_sender, watchdog_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let inner = Arc::new(BifrostInner::new(metadata.clone(), watchdog_sender.clone()));
+        let inner = Arc::new(BifrostInner::new(watchdog_sender.clone()));
         let bifrost = Bifrost::new(inner.clone());
-        let watchdog = Watchdog::new(
-            task_center.clone(),
-            inner.clone(),
-            watchdog_sender,
-            watchdog_receiver,
-        );
+        let watchdog = Watchdog::new(inner.clone(), watchdog_sender, watchdog_receiver);
         Self {
-            task_center,
             inner,
             bifrost,
             watchdog,
@@ -101,10 +94,9 @@ impl BifrostService {
         let mut tasks = tokio::task::JoinSet::new();
         // Start all enabled providers.
         for (kind, factory) in self.factories {
-            let tc = self.task_center.clone();
             let watchdog = self.watchdog.sender();
-            tasks.spawn(async move {
-                tc.run_in_scope("loglet-provider-start", None, async move {
+            tasks.spawn(
+                async move {
                     trace!("Starting loglet provider {}", kind);
                     match factory.create().await {
                         Err(e) => {
@@ -124,9 +116,9 @@ impl BifrostService {
                             Ok((kind, provider))
                         }
                     }
-                })
-                .await
-            });
+                }
+                .in_current_task_center(),
+            );
         }
         let mut shutdown = std::pin::pin!(cancellation_watcher());
 
@@ -160,7 +152,7 @@ impl BifrostService {
             .map_err(|_| anyhow::anyhow!("bifrost must be initialized only once"))?;
 
         // We spawn the watchdog as a background long-running task
-        self.task_center.spawn(
+        TaskCenter::current().spawn(
             TaskKind::BifrostBackgroundHighPriority,
             "bifrost-watchdog",
             None,

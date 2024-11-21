@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use tracing::{info, instrument};
 
-use restate_core::{MetadataKind, MetadataWriter};
+use restate_core::{Metadata, MetadataKind, MetadataWriter};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::Configuration;
 use restate_types::logs::builder::BuilderError;
@@ -93,22 +93,13 @@ impl<'a> BifrostAdmin<'a> {
         params: LogletParams,
     ) -> Result<SealedSegment> {
         self.bifrost.inner.fail_if_shutting_down()?;
-        let _ = self
-            .bifrost
-            .inner
-            .metadata
+        let metadata = Metadata::current();
+        let _ = metadata
             .wait_for_version(MetadataKind::Logs, min_version)
             .await?;
 
         let segment_index = segment_index
-            .or_else(|| {
-                self.bifrost
-                    .inner
-                    .metadata
-                    .logs_ref()
-                    .chain(&log_id)
-                    .map(|c| c.tail_index())
-            })
+            .or_else(|| metadata.logs_ref().chain(&log_id).map(|c| c.tail_index()))
             .ok_or(Error::UnknownLogId(log_id))?;
 
         let sealed_segment = self.seal(log_id, segment_index).await?;

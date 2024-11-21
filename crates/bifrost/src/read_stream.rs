@@ -21,6 +21,7 @@ use futures::Stream;
 use futures::StreamExt;
 use pin_project::pin_project;
 
+use restate_core::Metadata;
 use restate_core::MetadataKind;
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::MaybeSegment;
@@ -348,7 +349,7 @@ impl Stream for LogReadStream {
                         panic!("substream must be set at this point");
                     };
 
-                    let log_metadata = bifrost_inner.metadata.logs_ref();
+                    let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
 
                     // The log is gone!
                     let Some(chain) = log_metadata.chain(this.log_id) else {
@@ -400,11 +401,11 @@ impl Stream for LogReadStream {
                     let metadata_version = log_metadata.version();
 
                     // No hope at this metadata version, wait for the next update.
-                    let metadata_watch_fut = Box::pin(
-                        bifrost_inner
-                            .metadata
-                            .wait_for_version(MetadataKind::Logs, metadata_version.next()),
-                    );
+                    let metadata_watch_fut = Box::pin(async move {
+                        Metadata::current()
+                            .wait_for_version(MetadataKind::Logs, metadata_version.next())
+                            .await
+                    });
                     log_metadata_watch_fut.set(Some(metadata_watch_fut));
                     continue;
                 }
