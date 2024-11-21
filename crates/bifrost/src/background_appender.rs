@@ -56,8 +56,8 @@ where
     }
 
     /// Start the background appender as a TaskCenter background task. Note that the task will not
-    /// autmatically react to TaskCenter's shutdown signal, it gives control over the shutdown
-    /// behaviour to the the owner of [`AppenderHandle`] to drain or drop when appropriate.
+    /// automatically react to TaskCenter's shutdown signal, it gives control over the shutdown
+    /// behaviour to the owner of [`AppenderHandle`] to drain or drop when appropriate.
     pub fn start(
         self,
         task_center: TaskCenter,
@@ -212,6 +212,19 @@ impl<T> AppenderHandle<T> {
     /// If you need an owned LogSender, clone this.
     pub fn sender(&self) -> &LogSender<T> {
         self.sender.as_ref().unwrap()
+    }
+
+    /// Waits for the underlying appender task to finish.
+    ///
+    /// This function will return immediately if the underlying appender task has already finished.
+    ///
+    /// The appender task runs as an unmanaged task for which the [`TaskCenter`] will not handle
+    /// errors. If the user of the [`BackgroundAppender`] requires the proper functioning of the
+    /// appender task but does not want to track it on a per-record basis via
+    /// [`LogSender::enqueue_with_notification`], then this method can be used to react to task
+    /// failures or unexpected terminations.
+    pub async fn join(&mut self) -> Result<()> {
+        self.inner_handle.as_mut().expect("must be present").await?
     }
 }
 

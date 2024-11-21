@@ -21,18 +21,17 @@ use std::task::{ready, Context, Poll};
 use std::time::{Duration, SystemTime};
 
 use futures::future::OptionFuture;
+use futures::never::Never;
 use futures::stream::FuturesUnordered;
 use futures::{stream, FutureExt, StreamExt, TryStreamExt};
-use metrics::counter;
+use metrics::{counter, Counter};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, instrument, trace, warn};
 
 use restate_bifrost::{Bifrost, CommitToken};
 use restate_core::network::Reciprocal;
-use restate_core::{
-    metadata, task_center, Metadata, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind,
-};
+use restate_core::{metadata, task_center, Metadata, ShutdownError, TaskCenter, TaskId, TaskKind};
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
@@ -41,6 +40,7 @@ use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::timer_table::{TimerKey, TimerTable};
 use restate_timer::TokioClock;
+use restate_types::errors::GenericError;
 use restate_types::identifiers::{
     InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -58,7 +58,7 @@ use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
-use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
+use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_HANDLE_LEADER_ACTIONS};
 use crate::partition::cleaner::Cleaner;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::shuffle::{HintSender, OutboxReaderError, Shuffle, ShuffleMetadata};
@@ -66,6 +66,8 @@ use crate::partition::state_machine::Action;
 use crate::partition::{respond_to_rpc, shuffle};
 
 const BATCH_READY_UP_TO: usize = 10;
+
+static BIFROST_APPENDER_TASK: &str = "bifrost-appender";
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 
@@ -83,6 +85,38 @@ pub(crate) enum Error {
     Shutdown(#[from] ShutdownError),
     #[error("error when self proposing")]
     SelfProposer,
+    #[error("task '{name}' failed: {cause}")]
+    TaskFailed {
+        name: &'static str,
+        cause: TaskTermination,
+    },
+}
+
+impl Error {
+    fn task_terminated_unexpectedly(name: &'static str) -> Self {
+        Error::TaskFailed {
+            name,
+            cause: TaskTermination::Unexpected,
+        }
+    }
+
+    fn task_failed(
+        name: &'static str,
+        err: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Error::TaskFailed {
+            name,
+            cause: TaskTermination::Failure(err.into()),
+        }
+    }
+}
+
+#[derive(Debug, derive_more::Display)]
+pub(crate) enum TaskTermination {
+    #[display("unexpected termination")]
+    Unexpected,
+    #[display("{}", _0)]
+    Failure(GenericError),
 }
 
 #[derive(Debug)]
@@ -96,6 +130,10 @@ pub(crate) enum ActionEffect {
 
 pub(crate) struct LeaderState {
     leader_epoch: LeaderEpoch,
+    // only needed for proposing TruncateOutbox to ourselves
+    own_partition_key: PartitionKey,
+    action_effects_counter: Counter,
+
     shuffle_hint_tx: HintSender,
     shuffle_task_id: TaskId,
     timer_service: Pin<Box<TimerService>>,
@@ -113,11 +151,115 @@ pub(crate) struct LeaderState {
     cleaner_task_id: TaskId,
 }
 
-pub enum State {
+impl LeaderState {
+    /// Runs the leader specific task which is the processing of action effects and the monitoring
+    /// of unmanaged tasks.
+    async fn run(&mut self) -> Result<Never, Error> {
+        let timer_stream = std::pin::pin!(stream::unfold(
+            &mut self.timer_service,
+            |timer_service| async {
+                let timer_value = timer_service.as_mut().next_timer().await;
+                Some((ActionEffect::Timer(timer_value), timer_service))
+            }
+        ));
+
+        let invoker_stream = (&mut self.invoker_stream).map(ActionEffect::Invoker);
+        let shuffle_stream = (&mut self.shuffle_stream).map(ActionEffect::Shuffle);
+        let action_effects_stream = stream::unfold(
+            &mut self.pending_cleanup_timers_to_schedule,
+            |pending_cleanup_timers_to_schedule| {
+                let result = pending_cleanup_timers_to_schedule.pop_front();
+                future::ready(result.map(|(invocation_id, duration)| {
+                    (
+                        ActionEffect::ScheduleCleanupTimer(invocation_id, duration),
+                        pending_cleanup_timers_to_schedule,
+                    )
+                }))
+            },
+        )
+        .fuse();
+        let awaiting_rpc_self_propose_stream =
+            (&mut self.awaiting_rpc_self_propose).map(|_| ActionEffect::AwaitingRpcSelfProposeDone);
+
+        let all_streams = futures::stream_select!(
+            invoker_stream,
+            shuffle_stream,
+            timer_stream,
+            action_effects_stream,
+            awaiting_rpc_self_propose_stream
+        );
+        let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
+
+        loop {
+            tokio::select! {
+                Some(action_effects) = all_streams.next() => {
+                    self.action_effects_counter.increment(u64::try_from(action_effects.len()).expect("usize fits into u64"));
+                    LeaderState::handle_action_effects(&mut self.self_proposer, self.own_partition_key, action_effects).await?;
+                },
+                result = self.self_proposer.join_on_err() => {
+                    return result;
+                }
+            }
+        }
+    }
+
+    async fn handle_action_effects(
+        self_proposer: &mut SelfProposer,
+        own_partition_key: PartitionKey,
+        action_effects: impl IntoIterator<Item = ActionEffect>,
+    ) -> Result<(), Error> {
+        for effect in action_effects {
+            match effect {
+                ActionEffect::Invoker(invoker_effect) => {
+                    self_proposer
+                        .propose(
+                            invoker_effect.invocation_id.partition_key(),
+                            Command::InvokerEffect(invoker_effect),
+                        )
+                        .await?;
+                }
+                ActionEffect::Shuffle(outbox_truncation) => {
+                    // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
+                    //  specific destination messages that are identified by a partition_id
+                    self_proposer
+                        .propose(
+                            own_partition_key,
+                            Command::TruncateOutbox(outbox_truncation.index()),
+                        )
+                        .await?;
+                }
+                ActionEffect::Timer(timer) => {
+                    self_proposer
+                        .propose(timer.invocation_id().partition_key(), Command::Timer(timer))
+                        .await?;
+                }
+                ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
+                    self_proposer
+                        .propose(
+                            invocation_id.partition_key(),
+                            Command::ScheduleTimer(TimerKeyValue::clean_invocation_status(
+                                MillisSinceEpoch::from(SystemTime::now() + duration),
+                                invocation_id,
+                            )),
+                        )
+                        .await?;
+                }
+                ActionEffect::AwaitingRpcSelfProposeDone => {
+                    // Nothing to do here
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+enum State {
     Follower,
     Candidate {
         leader_epoch: LeaderEpoch,
-        appender_task: TaskHandle<Result<(), ShutdownError>>,
+        // to be able to move out of it
+        self_proposer: Option<SelfProposer>,
     },
     Leader(LeaderState),
 }
@@ -218,88 +360,39 @@ where
         Ok(())
     }
 
-    async fn announce_leadership(
-        &mut self,
-        leader_epoch: LeaderEpoch,
-    ) -> Result<(), ShutdownError> {
-        let header = Header {
-            dest: Destination::Processor {
-                partition_key: *self
+    async fn announce_leadership(&mut self, leader_epoch: LeaderEpoch) -> Result<(), Error> {
+        let announce_leader = Command::AnnounceLeader(AnnounceLeader {
+            // todo: Still need to write generational id for supporting rolling back, can be removed
+            //  with the next release.
+            node_id: Some(self.partition_processor_metadata.node_id),
+            leader_epoch,
+            partition_key_range: Some(
+                self.partition_processor_metadata
+                    .partition_key_range
+                    .clone(),
+            ),
+        });
+
+        let mut self_proposer = SelfProposer::new(
+            self.partition_processor_metadata.partition_id,
+            EpochSequenceNumber::new(leader_epoch),
+            &self.bifrost,
+            metadata(),
+        )?;
+
+        self_proposer
+            .propose(
+                *self
                     .partition_processor_metadata
                     .partition_key_range
                     .start(),
-                dedup: Some(DedupInformation::self_proposal(EpochSequenceNumber::new(
-                    leader_epoch,
-                ))),
-            },
-            source: Source::Processor {
-                partition_id: self.partition_processor_metadata.partition_id,
-                partition_key: Some(
-                    *self
-                        .partition_processor_metadata
-                        .partition_key_range
-                        .start(),
-                ),
-                leader_epoch,
-                // Kept for backward compatibility.
-                node_id: self.partition_processor_metadata.node_id.as_plain(),
-                generational_node_id: Some(self.partition_processor_metadata.node_id),
-            },
-        };
-
-        let envelope = Envelope::new(
-            header,
-            Command::AnnounceLeader(AnnounceLeader {
-                // todo: Still need to write generational id for supporting rolling back, can be removed
-                //  with the next release.
-                node_id: Some(self.partition_processor_metadata.node_id),
-                leader_epoch,
-                partition_key_range: Some(
-                    self.partition_processor_metadata
-                        .partition_key_range
-                        .clone(),
-                ),
-            }),
-        );
-
-        let envelope = Arc::new(envelope);
-        let log_id = LogId::from(self.partition_processor_metadata.partition_id);
-        let bifrost = self.bifrost.clone();
-
-        // todo replace with background appender and allowing PP to gracefully fail w/o stopping the process
-        let appender_task = task_center().spawn_unmanaged(TaskKind::Background, "announce-leadership", Some(self.partition_processor_metadata.partition_id), async move {
-            loop {
-                // further instructions/commands from PP manager.
-                match bifrost.append(log_id, Arc::clone(&envelope)).await {
-                    // only stop on shutdown
-                    Err(restate_bifrost::Error::Shutdown(_)) => return Err(ShutdownError),
-                    Err(e) => {
-                        info!(
-                        %log_id,
-                        %leader_epoch,
-                        ?e,
-                        "Failed to write the announce leadership message to bifrost. Retrying."
-                    );
-                        // todo: retry with backoff. At the moment, this is very aggressive (intentionally)
-                        // to avoid blocking for too long.
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                    }
-                    Ok(lsn) => {
-                        debug!(
-                        %log_id,
-                        %leader_epoch,
-                        %lsn,
-                        "Written announce leadership message to bifrost."
-                    );
-                        return Ok(());
-                    }
-                }
-            }
-        })?;
+                announce_leader,
+            )
+            .await?;
 
         self.state = State::Candidate {
             leader_epoch,
-            appender_task,
+            self_proposer: Some(self_proposer),
         };
 
         Ok(())
@@ -361,10 +454,17 @@ where
     }
 
     async fn become_leader(&mut self, partition_store: &mut PartitionStore) -> Result<(), Error> {
-        if let State::Candidate { leader_epoch, .. } = self.state {
+        if let State::Candidate {
+            leader_epoch,
+            self_proposer,
+        } = &mut self.state
+        {
             let invoker_rx = Self::resume_invoked_invocations(
                 &mut self.invoker_tx,
-                (self.partition_processor_metadata.partition_id, leader_epoch),
+                (
+                    self.partition_processor_metadata.partition_id,
+                    *leader_epoch,
+                ),
                 self.partition_processor_metadata
                     .partition_key_range
                     .clone(),
@@ -384,7 +484,7 @@ where
             let shuffle = Shuffle::new(
                 ShuffleMetadata::new(
                     self.partition_processor_metadata.partition_id,
-                    leader_epoch,
+                    *leader_epoch,
                     self.partition_processor_metadata.node_id,
                 ),
                 OutboxReader::from(partition_store.clone()),
@@ -402,16 +502,9 @@ where
                 shuffle.run(),
             )?;
 
-            let self_proposer = SelfProposer::new(
-                self.partition_processor_metadata.partition_id,
-                EpochSequenceNumber::new(leader_epoch),
-                &self.bifrost,
-                metadata(),
-            )?;
-
             let cleaner = Cleaner::new(
                 self.partition_processor_metadata.partition_id,
-                leader_epoch,
+                *leader_epoch,
                 self.partition_processor_metadata.node_id,
                 partition_store.clone(),
                 self.bifrost.clone(),
@@ -429,12 +522,17 @@ where
             )?;
 
             self.state = State::Leader(LeaderState {
-                leader_epoch,
+                leader_epoch: *leader_epoch,
+                own_partition_key: *self
+                    .partition_processor_metadata
+                    .partition_key_range
+                    .start(),
+                action_effects_counter: counter!(PARTITION_ACTUATOR_HANDLED),
                 shuffle_task_id,
                 cleaner_task_id,
                 shuffle_hint_tx,
                 timer_service,
-                self_proposer,
+                self_proposer: self_proposer.take().expect("must be present"),
                 awaiting_rpc_actions: Default::default(),
                 awaiting_rpc_self_propose: Default::default(),
                 invoker_stream: ReceiverStream::new(invoker_rx),
@@ -496,8 +594,8 @@ where
             State::Follower => {
                 // nothing to do :-)
             }
-            State::Candidate { appender_task, .. } => {
-                appender_task.abort();
+            State::Candidate { .. } => {
+                // nothing to do :-)
             }
             State::Leader(LeaderState {
                 leader_epoch,
@@ -694,114 +792,23 @@ where
         Ok(())
     }
 
-    pub async fn next_action_effects(&mut self) -> Option<Vec<ActionEffect>> {
+    /// Runs the leadership state tasks. This depends on the current state value:
+    ///
+    /// * Follower: Nothing to do
+    /// * Candidate: Monitor appender task
+    /// * Leader: Process action effects and monitor appender task
+    pub async fn run(&mut self) -> Result<Never, Error> {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => None,
-            State::Leader(leader_state) => {
-                let timer_stream = std::pin::pin!(stream::unfold(
-                    &mut leader_state.timer_service,
-                    |timer_service| async {
-                        let timer_value = timer_service.as_mut().next_timer().await;
-                        Some((ActionEffect::Timer(timer_value), timer_service))
-                    }
-                ));
-
-                let invoker_stream = (&mut leader_state.invoker_stream).map(ActionEffect::Invoker);
-                let shuffle_stream = (&mut leader_state.shuffle_stream).map(ActionEffect::Shuffle);
-                let action_effects_stream = stream::unfold(
-                    &mut leader_state.pending_cleanup_timers_to_schedule,
-                    |pending_cleanup_timers_to_schedule| {
-                        let result = pending_cleanup_timers_to_schedule.pop_front();
-                        future::ready(result.map(|(invocation_id, duration)| {
-                            (
-                                ActionEffect::ScheduleCleanupTimer(invocation_id, duration),
-                                pending_cleanup_timers_to_schedule,
-                            )
-                        }))
-                    },
-                )
-                .fuse();
-                let awaiting_rpc_self_propose_stream = (&mut leader_state
-                    .awaiting_rpc_self_propose)
-                    .map(|_| ActionEffect::AwaitingRpcSelfProposeDone);
-
-                let all_streams = futures::stream_select!(
-                    invoker_stream,
-                    shuffle_stream,
-                    timer_stream,
-                    action_effects_stream,
-                    awaiting_rpc_self_propose_stream
-                );
-                let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
-                all_streams.next().await
+            State::Follower => Ok(futures::future::pending::<Never>().await),
+            State::Candidate { self_proposer, .. } => {
+                self_proposer
+                    .as_mut()
+                    .expect("must be present")
+                    .join_on_err()
+                    .await
             }
+            State::Leader(leader_state) => leader_state.run().await,
         }
-    }
-
-    pub async fn handle_action_effect(
-        &mut self,
-        action_effects: impl IntoIterator<Item = ActionEffect>,
-    ) -> anyhow::Result<()> {
-        match &mut self.state {
-            State::Follower | State::Candidate { .. } => {
-                // nothing to do :-)
-            }
-            State::Leader(leader_state) => {
-                for effect in action_effects {
-                    match effect {
-                        ActionEffect::Invoker(invoker_effect) => {
-                            leader_state
-                                .self_proposer
-                                .propose(
-                                    invoker_effect.invocation_id.partition_key(),
-                                    Command::InvokerEffect(invoker_effect),
-                                )
-                                .await?;
-                        }
-                        ActionEffect::Shuffle(outbox_truncation) => {
-                            // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
-                            //  specific destination messages that are identified by a partition_id
-                            leader_state
-                                .self_proposer
-                                .propose(
-                                    *self
-                                        .partition_processor_metadata
-                                        .partition_key_range
-                                        .start(),
-                                    Command::TruncateOutbox(outbox_truncation.index()),
-                                )
-                                .await?;
-                        }
-                        ActionEffect::Timer(timer) => {
-                            leader_state
-                                .self_proposer
-                                .propose(
-                                    timer.invocation_id().partition_key(),
-                                    Command::Timer(timer),
-                                )
-                                .await?;
-                        }
-                        ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
-                            leader_state
-                                .self_proposer
-                                .propose(
-                                    invocation_id.partition_key(),
-                                    Command::ScheduleTimer(TimerKeyValue::clean_invocation_status(
-                                        MillisSinceEpoch::from(SystemTime::now() + duration),
-                                        invocation_id,
-                                    )),
-                                )
-                                .await?;
-                        }
-                        ActionEffect::AwaitingRpcSelfProposeDone => {
-                            // Nothing to do here
-                        }
-                    }
-                }
-            }
-        };
-
-        Ok(())
     }
 
     pub async fn handle_rpc_proposal_command(
@@ -1035,8 +1042,8 @@ impl SelfProposer {
     }
 
     fn create_header(&mut self, partition_key: PartitionKey) -> Header {
-        let esn = self.epoch_sequence_number.next();
-        self.epoch_sequence_number = esn;
+        let esn = self.epoch_sequence_number;
+        self.epoch_sequence_number = self.epoch_sequence_number.next();
 
         let my_node_id = self.metadata.my_node_id();
         Header {
@@ -1048,10 +1055,23 @@ impl SelfProposer {
                 partition_id: self.partition_id,
                 partition_key: Some(partition_key),
                 leader_epoch: self.epoch_sequence_number.leader_epoch,
+                // Kept for backward compatibility.
                 node_id: my_node_id.as_plain(),
                 generational_node_id: Some(my_node_id),
             },
         }
+    }
+
+    /// Waits for self proposer to fail. This method will only complete with an error if the self
+    /// proposer has failed. There is no guarantee up to which point the self proposer has finished
+    /// processing the proposed commands.
+    pub async fn join_on_err(&mut self) -> Result<Never, Error> {
+        let result = self.bifrost_appender.join().await;
+
+        Err(match result {
+            Ok(()) => Error::task_terminated_unexpectedly(BIFROST_APPENDER_TASK),
+            Err(err) => Error::task_failed(BIFROST_APPENDER_TASK, err),
+        })
     }
 }
 
