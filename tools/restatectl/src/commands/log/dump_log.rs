@@ -18,7 +18,7 @@ use tracing::{debug, info};
 
 use restate_bifrost::BifrostService;
 use restate_core::network::MessageRouterBuilder;
-use restate_core::{MetadataBuilder, MetadataManager, TaskKind};
+use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, TaskKind};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
@@ -59,7 +59,7 @@ struct DecodedLogRecord {
 }
 
 async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
-    run_in_task_center(opts.config_file.as_ref(), |config, tc| async move {
+    run_in_task_center(opts.config_file.as_ref(), |config| async move {
         if !config.bifrost.local.data_dir().exists() {
             bail!(
                 "The specified path '{}' does not contain a local-loglet directory.",
@@ -72,7 +72,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
 
         let metadata_builder = MetadataBuilder::default();
         let metadata = metadata_builder.to_metadata();
-        tc.try_set_global_metadata(metadata.clone());
+        TaskCenter::try_set_global_metadata(metadata.clone());
 
         let metadata_store_client = metadata_store::start_metadata_store(
             config.common.metadata_store_client.clone(),
@@ -80,7 +80,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
             Live::from_value(config.metadata_store.clone())
                 .map(|c| &c.rocksdb)
                 .boxed(),
-            &tc,
+            &TaskCenter::current(),
         )
         .await?;
         debug!("Metadata store client created");
@@ -90,19 +90,19 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
         let mut router_builder = MessageRouterBuilder::default();
         metadata_manager.register_in_message_router(&mut router_builder);
 
-        tc.spawn(
+        TaskCenter::current().spawn(
             TaskKind::SystemService,
             "metadata-manager",
             None,
             metadata_manager.run(),
         )?;
 
-        let bifrost_svc = BifrostService::new(tc.clone(), metadata.clone())
+        let bifrost_svc = BifrostService::new(TaskCenter::current(), metadata.clone())
             .enable_local_loglet(&Configuration::updateable());
 
         let bifrost = bifrost_svc.handle();
         // Ensures bifrost has initial metadata synced up before starting the worker.
-        // Need to run start in new tc scope to have access to metadata()
+        // Need to run start in tc scope to have access to metadata()
         bifrost_svc.start().await?;
 
         let log_id = LogId::from(opts.log_id);

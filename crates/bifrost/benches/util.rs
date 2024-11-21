@@ -13,6 +13,7 @@ use tracing::warn;
 
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter, TaskCenterBuilder,
+    TaskCenterFutureExt,
 };
 use restate_metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
@@ -34,25 +35,30 @@ pub async fn spawn_environment(
         .build()
         .expect("task_center builds");
 
-    restate_types::config::set_current_config(config.clone());
-    let metadata_builder = MetadataBuilder::default();
+    async {
+        restate_types::config::set_current_config(config.clone());
+        let metadata_builder = MetadataBuilder::default();
 
-    let metadata_store_client = MetadataStoreClient::new_in_memory();
-    let metadata = metadata_builder.to_metadata();
-    let metadata_manager = MetadataManager::new(metadata_builder, metadata_store_client.clone());
+        let metadata_store_client = MetadataStoreClient::new_in_memory();
+        let metadata = metadata_builder.to_metadata();
+        let metadata_manager =
+            MetadataManager::new(metadata_builder, metadata_store_client.clone());
 
-    let metadata_writer = metadata_manager.writer();
-    tc.try_set_global_metadata(metadata.clone());
+        let metadata_writer = metadata_manager.writer();
+        TaskCenter::try_set_global_metadata(metadata.clone());
 
-    tc.run_in_scope_sync(|| RocksDbManager::init(Constant::new(config.common)));
+        RocksDbManager::init(Constant::new(config.common));
 
-    let logs = restate_types::logs::metadata::bootstrap_logs_metadata(provider, None, num_logs);
+        let logs = restate_types::logs::metadata::bootstrap_logs_metadata(provider, None, num_logs);
 
-    metadata_store_client
-        .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
-        .await
-        .expect("to store bifrost config in metadata store");
-    metadata_writer.submit(Arc::new(logs));
-    spawn_metadata_manager(&tc, metadata_manager).expect("metadata manager starts");
+        metadata_store_client
+            .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
+            .await
+            .expect("to store bifrost config in metadata store");
+        metadata_writer.submit(Arc::new(logs));
+        spawn_metadata_manager(metadata_manager).expect("metadata manager starts");
+    }
+    .with_task_center(&tc)
+    .await;
     tc
 }

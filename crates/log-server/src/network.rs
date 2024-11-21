@@ -20,8 +20,8 @@ use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, trace};
 use xxhash_rust::xxh3::Xxh3Builder;
 
+use restate_core::cancellation_watcher;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
-use restate_core::{cancellation_watcher, Metadata, TaskCenter};
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
@@ -39,8 +39,6 @@ const DEFAULT_WRITERS_CAPACITY: usize = 128;
 type LogletWorkerMap = HashMap<ReplicatedLogletId, LogletWorkerHandle, Xxh3Builder>;
 
 pub struct RequestPump {
-    task_center: TaskCenter,
-    _metadata: Metadata,
     _configuration: Live<Configuration>,
     store_stream: MessageStream<Store>,
     release_stream: MessageStream<Release>,
@@ -54,8 +52,6 @@ pub struct RequestPump {
 
 impl RequestPump {
     pub fn new(
-        task_center: TaskCenter,
-        metadata: Metadata,
         mut configuration: Live<Configuration>,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
@@ -74,8 +70,6 @@ impl RequestPump {
         let wait_for_tail_stream = router_builder.subscribe_to_stream(queue_length);
         let get_digest_stream = router_builder.subscribe_to_stream(queue_length);
         Self {
-            task_center,
-            _metadata: metadata,
             _configuration: configuration,
             store_stream,
             release_stream,
@@ -100,7 +94,6 @@ impl RequestPump {
         S: LogStore + Clone + Sync + Send + 'static,
     {
         let RequestPump {
-            task_center,
             mut store_stream,
             mut release_stream,
             mut seal_stream,
@@ -148,7 +141,6 @@ impl RequestPump {
                     let worker = Self::find_or_create_worker(
                         get_digest.body().header.loglet_id,
                         &log_store,
-                        &task_center,
                         &state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -160,7 +152,6 @@ impl RequestPump {
                     let worker = Self::find_or_create_worker(
                         wait_for_tail.body().header.loglet_id,
                         &log_store,
-                        &task_center,
                         &state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -172,7 +163,6 @@ impl RequestPump {
                     let worker = Self::find_or_create_worker(
                         release.body().header.loglet_id,
                         &log_store,
-                        &task_center,
                         &state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -184,7 +174,6 @@ impl RequestPump {
                     let worker = Self::find_or_create_worker(
                         seal.body().header.loglet_id,
                         &log_store,
-                        &task_center,
                         &state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -196,7 +185,6 @@ impl RequestPump {
                     let worker = Self::find_or_create_worker(
                         get_loglet_info.body().header.loglet_id,
                         &log_store,
-                        &task_center,
                         &state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -208,7 +196,6 @@ impl RequestPump {
                     let worker = Self::find_or_create_worker(
                         get_records.body().header.loglet_id,
                         &log_store,
-                        &task_center,
                         &state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -220,7 +207,6 @@ impl RequestPump {
                     let worker = Self::find_or_create_worker(
                         trim.body().header.loglet_id,
                         &log_store,
-                        &task_center,
                         &state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -232,7 +218,6 @@ impl RequestPump {
                     let worker = Self::find_or_create_worker(
                         store.body().header.loglet_id,
                         &log_store,
-                        &task_center,
                         &state_map,
                         &mut loglet_workers,
                     ).await?;
@@ -329,7 +314,6 @@ impl RequestPump {
     async fn find_or_create_worker<'a, S: LogStore>(
         loglet_id: ReplicatedLogletId,
         log_store: &S,
-        task_center: &TaskCenter,
         state_map: &LogletStateMap,
         loglet_workers: &'a mut LogletWorkerMap,
     ) -> anyhow::Result<&'a LogletWorkerHandle> {
@@ -338,12 +322,7 @@ impl RequestPump {
                 .get_or_load(loglet_id, log_store)
                 .await
                 .context("cannot load loglet state map from logstore")?;
-            let handle = LogletWorker::start(
-                task_center.clone(),
-                loglet_id,
-                log_store.clone(),
-                state.clone(),
-            )?;
+            let handle = LogletWorker::start(loglet_id, log_store.clone(), state.clone())?;
             e.insert(handle);
         }
 

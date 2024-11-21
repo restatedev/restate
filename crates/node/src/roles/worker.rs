@@ -16,7 +16,8 @@ use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
-use restate_core::{cancellation_watcher, task_center, Metadata, MetadataKind};
+use restate_core::TaskCenter;
+use restate_core::{cancellation_watcher, Metadata, MetadataKind};
 use restate_core::{ShutdownError, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
@@ -103,16 +104,14 @@ impl WorkerRole {
     }
 
     pub async fn start(self) -> anyhow::Result<()> {
-        let tc = task_center();
         // todo: only run subscriptions on node 0 once being distributed
-        tc.spawn_child(
+        TaskCenter::spawn_child(
             TaskKind::MetadataBackgroundSync,
             "subscription_controller",
-            None,
             Self::watch_subscriptions(self.metadata, self.worker.subscription_controller_handle()),
         )?;
 
-        tc.spawn_child(TaskKind::RoleRunner, "worker-service", None, async {
+        TaskCenter::spawn_child(TaskKind::RoleRunner, "worker-service", async {
             self.worker.run().await
         })?;
 

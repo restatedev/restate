@@ -93,7 +93,6 @@ impl LogletWorkerHandle {
 }
 
 pub struct LogletWorker<S> {
-    task_center: TaskCenter,
     loglet_id: ReplicatedLogletId,
     log_store: S,
     loglet_state: LogletState,
@@ -101,13 +100,11 @@ pub struct LogletWorker<S> {
 
 impl<S: LogStore> LogletWorker<S> {
     pub fn start(
-        task_center: TaskCenter,
         loglet_id: ReplicatedLogletId,
         log_store: S,
         loglet_state: LogletState,
     ) -> Result<LogletWorkerHandle, ShutdownError> {
         let writer = Self {
-            task_center: task_center.clone(),
             loglet_id,
             log_store,
             loglet_state,
@@ -121,7 +118,8 @@ impl<S: LogStore> LogletWorker<S> {
         let (trim_tx, trim_rx) = mpsc::unbounded_channel();
         let (wait_for_tail_tx, wait_for_tail_rx) = mpsc::unbounded_channel();
         let (get_digest_tx, get_digest_rx) = mpsc::unbounded_channel();
-        let tc_handle = task_center.spawn_unmanaged(
+        // todo
+        let tc_handle = TaskCenter::current().spawn_unmanaged(
             TaskKind::LogletWriter,
             "loglet-worker",
             None,
@@ -423,7 +421,7 @@ impl<S: LogStore> LogletWorker<S> {
     fn process_wait_for_tail(&mut self, msg: Incoming<WaitForTail>) {
         let loglet_state = self.loglet_state.clone();
         // fails on shutdown, in this case, we ignore the request
-        let _ = self.task_center.spawn(
+        let _ = TaskCenter::current().spawn(
             TaskKind::Disposable,
             "logserver-tail-monitor",
             None,
@@ -465,7 +463,7 @@ impl<S: LogStore> LogletWorker<S> {
         let log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
         // fails on shutdown, in this case, we ignore the request
-        let _ = self.task_center.spawn(
+        let _ = TaskCenter::current().spawn(
             TaskKind::Disposable,
             "logserver-get-records",
             None,
@@ -500,7 +498,7 @@ impl<S: LogStore> LogletWorker<S> {
         let log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
         // fails on shutdown, in this case, we ignore the request
-        let _ = self.task_center.spawn(
+        let _ = TaskCenter::current().spawn(
             TaskKind::Disposable,
             "logserver-get-digest",
             None,
@@ -538,8 +536,8 @@ impl<S: LogStore> LogletWorker<S> {
         // fails on shutdown, in this case, we ignore the request
         let mut loglet_state = self.loglet_state.clone();
         let log_store = self.log_store.clone();
-        let _ = self
-            .task_center
+        let _ =
+            TaskCenter::current()
             .spawn(TaskKind::Disposable, "logserver-trim", None, async move {
                 let loglet_id = msg.body().header.loglet_id;
                 let new_trim_point = msg.body().trim_point;
@@ -616,7 +614,7 @@ mod tests {
     use test_log::test;
 
     use restate_core::network::OwnedConnection;
-    use restate_core::{MetadataBuilder, TaskCenter, TaskCenterBuilder};
+    use restate_core::{MetadataBuilder, TaskCenter, TaskCenterBuilder, TaskCenterFutureExt};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
@@ -636,498 +634,738 @@ mod tests {
         let tc = TaskCenterBuilder::default_for_tests().build()?;
         let config = Live::from_value(Configuration::default());
         let common_rocks_opts = config.clone().map(|c| &c.common);
-        let log_store = tc
-            .run_in_scope("test-setup", None, async {
-                RocksDbManager::init(common_rocks_opts);
-                let metadata_builder = MetadataBuilder::default();
-                assert!(tc.try_set_global_metadata(metadata_builder.to_metadata()));
-                // create logstore.
-                let builder = RocksDbLogStoreBuilder::create(
-                    config.clone().map(|c| &c.log_server).boxed(),
-                    config.map(|c| &c.log_server.rocksdb).boxed(),
-                    RecordCache::new(1_000_000),
-                )
-                .await?;
-                let log_store = builder.start(&tc, Default::default()).await?;
-                Result::Ok(log_store)
-            })
+        let log_store = async {
+            RocksDbManager::init(common_rocks_opts);
+            let metadata_builder = MetadataBuilder::default();
+            assert!(TaskCenter::try_set_global_metadata(
+                metadata_builder.to_metadata()
+            ));
+            // create logstore.
+            let builder = RocksDbLogStoreBuilder::create(
+                config.clone().map(|c| &c.log_server).boxed(),
+                config.map(|c| &c.log_server.rocksdb).boxed(),
+                RecordCache::new(1_000_000),
+            )
             .await?;
+            let log_store = builder.start(Default::default()).await?;
+            Result::Ok(log_store)
+        }
+        .with_task_center(&tc)
+        .await?;
         Ok((tc, log_store))
     }
 
     #[test(tokio::test(start_paused = true))]
     async fn test_simple_store_flow() -> Result<()> {
-        const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
-
         let (tc, log_store) = setup().await?;
-        let loglet_state_map = LogletStateMap::default();
-        let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        async {
+            const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
+            const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
+            let loglet_state_map = LogletStateMap::default();
+            let (net_tx, mut net_rx) = mpsc::channel(10);
+            let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
-        let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
-        let worker = LogletWorker::start(tc.clone(), LOGLET, log_store, loglet_state)?;
+            let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
+            let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
 
-        let payloads: Arc<[Record]> = vec![
-            Record::from("a sample record"),
-            Record::from("another record"),
-        ]
-        .into();
+            let payloads: Arc<[Record]> = vec![
+                Record::from("a sample record"),
+                Record::from("another record"),
+            ]
+            .into();
 
-        // offsets 1, 2
-        let msg1 = Store {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-            timeout_at: None,
-            sequencer: SEQUENCER,
-            known_archived: LogletOffset::INVALID,
-            first_offset: LogletOffset::OLDEST,
-            flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
-        };
+            // offsets 1, 2
+            let msg1 = Store {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                timeout_at: None,
+                sequencer: SEQUENCER,
+                known_archived: LogletOffset::INVALID,
+                first_offset: LogletOffset::OLDEST,
+                flags: StoreFlags::empty(),
+                payloads: payloads.clone(),
+            };
 
-        // offsets 3, 4
-        let msg2 = Store {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-            timeout_at: None,
-            sequencer: SEQUENCER,
-            known_archived: LogletOffset::INVALID,
-            first_offset: LogletOffset::new(3),
-            flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
-        };
+            // offsets 3, 4
+            let msg2 = Store {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                timeout_at: None,
+                sequencer: SEQUENCER,
+                known_archived: LogletOffset::INVALID,
+                first_offset: LogletOffset::new(3),
+                flags: StoreFlags::empty(),
+                payloads: payloads.clone(),
+            };
 
-        let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
-        let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
-        let msg1_id = msg1.msg_id();
-        let msg2_id = msg2.msg_id();
+            let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
+            let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
+            let msg1_id = msg1.msg_id();
+            let msg2_id = msg2.msg_id();
 
-        // pipelined writes
-        worker.enqueue_store(msg1).unwrap();
-        worker.enqueue_store(msg2).unwrap();
-        // wait for response (in test-env, it's safe to assume that responses will arrive in order)
-        let response = net_rx.recv().await.unwrap();
-        let header = response.header.unwrap();
-        assert_that!(header.in_response_to(), eq(msg1_id));
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(stored.status, eq(Status::Ok));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
+            // pipelined writes
+            worker.enqueue_store(msg1).unwrap();
+            worker.enqueue_store(msg2).unwrap();
+            // wait for response (in test-env, it's safe to assume that responses will arrive in order)
+            let response = net_rx.recv().await.unwrap();
+            let header = response.header.unwrap();
+            assert_that!(header.in_response_to(), eq(msg1_id));
+            let stored: Stored = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(stored.status, eq(Status::Ok));
+            assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
 
-        // response 2
-        let response = net_rx.recv().await.unwrap();
-        let header = response.header.unwrap();
-        assert_that!(header.in_response_to(), eq(msg2_id));
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(stored.status, eq(Status::Ok));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(5)));
+            // response 2
+            let response = net_rx.recv().await.unwrap();
+            let header = response.header.unwrap();
+            assert_that!(header.in_response_to(), eq(msg2_id));
+            let stored: Stored = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(stored.status, eq(Status::Ok));
+            assert_that!(stored.local_tail, eq(LogletOffset::new(5)));
 
-        tc.shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
+            tc.shutdown_node("test completed", 0).await;
+            RocksDbManager::get().shutdown().await;
 
-        Ok(())
+            Ok(())
+        }
+        .with_task_center(&tc)
+        .await
     }
 
     #[test(tokio::test(start_paused = true))]
     async fn test_store_and_seal() -> Result<()> {
-        const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
-
         let (tc, log_store) = setup().await?;
-        let loglet_state_map = LogletStateMap::default();
-        let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        async {
+            const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
+            const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
+            let loglet_state_map = LogletStateMap::default();
+            let (net_tx, mut net_rx) = mpsc::channel(10);
+            let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
-        let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
-        let worker = LogletWorker::start(tc.clone(), LOGLET, log_store, loglet_state)?;
+            let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
+            let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
 
-        let payloads: Arc<[Record]> = vec![
-            Record::from("a sample record"),
-            Record::from("another record"),
-        ]
-        .into();
+            let payloads: Arc<[Record]> = vec![
+                Record::from("a sample record"),
+                Record::from("another record"),
+            ]
+            .into();
 
-        // offsets 1, 2
-        let msg1 = Store {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-            timeout_at: None,
-            sequencer: SEQUENCER,
-            known_archived: LogletOffset::INVALID,
-            first_offset: LogletOffset::OLDEST,
-            flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
-        };
+            // offsets 1, 2
+            let msg1 = Store {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                timeout_at: None,
+                sequencer: SEQUENCER,
+                known_archived: LogletOffset::INVALID,
+                first_offset: LogletOffset::OLDEST,
+                flags: StoreFlags::empty(),
+                payloads: payloads.clone(),
+            };
 
-        let seal1 = Seal {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-            sequencer: SEQUENCER,
-        };
+            let seal1 = Seal {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                sequencer: SEQUENCER,
+            };
 
-        let seal2 = Seal {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-            sequencer: SEQUENCER,
-        };
+            let seal2 = Seal {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                sequencer: SEQUENCER,
+            };
 
-        // offsets 3, 4
-        let msg2 = Store {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-            timeout_at: None,
-            sequencer: SEQUENCER,
-            known_archived: LogletOffset::INVALID,
-            first_offset: LogletOffset::new(3),
-            flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
-        };
+            // offsets 3, 4
+            let msg2 = Store {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                timeout_at: None,
+                sequencer: SEQUENCER,
+                known_archived: LogletOffset::INVALID,
+                first_offset: LogletOffset::new(3),
+                flags: StoreFlags::empty(),
+                payloads: payloads.clone(),
+            };
 
-        let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
-        let seal1 = Incoming::for_testing(connection.downgrade(), seal1, None);
-        let seal2 = Incoming::for_testing(connection.downgrade(), seal2, None);
-        let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
-        let msg1_id = msg1.msg_id();
-        let seal1_id = seal1.msg_id();
-        let seal2_id = seal2.msg_id();
-        let msg2_id = msg2.msg_id();
+            let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
+            let seal1 = Incoming::for_testing(connection.downgrade(), seal1, None);
+            let seal2 = Incoming::for_testing(connection.downgrade(), seal2, None);
+            let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
+            let msg1_id = msg1.msg_id();
+            let seal1_id = seal1.msg_id();
+            let seal2_id = seal2.msg_id();
+            let msg2_id = msg2.msg_id();
 
-        worker.enqueue_store(msg1).unwrap();
-        // first store is successful
-        let response = net_rx.recv().await.unwrap();
-        let header = response.header.unwrap();
-        assert_that!(header.in_response_to(), eq(msg1_id));
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(stored.status, eq(Status::Ok));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
-        worker.enqueue_seal(seal1).unwrap();
-        // should latch onto existing seal
-        worker.enqueue_seal(seal2).unwrap();
-        // seal takes precedence, but it gets processed in the background. This store is likely to
-        // observe Status::Sealing
-        worker.enqueue_store(msg2).unwrap();
-        // sealing
-        let response = net_rx.recv().await.unwrap();
-        let header = response.header.unwrap();
-        assert_that!(header.in_response_to(), eq(msg2_id));
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(stored.status, eq(Status::Sealing));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
-        // seal responses can come at any order, but we'll consume waiters queue before we process
-        // store messages.
-        // sealed
-        let response = net_rx.recv().await.unwrap();
-        let header = response.header.unwrap();
-        assert_that!(header.in_response_to(), any!(eq(seal1_id), eq(seal2_id)));
-        let sealed: Sealed = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(sealed.status, eq(Status::Ok));
-        assert_that!(sealed.local_tail, eq(LogletOffset::new(3)));
+            worker.enqueue_store(msg1).unwrap();
+            // first store is successful
+            let response = net_rx.recv().await.unwrap();
+            let header = response.header.unwrap();
+            assert_that!(header.in_response_to(), eq(msg1_id));
+            let stored: Stored = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(stored.status, eq(Status::Ok));
+            assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
+            worker.enqueue_seal(seal1).unwrap();
+            // should latch onto existing seal
+            worker.enqueue_seal(seal2).unwrap();
+            // seal takes precedence, but it gets processed in the background. This store is likely to
+            // observe Status::Sealing
+            worker.enqueue_store(msg2).unwrap();
+            // sealing
+            let response = net_rx.recv().await.unwrap();
+            let header = response.header.unwrap();
+            assert_that!(header.in_response_to(), eq(msg2_id));
+            let stored: Stored = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(stored.status, eq(Status::Sealing));
+            assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
+            // seal responses can come at any order, but we'll consume waiters queue before we process
+            // store messages.
+            // sealed
+            let response = net_rx.recv().await.unwrap();
+            let header = response.header.unwrap();
+            assert_that!(header.in_response_to(), any!(eq(seal1_id), eq(seal2_id)));
+            let sealed: Sealed = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(sealed.status, eq(Status::Ok));
+            assert_that!(sealed.local_tail, eq(LogletOffset::new(3)));
 
-        // sealed2
-        let response = net_rx.recv().await.unwrap();
-        let header = response.header.unwrap();
-        assert_that!(header.in_response_to(), any!(eq(seal1_id), eq(seal2_id)));
-        let sealed: Sealed = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(sealed.status, eq(Status::Ok));
-        assert_that!(sealed.local_tail, eq(LogletOffset::new(3)));
+            // sealed2
+            let response = net_rx.recv().await.unwrap();
+            let header = response.header.unwrap();
+            assert_that!(header.in_response_to(), any!(eq(seal1_id), eq(seal2_id)));
+            let sealed: Sealed = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(sealed.status, eq(Status::Ok));
+            assert_that!(sealed.local_tail, eq(LogletOffset::new(3)));
 
-        // try another store
-        let msg3 = Store {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(3)),
-            timeout_at: None,
-            sequencer: SEQUENCER,
-            known_archived: LogletOffset::INVALID,
-            first_offset: LogletOffset::new(3),
-            flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
-        };
-        let msg3 = Incoming::for_testing(connection.downgrade(), msg3, None);
-        let msg3_id = msg3.msg_id();
-        worker.enqueue_store(msg3).unwrap();
-        let response = net_rx.recv().await.unwrap();
-        let header = response.header.unwrap();
-        assert_that!(header.in_response_to(), eq(msg3_id));
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(stored.status, eq(Status::Sealed));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
+            // try another store
+            let msg3 = Store {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(3)),
+                timeout_at: None,
+                sequencer: SEQUENCER,
+                known_archived: LogletOffset::INVALID,
+                first_offset: LogletOffset::new(3),
+                flags: StoreFlags::empty(),
+                payloads: payloads.clone(),
+            };
+            let msg3 = Incoming::for_testing(connection.downgrade(), msg3, None);
+            let msg3_id = msg3.msg_id();
+            worker.enqueue_store(msg3).unwrap();
+            let response = net_rx.recv().await.unwrap();
+            let header = response.header.unwrap();
+            assert_that!(header.in_response_to(), eq(msg3_id));
+            let stored: Stored = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(stored.status, eq(Status::Sealed));
+            assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
 
-        // GetLogletInfo
-        // offsets 3, 4
-        let msg = GetLogletInfo {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-        };
-        let msg = Incoming::for_testing(connection.downgrade(), msg, None);
-        let msg_id = msg.msg_id();
-        worker.enqueue_get_loglet_info(msg).unwrap();
+            // GetLogletInfo
+            // offsets 3, 4
+            let msg = GetLogletInfo {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+            };
+            let msg = Incoming::for_testing(connection.downgrade(), msg, None);
+            let msg_id = msg.msg_id();
+            worker.enqueue_get_loglet_info(msg).unwrap();
 
-        let response = net_rx.recv().await.unwrap();
-        let header = response.header.unwrap();
-        assert_that!(header.in_response_to(), eq(msg_id));
-        let info: LogletInfo = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(info.status, eq(Status::Ok));
-        assert_that!(info.local_tail, eq(LogletOffset::new(3)));
-        assert_that!(info.trim_point, eq(LogletOffset::INVALID));
-        assert_that!(info.sealed, eq(true));
+            let response = net_rx.recv().await.unwrap();
+            let header = response.header.unwrap();
+            assert_that!(header.in_response_to(), eq(msg_id));
+            let info: LogletInfo = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(info.status, eq(Status::Ok));
+            assert_that!(info.local_tail, eq(LogletOffset::new(3)));
+            assert_that!(info.trim_point, eq(LogletOffset::INVALID));
+            assert_that!(info.sealed, eq(true));
 
-        tc.shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
-
-        Ok(())
+            tc.shutdown_node("test completed", 0).await;
+            RocksDbManager::get().shutdown().await;
+            Ok(())
+        }
+        .with_task_center(&tc)
+        .await
     }
 
     #[test(tokio::test(start_paused = true))]
     async fn test_repair_store() -> Result<()> {
-        const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const PEER: GenerationalNodeId = GenerationalNodeId::new(2, 2);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
-
         let (tc, log_store) = setup().await?;
-        let loglet_state_map = LogletStateMap::default();
-        let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        async {
+            const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
+            const PEER: GenerationalNodeId = GenerationalNodeId::new(2, 2);
+            const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
+            let loglet_state_map = LogletStateMap::default();
+            let (net_tx, mut net_rx) = mpsc::channel(10);
+            let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
-        let (peer_net_tx, mut peer_net_rx) = mpsc::channel(10);
-        let repair_connection =
-            OwnedConnection::new_fake(PEER, CURRENT_PROTOCOL_VERSION, peer_net_tx);
+            let (peer_net_tx, mut peer_net_rx) = mpsc::channel(10);
+            let repair_connection =
+                OwnedConnection::new_fake(PEER, CURRENT_PROTOCOL_VERSION, peer_net_tx);
 
-        let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
-        let worker = LogletWorker::start(tc.clone(), LOGLET, log_store, loglet_state)?;
+            let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
+            let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
 
-        let payloads: Arc<[Record]> = vec![
-            Record::from("a sample record"),
-            Record::from("another record"),
-        ]
-        .into();
+            let payloads: Arc<[Record]> = vec![
+                Record::from("a sample record"),
+                Record::from("another record"),
+            ]
+            .into();
 
-        // offsets 1, 2
-        let msg1 = Store {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-            timeout_at: None,
-            sequencer: SEQUENCER,
-            known_archived: LogletOffset::INVALID,
-            first_offset: LogletOffset::OLDEST,
-            flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
-        };
+            // offsets 1, 2
+            let msg1 = Store {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                timeout_at: None,
+                sequencer: SEQUENCER,
+                known_archived: LogletOffset::INVALID,
+                first_offset: LogletOffset::OLDEST,
+                flags: StoreFlags::empty(),
+                payloads: payloads.clone(),
+            };
 
-        // offsets 10, 11
-        let msg2 = Store {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
-            timeout_at: None,
-            sequencer: SEQUENCER,
-            known_archived: LogletOffset::INVALID,
-            first_offset: LogletOffset::new(10),
-            flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
-        };
+            // offsets 10, 11
+            let msg2 = Store {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
+                timeout_at: None,
+                sequencer: SEQUENCER,
+                known_archived: LogletOffset::INVALID,
+                first_offset: LogletOffset::new(10),
+                flags: StoreFlags::empty(),
+                payloads: payloads.clone(),
+            };
 
-        let seal1 = Seal {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-            sequencer: SEQUENCER,
-        };
+            let seal1 = Seal {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                sequencer: SEQUENCER,
+            };
 
-        // 5, 6
-        let repair_message_before_local_tail = Store {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
-            timeout_at: None,
-            sequencer: SEQUENCER,
-            known_archived: LogletOffset::INVALID,
-            first_offset: LogletOffset::new(5),
-            flags: StoreFlags::IgnoreSeal,
-            payloads: payloads.clone(),
-        };
+            // 5, 6
+            let repair_message_before_local_tail = Store {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
+                timeout_at: None,
+                sequencer: SEQUENCER,
+                known_archived: LogletOffset::INVALID,
+                first_offset: LogletOffset::new(5),
+                flags: StoreFlags::IgnoreSeal,
+                payloads: payloads.clone(),
+            };
 
-        // 16, 17
-        let repair_message_after_local_tail = Store {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(16)),
-            timeout_at: None,
-            sequencer: SEQUENCER,
-            known_archived: LogletOffset::INVALID,
-            first_offset: LogletOffset::new(16),
-            flags: StoreFlags::IgnoreSeal,
-            payloads: payloads.clone(),
-        };
+            // 16, 17
+            let repair_message_after_local_tail = Store {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(16)),
+                timeout_at: None,
+                sequencer: SEQUENCER,
+                known_archived: LogletOffset::INVALID,
+                first_offset: LogletOffset::new(16),
+                flags: StoreFlags::IgnoreSeal,
+                payloads: payloads.clone(),
+            };
 
-        let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
-        let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
-        let repair1 = Incoming::for_testing(
-            repair_connection.downgrade(),
-            repair_message_before_local_tail,
-            None,
-        );
-        let repair2 = Incoming::for_testing(
-            repair_connection.downgrade(),
-            repair_message_after_local_tail,
-            None,
-        );
-        let seal1 = Incoming::for_testing(connection.downgrade(), seal1, None);
+            let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
+            let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
+            let repair1 = Incoming::for_testing(
+                repair_connection.downgrade(),
+                repair_message_before_local_tail,
+                None,
+            );
+            let repair2 = Incoming::for_testing(
+                repair_connection.downgrade(),
+                repair_message_after_local_tail,
+                None,
+            );
+            let seal1 = Incoming::for_testing(connection.downgrade(), seal1, None);
 
-        worker.enqueue_store(msg1).unwrap();
-        worker.enqueue_store(msg2).unwrap();
-        // first store is successful
-        let response = net_rx.recv().await.unwrap();
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(stored.status, eq(Status::Ok));
-        assert_that!(stored.sealed, eq(false));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
+            worker.enqueue_store(msg1).unwrap();
+            worker.enqueue_store(msg2).unwrap();
+            // first store is successful
+            let response = net_rx.recv().await.unwrap();
+            let stored: Stored = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(stored.status, eq(Status::Ok));
+            assert_that!(stored.sealed, eq(false));
+            assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
 
-        // 10, 11
-        let response = net_rx.recv().await.unwrap();
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(stored.status, eq(Status::Ok));
-        assert_that!(stored.sealed, eq(false));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(12)));
+            // 10, 11
+            let response = net_rx.recv().await.unwrap();
+            let stored: Stored = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(stored.status, eq(Status::Ok));
+            assert_that!(stored.sealed, eq(false));
+            assert_that!(stored.local_tail, eq(LogletOffset::new(12)));
 
-        worker.enqueue_seal(seal1).unwrap();
-        // seal responses can come at any order, but we'll consume waiters queue before we process
-        // store messages.
-        // sealed
-        let response = net_rx.recv().await.unwrap();
-        let sealed: Sealed = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(sealed.status, eq(Status::Ok));
-        assert_that!(sealed.local_tail, eq(LogletOffset::new(12)));
+            worker.enqueue_seal(seal1).unwrap();
+            // seal responses can come at any order, but we'll consume waiters queue before we process
+            // store messages.
+            // sealed
+            let response = net_rx.recv().await.unwrap();
+            let sealed: Sealed = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(sealed.status, eq(Status::Ok));
+            assert_that!(sealed.local_tail, eq(LogletOffset::new(12)));
 
-        // repair store (before local tail, local tail won't move)
-        worker.enqueue_store(repair1).unwrap();
-        let response = peer_net_rx.recv().await.unwrap();
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(stored.status, eq(Status::Ok));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(12)));
+            // repair store (before local tail, local tail won't move)
+            worker.enqueue_store(repair1).unwrap();
+            let response = peer_net_rx.recv().await.unwrap();
+            let stored: Stored = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(stored.status, eq(Status::Ok));
+            assert_that!(stored.local_tail, eq(LogletOffset::new(12)));
 
-        worker.enqueue_store(repair2).unwrap();
-        let response = peer_net_rx.recv().await.unwrap();
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(stored.status, eq(Status::Ok));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(18)));
+            worker.enqueue_store(repair2).unwrap();
+            let response = peer_net_rx.recv().await.unwrap();
+            let stored: Stored = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(stored.status, eq(Status::Ok));
+            assert_that!(stored.local_tail, eq(LogletOffset::new(18)));
 
-        // GetLogletInfo
-        // offsets 3, 4
-        let msg = GetLogletInfo {
-            header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-        };
-        let msg = Incoming::for_testing(connection.downgrade(), msg, None);
-        let msg_id = msg.msg_id();
-        worker.enqueue_get_loglet_info(msg).unwrap();
+            // GetLogletInfo
+            // offsets 3, 4
+            let msg = GetLogletInfo {
+                header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+            };
+            let msg = Incoming::for_testing(connection.downgrade(), msg, None);
+            let msg_id = msg.msg_id();
+            worker.enqueue_get_loglet_info(msg).unwrap();
 
-        let response = net_rx.recv().await.unwrap();
-        let header = response.header.unwrap();
-        assert_that!(header.in_response_to(), eq(msg_id));
-        let info: LogletInfo = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(info.status, eq(Status::Ok));
-        assert_that!(info.local_tail, eq(LogletOffset::new(18)));
-        assert_that!(info.trim_point, eq(LogletOffset::INVALID));
-        assert_that!(info.sealed, eq(true));
-
-        tc.shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
-
-        Ok(())
+            let response = net_rx.recv().await.unwrap();
+            let header = response.header.unwrap();
+            assert_that!(header.in_response_to(), eq(msg_id));
+            let info: LogletInfo = response
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(info.status, eq(Status::Ok));
+            assert_that!(info.local_tail, eq(LogletOffset::new(18)));
+            assert_that!(info.trim_point, eq(LogletOffset::INVALID));
+            assert_that!(info.sealed, eq(true));
+            tc.shutdown_node("test completed", 0).await;
+            RocksDbManager::get().shutdown().await;
+            Ok(())
+        }
+        .with_task_center(&tc)
+        .await
     }
 
     #[test(tokio::test(start_paused = true))]
     async fn test_simple_get_records_flow() -> Result<()> {
-        const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
-
         let (tc, log_store) = setup().await?;
-        let loglet_state_map = LogletStateMap::default();
-        let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        async {
+            const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
+            const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
+            let loglet_state_map = LogletStateMap::default();
+            let (net_tx, mut net_rx) = mpsc::channel(10);
+            let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
 
-        let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
-        let worker = LogletWorker::start(tc.clone(), LOGLET, log_store, loglet_state)?;
+            let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
+            let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
 
-        // Populate the log-store with some records (..,2,..,5,..,10, 11)
-        // Note: dots mean we don't have records at those globally committed offsets.
-        worker
-            .enqueue_store(Incoming::for_testing(
-                connection.downgrade(),
-                Store {
-                    // faking that offset=1 is released
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(2)),
-                    timeout_at: None,
-                    sequencer: SEQUENCER,
-                    known_archived: LogletOffset::INVALID,
-                    first_offset: LogletOffset::new(2),
-                    flags: StoreFlags::empty(),
-                    payloads: vec![Record::from("record2")].into(),
-                },
-                None,
-            ))
-            .unwrap();
+            // Populate the log-store with some records (..,2,..,5,..,10, 11)
+            // Note: dots mean we don't have records at those globally committed offsets.
+            worker
+                .enqueue_store(Incoming::for_testing(
+                    connection.downgrade(),
+                    Store {
+                        // faking that offset=1 is released
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(2)),
+                        timeout_at: None,
+                        sequencer: SEQUENCER,
+                        known_archived: LogletOffset::INVALID,
+                        first_offset: LogletOffset::new(2),
+                        flags: StoreFlags::empty(),
+                        payloads: vec![Record::from("record2")].into(),
+                    },
+                    None,
+                ))
+                .unwrap();
 
-        worker
-            .enqueue_store(Incoming::for_testing(
-                connection.downgrade(),
-                Store {
-                    // faking that offset=4 is released
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(5)),
-                    timeout_at: None,
-                    sequencer: SEQUENCER,
-                    known_archived: LogletOffset::INVALID,
-                    first_offset: LogletOffset::new(5),
-                    flags: StoreFlags::empty(),
-                    payloads: vec![Record::from(("record5", Keys::Single(11)))].into(),
-                },
-                None,
-            ))
-            .unwrap();
+            worker
+                .enqueue_store(Incoming::for_testing(
+                    connection.downgrade(),
+                    Store {
+                        // faking that offset=4 is released
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(5)),
+                        timeout_at: None,
+                        sequencer: SEQUENCER,
+                        known_archived: LogletOffset::INVALID,
+                        first_offset: LogletOffset::new(5),
+                        flags: StoreFlags::empty(),
+                        payloads: vec![Record::from(("record5", Keys::Single(11)))].into(),
+                    },
+                    None,
+                ))
+                .unwrap();
 
-        worker
-            .enqueue_store(Incoming::for_testing(
-                connection.downgrade(),
-                Store {
-                    // faking that offset=9 is released
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
-                    timeout_at: None,
-                    sequencer: SEQUENCER,
-                    known_archived: LogletOffset::INVALID,
-                    first_offset: LogletOffset::new(10),
-                    flags: StoreFlags::empty(),
-                    payloads: vec![Record::from("record10"), Record::from("record11")].into(),
-                },
-                None,
-            ))
-            .unwrap();
+            worker
+                .enqueue_store(Incoming::for_testing(
+                    connection.downgrade(),
+                    Store {
+                        // faking that offset=9 is released
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
+                        timeout_at: None,
+                        sequencer: SEQUENCER,
+                        known_archived: LogletOffset::INVALID,
+                        first_offset: LogletOffset::new(10),
+                        flags: StoreFlags::empty(),
+                        payloads: vec![Record::from("record10"), Record::from("record11")].into(),
+                    },
+                    None,
+                ))
+                .unwrap();
 
-        // Wait for stores to complete.
-        for _ in 0..3 {
+            // Wait for stores to complete.
+            for _ in 0..3 {
+                let stored: Stored = net_rx
+                    .recv()
+                    .await
+                    .unwrap()
+                    .body
+                    .unwrap()
+                    .try_decode(connection.protocol_version())?;
+                assert_that!(stored.status, eq(Status::Ok));
+            }
+
+            // We expect to see [2, 5]. No trim gaps, no filtered gaps.
+            worker
+                .enqueue_get_records(Incoming::for_testing(
+                    connection.downgrade(),
+                    GetRecords {
+                        // faking that offset=9 is released
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
+                        filter: KeyFilter::Any,
+                        // no memory limits
+                        total_limit_in_bytes: None,
+                        from_offset: LogletOffset::new(1),
+                        to_offset: LogletOffset::new(7),
+                    },
+                    None,
+                ))
+                .unwrap();
+
+            let mut records: Records = net_rx
+                .recv()
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(records.status, eq(Status::Ok));
+            assert_that!(records.local_tail, eq(LogletOffset::new(12)));
+            assert_that!(records.sealed, eq(false));
+            assert_that!(records.next_offset, eq(LogletOffset::new(8)));
+            assert_that!(records.records.len(), eq(2));
+            // pop in reverse order
+            for i in [5, 2] {
+                let (offset, record) = records.records.pop().unwrap();
+                assert_that!(offset, eq(LogletOffset::from(i)));
+                assert_that!(record.is_data(), eq(true));
+                let data = record.try_unwrap_data().unwrap();
+                let original: String = data.decode().unwrap();
+                assert_that!(original, eq(format!("record{}", i)));
+            }
+
+            // We expect to see [2, FILTERED(5), 10, 11]. No trim gaps.
+            worker
+                .enqueue_get_records(Incoming::for_testing(
+                    connection.downgrade(),
+                    GetRecords {
+                        // INVALID can be used when we don't have a reasonable value to pass in.
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                        // no memory limits
+                        total_limit_in_bytes: None,
+                        filter: KeyFilter::Within(0..=5),
+                        from_offset: LogletOffset::new(1),
+                        // to a point beyond local tail
+                        to_offset: LogletOffset::new(100),
+                    },
+                    None,
+                ))
+                .unwrap();
+
+            let mut records: Records = net_rx
+                .recv()
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(records.status, eq(Status::Ok));
+            assert_that!(records.local_tail, eq(LogletOffset::new(12)));
+            assert_that!(records.next_offset, eq(LogletOffset::new(12)));
+            assert_that!(records.sealed, eq(false));
+            assert_that!(records.records.len(), eq(4));
+            // pop() returns records in reverse order
+            for i in [11, 10, 5, 2] {
+                let (offset, record) = records.records.pop().unwrap();
+                assert_that!(offset, eq(LogletOffset::from(i)));
+                if i == 5 {
+                    // this one is filtered
+                    assert_that!(record.is_filtered_gap(), eq(true));
+                    let gap = record.try_unwrap_filtered_gap().unwrap();
+                    assert_that!(gap.to, eq(LogletOffset::new(5)));
+                } else {
+                    assert_that!(record.is_data(), eq(true));
+                    let data = record.try_unwrap_data().unwrap();
+                    let original: String = data.decode().unwrap();
+                    assert_that!(original, eq(format!("record{}", i)));
+                }
+            }
+
+            // Apply memory limits (2 bytes) should always see the first real record.
+            // We expect to see [FILTERED(5), 10]. (11 is not returend due to budget)
+            worker
+                .enqueue_get_records(Incoming::for_testing(
+                    connection.downgrade(),
+                    GetRecords {
+                        // INVALID can be used when we don't have a reasonable value to pass in.
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                        // no memory limits
+                        total_limit_in_bytes: Some(2),
+                        filter: KeyFilter::Within(0..=5),
+                        from_offset: LogletOffset::new(4),
+                        // to a point beyond local tail
+                        to_offset: LogletOffset::new(100),
+                    },
+                    None,
+                ))
+                .unwrap();
+
+            let mut records: Records = net_rx
+                .recv()
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(records.status, eq(Status::Ok));
+            assert_that!(records.local_tail, eq(LogletOffset::new(12)));
+            assert_that!(records.next_offset, eq(LogletOffset::new(11)));
+            assert_that!(records.sealed, eq(false));
+            assert_that!(records.records.len(), eq(2));
+            // pop() returns records in reverse order
+            for i in [10, 5] {
+                let (offset, record) = records.records.pop().unwrap();
+                assert_that!(offset, eq(LogletOffset::from(i)));
+                if i == 5 {
+                    // this one is filtered
+                    assert_that!(record.is_filtered_gap(), eq(true));
+                    let gap = record.try_unwrap_filtered_gap().unwrap();
+                    assert_that!(gap.to, eq(LogletOffset::new(5)));
+                } else {
+                    assert_that!(record.is_data(), eq(true));
+                    let data = record.try_unwrap_data().unwrap();
+                    let original: String = data.decode().unwrap();
+                    assert_that!(original, eq(format!("record{}", i)));
+                }
+            }
+
+            tc.shutdown_node("test completed", 0).await;
+            RocksDbManager::get().shutdown().await;
+
+            Ok(())
+        }
+        .with_task_center(&tc)
+        .await
+    }
+
+    #[test(tokio::test(start_paused = true))]
+    async fn test_trim_basics() -> Result<()> {
+        let (tc, log_store) = setup().await?;
+        async {
+            const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
+            const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
+            let loglet_state_map = LogletStateMap::default();
+            let (net_tx, mut net_rx) = mpsc::channel(10);
+            let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+
+            let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
+            let worker = LogletWorker::start(LOGLET, log_store.clone(), loglet_state.clone())?;
+
+            assert_that!(loglet_state.trim_point(), eq(LogletOffset::INVALID));
+            assert_that!(loglet_state.local_tail().offset(), eq(LogletOffset::OLDEST));
+            // The loglet has no knowledge of global commits, it shouldn't accept trims.
+            worker
+                .enqueue_trim(Incoming::for_testing(
+                    connection.downgrade(),
+                    Trim {
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::OLDEST),
+                        trim_point: LogletOffset::OLDEST,
+                    },
+                    None,
+                ))
+                .unwrap();
+
+            let trimmed: Trimmed = net_rx
+                .recv()
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(trimmed.status, eq(Status::Malformed));
+            assert_that!(trimmed.local_tail, eq(LogletOffset::OLDEST));
+            assert_that!(trimmed.sealed, eq(false));
+
+            // The loglet has knowledge of global tail of 10, it should accept trims up to 9 but it
+            // won't move trim point beyond its local tail.
+            worker
+                .enqueue_trim(Incoming::for_testing(
+                    connection.downgrade(),
+                    Trim {
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
+                        trim_point: LogletOffset::new(9),
+                    },
+                    None,
+                ))
+                .unwrap();
+
+            let trimmed: Trimmed = net_rx
+                .recv()
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(trimmed.status, eq(Status::Ok));
+            assert_that!(trimmed.local_tail, eq(LogletOffset::OLDEST));
+            assert_that!(trimmed.sealed, eq(false));
+
+            // let's store some records at offsets (5, 6)
+            worker
+                .enqueue_store(Incoming::for_testing(
+                    connection.downgrade(),
+                    Store {
+                        // faking that offset=9 is released
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
+                        timeout_at: None,
+                        sequencer: SEQUENCER,
+                        known_archived: LogletOffset::INVALID,
+                        first_offset: LogletOffset::new(5),
+                        flags: StoreFlags::empty(),
+                        payloads: vec![Record::from("record5"), Record::from("record6")].into(),
+                    },
+                    None,
+                ))
+                .unwrap();
             let stored: Stored = net_rx
                 .recv()
                 .await
@@ -1136,372 +1374,144 @@ mod tests {
                 .unwrap()
                 .try_decode(connection.protocol_version())?;
             assert_that!(stored.status, eq(Status::Ok));
-        }
+            assert_that!(stored.local_tail, eq(LogletOffset::new(7)));
 
-        // We expect to see [2, 5]. No trim gaps, no filtered gaps.
-        worker
-            .enqueue_get_records(Incoming::for_testing(
-                connection.downgrade(),
-                GetRecords {
-                    // faking that offset=9 is released
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
-                    filter: KeyFilter::Any,
-                    // no memory limits
-                    total_limit_in_bytes: None,
-                    from_offset: LogletOffset::new(1),
-                    to_offset: LogletOffset::new(7),
-                },
-                None,
-            ))
-            .unwrap();
+            // trim to 5
+            worker
+                .enqueue_trim(Incoming::for_testing(
+                    connection.downgrade(),
+                    Trim {
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
+                        trim_point: LogletOffset::new(5),
+                    },
+                    None,
+                ))
+                .unwrap();
 
-        let mut records: Records = net_rx
-            .recv()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(records.status, eq(Status::Ok));
-        assert_that!(records.local_tail, eq(LogletOffset::new(12)));
-        assert_that!(records.sealed, eq(false));
-        assert_that!(records.next_offset, eq(LogletOffset::new(8)));
-        assert_that!(records.records.len(), eq(2));
-        // pop in reverse order
-        for i in [5, 2] {
-            let (offset, record) = records.records.pop().unwrap();
-            assert_that!(offset, eq(LogletOffset::from(i)));
-            assert_that!(record.is_data(), eq(true));
-            let data = record.try_unwrap_data().unwrap();
-            let original: String = data.decode().unwrap();
-            assert_that!(original, eq(format!("record{}", i)));
-        }
+            let trimmed: Trimmed = net_rx
+                .recv()
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(trimmed.status, eq(Status::Ok));
+            assert_that!(trimmed.local_tail, eq(LogletOffset::new(7)));
+            assert_that!(trimmed.sealed, eq(false));
 
-        // We expect to see [2, FILTERED(5), 10, 11]. No trim gaps.
-        worker
-            .enqueue_get_records(Incoming::for_testing(
-                connection.downgrade(),
-                GetRecords {
-                    // INVALID can be used when we don't have a reasonable value to pass in.
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-                    // no memory limits
-                    total_limit_in_bytes: None,
-                    filter: KeyFilter::Within(0..=5),
-                    from_offset: LogletOffset::new(1),
-                    // to a point beyond local tail
-                    to_offset: LogletOffset::new(100),
-                },
-                None,
-            ))
-            .unwrap();
+            // Attempt to read. We expect to see a trim gap (1->5, 6 (data-record))
+            worker
+                .enqueue_get_records(Incoming::for_testing(
+                    connection.downgrade(),
+                    GetRecords {
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                        total_limit_in_bytes: None,
+                        filter: KeyFilter::Any,
+                        from_offset: LogletOffset::OLDEST,
+                        // to a point beyond local tail
+                        to_offset: LogletOffset::new(100),
+                    },
+                    None,
+                ))
+                .unwrap();
 
-        let mut records: Records = net_rx
-            .recv()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(records.status, eq(Status::Ok));
-        assert_that!(records.local_tail, eq(LogletOffset::new(12)));
-        assert_that!(records.next_offset, eq(LogletOffset::new(12)));
-        assert_that!(records.sealed, eq(false));
-        assert_that!(records.records.len(), eq(4));
-        // pop() returns records in reverse order
-        for i in [11, 10, 5, 2] {
-            let (offset, record) = records.records.pop().unwrap();
-            assert_that!(offset, eq(LogletOffset::from(i)));
-            if i == 5 {
-                // this one is filtered
-                assert_that!(record.is_filtered_gap(), eq(true));
-                let gap = record.try_unwrap_filtered_gap().unwrap();
-                assert_that!(gap.to, eq(LogletOffset::new(5)));
-            } else {
-                assert_that!(record.is_data(), eq(true));
-                let data = record.try_unwrap_data().unwrap();
-                let original: String = data.decode().unwrap();
-                assert_that!(original, eq(format!("record{}", i)));
+            let mut records: Records = net_rx
+                .recv()
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(records.status, eq(Status::Ok));
+            assert_that!(records.local_tail, eq(LogletOffset::new(7)));
+            assert_that!(records.next_offset, eq(LogletOffset::new(7)));
+            assert_that!(records.sealed, eq(false));
+            assert_that!(records.records.len(), eq(2));
+            // pop() returns records in reverse order
+            for i in [6, 1] {
+                let (offset, record) = records.records.pop().unwrap();
+                assert_that!(offset, eq(LogletOffset::from(i)));
+                if i == 1 {
+                    // this one is a trim gap
+                    assert_that!(record.is_trim_gap(), eq(true));
+                    let gap = record.try_unwrap_trim_gap().unwrap();
+                    assert_that!(gap.to, eq(LogletOffset::new(5)));
+                } else {
+                    assert_that!(record.is_data(), eq(true));
+                    let data = record.try_unwrap_data().unwrap();
+                    let original: String = data.decode().unwrap();
+                    assert_that!(original, eq(format!("record{}", i)));
+                }
             }
-        }
 
-        // Apply memory limits (2 bytes) should always see the first real record.
-        // We expect to see [FILTERED(5), 10]. (11 is not returend due to budget)
-        worker
-            .enqueue_get_records(Incoming::for_testing(
-                connection.downgrade(),
-                GetRecords {
-                    // INVALID can be used when we don't have a reasonable value to pass in.
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-                    // no memory limits
-                    total_limit_in_bytes: Some(2),
-                    filter: KeyFilter::Within(0..=5),
-                    from_offset: LogletOffset::new(4),
-                    // to a point beyond local tail
-                    to_offset: LogletOffset::new(100),
-                },
-                None,
-            ))
-            .unwrap();
+            // trim everything
+            worker
+                .enqueue_trim(Incoming::for_testing(
+                    connection.downgrade(),
+                    Trim {
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
+                        trim_point: LogletOffset::new(9),
+                    },
+                    None,
+                ))
+                .unwrap();
 
-        let mut records: Records = net_rx
-            .recv()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(records.status, eq(Status::Ok));
-        assert_that!(records.local_tail, eq(LogletOffset::new(12)));
-        assert_that!(records.next_offset, eq(LogletOffset::new(11)));
-        assert_that!(records.sealed, eq(false));
-        assert_that!(records.records.len(), eq(2));
-        // pop() returns records in reverse order
-        for i in [10, 5] {
+            let trimmed: Trimmed = net_rx
+                .recv()
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(trimmed.status, eq(Status::Ok));
+            assert_that!(trimmed.local_tail, eq(LogletOffset::new(7)));
+            assert_that!(trimmed.sealed, eq(false));
+
+            // Attempt to read again. We expect to see a trim gap (1->6)
+            worker
+                .enqueue_get_records(Incoming::for_testing(
+                    connection.downgrade(),
+                    GetRecords {
+                        header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
+                        total_limit_in_bytes: None,
+                        filter: KeyFilter::Any,
+                        from_offset: LogletOffset::OLDEST,
+                        // to a point beyond local tail
+                        to_offset: LogletOffset::new(100),
+                    },
+                    None,
+                ))
+                .unwrap();
+
+            let mut records: Records = net_rx
+                .recv()
+                .await
+                .unwrap()
+                .body
+                .unwrap()
+                .try_decode(connection.protocol_version())?;
+            assert_that!(records.status, eq(Status::Ok));
+            assert_that!(records.local_tail, eq(LogletOffset::new(7)));
+            assert_that!(records.next_offset, eq(LogletOffset::new(7)));
+            assert_that!(records.sealed, eq(false));
+            assert_that!(records.records.len(), eq(1));
             let (offset, record) = records.records.pop().unwrap();
-            assert_that!(offset, eq(LogletOffset::from(i)));
-            if i == 5 {
-                // this one is filtered
-                assert_that!(record.is_filtered_gap(), eq(true));
-                let gap = record.try_unwrap_filtered_gap().unwrap();
-                assert_that!(gap.to, eq(LogletOffset::new(5)));
-            } else {
-                assert_that!(record.is_data(), eq(true));
-                let data = record.try_unwrap_data().unwrap();
-                let original: String = data.decode().unwrap();
-                assert_that!(original, eq(format!("record{}", i)));
-            }
+            assert_that!(offset, eq(LogletOffset::from(1)));
+            assert_that!(record.is_trim_gap(), eq(true));
+            let gap = record.try_unwrap_trim_gap().unwrap();
+            assert_that!(gap.to, eq(LogletOffset::new(6)));
+
+            // Make sure that we can load the local-tail correctly when loading the loglet_state
+            let loglet_state_map = LogletStateMap::default();
+            let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
+            assert_that!(loglet_state.trim_point(), eq(LogletOffset::new(6)));
+            assert_that!(loglet_state.local_tail().offset(), eq(LogletOffset::new(7)));
+
+            tc.shutdown_node("test completed", 0).await;
+            RocksDbManager::get().shutdown().await;
+            Ok(())
         }
-
-        tc.shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
-
-        Ok(())
-    }
-
-    #[test(tokio::test(start_paused = true))]
-    async fn test_trim_basics() -> Result<()> {
-        const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
-
-        let (tc, log_store) = setup().await?;
-        let loglet_state_map = LogletStateMap::default();
-        let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
-
-        let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
-        let worker =
-            LogletWorker::start(tc.clone(), LOGLET, log_store.clone(), loglet_state.clone())?;
-
-        assert_that!(loglet_state.trim_point(), eq(LogletOffset::INVALID));
-        assert_that!(loglet_state.local_tail().offset(), eq(LogletOffset::OLDEST));
-        // The loglet has no knowledge of global commits, it shouldn't accept trims.
-        worker
-            .enqueue_trim(Incoming::for_testing(
-                connection.downgrade(),
-                Trim {
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::OLDEST),
-                    trim_point: LogletOffset::OLDEST,
-                },
-                None,
-            ))
-            .unwrap();
-
-        let trimmed: Trimmed = net_rx
-            .recv()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(trimmed.status, eq(Status::Malformed));
-        assert_that!(trimmed.local_tail, eq(LogletOffset::OLDEST));
-        assert_that!(trimmed.sealed, eq(false));
-
-        // The loglet has knowledge of global tail of 10, it should accept trims up to 9 but it
-        // won't move trim point beyond its local tail.
-        worker
-            .enqueue_trim(Incoming::for_testing(
-                connection.downgrade(),
-                Trim {
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
-                    trim_point: LogletOffset::new(9),
-                },
-                None,
-            ))
-            .unwrap();
-
-        let trimmed: Trimmed = net_rx
-            .recv()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(trimmed.status, eq(Status::Ok));
-        assert_that!(trimmed.local_tail, eq(LogletOffset::OLDEST));
-        assert_that!(trimmed.sealed, eq(false));
-
-        // let's store some records at offsets (5, 6)
-        worker
-            .enqueue_store(Incoming::for_testing(
-                connection.downgrade(),
-                Store {
-                    // faking that offset=9 is released
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
-                    timeout_at: None,
-                    sequencer: SEQUENCER,
-                    known_archived: LogletOffset::INVALID,
-                    first_offset: LogletOffset::new(5),
-                    flags: StoreFlags::empty(),
-                    payloads: vec![Record::from("record5"), Record::from("record6")].into(),
-                },
-                None,
-            ))
-            .unwrap();
-        let stored: Stored = net_rx
-            .recv()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(stored.status, eq(Status::Ok));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(7)));
-
-        // trim to 5
-        worker
-            .enqueue_trim(Incoming::for_testing(
-                connection.downgrade(),
-                Trim {
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
-                    trim_point: LogletOffset::new(5),
-                },
-                None,
-            ))
-            .unwrap();
-
-        let trimmed: Trimmed = net_rx
-            .recv()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(trimmed.status, eq(Status::Ok));
-        assert_that!(trimmed.local_tail, eq(LogletOffset::new(7)));
-        assert_that!(trimmed.sealed, eq(false));
-
-        // Attempt to read. We expect to see a trim gap (1->5, 6 (data-record))
-        worker
-            .enqueue_get_records(Incoming::for_testing(
-                connection.downgrade(),
-                GetRecords {
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-                    total_limit_in_bytes: None,
-                    filter: KeyFilter::Any,
-                    from_offset: LogletOffset::OLDEST,
-                    // to a point beyond local tail
-                    to_offset: LogletOffset::new(100),
-                },
-                None,
-            ))
-            .unwrap();
-
-        let mut records: Records = net_rx
-            .recv()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(records.status, eq(Status::Ok));
-        assert_that!(records.local_tail, eq(LogletOffset::new(7)));
-        assert_that!(records.next_offset, eq(LogletOffset::new(7)));
-        assert_that!(records.sealed, eq(false));
-        assert_that!(records.records.len(), eq(2));
-        // pop() returns records in reverse order
-        for i in [6, 1] {
-            let (offset, record) = records.records.pop().unwrap();
-            assert_that!(offset, eq(LogletOffset::from(i)));
-            if i == 1 {
-                // this one is a trim gap
-                assert_that!(record.is_trim_gap(), eq(true));
-                let gap = record.try_unwrap_trim_gap().unwrap();
-                assert_that!(gap.to, eq(LogletOffset::new(5)));
-            } else {
-                assert_that!(record.is_data(), eq(true));
-                let data = record.try_unwrap_data().unwrap();
-                let original: String = data.decode().unwrap();
-                assert_that!(original, eq(format!("record{}", i)));
-            }
-        }
-
-        // trim everything
-        worker
-            .enqueue_trim(Incoming::for_testing(
-                connection.downgrade(),
-                Trim {
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
-                    trim_point: LogletOffset::new(9),
-                },
-                None,
-            ))
-            .unwrap();
-
-        let trimmed: Trimmed = net_rx
-            .recv()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(trimmed.status, eq(Status::Ok));
-        assert_that!(trimmed.local_tail, eq(LogletOffset::new(7)));
-        assert_that!(trimmed.sealed, eq(false));
-
-        // Attempt to read again. We expect to see a trim gap (1->6)
-        worker
-            .enqueue_get_records(Incoming::for_testing(
-                connection.downgrade(),
-                GetRecords {
-                    header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
-                    total_limit_in_bytes: None,
-                    filter: KeyFilter::Any,
-                    from_offset: LogletOffset::OLDEST,
-                    // to a point beyond local tail
-                    to_offset: LogletOffset::new(100),
-                },
-                None,
-            ))
-            .unwrap();
-
-        let mut records: Records = net_rx
-            .recv()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
-        assert_that!(records.status, eq(Status::Ok));
-        assert_that!(records.local_tail, eq(LogletOffset::new(7)));
-        assert_that!(records.next_offset, eq(LogletOffset::new(7)));
-        assert_that!(records.sealed, eq(false));
-        assert_that!(records.records.len(), eq(1));
-        let (offset, record) = records.records.pop().unwrap();
-        assert_that!(offset, eq(LogletOffset::from(1)));
-        assert_that!(record.is_trim_gap(), eq(true));
-        let gap = record.try_unwrap_trim_gap().unwrap();
-        assert_that!(gap.to, eq(LogletOffset::new(6)));
-
-        // Make sure that we can load the local-tail correctly when loading the loglet_state
-        let loglet_state_map = LogletStateMap::default();
-        let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
-        assert_that!(loglet_state.trim_point(), eq(LogletOffset::new(6)));
-        assert_that!(loglet_state.local_tail().offset(), eq(LogletOffset::new(7)));
-
-        tc.shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
-
-        Ok(())
+        .with_task_center(&tc)
+        .await
     }
 }
