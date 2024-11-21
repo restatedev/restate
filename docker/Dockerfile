@@ -1,4 +1,4 @@
-# Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+# Copyright (c) 2023 - 2024 Restate Software, Inc., Restate GmbH.
 # All rights reserved.
 #
 # Use of this software is governed by the Business Source License
@@ -34,11 +34,8 @@ ENV SCCACHE_DIR=/var/cache/sccache
 # Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
 ARG CARGO_PROFILE_RELEASE_DEBUG=false
 ARG RESTATE_FEATURES=''
-
 RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release --bin restate-server
-
 COPY . .
-
 # Mount the sccache directory as a cache to leverage sccache during build
 # Caching layer if nothing has changed
 # Use sccache during the main build

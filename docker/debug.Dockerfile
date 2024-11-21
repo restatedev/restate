@@ -1,4 +1,4 @@
-# Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
+# Copyright (c) 2023 - 2024 Restate Software, Inc., Restate GmbH.
 # All rights reserved.
 #
 # Use of this software is governed by the Business Source License
@@ -26,19 +26,21 @@ ARG SCCACHE_SERVER_PORT=4227
 FROM base-$TARGETARCH AS builder
 ARG SCCACHE_SERVER_PORT
 ARG TARGETARCH
-# https://github.com/mozilla/sccache/blob/main/docs/GHA.md
-ARG ACTIONS_CACHE_URL=''
-ARG ACTIONS_RUNTIME_TOKEN=''
-ARG SCCACHE_GHA_ENABLED=''
+
+ENV RUSTC_WRAPPER=/usr/bin/sccache
+ENV SCCACHE_DIR=/var/cache/sccache
+
 # Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
 # Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
-ARG CARGO_PROFILE_RELEASE_DEBUG=true
+ARG CARGO_PROFILE_RELEASE_DEBUG=false
 ARG RESTATE_FEATURES=''
-# Caching layer if nothing has changed
-# Only build restate binary to avoid compiling unneeded crates
 RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --bin restate-server
 COPY . .
-RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --profile=dev --bin restate-server && \
+# Mount the sccache directory as a cache to leverage sccache during build
+# Caching layer if nothing has changed
+# Use sccache during the main build
+RUN --mount=type=cache,target=/var/cache/sccache \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --bin restate-server && \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restate-server target/restate-server
 
