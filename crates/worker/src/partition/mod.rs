@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use assert2::let_assert;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
-use metrics::{counter, histogram};
+use metrics::histogram;
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, instrument, trace, warn, Span};
@@ -63,8 +63,8 @@ use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::metric_definitions::{
-    PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
-    PP_APPLY_COMMAND_BATCH_SIZE, PP_APPLY_COMMAND_DURATION,
+    PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION, PP_APPLY_COMMAND_BATCH_SIZE,
+    PP_APPLY_COMMAND_DURATION,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
@@ -382,7 +382,6 @@ where
         let record_actions_latency = histogram!(PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION);
         let command_batch_size =
             histogram!(PP_APPLY_COMMAND_BATCH_SIZE, PARTITION_LABEL => partition_id_str);
-        let actuator_effects_handled = counter!(PARTITION_ACTUATOR_HANDLED);
 
         let mut action_collector = ActionCollector::default();
         let mut command_buffer = Vec::with_capacity(self.max_command_batch_size);
@@ -468,10 +467,9 @@ where
                     self.leadership_state.handle_actions(action_collector.drain(..)).await?;
                     record_actions_latency.record(actions_start.elapsed());
                 },
-                Some(action_effects) = self.leadership_state.next_action_effects() => {
-                    actuator_effects_handled.increment(action_effects.len() as u64);
-                    self.leadership_state.handle_action_effect(action_effects).await?;
-                },
+                result = self.leadership_state.run() => {
+                    result?;
+                }
             }
             // Allow other tasks on this thread to run, but only if we have exhausted the coop
             // budget.

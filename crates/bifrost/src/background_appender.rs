@@ -56,8 +56,8 @@ where
     }
 
     /// Start the background appender as a TaskCenter background task. Note that the task will not
-    /// autmatically react to TaskCenter's shutdown signal, it gives control over the shutdown
-    /// behaviour to the the owner of [`AppenderHandle`] to drain or drop when appropriate.
+    /// automatically react to TaskCenter's shutdown signal, it gives control over the shutdown
+    /// behaviour to the owner of [`AppenderHandle`] to drain or drop when appropriate.
     pub fn start(
         self,
         task_center: TaskCenter,
@@ -212,6 +212,11 @@ impl<T> AppenderHandle<T> {
     /// If you need an owned LogSender, clone this.
     pub fn sender(&self) -> &LogSender<T> {
         self.sender.as_ref().unwrap()
+    }
+
+    /// Polls the underlying appender task to check whether it has finished or not.
+    pub async fn poll_appender_task(&mut self) -> Result<()> {
+        self.inner_handle.as_mut().expect("must be present").await?
     }
 }
 
