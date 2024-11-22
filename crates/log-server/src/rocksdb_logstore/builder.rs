@@ -16,7 +16,7 @@ use restate_types::protobuf::common::LogServerStatus;
 use rocksdb::{DBCompressionType, SliceTransform};
 use static_assertions::const_assert;
 
-use restate_core::{ShutdownError, TaskCenter};
+use restate_core::ShutdownError;
 use restate_rocksdb::{CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
 use restate_types::config::{LogServerOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
@@ -81,7 +81,6 @@ impl RocksDbLogStoreBuilder {
 
     pub async fn start(
         self,
-        task_center: &TaskCenter,
         health_status: HealthStatus<LogServerStatus>,
     ) -> Result<RocksDbLogStore, ShutdownError> {
         let RocksDbLogStoreBuilder {
@@ -96,7 +95,7 @@ impl RocksDbLogStoreBuilder {
             record_cache,
             health_status.clone(),
         )
-        .start(task_center)?;
+        .start()?;
 
         Ok(RocksDbLogStore {
             health_status,

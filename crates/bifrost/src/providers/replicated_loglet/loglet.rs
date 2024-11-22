@@ -317,7 +317,6 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
 
     async fn seal(&self) -> Result<(), OperationError> {
         let _ = SealTask::new(
-            task_center(),
             self.my_params.clone(),
             self.logservers_rpc.seal.clone(),
             self.known_global_tail.clone(),
@@ -388,7 +387,6 @@ mod tests {
         let log_server = LogServerService::create(
             HealthStatus::default(),
             config.clone(),
-            node_env.tc.clone(),
             node_env.metadata.clone(),
             node_env.metadata_store_client.clone(),
             record_cache.clone(),

@@ -282,7 +282,13 @@ impl TaskCenter {
 
     /// Attempt to set the global metadata handle. This should be called once
     /// at the startup of the node.
-    pub fn try_set_global_metadata(&self, metadata: Metadata) -> bool {
+    pub fn try_set_global_metadata(metadata: Metadata) -> bool {
+        Self::with_current(|tc| tc.try_set_global_metadata_inner(metadata))
+    }
+
+    /// Attempt to set the global metadata handle. This should be called once
+    /// at the startup of the node.
+    pub(crate) fn try_set_global_metadata_inner(&self, metadata: Metadata) -> bool {
         self.inner.global_metadata.set(metadata).is_ok()
     }
 
@@ -563,10 +569,23 @@ impl TaskCenter {
     /// finish before completion, but this might change in the future if the need for that arises.
     #[track_caller]
     pub fn spawn_child<F>(
+        kind: TaskKind,
+        name: &'static str,
+        future: F,
+    ) -> Result<TaskId, ShutdownError>
+    where
+        F: Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        Self::with_current(|tc| tc.spawn_child_inner(kind, name, future))
+    }
+
+    /// Spawn a new task that is a child of the current task. The child task will be cancelled if the parent
+    /// task is cancelled. At the moment, the parent task will not automatically wait for children tasks to
+    /// finish before completion, but this might change in the future if the need for that arises.
+    fn spawn_child_inner<F>(
         &self,
         kind: TaskKind,
         name: &'static str,
-        partition_id: Option<PartitionId>,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
@@ -576,16 +595,18 @@ impl TaskCenter {
             return Err(ShutdownError);
         }
 
-        let (parent_id, parent_name, parent_kind, cancel) = self.with_task_context(|ctx| {
-            (
-                ctx.id,
-                ctx.name,
-                ctx.kind,
-                ctx.cancellation_token.child_token(),
-            )
-        });
+        let (parent_id, parent_name, parent_kind, parent_partition, cancel) = self
+            .with_task_context(|ctx| {
+                (
+                    ctx.id,
+                    ctx.name,
+                    ctx.kind,
+                    ctx.partition_id,
+                    ctx.cancellation_token.child_token(),
+                )
+            });
 
-        let result = self.spawn_inner(kind, name, partition_id, cancel, future);
+        let result = self.spawn_inner(kind, name, parent_partition, cancel, future);
 
         trace!(
             kind = ?parent_kind,

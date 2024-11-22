@@ -39,7 +39,8 @@ use crate::network::Outgoing;
 use crate::network::Reciprocal;
 use crate::network::WeakConnection;
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError};
-use crate::task_center;
+use crate::TaskCenter;
+use crate::TaskKind;
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
@@ -162,17 +163,11 @@ impl MetadataMessageHandler {
             container: MetadataContainer::from(metadata),
         }));
 
-        let _ = task_center().spawn_child(
-            crate::TaskKind::Disposable,
-            "send-metadata-to-peer",
-            None,
-            {
-                async move {
-                    outgoing.send().await?;
-                    Ok(())
-                }
-            },
-        );
+        let _ =
+            TaskCenter::spawn_child(TaskKind::Disposable, "send-metadata-to-peer", async move {
+                outgoing.send().await?;
+                Ok(())
+            });
     }
 }
 
@@ -630,9 +625,8 @@ mod tests {
             // updates happening before metadata manager start should not get lost.
             metadata_writer.submit(Arc::new(value.clone()));
 
-            let tc = task_center();
             // start metadata manager
-            spawn_metadata_manager(&tc, metadata_manager)?;
+            spawn_metadata_manager(metadata_manager)?;
 
             let version = metadata.wait_for_version(kind, Version::MIN).await.unwrap();
             assert_eq!(Version::MIN, version);
@@ -651,7 +645,7 @@ mod tests {
 
             let _ = metadata.wait_for_version(kind, Version::from(3)).await;
 
-            tc.cancel_tasks(None, None).await;
+            TaskCenter::current().cancel_tasks(None, None).await;
             Ok(())
         })
     }
@@ -702,7 +696,7 @@ mod tests {
             assert_eq!(Version::MIN, value.version());
 
             // start metadata manager
-            spawn_metadata_manager(&task_center(), metadata_manager)?;
+            spawn_metadata_manager(metadata_manager)?;
 
             let mut watcher1 = metadata.watch(kind);
             assert_eq!(Version::INVALID, *watcher1.borrow());

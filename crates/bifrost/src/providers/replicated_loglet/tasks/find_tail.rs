@@ -350,7 +350,6 @@ impl<T: TransportConnect> FindTailTask<T> {
                     if nodeset_checker.any(NodeTailStatus::is_known_sealed) {
                         // run seal task then retry the find-tail check.
                         let seal_task = SealTask::new(
-                            self.task_center.clone(),
                             self.my_params.clone(),
                             self.logservers_rpc.seal.clone(),
                             self.known_global_tail.clone(),

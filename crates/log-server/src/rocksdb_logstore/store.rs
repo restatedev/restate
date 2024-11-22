@@ -497,7 +497,7 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
-    use restate_core::{TaskCenter, TaskCenterBuilder};
+    use restate_core::{TaskCenter, TaskCenterBuilder, TaskCenterFutureExt};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
@@ -517,22 +517,22 @@ mod tests {
     async fn setup() -> Result<(TaskCenter, RocksDbLogStore)> {
         setup_panic_handler();
         let tc = TaskCenterBuilder::default_for_tests().build()?;
-        let config = Live::from_value(Configuration::default());
-        let common_rocks_opts = config.clone().map(|c| &c.common);
-        let log_store = tc
-            .run_in_scope("test-setup", None, async {
-                RocksDbManager::init(common_rocks_opts);
-                // create logstore.
-                let builder = RocksDbLogStoreBuilder::create(
-                    config.clone().map(|c| &c.log_server).boxed(),
-                    config.map(|c| &c.log_server.rocksdb).boxed(),
-                    RecordCache::new(1_000_000),
-                )
-                .await?;
-                let log_store = builder.start(&tc, Default::default()).await?;
-                Result::Ok(log_store)
-            })
+        let log_store = async {
+            let config = Live::from_value(Configuration::default());
+            let common_rocks_opts = config.clone().map(|c| &c.common);
+            RocksDbManager::init(common_rocks_opts);
+            // create logstore.
+            let builder = RocksDbLogStoreBuilder::create(
+                config.clone().map(|c| &c.log_server).boxed(),
+                config.map(|c| &c.log_server.rocksdb).boxed(),
+                RecordCache::new(1_000_000),
+            )
             .await?;
+            let log_store = builder.start(Default::default()).await?;
+            Result::Ok(log_store)
+        }
+        .in_tc(&tc)
+        .await?;
         Ok((tc, log_store))
     }
 

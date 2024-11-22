@@ -20,7 +20,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, error, trace, warn};
 
-use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
+use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::config::LocalLogletOptions;
 use restate_types::live::BoxedLiveLoad;
@@ -85,10 +85,9 @@ impl LogStoreWriter {
         // the backlog while we process this one.
         let (sender, receiver) = mpsc::channel(batch_size * 2);
 
-        task_center().spawn_child(
+        TaskCenter::spawn_child(
             TaskKind::LogletProvider,
             "local-loglet-writer",
-            None,
             async move {
                 debug!("Start running LogStoreWriter");
                 let opts = updateable.live_load();

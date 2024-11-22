@@ -90,8 +90,6 @@ impl<T: PartitionProcessorPlacementHints> PartitionProcessorPlacementHints for &
 
 pub struct Scheduler<T> {
     scheduling_plan: SchedulingPlan,
-
-    task_center: TaskCenter,
     metadata_store_client: MetadataStoreClient,
     networking: Networking<T>,
 }
@@ -103,7 +101,6 @@ pub struct Scheduler<T> {
 impl<T: TransportConnect> Scheduler<T> {
     pub async fn init(
         configuration: &Configuration,
-        task_center: TaskCenter,
         metadata_store_client: MetadataStoreClient,
         networking: Networking<T>,
     ) -> Result<Self, BuildError> {
@@ -118,7 +115,6 @@ impl<T: TransportConnect> Scheduler<T> {
 
         Ok(Self {
             scheduling_plan,
-            task_center,
             metadata_store_client,
             networking,
         })
@@ -458,10 +454,9 @@ impl<T: TransportConnect> Scheduler<T> {
                     commands,
                 };
 
-                self.task_center.spawn_child(
+                TaskCenter::spawn_child(
                     TaskKind::Disposable,
                     "send-control-processors-to-node",
-                    None,
                     {
                         let networking = self.networking.clone();
                         async move {
@@ -564,7 +559,9 @@ mod tests {
         HashSet, PartitionProcessorPlacementHints, Scheduler,
     };
     use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
-    use restate_core::{metadata, TaskCenterBuilder, TestCoreEnv, TestCoreEnvBuilder};
+    use restate_core::{
+        metadata, TaskCenterBuilder, TaskCenterFutureExt, TestCoreEnv, TestCoreEnvBuilder,
+    };
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
@@ -598,44 +595,41 @@ mod tests {
     #[test(tokio::test)]
     async fn empty_leadership_changes_dont_modify_plan() -> googletest::Result<()> {
         let test_env = TestCoreEnv::create_with_single_node(0, 0).await;
-        let tc = test_env.tc.clone();
         let metadata_store_client = test_env.metadata_store_client.clone();
         let networking = test_env.networking.clone();
 
-        test_env
-            .tc
-            .run_in_scope("test", None, async {
-                let initial_scheduling_plan = metadata_store_client
-                    .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
-                    .await
-                    .expect("scheduling plan");
-                let mut scheduler = Scheduler::init(
-                    Configuration::pinned().as_ref(),
-                    tc,
-                    metadata_store_client.clone(),
-                    networking,
+        async {
+            let initial_scheduling_plan = metadata_store_client
+                .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+                .await
+                .expect("scheduling plan");
+            let mut scheduler = Scheduler::init(
+                Configuration::pinned().as_ref(),
+                metadata_store_client.clone(),
+                networking,
+            )
+            .await?;
+            let observed_cluster_state = ObservedClusterState::default();
+
+            scheduler
+                .on_observed_cluster_state(
+                    &observed_cluster_state,
+                    &metadata().nodes_config_ref(),
+                    NoPlacementHints,
                 )
                 .await?;
-                let observed_cluster_state = ObservedClusterState::default();
 
-                scheduler
-                    .on_observed_cluster_state(
-                        &observed_cluster_state,
-                        &metadata().nodes_config_ref(),
-                        NoPlacementHints,
-                    )
-                    .await?;
+            let scheduling_plan = metadata_store_client
+                .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+                .await
+                .expect("scheduling plan");
 
-                let scheduling_plan = metadata_store_client
-                    .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
-                    .await
-                    .expect("scheduling plan");
+            assert_eq!(initial_scheduling_plan, scheduling_plan);
 
-                assert_eq!(initial_scheduling_plan, scheduling_plan);
-
-                Ok(())
-            })
-            .await
+            Ok(())
+        }
+        .in_tc(&test_env.tc)
+        .await
     }
 
     #[test(tokio::test(start_paused = true))]
@@ -722,78 +716,76 @@ mod tests {
             .set_scheduling_plan(initial_scheduling_plan)
             .build()
             .await;
-        let tc = env.tc.clone();
-        env.tc
-            .run_in_scope("test", None, async move {
-                let mut scheduler = Scheduler::init(
-                    Configuration::pinned().as_ref(),
-                    tc,
-                    metadata_store_client.clone(),
-                    networking,
-                )
-                .await?;
-                let mut observed_cluster_state = ObservedClusterState::default();
+        async move {
+            let mut scheduler = Scheduler::init(
+                Configuration::pinned().as_ref(),
+                metadata_store_client.clone(),
+                networking,
+            )
+            .await?;
+            let mut observed_cluster_state = ObservedClusterState::default();
 
-                for _ in 0..num_scheduling_rounds {
-                    let cluster_state = random_cluster_state(&node_ids, num_partitions);
+            for _ in 0..num_scheduling_rounds {
+                let cluster_state = random_cluster_state(&node_ids, num_partitions);
 
-                    observed_cluster_state.update(&cluster_state);
-                    scheduler
-                        .on_observed_cluster_state(
-                            &observed_cluster_state,
-                            &metadata().nodes_config_ref(),
-                            NoPlacementHints,
-                        )
-                        .await?;
-                    // collect all control messages from the network to build up the effective scheduling plan
-                    let control_messages = control_recv
-                        .as_mut()
-                        .take_until(tokio::time::sleep(Duration::from_secs(10)))
-                        .collect::<Vec<_>>()
-                        .await;
+                observed_cluster_state.update(&cluster_state);
+                scheduler
+                    .on_observed_cluster_state(
+                        &observed_cluster_state,
+                        &metadata().nodes_config_ref(),
+                        NoPlacementHints,
+                    )
+                    .await?;
+                // collect all control messages from the network to build up the effective scheduling plan
+                let control_messages = control_recv
+                    .as_mut()
+                    .take_until(tokio::time::sleep(Duration::from_secs(10)))
+                    .collect::<Vec<_>>()
+                    .await;
 
-                    let observed_cluster_state =
-                        derive_observed_cluster_state(&cluster_state, control_messages);
-                    let target_scheduling_plan = metadata_store_client
-                        .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
-                        .await?
-                        .expect("the scheduler should have created a scheduling plan");
+                let observed_cluster_state =
+                    derive_observed_cluster_state(&cluster_state, control_messages);
+                let target_scheduling_plan = metadata_store_client
+                    .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+                    .await?
+                    .expect("the scheduler should have created a scheduling plan");
 
-                    // assert that the effective scheduling plan aligns with the target scheduling plan
-                    assert_that!(
-                        observed_cluster_state,
-                        matches_scheduling_plan(&target_scheduling_plan)
-                    );
+                // assert that the effective scheduling plan aligns with the target scheduling plan
+                assert_that!(
+                    observed_cluster_state,
+                    matches_scheduling_plan(&target_scheduling_plan)
+                );
 
-                    let alive_nodes: HashSet<_> = cluster_state
-                        .alive_nodes()
-                        .map(|node| node.generational_node_id.as_plain())
-                        .collect();
+                let alive_nodes: HashSet<_> = cluster_state
+                    .alive_nodes()
+                    .map(|node| node.generational_node_id.as_plain())
+                    .collect();
 
-                    for (_, target_state) in target_scheduling_plan.iter() {
-                        // assert that every partition has a leader which is part of the alive nodes set
-                        assert!(target_state
-                            .leader
-                            .is_some_and(|leader| alive_nodes.contains(&leader)));
+                for (_, target_state) in target_scheduling_plan.iter() {
+                    // assert that every partition has a leader which is part of the alive nodes set
+                    assert!(target_state
+                        .leader
+                        .is_some_and(|leader| alive_nodes.contains(&leader)));
 
-                        // assert that the replication strategy was respected
-                        match replication_strategy {
-                            ReplicationStrategy::OnAllNodes => {
-                                assert_eq!(target_state.node_set, alive_nodes)
-                            }
-                            ReplicationStrategy::Factor(replication_factor) => assert_eq!(
-                                target_state.node_set.len(),
-                                alive_nodes.len().min(
-                                    usize::try_from(replication_factor.get())
-                                        .expect("u32 fits into usize")
-                                )
-                            ),
+                    // assert that the replication strategy was respected
+                    match replication_strategy {
+                        ReplicationStrategy::OnAllNodes => {
+                            assert_eq!(target_state.node_set, alive_nodes)
                         }
+                        ReplicationStrategy::Factor(replication_factor) => assert_eq!(
+                            target_state.node_set.len(),
+                            alive_nodes.len().min(
+                                usize::try_from(replication_factor.get())
+                                    .expect("u32 fits into usize")
+                            )
+                        ),
                     }
                 }
-                googletest::Result::Ok(())
-            })
-            .await?;
+            }
+            googletest::Result::Ok(())
+        }
+        .in_tc(&env.tc)
+        .await?;
 
         Ok(())
     }

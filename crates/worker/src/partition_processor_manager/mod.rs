@@ -229,12 +229,7 @@ impl PartitionProcessorManager {
             self.partition_store_manager.clone(),
             persisted_lsns_tx,
         );
-        self.task_center.spawn_child(
-            TaskKind::Watchdog,
-            "persisted-lsn-watchdog",
-            None,
-            watchdog.run(),
-        )?;
+        TaskCenter::spawn_child(TaskKind::Watchdog, "persisted-lsn-watchdog", watchdog.run())?;
 
         let mut logs_version_watcher = self.metadata.watch(MetadataKind::Logs);
         let mut partition_table_version_watcher = self.metadata.watch(MetadataKind::PartitionTable);

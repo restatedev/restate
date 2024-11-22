@@ -157,7 +157,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (TaskCenter,
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
 
         let metadata_writer = metadata_manager.writer();
-        task_center.try_set_global_metadata(metadata.clone());
+        TaskCenter::try_set_global_metadata(metadata.clone());
 
         RocksDbManager::init(config.clone().map(|c| &c.common));
 
@@ -172,7 +172,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (TaskCenter,
             .await
             .expect("to store bifrost config in metadata store");
         metadata_writer.submit(Arc::new(logs));
-        spawn_metadata_manager(&task_center, metadata_manager).expect("metadata manager starts");
+        spawn_metadata_manager(metadata_manager).expect("metadata manager starts");
 
         let bifrost_svc = BifrostService::new(task_center, metadata)
             .enable_in_memory_loglet()
