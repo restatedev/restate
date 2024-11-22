@@ -13,12 +13,8 @@ use std::ops::RangeInclusive;
 use tokio::sync::{mpsc, watch};
 use tracing::instrument;
 
-use crate::invoker_integration::EntryEnricher;
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition_processor_manager::processor_state::StartedProcessor;
-use crate::PartitionProcessorBuilder;
 use restate_bifrost::Bifrost;
-use restate_core::{task_center, Metadata, RuntimeRootTaskHandle, TaskKind};
+use restate_core::{Metadata, RuntimeRootTaskHandle, TaskCenter, TaskKind};
 use restate_invoker_impl::Service as InvokerService;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -28,6 +24,11 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::schema::Schema;
 use restate_types::GenerationalNodeId;
+
+use crate::invoker_integration::EntryEnricher;
+use crate::partition::invoker_storage_reader::InvokerStorageReader;
+use crate::partition_processor_manager::processor_state::StartedProcessor;
+use crate::PartitionProcessorBuilder;
 
 pub struct SpawnPartitionProcessorTask {
     task_name: &'static str,
@@ -121,8 +122,7 @@ impl SpawnPartitionProcessorTask {
         let invoker_name = Box::leak(Box::new(format!("invoker-{}", partition_id)));
         let invoker_config = configuration.clone().map(|c| &c.worker.invoker);
 
-        let tc = task_center();
-        let root_task_handle = tc.clone().start_runtime(
+        let root_task_handle = TaskCenter::current().start_runtime(
             TaskKind::PartitionProcessor,
             task_name,
             Some(pp_builder.partition_id),
@@ -139,15 +139,18 @@ impl SpawnPartitionProcessorTask {
                     .await?;
 
                 move || async move {
-                    tc.spawn_child(
+                    TaskCenter::spawn_child(
                         TaskKind::SystemService,
                         invoker_name,
-                        Some(pp_builder.partition_id),
                         invoker.run(invoker_config),
                     )?;
 
                     pp_builder
-                        .build::<ProtobufRawEntryCodec>(tc, bifrost, partition_store)
+                        .build::<ProtobufRawEntryCodec>(
+                            TaskCenter::current(),
+                            bifrost,
+                            partition_store,
+                        )
                         .await?
                         .run()
                         .await

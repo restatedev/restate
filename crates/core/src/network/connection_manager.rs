@@ -41,8 +41,8 @@ use super::{Handler, MessageRouter};
 use crate::metadata::Urgency;
 use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
 use crate::network::{Incoming, PeerMetadataVersion};
-use crate::Metadata;
-use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
+use crate::{cancellation_watcher, current_task_id, TaskId, TaskKind};
+use crate::{Metadata, TaskCenter};
 
 struct ConnectionManagerInner {
     router: MessageRouter,
@@ -451,10 +451,9 @@ impl<T: TransportConnect> ConnectionManager<T> {
         );
         let router = guard.router.clone();
 
-        let task_id = task_center().spawn_child(
+        let task_id = TaskCenter::spawn_child(
             TaskKind::ConnectionReactor,
             "network-connection-reactor",
-            None,
             run_reactor(
                 self.inner.clone(),
                 connection.clone(),

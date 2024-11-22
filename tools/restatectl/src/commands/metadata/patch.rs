@@ -15,6 +15,7 @@ use json_patch::Patch;
 use tracing::debug;
 
 use restate_core::metadata_store::{MetadataStoreClient, Precondition};
+use restate_core::TaskCenter;
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
@@ -79,30 +80,26 @@ async fn patch_value_direct(
     opts: &PatchValueOpts,
     patch: Patch,
 ) -> anyhow::Result<Option<GenericMetadataValue>> {
-    let value = run_in_task_center(
-        opts.metadata.config_file.as_ref(),
-        |config, task_center| async move {
-            let rocksdb_manager =
-                RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
-            debug!("RocksDB Initialized");
+    let value = run_in_task_center(opts.metadata.config_file.as_ref(), |config| async move {
+        let rocksdb_manager = RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+        debug!("RocksDB Initialized");
 
-            let metadata_store_client = start_metadata_store(
-                config.common.metadata_store_client.clone(),
-                Live::from_value(config.metadata_store.clone()).boxed(),
-                Live::from_value(config.metadata_store.clone())
-                    .map(|c| &c.rocksdb)
-                    .boxed(),
-                &task_center,
-            )
-            .await?;
-            debug!("Metadata store client created");
+        let metadata_store_client = start_metadata_store(
+            config.common.metadata_store_client.clone(),
+            Live::from_value(config.metadata_store.clone()).boxed(),
+            Live::from_value(config.metadata_store.clone())
+                .map(|c| &c.rocksdb)
+                .boxed(),
+            &TaskCenter::current(),
+        )
+        .await?;
+        debug!("Metadata store client created");
 
-            let result = patch_value_inner(opts, &patch, &metadata_store_client).await;
+        let result = patch_value_inner(opts, &patch, &metadata_store_client).await;
 
-            rocksdb_manager.shutdown().await;
-            result
-        },
-    )
+        rocksdb_manager.shutdown().await;
+        result
+    })
     .await?;
 
     Ok(Some(value))

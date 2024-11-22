@@ -20,6 +20,7 @@ mod subscription_controller;
 mod subscription_integration;
 
 use codederror::CodedError;
+use restate_core::TaskCenter;
 use std::time::Duration;
 
 use restate_bifrost::Bifrost;
@@ -199,37 +200,31 @@ impl Worker {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
-        let tc = task_center();
-
         // Postgres external server
-        tc.spawn_child(
+        TaskCenter::spawn_child(
             TaskKind::RpcServer,
             "postgres-query-server",
-            None,
             self.storage_query_postgres.run(),
         )?;
 
         // Datafusion remote scanner
-        tc.spawn_child(
+        TaskCenter::spawn_child(
             TaskKind::SystemService,
             "datafusion-scan-server",
-            None,
             self.datafusion_remote_scanner.run(),
         )?;
 
         // Kafka Ingress
-        tc.spawn_child(
+        TaskCenter::spawn_child(
             TaskKind::SystemService,
             "kafka-ingress",
-            None,
             self.ingress_kafka
                 .run(self.updateable_config.clone().map(|c| &c.ingress)),
         )?;
 
-        tc.spawn_child(
+        TaskCenter::spawn_child(
             TaskKind::SystemService,
             "partition-processor-manager",
-            None,
             self.partition_processor_manager.run(),
         )?;
 
