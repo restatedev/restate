@@ -272,7 +272,8 @@ impl<T: TransportConnect> Service<T> {
                     state.reconfigure(configuration);
                 }
                 result = state.run() => {
-                    result?
+                    let leader_event = result?;
+                    state.on_leader_event(leader_event).await?;
                 }
                 _ = &mut shutdown => {
                     self.health_status.update(AdminStatus::Unknown);

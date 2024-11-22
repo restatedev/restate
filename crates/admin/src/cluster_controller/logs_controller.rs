@@ -10,15 +10,15 @@
 
 mod nodeset_selection;
 
+use futures::never::Never;
+use rand::prelude::IteratorRandom;
+use rand::{thread_rng, RngCore};
 use std::collections::HashMap;
 use std::iter;
 use std::num::NonZeroU8;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
-
-use rand::prelude::IteratorRandom;
-use rand::{thread_rng, RngCore};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, trace, trace_span, Instrument};
@@ -1210,7 +1210,7 @@ impl LogsController {
         });
     }
 
-    pub async fn run_async_operations(&mut self) -> Result<()> {
+    pub async fn run_async_operations(&mut self) -> Result<Never> {
         loop {
             if self.async_operations.is_empty() {
                 futures::future::pending().await
