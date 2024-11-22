@@ -72,7 +72,8 @@ pub enum RuntimeError {
 }
 
 /// Task center is used to manage long-running and background tasks and their lifecycle.
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
+#[debug("TaskCenter({})", inner.id)]
 pub struct TaskCenter {
     inner: Arc<TaskCenterInner>,
 }
@@ -85,6 +86,9 @@ impl TaskCenter {
         ingress_runtime_handle: tokio::runtime::Handle,
         default_runtime: Option<tokio::runtime::Runtime>,
         ingress_runtime: Option<tokio::runtime::Runtime>,
+        // used in tests to start all runtimes with clock paused. Note that this only impacts
+        // partition processor runtimes
+        pause_time: bool,
     ) -> Self {
         metric_definitions::describe_metrics();
         let root_task_context = TaskContext {
@@ -96,6 +100,7 @@ impl TaskCenter {
         };
         Self {
             inner: Arc::new(TaskCenterInner {
+                id: rand::random(),
                 start_time: Instant::now(),
                 default_runtime_handle,
                 default_runtime,
@@ -108,6 +113,7 @@ impl TaskCenter {
                 global_metadata: OnceLock::new(),
                 managed_runtimes: Mutex::new(HashMap::with_capacity(64)),
                 root_task_context,
+                pause_time,
             }),
         }
     }
@@ -508,6 +514,10 @@ impl TaskCenter {
         // todo: configure the runtime according to a new runtime kind perhaps?
         let thread_builder = std::thread::Builder::new().name(format!("rt:{}", runtime_name));
         let mut builder = tokio::runtime::Builder::new_current_thread();
+
+        #[cfg(any(test, feature = "test-util"))]
+        builder.start_paused(self.inner.pause_time);
+
         let rt = builder
             .enable_all()
             .build()
@@ -886,6 +896,10 @@ impl TaskCenter {
 }
 
 struct TaskCenterInner {
+    id: u16,
+    /// Should we start new runtimes with paused clock?
+    #[allow(dead_code)]
+    pause_time: bool,
     default_runtime_handle: tokio::runtime::Handle,
     ingress_runtime_handle: tokio::runtime::Handle,
     managed_runtimes: Mutex<HashMap<&'static str, Arc<tokio::runtime::Runtime>>>,

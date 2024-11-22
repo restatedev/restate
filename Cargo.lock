@@ -6107,6 +6107,7 @@ dependencies = [
  "prost",
  "prost-types",
  "rand",
+ "restate-core-derive",
  "restate-test-util",
  "restate-types",
  "schemars",
@@ -6129,6 +6130,15 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "xxhash-rust",
+]
+
+[[package]]
+name = "restate-core-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.85",
 ]
 
 [[package]]
