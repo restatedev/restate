@@ -11,6 +11,7 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use googletest::prelude::*;
+use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::timer_table::{TimerKey, TimerKeyKind};
 use restate_types::errors::codes;
 use restate_types::identifiers::EntryIndex;
@@ -150,6 +151,18 @@ pub mod outbox {
             ))
         )
     }
+}
+
+pub fn invoked() -> impl Matcher<ActualT = InvocationStatus> {
+    pat!(InvocationStatus::Invoked { .. })
+}
+
+pub fn suspended() -> impl Matcher<ActualT = InvocationStatus> {
+    pat!(InvocationStatus::Suspended { .. })
+}
+
+pub fn killed() -> impl Matcher<ActualT = InvocationStatus> {
+    pat!(InvocationStatus::Killed { .. })
 }
 
 pub fn completion(
