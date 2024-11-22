@@ -468,7 +468,11 @@ where
                     record_actions_latency.record(actions_start.elapsed());
                 },
                 result = self.leadership_state.run() => {
-                    result?;
+                    let action_effects = result?;
+                    // We process the action_effects not directly in the run future because it
+                    // requires the run future to be cancellation safe. In the future this could be
+                    // implemented.
+                    self.leadership_state.handle_action_effects(action_effects).await?;
                 }
             }
             // Allow other tasks on this thread to run, but only if we have exhausted the coop

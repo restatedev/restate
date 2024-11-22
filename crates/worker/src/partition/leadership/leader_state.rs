@@ -16,7 +16,6 @@ use crate::partition::shuffle::HintSender;
 use crate::partition::state_machine::Action;
 use crate::partition::{respond_to_rpc, shuffle};
 use futures::future::OptionFuture;
-use futures::never::Never;
 use futures::stream::FuturesUnordered;
 use futures::{stream, FutureExt, StreamExt};
 use metrics::{counter, Counter};
@@ -106,9 +105,12 @@ impl LeaderState {
         }
     }
 
-    /// Runs the leader specific task which is the processing of action effects and the monitoring
+    /// Runs the leader specific task which is the awaiting of action effects and the monitoring
     /// of unmanaged tasks.
-    pub async fn run(&mut self) -> Result<Never, Error> {
+    ///
+    /// Important: The future needs to be cancellation safe since it is polled as a tokio::select
+    /// arm!
+    pub async fn run(&mut self) -> Result<Vec<ActionEffect>, Error> {
         let timer_stream = std::pin::pin!(stream::unfold(
             &mut self.timer_service,
             |timer_service| async {
@@ -144,15 +146,12 @@ impl LeaderState {
         );
         let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
 
-        loop {
-            tokio::select! {
-                Some(action_effects) = all_streams.next() => {
-                    self.action_effects_counter.increment(u64::try_from(action_effects.len()).expect("usize fits into u64"));
-                    LeaderState::handle_action_effects(&mut self.self_proposer, self.own_partition_key, action_effects).await?;
-                },
-                result = self.self_proposer.join_on_err() => {
-                    return result;
-                }
+        tokio::select! {
+            Some(action_effects) = all_streams.next() => {
+                Ok(action_effects)
+            },
+            result = self.self_proposer.join_on_err() => {
+                Err(result.expect_err("never should never be returned"))
             }
         }
     }
@@ -201,15 +200,16 @@ impl LeaderState {
         }
     }
 
-    async fn handle_action_effects(
-        self_proposer: &mut SelfProposer,
-        own_partition_key: PartitionKey,
+    pub async fn handle_action_effects(
+        &mut self,
         action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> Result<(), Error> {
         for effect in action_effects {
+            self.action_effects_counter.increment(1);
+
             match effect {
                 ActionEffect::Invoker(invoker_effect) => {
-                    self_proposer
+                    self.self_proposer
                         .propose(
                             invoker_effect.invocation_id.partition_key(),
                             Command::InvokerEffect(invoker_effect),
@@ -219,20 +219,20 @@ impl LeaderState {
                 ActionEffect::Shuffle(outbox_truncation) => {
                     // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
                     //  specific destination messages that are identified by a partition_id
-                    self_proposer
+                    self.self_proposer
                         .propose(
-                            own_partition_key,
+                            self.own_partition_key,
                             Command::TruncateOutbox(outbox_truncation.index()),
                         )
                         .await?;
                 }
                 ActionEffect::Timer(timer) => {
-                    self_proposer
+                    self.self_proposer
                         .propose(timer.invocation_id().partition_key(), Command::Timer(timer))
                         .await?;
                 }
                 ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
-                    self_proposer
+                    self.self_proposer
                         .propose(
                             invocation_id.partition_key(),
                             Command::ScheduleTimer(TimerKeyValue::clean_invocation_status(

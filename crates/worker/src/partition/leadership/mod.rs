@@ -17,7 +17,6 @@ use std::mem;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
-use futures::never::Never;
 use futures::{StreamExt, TryStreamExt};
 use tokio::sync::mpsc;
 use tracing::{debug, instrument, warn};
@@ -483,19 +482,34 @@ where
     ///
     /// * Follower: Nothing to do
     /// * Candidate: Monitor appender task
-    /// * Leader: Process action effects and monitor appender task
-    pub async fn run(&mut self) -> Result<Never, Error> {
+    /// * Leader: Await action effects and monitor appender task
+    pub async fn run(&mut self) -> Result<Vec<ActionEffect>, Error> {
         match &mut self.state {
-            State::Follower => Ok(futures::future::pending::<Never>().await),
-            State::Candidate { self_proposer, .. } => {
-                self_proposer
-                    .as_mut()
-                    .expect("must be present")
-                    .join_on_err()
-                    .await
-            }
+            State::Follower => Ok(futures::future::pending::<Vec<_>>().await),
+            State::Candidate { self_proposer, .. } => Err(self_proposer
+                .as_mut()
+                .expect("must be present")
+                .join_on_err()
+                .await
+                .expect_err("never should never be returned")),
             State::Leader(leader_state) => leader_state.run().await,
         }
+    }
+
+    pub async fn handle_action_effects(
+        &mut self,
+        action_effects: impl IntoIterator<Item = ActionEffect>,
+    ) -> Result<(), Error> {
+        match &mut self.state {
+            State::Follower | State::Candidate { .. } => {
+                // nothing to do :-)
+            }
+            State::Leader(leader_state) => {
+                leader_state.handle_action_effects(action_effects).await?
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn handle_rpc_proposal_command(
