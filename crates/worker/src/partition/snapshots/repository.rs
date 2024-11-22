@@ -22,11 +22,14 @@ use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info, instrument, warn};
 use url::Url;
 
-use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
+use restate_partition_store::snapshots::{
+    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
+};
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
@@ -50,6 +53,8 @@ pub struct SnapshotRepository {
     object_store: Arc<dyn ObjectStore>,
     destination: Url,
     prefix: String,
+    /// Ingested snapshots staging location.
+    staging_dir: PathBuf,
 }
 
 #[serde_as]
@@ -99,6 +104,7 @@ impl SnapshotRepository {
     /// Creates an instance of the repository if a snapshots destination is configured.
     pub async fn create_if_configured(
         snapshots_options: &SnapshotsOptions,
+        staging_dir: PathBuf,
     ) -> anyhow::Result<Option<SnapshotRepository>> {
         let mut destination = if let Some(ref destination) = snapshots_options.destination {
             Url::parse(destination).context("Failed parsing snapshot repository URL")?
@@ -125,6 +131,7 @@ impl SnapshotRepository {
             object_store,
             destination,
             prefix,
+            staging_dir,
         }))
     }
 
@@ -312,6 +319,98 @@ impl SnapshotRepository {
             lsn = snapshot.min_applied_lsn,
             snapshot_id = snapshot.snapshot_id
         )
+    }
+
+    /// Discover and download the latest snapshot available. Dropping the returned
+    /// `LocalPartitionSnapshot` will delete the local snapshot data files.
+    pub(crate) async fn get_latest(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
+        let latest_path = object_store::path::Path::from(format!(
+            "{prefix}{partition_id}/latest.json",
+            prefix = self.prefix,
+            partition_id = partition_id,
+        ));
+
+        let latest = self.object_store.get(&latest_path).await;
+
+        let latest = match latest {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => {
+                debug!("Latest snapshot data not found in repository");
+                return Ok(None);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let latest: LatestSnapshot =
+            serde_json::from_slice(latest.bytes().await?.iter().as_slice())?;
+        debug!("Latest snapshot metadata: {:?}", latest);
+
+        let snapshot_metadata_path = object_store::path::Path::from(format!(
+            "{prefix}{partition_id}/{path}/metadata.json",
+            prefix = self.prefix,
+            partition_id = partition_id,
+            path = latest.path,
+        ));
+        let snapshot_metadata = self.object_store.get(&snapshot_metadata_path).await;
+
+        let snapshot_metadata = match snapshot_metadata {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => {
+                info!("Latest snapshot points to a snapshot that was not found in the repository!");
+                return Ok(None); // arguably this could also be an error
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut snapshot_metadata: PartitionSnapshotMetadata =
+            serde_json::from_slice(snapshot_metadata.bytes().await?.iter().as_slice())?;
+        if snapshot_metadata.version != SnapshotFormatVersion::V1 {
+            return Err(anyhow!(
+                "Unsupported snapshot format version: {:?}",
+                snapshot_metadata.version
+            ));
+        }
+
+        // The snapshot ingest directory should be on the same filesystem as the partition store
+        // to minimize IO and disk space usage during import.
+        let snapshot_dir = TempDir::with_prefix_in(
+            format!("{}-", snapshot_metadata.snapshot_id),
+            &self.staging_dir,
+        )?;
+        debug!(
+            snapshot_id = %snapshot_metadata.snapshot_id,
+            path = ?snapshot_dir.path(),
+            "Getting snapshot data",
+        );
+
+        // todo(pavel): stream the data from the object store
+        for file in &mut snapshot_metadata.files {
+            let filename = file.name.trim_start_matches("/");
+            let key = object_store::path::Path::from(format!(
+                "{prefix}{partition_id}/{path}/{filename}",
+                prefix = self.prefix,
+                partition_id = partition_id,
+                path = latest.path,
+                filename = filename,
+            ));
+            let file_path = snapshot_dir.path().join(filename);
+            let file_data = self.object_store.get(&key).await?;
+            tokio::fs::write(&file_path, file_data.bytes().await?).await?;
+            debug!(%key, "Downloaded snapshot data file to {:?}", file_path);
+            // Patch paths to point to the local staging directory
+            file.directory = snapshot_dir.path().to_string_lossy().to_string();
+        }
+
+        Ok(Some(LocalPartitionSnapshot {
+            base_dir: snapshot_dir.into_path(),
+            min_applied_lsn: snapshot_metadata.min_applied_lsn,
+            db_comparator_name: snapshot_metadata.db_comparator_name,
+            files: snapshot_metadata.files,
+            key_range: snapshot_metadata.key_range.clone(),
+        }))
     }
 
     async fn get_latest_snapshot_metadata_for_update(
@@ -576,7 +675,7 @@ mod tests {
             ),
             ..SnapshotsOptions::default()
         };
-        let repository = SnapshotRepository::create_if_configured(&opts)
+        let repository = SnapshotRepository::create_if_configured(&opts, TempDir::new().unwrap().into_path())
             .await?
             .unwrap();
 
@@ -652,7 +751,7 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::create_if_configured(&opts)
+        let repository = SnapshotRepository::create_if_configured(&opts, TempDir::new().unwrap().into_path())
             .await?
             .unwrap();
 

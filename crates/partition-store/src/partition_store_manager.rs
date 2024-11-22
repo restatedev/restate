@@ -86,9 +86,11 @@ impl PartitionStoreManager {
         })
     }
 
-    pub async fn has_partition(&self, partition_id: PartitionId) -> bool {
-        let guard = self.lookup.lock().await;
-        guard.live.contains_key(&partition_id)
+    /// Check whether we have a partition store for the given partition id, irrespective of whether
+    /// the store is open or not.
+    pub async fn has_partition_store(&self, partition_id: PartitionId) -> bool {
+        let cf_name = cf_for_partition(partition_id);
+        self.rocksdb.inner().cf_handle(&cf_name).is_some()
     }
 
     pub async fn get_partition_store(&self, partition_id: PartitionId) -> Option<PartitionStore> {
@@ -172,8 +174,9 @@ impl PartitionStoreManager {
 
         info!(
             ?partition_id,
-            min_applied_lsn = ?snapshot.min_applied_lsn,
-            "Initializing partition store from snapshot"
+            lsn = ?snapshot.min_applied_lsn,
+            path = ?snapshot.base_dir,
+            "Importing partition store snapshot"
         );
 
         if let Err(e) = self

@@ -156,9 +156,12 @@ impl Worker {
             partition_store_manager.clone(),
             router_builder,
             bifrost,
-            SnapshotRepository::create_if_configured(snapshots_options)
-                .await
-                .map_err(BuildError::SnapshotRepository)?,
+            SnapshotRepository::create_if_configured(
+                snapshots_options,
+                config.common.base_dir().join("pp-snapshots"),
+            )
+            .await
+            .map_err(BuildError::SnapshotRepository)?,
         );
 
         // handle RPCs
