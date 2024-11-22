@@ -25,7 +25,7 @@ use restate_types::identifiers::{
 };
 use restate_types::storage::StorageCodec;
 use std::io::Cursor;
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 
 define_table_key!(
     Journal,
@@ -121,14 +121,14 @@ fn all_journals<S: StorageAccess>(
     }))
 }
 
-fn delete_journal<S: StorageAccess>(
+fn delete_journal_range<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
-    journal_length: EntryIndex,
+    journal_range: Range<EntryIndex>,
 ) {
     let mut key = write_journal_entry_key(invocation_id, 0);
     let k = &mut key;
-    for journal_index in 0..journal_length {
+    for journal_index in journal_range {
         k.journal_index = Some(journal_index);
         storage.delete_key(k);
     }
@@ -201,10 +201,14 @@ impl<'a> JournalTable for PartitionStoreTransaction<'a> {
         put_journal_entry(self, invocation_id, journal_index, journal_entry)
     }
 
-    async fn delete_journal(&mut self, invocation_id: &InvocationId, journal_length: EntryIndex) {
+    async fn delete_journal_range(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_range: Range<EntryIndex>,
+    ) {
         self.assert_partition_key(invocation_id);
-        let _x = RocksDbPerfGuard::new("delete-journal");
-        delete_journal(self, invocation_id, journal_length)
+        let _x = RocksDbPerfGuard::new("delete-journal-range");
+        delete_journal_range(self, invocation_id, journal_range)
     }
 }
 
