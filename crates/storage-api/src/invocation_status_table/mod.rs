@@ -473,6 +473,9 @@ pub struct InFlightInvocationMetadata {
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_duration: Duration,
     pub idempotency_key: Option<ByteString>,
+
+    /// When the invocation completes, restart it.
+    pub restart_when_completed: bool,
 }
 
 impl InFlightInvocationMetadata {
@@ -496,6 +499,7 @@ impl InFlightInvocationMetadata {
                 completion_retention_duration: pre_flight_invocation_metadata
                     .completion_retention_duration,
                 idempotency_key: pre_flight_invocation_metadata.idempotency_key,
+                restart_when_completed: false,
             },
             InvocationInput {
                 argument: pre_flight_invocation_metadata.argument,
@@ -624,6 +628,7 @@ mod test_util {
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 completion_retention_duration: Duration::ZERO,
                 idempotency_key: None,
+                restart_when_completed: false,
             }
         }
     }

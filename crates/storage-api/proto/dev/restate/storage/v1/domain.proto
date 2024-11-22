@@ -153,6 +153,7 @@ message InvocationStatusV2 {
   uint32 journal_length = 14;
   optional string deployment_id = 15;
   optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
+  bool restart_when_completed = 23;
 
   // Suspended
   repeated uint32 waiting_for_completed_entries = 17;
@@ -519,12 +520,27 @@ message OutboxMessage {
     ResponseResult response_result = 3;
   }
 
+  // TODO remove this in Restate 1.3
   message OutboxKill {
     InvocationId invocation_id = 1;
   }
 
+  // TODO remove this in Restate 1.3
   message OutboxCancel {
     InvocationId invocation_id = 1;
+  }
+
+  message OutboxTermination {
+    enum TerminationFlavor {
+      UNKNOWN = 0;
+      KILL = 1;
+      KILL_AND_RESTART = 2;
+      CANCEL = 3;
+      CANCEL_AND_RESTART = 4;
+    }
+
+    InvocationId invocation_id = 1;
+    TerminationFlavor flavor = 2;
   }
 
   message AttachInvocationRequest {
@@ -543,6 +559,7 @@ message OutboxMessage {
     OutboxKill kill = 4;
     OutboxCancel cancel = 5;
     AttachInvocationRequest attach_invocation_request = 6;
+    OutboxTermination termination = 7;
   }
 
 }
