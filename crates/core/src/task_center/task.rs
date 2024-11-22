@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use restate_types::identifiers::PartitionId;
 
 use super::{TaskId, TaskKind};
-use crate::{Metadata, ShutdownError};
+use crate::ShutdownError;
 
 #[derive(Clone)]
 pub(super) struct TaskContext {
@@ -31,8 +31,6 @@ pub(super) struct TaskContext {
     /// Tasks associated with a specific partition ID will have this set. This allows
     /// for cancellation of tasks associated with that partition.
     pub(super) partition_id: Option<PartitionId>,
-    /// Access to a locally-cached metadata view.
-    pub(super) metadata: Option<Metadata>,
 }
 
 pub(super) struct Task<R = ()> {

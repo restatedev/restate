@@ -37,7 +37,7 @@ hyper-util = { workspace = true, features = ["http1", "http2", "server", "tokio"
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
-pin-project-lite = "0.2.13"
+pin-project-lite = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_with = { workspace = true }

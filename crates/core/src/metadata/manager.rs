@@ -617,7 +617,7 @@ mod tests {
         S: Fn(&mut T, Version),
     {
         let tc = TaskCenterBuilder::default().build()?;
-        tc.block_on("test", None, async move {
+        tc.block_on(async move {
             let metadata_builder = MetadataBuilder::default();
             let metadata_store_client = MetadataStoreClient::new_in_memory();
             let metadata = metadata_builder.to_metadata();
@@ -689,7 +689,7 @@ mod tests {
         I: Fn(&mut T),
     {
         let tc = TaskCenterBuilder::default().build()?;
-        tc.block_on("test", None, async move {
+        tc.block_on(async move {
             let metadata_builder = MetadataBuilder::default();
             let metadata_store_client = MetadataStoreClient::new_in_memory();
 
