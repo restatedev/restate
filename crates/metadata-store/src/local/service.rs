@@ -18,7 +18,7 @@ use tower::ServiceExt;
 use tower_http::classify::{GrpcCode, GrpcErrorsAsFailures, SharedClassifier};
 
 use restate_core::network::net_util;
-use restate_core::{task_center, ShutdownError, TaskKind};
+use restate_core::{ShutdownError, TaskCenter, TaskKind};
 use restate_rocksdb::RocksError;
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
@@ -106,22 +106,17 @@ impl LocalMetadataStoreService {
                 .map_request(|req: Request<Incoming>| req.map(boxed)),
         );
 
-        task_center().spawn_child(
-            TaskKind::RpcServer,
-            "metadata-store-grpc",
-            None,
-            async move {
-                net_util::run_hyper_server(
-                    &bind_address,
-                    service,
-                    "metadata-store-grpc",
-                    || health_status.update(MetadataServerStatus::Ready),
-                    || health_status.update(MetadataServerStatus::Unknown),
-                )
-                .await?;
-                Ok(())
-            },
-        )?;
+        TaskCenter::spawn_child(TaskKind::RpcServer, "metadata-store-grpc", async move {
+            net_util::run_hyper_server(
+                &bind_address,
+                service,
+                "metadata-store-grpc",
+                || health_status.update(MetadataServerStatus::Ready),
+                || health_status.update(MetadataServerStatus::Unknown),
+            )
+            .await?;
+            Ok(())
+        })?;
 
         store.run().await;
 

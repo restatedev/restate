@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use tracing::warn;
 
-use restate_core::{TaskCenter, TaskCenterBuilder};
+use restate_core::TaskCenterBuilder;
 use restate_types::config::Configuration;
 use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::Pinned;
@@ -21,7 +21,7 @@ use restate_types::live::Pinned;
 /// Loads configuration, creates a task center, executes the supplied function body in scope of TC, and shuts down.
 pub async fn run_in_task_center<F, O>(config_file: Option<&PathBuf>, fn_body: F) -> O::Output
 where
-    F: FnOnce(Pinned<Configuration>, TaskCenter) -> O,
+    F: FnOnce(Pinned<Configuration>) -> O,
     O: Future,
 {
     let config_path = config_file
@@ -57,9 +57,7 @@ where
         .build()
         .expect("task_center builds");
 
-    let result = task_center
-        .run_in_scope("main", None, fn_body(config, task_center.clone()))
-        .await;
+    let result = task_center.run_in_scope_sync(|| fn_body(config)).await;
 
     task_center.shutdown_node("finished", 0).await;
     result
