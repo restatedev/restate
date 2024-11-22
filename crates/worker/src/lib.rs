@@ -137,10 +137,8 @@ impl Worker {
         .await?;
 
         let partition_processor_manager = PartitionProcessorManager::new(
-            task_center(),
             health_status,
             updateable_config.clone(),
-            metadata.clone(),
             metadata_store_client,
             partition_store_manager.clone(),
             router_builder,
