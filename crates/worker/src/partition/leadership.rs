@@ -30,9 +30,7 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use restate_bifrost::{Bifrost, CommitToken};
 use restate_core::network::Reciprocal;
-use restate_core::{
-    metadata, task_center, Metadata, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind,
-};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind};
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
@@ -53,7 +51,6 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::storage::StorageEncodeError;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::GenerationalNodeId;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
@@ -133,19 +130,16 @@ impl State {
 }
 
 pub struct PartitionProcessorMetadata {
-    node_id: GenerationalNodeId,
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
 }
 
 impl PartitionProcessorMetadata {
     pub const fn new(
-        node_id: GenerationalNodeId,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
         Self {
-            node_id,
             partition_id,
             partition_key_range,
         }
@@ -162,7 +156,6 @@ pub(crate) struct LeadershipState<I> {
     channel_size: usize,
     invoker_tx: I,
     bifrost: Bifrost,
-    task_center: TaskCenter,
 }
 
 impl<I> LeadershipState<I>
@@ -171,7 +164,6 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        task_center: TaskCenter,
         partition_processor_metadata: PartitionProcessorMetadata,
         num_timers_in_memory_limit: Option<usize>,
         cleanup_interval: Duration,
@@ -181,7 +173,6 @@ where
         last_seen_leader_epoch: Option<LeaderEpoch>,
     ) -> Self {
         Self {
-            task_center,
             state: State::Follower,
             partition_processor_metadata,
             num_timers_in_memory_limit,
@@ -222,6 +213,7 @@ where
         &mut self,
         leader_epoch: LeaderEpoch,
     ) -> Result<(), ShutdownError> {
+        let my_node_id = Metadata::with_current(|m| m.my_node_id());
         let header = Header {
             dest: Destination::Processor {
                 partition_key: *self
@@ -242,8 +234,8 @@ where
                 ),
                 leader_epoch,
                 // Kept for backward compatibility.
-                node_id: self.partition_processor_metadata.node_id.as_plain(),
-                generational_node_id: Some(self.partition_processor_metadata.node_id),
+                node_id: my_node_id.as_plain(),
+                generational_node_id: Some(my_node_id),
             },
         };
 
@@ -252,7 +244,7 @@ where
             Command::AnnounceLeader(AnnounceLeader {
                 // todo: Still need to write generational id for supporting rolling back, can be removed
                 //  with the next release.
-                node_id: Some(self.partition_processor_metadata.node_id),
+                node_id: Some(my_node_id),
                 leader_epoch,
                 partition_key_range: Some(
                     self.partition_processor_metadata
@@ -267,7 +259,7 @@ where
         let bifrost = self.bifrost.clone();
 
         // todo replace with background appender and allowing PP to gracefully fail w/o stopping the process
-        let appender_task = task_center().spawn_unmanaged(TaskKind::Background, "announce-leadership", Some(self.partition_processor_metadata.partition_id), async move {
+        let appender_task = TaskCenter::current().spawn_unmanaged(TaskKind::Background, "announce-leadership", Some(self.partition_processor_metadata.partition_id), async move {
             loop {
                 // further instructions/commands from PP manager.
                 match bifrost.append(log_id, Arc::clone(&envelope)).await {
@@ -382,11 +374,7 @@ where
             let (shuffle_tx, shuffle_rx) = mpsc::channel(self.channel_size);
 
             let shuffle = Shuffle::new(
-                ShuffleMetadata::new(
-                    self.partition_processor_metadata.partition_id,
-                    leader_epoch,
-                    self.partition_processor_metadata.node_id,
-                ),
+                ShuffleMetadata::new(self.partition_processor_metadata.partition_id, leader_epoch),
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
                 self.channel_size,
@@ -402,13 +390,11 @@ where
                 self.partition_processor_metadata.partition_id,
                 EpochSequenceNumber::new(leader_epoch),
                 &self.bifrost,
-                metadata(),
             )?;
 
             let cleaner = Cleaner::new(
                 self.partition_processor_metadata.partition_id,
                 leader_epoch,
-                self.partition_processor_metadata.node_id,
                 partition_store.clone(),
                 self.bifrost.clone(),
                 self.partition_processor_metadata
@@ -500,9 +486,9 @@ where
                 ..
             }) => {
                 let shuffle_handle =
-                    OptionFuture::from(task_center().cancel_task(*shuffle_task_id));
+                    OptionFuture::from(TaskCenter::current().cancel_task(*shuffle_task_id));
                 let cleaner_handle =
-                    OptionFuture::from(task_center().cancel_task(*cleaner_task_id));
+                    OptionFuture::from(TaskCenter::current().cancel_task(*cleaner_task_id));
 
                 // It's ok to not check the abort_result because either it succeeded or the invoker
                 // is not running. If the invoker is not running, and we are not shutting down, then
@@ -529,12 +515,11 @@ where
                         %request_id,
                         "Failing rpc because I lost leadership",
                     );
-                    respond_to_rpc(
-                        &self.task_center,
-                        reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
+                    respond_to_rpc(reciprocal.prepare(Err(
+                        PartitionProcessorRpcError::LostLeadership(
                             self.partition_processor_metadata.partition_id,
-                        ))),
-                    );
+                        ),
+                    )));
                 }
                 for fut in awaiting_rpc_self_appends.iter_mut() {
                     fut.fail_with_lost_leadership(self.partition_processor_metadata.partition_id);
@@ -561,7 +546,6 @@ where
                         action.name())
                     .increment(1);
                     Self::handle_action(
-                        &self.task_center,
                         action,
                         (
                             self.partition_processor_metadata.partition_id,
@@ -583,7 +567,6 @@ where
 
     #[allow(clippy::too_many_arguments)]
     async fn handle_action(
-        task_center: &TaskCenter,
         action: Action,
         partition_leader_epoch: PartitionLeaderEpoch,
         invoker_tx: &mut I,
@@ -644,7 +627,6 @@ where
             } => {
                 if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
                     respond_to_rpc(
-                        task_center,
                         response_tx.prepare(Ok(PartitionProcessorRpcResponse::Output(
                             InvocationOutput {
                                 request_id,
@@ -664,15 +646,12 @@ where
                 ..
             } => {
                 if let Some(response_tx) = awaiting_rpcs.remove(&request_id) {
-                    respond_to_rpc(
-                        task_center,
-                        response_tx.prepare(Ok(PartitionProcessorRpcResponse::Submitted(
-                            SubmittedInvocationNotification {
-                                request_id,
-                                is_new_invocation,
-                            },
-                        ))),
-                    );
+                    respond_to_rpc(response_tx.prepare(Ok(
+                        PartitionProcessorRpcResponse::Submitted(SubmittedInvocationNotification {
+                            request_id,
+                            is_new_invocation,
+                        }),
+                    )));
                 }
             }
             Action::ScheduleInvocationStatusCleanup {
@@ -807,7 +786,6 @@ where
             State::Follower | State::Candidate { .. } => {
                 // Just fail the rpc
                 respond_to_rpc(
-                    &self.task_center,
                     reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
                         self.partition_processor_metadata.partition_id,
                     ))),
@@ -820,12 +798,9 @@ where
                         // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
                         let old_reciprocal = o.remove();
                         trace!(%request_id, "Replacing rpc with newer request");
-                        respond_to_rpc(
-                            &self.task_center,
-                            old_reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
-                                "retried".to_string(),
-                            ))),
-                        );
+                        respond_to_rpc(old_reciprocal.prepare(Err(
+                            PartitionProcessorRpcError::Internal("retried".to_string()),
+                        )));
                         leader_state
                             .awaiting_rpc_actions
                             .insert(request_id, reciprocal);
@@ -835,7 +810,6 @@ where
                         if let Err(e) = leader_state.self_proposer.propose(partition_key, cmd).await
                         {
                             respond_to_rpc(
-                                &self.task_center,
                                 reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
                                     e.to_string(),
                                 ))),
@@ -857,12 +831,11 @@ where
         reciprocal: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
     ) {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => respond_to_rpc(
-                &self.task_center,
-                reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
+            State::Follower | State::Candidate { .. } => respond_to_rpc(reciprocal.prepare(Err(
+                PartitionProcessorRpcError::NotLeader(
                     self.partition_processor_metadata.partition_id,
-                ))),
-            ),
+                ),
+            ))),
             State::Leader(leader_state) => {
                 match leader_state
                     .self_proposer
@@ -872,15 +845,10 @@ where
                     Ok(commit_token) => {
                         leader_state
                             .awaiting_rpc_self_propose
-                            .push(SelfAppendFuture::new(
-                                self.task_center.clone(),
-                                commit_token,
-                                reciprocal,
-                            ));
+                            .push(SelfAppendFuture::new(commit_token, reciprocal));
                     }
                     Err(e) => {
                         respond_to_rpc(
-                            &self.task_center,
                             reciprocal
                                 .prepare(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
                         );
@@ -892,19 +860,16 @@ where
 }
 
 struct SelfAppendFuture {
-    task_center: TaskCenter,
     commit_token: CommitToken,
     response: Option<Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>,
 }
 
 impl SelfAppendFuture {
     fn new(
-        task_center: TaskCenter,
         commit_token: CommitToken,
         response: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
     ) -> Self {
         Self {
-            task_center,
             commit_token,
             response: Some(response),
         }
@@ -912,19 +877,15 @@ impl SelfAppendFuture {
 
     fn fail_with_internal(&mut self) {
         if let Some(reciprocal) = self.response.take() {
-            respond_to_rpc(
-                &self.task_center,
-                reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
-                    "error when proposing to bifrost".to_string(),
-                ))),
-            );
+            respond_to_rpc(reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
+                "error when proposing to bifrost".to_string(),
+            ))));
         }
     }
 
     fn fail_with_lost_leadership(&mut self, this_partition_id: PartitionId) {
         if let Some(reciprocal) = self.response.take() {
             respond_to_rpc(
-                &self.task_center,
                 reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
                     this_partition_id,
                 ))),
@@ -934,10 +895,7 @@ impl SelfAppendFuture {
 
     fn succeed_with_appended(&mut self) {
         if let Some(reciprocal) = self.response.take() {
-            respond_to_rpc(
-                &self.task_center,
-                reciprocal.prepare(Ok(PartitionProcessorRpcResponse::Appended)),
-            );
+            respond_to_rpc(reciprocal.prepare(Ok(PartitionProcessorRpcResponse::Appended)));
         }
     }
 }
@@ -970,7 +928,6 @@ struct SelfProposer {
     partition_id: PartitionId,
     epoch_sequence_number: EpochSequenceNumber,
     bifrost_appender: restate_bifrost::AppenderHandle<Envelope>,
-    metadata: Metadata,
 }
 
 impl SelfProposer {
@@ -978,7 +935,6 @@ impl SelfProposer {
         partition_id: PartitionId,
         epoch_sequence_number: EpochSequenceNumber,
         bifrost: &Bifrost,
-        metadata: Metadata,
     ) -> Result<Self, Error> {
         let bifrost_appender = bifrost
             .create_background_appender(
@@ -986,13 +942,12 @@ impl SelfProposer {
                 BIFROST_QUEUE_SIZE,
                 MAX_BIFROST_APPEND_BATCH,
             )?
-            .start(task_center(), "self-appender", Some(partition_id))?;
+            .start("self-appender", Some(partition_id))?;
 
         Ok(Self {
             partition_id,
             epoch_sequence_number,
             bifrost_appender,
-            metadata,
         })
     }
 
@@ -1030,7 +985,7 @@ impl SelfProposer {
         let esn = self.epoch_sequence_number.next();
         self.epoch_sequence_number = esn;
 
-        let my_node_id = self.metadata.my_node_id();
+        let my_node_id = Metadata::with_current(|m| m.my_node_id());
         Header {
             dest: Destination::Processor {
                 partition_key,
@@ -1099,7 +1054,7 @@ mod tests {
     use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
-    use restate_core::{task_center, TaskCenterFutureExt, TestCoreEnv};
+    use restate_core::{TaskCenter, TestCoreEnv2};
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
@@ -1119,88 +1074,83 @@ mod tests {
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
     const PARTITION_KEY_RANGE: RangeInclusive<PartitionKey> = PartitionKey::MIN..=PartitionKey::MAX;
     const PARTITION_PROCESSOR_METADATA: PartitionProcessorMetadata =
-        PartitionProcessorMetadata::new(NODE_ID, PARTITION_ID, PARTITION_KEY_RANGE);
+        PartitionProcessorMetadata::new(PARTITION_ID, PARTITION_KEY_RANGE);
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
-        let env = TestCoreEnv::create_with_single_node(0, 0).await;
-        async {
-            let storage_options = StorageOptions::default();
-            let rocksdb_options = RocksDbOptions::default();
+        let _env = TestCoreEnv2::create_with_single_node(0, 0).await;
+        let storage_options = StorageOptions::default();
+        let rocksdb_options = RocksDbOptions::default();
 
-            RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-            let bifrost = Bifrost::init_in_memory().await;
+        let bifrost = Bifrost::init_in_memory().await;
 
-            let partition_store_manager = PartitionStoreManager::create(
-                Constant::new(storage_options.clone()).boxed(),
-                Constant::new(rocksdb_options.clone()).boxed(),
-                &[(PARTITION_ID, PARTITION_KEY_RANGE)],
-            )
-            .await?;
-
-            let invoker_tx = MockInvokerHandle::default();
-            let mut state = LeadershipState::new(
-                task_center(),
-                PARTITION_PROCESSOR_METADATA,
-                None,
-                Duration::from_secs(60 * 60),
-                42,
-                invoker_tx,
-                bifrost.clone(),
-                None,
-            );
-
-            assert!(matches!(state.state, State::Follower));
-
-            let leader_epoch = LeaderEpoch::from(1);
-            state.run_for_leader(leader_epoch).await?;
-
-            assert!(matches!(state.state, State::Candidate { .. }));
-
-            let record = bifrost
-                .create_reader(PARTITION_ID.into(), KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)
-                .expect("valid reader")
-                .next()
-                .await
-                .unwrap()?;
-
-            let envelope = record.try_decode::<Envelope>().unwrap()?;
-
-            let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
-            assert_eq!(
-                announce_leader,
-                AnnounceLeader {
-                    node_id: Some(NODE_ID),
-                    leader_epoch,
-                    partition_key_range: Some(PARTITION_KEY_RANGE),
-                }
-            );
-
-            let mut partition_store = partition_store_manager
-                .open_partition_store(
-                    PARTITION_ID,
-                    PARTITION_KEY_RANGE,
-                    OpenMode::CreateIfMissing,
-                    &rocksdb_options,
-                )
-                .await?;
-            state
-                .on_announce_leader(announce_leader, &mut partition_store)
-                .await?;
-
-            assert!(matches!(state.state, State::Leader(_)));
-
-            state.step_down().await;
-
-            assert!(matches!(state.state, State::Follower));
-
-            googletest::Result::Ok(())
-        }
-        .in_tc(&env.tc)
+        let partition_store_manager = PartitionStoreManager::create(
+            Constant::new(storage_options.clone()).boxed(),
+            Constant::new(rocksdb_options.clone()).boxed(),
+            &[(PARTITION_ID, PARTITION_KEY_RANGE)],
+        )
         .await?;
 
-        env.tc.shutdown_node("test_completed", 0).await;
+        let invoker_tx = MockInvokerHandle::default();
+        let mut state = LeadershipState::new(
+            PARTITION_PROCESSOR_METADATA,
+            None,
+            Duration::from_secs(60 * 60),
+            42,
+            invoker_tx,
+            bifrost.clone(),
+            None,
+        );
+
+        assert!(matches!(state.state, State::Follower));
+
+        let leader_epoch = LeaderEpoch::from(1);
+        state.run_for_leader(leader_epoch).await?;
+
+        assert!(matches!(state.state, State::Candidate { .. }));
+
+        let record = bifrost
+            .create_reader(PARTITION_ID.into(), KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)
+            .expect("valid reader")
+            .next()
+            .await
+            .unwrap()?;
+
+        let envelope = record.try_decode::<Envelope>().unwrap()?;
+
+        let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
+        assert_eq!(
+            announce_leader,
+            AnnounceLeader {
+                node_id: Some(NODE_ID),
+                leader_epoch,
+                partition_key_range: Some(PARTITION_KEY_RANGE),
+            }
+        );
+
+        let mut partition_store = partition_store_manager
+            .open_partition_store(
+                PARTITION_ID,
+                PARTITION_KEY_RANGE,
+                OpenMode::CreateIfMissing,
+                &rocksdb_options,
+            )
+            .await?;
+        state
+            .on_announce_leader(announce_leader, &mut partition_store)
+            .await?;
+
+        assert!(matches!(state.state, State::Leader(_)));
+
+        state.step_down().await;
+
+        assert!(matches!(state.state, State::Follower));
+
+        TaskCenter::current()
+            .shutdown_node("test_completed", 0)
+            .await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }
