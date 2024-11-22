@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use restate_bifrost::Bifrost;
-use restate_core::{metadata, ShutdownError};
+use restate_core::{Metadata, ShutdownError};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
@@ -237,7 +237,9 @@ pub async fn append_envelope_to_bifrost(
 ) -> Result<(LogId, Lsn), Error> {
     let partition_id = {
         // make sure we drop pinned partition table before awaiting
-        let partition_table = metadata().wait_for_partition_table(Version::MIN).await?;
+        let partition_table = Metadata::current()
+            .wait_for_partition_table(Version::MIN)
+            .await?;
         partition_table.find_partition_id(envelope.partition_key())?
     };
 

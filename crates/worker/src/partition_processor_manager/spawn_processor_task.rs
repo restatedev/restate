@@ -23,7 +23,6 @@ use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::schema::Schema;
-use restate_types::GenerationalNodeId;
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -32,11 +31,9 @@ use crate::PartitionProcessorBuilder;
 
 pub struct SpawnPartitionProcessorTask {
     task_name: &'static str,
-    node_id: GenerationalNodeId,
     partition_id: PartitionId,
     key_range: RangeInclusive<PartitionKey>,
     configuration: Live<Configuration>,
-    metadata: Metadata,
     bifrost: Bifrost,
     partition_store_manager: PartitionStoreManager,
 }
@@ -45,21 +42,17 @@ impl SpawnPartitionProcessorTask {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_name: &'static str,
-        node_id: GenerationalNodeId,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
         configuration: Live<Configuration>,
-        metadata: Metadata,
         bifrost: Bifrost,
         partition_store_manager: PartitionStoreManager,
     ) -> Self {
         Self {
             task_name,
-            node_id,
             partition_id,
             key_range,
             configuration,
-            metadata,
             bifrost,
             partition_store_manager,
         }
@@ -76,17 +69,15 @@ impl SpawnPartitionProcessorTask {
     ) -> anyhow::Result<(StartedProcessor, RuntimeRootTaskHandle<anyhow::Result<()>>)> {
         let Self {
             task_name,
-            node_id,
             partition_id,
             key_range,
             configuration,
-            metadata,
             bifrost,
             partition_store_manager,
         } = self;
 
         let config = configuration.pinned();
-        let schema = metadata.updateable_schema();
+        let schema = Metadata::with_current(|m| m.updateable_schema());
         let invoker: InvokerService<
             InvokerStorageReader<PartitionStore>,
             EntryEnricher<Schema, ProtobufRawEntryCodec>,
@@ -108,7 +99,6 @@ impl SpawnPartitionProcessorTask {
         let options = &configuration.pinned().worker;
 
         let pp_builder = PartitionProcessorBuilder::new(
-            node_id,
             partition_id,
             key_range.clone(),
             status,
@@ -146,11 +136,7 @@ impl SpawnPartitionProcessorTask {
                     )?;
 
                     pp_builder
-                        .build::<ProtobufRawEntryCodec>(
-                            TaskCenter::current(),
-                            bifrost,
-                            partition_store,
-                        )
+                        .build::<ProtobufRawEntryCodec>(bifrost, partition_store)
                         .await?
                         .run()
                         .await
