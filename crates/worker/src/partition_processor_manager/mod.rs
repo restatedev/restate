@@ -912,7 +912,7 @@ mod tests {
     use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::BifrostService;
     use restate_core::network::MockPeerConnection;
-    use restate_core::{TaskKind, TestCoreEnvBuilder};
+    use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StorageOptions};
@@ -947,49 +947,44 @@ mod tests {
 
         let mut env_builder =
             TestCoreEnvBuilder::with_incoming_only_connector().set_nodes_config(nodes_config);
-        let health_status = HealthStatus::default();
+        let tc = env_builder.tc.clone();
+        async {
+            let health_status = HealthStatus::default();
 
-        env_builder.tc.run_in_scope_sync(|| {
             RocksDbManager::init(Constant::new(CommonOptions::default()));
-        });
 
-        let bifrost_svc = BifrostService::new(env_builder.tc.clone(), env_builder.metadata.clone())
-            .with_factory(memory_loglet::Factory::default());
-        let bifrost = bifrost_svc.handle();
+            let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
+            let bifrost = bifrost_svc.handle();
 
-        let partition_store_manager = PartitionStoreManager::create(
-            Constant::new(StorageOptions::default()),
-            Constant::new(RocksDbOptions::default()).boxed(),
-            &[(PartitionId::MIN, 0..=PartitionKey::MAX)],
-        )
-        .await?;
+            let partition_store_manager = PartitionStoreManager::create(
+                Constant::new(StorageOptions::default()),
+                Constant::new(RocksDbOptions::default()).boxed(),
+                &[(PartitionId::MIN, 0..=PartitionKey::MAX)],
+            )
+            .await?;
 
-        let partition_processor_manager = PartitionProcessorManager::new(
-            env_builder.tc.clone(),
-            health_status,
-            Live::from_value(Configuration::default()),
-            env_builder.metadata.clone(),
-            env_builder.metadata_store_client.clone(),
-            partition_store_manager,
-            &mut env_builder.router_builder,
-            bifrost,
-        );
+            let partition_processor_manager = PartitionProcessorManager::new(
+                env_builder.tc.clone(),
+                health_status,
+                Live::from_value(Configuration::default()),
+                env_builder.metadata.clone(),
+                env_builder.metadata_store_client.clone(),
+                partition_store_manager,
+                &mut env_builder.router_builder,
+                bifrost,
+            );
 
-        let env = env_builder.build().await;
-        let processors_manager_handle = partition_processor_manager.handle();
+            let env = env_builder.build().await;
+            let processors_manager_handle = partition_processor_manager.handle();
 
-        env.tc
-            .run_in_scope("init-bifrost", None, bifrost_svc.start())
-            .await
-            .into_test_result()?;
-        env.tc.spawn(
-            TaskKind::SystemService,
-            "partition-processor-manager",
-            None,
-            partition_processor_manager.run(),
-        )?;
-        let tc = env.tc.clone();
-        tc.run_in_scope("test", None, async move {
+            bifrost_svc.start().await.into_test_result()?;
+            TaskCenter::current().spawn(
+                TaskKind::SystemService,
+                "partition-processor-manager",
+                None,
+                partition_processor_manager.run(),
+            )?;
+
             let connection = MockPeerConnection::connect(
                 node_id,
                 env.metadata.nodes_config_version(),
@@ -1049,7 +1044,8 @@ mod tests {
             }
 
             googletest::Result::Ok(())
-        })
+        }
+        .in_tc(&tc)
         .await?;
 
         tc.shutdown_node("test completed", 0).await;

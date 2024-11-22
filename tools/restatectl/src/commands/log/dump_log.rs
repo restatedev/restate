@@ -97,8 +97,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
             metadata_manager.run(),
         )?;
 
-        let bifrost_svc = BifrostService::new(TaskCenter::current(), metadata.clone())
-            .enable_local_loglet(&Configuration::updateable());
+        let bifrost_svc = BifrostService::new().enable_local_loglet(&Configuration::updateable());
 
         let bifrost = bifrost_svc.handle();
         // Ensures bifrost has initial metadata synced up before starting the worker.

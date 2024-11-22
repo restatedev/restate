@@ -483,7 +483,10 @@ mod tests {
     use restate_core::network::{
         FailingConnector, Incoming, MessageHandler, MockPeerConnection, NetworkServerBuilder,
     };
-    use restate_core::{NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+    use restate_core::{
+        NoOpMessageHandler, TaskCenter, TaskCenterFutureExt, TaskKind, TestCoreEnv,
+        TestCoreEnvBuilder,
+    };
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::{AdminOptions, Configuration};
     use restate_types::health::HealthStatus;
@@ -500,53 +503,49 @@ mod tests {
     async fn manual_log_trim() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
         let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
+        let tc = builder.tc.clone();
+        async {
+            let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
+            let bifrost = bifrost_svc.handle();
 
-        let metadata = builder.metadata.clone();
+            let svc = Service::new(
+                Live::from_value(Configuration::default()),
+                HealthStatus::default(),
+                bifrost.clone(),
+                builder.metadata.clone(),
+                builder.networking.clone(),
+                &mut builder.router_builder,
+                &mut NetworkServerBuilder::default(),
+                builder.metadata_writer.clone(),
+                builder.metadata_store_client.clone(),
+            );
+            let svc_handle = svc.handle();
 
-        let bifrost_svc = BifrostService::new(builder.tc.clone(), metadata.clone())
-            .with_factory(memory_loglet::Factory::default());
-        let bifrost = bifrost_svc.handle();
+            let _ = builder.build().await;
+            bifrost_svc.start().await?;
 
-        let svc = Service::new(
-            Live::from_value(Configuration::default()),
-            HealthStatus::default(),
-            bifrost.clone(),
-            builder.metadata.clone(),
-            builder.networking.clone(),
-            &mut builder.router_builder,
-            &mut NetworkServerBuilder::default(),
-            builder.metadata_writer.clone(),
-            builder.metadata_store_client.clone(),
-        );
-        let svc_handle = svc.handle();
+            let mut appender = bifrost.create_appender(LOG_ID)?;
 
-        let node_env = builder.build().await;
-        bifrost_svc.start().await?;
+            TaskCenter::current().spawn(
+                TaskKind::SystemService,
+                "cluster-controller",
+                None,
+                svc.run(),
+            )?;
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+            for _ in 1..=5 {
+                appender.append("").await?;
+            }
 
-        node_env.tc.spawn(
-            TaskKind::SystemService,
-            "cluster-controller",
-            None,
-            svc.run(),
-        )?;
+            svc_handle.trim_log(LOG_ID, Lsn::from(3)).await??;
 
-        node_env
-            .tc
-            .run_in_scope("test", None, async move {
-                for _ in 1..=5 {
-                    appender.append("").await?;
-                }
-
-                svc_handle.trim_log(LOG_ID, Lsn::from(3)).await??;
-
-                let record = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
-                assert_that!(record.sequence_number(), eq(Lsn::OLDEST));
-                assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(3))));
-                Ok::<(), anyhow::Error>(())
-            })
-            .await?;
+            let record = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
+            assert_that!(record.sequence_number(), eq(Lsn::OLDEST));
+            assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(3))));
+            Ok::<(), anyhow::Error>(())
+        }
+        .in_tc(&tc)
+        .await?;
 
         Ok(())
     }
@@ -612,63 +611,60 @@ mod tests {
                 .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
+        let tc = node_env.tc.clone();
 
-        node_env
-            .tc
-            .clone()
-            .run_in_scope("test", None, async move {
-                // simulate a connection from node 2 so we can have a connection between the two
-                // nodes
-                let node_2 = MockPeerConnection::connect(
-                    GenerationalNodeId::new(2, 2),
-                    node_env.metadata.nodes_config_version(),
-                    node_env
-                        .metadata
-                        .nodes_config_ref()
-                        .cluster_name()
-                        .to_owned(),
-                    node_env.networking.connection_manager(),
-                    10,
-                )
-                .await?;
-                // let node2 receive messages and use the same message handler as node1
-                let (_node_2, _node2_reactor) =
-                    node_2.process_with_message_handler(&node_env.tc, get_node_state_handler)?;
-
-                let mut appender = bifrost.create_appender(LOG_ID)?;
-                for i in 1..=20 {
-                    let lsn = appender.append("").await?;
-                    assert_eq!(Lsn::from(i), lsn);
-                }
-
-                tokio::time::sleep(interval_duration * 10).await;
-
-                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
-
-                // report persisted lsn back to cluster controller
-                persisted_lsn.store(6, Ordering::Relaxed);
-
-                tokio::time::sleep(interval_duration * 10).await;
-                // we delete 1-6.
-                assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
-
-                // increase by 4 more, this should not overcome the threshold
-                persisted_lsn.store(10, Ordering::Relaxed);
-
-                tokio::time::sleep(interval_duration * 10).await;
-                assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
-
-                // now we have reached the min threshold wrt to the last trim point
-                persisted_lsn.store(11, Ordering::Relaxed);
-
-                tokio::time::sleep(interval_duration * 10).await;
-                assert_eq!(Lsn::from(11), bifrost.get_trim_point(LOG_ID).await?);
-
-                Ok::<(), anyhow::Error>(())
-            })
+        async move {
+            // simulate a connection from node 2 so we can have a connection between the two
+            // nodes
+            let node_2 = MockPeerConnection::connect(
+                GenerationalNodeId::new(2, 2),
+                node_env.metadata.nodes_config_version(),
+                node_env
+                    .metadata
+                    .nodes_config_ref()
+                    .cluster_name()
+                    .to_owned(),
+                node_env.networking.connection_manager(),
+                10,
+            )
             .await?;
+            // let node2 receive messages and use the same message handler as node1
+            let (_node_2, _node2_reactor) = node_2
+                .process_with_message_handler(&TaskCenter::current(), get_node_state_handler)?;
 
-        Ok(())
+            let mut appender = bifrost.create_appender(LOG_ID)?;
+            for i in 1..=20 {
+                let lsn = appender.append("").await?;
+                assert_eq!(Lsn::from(i), lsn);
+            }
+
+            tokio::time::sleep(interval_duration * 10).await;
+
+            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+
+            // report persisted lsn back to cluster controller
+            persisted_lsn.store(6, Ordering::Relaxed);
+
+            tokio::time::sleep(interval_duration * 10).await;
+            // we delete 1-6.
+            assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
+
+            // increase by 4 more, this should not overcome the threshold
+            persisted_lsn.store(10, Ordering::Relaxed);
+
+            tokio::time::sleep(interval_duration * 10).await;
+            assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
+
+            // now we have reached the min threshold wrt to the last trim point
+            persisted_lsn.store(11, Ordering::Relaxed);
+
+            tokio::time::sleep(interval_duration * 10).await;
+            assert_eq!(Lsn::from(11), bifrost.get_trim_point(LOG_ID).await?);
+
+            Ok::<(), anyhow::Error>(())
+        }
+        .in_tc(&tc)
+        .await
     }
 
     #[test(tokio::test(start_paused = true))]
@@ -698,58 +694,55 @@ mod tests {
         })
         .await?;
 
-        node_env
-            .tc
-            .clone()
-            .run_in_scope("test", None, async move {
-                // simulate a connection from node 2 so we can have a connection between the two
-                // nodes
-                let node_2 = MockPeerConnection::connect(
-                    GenerationalNodeId::new(2, 2),
-                    node_env.metadata.nodes_config_version(),
-                    node_env
-                        .metadata
-                        .nodes_config_ref()
-                        .cluster_name()
-                        .to_owned(),
-                    node_env.networking.connection_manager(),
-                    10,
-                )
-                .await?;
-                // let node2 receive messages and use the same message handler as node1
-                let (_node_2, _node2_reactor) =
-                    node_2.process_with_message_handler(&node_env.tc, get_node_state_handler)?;
-
-                let mut appender = bifrost.create_appender(LOG_ID)?;
-                for i in 1..=20 {
-                    let lsn = appender.append(format!("record{}", i)).await?;
-                    assert_eq!(Lsn::from(i), lsn);
-                }
-                tokio::time::sleep(interval_duration * 10).await;
-                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
-
-                // report persisted lsn back to cluster controller
-                persisted_lsn.store(3, Ordering::Relaxed);
-
-                tokio::time::sleep(interval_duration * 10).await;
-                // everything before the persisted_lsn.
-                assert_eq!(bifrost.get_trim_point(LOG_ID).await?, Lsn::from(3));
-                // we should be able to after the last persisted lsn
-                let v = bifrost.read(LOG_ID, Lsn::from(4)).await?.unwrap();
-                assert_that!(v.sequence_number(), eq(Lsn::new(4)));
-                assert!(v.is_data_record());
-                assert_that!(v.decode_unchecked::<String>(), eq("record4".to_owned()));
-
-                persisted_lsn.store(20, Ordering::Relaxed);
-
-                tokio::time::sleep(interval_duration * 10).await;
-                assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
-
-                Ok::<(), anyhow::Error>(())
-            })
+        let tc = node_env.tc.clone();
+        async move {
+            // simulate a connection from node 2 so we can have a connection between the two
+            // nodes
+            let node_2 = MockPeerConnection::connect(
+                GenerationalNodeId::new(2, 2),
+                node_env.metadata.nodes_config_version(),
+                node_env
+                    .metadata
+                    .nodes_config_ref()
+                    .cluster_name()
+                    .to_owned(),
+                node_env.networking.connection_manager(),
+                10,
+            )
             .await?;
+            // let node2 receive messages and use the same message handler as node1
+            let (_node_2, _node2_reactor) =
+                node_2.process_with_message_handler(&node_env.tc, get_node_state_handler)?;
 
-        Ok(())
+            let mut appender = bifrost.create_appender(LOG_ID)?;
+            for i in 1..=20 {
+                let lsn = appender.append(format!("record{}", i)).await?;
+                assert_eq!(Lsn::from(i), lsn);
+            }
+            tokio::time::sleep(interval_duration * 10).await;
+            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+
+            // report persisted lsn back to cluster controller
+            persisted_lsn.store(3, Ordering::Relaxed);
+
+            tokio::time::sleep(interval_duration * 10).await;
+            // everything before the persisted_lsn.
+            assert_eq!(bifrost.get_trim_point(LOG_ID).await?, Lsn::from(3));
+            // we should be able to after the last persisted lsn
+            let v = bifrost.read(LOG_ID, Lsn::from(4)).await?.unwrap();
+            assert_that!(v.sequence_number(), eq(Lsn::new(4)));
+            assert!(v.is_data_record());
+            assert_that!(v.decode_unchecked::<String>(), eq("record4".to_owned()));
+
+            persisted_lsn.store(20, Ordering::Relaxed);
+
+            tokio::time::sleep(interval_duration * 10).await;
+            assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
+
+            Ok::<(), anyhow::Error>(())
+        }
+        .in_tc(&tc)
+        .await
     }
 
     #[test(tokio::test(start_paused = true))]
@@ -787,25 +780,24 @@ mod tests {
         })
         .await?;
 
-        node_env
-            .tc
-            .run_in_scope("test", None, async move {
-                let mut appender = bifrost.create_appender(LOG_ID)?;
-                for i in 1..=5 {
-                    let lsn = appender.append(format!("record{}", i)).await?;
-                    assert_eq!(Lsn::from(i), lsn);
-                }
+        async move {
+            let mut appender = bifrost.create_appender(LOG_ID)?;
+            for i in 1..=5 {
+                let lsn = appender.append(format!("record{}", i)).await?;
+                assert_eq!(Lsn::from(i), lsn);
+            }
 
-                // report persisted lsn back to cluster controller for a subset of the nodes
-                persisted_lsn.store(5, Ordering::Relaxed);
+            // report persisted lsn back to cluster controller for a subset of the nodes
+            persisted_lsn.store(5, Ordering::Relaxed);
 
-                tokio::time::sleep(interval_duration * 10).await;
-                // no trimming should have happened because one node did not report the persisted lsn
-                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+            tokio::time::sleep(interval_duration * 10).await;
+            // no trimming should have happened because one node did not report the persisted lsn
+            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-                Ok::<(), anyhow::Error>(())
-            })
-            .await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .in_tc(&node_env.tc)
+        .await?;
 
         Ok(())
     }
@@ -818,53 +810,54 @@ mod tests {
         F: FnMut(TestCoreEnvBuilder<FailingConnector>) -> TestCoreEnvBuilder<FailingConnector>,
     {
         let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
-        let metadata = builder.metadata.clone();
+        let tc = builder.tc.clone();
+        async {
+            let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
+            let bifrost = bifrost_svc.handle();
 
-        let bifrost_svc = BifrostService::new(builder.tc.clone(), metadata.clone())
-            .with_factory(memory_loglet::Factory::default());
-        let bifrost = bifrost_svc.handle();
+            let mut server_builder = NetworkServerBuilder::default();
 
-        let mut server_builder = NetworkServerBuilder::default();
+            let svc = Service::new(
+                Live::from_value(config),
+                HealthStatus::default(),
+                bifrost.clone(),
+                builder.metadata.clone(),
+                builder.networking.clone(),
+                &mut builder.router_builder,
+                &mut server_builder,
+                builder.metadata_writer.clone(),
+                builder.metadata_store_client.clone(),
+            );
 
-        let svc = Service::new(
-            Live::from_value(config),
-            HealthStatus::default(),
-            bifrost.clone(),
-            builder.metadata.clone(),
-            builder.networking.clone(),
-            &mut builder.router_builder,
-            &mut server_builder,
-            builder.metadata_writer.clone(),
-            builder.metadata_store_client.clone(),
-        );
+            let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+            nodes_config.upsert_node(NodeConfig::new(
+                "node-1".to_owned(),
+                GenerationalNodeId::new(1, 1),
+                AdvertisedAddress::Uds("foobar".into()),
+                Role::Worker.into(),
+                LogServerConfig::default(),
+            ));
+            nodes_config.upsert_node(NodeConfig::new(
+                "node-2".to_owned(),
+                GenerationalNodeId::new(2, 2),
+                AdvertisedAddress::Uds("bar".into()),
+                Role::Worker.into(),
+                LogServerConfig::default(),
+            ));
+            let builder = modify_builder(builder.set_nodes_config(nodes_config));
 
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
-        nodes_config.upsert_node(NodeConfig::new(
-            "node-1".to_owned(),
-            GenerationalNodeId::new(1, 1),
-            AdvertisedAddress::Uds("foobar".into()),
-            Role::Worker.into(),
-            LogServerConfig::default(),
-        ));
-        nodes_config.upsert_node(NodeConfig::new(
-            "node-2".to_owned(),
-            GenerationalNodeId::new(2, 2),
-            AdvertisedAddress::Uds("bar".into()),
-            Role::Worker.into(),
-            LogServerConfig::default(),
-        ));
-        let builder = modify_builder(builder.set_nodes_config(nodes_config));
+            let node_env = builder.build().await;
+            bifrost_svc.start().await?;
 
-        let node_env = builder.build().await;
-        bifrost_svc.start().await?;
-
-        node_env.tc.spawn(
-            TaskKind::SystemService,
-            "cluster-controller",
-            None,
-            svc.run(),
-        )?;
-
-        Ok((node_env, bifrost))
+            node_env.tc.spawn(
+                TaskKind::SystemService,
+                "cluster-controller",
+                None,
+                svc.run(),
+            )?;
+            Ok((node_env, bifrost))
+        }
+        .in_tc(&tc)
+        .await
     }
 }

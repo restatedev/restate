@@ -21,6 +21,7 @@ use futures::Stream;
 use futures::StreamExt;
 use pin_project::pin_project;
 
+use restate_core::Metadata;
 use restate_core::MetadataKind;
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::MaybeSegment;
@@ -348,7 +349,7 @@ impl Stream for LogReadStream {
                         panic!("substream must be set at this point");
                     };
 
-                    let log_metadata = bifrost_inner.metadata.logs_ref();
+                    let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
 
                     // The log is gone!
                     let Some(chain) = log_metadata.chain(this.log_id) else {
@@ -400,11 +401,11 @@ impl Stream for LogReadStream {
                     let metadata_version = log_metadata.version();
 
                     // No hope at this metadata version, wait for the next update.
-                    let metadata_watch_fut = Box::pin(
-                        bifrost_inner
-                            .metadata
-                            .wait_for_version(MetadataKind::Logs, metadata_version.next()),
-                    );
+                    let metadata_watch_fut = Box::pin(async move {
+                        Metadata::current()
+                            .wait_for_version(MetadataKind::Logs, metadata_version.next())
+                            .await
+                    });
                     log_metadata_watch_fut.set(Some(metadata_watch_fut));
                     continue;
                 }
@@ -445,7 +446,7 @@ mod tests {
     use tracing_test::traced_test;
 
     use restate_core::{
-        metadata, task_center, MetadataKind, TargetVersion, TaskKind, TestCoreEnvBuilder,
+        MetadataKind, TargetVersion, TaskCenter, TaskCenterFutureExt, TaskKind, TestCoreEnvBuilder,
     };
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{CommonOptions, Configuration};
@@ -468,14 +469,13 @@ mod tests {
             .build()
             .await;
 
-        let tc = node_env.tc;
-        tc.run_in_scope("test", None, async {
+        async {
             let read_from = Lsn::from(6);
 
             let config = Live::from_value(Configuration::default());
             RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-            let svc = BifrostService::new(task_center(), metadata()).enable_local_loglet(&config);
+            let svc = BifrostService::new().enable_local_loglet(&config);
             let bifrost = svc.handle();
             svc.start().await.expect("loglet must start");
 
@@ -494,22 +494,28 @@ mod tests {
             let read_counter = Arc::new(AtomicUsize::new(0));
             // spawn a reader that reads 5 records and exits.
             let counter_clone = read_counter.clone();
-            let id = tc.spawn(TaskKind::TestRunner, "read-records", None, async move {
-                for i in 6..=10 {
-                    let record = reader.next().await.expect("to never terminate")?;
-                    let expected_lsn = Lsn::from(i);
-                    counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    assert_that!(record.sequence_number(), eq(expected_lsn));
-                    assert_that!(reader.read_pointer(), ge(record.sequence_number()));
-                    assert_that!(
-                        record.decode_unchecked::<String>(),
-                        eq(format!("record{}", expected_lsn))
-                    );
-                }
-                Ok(())
-            })?;
+            let id = TaskCenter::current().spawn(
+                TaskKind::TestRunner,
+                "read-records",
+                None,
+                async move {
+                    for i in 6..=10 {
+                        let record = reader.next().await.expect("to never terminate")?;
+                        let expected_lsn = Lsn::from(i);
+                        counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        assert_that!(record.sequence_number(), eq(expected_lsn));
+                        assert_that!(reader.read_pointer(), ge(record.sequence_number()));
+                        assert_that!(
+                            record.decode_unchecked::<String>(),
+                            eq(format!("record{}", expected_lsn))
+                        );
+                    }
+                    Ok(())
+                },
+            )?;
 
-            let reader_bg_handle = tc.take_task(id).expect("read-records task to exist");
+            let reader_bg_handle = TaskCenter::with_current(|tc| tc.take_task(id))
+                .expect("read-records task to exist");
 
             tokio::task::yield_now().await;
             // Not finished, we still didn't append records
@@ -538,7 +544,8 @@ mod tests {
             assert_eq!(5, read_counter.load(std::sync::atomic::Ordering::Relaxed));
 
             anyhow::Ok(())
-        })
+        }
+        .in_tc(&node_env.tc)
         .await?;
         Ok(())
     }
@@ -553,94 +560,92 @@ mod tests {
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
-        node_env
-            .tc
-            .run_in_scope("test", None, async {
-                let config = Live::from_value(Configuration::default());
-                RocksDbManager::init(Constant::new(CommonOptions::default()));
+        async {
+            let config = Live::from_value(Configuration::default());
+            RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-                let svc =
-                    BifrostService::new(task_center(), metadata()).enable_local_loglet(&config);
-                let bifrost = svc.handle();
+            let svc = BifrostService::new().enable_local_loglet(&config);
+            let bifrost = svc.handle();
 
-                let bifrost_admin = BifrostAdmin::new(
-                    &bifrost,
-                    &node_env.metadata_writer,
-                    &node_env.metadata_store_client,
+            let bifrost_admin = BifrostAdmin::new(
+                &bifrost,
+                &node_env.metadata_writer,
+                &node_env.metadata_store_client,
+            );
+            svc.start().await.expect("loglet must start");
+
+            let mut appender = bifrost.create_appender(LOG_ID)?;
+
+            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+
+            // append 10 records [1..10]
+            for i in 1..=10 {
+                let lsn = appender.append("").await?;
+                assert_eq!(Lsn::from(i), lsn);
+            }
+
+            // [1..5] trimmed. trim_point = 5
+            bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
+
+            assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
+            assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
+
+            let mut read_stream =
+                bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
+
+            let record = read_stream.next().await.unwrap()?;
+            assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(5))));
+
+            for lsn in 6..=7 {
+                let record = read_stream.next().await.unwrap()?;
+                assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+                assert!(record.is_data_record());
+            }
+            assert!(!read_stream.is_terminated());
+            assert_eq!(Lsn::from(8), read_stream.read_pointer());
+
+            let tail = bifrost.find_tail(LOG_ID).await?.offset();
+            // trimming beyond the release point will fall back to the release point
+            bifrost_admin.trim(LOG_ID, Lsn::from(u64::MAX)).await?;
+            let trim_point = bifrost.get_trim_point(LOG_ID).await?;
+            assert_eq!(Lsn::from(10), bifrost.get_trim_point(LOG_ID).await?);
+            // trim point becomes the point before the next slot available for writes (aka. the
+            // tail)
+            assert_eq!(tail.prev(), trim_point);
+
+            // append lsns [11..20]
+            for i in 11..=20 {
+                let lsn = appender.append(format!("record{}", i)).await?;
+                assert_eq!(Lsn::from(i), lsn);
+            }
+
+            // read stream should send a gap from 8->10
+            let record = read_stream.next().await.unwrap()?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(8)));
+            assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
+
+            // read pointer is at 11
+            assert_eq!(Lsn::from(11), read_stream.read_pointer());
+
+            // read the rest of the records
+            for lsn in 11..=20 {
+                let record = read_stream.next().await.unwrap()?;
+                assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+                assert!(record.is_data_record());
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq(format!("record{}", lsn))
                 );
-                svc.start().await.expect("loglet must start");
+            }
+            // we are at tail. polling should return pending.
+            let pinned = std::pin::pin!(read_stream.next());
+            let next_is_pending = futures::poll!(pinned);
+            assert!(matches!(next_is_pending, Poll::Pending));
 
-                let mut appender = bifrost.create_appender(LOG_ID)?;
-
-                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
-
-                // append 10 records [1..10]
-                for i in 1..=10 {
-                    let lsn = appender.append("").await?;
-                    assert_eq!(Lsn::from(i), lsn);
-                }
-
-                // [1..5] trimmed. trim_point = 5
-                bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
-
-                assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
-                assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
-
-                let mut read_stream =
-                    bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
-
-                let record = read_stream.next().await.unwrap()?;
-                assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(5))));
-
-                for lsn in 6..=7 {
-                    let record = read_stream.next().await.unwrap()?;
-                    assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
-                    assert!(record.is_data_record());
-                }
-                assert!(!read_stream.is_terminated());
-                assert_eq!(Lsn::from(8), read_stream.read_pointer());
-
-                let tail = bifrost.find_tail(LOG_ID).await?.offset();
-                // trimming beyond the release point will fall back to the release point
-                bifrost_admin.trim(LOG_ID, Lsn::from(u64::MAX)).await?;
-                let trim_point = bifrost.get_trim_point(LOG_ID).await?;
-                assert_eq!(Lsn::from(10), bifrost.get_trim_point(LOG_ID).await?);
-                // trim point becomes the point before the next slot available for writes (aka. the
-                // tail)
-                assert_eq!(tail.prev(), trim_point);
-
-                // append lsns [11..20]
-                for i in 11..=20 {
-                    let lsn = appender.append(format!("record{}", i)).await?;
-                    assert_eq!(Lsn::from(i), lsn);
-                }
-
-                // read stream should send a gap from 8->10
-                let record = read_stream.next().await.unwrap()?;
-                assert_that!(record.sequence_number(), eq(Lsn::new(8)));
-                assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
-
-                // read pointer is at 11
-                assert_eq!(Lsn::from(11), read_stream.read_pointer());
-
-                // read the rest of the records
-                for lsn in 11..=20 {
-                    let record = read_stream.next().await.unwrap()?;
-                    assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
-                    assert!(record.is_data_record());
-                    assert_that!(
-                        record.decode_unchecked::<String>(),
-                        eq(format!("record{}", lsn))
-                    );
-                }
-                // we are at tail. polling should return pending.
-                let pinned = std::pin::pin!(read_stream.next());
-                let next_is_pending = futures::poll!(pinned);
-                assert!(matches!(next_is_pending, Poll::Pending));
-
-                Ok(())
-            })
-            .await
+            Ok(())
+        }
+        .in_tc(&node_env.tc)
+        .await
     }
 
     // Note: This test doesn't validate read stream behaviour with zombie records at seal boundary.
@@ -654,13 +659,12 @@ mod tests {
             .build()
             .await;
 
-        let tc = node_env.tc;
-        tc.run_in_scope("test", None, async {
+        async {
             let config = Live::from_value(Configuration::default());
             RocksDbManager::init(Constant::new(CommonOptions::default()));
 
             // enable both in-memory and local loglet types
-            let svc = BifrostService::new(task_center(), metadata())
+            let svc = BifrostService::new()
                 .enable_local_loglet(&config)
                 .enable_in_memory_loglet();
             let bifrost = svc.handle();
@@ -742,10 +746,11 @@ mod tests {
 
             assert!(tail.is_sealed());
             assert_eq!(Lsn::from(11), tail.offset());
+            let metadata = Metadata::current();
             // perform manual reconfiguration (can be replaced with bifrost reconfiguration API
             // when it's implemented)
-            let old_version = bifrost.inner.metadata.logs_version();
-            let mut builder = bifrost.inner.metadata.logs_ref().clone().into_builder();
+            let old_version = metadata.logs_version();
+            let mut builder = metadata.logs_ref().clone().into_builder();
             let mut chain_builder = builder.chain(LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
@@ -768,9 +773,7 @@ mod tests {
                 .await?;
 
             // make sure we have updated metadata.
-            bifrost
-                .inner
-                .metadata
+            metadata
                 .sync(MetadataKind::Logs, TargetVersion::Latest)
                 .await?;
 
@@ -807,7 +810,8 @@ mod tests {
             assert_that!(record.decode_unchecked::<String>(), eq("segment-2-1000"));
 
             anyhow::Ok(())
-        })
+        }
+        .in_tc(&node_env.tc)
         .await?;
         Ok(())
     }
@@ -822,13 +826,12 @@ mod tests {
             .build()
             .await;
 
-        let tc = node_env.tc;
-        tc.run_in_scope("test", None, async {
+        async {
             let config = Live::from_value(Configuration::default());
             RocksDbManager::init(Constant::new(CommonOptions::default()));
 
             // enable both in-memory and local loglet types
-            let svc = BifrostService::new(task_center(), metadata())
+            let svc = BifrostService::new()
                 .enable_local_loglet(&config)
                 .enable_in_memory_loglet();
             let bifrost = svc.handle();
@@ -932,7 +935,8 @@ mod tests {
             );
 
             anyhow::Ok(())
-        })
+        }
+        .in_tc(&node_env.tc)
         .await?;
         Ok(())
     }
@@ -947,22 +951,22 @@ mod tests {
             .build()
             .await;
 
-        let tc = node_env.tc;
-        tc.run_in_scope("test", None, async {
+        async {
             let config = Live::from_value(Configuration::default());
             RocksDbManager::init(Constant::new(CommonOptions::default()));
 
             // enable both in-memory and local loglet types
-            let svc = BifrostService::new(task_center(), metadata())
+            let svc = BifrostService::new()
                 .enable_local_loglet(&config)
                 .enable_in_memory_loglet();
             let bifrost = svc.handle();
             svc.start().await.expect("loglet must start");
             let mut appender = bifrost.create_appender(LOG_ID)?;
 
+            let metadata = Metadata::current();
             // prepare a chain that starts from Lsn 10 (we expect trim from OLDEST -> 9)
-            let old_version = bifrost.inner.metadata.logs_version();
-            let mut builder = bifrost.inner.metadata.logs_ref().clone().into_builder();
+            let old_version = metadata.logs_version();
+            let mut builder = metadata.logs_ref().clone().into_builder();
             let mut chain_builder = builder.chain(LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::Local);
@@ -984,9 +988,7 @@ mod tests {
                 .await?;
 
             // make sure we have updated metadata.
-            bifrost
-                .inner
-                .metadata
+            metadata
                 .sync(MetadataKind::Logs, TargetVersion::Latest)
                 .await?;
 
@@ -1016,7 +1018,8 @@ mod tests {
             }
 
             anyhow::Ok(())
-        })
+        }
+        .in_tc(&node_env.tc)
         .await?;
         Ok(())
     }
