@@ -41,7 +41,12 @@ pub trait AdminClientInterface {
 
     async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
 
-    async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>>;
+    async fn cancel_invocation(
+        &self,
+        id: &str,
+        kill: bool,
+        retry: bool,
+    ) -> reqwest::Result<Envelope<()>>;
 
     async fn patch_state(
         &self,
@@ -132,7 +137,12 @@ impl AdminClientInterface for AdminClient {
         self.run(reqwest::Method::DELETE, url).await
     }
 
-    async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>> {
+    async fn cancel_invocation(
+        &self,
+        id: &str,
+        kill: bool,
+        retry: bool,
+    ) -> reqwest::Result<Envelope<()>> {
         let mut url = self
             .base_url
             .join(&format!("/invocations/{id}"))
@@ -140,7 +150,12 @@ impl AdminClientInterface for AdminClient {
 
         url.set_query(Some(&format!(
             "mode={}",
-            if kill { "kill" } else { "cancel" }
+            match (kill, retry) {
+                (false, false) => "cancel",
+                (false, true) => "cancel-and-restart",
+                (true, false) => "kill",
+                (true, true) => "kill-and-restart",
+            }
         )));
 
         self.run(reqwest::Method::DELETE, url).await

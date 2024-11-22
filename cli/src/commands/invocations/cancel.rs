@@ -37,6 +37,9 @@ pub struct Cancel {
     /// Ungracefully kill the invocation and its children
     #[clap(long)]
     kill: bool,
+    /// After cancelling/killing, restart the invocation using the same input.
+    #[clap(long, alias = "retry")]
+    restart: bool,
 }
 
 pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> {
@@ -67,16 +70,19 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
     // Get the invocation and confirm
     let prompt = format!(
         "Are you sure you want to {} these invocations?",
-        if opts.kill {
-            Styled(Style::Danger, "kill")
-        } else {
-            Styled(Style::Warn, "cancel")
-        },
+        match (opts.kill, opts.restart) {
+            (false, false) => Styled(Style::Warn, "cancel"),
+            (false, true) => Styled(Style::Warn, "cancel and restart"),
+            (true, false) => Styled(Style::Danger, "kill"),
+            (true, true) => Styled(Style::Danger, "kill and restart"),
+        }
     );
     confirm_or_exit(&prompt)?;
 
     for inv in invocations {
-        let result = client.cancel_invocation(&inv.id, opts.kill).await?;
+        let result = client
+            .cancel_invocation(&inv.id, opts.kill, opts.restart)
+            .await?;
         let _ = result.success_or_error()?;
     }
 
