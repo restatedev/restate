@@ -99,7 +99,7 @@ pub fn spawn_restate(config: Configuration) -> TaskCenter {
     restate_types::config::set_current_config(config.clone());
     let updateable_config = Configuration::updateable();
 
-    tc.block_on("benchmark", None, async {
+    tc.block_on(async {
         RocksDbManager::init(Constant::new(config.common));
 
         tc.spawn(TaskKind::SystemBoot, "restate", None, async move {

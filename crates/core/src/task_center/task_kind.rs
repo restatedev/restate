@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use strum::EnumProperty;
 
-static NEXT_TASK_ID: AtomicU64 = const { AtomicU64::new(0) };
+static NEXT_TASK_ID: AtomicU64 = const { AtomicU64::new(1) };
 
 #[derive(
     Clone,
@@ -36,6 +36,8 @@ impl Default for TaskId {
 }
 
 impl TaskId {
+    pub const ROOT: TaskId = TaskId(0);
+
     pub fn new() -> Self {
         Default::default()
     }

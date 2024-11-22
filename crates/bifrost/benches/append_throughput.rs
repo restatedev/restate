@@ -104,7 +104,7 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
         provider,
     ));
 
-    let bifrost = tc.block_on("bifrost-init", None, async {
+    let bifrost = tc.block_on(async {
         let metadata = metadata();
         let bifrost_svc = BifrostService::new(restate_core::task_center(), metadata)
             .enable_local_loglet(&Live::from_value(config));

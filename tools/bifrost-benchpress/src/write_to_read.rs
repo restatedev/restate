@@ -17,7 +17,7 @@ use hdrhistogram::Histogram;
 use tracing::info;
 
 use restate_bifrost::Bifrost;
-use restate_core::{TaskCenter, TaskHandle, TaskKind};
+use restate_core::{Metadata, TaskCenter, TaskHandle, TaskKind};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, WithKeys};
 
 use crate::util::{print_latencies, DummyPayload};
@@ -140,7 +140,7 @@ pub async fn run(
 
     println!(
         "Log Chain: {:#?}",
-        tc.metadata().unwrap().logs_ref().chain(&LOG_ID).unwrap()
+        Metadata::current().logs_ref().chain(&LOG_ID).unwrap()
     );
     println!("Payload size per record: {} bytes", args.payload_size);
     println!();

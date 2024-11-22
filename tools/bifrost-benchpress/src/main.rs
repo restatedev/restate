@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
     let (tc, bifrost) = spawn_environment(Configuration::updateable(), 1);
     let task_center = tc.clone();
     let args = cli_args.clone();
-    tc.block_on("benchpress", None, async move {
+    tc.block_on(async move {
         let tracing_guard = init_tracing_and_logging(&config.common, "Bifrost benchpress")
             .expect("failed to configure logging and tracing!");
 
@@ -149,7 +149,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (TaskCenter,
         .expect("task_center builds");
 
     let task_center = tc.clone();
-    let bifrost = tc.block_on("spawn", None, async move {
+    let bifrost = tc.block_on(async move {
         let metadata_builder = MetadataBuilder::default();
         let metadata_store_client = MetadataStoreClient::new_in_memory();
         let metadata = metadata_builder.to_metadata();

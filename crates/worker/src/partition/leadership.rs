@@ -1136,9 +1136,7 @@ mod tests {
         let storage_options = StorageOptions::default();
         let rocksdb_options = RocksDbOptions::default();
 
-        tc.run_in_scope_sync("db-manager-init", None, || {
-            RocksDbManager::init(Constant::new(CommonOptions::default()))
-        });
+        tc.run_in_scope_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
 
         let bifrost = tc
             .run_in_scope(

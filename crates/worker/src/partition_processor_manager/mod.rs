@@ -651,7 +651,6 @@ impl PartitionProcessorManager {
                     // where doing otherwise appears to starve the Tokio event loop, causing very slow startup.
                     let handle = self.task_center.spawn_blocking_unmanaged(
                         "starting-partition-processor",
-                        Some(partition_id),
                         starting_task.run(),
                     );
 
@@ -955,11 +954,9 @@ mod tests {
             TestCoreEnvBuilder::with_incoming_only_connector().set_nodes_config(nodes_config);
         let health_status = HealthStatus::default();
 
-        env_builder
-            .tc
-            .run_in_scope_sync("db-manager-init", None, || {
-                RocksDbManager::init(Constant::new(CommonOptions::default()));
-            });
+        env_builder.tc.run_in_scope_sync(|| {
+            RocksDbManager::init(Constant::new(CommonOptions::default()));
+        });
 
         let bifrost_svc = BifrostService::new(env_builder.tc.clone(), env_builder.metadata.clone())
             .with_factory(memory_loglet::Factory::default());
