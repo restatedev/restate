@@ -645,7 +645,6 @@ mod tests {
             ))
             .build()
             .await;
-        let tc = &env.tc;
         let metadata = ShuffleMetadata::new(
             PartitionId::from(0),
             LeaderEpoch::from(0),
@@ -654,13 +653,7 @@ mod tests {
 
         let (truncation_tx, _truncation_rx) = mpsc::channel(1);
 
-        let bifrost = tc
-            .run_in_scope(
-                "init bifrost",
-                None,
-                Bifrost::init_in_memory(env.metadata.clone()),
-            )
-            .await;
+        let bifrost = Bifrost::init_in_memory().in_tc(&env.tc).await;
         let shuffle = Shuffle::new(metadata, outbox_reader, truncation_tx, 1, bifrost.clone());
 
         ShuffleEnv {
