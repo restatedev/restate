@@ -445,9 +445,7 @@ mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
-    use restate_core::{
-        MetadataKind, TargetVersion, TaskCenter, TaskCenterFutureExt, TaskKind, TestCoreEnvBuilder,
-    };
+    use restate_core::{MetadataKind, TargetVersion, TaskCenter, TaskKind, TestCoreEnvBuilder2};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{CommonOptions, Configuration};
     use restate_types::live::{Constant, Live};
@@ -456,571 +454,535 @@ mod tests {
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
     use restate_types::Versioned;
 
-    use crate::{setup_panic_handler, BifrostAdmin, BifrostService};
+    use crate::{BifrostAdmin, BifrostService};
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
     async fn test_readstream_one_loglet() -> anyhow::Result<()> {
-        setup_panic_handler();
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+        let _ = TestCoreEnvBuilder2::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
 
-        async {
-            let read_from = Lsn::from(6);
+        let read_from = Lsn::from(6);
 
-            let config = Live::from_value(Configuration::default());
-            RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let config = Live::from_value(Configuration::default());
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-            let svc = BifrostService::new().enable_local_loglet(&config);
-            let bifrost = svc.handle();
-            svc.start().await.expect("loglet must start");
+        let svc = BifrostService::new().enable_local_loglet(&config);
+        let bifrost = svc.handle();
+        svc.start().await.expect("loglet must start");
 
-            let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, read_from, Lsn::MAX)?;
-            let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, read_from, Lsn::MAX)?;
+        let mut appender = bifrost.create_appender(LOG_ID)?;
 
-            let tail = bifrost.find_tail(LOG_ID).await?;
-            // no records have been written
-            assert!(!tail.is_sealed());
-            assert_eq!(Lsn::OLDEST, tail.offset());
-            assert_eq!(read_from, reader.read_pointer());
+        let tail = bifrost.find_tail(LOG_ID).await?;
+        // no records have been written
+        assert!(!tail.is_sealed());
+        assert_eq!(Lsn::OLDEST, tail.offset());
+        assert_eq!(read_from, reader.read_pointer());
 
-            // Nothing is trimmed
-            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+        // Nothing is trimmed
+        assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-            let read_counter = Arc::new(AtomicUsize::new(0));
-            // spawn a reader that reads 5 records and exits.
-            let counter_clone = read_counter.clone();
-            let id = TaskCenter::current().spawn(
-                TaskKind::TestRunner,
-                "read-records",
-                None,
-                async move {
-                    for i in 6..=10 {
-                        let record = reader.next().await.expect("to never terminate")?;
-                        let expected_lsn = Lsn::from(i);
-                        counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        assert_that!(record.sequence_number(), eq(expected_lsn));
-                        assert_that!(reader.read_pointer(), ge(record.sequence_number()));
-                        assert_that!(
-                            record.decode_unchecked::<String>(),
-                            eq(format!("record{}", expected_lsn))
-                        );
-                    }
-                    Ok(())
-                },
-            )?;
+        let read_counter = Arc::new(AtomicUsize::new(0));
+        // spawn a reader that reads 5 records and exits.
+        let counter_clone = read_counter.clone();
+        let id = TaskCenter::current().spawn(
+            TaskKind::TestRunner,
+            "read-records",
+            None,
+            async move {
+                for i in 6..=10 {
+                    let record = reader.next().await.expect("to never terminate")?;
+                    let expected_lsn = Lsn::from(i);
+                    counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    assert_that!(record.sequence_number(), eq(expected_lsn));
+                    assert_that!(reader.read_pointer(), ge(record.sequence_number()));
+                    assert_that!(
+                        record.decode_unchecked::<String>(),
+                        eq(format!("record{}", expected_lsn))
+                    );
+                }
+                Ok(())
+            },
+        )?;
 
-            let reader_bg_handle = TaskCenter::with_current(|tc| tc.take_task(id))
-                .expect("read-records task to exist");
+        let reader_bg_handle =
+            TaskCenter::with_current(|tc| tc.take_task(id)).expect("read-records task to exist");
 
-            tokio::task::yield_now().await;
-            // Not finished, we still didn't append records
-            assert!(!reader_bg_handle.is_finished());
+        tokio::task::yield_now().await;
+        // Not finished, we still didn't append records
+        assert!(!reader_bg_handle.is_finished());
 
-            // append 5 records to the log
-            for i in 1..=5 {
-                let lsn = appender.append(format!("record{}", i)).await?;
-                info!(?lsn, "appended record");
-                assert_eq!(Lsn::from(i), lsn);
-            }
-
-            // Written records are not enough for the reader to finish.
-            // Not finished, we still didn't append records
-            tokio::task::yield_now().await;
-            assert!(!reader_bg_handle.is_finished());
-            assert!(read_counter.load(std::sync::atomic::Ordering::Relaxed) == 0);
-
-            // write 5 more records.
-            for i in 6..=10 {
-                appender.append(format!("record{}", i)).await?;
-            }
-
-            // reader has finished
-            reader_bg_handle.await?;
-            assert_eq!(5, read_counter.load(std::sync::atomic::Ordering::Relaxed));
-
-            anyhow::Ok(())
+        // append 5 records to the log
+        for i in 1..=5 {
+            let lsn = appender.append(format!("record{}", i)).await?;
+            info!(?lsn, "appended record");
+            assert_eq!(Lsn::from(i), lsn);
         }
-        .in_tc(&node_env.tc)
-        .await?;
+
+        // Written records are not enough for the reader to finish.
+        // Not finished, we still didn't append records
+        tokio::task::yield_now().await;
+        assert!(!reader_bg_handle.is_finished());
+        assert!(read_counter.load(std::sync::atomic::Ordering::Relaxed) == 0);
+
+        // write 5 more records.
+        for i in 6..=10 {
+            appender.append(format!("record{}", i)).await?;
+        }
+
+        // reader has finished
+        reader_bg_handle.await?;
+        assert_eq!(5, read_counter.load(std::sync::atomic::Ordering::Relaxed));
+
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
     async fn test_read_stream_with_trim() -> anyhow::Result<()> {
-        setup_panic_handler();
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
-        async {
-            let config = Live::from_value(Configuration::default());
-            RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let config = Live::from_value(Configuration::default());
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-            let svc = BifrostService::new().enable_local_loglet(&config);
-            let bifrost = svc.handle();
+        let svc = BifrostService::new().enable_local_loglet(&config);
+        let bifrost = svc.handle();
 
-            let bifrost_admin = BifrostAdmin::new(
-                &bifrost,
-                &node_env.metadata_writer,
-                &node_env.metadata_store_client,
-            );
-            svc.start().await.expect("loglet must start");
+        let bifrost_admin = BifrostAdmin::new(
+            &bifrost,
+            &node_env.metadata_writer,
+            &node_env.metadata_store_client,
+        );
+        svc.start().await.expect("loglet must start");
 
-            let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID)?;
 
-            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+        assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-            // append 10 records [1..10]
-            for i in 1..=10 {
-                let lsn = appender.append("").await?;
-                assert_eq!(Lsn::from(i), lsn);
-            }
-
-            // [1..5] trimmed. trim_point = 5
-            bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
-
-            assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
-            assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
-
-            let mut read_stream =
-                bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
-
-            let record = read_stream.next().await.unwrap()?;
-            assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(5))));
-
-            for lsn in 6..=7 {
-                let record = read_stream.next().await.unwrap()?;
-                assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
-                assert!(record.is_data_record());
-            }
-            assert!(!read_stream.is_terminated());
-            assert_eq!(Lsn::from(8), read_stream.read_pointer());
-
-            let tail = bifrost.find_tail(LOG_ID).await?.offset();
-            // trimming beyond the release point will fall back to the release point
-            bifrost_admin.trim(LOG_ID, Lsn::from(u64::MAX)).await?;
-            let trim_point = bifrost.get_trim_point(LOG_ID).await?;
-            assert_eq!(Lsn::from(10), bifrost.get_trim_point(LOG_ID).await?);
-            // trim point becomes the point before the next slot available for writes (aka. the
-            // tail)
-            assert_eq!(tail.prev(), trim_point);
-
-            // append lsns [11..20]
-            for i in 11..=20 {
-                let lsn = appender.append(format!("record{}", i)).await?;
-                assert_eq!(Lsn::from(i), lsn);
-            }
-
-            // read stream should send a gap from 8->10
-            let record = read_stream.next().await.unwrap()?;
-            assert_that!(record.sequence_number(), eq(Lsn::new(8)));
-            assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
-
-            // read pointer is at 11
-            assert_eq!(Lsn::from(11), read_stream.read_pointer());
-
-            // read the rest of the records
-            for lsn in 11..=20 {
-                let record = read_stream.next().await.unwrap()?;
-                assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
-                assert!(record.is_data_record());
-                assert_that!(
-                    record.decode_unchecked::<String>(),
-                    eq(format!("record{}", lsn))
-                );
-            }
-            // we are at tail. polling should return pending.
-            let pinned = std::pin::pin!(read_stream.next());
-            let next_is_pending = futures::poll!(pinned);
-            assert!(matches!(next_is_pending, Poll::Pending));
-
-            Ok(())
+        // append 10 records [1..10]
+        for i in 1..=10 {
+            let lsn = appender.append("").await?;
+            assert_eq!(Lsn::from(i), lsn);
         }
-        .in_tc(&node_env.tc)
-        .await
+
+        // [1..5] trimmed. trim_point = 5
+        bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
+
+        assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
+        assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
+
+        let mut read_stream =
+            bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
+
+        let record = read_stream.next().await.unwrap()?;
+        assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(5))));
+
+        for lsn in 6..=7 {
+            let record = read_stream.next().await.unwrap()?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+            assert!(record.is_data_record());
+        }
+        assert!(!read_stream.is_terminated());
+        assert_eq!(Lsn::from(8), read_stream.read_pointer());
+
+        let tail = bifrost.find_tail(LOG_ID).await?.offset();
+        // trimming beyond the release point will fall back to the release point
+        bifrost_admin.trim(LOG_ID, Lsn::from(u64::MAX)).await?;
+        let trim_point = bifrost.get_trim_point(LOG_ID).await?;
+        assert_eq!(Lsn::from(10), bifrost.get_trim_point(LOG_ID).await?);
+        // trim point becomes the point before the next slot available for writes (aka. the
+        // tail)
+        assert_eq!(tail.prev(), trim_point);
+
+        // append lsns [11..20]
+        for i in 11..=20 {
+            let lsn = appender.append(format!("record{}", i)).await?;
+            assert_eq!(Lsn::from(i), lsn);
+        }
+
+        // read stream should send a gap from 8->10
+        let record = read_stream.next().await.unwrap()?;
+        assert_that!(record.sequence_number(), eq(Lsn::new(8)));
+        assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
+
+        // read pointer is at 11
+        assert_eq!(Lsn::from(11), read_stream.read_pointer());
+
+        // read the rest of the records
+        for lsn in 11..=20 {
+            let record = read_stream.next().await.unwrap()?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+            assert!(record.is_data_record());
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq(format!("record{}", lsn))
+            );
+        }
+        // we are at tail. polling should return pending.
+        let pinned = std::pin::pin!(read_stream.next());
+        let next_is_pending = futures::poll!(pinned);
+        assert!(matches!(next_is_pending, Poll::Pending));
+
+        Ok(())
     }
 
     // Note: This test doesn't validate read stream behaviour with zombie records at seal boundary.
-    #[tokio::test(start_paused = true)]
+    #[restate_core::test(start_paused = true)]
     async fn test_readstream_simple_multi_loglet() -> anyhow::Result<()> {
-        setup_panic_handler();
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
 
-        async {
-            let config = Live::from_value(Configuration::default());
-            RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let config = Live::from_value(Configuration::default());
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-            // enable both in-memory and local loglet types
-            let svc = BifrostService::new()
-                .enable_local_loglet(&config)
-                .enable_in_memory_loglet();
-            let bifrost = svc.handle();
-            svc.start().await.expect("loglet must start");
+        // enable both in-memory and local loglet types
+        let svc = BifrostService::new()
+            .enable_local_loglet(&config)
+            .enable_in_memory_loglet();
+        let bifrost = svc.handle();
+        svc.start().await.expect("loglet must start");
 
-            // create the reader and put it on the side.
-            let mut reader =
-                bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
-            let mut appender = bifrost.create_appender(LOG_ID)?;
-            // We should be at tail, any attempt to read will yield `pending`.
+        // create the reader and put it on the side.
+        let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
+        let mut appender = bifrost.create_appender(LOG_ID)?;
+        // We should be at tail, any attempt to read will yield `pending`.
+        assert_that!(
+            futures::poll!(std::pin::pin!(reader.next())),
+            pat!(Poll::Pending)
+        );
+
+        let tail = bifrost.find_tail(LOG_ID).await?;
+        // no records have been written
+        assert!(!tail.is_sealed());
+        assert_eq!(Lsn::OLDEST, tail.offset());
+        assert_eq!(Lsn::OLDEST, reader.read_pointer());
+
+        // Nothing is trimmed
+        assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+
+        // append 10 records [1..10]
+        for i in 1..=10 {
+            let lsn = appender.append(format!("segment-1-{}", i)).await?;
+            assert_eq!(Lsn::from(i), lsn);
+        }
+
+        // read 5 records.
+        for i in 1..=5 {
+            let record = reader.next().await.expect("to stay alive")?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+            assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
             assert_that!(
-                futures::poll!(std::pin::pin!(reader.next())),
-                pat!(Poll::Pending)
+                record.decode_unchecked::<String>(),
+                eq(format!("segment-1-{}", i))
             );
+        }
 
-            let tail = bifrost.find_tail(LOG_ID).await?;
-            // no records have been written
-            assert!(!tail.is_sealed());
-            assert_eq!(Lsn::OLDEST, tail.offset());
-            assert_eq!(Lsn::OLDEST, reader.read_pointer());
-
-            // Nothing is trimmed
-            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
-
-            // append 10 records [1..10]
-            for i in 1..=10 {
-                let lsn = appender.append(format!("segment-1-{}", i)).await?;
-                assert_eq!(Lsn::from(i), lsn);
-            }
-
-            // read 5 records.
-            for i in 1..=5 {
-                let record = reader.next().await.expect("to stay alive")?;
-                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
-                assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
-                assert_that!(
-                    record.decode_unchecked::<String>(),
-                    eq(format!("segment-1-{}", i))
-                );
-            }
-
-            // manually seal the loglet, create a new in-memory loglet at base_lsn=11
-            let raw_loglet = bifrost
-                .inner
-                .find_loglet_for_lsn(LOG_ID, Lsn::new(5))
-                .await?
-                .unwrap();
-            raw_loglet.seal().await?;
-            // In fact, reader is allowed to go as far as the last known unsealed tail which
-            // in our case could be the real tail since we didn't have in-flight appends at seal
-            // time. It's legal for loglets to have lagging indicator of the unsealed pointer but
-            // we know that local loglet won't do this.
-            //
-            // read 5 more records.
-            println!("reading records at sealed loglet");
-            for i in 6..=10 {
-                let record = reader.next().await.expect("to stay alive")?;
-                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
-                assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
-                assert_that!(
-                    record.decode_unchecked::<String>(),
-                    eq(format!("segment-1-{}", i))
-                );
-            }
-
-            // reads should yield pending since we are at the last known unsealed tail
-            // loglet.
+        // manually seal the loglet, create a new in-memory loglet at base_lsn=11
+        let raw_loglet = bifrost
+            .inner
+            .find_loglet_for_lsn(LOG_ID, Lsn::new(5))
+            .await?
+            .unwrap();
+        raw_loglet.seal().await?;
+        // In fact, reader is allowed to go as far as the last known unsealed tail which
+        // in our case could be the real tail since we didn't have in-flight appends at seal
+        // time. It's legal for loglets to have lagging indicator of the unsealed pointer but
+        // we know that local loglet won't do this.
+        //
+        // read 5 more records.
+        println!("reading records at sealed loglet");
+        for i in 6..=10 {
+            let record = reader.next().await.expect("to stay alive")?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+            assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
             assert_that!(
-                futures::poll!(std::pin::pin!(reader.next())),
-                pat!(Poll::Pending)
+                record.decode_unchecked::<String>(),
+                eq(format!("segment-1-{}", i))
             );
-            // again.
+        }
+
+        // reads should yield pending since we are at the last known unsealed tail
+        // loglet.
+        assert_that!(
+            futures::poll!(std::pin::pin!(reader.next())),
+            pat!(Poll::Pending)
+        );
+        // again.
+        assert_that!(
+            futures::poll!(std::pin::pin!(reader.next())),
+            pat!(Poll::Pending)
+        );
+
+        let tail = bifrost.find_tail(LOG_ID).await?;
+
+        assert!(tail.is_sealed());
+        assert_eq!(Lsn::from(11), tail.offset());
+        let metadata = Metadata::current();
+        // perform manual reconfiguration (can be replaced with bifrost reconfiguration API
+        // when it's implemented)
+        let old_version = metadata.logs_version();
+        let mut builder = metadata.logs_ref().clone().into_builder();
+        let mut chain_builder = builder.chain(LOG_ID).unwrap();
+        assert_eq!(1, chain_builder.num_segments());
+        let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
+        chain_builder.append_segment(Lsn::new(11), ProviderKind::InMemory, new_segment_params)?;
+
+        let new_metadata = builder.build();
+        let new_version = new_metadata.version();
+        assert_eq!(new_version, old_version.next());
+        node_env
+            .metadata_store_client
+            .put(
+                BIFROST_CONFIG_KEY.clone(),
+                &new_metadata,
+                restate_metadata_store::Precondition::MatchesVersion(old_version),
+            )
+            .await?;
+
+        // make sure we have updated metadata.
+        metadata
+            .sync(MetadataKind::Logs, TargetVersion::Latest)
+            .await?;
+
+        // append 5 more records into the new loglet.
+        for i in 11..=15 {
+            let lsn = appender.append(format!("segment-2-{}", i)).await?;
+            println!("appended record={}", lsn);
+            assert_eq!(Lsn::from(i), lsn);
+        }
+
+        // read stream should jump across segments.
+        for i in 11..=15 {
+            let record = reader.next().await.expect("to stay alive")?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+            assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
             assert_that!(
-                futures::poll!(std::pin::pin!(reader.next())),
-                pat!(Poll::Pending)
+                record.decode_unchecked::<String>(),
+                eq(format!("segment-2-{}", i))
             );
+        }
+        // We are at tail. validate.
+        assert_that!(
+            futures::poll!(std::pin::pin!(reader.next())),
+            pat!(Poll::Pending)
+        );
 
-            let tail = bifrost.find_tail(LOG_ID).await?;
+        assert_eq!(
+            Lsn::from(16),
+            appender.append("segment-2-1000".to_owned()).await?
+        );
 
-            assert!(tail.is_sealed());
-            assert_eq!(Lsn::from(11), tail.offset());
-            let metadata = Metadata::current();
-            // perform manual reconfiguration (can be replaced with bifrost reconfiguration API
-            // when it's implemented)
-            let old_version = metadata.logs_version();
-            let mut builder = metadata.logs_ref().clone().into_builder();
-            let mut chain_builder = builder.chain(LOG_ID).unwrap();
-            assert_eq!(1, chain_builder.num_segments());
-            let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
-            chain_builder.append_segment(
-                Lsn::new(11),
+        let record = reader.next().await.expect("to stay alive")?;
+        assert_that!(record.sequence_number(), eq(Lsn::new(16)));
+        assert_that!(record.decode_unchecked::<String>(), eq("segment-2-1000"));
+
+        Ok(())
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn test_readstream_sealed_multi_loglet() -> anyhow::Result<()> {
+        const LOG_ID: LogId = LogId::new(0);
+
+        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+
+        let config = Live::from_value(Configuration::default());
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
+
+        // enable both in-memory and local loglet types
+        let svc = BifrostService::new()
+            .enable_local_loglet(&config)
+            .enable_in_memory_loglet();
+        let bifrost = svc.handle();
+        let bifrost_admin = BifrostAdmin::new(
+            &bifrost,
+            &node_env.metadata_writer,
+            &node_env.metadata_store_client,
+        );
+        svc.start().await.expect("loglet must start");
+
+        let mut appender = bifrost.create_appender(LOG_ID)?;
+
+        let tail = bifrost.find_tail(LOG_ID).await?;
+        // no records have been written
+        assert!(!tail.is_sealed());
+        assert_eq!(Lsn::OLDEST, tail.offset());
+
+        // append 10 records [1..10]
+        for i in 1..=10 {
+            let lsn = appender.append(format!("segment-1-{}", i)).await?;
+            assert_eq!(Lsn::from(i), lsn);
+        }
+
+        // seal the loglet and extend with an in-memory one
+        let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
+        bifrost_admin
+            .seal_and_extend_chain(
+                LOG_ID,
+                None,
+                Version::MIN,
                 ProviderKind::InMemory,
                 new_segment_params,
-            )?;
+            )
+            .await?;
 
-            let new_metadata = builder.build();
-            let new_version = new_metadata.version();
-            assert_eq!(new_version, old_version.next());
+        let tail = bifrost.find_tail(LOG_ID).await?;
+
+        assert!(!tail.is_sealed());
+        assert_eq!(Lsn::from(11), tail.offset());
+
+        // validate that we have 2 segments now
+        assert_eq!(
+            2,
             node_env
-                .metadata_store_client
-                .put(
-                    BIFROST_CONFIG_KEY.clone(),
-                    &new_metadata,
-                    restate_metadata_store::Precondition::MatchesVersion(old_version),
-                )
-                .await?;
+                .metadata
+                .logs_ref()
+                .chain(&LOG_ID)
+                .unwrap()
+                .num_segments()
+        );
 
-            // make sure we have updated metadata.
-            metadata
-                .sync(MetadataKind::Logs, TargetVersion::Latest)
-                .await?;
+        // validate that the first segment is sealed
+        let segment_1_loglet = bifrost
+            .inner
+            .find_loglet_for_lsn(LOG_ID, Lsn::from(1))
+            .await?
+            .unwrap();
 
-            // append 5 more records into the new loglet.
-            for i in 11..=15 {
-                let lsn = appender.append(format!("segment-2-{}", i)).await?;
-                println!("appended record={}", lsn);
-                assert_eq!(Lsn::from(i), lsn);
-            }
+        assert_that!(
+            segment_1_loglet.find_tail().await?,
+            pat!(TailState::Sealed(eq(Lsn::from(11))))
+        );
 
-            // read stream should jump across segments.
-            for i in 11..=15 {
-                let record = reader.next().await.expect("to stay alive")?;
-                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
-                assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
-                assert_that!(
-                    record.decode_unchecked::<String>(),
-                    eq(format!("segment-2-{}", i))
-                );
-            }
-            // We are at tail. validate.
-            assert_that!(
-                futures::poll!(std::pin::pin!(reader.next())),
-                pat!(Poll::Pending)
-            );
+        // append 5 more records into the new loglet.
+        for i in 11..=15 {
+            let lsn = appender.append(format!("segment-2-{}", i)).await?;
+            info!(?lsn, "appended record");
+            assert_eq!(Lsn::from(i), lsn);
+        }
 
-            assert_eq!(
-                Lsn::from(16),
-                appender.append("segment-2-1000".to_owned()).await?
-            );
+        // start a reader (from 3) and read everything. [3..15]
+        let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::new(3), Lsn::MAX)?;
 
+        // first segment records
+        for i in 3..=10 {
             let record = reader.next().await.expect("to stay alive")?;
-            assert_that!(record.sequence_number(), eq(Lsn::new(16)));
-            assert_that!(record.decode_unchecked::<String>(), eq("segment-2-1000"));
-
-            anyhow::Ok(())
+            assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+            assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq(format!("segment-1-{}", i))
+            );
         }
-        .in_tc(&node_env.tc)
-        .await?;
+
+        // first segment records
+        for i in 11..=15 {
+            let record = reader.next().await.expect("to stay alive")?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+            assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq(format!("segment-2-{}", i))
+            );
+        }
+
+        // We are at tail. validate.
+        assert_that!(
+            futures::poll!(std::pin::pin!(reader.next())),
+            pat!(Poll::Pending)
+        );
+
         Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_readstream_sealed_multi_loglet() -> anyhow::Result<()> {
-        setup_panic_handler();
-        const LOG_ID: LogId = LogId::new(0);
-
-        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
-            .set_provider_kind(ProviderKind::Local)
-            .build()
-            .await;
-
-        async {
-            let config = Live::from_value(Configuration::default());
-            RocksDbManager::init(Constant::new(CommonOptions::default()));
-
-            // enable both in-memory and local loglet types
-            let svc = BifrostService::new()
-                .enable_local_loglet(&config)
-                .enable_in_memory_loglet();
-            let bifrost = svc.handle();
-            let bifrost_admin = BifrostAdmin::new(
-                &bifrost,
-                &node_env.metadata_writer,
-                &node_env.metadata_store_client,
-            );
-            svc.start().await.expect("loglet must start");
-
-            let mut appender = bifrost.create_appender(LOG_ID)?;
-
-            let tail = bifrost.find_tail(LOG_ID).await?;
-            // no records have been written
-            assert!(!tail.is_sealed());
-            assert_eq!(Lsn::OLDEST, tail.offset());
-
-            // append 10 records [1..10]
-            for i in 1..=10 {
-                let lsn = appender.append(format!("segment-1-{}", i)).await?;
-                assert_eq!(Lsn::from(i), lsn);
-            }
-
-            // seal the loglet and extend with an in-memory one
-            let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
-            bifrost_admin
-                .seal_and_extend_chain(
-                    LOG_ID,
-                    None,
-                    Version::MIN,
-                    ProviderKind::InMemory,
-                    new_segment_params,
-                )
-                .await?;
-
-            let tail = bifrost.find_tail(LOG_ID).await?;
-
-            assert!(!tail.is_sealed());
-            assert_eq!(Lsn::from(11), tail.offset());
-
-            // validate that we have 2 segments now
-            assert_eq!(
-                2,
-                node_env
-                    .metadata
-                    .logs_ref()
-                    .chain(&LOG_ID)
-                    .unwrap()
-                    .num_segments()
-            );
-
-            // validate that the first segment is sealed
-            let segment_1_loglet = bifrost
-                .inner
-                .find_loglet_for_lsn(LOG_ID, Lsn::from(1))
-                .await?
-                .unwrap();
-
-            assert_that!(
-                segment_1_loglet.find_tail().await?,
-                pat!(TailState::Sealed(eq(Lsn::from(11))))
-            );
-
-            // append 5 more records into the new loglet.
-            for i in 11..=15 {
-                let lsn = appender.append(format!("segment-2-{}", i)).await?;
-                info!(?lsn, "appended record");
-                assert_eq!(Lsn::from(i), lsn);
-            }
-
-            // start a reader (from 3) and read everything. [3..15]
-            let mut reader =
-                bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::new(3), Lsn::MAX)?;
-
-            // first segment records
-            for i in 3..=10 {
-                let record = reader.next().await.expect("to stay alive")?;
-                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
-                assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
-                assert_that!(
-                    record.decode_unchecked::<String>(),
-                    eq(format!("segment-1-{}", i))
-                );
-            }
-
-            // first segment records
-            for i in 11..=15 {
-                let record = reader.next().await.expect("to stay alive")?;
-                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
-                assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
-                assert_that!(
-                    record.decode_unchecked::<String>(),
-                    eq(format!("segment-2-{}", i))
-                );
-            }
-
-            // We are at tail. validate.
-            assert_that!(
-                futures::poll!(std::pin::pin!(reader.next())),
-                pat!(Poll::Pending)
-            );
-
-            anyhow::Ok(())
-        }
-        .in_tc(&node_env.tc)
-        .await?;
-        Ok(())
-    }
-
-    #[tokio::test(start_paused = true)]
+    #[restate_core::test(start_paused = true)]
     async fn test_readstream_prefix_trimmed() -> anyhow::Result<()> {
-        setup_panic_handler();
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
 
-        async {
-            let config = Live::from_value(Configuration::default());
-            RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let config = Live::from_value(Configuration::default());
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-            // enable both in-memory and local loglet types
-            let svc = BifrostService::new()
-                .enable_local_loglet(&config)
-                .enable_in_memory_loglet();
-            let bifrost = svc.handle();
-            svc.start().await.expect("loglet must start");
-            let mut appender = bifrost.create_appender(LOG_ID)?;
+        // enable both in-memory and local loglet types
+        let svc = BifrostService::new()
+            .enable_local_loglet(&config)
+            .enable_in_memory_loglet();
+        let bifrost = svc.handle();
+        svc.start().await.expect("loglet must start");
+        let mut appender = bifrost.create_appender(LOG_ID)?;
 
-            let metadata = Metadata::current();
-            // prepare a chain that starts from Lsn 10 (we expect trim from OLDEST -> 9)
-            let old_version = metadata.logs_version();
-            let mut builder = metadata.logs_ref().clone().into_builder();
-            let mut chain_builder = builder.chain(LOG_ID).unwrap();
-            assert_eq!(1, chain_builder.num_segments());
-            let new_segment_params = new_single_node_loglet_params(ProviderKind::Local);
-            chain_builder.append_segment(Lsn::new(10), ProviderKind::Local, new_segment_params)?;
-            chain_builder.trim_prefix(Lsn::new(10));
-            assert_eq!(1, chain_builder.num_segments());
-            assert_eq!(Lsn::from(10), chain_builder.tail().base_lsn);
+        let metadata = Metadata::current();
+        // prepare a chain that starts from Lsn 10 (we expect trim from OLDEST -> 9)
+        let old_version = metadata.logs_version();
+        let mut builder = metadata.logs_ref().clone().into_builder();
+        let mut chain_builder = builder.chain(LOG_ID).unwrap();
+        assert_eq!(1, chain_builder.num_segments());
+        let new_segment_params = new_single_node_loglet_params(ProviderKind::Local);
+        chain_builder.append_segment(Lsn::new(10), ProviderKind::Local, new_segment_params)?;
+        chain_builder.trim_prefix(Lsn::new(10));
+        assert_eq!(1, chain_builder.num_segments());
+        assert_eq!(Lsn::from(10), chain_builder.tail().base_lsn);
 
-            let new_metadata = builder.build();
-            let new_version = new_metadata.version();
-            assert_eq!(new_version, old_version.next());
-            node_env
-                .metadata_store_client
-                .put(
-                    BIFROST_CONFIG_KEY.clone(),
-                    &new_metadata,
-                    restate_metadata_store::Precondition::MatchesVersion(old_version),
-                )
-                .await?;
+        let new_metadata = builder.build();
+        let new_version = new_metadata.version();
+        assert_eq!(new_version, old_version.next());
+        node_env
+            .metadata_store_client
+            .put(
+                BIFROST_CONFIG_KEY.clone(),
+                &new_metadata,
+                restate_metadata_store::Precondition::MatchesVersion(old_version),
+            )
+            .await?;
 
-            // make sure we have updated metadata.
-            metadata
-                .sync(MetadataKind::Logs, TargetVersion::Latest)
-                .await?;
+        // make sure we have updated metadata.
+        metadata
+            .sync(MetadataKind::Logs, TargetVersion::Latest)
+            .await?;
 
-            let mut reader =
-                bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
+        let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
 
-            // append a few records
-            for i in 10..=13 {
-                let lsn = appender.append(format!("record-{}", i)).await?;
-                assert_eq!(Lsn::from(i), lsn);
-            }
-
-            // first read should be the trim gap.
-            let record = reader.next().await.expect("to stay alive")?;
-            assert_that!(record.sequence_number(), eq(Lsn::OLDEST));
-            assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(9))));
-            assert_that!(reader.read_pointer(), eq(Lsn::from(10)));
-
-            // read records
-            for i in 10..=13 {
-                let record = reader.next().await.expect("to stay alive")?;
-                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
-                assert_that!(
-                    record.decode_unchecked::<String>(),
-                    eq(format!("record-{}", i))
-                );
-            }
-
-            anyhow::Ok(())
+        // append a few records
+        for i in 10..=13 {
+            let lsn = appender.append(format!("record-{}", i)).await?;
+            assert_eq!(Lsn::from(i), lsn);
         }
-        .in_tc(&node_env.tc)
-        .await?;
+
+        // first read should be the trim gap.
+        let record = reader.next().await.expect("to stay alive")?;
+        assert_that!(record.sequence_number(), eq(Lsn::OLDEST));
+        assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(9))));
+        assert_that!(reader.read_pointer(), eq(Lsn::from(10)));
+
+        // read records
+        for i in 10..=13 {
+            let record = reader.next().await.expect("to stay alive")?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq(format!("record-{}", i))
+            );
+        }
+
         Ok(())
     }
 }

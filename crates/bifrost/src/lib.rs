@@ -33,14 +33,3 @@ pub use service::BifrostService;
 pub use types::*;
 
 pub const SMALL_BATCH_THRESHOLD_COUNT: usize = 4;
-
-#[cfg(any(test, feature = "test-util"))]
-pub(crate) fn setup_panic_handler() {
-    // Make sure that panics exits the process.
-    let orig_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |panic_info| {
-        // invoke the default handler and exit the process
-        orig_hook(panic_info);
-        std::process::exit(1);
-    }));
-}
