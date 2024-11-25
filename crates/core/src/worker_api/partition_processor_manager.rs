@@ -82,11 +82,11 @@ pub enum SnapshotError {
     InvalidState(PartitionId),
     /// Database snapshot export error.
     #[error("Snapshot export failed: {1}")]
-    SnapshotExportError(PartitionId, #[source] anyhow::Error),
+    SnapshotExport(PartitionId, #[source] anyhow::Error),
     #[error("Snapshot IO error: {1}")]
-    SnapshotIoError(PartitionId, #[source] io::Error),
+    SnapshotIo(PartitionId, #[source] io::Error),
     #[error("Snapshot repository IO error: {1}")]
-    RepositoryIoError(PartitionId, #[source] anyhow::Error),
+    RepositoryIo(PartitionId, #[source] anyhow::Error),
     #[error("Internal error creating snapshot: {1}")]
     Internal(PartitionId, String),
 }
@@ -97,9 +97,9 @@ impl SnapshotError {
             SnapshotError::PartitionNotFound(partition_id) => *partition_id,
             SnapshotError::SnapshotInProgress(partition_id) => *partition_id,
             SnapshotError::InvalidState(partition_id) => *partition_id,
-            SnapshotError::SnapshotExportError(partition_id, _) => *partition_id,
-            SnapshotError::SnapshotIoError(partition_id, _) => *partition_id,
-            SnapshotError::RepositoryIoError(partition_id, _) => *partition_id,
+            SnapshotError::SnapshotExport(partition_id, _) => *partition_id,
+            SnapshotError::SnapshotIo(partition_id, _) => *partition_id,
+            SnapshotError::RepositoryIo(partition_id, _) => *partition_id,
             SnapshotError::Internal(partition_id, _) => *partition_id,
         }
     }

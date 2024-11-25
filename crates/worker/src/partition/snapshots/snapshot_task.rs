@@ -67,7 +67,7 @@ impl SnapshotPartitionTask {
         self.snapshot_repository
             .put(&metadata, snapshot.base_dir)
             .await
-            .map_err(|e| SnapshotError::RepositoryIoError(self.partition_id, e))?;
+            .map_err(|e| SnapshotError::RepositoryIo(self.partition_id, e))?;
 
         Ok(metadata)
     }

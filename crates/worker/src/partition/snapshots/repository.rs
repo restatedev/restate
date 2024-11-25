@@ -21,7 +21,7 @@ use object_store::{MultipartUpload, ObjectStore, PutPayload};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::io::AsyncReadExt;
-use tracing::{debug, trace};
+use tracing::{debug, instrument, trace};
 use url::Url;
 
 use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
@@ -41,8 +41,8 @@ use restate_types::logs::Lsn;
 /// data is immutable until the pruning policy allows for deletion.
 ///
 /// - `[<prefix>/]<partition_id>/latest.json` - latest snapshot metadata for the partition
-/// - `[<prefix>/]<partition_id>/YYYY-MM-DD/{lsn}/metadata.json` - snapshot descriptor
-/// - `[<prefix>/]<partition_id>/YYYY-MM-DD/{lsn}/*.sst` - data files (explicitly named in `metadata.json`)
+/// - `[<prefix>/]<partition_id>/{lsn}_{snapshot_id}/metadata.json` - snapshot descriptor
+/// - `[<prefix>/]<partition_id>/{lsn}_{snapshot_id}/*.sst` - data files (explicitly named in `metadata.json`)
 #[derive(Clone)]
 pub struct SnapshotRepository {
     object_store: Arc<dyn ObjectStore>,
@@ -55,10 +55,6 @@ pub struct SnapshotRepository {
 pub struct LatestSnapshot {
     pub version: SnapshotFormatVersion,
 
-    /// Restate cluster name which produced the snapshot.
-    pub lsn: Lsn,
-
-    /// Restate partition id.
     pub partition_id: PartitionId,
 
     /// Node that produced this snapshot.
@@ -68,7 +64,7 @@ pub struct LatestSnapshot {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     pub created_at: humantime::Timestamp,
 
-    /// Snapshot id.
+    /// Unique snapshot id.
     pub snapshot_id: SnapshotId,
 
     /// The minimum LSN guaranteed to be applied in this snapshot. The actual
@@ -142,37 +138,44 @@ impl SnapshotRepository {
     }
 
     /// Write a partition snapshot to the snapshot repository.
+    #[instrument(
+        level = "debug",
+        skip(self),
+        err,
+        fields(
+            snapshot_id = ?snapshot.snapshot_id,
+            partition_id = ?snapshot.partition_id,
+        )
+    )]
     pub(crate) async fn put(
         &self,
         snapshot: &PartitionSnapshotMetadata,
         local_snapshot_path: PathBuf,
     ) -> anyhow::Result<()> {
-        let partition_id = snapshot.partition_id;
-        let lsn = snapshot.min_applied_lsn;
+        debug!("Publishing partition snapshot to: {}", self.destination);
 
-        debug!(
-            %lsn,
-            "Publishing partition snapshot to: {}",
-            self.destination,
+        let relative_snapshot_path = format!(
+            "lsn_{lsn}_{snapshot_id}",
+            lsn = snapshot.min_applied_lsn,
+            snapshot_id = snapshot.snapshot_id
         );
-
-        let relative_snapshot_path = format!("lsn_{lsn}", lsn = snapshot.min_applied_lsn);
-        let snapshot_prefix = format!(
+        let full_snapshot_path = format!(
             "{prefix}{partition_id}/{relative_snapshot_path}",
             prefix = self.prefix,
+            partition_id = snapshot.partition_id,
         );
 
         debug!(
             "Uploading snapshot from {:?} to {}",
             local_snapshot_path.as_path(),
-            snapshot_prefix
+            full_snapshot_path
         );
 
         for file in &snapshot.files {
             let filename = file.name.trim_start_matches("/");
             let key = object_store::path::Path::from(format!(
                 "{}/{}",
-                snapshot_prefix.as_str(),
+                full_snapshot_path.as_str(),
                 filename
             ));
             let put_result = put_snapshot_object(
@@ -189,7 +192,7 @@ impl SnapshotRepository {
         }
 
         let metadata_key =
-            object_store::path::Path::from(format!("{}/metadata.json", snapshot_prefix.as_str()));
+            object_store::path::Path::from(format!("{}/metadata.json", full_snapshot_path.as_str()));
         let metadata_json_payload = PutPayload::from(
             serde_json::to_string_pretty(snapshot).expect("Can always serialize JSON"),
         );
@@ -205,8 +208,7 @@ impl SnapshotRepository {
 
         let latest = LatestSnapshot {
             version: snapshot.version,
-            lsn: snapshot.min_applied_lsn,
-            partition_id,
+            partition_id: snapshot.partition_id,
             node_name: snapshot.node_name.clone(),
             created_at: snapshot.created_at.clone(),
             snapshot_id: snapshot.snapshot_id,
@@ -216,7 +218,7 @@ impl SnapshotRepository {
         let latest_path = object_store::path::Path::from(format!(
             "{prefix}{partition_id}/latest.json",
             prefix = self.prefix,
-            partition_id = partition_id,
+            partition_id = snapshot.partition_id,
         ));
         let latest_json_payload = PutPayload::from(serde_json::to_string_pretty(&latest)?);
         let put_result = self
