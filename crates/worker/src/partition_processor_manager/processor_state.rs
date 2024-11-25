@@ -16,7 +16,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use ulid::Ulid;
 
-use crate::partition::PartitionProcessorControlCommand;
 use restate_core::network::Incoming;
 use restate_core::{TaskCenter, TaskKind};
 use restate_invoker_impl::ChannelStatusReader;
@@ -25,8 +24,9 @@ use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcRequest,
 };
-
 use restate_types::time::MillisSinceEpoch;
+
+use crate::partition::PartitionProcessorControlCommand;
 
 pub type LeaderEpochToken = Ulid;
 
@@ -280,11 +280,10 @@ impl ProcessorState {
         &self,
         partition_id: PartitionId,
         partition_processor_rpc: Incoming<PartitionProcessorRpcRequest>,
-        task_center: &TaskCenter,
     ) {
         match self {
             ProcessorState::Starting { .. } => {
-                let _ = task_center.spawn(
+                let _ = TaskCenter::current().spawn(
                     TaskKind::Disposable,
                     "partition-processor-rpc",
                     None,
@@ -305,7 +304,7 @@ impl ProcessorState {
                 {
                     match err {
                         TrySendError::Full(req) => {
-                            let _ = task_center.spawn(
+                            let _ = TaskCenter::current().spawn(
                                 TaskKind::Disposable,
                                 "partition-processor-rpc",
                                 None,
@@ -318,7 +317,7 @@ impl ProcessorState {
                             );
                         }
                         TrySendError::Closed(req) => {
-                            let _ = task_center.spawn(
+                            let _ = TaskCenter::current().spawn(
                                 TaskKind::Disposable,
                                 "partition-processor-rpc",
                                 None,
@@ -336,7 +335,7 @@ impl ProcessorState {
                 }
             }
             ProcessorState::Stopping { .. } => {
-                let _ = task_center.spawn(
+                let _ = TaskCenter::current().spawn(
                     TaskKind::Disposable,
                     "partition-processor-rpc",
                     None,

@@ -52,7 +52,6 @@ pub struct LeaderState {
     // only needed for proposing TruncateOutbox to ourselves
     own_partition_key: PartitionKey,
     action_effects_counter: Counter,
-    task_center: TaskCenter,
 
     pub shuffle_hint_tx: HintSender,
     shuffle_task_id: TaskId,
@@ -74,7 +73,6 @@ pub struct LeaderState {
 impl LeaderState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        task_center: TaskCenter,
         partition_id: PartitionId,
         leader_epoch: LeaderEpoch,
         own_partition_key: PartitionKey,
@@ -87,7 +85,6 @@ impl LeaderState {
         shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
     ) -> Self {
         LeaderState {
-            task_center,
             partition_id,
             leader_epoch,
             own_partition_key,
@@ -163,8 +160,10 @@ impl LeaderState {
             InvokerStorageReader<PartitionStore>,
         >,
     ) {
-        let shuffle_handle = OptionFuture::from(self.task_center.cancel_task(self.shuffle_task_id));
-        let cleaner_handle = OptionFuture::from(self.task_center.cancel_task(self.cleaner_task_id));
+        let shuffle_handle =
+            OptionFuture::from(TaskCenter::current().cancel_task(self.shuffle_task_id));
+        let cleaner_handle =
+            OptionFuture::from(TaskCenter::current().cancel_task(self.cleaner_task_id));
 
         // It's ok to not check the abort_result because either it succeeded or the invoker
         // is not running. If the invoker is not running, and we are not shutting down, then
@@ -189,7 +188,6 @@ impl LeaderState {
                 "Failing rpc because I lost leadership",
             );
             respond_to_rpc(
-                &self.task_center,
                 reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
                     self.partition_id,
                 ))),
@@ -265,7 +263,6 @@ impl LeaderState {
                 let old_reciprocal = o.remove();
                 trace!(%request_id, "Replacing rpc with newer request");
                 respond_to_rpc(
-                    &self.task_center,
                     old_reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
                         "retried".to_string(),
                     ))),
@@ -276,7 +273,6 @@ impl LeaderState {
                 // In this case, no one proposed this command yet, let's try to propose it
                 if let Err(e) = self.self_proposer.propose(partition_key, cmd).await {
                     respond_to_rpc(
-                        &self.task_center,
                         reciprocal
                             .prepare(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
                     );
@@ -299,15 +295,11 @@ impl LeaderState {
             .await
         {
             Ok(commit_token) => {
-                self.awaiting_rpc_self_propose.push(SelfAppendFuture::new(
-                    self.task_center.clone(),
-                    commit_token,
-                    reciprocal,
-                ));
+                self.awaiting_rpc_self_propose
+                    .push(SelfAppendFuture::new(commit_token, reciprocal));
             }
             Err(e) => {
                 respond_to_rpc(
-                    &self.task_center,
                     reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
                 );
             }
@@ -391,7 +383,6 @@ impl LeaderState {
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
                     respond_to_rpc(
-                        &self.task_center,
                         response_tx.prepare(Ok(PartitionProcessorRpcResponse::Output(
                             InvocationOutput {
                                 request_id,
@@ -411,15 +402,12 @@ impl LeaderState {
                 ..
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    respond_to_rpc(
-                        &self.task_center,
-                        response_tx.prepare(Ok(PartitionProcessorRpcResponse::Submitted(
-                            SubmittedInvocationNotification {
-                                request_id,
-                                is_new_invocation,
-                            },
-                        ))),
-                    );
+                    respond_to_rpc(response_tx.prepare(Ok(
+                        PartitionProcessorRpcResponse::Submitted(SubmittedInvocationNotification {
+                            request_id,
+                            is_new_invocation,
+                        }),
+                    )));
                 }
             }
             Action::ScheduleInvocationStatusCleanup {
@@ -436,19 +424,16 @@ impl LeaderState {
 }
 
 struct SelfAppendFuture {
-    task_center: TaskCenter,
     commit_token: CommitToken,
     response: Option<Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>,
 }
 
 impl SelfAppendFuture {
     fn new(
-        task_center: TaskCenter,
         commit_token: CommitToken,
         response: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
     ) -> Self {
         Self {
-            task_center,
             commit_token,
             response: Some(response),
         }
@@ -456,19 +441,15 @@ impl SelfAppendFuture {
 
     fn fail_with_internal(&mut self) {
         if let Some(reciprocal) = self.response.take() {
-            respond_to_rpc(
-                &self.task_center,
-                reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
-                    "error when proposing to bifrost".to_string(),
-                ))),
-            );
+            respond_to_rpc(reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
+                "error when proposing to bifrost".to_string(),
+            ))));
         }
     }
 
     fn fail_with_lost_leadership(&mut self, this_partition_id: PartitionId) {
         if let Some(reciprocal) = self.response.take() {
             respond_to_rpc(
-                &self.task_center,
                 reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
                     this_partition_id,
                 ))),
@@ -478,10 +459,7 @@ impl SelfAppendFuture {
 
     fn succeed_with_appended(&mut self) {
         if let Some(reciprocal) = self.response.take() {
-            respond_to_rpc(
-                &self.task_center,
-                reciprocal.prepare(Ok(PartitionProcessorRpcResponse::Appended)),
-            );
+            respond_to_rpc(reciprocal.prepare(Ok(PartitionProcessorRpcResponse::Appended)));
         }
     }
 }
