@@ -60,13 +60,12 @@ where
     /// behaviour to the the owner of [`AppenderHandle`] to drain or drop when appropriate.
     pub fn start(
         self,
-        task_center: TaskCenter,
         name: &'static str,
         partition_id: Option<PartitionId>,
     ) -> Result<AppenderHandle<T>, ShutdownError> {
         let (tx, rx) = tokio::sync::mpsc::channel(self.queue_capacity);
 
-        let handle = task_center.spawn_unmanaged(
+        let handle = TaskCenter::current().spawn_unmanaged(
             restate_core::TaskKind::BifrostAppender,
             name,
             partition_id,
