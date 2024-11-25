@@ -8,22 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod util;
+
 use std::ops::Range;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use futures::stream::{FuturesOrdered, FuturesUnordered};
 use futures::StreamExt;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
+
 use restate_bifrost::{Bifrost, BifrostService};
-use restate_core::metadata;
 use restate_rocksdb::{DbName, RocksDbManager};
 use restate_types::config::{
     BifrostOptionsBuilder, CommonOptionsBuilder, ConfigurationBuilder, LocalLogletOptionsBuilder,
 };
 use restate_types::live::Live;
 use restate_types::logs::LogId;
-use tracing::info;
-use tracing_subscriber::EnvFilter;
-mod util;
 
 async fn append_records_multi_log(bifrost: Bifrost, log_id_range: Range<u32>, count_per_log: u64) {
     let mut appends = FuturesUnordered::new();
@@ -105,9 +106,7 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
     ));
 
     let bifrost = tc.block_on(async {
-        let metadata = metadata();
-        let bifrost_svc = BifrostService::new(restate_core::task_center(), metadata)
-            .enable_local_loglet(&Live::from_value(config));
+        let bifrost_svc = BifrostService::new().enable_local_loglet(&Live::from_value(config));
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background

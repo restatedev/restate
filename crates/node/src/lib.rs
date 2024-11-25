@@ -178,8 +178,7 @@ impl Node {
             record_cache.clone(),
             &mut router_builder,
         );
-        let bifrost_svc = BifrostService::new(tc.clone(), metadata.clone())
-            .enable_local_loglet(&updateable_config);
+        let bifrost_svc = BifrostService::new().enable_local_loglet(&updateable_config);
 
         #[cfg(feature = "replicated-loglet")]
         let bifrost_svc = bifrost_svc.with_factory(replicated_loglet_factory);
