@@ -30,7 +30,6 @@ type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;
 /// Tasks are expected to check for the cancellation token when appropriate and finalize their
 /// work before termination.
 pub struct Watchdog {
-    task_center: TaskCenter,
     inner: Arc<BifrostInner>,
     sender: WatchdogSender,
     inbound: WatchdogReceiver,
@@ -39,13 +38,11 @@ pub struct Watchdog {
 
 impl Watchdog {
     pub fn new(
-        task_center: TaskCenter,
         inner: Arc<BifrostInner>,
         sender: WatchdogSender,
         inbound: WatchdogReceiver,
     ) -> Self {
         Self {
-            task_center,
             inner,
             sender,
             inbound,
@@ -57,7 +54,7 @@ impl Watchdog {
         match cmd {
             WatchdogCommand::ScheduleMetadataSync => {
                 let bifrost = self.inner.clone();
-                let _ = self.task_center.spawn(
+                let _ = TaskCenter::current().spawn(
                     TaskKind::MetadataBackgroundSync,
                     "bifrost-metadata-sync",
                     None,
@@ -73,7 +70,7 @@ impl Watchdog {
             WatchdogCommand::WatchProvider(provider) => {
                 self.live_providers.push(provider.clone());
                 // TODO: Convert to a managed background task
-                let _ = self.task_center.spawn(
+                let _ = TaskCenter::current().spawn(
                     TaskKind::BifrostBackgroundHighPriority,
                     "bifrost-provider-on-start",
                     None,

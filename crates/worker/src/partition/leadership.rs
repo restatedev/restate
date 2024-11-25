@@ -1099,7 +1099,7 @@ mod tests {
     use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
-    use restate_core::{task_center, TestCoreEnv};
+    use restate_core::{task_center, TaskCenterFutureExt, TestCoreEnv};
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
@@ -1124,21 +1124,14 @@ mod tests {
     #[test(tokio::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
         let env = TestCoreEnv::create_with_single_node(0, 0).await;
-        let tc = env.tc.clone();
-        let storage_options = StorageOptions::default();
-        let rocksdb_options = RocksDbOptions::default();
+        async {
+            let storage_options = StorageOptions::default();
+            let rocksdb_options = RocksDbOptions::default();
 
-        tc.run_in_scope_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
+            RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-        let bifrost = tc
-            .run_in_scope(
-                "init bifrost",
-                None,
-                Bifrost::init_in_memory(env.metadata.clone()),
-            )
-            .await;
+            let bifrost = Bifrost::init_in_memory().await;
 
-        tc.run_in_scope("test", None, async {
             let partition_store_manager = PartitionStoreManager::create(
                 Constant::new(storage_options.clone()).boxed(),
                 Constant::new(rocksdb_options.clone()).boxed(),
@@ -1203,10 +1196,11 @@ mod tests {
             assert!(matches!(state.state, State::Follower));
 
             googletest::Result::Ok(())
-        })
+        }
+        .in_tc(&env.tc)
         .await?;
 
-        tc.shutdown_node("test_completed", 0).await;
+        env.tc.shutdown_node("test_completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }

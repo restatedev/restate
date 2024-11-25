@@ -13,13 +13,12 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use enum_map::EnumMap;
+use tracing::instrument;
 
 use restate_core::{Metadata, MetadataKind, TargetVersion};
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
 use restate_types::storage::StorageEncode;
-use restate_types::Version;
-use tracing::instrument;
 
 use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
@@ -44,21 +43,20 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init_in_memory(metadata: Metadata) -> Self {
+    pub async fn init_in_memory() -> Self {
         use crate::providers::memory_loglet;
 
-        Self::init_with_factory(metadata, memory_loglet::Factory::default()).await
+        Self::init_with_factory(memory_loglet::Factory::default()).await
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init_local(metadata: Metadata) -> Self {
+    pub async fn init_local() -> Self {
         use restate_types::config::Configuration;
 
         use crate::BifrostService;
 
         let config = Configuration::updateable();
-        let bifrost_svc =
-            BifrostService::new(restate_core::task_center(), metadata).enable_local_loglet(&config);
+        let bifrost_svc = BifrostService::new().enable_local_loglet(&config);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -70,14 +68,10 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init_with_factory(
-        metadata: Metadata,
-        factory: impl crate::loglet::LogletProviderFactory,
-    ) -> Self {
+    pub async fn init_with_factory(factory: impl crate::loglet::LogletProviderFactory) -> Self {
         use crate::BifrostService;
 
-        let bifrost_svc =
-            BifrostService::new(restate_core::task_center(), metadata).with_factory(factory);
+        let bifrost_svc = BifrostService::new().with_factory(factory);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -228,11 +222,6 @@ impl Bifrost {
         self.inner.get_trim_point(log_id).await
     }
 
-    /// The version of the currently loaded logs metadata
-    pub fn version(&self) -> Version {
-        self.inner.metadata.logs_version()
-    }
-
     /// Read a full log with the given id. To be used only in tests!!!
     #[cfg(any(test, feature = "test-util"))]
     pub async fn read_all(&self, log_id: LogId) -> Result<Vec<crate::LogEntry>> {
@@ -262,7 +251,6 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // Locks in this data-structure are held for very short time and should never be
 // held across an async boundary.
 pub struct BifrostInner {
-    pub(crate) metadata: Metadata,
     #[allow(unused)]
     watchdog: WatchdogSender,
     // Initialized after BifrostService::start completes.
@@ -271,9 +259,8 @@ pub struct BifrostInner {
 }
 
 impl BifrostInner {
-    pub fn new(metadata: Metadata, watchdog: WatchdogSender) -> Self {
+    pub fn new(watchdog: WatchdogSender) -> Self {
         Self {
-            metadata,
             watchdog,
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
@@ -338,7 +325,7 @@ impl BifrostInner {
     }
 
     async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
-        let log_metadata = self.metadata.logs_ref();
+        let log_metadata = Metadata::with_current(|m| m.logs_ref());
 
         let log_chain = log_metadata
             .chain(&log_id)
@@ -366,7 +353,7 @@ impl BifrostInner {
     }
 
     pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
-        let log_metadata = self.metadata.logs_ref();
+        let log_metadata = Metadata::with_current(|m| m.logs_ref());
 
         let log_chain = log_metadata
             .chain(&log_id)
@@ -396,7 +383,7 @@ impl BifrostInner {
 
     /// Immediately fetch new metadata from metadata store.
     pub async fn sync_metadata(&self) -> Result<()> {
-        self.metadata
+        Metadata::current()
             .sync(MetadataKind::Logs, TargetVersion::Latest)
             .await?;
         Ok(())
@@ -419,7 +406,7 @@ impl BifrostInner {
 
     /// Checks if the log_id exists and that the provider is not disabled (can be created).
     pub(crate) fn check_log_id(&self, log_id: LogId) -> Result<(), Error> {
-        let logs = self.metadata.logs_ref();
+        let logs = Metadata::with_current(|metadata| metadata.logs_ref());
         let chain = logs.chain(&log_id).ok_or(Error::UnknownLogId(log_id))?;
 
         let kind = chain.tail().config.kind;
@@ -429,7 +416,7 @@ impl BifrostInner {
     }
 
     pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
-        let log_metadata = self.metadata.logs_ref();
+        let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
         let tail_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
@@ -438,7 +425,7 @@ impl BifrostInner {
     }
 
     pub async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<MaybeLoglet> {
-        let log_metadata = self.metadata.logs_ref();
+        let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
         let maybe_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
@@ -509,8 +496,8 @@ mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
-    use restate_core::{metadata, TaskKind, TestCoreEnv};
-    use restate_core::{task_center, TestCoreEnvBuilder};
+    use restate_core::TestCoreEnvBuilder;
+    use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, TestCoreEnv};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::CommonOptions;
     use restate_types::live::Constant;
@@ -518,7 +505,7 @@ mod tests {
     use restate_types::logs::SequenceNumber;
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
     use restate_types::partition_table::PartitionTable;
-    use restate_types::Versioned;
+    use restate_types::{Version, Versioned};
 
     use crate::providers::memory_loglet::{self};
     use crate::BifrostAdmin;
@@ -534,9 +521,8 @@ mod tests {
             ))
             .build()
             .await;
-        let tc = node_env.tc;
-        tc.run_in_scope("test", None, async {
-            let bifrost = Bifrost::init_in_memory(metadata()).await;
+        async {
+            let bifrost = Bifrost::init_in_memory().await;
 
             let clean_bifrost_clone = bifrost.clone();
 
@@ -588,7 +574,7 @@ mod tests {
             assert_eq!(max_lsn.next(), tail.offset());
 
             // Initiate shutdown
-            task_center().shutdown_node("completed", 0).await;
+            TaskCenter::current().shutdown_node("completed", 0).await;
             // appends cannot succeed after shutdown
             let res = appender_0.append("").await;
             assert!(matches!(res, Err(Error::Shutdown(_))));
@@ -596,20 +582,20 @@ mod tests {
             assert!(logs_contain("Shutting down in-memory loglet provider"));
             assert!(logs_contain("Bifrost watchdog shutdown complete"));
             Ok(())
-        })
+        }
+        .in_tc(&node_env.tc)
         .await
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_lazy_initialization() -> googletest::Result<()> {
         let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
-        let tc = node_env.tc;
-        tc.run_in_scope("test", None, async {
+        async {
             let delay = Duration::from_secs(5);
             // This memory provider adds a delay to its loglet initialization, we want
             // to ensure that appends do not fail while waiting for the loglet;
             let factory = memory_loglet::Factory::with_init_delay(delay);
-            let bifrost = Bifrost::init_with_factory(metadata(), factory).await;
+            let bifrost = Bifrost::init_with_factory(factory).await;
 
             let start = tokio::time::Instant::now();
             let lsn = bifrost.create_appender(LogId::new(0))?.append("").await?;
@@ -617,7 +603,8 @@ mod tests {
             // The append was properly delayed
             assert_eq!(delay, start.elapsed());
             Ok(())
-        })
+        }
+        .in_tc(&node_env.tc)
         .await
     }
 
@@ -628,74 +615,73 @@ mod tests {
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
-        node_env
-            .tc
-            .run_in_scope("test", None, async {
-                RocksDbManager::init(Constant::new(CommonOptions::default()));
+        async {
+            RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-                let bifrost = Bifrost::init_local(metadata()).await;
-                let bifrost_admin = BifrostAdmin::new(
-                    &bifrost,
-                    &node_env.metadata_writer,
-                    &node_env.metadata_store_client,
-                );
+            let bifrost = Bifrost::init_local().await;
+            let bifrost_admin = BifrostAdmin::new(
+                &bifrost,
+                &node_env.metadata_writer,
+                &node_env.metadata_store_client,
+            );
 
-                assert_eq!(Lsn::OLDEST, bifrost.find_tail(LOG_ID).await?.offset());
+            assert_eq!(Lsn::OLDEST, bifrost.find_tail(LOG_ID).await?.offset());
 
-                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-                let mut appender = bifrost.create_appender(LOG_ID)?;
-                // append 10 records
-                for _ in 1..=10 {
-                    appender.append("").await?;
-                }
+            let mut appender = bifrost.create_appender(LOG_ID)?;
+            // append 10 records
+            for _ in 1..=10 {
+                appender.append("").await?;
+            }
 
-                bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
+            bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
 
-                let tail = bifrost.find_tail(LOG_ID).await?;
-                assert_eq!(tail.offset(), Lsn::from(11));
-                assert!(!tail.is_sealed());
-                assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
+            let tail = bifrost.find_tail(LOG_ID).await?;
+            assert_eq!(tail.offset(), Lsn::from(11));
+            assert!(!tail.is_sealed());
+            assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
 
-                // 5 itself is trimmed
-                for lsn in 1..=5 {
-                    let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?.unwrap();
+            // 5 itself is trimmed
+            for lsn in 1..=5 {
+                let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?.unwrap();
 
-                    assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
-                    assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(5))));
-                }
+                assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+                assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(5))));
+            }
 
-                for lsn in 6..=10 {
-                    let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?.unwrap();
-                    assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
-                    assert!(record.is_data_record());
-                }
+            for lsn in 6..=10 {
+                let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?.unwrap();
+                assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+                assert!(record.is_data_record());
+            }
 
-                // trimming beyond the release point will fall back to the release point
-                bifrost_admin.trim(LOG_ID, Lsn::MAX).await?;
+            // trimming beyond the release point will fall back to the release point
+            bifrost_admin.trim(LOG_ID, Lsn::MAX).await?;
 
-                assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
-                let new_trim_point = bifrost.get_trim_point(LOG_ID).await?;
-                assert_eq!(Lsn::from(10), new_trim_point);
+            assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
+            let new_trim_point = bifrost.get_trim_point(LOG_ID).await?;
+            assert_eq!(Lsn::from(10), new_trim_point);
 
-                let record = bifrost.read(LOG_ID, Lsn::from(10)).await?.unwrap();
-                assert!(record.is_trim_gap());
-                assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
+            let record = bifrost.read(LOG_ID, Lsn::from(10)).await?.unwrap();
+            assert!(record.is_trim_gap());
+            assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
 
-                // Add 10 more records
-                for _ in 0..10 {
-                    appender.append("").await?;
-                }
+            // Add 10 more records
+            for _ in 0..10 {
+                appender.append("").await?;
+            }
 
-                for lsn in 11..20 {
-                    let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?.unwrap();
-                    assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
-                    assert!(record.is_data_record());
-                }
+            for lsn in 11..20 {
+                let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?.unwrap();
+                assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+                assert!(record.is_data_record());
+            }
 
-                Ok(())
-            })
-            .await
+            Ok(())
+        }
+        .in_tc(&node_env.tc)
+        .await
     }
 
     #[tokio::test(start_paused = true)]
@@ -708,9 +694,8 @@ mod tests {
             ))
             .build()
             .await;
-        let tc = node_env.tc;
-        tc.run_in_scope("test", None, async {
-            let bifrost = Bifrost::init_in_memory(metadata()).await;
+        async {
+            let bifrost = Bifrost::init_in_memory().await;
             let bifrost_admin = BifrostAdmin::new(
                 &bifrost,
                 &node_env.metadata_writer,
@@ -759,9 +744,10 @@ mod tests {
             .await
             .is_err());
 
-            let old_version = bifrost.inner.metadata.logs_version();
+            let metadata = Metadata::current();
+            let old_version = metadata.logs_version();
 
-            let mut builder = bifrost.inner.metadata.logs_ref().clone().into_builder();
+            let mut builder = metadata.logs_ref().clone().into_builder();
             let mut chain_builder = builder.chain(LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
@@ -785,14 +771,14 @@ mod tests {
                 .await?;
 
             // make sure we have updated metadata.
-            metadata()
+            metadata
                 .sync(MetadataKind::Logs, TargetVersion::Latest)
                 .await?;
-            assert_eq!(new_version, bifrost.inner.metadata.logs_version());
+            assert_eq!(new_version, metadata.logs_version());
 
             {
                 // validate that the stored metadata matches our expectations.
-                let new_metadata = bifrost.inner.metadata.logs_ref().clone();
+                let new_metadata = metadata.logs_ref().clone();
                 let chain_builder = new_metadata.chain(&LOG_ID).unwrap();
                 assert_eq!(2, chain_builder.num_segments());
             }
@@ -887,7 +873,8 @@ mod tests {
             assert!(bifrost.read(LOG_ID, Lsn::new(8)).await?.is_none());
 
             Ok(())
-        })
+        }
+        .in_tc(&node_env.tc)
         .await
     }
 
@@ -903,10 +890,9 @@ mod tests {
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
-        let tc = node_env.tc;
-        tc.run_in_scope("test", None, async {
+        async {
             RocksDbManager::init(Constant::new(CommonOptions::default()));
-            let bifrost = Bifrost::init_local(metadata()).await;
+            let bifrost = Bifrost::init_local().await;
             let bifrost_admin = BifrostAdmin::new(
                 &bifrost,
                 &node_env.metadata_writer,
@@ -916,7 +902,7 @@ mod tests {
             // create an appender
             let stop_signal = Arc::new(AtomicBool::default());
             let append_counter = Arc::new(AtomicUsize::new(0));
-            let _ = tc.spawn(TaskKind::TestRunner, "append-records", None, {
+            let _ = TaskCenter::current().spawn(TaskKind::TestRunner, "append-records", None, {
                 let append_counter = append_counter.clone();
                 let stop_signal = stop_signal.clone();
                 let bifrost = bifrost.clone();
@@ -1011,9 +997,11 @@ mod tests {
             }
 
             googletest::Result::Ok(())
-        })
+        }
+        .in_tc(&node_env.tc)
         .await?;
-        tc.shutdown_node("test completed", 0).await;
+
+        node_env.tc.shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }
