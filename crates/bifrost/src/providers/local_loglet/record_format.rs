@@ -182,7 +182,7 @@ fn write_record(record: &Record, buf: &mut BytesMut) -> BytesMut {
     match record.body() {
         PolyBytes::Bytes(raw_bytes) => buf.put_slice(raw_bytes),
         PolyBytes::Typed(encodeable) => {
-            StorageCodec::encode(encodeable.deref(), buf).expect("record serde is infallible")
+            StorageCodec::encode(encodeable.deref()).expect("record serde is infallible");
         }
     }
     buf.split()

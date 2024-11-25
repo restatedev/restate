@@ -774,7 +774,7 @@ pub(crate) trait StorageAccess {
         let key_buffer = key_buffer.split();
 
         let value_buffer = self.cleared_value_buffer_mut(0);
-        StorageCodec::encode(value, value_buffer).unwrap();
+        StorageCodec::encode(value).unwrap();
         let value_buffer = value_buffer.split();
 
         self.put_cf(K::TABLE, key_buffer, value_buffer);

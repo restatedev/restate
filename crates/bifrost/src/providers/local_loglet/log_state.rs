@@ -104,22 +104,18 @@ impl LogStateUpdates {
 
 impl LogStateUpdates {
     pub fn to_bytes(&self) -> Result<BytesMut, LogStoreError> {
-        // trying to avoid buffer resizing by having plenty of space for serialization
-        let mut buf = BytesMut::with_capacity(std::mem::size_of::<Self>() * 2);
-        self.encode(&mut buf)?;
+        let buf = self.encode()?;
         Ok(buf)
     }
 
-    pub fn encode_and_split(&self, buf: &mut BytesMut) -> Result<BytesMut, LogStoreError> {
-        self.encode(buf)?;
+    pub fn encode_and_split(&self) -> Result<BytesMut, LogStoreError> {
+        let mut buf = self.encode()?;
         Ok(buf.split())
     }
 
-    pub fn encode(&self, buf: &mut BytesMut) -> Result<(), LogStoreError> {
-        // trying to avoid buffer resizing by having plenty of space for serialization
-        buf.reserve(std::mem::size_of::<Self>() * 2);
-        StorageCodec::encode(self, buf)?;
-        Ok(())
+    pub fn encode(&self) -> Result<BytesMut, LogStoreError> {
+        let buf = StorageCodec::encode(self)?;
+        Ok(buf)
     }
 
     pub fn from_slice(mut data: &[u8]) -> Result<Self, LogStoreError> {
@@ -149,23 +145,19 @@ pub struct LogState {
 
 impl LogState {
     pub fn to_bytes(&self) -> Result<BytesMut, LogStoreError> {
-        // trying to avoid buffer resizing by having plenty of space for serialization
-        let mut buf = BytesMut::with_capacity(std::mem::size_of::<Self>() * 2);
-        self.encode(&mut buf)?;
+        let buf = self.encode()?;
         Ok(buf)
     }
 
     #[allow(unused)]
-    pub fn encode_and_split(&self, buf: &mut BytesMut) -> Result<BytesMut, LogStoreError> {
-        self.encode(buf)?;
+    pub fn encode_and_split(&self) -> Result<BytesMut, LogStoreError> {
+        let mut buf = self.encode()?;
         Ok(buf.split())
     }
 
-    pub fn encode(&self, buf: &mut BytesMut) -> Result<(), LogStoreError> {
-        // trying to avoid buffer resizing by having plenty of space for serialization
-        buf.reserve(std::mem::size_of::<Self>() * 2);
-        StorageCodec::encode(self, buf)?;
-        Ok(())
+    pub fn encode(&self) -> Result<BytesMut, LogStoreError> {
+        let buf = StorageCodec::encode(self)?;
+        Ok(buf)
     }
 
     pub fn from_slice(mut data: &[u8]) -> Result<Self, LogStoreError> {

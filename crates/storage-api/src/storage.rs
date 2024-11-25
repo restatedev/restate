@@ -31,6 +31,9 @@ macro_rules! protobuf_storage_encode_decode {
                     restate_types::storage::StorageEncodeError::EncodeValue(err.into())
                 })
             }
+            fn serialized_size(&self) -> usize {
+                bytes::BytesMut::default().len() // todo: to be calculated
+            }
         }
 
         impl restate_types::storage::StorageDecode for $ty {

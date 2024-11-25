@@ -124,22 +124,22 @@ impl<T: TransportConnect> NodeSvc for NodeSvcHandler<T> {
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
         }
-        let mut encoded = BytesMut::new();
+        let encoded = BytesMut::new();
         match kind {
             MetadataKind::NodesConfiguration => {
-                StorageCodec::encode(metadata.nodes_config_ref().as_ref(), &mut encoded)
+                StorageCodec::encode(metadata.nodes_config_ref().as_ref())
                     .expect("We can always serialize");
             }
             MetadataKind::Schema => {
-                StorageCodec::encode(metadata.schema_ref().as_ref(), &mut encoded)
+                StorageCodec::encode(metadata.schema_ref().as_ref())
                     .expect("We can always serialize");
             }
             MetadataKind::PartitionTable => {
-                StorageCodec::encode(metadata.partition_table_ref().as_ref(), &mut encoded)
+                StorageCodec::encode(metadata.partition_table_ref().as_ref())
                     .expect("We can always serialize");
             }
             MetadataKind::Logs => {
-                StorageCodec::encode(metadata.logs_ref().as_ref(), &mut encoded)
+                StorageCodec::encode(metadata.logs_ref().as_ref())
                     .expect("We can always serialize");
             }
         }

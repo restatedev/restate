@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, ShutdownError};
 use restate_storage_api::deduplication_table::DedupInformation;
@@ -47,8 +47,7 @@ impl Envelope {
     }
 
     pub fn to_bytes(&self) -> Result<Bytes, StorageEncodeError> {
-        let mut buf = BytesMut::default();
-        StorageCodec::encode(self, &mut buf)?;
+        let buf = StorageCodec::encode(self)?;
         Ok(buf.freeze())
     }
 

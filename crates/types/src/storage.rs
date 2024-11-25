@@ -73,21 +73,27 @@ impl TryFrom<u8> for StorageCodecKind {
 pub struct StorageCodec;
 
 impl StorageCodec {
-    pub fn encode<T: StorageEncode + ?Sized>(
-        value: &T,
-        buf: &mut BytesMut,
-    ) -> Result<(), StorageEncodeError> {
-        // write codec
+    pub fn encode<T: StorageEncode + ?Sized>(value: &T) -> Result<BytesMut, StorageEncodeError> {
+        // Calculate the exact size required for serialization
+        let size = value.serialized_size();
+
+        // Create a buffer with enough capacity
+        let mut buf = BytesMut::with_capacity(size + 1); // +1 for codec version byte
+
+        // Write codec version byte
         buf.put_u8(value.default_codec().into());
-        // encode value
-        value.encode(buf)
+
+        // Encode the value into the buffer
+        value.encode(&mut buf)?;
+
+        Ok(buf)
     }
 
     pub fn encode_and_split<T: StorageEncode + ?Sized>(
         value: &T,
         buf: &mut BytesMut,
     ) -> Result<BytesMut, StorageEncodeError> {
-        Self::encode(value, buf)?;
+        Self::encode(value)?;
         Ok(buf.split())
     }
 
@@ -119,6 +125,9 @@ pub trait StorageEncode: DowncastSync {
 
     /// Codec which is used when encode new values.
     fn default_codec(&self) -> StorageCodecKind;
+
+    /// Returns the expected serialized size in bytes of the encoded value.
+    fn serialized_size(&self) -> usize;
 }
 impl_downcast!(sync StorageEncode);
 
@@ -153,6 +162,12 @@ macro_rules! flexbuffers_storage_encode_decode {
                 $crate::storage::encode_as_flexbuffers(self, buf)
                     .map_err(|err| $crate::storage::StorageEncodeError::EncodeValue(err.into()))
             }
+
+
+            fn serialized_size(&self) -> usize {
+                bytes::BytesMut::default().len()  // todo: to be calculated
+            }
+
         }
 
         impl $crate::storage::StorageDecode for $name {
@@ -195,7 +210,7 @@ impl StorageEncode for PolyBytes {
         match self {
             PolyBytes::Bytes(bytes) => buf.put_slice(bytes.as_ref()),
             PolyBytes::Typed(typed) => {
-                StorageCodec::encode(&**typed, buf)?;
+                StorageCodec::encode(&**typed)?;
             }
         };
         Ok(())
@@ -203,6 +218,12 @@ impl StorageEncode for PolyBytes {
 
     fn default_codec(&self) -> StorageCodecKind {
         StorageCodecKind::FlexbuffersSerde
+    }
+    fn serialized_size(&self) -> usize {
+        match self {
+            PolyBytes::Bytes(bytes) => bytes.len(),
+            PolyBytes::Typed(typed) => typed.serialized_size(),
+        }
     }
 }
 
@@ -218,9 +239,7 @@ impl serde_with::SerializeAs<PolyBytes> for EncodedPolyBytes {
         match source {
             PolyBytes::Bytes(bytes) => serializer.serialize_bytes(bytes.as_ref()),
             PolyBytes::Typed(typed) => {
-                // todo: estimate size to avoid re allocations
-                let mut buf = BytesMut::new();
-                StorageCodec::encode(&**typed, &mut buf).expect("record serde is infallible");
+                let buf = StorageCodec::encode(&**typed).expect("record serde is infallible");
                 serializer.serialize_bytes(buf.as_ref())
             }
         }
@@ -265,6 +284,10 @@ impl StorageEncode for String {
         }
         buf.put_slice(my_bytes);
         Ok(())
+    }
+
+    fn serialized_size(&self) -> usize {
+        4 + self.len() // 4 bytes for length + string byte length
     }
 }
 impl StorageDecode for String {
@@ -331,6 +354,9 @@ impl StorageEncode for bytes::Bytes {
         }
         buf.put_slice(&self[..]);
         Ok(())
+    }
+    fn serialized_size(&self) -> usize {
+        4 + self.len() // 4 bytes for length + byte slice length
     }
 }
 

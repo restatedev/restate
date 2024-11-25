@@ -155,14 +155,10 @@ mod serde_tests {
 
     #[test]
     fn can_deserialise_without_http_version() {
-        let mut buf = bytes::BytesMut::default();
-        StorageCodec::encode(
-            &OldDeploymentType::Http {
-                address: Uri::from_static("google.com"),
-                protocol_type: ProtocolType::BidiStream,
-            },
-            &mut buf,
-        )
+        let mut buf = StorageCodec::encode(&OldDeploymentType::Http {
+            address: Uri::from_static("google.com"),
+            protocol_type: ProtocolType::BidiStream,
+        })
         .unwrap();
         let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
         assert_eq!(
@@ -174,14 +170,10 @@ mod serde_tests {
             dt
         );
 
-        let mut buf = bytes::BytesMut::default();
-        StorageCodec::encode(
-            &OldDeploymentType::Http {
-                address: Uri::from_static("google.com"),
-                protocol_type: ProtocolType::RequestResponse,
-            },
-            &mut buf,
-        )
+        let mut buf = StorageCodec::encode(&OldDeploymentType::Http {
+            address: Uri::from_static("google.com"),
+            protocol_type: ProtocolType::RequestResponse,
+        })
         .unwrap();
         let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
         assert_eq!(

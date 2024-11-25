@@ -363,7 +363,6 @@ impl Iterator for EqualSizedPartitionPartitioner {
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
     use test_log::test;
 
     use crate::identifiers::{PartitionId, PartitionKey};
@@ -446,16 +445,15 @@ mod tests {
         let version = Version::from(42);
         let num_partitions = 1337;
         let expected_fixed_partition_table = FixedPartitionTable::new(version, num_partitions);
-        let mut buf = BytesMut::default();
 
-        StorageCodec::encode(&expected_fixed_partition_table, &mut buf)?;
+        let mut buf = StorageCodec::encode(&expected_fixed_partition_table)?;
         let partition_table = StorageCodec::decode::<PartitionTable, _>(&mut buf)?;
 
         assert_eq!(partition_table.version, version);
         assert_eq!(partition_table.num_partitions(), num_partitions);
 
         buf.clear();
-        StorageCodec::encode(&partition_table, &mut buf)?;
+        buf = StorageCodec::encode(&partition_table)?;
         let fixed_partition_table = StorageCodec::decode::<FixedPartitionTable, _>(&mut buf)?;
 
         assert_eq!(fixed_partition_table.version, version);

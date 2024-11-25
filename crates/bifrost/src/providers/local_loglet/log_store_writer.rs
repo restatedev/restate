@@ -183,7 +183,6 @@ impl LogStoreWriter {
                         &mut write_batch,
                         command.loglet_id,
                         logstate_updates,
-                        buffer,
                     )
                 }
 
@@ -203,9 +202,8 @@ impl LogStoreWriter {
         write_batch: &mut WriteBatch,
         loglet_id: u64,
         updates: LogStateUpdates,
-        buffer: &mut BytesMut,
     ) {
-        let buffer = updates.encode_and_split(buffer).expect("encode");
+        let buffer = updates.encode_and_split().expect("encode");
         write_batch.merge_cf(
             metadata_cf,
             MetadataKey::new(loglet_id, MetadataKind::LogState).to_bytes(),
