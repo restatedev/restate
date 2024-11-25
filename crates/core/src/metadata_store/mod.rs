@@ -14,7 +14,7 @@ mod test_util;
 #[cfg(any(test, feature = "test-util"))]
 use crate::metadata_store::test_util::InMemoryMetadataStore;
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use bytestring::ByteString;
 use restate_types::errors::GenericError;
 use restate_types::retries::RetryPolicy;
@@ -173,8 +173,7 @@ impl MetadataStoreClient {
     {
         let version = value.version();
 
-        let mut buf = BytesMut::default();
-        StorageCodec::encode(value, &mut buf).map_err(|err| WriteError::Codec(err.into()))?;
+        let buf = StorageCodec::encode(value).map_err(|err| WriteError::Codec(err.into()))?;
 
         self.inner
             .put(

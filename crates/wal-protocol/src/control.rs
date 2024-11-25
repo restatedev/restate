@@ -30,7 +30,7 @@ pub struct AnnounceLeader {
 #[cfg(test)]
 mod tests {
     use crate::control::AnnounceLeader;
-    use bytes::BytesMut;
+    
     use restate_types::identifiers::LeaderEpoch;
     use restate_types::storage::StorageCodec;
     use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId};
@@ -60,8 +60,7 @@ mod tests {
             leader_epoch,
         };
 
-        let mut buf = BytesMut::default();
-        StorageCodec::encode(&old_announce_leader, &mut buf)?;
+        let mut buf = StorageCodec::encode(&old_announce_leader)?;
 
         let new_announce_leader = StorageCodec::decode::<AnnounceLeader, _>(&mut buf)?;
 
@@ -76,7 +75,7 @@ mod tests {
         );
 
         buf.clear();
-        StorageCodec::encode(&new_announce_leader, &mut buf)?;
+        buf = StorageCodec::encode(&new_announce_leader)?;
 
         let announce_leader = StorageCodec::decode::<OldAnnounceLeader, _>(&mut buf)?;
 

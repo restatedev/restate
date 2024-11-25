@@ -73,28 +73,27 @@ impl TryFrom<u8> for StorageCodecKind {
 pub struct StorageCodec;
 
 impl StorageCodec {
-    pub fn encode<T: StorageEncode + ?Sized>(
-        value: &T,
-        buf: &mut BytesMut,
-    ) -> Result<(), StorageEncodeError> {
-        // Write codec version byte
-        buf.put_u8(value.default_codec().into());
-
+    pub fn encode<T: StorageEncode + ?Sized>(value: &T) -> Result<BytesMut, StorageEncodeError> {
         // Calculate the exact size required for serialization
         let size = value.serialized_size();
 
-        // Ensure the buffer has enough capacity
-        buf.reserve(size);
+        // Create a buffer with enough capacity
+        let mut buf = BytesMut::with_capacity(size + 1); // +1 for codec version byte
+
+        // Write codec version byte
+        buf.put_u8(value.default_codec().into());
 
         // Encode the value into the buffer
-        value.encode(buf)
+        value.encode(&mut buf)?;
+
+        Ok(buf)
     }
 
     pub fn encode_and_split<T: StorageEncode + ?Sized>(
         value: &T,
         buf: &mut BytesMut,
     ) -> Result<BytesMut, StorageEncodeError> {
-        Self::encode(value, buf)?;
+        Self::encode(value)?;
         Ok(buf.split())
     }
 
@@ -211,7 +210,7 @@ impl StorageEncode for PolyBytes {
         match self {
             PolyBytes::Bytes(bytes) => buf.put_slice(bytes.as_ref()),
             PolyBytes::Typed(typed) => {
-                StorageCodec::encode(&**typed, buf)?;
+                StorageCodec::encode(&**typed)?;
             }
         };
         Ok(())
@@ -240,9 +239,7 @@ impl serde_with::SerializeAs<PolyBytes> for EncodedPolyBytes {
         match source {
             PolyBytes::Bytes(bytes) => serializer.serialize_bytes(bytes.as_ref()),
             PolyBytes::Typed(typed) => {
-                // todo: estimate size to avoid re allocations
-                let mut buf = BytesMut::new();
-                StorageCodec::encode(&**typed, &mut buf).expect("record serde is infallible");
+                let buf = StorageCodec::encode(&**typed).expect("record serde is infallible");
                 serializer.serialize_bytes(buf.as_ref())
             }
         }

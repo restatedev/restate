@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use tonic::{async_trait, Request, Response, Status};
 use tracing::info;
 
@@ -289,7 +289,6 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 }
 
 fn serialize_value<T: StorageEncode>(value: T) -> Bytes {
-    let mut buf = BytesMut::new();
-    StorageCodec::encode(&value, &mut buf).expect("We can always serialize");
+    let buf = StorageCodec::encode(&value).expect("We can always serialize");
     buf.freeze()
 }

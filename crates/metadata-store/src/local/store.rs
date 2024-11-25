@@ -273,7 +273,7 @@ impl LocalMetadataStore {
         value: &VersionedValue,
     ) -> Result<()> {
         self.buffer.clear();
-        Self::encode(value, &mut self.buffer)?;
+        Self::encode(value)?;
 
         let write_options = self.write_options();
         let cf_handle = self.kv_cf_handle();
@@ -324,8 +324,8 @@ impl LocalMetadataStore {
             .map_err(Into::into)
     }
 
-    fn encode<T: StorageEncode>(value: &T, buf: &mut BytesMut) -> Result<()> {
-        StorageCodec::encode(value, buf)?;
+    fn encode<T: StorageEncode>(value: &T) -> Result<()> {
+        StorageCodec::encode(value)?;
         Ok(())
     }
 
