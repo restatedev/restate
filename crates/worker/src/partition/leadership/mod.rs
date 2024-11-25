@@ -23,7 +23,7 @@ use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::Reciprocal;
-use restate_core::{metadata, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{metadata, my_node_id, ShutdownError, TaskCenter, TaskKind};
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
@@ -40,7 +40,6 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
 use restate_types::storage::StorageEncodeError;
-use restate_types::GenerationalNodeId;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::Command;
@@ -132,19 +131,16 @@ impl State {
 }
 
 pub struct PartitionProcessorMetadata {
-    node_id: GenerationalNodeId,
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
 }
 
 impl PartitionProcessorMetadata {
     pub const fn new(
-        node_id: GenerationalNodeId,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
         Self {
-            node_id,
             partition_id,
             partition_key_range,
         }
@@ -161,7 +157,6 @@ pub(crate) struct LeadershipState<I> {
     channel_size: usize,
     invoker_tx: I,
     bifrost: Bifrost,
-    task_center: TaskCenter,
 }
 
 impl<I> LeadershipState<I>
@@ -170,7 +165,6 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        task_center: TaskCenter,
         partition_processor_metadata: PartitionProcessorMetadata,
         num_timers_in_memory_limit: Option<usize>,
         cleanup_interval: Duration,
@@ -180,7 +174,6 @@ where
         last_seen_leader_epoch: Option<LeaderEpoch>,
     ) -> Self {
         Self {
-            task_center,
             state: State::Follower,
             partition_processor_metadata,
             num_timers_in_memory_limit,
@@ -221,7 +214,7 @@ where
         let announce_leader = Command::AnnounceLeader(AnnounceLeader {
             // todo: Still need to write generational id for supporting rolling back, can be removed
             //  with the next release.
-            node_id: Some(self.partition_processor_metadata.node_id),
+            node_id: Some(my_node_id()),
             leader_epoch,
             partition_key_range: Some(
                 self.partition_processor_metadata
@@ -342,7 +335,6 @@ where
                 ShuffleMetadata::new(
                     self.partition_processor_metadata.partition_id,
                     *leader_epoch,
-                    self.partition_processor_metadata.node_id,
                 ),
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
@@ -358,7 +350,6 @@ where
             let cleaner = Cleaner::new(
                 self.partition_processor_metadata.partition_id,
                 *leader_epoch,
-                self.partition_processor_metadata.node_id,
                 partition_store.clone(),
                 self.bifrost.clone(),
                 self.partition_processor_metadata
@@ -371,7 +362,6 @@ where
                 TaskCenter::spawn_child(TaskKind::Cleaner, "cleaner", cleaner.run())?;
 
             self.state = State::Leader(LeaderState::new(
-                self.task_center.clone(),
                 self.partition_processor_metadata.partition_id,
                 *leader_epoch,
                 *self
@@ -515,7 +505,6 @@ where
             State::Follower | State::Candidate { .. } => {
                 // Just fail the rpc
                 respond_to_rpc(
-                    &self.task_center,
                     reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
                         self.partition_processor_metadata.partition_id,
                     ))),
@@ -537,12 +526,11 @@ where
         reciprocal: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
     ) {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => respond_to_rpc(
-                &self.task_center,
-                reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
+            State::Follower | State::Candidate { .. } => respond_to_rpc(reciprocal.prepare(Err(
+                PartitionProcessorRpcError::NotLeader(
                     self.partition_processor_metadata.partition_id,
-                ))),
-            ),
+                ),
+            ))),
             State::Leader(leader_state) => {
                 leader_state
                     .self_propose_and_respond_asynchronously(partition_key, cmd, reciprocal)
@@ -603,7 +591,7 @@ mod tests {
     use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
-    use restate_core::{task_center, TestCoreEnv};
+    use restate_core::{TaskCenter, TestCoreEnv2};
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
@@ -623,90 +611,82 @@ mod tests {
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
     const PARTITION_KEY_RANGE: RangeInclusive<PartitionKey> = PartitionKey::MIN..=PartitionKey::MAX;
     const PARTITION_PROCESSOR_METADATA: PartitionProcessorMetadata =
-        PartitionProcessorMetadata::new(NODE_ID, PARTITION_ID, PARTITION_KEY_RANGE);
+        PartitionProcessorMetadata::new(PARTITION_ID, PARTITION_KEY_RANGE);
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
-        let env = TestCoreEnv::create_with_single_node(0, 0).await;
-        let tc = env.tc.clone();
+        let _env = TestCoreEnv2::create_with_single_node(0, 0).await;
         let storage_options = StorageOptions::default();
         let rocksdb_options = RocksDbOptions::default();
 
-        tc.run_in_scope_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let bifrost = Bifrost::init_in_memory().await;
 
-        let bifrost = tc
-            .run_in_scope("init bifrost", None, Bifrost::init_in_memory())
-            .await;
-
-        tc.run_in_scope("test", None, async {
-            let partition_store_manager = PartitionStoreManager::create(
-                Constant::new(storage_options.clone()).boxed(),
-                Constant::new(rocksdb_options.clone()).boxed(),
-                &[(PARTITION_ID, PARTITION_KEY_RANGE)],
-            )
-            .await?;
-
-            let invoker_tx = MockInvokerHandle::default();
-            let mut state = LeadershipState::new(
-                task_center(),
-                PARTITION_PROCESSOR_METADATA,
-                None,
-                Duration::from_secs(60 * 60),
-                42,
-                invoker_tx,
-                bifrost.clone(),
-                None,
-            );
-
-            assert!(matches!(state.state, State::Follower));
-
-            let leader_epoch = LeaderEpoch::from(1);
-            state.run_for_leader(leader_epoch).await?;
-
-            assert!(matches!(state.state, State::Candidate { .. }));
-
-            let record = bifrost
-                .create_reader(PARTITION_ID.into(), KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)
-                .expect("valid reader")
-                .next()
-                .await
-                .unwrap()?;
-
-            let envelope = record.try_decode::<Envelope>().unwrap()?;
-
-            let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
-            assert_eq!(
-                announce_leader,
-                AnnounceLeader {
-                    node_id: Some(NODE_ID),
-                    leader_epoch,
-                    partition_key_range: Some(PARTITION_KEY_RANGE),
-                }
-            );
-
-            let mut partition_store = partition_store_manager
-                .open_partition_store(
-                    PARTITION_ID,
-                    PARTITION_KEY_RANGE,
-                    OpenMode::CreateIfMissing,
-                    &rocksdb_options,
-                )
-                .await?;
-            state
-                .on_announce_leader(announce_leader, &mut partition_store)
-                .await?;
-
-            assert!(matches!(state.state, State::Leader(_)));
-
-            state.step_down().await;
-
-            assert!(matches!(state.state, State::Follower));
-
-            googletest::Result::Ok(())
-        })
+        let partition_store_manager = PartitionStoreManager::create(
+            Constant::new(storage_options.clone()).boxed(),
+            Constant::new(rocksdb_options.clone()).boxed(),
+            &[(PARTITION_ID, PARTITION_KEY_RANGE)],
+        )
         .await?;
 
-        tc.shutdown_node("test_completed", 0).await;
+        let invoker_tx = MockInvokerHandle::default();
+        let mut state = LeadershipState::new(
+            PARTITION_PROCESSOR_METADATA,
+            None,
+            Duration::from_secs(60 * 60),
+            42,
+            invoker_tx,
+            bifrost.clone(),
+            None,
+        );
+
+        assert!(matches!(state.state, State::Follower));
+
+        let leader_epoch = LeaderEpoch::from(1);
+        state.run_for_leader(leader_epoch).await?;
+
+        assert!(matches!(state.state, State::Candidate { .. }));
+
+        let record = bifrost
+            .create_reader(PARTITION_ID.into(), KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)
+            .expect("valid reader")
+            .next()
+            .await
+            .unwrap()?;
+
+        let envelope = record.try_decode::<Envelope>().unwrap()?;
+
+        let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
+        assert_eq!(
+            announce_leader,
+            AnnounceLeader {
+                node_id: Some(NODE_ID),
+                leader_epoch,
+                partition_key_range: Some(PARTITION_KEY_RANGE),
+            }
+        );
+
+        let mut partition_store = partition_store_manager
+            .open_partition_store(
+                PARTITION_ID,
+                PARTITION_KEY_RANGE,
+                OpenMode::CreateIfMissing,
+                &rocksdb_options,
+            )
+            .await?;
+        state
+            .on_announce_leader(announce_leader, &mut partition_store)
+            .await?;
+
+        assert!(matches!(state.state, State::Leader(_)));
+
+        state.step_down().await;
+
+        assert!(matches!(state.state, State::Follower));
+
+        TaskCenter::current()
+            .shutdown_node("test_completed", 0)
+            .await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }

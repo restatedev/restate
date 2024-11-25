@@ -18,14 +18,13 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::cancellation_watcher;
+use restate_core::{cancellation_watcher, Metadata};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::invocation::PurgeInvocationRequest;
-use restate_types::GenerationalNodeId;
 use restate_wal_protocol::{
     append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
 };
@@ -33,7 +32,6 @@ use restate_wal_protocol::{
 pub(super) struct Cleaner<Storage> {
     partition_id: PartitionId,
     leader_epoch: LeaderEpoch,
-    node_id: GenerationalNodeId,
     partition_key_range: RangeInclusive<PartitionKey>,
     storage: Storage,
     bifrost: Bifrost,
@@ -47,7 +45,6 @@ where
     pub(super) fn new(
         partition_id: PartitionId,
         leader_epoch: LeaderEpoch,
-        node_id: GenerationalNodeId,
         storage: Storage,
         bifrost: Bifrost,
         partition_key_range: RangeInclusive<PartitionKey>,
@@ -56,7 +53,6 @@ where
         Self {
             partition_id,
             leader_epoch,
-            node_id,
             partition_key_range,
             storage,
             bifrost,
@@ -64,12 +60,11 @@ where
         }
     }
 
-    #[instrument(skip_all, fields(restate.node = %self.node_id, restate.partition.id = %self.partition_id))]
+    #[instrument(skip_all, fields(restate.partition.id = %self.partition_id))]
     pub(super) async fn run(self) -> anyhow::Result<()> {
         let Self {
             partition_id,
             leader_epoch,
-            node_id,
             partition_key_range,
             storage,
             bifrost,
@@ -77,12 +72,13 @@ where
         } = self;
         debug!("Running cleaner");
 
+        let my_node_id = Metadata::with_current(|m| m.my_node_id());
         let bifrost_envelope_source = Source::Processor {
             partition_id,
             partition_key: None,
             leader_epoch,
-            node_id: node_id.as_plain(),
-            generational_node_id: Some(node_id),
+            node_id: my_node_id.as_plain(),
+            generational_node_id: Some(my_node_id),
         };
 
         let mut interval = tokio::time::interval(cleanup_interval);
@@ -172,7 +168,7 @@ mod tests {
 
     use futures::{stream, Stream};
     use googletest::prelude::*;
-    use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, TestCoreEnvBuilder};
+    use restate_core::{Metadata, TaskCenter, TaskKind, TestCoreEnvBuilder2};
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
     };
@@ -215,97 +211,92 @@ mod tests {
     }
 
     // Start paused makes sure the timer is immediately fired
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     pub async fn cleanup_works() {
-        let env = TestCoreEnvBuilder::with_incoming_only_connector()
+        let _env = TestCoreEnvBuilder2::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
             ))
             .build()
             .await;
-        async {
-            let bifrost = Bifrost::init_in_memory().await;
+        let bifrost = Bifrost::init_in_memory().await;
 
-            let expired_invocation =
-                InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
-            let not_expired_invocation_1 =
-                InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
-            let not_expired_invocation_2 =
-                InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
-            let not_completed_invocation =
-                InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
+        let expired_invocation =
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
+        let not_expired_invocation_1 =
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
+        let not_expired_invocation_2 =
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
+        let not_completed_invocation =
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
 
-            let mock_storage = MockInvocationStatusReader(vec![
-                (
-                    expired_invocation,
-                    InvocationStatus::Completed(CompletedInvocation {
-                        completion_retention_duration: Duration::ZERO,
-                        ..CompletedInvocation::mock_neo()
-                    }),
-                ),
-                (
-                    not_expired_invocation_1,
-                    InvocationStatus::Completed(CompletedInvocation {
-                        completion_retention_duration: Duration::MAX,
-                        ..CompletedInvocation::mock_neo()
-                    }),
-                ),
-                (
-                    not_expired_invocation_2,
-                    // Old status invocations are still processed with the cleanup timer in the PP
-                    InvocationStatus::Completed(CompletedInvocation::mock_old()),
-                ),
-                (
-                    not_completed_invocation,
-                    InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
-                ),
-            ]);
+        let mock_storage = MockInvocationStatusReader(vec![
+            (
+                expired_invocation,
+                InvocationStatus::Completed(CompletedInvocation {
+                    completion_retention_duration: Duration::ZERO,
+                    ..CompletedInvocation::mock_neo()
+                }),
+            ),
+            (
+                not_expired_invocation_1,
+                InvocationStatus::Completed(CompletedInvocation {
+                    completion_retention_duration: Duration::MAX,
+                    ..CompletedInvocation::mock_neo()
+                }),
+            ),
+            (
+                not_expired_invocation_2,
+                // Old status invocations are still processed with the cleanup timer in the PP
+                InvocationStatus::Completed(CompletedInvocation::mock_old()),
+            ),
+            (
+                not_completed_invocation,
+                InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+            ),
+        ]);
 
-            TaskCenter::current()
-                .spawn(
-                    TaskKind::Cleaner,
-                    "cleaner",
-                    Some(PartitionId::MIN),
-                    Cleaner::new(
-                        PartitionId::MIN,
-                        LeaderEpoch::INITIAL,
-                        GenerationalNodeId::new(1, 1),
-                        mock_storage,
-                        bifrost.clone(),
-                        RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
-                        Duration::from_secs(1),
-                    )
-                    .run(),
+        TaskCenter::current()
+            .spawn(
+                TaskKind::Cleaner,
+                "cleaner",
+                Some(PartitionId::MIN),
+                Cleaner::new(
+                    PartitionId::MIN,
+                    LeaderEpoch::INITIAL,
+                    mock_storage,
+                    bifrost.clone(),
+                    RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
+                    Duration::from_secs(1),
                 )
-                .unwrap();
+                .run(),
+            )
+            .unwrap();
 
-            // By yielding once we let the cleaner task run, and perform the cleanup
-            tokio::task::yield_now().await;
+        // By yielding once we let the cleaner task run, and perform the cleanup
+        tokio::task::yield_now().await;
 
-            // All the invocation ids were created with same partition keys, hence same partition id.
-            let partition_id = env
-                .metadata
-                .partition_table_snapshot()
+        // All the invocation ids were created with same partition keys, hence same partition id.
+        let partition_id = Metadata::with_current(|m| {
+            m.partition_table_snapshot()
                 .find_partition_id(expired_invocation.partition_key())
-                .unwrap();
+        })
+        .unwrap();
 
-            let mut log_entries = bifrost.read_all(partition_id.into()).await.unwrap();
-            let bifrost_message = log_entries
-                .remove(0)
-                .try_decode::<Envelope>()
-                .unwrap()
-                .unwrap();
+        let mut log_entries = bifrost.read_all(partition_id.into()).await.unwrap();
+        let bifrost_message = log_entries
+            .remove(0)
+            .try_decode::<Envelope>()
+            .unwrap()
+            .unwrap();
 
-            assert_that!(
-                bifrost_message.command,
-                pat!(Command::PurgeInvocation(pat!(PurgeInvocationRequest {
-                    invocation_id: eq(expired_invocation)
-                })))
-            );
-            assert_that!(log_entries, empty());
-        }
-        .in_tc(&env.tc)
-        .await;
+        assert_that!(
+            bifrost_message.command,
+            pat!(Command::PurgeInvocation(pat!(PurgeInvocationRequest {
+                invocation_id: eq(expired_invocation)
+            })))
+        );
+        assert_that!(log_entries, empty());
     }
 }

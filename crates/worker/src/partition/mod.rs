@@ -44,6 +44,7 @@ use restate_types::config::WorkerOptions;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
+use restate_types::invocation;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
     ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, SubmitNotificationSink,
@@ -58,7 +59,6 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{invocation, GenerationalNodeId};
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
@@ -85,7 +85,6 @@ pub enum PartitionProcessorControlCommand {
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
-    node_id: GenerationalNodeId,
     pub partition_id: PartitionId,
     pub partition_key_range: RangeInclusive<PartitionKey>,
 
@@ -109,7 +108,6 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
-        node_id: GenerationalNodeId,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
         status: PartitionProcessorStatus,
@@ -120,7 +118,6 @@ where
         invoker_tx: InvokerInputSender,
     ) -> Self {
         Self {
-            node_id,
             partition_id,
             partition_key_range,
             status,
@@ -138,7 +135,6 @@ where
 
     pub async fn build<Codec: RawEntryCodec + Default + Debug>(
         self,
-        task_center: TaskCenter,
         bifrost: Bifrost,
         mut partition_store: PartitionStore,
     ) -> Result<PartitionProcessor<Codec, InvokerInputSender>, StorageError> {
@@ -177,12 +173,7 @@ where
             });
 
         let leadership_state = LeadershipState::new(
-            task_center.clone(),
-            PartitionProcessorMetadata::new(
-                self.node_id,
-                partition_id,
-                partition_key_range.clone(),
-            ),
+            PartitionProcessorMetadata::new(partition_id, partition_key_range.clone()),
             num_timers_in_memory_limit,
             cleanup_interval,
             channel_size,
@@ -192,7 +183,6 @@ where
         );
 
         Ok(PartitionProcessor {
-            task_center,
             partition_id,
             partition_key_range,
             leadership_state,
@@ -241,7 +231,6 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
     rpc_rx: mpsc::Receiver<Incoming<PartitionProcessorRpcRequest>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     status: PartitionProcessorStatus,
-    task_center: TaskCenter,
 
     max_command_batch_size: usize,
     partition_store: PartitionStore,
@@ -280,12 +269,9 @@ where
         // Drain rpc_rx
         self.rpc_rx.close();
         while let Some(msg) = self.rpc_rx.recv().await {
-            respond_to_rpc(
-                &self.task_center,
-                msg.into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
-                    self.partition_id,
-                ))),
-            );
+            respond_to_rpc(msg.into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
+                self.partition_id,
+            ))));
         }
 
         res
@@ -587,7 +573,7 @@ where
                     )
                     .await
                 {
-                    respond_to_rpc(&self.task_center, response_tx.prepare(Ok(ready_result)));
+                    respond_to_rpc(response_tx.prepare(Ok(ready_result)));
                     return;
                 }
 
@@ -609,7 +595,6 @@ where
                 GetInvocationOutputResponseMode::ReplyIfNotReady,
             ) => {
                 respond_to_rpc(
-                    &self.task_center,
                     response_tx.prepare(
                         self.handle_rpc_get_invocation_output(
                             request_id,
@@ -845,21 +830,19 @@ where
 }
 
 fn respond_to_rpc(
-    task_center: &TaskCenter,
     outgoing: Outgoing<
         Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
         HasConnection,
     >,
 ) {
     // ignore shutdown errors
-    let _ = task_center.spawn(
+    let _ = TaskCenter::spawn_child(
         // Use RpcResponse kind to make sure that the response is sent on the default runtime and
         // not the partition processor runtime which might be dropped. Otherwise, we risk that the
         // response is never sent even though the connection is still open. If the default runtime is
         // dropped, then the process is shutting down which would also close all open connections.
         TaskKind::RpcResponse,
         "partition-processor-rpc-response",
-        None,
-        async move { outgoing.send().await.map_err(Into::into) },
+        async { outgoing.send().await.map_err(Into::into) },
     );
 }

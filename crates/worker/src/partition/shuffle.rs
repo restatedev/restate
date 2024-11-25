@@ -15,12 +15,11 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use restate_bifrost::Bifrost;
-use restate_core::cancellation_watcher;
+use restate_core::{cancellation_watcher, Metadata};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::message::MessageIndex;
-use restate_types::GenerationalNodeId;
 use restate_wal_protocol::{append_envelope_to_bifrost, Destination, Envelope, Header, Source};
 
 use crate::partition::shuffle::state_machine::StateMachine;
@@ -70,13 +69,14 @@ fn create_header(
     seq_number: MessageIndex,
     shuffle_metadata: &ShuffleMetadata,
 ) -> Header {
+    let my_node_id = Metadata::with_current(|m| m.my_node_id());
     Header {
         source: Source::Processor {
             partition_id: shuffle_metadata.partition_id,
             partition_key: None,
             leader_epoch: shuffle_metadata.leader_epoch,
-            node_id: shuffle_metadata.node_id.as_plain(),
-            generational_node_id: Some(shuffle_metadata.node_id),
+            node_id: my_node_id.as_plain(),
+            generational_node_id: Some(my_node_id),
         },
         dest: Destination::Processor {
             partition_key: dest_partition_key,
@@ -152,19 +152,13 @@ impl HintSender {
 pub(crate) struct ShuffleMetadata {
     partition_id: PartitionId,
     leader_epoch: LeaderEpoch,
-    node_id: GenerationalNodeId,
 }
 
 impl ShuffleMetadata {
-    pub(crate) fn new(
-        partition_id: PartitionId,
-        leader_epoch: LeaderEpoch,
-        node_id: GenerationalNodeId,
-    ) -> Self {
+    pub(crate) fn new(partition_id: PartitionId, leader_epoch: LeaderEpoch) -> Self {
         ShuffleMetadata {
             partition_id,
             leader_epoch,
-            node_id,
         }
     }
 }
@@ -222,9 +216,9 @@ where
             ..
         } = self;
 
-        debug!(restate.node = %metadata.node_id, restate.partition.id = %metadata.partition_id, "Running shuffle");
+        let node_id = Metadata::with_current(|m| m.my_node_id());
+        debug!(restate.node = %node_id, restate.partition.id = %metadata.partition_id, "Running shuffle");
 
-        let node_id = metadata.node_id;
         let state_machine = StateMachine::new(
             metadata,
             outbox_reader,
@@ -460,9 +454,7 @@ mod tests {
 
     use restate_bifrost::{Bifrost, LogEntry};
     use restate_core::network::FailingConnector;
-    use restate_core::{
-        TaskCenter, TaskCenterFutureExt, TaskKind, TestCoreEnv, TestCoreEnvBuilder,
-    };
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnv2, TestCoreEnvBuilder2};
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_storage_api::StorageError;
     use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
@@ -470,7 +462,7 @@ mod tests {
     use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
     use restate_types::message::MessageIndex;
     use restate_types::partition_table::PartitionTable;
-    use restate_types::{GenerationalNodeId, Version};
+    use restate_types::Version;
     use restate_wal_protocol::{Command, Envelope};
 
     use crate::partition::shuffle::{OutboxReader, OutboxReaderError, Shuffle, ShuffleMetadata};
@@ -629,7 +621,8 @@ mod tests {
     }
 
     struct ShuffleEnv<OR> {
-        env: TestCoreEnv<FailingConnector>,
+        #[allow(dead_code)]
+        env: TestCoreEnv2<FailingConnector>,
         bifrost: Bifrost,
         shuffle: Shuffle<OR>,
     }
@@ -638,22 +631,18 @@ mod tests {
         outbox_reader: OR,
     ) -> ShuffleEnv<OR> {
         // set numbers of partitions to 1 to easily find all sent messages by the shuffle
-        let env = TestCoreEnvBuilder::with_incoming_only_connector()
+        let env = TestCoreEnvBuilder2::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
             ))
             .build()
             .await;
-        let metadata = ShuffleMetadata::new(
-            PartitionId::from(0),
-            LeaderEpoch::from(0),
-            GenerationalNodeId::new(0, 0),
-        );
+        let metadata = ShuffleMetadata::new(PartitionId::from(0), LeaderEpoch::from(0));
 
         let (truncation_tx, _truncation_rx) = mpsc::channel(1);
 
-        let bifrost = Bifrost::init_in_memory().in_tc(&env.tc).await;
+        let bifrost = Bifrost::init_in_memory().await;
         let shuffle = Shuffle::new(metadata, outbox_reader, truncation_tx, 1, bifrost.clone());
 
         ShuffleEnv {
@@ -663,7 +652,7 @@ mod tests {
         }
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn shuffle_consecutive_outbox() -> anyhow::Result<()> {
         let expected_messages = iter::repeat_with(|| Some(ServiceInvocation::mock()))
             .take(10)
@@ -679,29 +668,24 @@ mod tests {
 
         let outbox_reader = MockOutboxReader::new(42, expected_messages.clone());
         let shuffle_env = create_shuffle_env(outbox_reader).await;
-        let tc = shuffle_env.env.tc.clone();
 
-        async {
-            let partition_id = shuffle_env.shuffle.metadata.partition_id;
-            TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
-            let reader = shuffle_env.bifrost.create_reader(
-                LogId::from(partition_id),
-                KeyFilter::Any,
-                Lsn::OLDEST,
-                Lsn::MAX,
-            )?;
+        let partition_id = shuffle_env.shuffle.metadata.partition_id;
+        TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
+        let reader = shuffle_env.bifrost.create_reader(
+            LogId::from(partition_id),
+            KeyFilter::Any,
+            Lsn::OLDEST,
+            Lsn::MAX,
+        )?;
 
-            let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+        let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
 
-            assert_received_invoke_commands(messages, expected_messages);
+        assert_received_invoke_commands(messages, expected_messages);
 
-            Ok::<(), anyhow::Error>(())
-        }
-        .in_tc(&tc)
-        .await
+        Ok(())
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn shuffle_holey_outbox() -> anyhow::Result<()> {
         let expected_messages = vec![
             Some(ServiceInvocation::mock()),
@@ -721,29 +705,24 @@ mod tests {
 
         let outbox_reader = MockOutboxReader::new(42, expected_messages.clone());
         let shuffle_env = create_shuffle_env(outbox_reader).await;
-        let tc = shuffle_env.env.tc.clone();
 
-        async {
-            let partition_id = shuffle_env.shuffle.metadata.partition_id;
-            TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
-            let reader = shuffle_env.bifrost.create_reader(
-                LogId::from(partition_id),
-                KeyFilter::Any,
-                Lsn::OLDEST,
-                Lsn::MAX,
-            )?;
+        let partition_id = shuffle_env.shuffle.metadata.partition_id;
+        TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
+        let reader = shuffle_env.bifrost.create_reader(
+            LogId::from(partition_id),
+            KeyFilter::Any,
+            Lsn::OLDEST,
+            Lsn::MAX,
+        )?;
 
-            let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+        let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
 
-            assert_received_invoke_commands(messages, expected_messages);
+        assert_received_invoke_commands(messages, expected_messages);
 
-            Ok::<(), anyhow::Error>(())
-        }
-        .in_tc(&tc)
-        .await
+        Ok(())
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn shuffle_with_restarts() -> anyhow::Result<()> {
         let expected_messages: Vec<_> = iter::repeat_with(|| Some(ServiceInvocation::mock()))
             .take(100)
@@ -759,20 +738,19 @@ mod tests {
 
         let mut outbox_reader = Arc::new(FailingOutboxReader::new(expected_messages.clone(), 10));
         let shuffle_env = create_shuffle_env(Arc::clone(&outbox_reader)).await;
-        let tc = shuffle_env.env.tc.clone();
         let total_restarts = Arc::new(AtomicUsize::new(0));
 
-        let shuffle_task_id = async {
-            let partition_id = shuffle_env.shuffle.metadata.partition_id;
-            let reader = shuffle_env.bifrost.create_reader(
-                LogId::from(partition_id),
-                KeyFilter::Any,
-                Lsn::INVALID,
-                Lsn::MAX,
-            )?;
-            let total_restarts = Arc::clone(&total_restarts);
+        let partition_id = shuffle_env.shuffle.metadata.partition_id;
+        let reader = shuffle_env.bifrost.create_reader(
+            LogId::from(partition_id),
+            KeyFilter::Any,
+            Lsn::INVALID,
+            Lsn::MAX,
+        )?;
 
-            let shuffle_task = TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", async move {
+        let shuffle_task = TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", {
+            let total_restarts = Arc::clone(&total_restarts);
+            async move {
                 let mut shuffle = shuffle_env.shuffle;
                 let metadata = shuffle.metadata;
                 let truncation_tx = shuffle.truncation_tx.clone();
@@ -809,18 +787,16 @@ mod tests {
                 total_restarts.store(num_restarts, Ordering::Relaxed);
 
                 Ok(())
-            })?;
+            }
+        })?;
 
-            let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+        let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
 
-            assert_received_invoke_commands(messages, expected_messages);
+        assert_received_invoke_commands(messages, expected_messages);
 
-            Ok::<_, anyhow::Error>(shuffle_task)
-        }
-        .in_tc(&tc)
-        .await?;
-
-        let shuffle_task = tc.cancel_task(shuffle_task_id).expect("should exist");
+        let shuffle_task = TaskCenter::current()
+            .cancel_task(shuffle_task)
+            .expect("should exist");
         shuffle_task.await?;
 
         // make sure that we have restarted the shuffle

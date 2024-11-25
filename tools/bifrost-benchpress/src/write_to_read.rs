@@ -94,7 +94,6 @@ pub async fn run(
         tc.spawn_unmanaged(TaskKind::PartitionProcessor, "test-log-appender", None, {
             let clock = clock.clone();
             let bifrost = bifrost.clone();
-            let tc = tc.clone();
             let args = args.clone();
             let blob = BytesMut::zeroed(args.payload_size).freeze();
             async move {
@@ -105,7 +104,7 @@ pub async fn run(
                         args.write_buffer_size,
                         args.max_batch_size,
                     )?
-                    .start(tc, "writer", None)?;
+                    .start("writer", None)?;
                 let sender = appender_handle.sender();
                 let start = Instant::now();
                 for counter in 1..=args.num_records {
