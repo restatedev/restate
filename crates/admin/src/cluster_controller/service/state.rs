@@ -162,7 +162,6 @@ where
 
         let scheduler = Scheduler::init(
             &configuration,
-            service.task_center.clone(),
             service.metadata_store_client.clone(),
             service.networking.clone(),
         )

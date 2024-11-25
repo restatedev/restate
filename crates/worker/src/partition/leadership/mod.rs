@@ -23,7 +23,7 @@ use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::Reciprocal;
-use restate_core::{metadata, task_center, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{metadata, ShutdownError, TaskCenter, TaskKind};
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
@@ -352,12 +352,8 @@ where
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
 
-            let shuffle_task_id = task_center().spawn_child(
-                TaskKind::Shuffle,
-                "shuffle",
-                Some(self.partition_processor_metadata.partition_id),
-                shuffle.run(),
-            )?;
+            let shuffle_task_id =
+                TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle.run())?;
 
             let cleaner = Cleaner::new(
                 self.partition_processor_metadata.partition_id,
@@ -371,12 +367,8 @@ where
                 self.cleanup_interval,
             );
 
-            let cleaner_task_id = task_center().spawn_child(
-                TaskKind::Cleaner,
-                "cleaner",
-                Some(self.partition_processor_metadata.partition_id),
-                cleaner.run(),
-            )?;
+            let cleaner_task_id =
+                TaskCenter::spawn_child(TaskKind::Cleaner, "cleaner", cleaner.run())?;
 
             self.state = State::Leader(LeaderState::new(
                 self.task_center.clone(),
