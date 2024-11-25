@@ -14,7 +14,7 @@ use tracing::error;
 
 use restate_types::config::CommonOptions;
 
-use super::TaskCenter;
+use super::{OwnedHandle, TaskCenterInner};
 
 static WORKER_ID: AtomicUsize = const { AtomicUsize::new(0) };
 
@@ -78,7 +78,7 @@ impl TaskCenterBuilder {
             .pause_time(true)
     }
 
-    pub fn build(mut self) -> Result<TaskCenter, TaskCenterBuildError> {
+    pub fn build(mut self) -> Result<OwnedHandle, TaskCenterBuildError> {
         let options = self.options.unwrap_or_default();
         if self.default_runtime_handle.is_none() {
             let mut default_runtime_builder = tokio_builder("worker", &options);
@@ -97,13 +97,13 @@ impl TaskCenterBuilder {
         if cfg!(any(test, feature = "test-util")) {
             eprintln!("!!!! Runnning with test-util enabled !!!!");
         }
-        Ok(TaskCenter::new(
+        Ok(OwnedHandle::new(TaskCenterInner::new(
             self.default_runtime_handle.unwrap(),
             self.ingress_runtime_handle.unwrap(),
             self.default_runtime,
             self.ingress_runtime,
             self.pause_time,
-        ))
+        )))
     }
 }
 

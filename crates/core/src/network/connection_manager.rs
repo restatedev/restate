@@ -41,8 +41,7 @@ use super::{Handler, MessageRouter};
 use crate::metadata::Urgency;
 use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
 use crate::network::{Incoming, PeerMetadataVersion};
-use crate::{cancellation_watcher, current_task_id, TaskId, TaskKind};
-use crate::{Metadata, TaskCenter};
+use crate::{Metadata, TaskCenter, TaskContext, TaskId, TaskKind};
 
 struct ConnectionManagerInner {
     router: MessageRouter,
@@ -495,11 +494,9 @@ async fn run_reactor<S>(
 where
     S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send,
 {
-    Span::current().record(
-        "task_id",
-        tracing::field::display(current_task_id().unwrap()),
-    );
-    let mut cancellation = std::pin::pin!(cancellation_watcher());
+    let current_task = TaskContext::current();
+    Span::current().record("task_id", tracing::field::display(current_task.id()));
+    let mut cancellation = std::pin::pin!(current_task.cancellation_token().cancelled());
     let mut seen_versions = MetadataVersions::default();
 
     // Receive loop
@@ -705,9 +702,8 @@ fn on_connection_draining(
 }
 
 fn on_connection_terminated(inner_manager: &Mutex<ConnectionManagerInner>) {
-    let task_id = current_task_id().expect("TaskId is set");
     let mut guard = inner_manager.lock();
-    guard.drop_connection(task_id);
+    guard.drop_connection(TaskContext::with_current(|ctx| ctx.id()));
 }
 
 #[derive(Debug, Clone, PartialEq, derive_more::Index, derive_more::IndexMut)]
@@ -782,232 +778,210 @@ mod tests {
     use restate_types::Version;
 
     use crate::network::MockPeerConnection;
-    use crate::{TestCoreEnv, TestCoreEnvBuilder};
+    use crate::{self as restate_core, TestCoreEnv2, TestCoreEnvBuilder2};
 
     // Test handshake with a client
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_hello_welcome_handshake() -> Result<()> {
-        let test_setup = TestCoreEnv::create_with_single_node(1, 1).await;
-        test_setup
-            .tc
-            .run_in_scope("test", None, async {
-                let metadata = crate::metadata();
-                let connections = ConnectionManager::new_incoming_only(metadata.clone());
+        let _env = TestCoreEnv2::create_with_single_node(1, 1).await;
+        let metadata = Metadata::current();
+        let connections = ConnectionManager::new_incoming_only(metadata.clone());
 
-                let _mock_connection = MockPeerConnection::connect(
-                    GenerationalNodeId::new(1, 1),
-                    metadata.nodes_config_version(),
-                    metadata.nodes_config_ref().cluster_name().to_owned(),
-                    &connections,
-                    10,
-                )
-                .await
-                .unwrap();
+        let _mock_connection = MockPeerConnection::connect(
+            GenerationalNodeId::new(1, 1),
+            metadata.nodes_config_version(),
+            metadata.nodes_config_ref().cluster_name().to_owned(),
+            &connections,
+            10,
+        )
+        .await
+        .unwrap();
 
-                Ok(())
-            })
-            .await
+        Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
+    #[restate_core::test(start_paused = true)]
     async fn test_hello_welcome_timeout() -> Result<()> {
-        let test_setup = TestCoreEnv::create_with_single_node(1, 1).await;
-        let metadata = test_setup.metadata;
+        let _env = TestCoreEnv2::create_with_single_node(1, 1).await;
+        let metadata = Metadata::current();
         let net_opts = NetworkingOptions::default();
-        test_setup
-            .tc
-            .run_in_scope("test", None, async {
-                let (_tx, rx) = mpsc::channel(1);
-                let connections = ConnectionManager::new_incoming_only(metadata);
+        let (_tx, rx) = mpsc::channel(1);
+        let connections = ConnectionManager::new_incoming_only(metadata);
 
-                let start = tokio::time::Instant::now();
-                let incoming = ReceiverStream::new(rx);
-                let resp = connections.accept_incoming_connection(incoming).await;
-                assert!(resp.is_err());
-                assert!(matches!(
-                    resp,
-                    Err(NetworkError::ProtocolError(
-                        ProtocolError::HandshakeTimeout(_)
-                    ))
-                ));
-                assert!(start.elapsed() >= net_opts.handshake_timeout.into());
-                Ok(())
-            })
-            .await
+        let start = tokio::time::Instant::now();
+        let incoming = ReceiverStream::new(rx);
+        let resp = connections.accept_incoming_connection(incoming).await;
+        assert!(resp.is_err());
+        assert!(matches!(
+            resp,
+            Err(NetworkError::ProtocolError(
+                ProtocolError::HandshakeTimeout(_)
+            ))
+        ));
+        assert!(start.elapsed() >= net_opts.handshake_timeout.into());
+        Ok(())
     }
 
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_bad_handshake() -> Result<()> {
-        let test_setup = TestCoreEnv::create_with_single_node(1, 1).await;
+        let test_setup = TestCoreEnv2::create_with_single_node(1, 1).await;
         let metadata = test_setup.metadata;
-        test_setup
-            .tc
-            .run_in_scope("test", None, async {
-                let (tx, rx) = mpsc::channel(1);
-                let my_node_id = metadata.my_node_id();
+        let (tx, rx) = mpsc::channel(1);
+        let my_node_id = metadata.my_node_id();
 
-                // unsupported protocol version
-                let hello = Hello {
-                    min_protocol_version: ProtocolVersion::Unknown.into(),
-                    max_protocol_version: ProtocolVersion::Unknown.into(),
-                    my_node_id: Some(my_node_id.into()),
-                    cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
-                };
-                let hello = Message::new(
-                    Header::new(
-                        metadata.nodes_config_version(),
-                        None,
-                        None,
-                        None,
-                        crate::network::generate_msg_id(),
-                        None,
-                    ),
-                    hello,
-                );
-                tx.send(Ok(hello))
-                    .await
-                    .expect("Channel accept hello message");
-
-                let connections = ConnectionManager::new_incoming_only(metadata.clone());
-                let incoming = ReceiverStream::new(rx);
-                let resp = connections.accept_incoming_connection(incoming).await;
-                assert!(resp.is_err());
-                assert!(matches!(
-                    resp,
-                    Err(NetworkError::ProtocolError(
-                        ProtocolError::UnsupportedVersion(proto_version)
-                    )) if proto_version == ProtocolVersion::Unknown as i32
-                ));
-
-                // cluster name mismatch
-                let (tx, rx) = mpsc::channel(1);
-                let my_node_id = metadata.my_node_id();
-                let hello = Hello {
-                    min_protocol_version: MIN_SUPPORTED_PROTOCOL_VERSION.into(),
-                    max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
-                    my_node_id: Some(my_node_id.into()),
-                    cluster_name: "Random-cluster".to_owned(),
-                };
-                let hello = Message::new(
-                    Header::new(
-                        metadata.nodes_config_version(),
-                        None,
-                        None,
-                        None,
-                        crate::network::generate_msg_id(),
-                        None,
-                    ),
-                    hello,
-                );
-                tx.send(Ok(hello)).await?;
-
-                let connections = ConnectionManager::new_incoming_only(metadata.clone());
-                let incoming = ReceiverStream::new(rx);
-                let err = connections
-                    .accept_incoming_connection(incoming)
-                    .await
-                    .err()
-                    .unwrap();
-                assert!(matches!(
-                    err,
-                    NetworkError::ProtocolError(ProtocolError::HandshakeFailed(
-                        "cluster name mismatch"
-                    ))
-                ));
-                Ok(())
-            })
+        // unsupported protocol version
+        let hello = Hello {
+            min_protocol_version: ProtocolVersion::Unknown.into(),
+            max_protocol_version: ProtocolVersion::Unknown.into(),
+            my_node_id: Some(my_node_id.into()),
+            cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
+        };
+        let hello = Message::new(
+            Header::new(
+                metadata.nodes_config_version(),
+                None,
+                None,
+                None,
+                crate::network::generate_msg_id(),
+                None,
+            ),
+            hello,
+        );
+        tx.send(Ok(hello))
             .await
+            .expect("Channel accept hello message");
+
+        let connections = ConnectionManager::new_incoming_only(metadata.clone());
+        let incoming = ReceiverStream::new(rx);
+        let resp = connections.accept_incoming_connection(incoming).await;
+        assert!(resp.is_err());
+        assert!(matches!(
+            resp,
+            Err(NetworkError::ProtocolError(
+                ProtocolError::UnsupportedVersion(proto_version)
+            )) if proto_version == ProtocolVersion::Unknown as i32
+        ));
+
+        // cluster name mismatch
+        let (tx, rx) = mpsc::channel(1);
+        let my_node_id = metadata.my_node_id();
+        let hello = Hello {
+            min_protocol_version: MIN_SUPPORTED_PROTOCOL_VERSION.into(),
+            max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
+            my_node_id: Some(my_node_id.into()),
+            cluster_name: "Random-cluster".to_owned(),
+        };
+        let hello = Message::new(
+            Header::new(
+                metadata.nodes_config_version(),
+                None,
+                None,
+                None,
+                crate::network::generate_msg_id(),
+                None,
+            ),
+            hello,
+        );
+        tx.send(Ok(hello)).await?;
+
+        let connections = ConnectionManager::new_incoming_only(metadata.clone());
+        let incoming = ReceiverStream::new(rx);
+        let err = connections
+            .accept_incoming_connection(incoming)
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(
+            err,
+            NetworkError::ProtocolError(ProtocolError::HandshakeFailed("cluster name mismatch"))
+        ));
+        Ok(())
     }
 
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_node_generation() -> Result<()> {
-        let test_setup = TestCoreEnv::create_with_single_node(1, 2).await;
-        let metadata = test_setup.metadata;
-        test_setup
-            .tc
-            .run_in_scope("test", None, async {
-                let (tx, rx) = mpsc::channel(1);
-                let mut my_node_id = metadata.my_node_id();
-                assert_eq!(2, my_node_id.generation());
-                my_node_id.bump_generation();
+        let _env = TestCoreEnv2::create_with_single_node(1, 2).await;
+        let metadata = Metadata::current();
+        let (tx, rx) = mpsc::channel(1);
+        let mut my_node_id = metadata.my_node_id();
+        assert_eq!(2, my_node_id.generation());
+        my_node_id.bump_generation();
 
-                // newer generation
-                let hello = Hello::new(
-                    my_node_id,
-                    metadata.nodes_config_ref().cluster_name().to_owned(),
-                );
-                let hello = Message::new(
-                    Header::new(
-                        metadata.nodes_config_version(),
-                        None,
-                        None,
-                        None,
-                        crate::network::generate_msg_id(),
-                        None,
-                    ),
-                    hello,
-                );
-                tx.send(Ok(hello))
-                    .await
-                    .expect("Channel accept hello message");
-
-                let connections = ConnectionManager::new_incoming_only(metadata.clone());
-
-                let incoming = ReceiverStream::new(rx);
-                let err = connections
-                    .accept_incoming_connection(incoming)
-                    .await
-                    .err()
-                    .unwrap();
-
-                assert!(matches!(
-                    err,
-                    NetworkError::ProtocolError(ProtocolError::HandshakeFailed(
-                        "cannot accept a connection to the same NodeID from a different generation",
-                    ))
-                ));
-
-                // Unrecognized node Id
-                let (tx, rx) = mpsc::channel(1);
-                let my_node_id = GenerationalNodeId::new(55, 2);
-
-                let hello = Hello::new(
-                    my_node_id,
-                    metadata.nodes_config_ref().cluster_name().to_owned(),
-                );
-                let hello = Message::new(
-                    Header::new(
-                        metadata.nodes_config_version(),
-                        None,
-                        None,
-                        None,
-                        crate::network::generate_msg_id(),
-                        None,
-                    ),
-                    hello,
-                );
-                tx.send(Ok(hello))
-                    .await
-                    .expect("Channel accept hello message");
-
-                let connections = ConnectionManager::new_incoming_only(metadata);
-
-                let incoming = ReceiverStream::new(rx);
-                let err = connections
-                    .accept_incoming_connection(incoming)
-                    .await
-                    .err()
-                    .unwrap();
-                assert!(matches!(
-                    err,
-                    NetworkError::UnknownNode(NodesConfigError::UnknownNodeId(_))
-                ));
-                Ok(())
-            })
+        // newer generation
+        let hello = Hello::new(
+            my_node_id,
+            metadata.nodes_config_ref().cluster_name().to_owned(),
+        );
+        let hello = Message::new(
+            Header::new(
+                metadata.nodes_config_version(),
+                None,
+                None,
+                None,
+                crate::network::generate_msg_id(),
+                None,
+            ),
+            hello,
+        );
+        tx.send(Ok(hello))
             .await
+            .expect("Channel accept hello message");
+
+        let connections = ConnectionManager::new_incoming_only(metadata.clone());
+
+        let incoming = ReceiverStream::new(rx);
+        let err = connections
+            .accept_incoming_connection(incoming)
+            .await
+            .err()
+            .unwrap();
+
+        assert!(matches!(
+            err,
+            NetworkError::ProtocolError(ProtocolError::HandshakeFailed(
+                "cannot accept a connection to the same NodeID from a different generation",
+            ))
+        ));
+
+        // Unrecognized node Id
+        let (tx, rx) = mpsc::channel(1);
+        let my_node_id = GenerationalNodeId::new(55, 2);
+
+        let hello = Hello::new(
+            my_node_id,
+            metadata.nodes_config_ref().cluster_name().to_owned(),
+        );
+        let hello = Message::new(
+            Header::new(
+                metadata.nodes_config_version(),
+                None,
+                None,
+                None,
+                crate::network::generate_msg_id(),
+                None,
+            ),
+            hello,
+        );
+        tx.send(Ok(hello))
+            .await
+            .expect("Channel accept hello message");
+
+        let connections = ConnectionManager::new_incoming_only(metadata);
+
+        let incoming = ReceiverStream::new(rx);
+        let err = connections
+            .accept_incoming_connection(incoming)
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(
+            err,
+            NetworkError::UnknownNode(NodesConfigError::UnknownNodeId(_))
+        ));
+        Ok(())
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn fetching_metadata_updates_through_message_headers() -> Result<()> {
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
 
@@ -1021,54 +995,49 @@ mod tests {
         );
         nodes_config.upsert_node(node_config);
 
-        let test_env = TestCoreEnvBuilder::with_incoming_only_connector()
+        let test_env = TestCoreEnvBuilder2::with_incoming_only_connector()
             .set_nodes_config(nodes_config)
             .build()
             .await;
 
-        test_env
-            .tc
-            .run_in_scope("test", None, async {
-                let metadata = crate::metadata();
+        let metadata = Metadata::current();
 
-                let mut connection = MockPeerConnection::connect(
-                    node_id,
-                    metadata.nodes_config_version(),
-                    metadata.nodes_config_ref().cluster_name().to_string(),
-                    test_env.networking.connection_manager(),
-                    10,
-                )
-                .await
-                .into_test_result()?;
+        let mut connection = MockPeerConnection::connect(
+            node_id,
+            metadata.nodes_config_version(),
+            metadata.nodes_config_ref().cluster_name().to_string(),
+            test_env.networking.connection_manager(),
+            10,
+        )
+        .await
+        .into_test_result()?;
 
-                let request = GetNodeState {};
-                let partition_table_version = metadata.partition_table_version().next();
-                let header = Header::new(
-                    metadata.nodes_config_version(),
-                    None,
-                    None,
-                    Some(partition_table_version),
-                    crate::network::generate_msg_id(),
-                    None,
-                );
+        let request = GetNodeState {};
+        let partition_table_version = metadata.partition_table_version().next();
+        let header = Header::new(
+            metadata.nodes_config_version(),
+            None,
+            None,
+            Some(partition_table_version),
+            crate::network::generate_msg_id(),
+            None,
+        );
 
-                connection
-                    .send_raw(request, header)
-                    .await
-                    .into_test_result()?;
-
-                // we expect the request to go throught he existing open connection to my node
-                let message = connection.recv_stream.next().await.expect("some message");
-                assert_get_metadata_request(
-                    message,
-                    connection.protocol_version,
-                    MetadataKind::PartitionTable,
-                    partition_table_version,
-                );
-
-                Ok(())
-            })
+        connection
+            .send_raw(request, header)
             .await
+            .into_test_result()?;
+
+        // we expect the request to go throught he existing open connection to my node
+        let message = connection.recv_stream.next().await.expect("some message");
+        assert_get_metadata_request(
+            message,
+            connection.protocol_version,
+            MetadataKind::PartitionTable,
+            partition_table_version,
+        );
+
+        Ok(())
     }
 
     fn assert_get_metadata_request(

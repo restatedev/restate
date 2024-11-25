@@ -180,7 +180,7 @@ mod tests {
 
         node_env
             .tc
-            .run_in_scope_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
+            .run_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
 
         let all_partition_keys = RangeInclusive::new(0, PartitionKey::MAX);
         let partition_store_manager = PartitionStoreManager::create(

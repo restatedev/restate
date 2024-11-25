@@ -335,7 +335,7 @@ impl Node {
         spawn_metadata_manager(self.metadata_manager)?;
 
         // Start partition routing information refresher
-        spawn_partition_routing_refresher(&tc, self.partition_routing_refresher)?;
+        spawn_partition_routing_refresher(self.partition_routing_refresher)?;
 
         let nodes_config =
             Self::upsert_node_config(&self.metadata_store_client, &config.common).await?;

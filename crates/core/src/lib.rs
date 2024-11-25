@@ -14,7 +14,7 @@ pub mod metadata_store;
 mod metric_definitions;
 pub mod network;
 pub mod partitions;
-mod task_center;
+pub mod task_center;
 pub mod worker_api;
 pub use error::*;
 
@@ -44,7 +44,11 @@ pub use metadata::{
     spawn_metadata_manager, Metadata, MetadataBuilder, MetadataKind, MetadataManager,
     MetadataWriter, SyncError, TargetVersion,
 };
-pub use task_center::*;
+pub use task_center::{
+    cancellation_token, cancellation_watcher, is_cancellation_requested, my_node_id, AsyncRuntime,
+    MetadataFutureExt, RuntimeError, TaskCenter, TaskCenterBuildError, TaskCenterBuilder,
+    TaskCenterFutureExt, TaskContext, TaskHandle, TaskId, TaskKind,
+};
 
 #[cfg(any(test, feature = "test-util"))]
 mod test_env;

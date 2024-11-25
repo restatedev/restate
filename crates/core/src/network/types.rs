@@ -22,7 +22,7 @@ use restate_types::net::RpcRequest;
 use restate_types::protobuf::node::Header;
 use restate_types::{GenerationalNodeId, NodeId, Version};
 
-use crate::with_metadata;
+use crate::Metadata;
 
 use super::connection::OwnedConnection;
 use super::metric_definitions::CONNECTION_SEND_DURATION;
@@ -425,7 +425,7 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
             NetworkError::ConnectionClosed(connection.peer())
         );
 
-        with_metadata(|metadata| {
+        Metadata::with_current(|metadata| {
             permit.send(self, metadata);
         });
         CONNECTION_SEND_DURATION.record(send_start.elapsed());
@@ -443,7 +443,7 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
             Err(e) => return Err(NetworkSendError::new(self, e)),
         };
 
-        with_metadata(|metadata| {
+        Metadata::with_current(|metadata| {
             permit.send(self, metadata);
         });
         CONNECTION_SEND_DURATION.record(send_start.elapsed());
@@ -459,7 +459,7 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
         let connection = bail_on_error!(self, self.try_upgrade());
         let permit = bail_on_error!(self, connection.try_reserve());
 
-        with_metadata(|metadata| {
+        Metadata::with_current(|metadata| {
             permit.send(self, metadata);
         });
 
