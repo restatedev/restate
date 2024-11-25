@@ -161,9 +161,8 @@ impl MockQueryEngine {
             + 'static,
     ) -> Self {
         // Prepare Rocksdb
-        task_center().run_in_scope_sync("db-manager-init", None, || {
-            RocksDbManager::init(Constant::new(CommonOptions::default()))
-        });
+        task_center()
+            .run_in_scope_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
         let worker_options = Live::from_value(WorkerOptions::default());
         let manager = PartitionStoreManager::create(
             worker_options.clone().map(|c| &c.storage),

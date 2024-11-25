@@ -73,6 +73,30 @@ pub struct Metadata {
 }
 
 impl Metadata {
+    pub fn try_with_current<F, R>(f: F) -> Option<R>
+    where
+        F: Fn(&Metadata) -> R,
+    {
+        TaskCenter::with_metadata(|m| f(m))
+    }
+
+    pub fn try_current() -> Option<Metadata> {
+        TaskCenter::with_current(|tc| tc.metadata())
+    }
+
+    #[track_caller]
+    pub fn with_current<F, R>(f: F) -> R
+    where
+        F: FnOnce(&Metadata) -> R,
+    {
+        TaskCenter::with_metadata(|m| f(m)).expect("called outside task-center scope")
+    }
+
+    #[track_caller]
+    pub fn current() -> Metadata {
+        TaskCenter::with_current(|tc| tc.metadata()).expect("called outside task-center scope")
+    }
+
     #[inline(always)]
     pub fn nodes_config_snapshot(&self) -> Arc<NodesConfiguration> {
         self.inner.nodes_config.load_full()

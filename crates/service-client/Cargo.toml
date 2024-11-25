@@ -51,7 +51,7 @@ aws-smithy-async = {version = "1.2.1", default-features = false}
 aws-smithy-runtime = {version = "1.6.2", default-features = false}
 aws-smithy-runtime-api = {version = "1.7.1", default-features = false}
 aws-smithy-types = { version = "1.2.0", default-features = false}
-pin-project-lite = "0.2.13"
+pin-project-lite = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -44,9 +44,7 @@ pub async fn spawn_environment(
     let metadata_writer = metadata_manager.writer();
     tc.try_set_global_metadata(metadata.clone());
 
-    tc.run_in_scope_sync("db-manager-init", None, || {
-        RocksDbManager::init(Constant::new(config.common))
-    });
+    tc.run_in_scope_sync(|| RocksDbManager::init(Constant::new(config.common)));
 
     let logs = restate_types::logs::metadata::bootstrap_logs_metadata(provider, None, num_logs);
 
