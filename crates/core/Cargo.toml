@@ -9,11 +9,12 @@ publish = false
 
 [features]
 default = []
-test-util = ["tokio/test-util"]
+test-util = ["tokio/test-util", "restate-core-derive"]
 options_schema = ["dep:schemars"]
 
 [dependencies]
 restate-types = { workspace = true }
+restate-core-derive = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 axum = { workspace = true, default-features = false }
@@ -67,6 +68,7 @@ tonic-build = { workspace = true }
 [dev-dependencies]
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+restate-core-derive = { workspace = true }
 
 googletest = { workspace = true }
 test-log = { workspace = true }
