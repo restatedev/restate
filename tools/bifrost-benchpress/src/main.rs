@@ -148,7 +148,6 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (TaskCenter,
         .build()
         .expect("task_center builds");
 
-    let task_center = tc.clone();
     let bifrost = tc.block_on(async move {
         let metadata_builder = MetadataBuilder::default();
         let metadata_store_client = MetadataStoreClient::new_in_memory();
@@ -174,7 +173,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (TaskCenter,
         metadata_writer.submit(Arc::new(logs));
         spawn_metadata_manager(metadata_manager).expect("metadata manager starts");
 
-        let bifrost_svc = BifrostService::new(task_center, metadata)
+        let bifrost_svc = BifrostService::new()
             .enable_in_memory_loglet()
             .enable_local_loglet(&config);
         let bifrost = bifrost_svc.handle();

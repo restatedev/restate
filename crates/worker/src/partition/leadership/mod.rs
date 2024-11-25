@@ -635,11 +635,7 @@ mod tests {
         tc.run_in_scope_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
 
         let bifrost = tc
-            .run_in_scope(
-                "init bifrost",
-                None,
-                Bifrost::init_in_memory(env.metadata.clone()),
-            )
+            .run_in_scope("init bifrost", None, Bifrost::init_in_memory())
             .await;
 
         tc.run_in_scope("test", None, async {
