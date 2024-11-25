@@ -178,9 +178,9 @@ mod tests {
         let storage_options = StorageOptions::default();
         let rocksdb_options = RocksDbOptions::default();
 
-        node_env.tc.run_in_scope_sync("db-manager-init", None, || {
-            RocksDbManager::init(Constant::new(CommonOptions::default()))
-        });
+        node_env
+            .tc
+            .run_in_scope_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
 
         let all_partition_keys = RangeInclusive::new(0, PartitionKey::MAX);
         let partition_store_manager = PartitionStoreManager::create(

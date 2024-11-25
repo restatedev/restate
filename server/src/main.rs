@@ -161,7 +161,7 @@ fn main() {
         .options(Configuration::pinned().common.clone())
         .build()
         .expect("task_center builds");
-    tc.block_on("main", None, {
+    tc.block_on({
         let tc = tc.clone();
         async move {
             // Apply tracing config globally
