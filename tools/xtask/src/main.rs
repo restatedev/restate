@@ -18,7 +18,7 @@ use schemars::gen::SchemaSettings;
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
-use restate_core::TestCoreEnv;
+use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv2};
 use restate_core::{TaskCenterFutureExt, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
@@ -101,48 +101,58 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         config.admin.bind_address.port()
     );
 
-    // We start the Meta service, then download the openapi schema generated
-    let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
-    let bifrost = Bifrost::init_in_memory().in_tc(&node_env.tc).await;
+    let tc = TaskCenterBuilder::default_for_tests()
+        .build()
+        .expect("building task-center should not fail");
+    async {
+        // We start the Meta service, then download the openapi schema generated
+        let node_env = TestCoreEnv2::create_with_single_node(1, 1).await;
+        let bifrost = Bifrost::init_in_memory().await;
 
-    let admin_service = AdminService::new(
-        node_env.metadata_writer.clone(),
-        node_env.metadata_store_client.clone(),
-        bifrost,
-        Mock,
-        ServiceDiscovery::new(
-            RetryPolicy::default(),
-            ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)
+        let admin_service = AdminService::new(
+            node_env.metadata_writer.clone(),
+            node_env.metadata_store_client.clone(),
+            bifrost,
+            Mock,
+            ServiceDiscovery::new(
+                RetryPolicy::default(),
+                ServiceClient::from_options(
+                    &config.common.service_client,
+                    AssumeRoleCacheMode::None,
+                )
                 .unwrap(),
-        ),
-        false,
-        None,
-    );
+            ),
+            false,
+            None,
+        );
 
-    node_env.tc.spawn(
-        TaskKind::TestRunner,
-        "doc-gen",
-        None,
-        admin_service.run(Constant::new(config.admin)),
-    )?;
+        TaskCenter::current().spawn(
+            TaskKind::TestRunner,
+            "doc-gen",
+            None,
+            admin_service.run(Constant::new(config.admin)),
+        )?;
 
-    let res = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(20))
-        .retry(|| async {
-            reqwest::Client::builder()
-                .build()?
-                .get(openapi_address.clone())
-                .header(ACCEPT, "application/json")
-                .send()
-                .await?
-                .text()
-                .await
-        })
-        .await
-        .unwrap();
+        let res = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(20))
+            .retry(|| async {
+                reqwest::Client::builder()
+                    .build()?
+                    .get(openapi_address.clone())
+                    .header(ACCEPT, "application/json")
+                    .send()
+                    .await?
+                    .text()
+                    .await
+            })
+            .await
+            .unwrap();
 
-    println!("{}", res);
-
-    node_env.tc.shutdown_node("completed", 0).await;
+        println!("{}", res);
+        anyhow::Ok(())
+    }
+    .in_tc(&tc)
+    .await?;
+    tc.shutdown_node("completed", 0).await;
 
     Ok(())
 }
