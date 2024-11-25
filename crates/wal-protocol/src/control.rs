@@ -30,7 +30,7 @@ pub struct AnnounceLeader {
 #[cfg(test)]
 mod tests {
     use crate::control::AnnounceLeader;
-    
+
     use restate_types::identifiers::LeaderEpoch;
     use restate_types::storage::StorageCodec;
     use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId};
