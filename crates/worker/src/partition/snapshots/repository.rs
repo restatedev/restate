@@ -140,7 +140,7 @@ impl SnapshotRepository {
     /// Write a partition snapshot to the snapshot repository.
     #[instrument(
         level = "debug",
-        skip(self),
+        skip_all,
         err,
         fields(
             snapshot_id = ?snapshot.snapshot_id,
@@ -154,8 +154,10 @@ impl SnapshotRepository {
     ) -> anyhow::Result<()> {
         debug!("Publishing partition snapshot to: {}", self.destination);
 
+        // A unique snapshot path within the partition prefix. We pad the LSN to ensure correct
+        // lexicographic sorting.
         let relative_snapshot_path = format!(
-            "lsn_{lsn}_{snapshot_id}",
+            "lsn_{lsn:020}-{snapshot_id}",
             lsn = snapshot.min_applied_lsn,
             snapshot_id = snapshot.snapshot_id
         );
