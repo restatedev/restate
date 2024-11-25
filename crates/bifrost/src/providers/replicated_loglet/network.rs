@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use restate_types::errors::MaybeRetryableError;
 use tracing::{instrument, trace};
 
 use restate_core::network::{
@@ -23,9 +22,10 @@ use restate_core::network::{
     TransportConnect,
 };
 use restate_core::{
-    cancellation_watcher, task_center, Metadata, MetadataKind, SyncError, TargetVersion, TaskKind,
+    cancellation_watcher, Metadata, MetadataKind, SyncError, TargetVersion, TaskCenter, TaskKind,
 };
 use restate_types::config::ReplicatedLogletOptions;
+use restate_types::errors::MaybeRetryableError;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::replicated_loglet::{
     Append, Appended, CommonRequestHeader, CommonResponseHeader, GetSequencerState, SequencerState,
@@ -49,15 +49,10 @@ macro_rules! return_error_status {
             },
         };
 
-        let _ = task_center().spawn_child(
-            TaskKind::Disposable,
-            "append-return-error",
-            None,
-            async move {
-                $reciprocal.prepare(msg).send().await?;
-                Ok(())
-            },
-        );
+        let _ = TaskCenter::spawn_child(TaskKind::Disposable, "append-return-error", async move {
+            $reciprocal.prepare(msg).send().await?;
+            Ok(())
+        });
 
         return;
     }};
@@ -71,15 +66,10 @@ macro_rules! return_error_status {
             },
         };
 
-        let _ = task_center().spawn_child(
-            TaskKind::Disposable,
-            "append-return-error",
-            None,
-            async move {
-                $reciprocal.prepare(msg).send().await?;
-                Ok(())
-            },
-        );
+        let _ = TaskCenter::spawn_child(TaskKind::Disposable, "append-return-error", async move {
+            $reciprocal.prepare(msg).send().await?;
+            Ok(())
+        });
 
         return;
     }};
@@ -230,7 +220,7 @@ impl RequestPump {
             global_tail: global_tail.clone(),
         };
 
-        let _ = task_center().spawn_child(TaskKind::Disposable, "wait-appended", None, task.run());
+        let _ = TaskCenter::spawn_child(TaskKind::Disposable, "wait-appended", task.run());
     }
 
     async fn get_loglet<T: TransportConnect>(
