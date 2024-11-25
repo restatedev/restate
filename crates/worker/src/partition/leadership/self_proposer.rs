@@ -11,7 +11,7 @@
 use crate::partition::leadership::Error;
 use futures::never::Never;
 use restate_bifrost::{Bifrost, CommitToken};
-use restate_core::{task_center, Metadata};
+use restate_core::Metadata;
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::logs::LogId;
@@ -49,7 +49,7 @@ impl SelfProposer {
                 BIFROST_QUEUE_SIZE,
                 MAX_BIFROST_APPEND_BATCH,
             )?
-            .start(task_center(), "self-appender", Some(partition_id))?;
+            .start("self-appender", Some(partition_id))?;
 
         Ok(Self {
             partition_id,
