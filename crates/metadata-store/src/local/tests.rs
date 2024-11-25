@@ -331,9 +331,7 @@ async fn create_test_environment(
 
     let task_center = &env.tc;
 
-    task_center.run_in_scope_sync("db-manager-init", None, || {
-        RocksDbManager::init(config.clone().map(|c| &c.common))
-    });
+    task_center.run_in_scope_sync(|| RocksDbManager::init(config.clone().map(|c| &c.common)));
 
     let client = start_metadata_store(
         config.pinned().common.metadata_store_client.clone(),
