@@ -38,7 +38,6 @@ use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
 pub struct LogServerService {
     health_status: HealthStatus<LogServerStatus>,
     updateable_config: Live<Configuration>,
-    task_center: TaskCenter,
     metadata: Metadata,
     request_processor: RequestPump,
     metadata_store_client: MetadataStoreClient,
@@ -49,7 +48,6 @@ impl LogServerService {
     pub async fn create(
         health_status: HealthStatus<LogServerStatus>,
         updateable_config: Live<Configuration>,
-        task_center: TaskCenter,
         metadata: Metadata,
         metadata_store_client: MetadataStoreClient,
         record_cache: RecordCache,
@@ -58,17 +56,11 @@ impl LogServerService {
         describe_metrics();
         health_status.update(LogServerStatus::StartingUp);
 
-        let request_processor = RequestPump::new(
-            task_center.clone(),
-            metadata.clone(),
-            updateable_config.clone(),
-            router_builder,
-        );
+        let request_processor = RequestPump::new(updateable_config.clone(), router_builder);
 
         Ok(Self {
             health_status,
             updateable_config,
-            task_center,
             metadata,
             request_processor,
             metadata_store_client,
@@ -84,7 +76,6 @@ impl LogServerService {
         let LogServerService {
             health_status,
             updateable_config,
-            task_center,
             metadata,
             request_processor: request_pump,
             mut metadata_store_client,
@@ -102,7 +93,7 @@ impl LogServerService {
 
         // 2. Fire up the log store.
         let mut log_store = log_store_builder
-            .start(&task_center, health_status.clone())
+            .start(health_status.clone())
             .await
             .context("Couldn't start log-server's log store")?;
 
@@ -132,10 +123,9 @@ impl LogServerService {
             crate::protobuf::FILE_DESCRIPTOR_SET,
         );
 
-        let _ = task_center.spawn_child(
+        let _ = TaskCenter::spawn_child(
             TaskKind::SystemService,
             "log-server",
-            None,
             request_pump.run(health_status, log_store, state_map, storage_state),
         )?;
 

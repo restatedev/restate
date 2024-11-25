@@ -14,9 +14,8 @@ use futures::StreamExt;
 use restate_core::{
     cancellation_watcher,
     network::{Incoming, MessageRouterBuilder, MessageStream, NetworkError},
-    task_center,
     worker_api::ProcessorsManagerHandle,
-    ShutdownError, TaskKind,
+    ShutdownError, TaskCenter, TaskKind,
 };
 use restate_types::net::node::{GetNodeState, NodeStateResponse};
 
@@ -39,8 +38,7 @@ impl BaseRole {
     }
 
     pub fn start(self) -> anyhow::Result<()> {
-        let tc = task_center();
-        tc.spawn_child(TaskKind::RoleRunner, "base-role-service", None, async {
+        TaskCenter::spawn_child(TaskKind::RoleRunner, "base-role-service", async {
             let cancelled = cancellation_watcher();
 
             tokio::select! {

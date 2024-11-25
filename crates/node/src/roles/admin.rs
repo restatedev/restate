@@ -20,7 +20,7 @@ use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
-use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
+use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
@@ -122,7 +122,6 @@ impl<T: TransportConnect> AdminRole<T> {
                 updateable_config.clone(),
                 health_status,
                 bifrost,
-                task_center,
                 metadata,
                 networking,
                 router_builder,
@@ -142,21 +141,17 @@ impl<T: TransportConnect> AdminRole<T> {
     }
 
     pub async fn start(self) -> Result<(), anyhow::Error> {
-        let tc = task_center();
-
         if let Some(cluster_controller) = self.controller {
-            tc.spawn_child(
+            TaskCenter::spawn_child(
                 TaskKind::SystemService,
                 "cluster-controller-service",
-                None,
                 cluster_controller.run(),
             )?;
         }
 
-        tc.spawn_child(
+        TaskCenter::spawn_child(
             TaskKind::RpcServer,
             "admin-rpc-server",
-            None,
             self.admin.run(self.updateable_config.map(|c| &c.admin)),
         )?;
 

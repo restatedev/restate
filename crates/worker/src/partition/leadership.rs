@@ -395,12 +395,8 @@ where
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
 
-            let shuffle_task_id = task_center().spawn_child(
-                TaskKind::Shuffle,
-                "shuffle",
-                Some(self.partition_processor_metadata.partition_id),
-                shuffle.run(),
-            )?;
+            let shuffle_task_id =
+                TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle.run())?;
 
             let self_proposer = SelfProposer::new(
                 self.partition_processor_metadata.partition_id,
@@ -421,12 +417,8 @@ where
                 self.cleanup_interval,
             );
 
-            let cleaner_task_id = task_center().spawn_child(
-                TaskKind::Cleaner,
-                "cleaner",
-                Some(self.partition_processor_metadata.partition_id),
-                cleaner.run(),
-            )?;
+            let cleaner_task_id =
+                TaskCenter::spawn_child(TaskKind::Cleaner, "cleaner", cleaner.run())?;
 
             self.state = State::Leader(LeaderState {
                 leader_epoch,
