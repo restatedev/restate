@@ -33,7 +33,6 @@ pub struct TaskCenterBuilder {
     ingress_runtime_handle: Option<tokio::runtime::Handle>,
     ingress_runtime: Option<tokio::runtime::Runtime>,
     options: Option<CommonOptions>,
-    #[cfg(any(test, feature = "test-util"))]
     pause_time: bool,
 }
 
@@ -67,13 +66,11 @@ impl TaskCenterBuilder {
         self
     }
 
-    #[cfg(any(test, feature = "test-util"))]
     pub fn pause_time(mut self, pause_time: bool) -> Self {
         self.pause_time = pause_time;
         self
     }
 
-    #[cfg(any(test, feature = "test-util"))]
     pub fn default_for_tests() -> Self {
         Self::default()
             .ingress_runtime_handle(tokio::runtime::Handle::current())
@@ -85,10 +82,6 @@ impl TaskCenterBuilder {
         let options = self.options.unwrap_or_default();
         if self.default_runtime_handle.is_none() {
             let mut default_runtime_builder = tokio_builder("worker", &options);
-            #[cfg(any(test, feature = "test-util"))]
-            if self.pause_time {
-                default_runtime_builder.start_paused(self.pause_time);
-            }
             let default_runtime = default_runtime_builder.build()?;
             self.default_runtime_handle = Some(default_runtime.handle().clone());
             self.default_runtime = Some(default_runtime);
@@ -96,10 +89,6 @@ impl TaskCenterBuilder {
 
         if self.ingress_runtime_handle.is_none() {
             let mut ingress_runtime_builder = tokio_builder("ingress", &options);
-            #[cfg(any(test, feature = "test-util"))]
-            if self.pause_time {
-                ingress_runtime_builder.start_paused(self.pause_time);
-            }
             let ingress_runtime = ingress_runtime_builder.build()?;
             self.ingress_runtime_handle = Some(ingress_runtime.handle().clone());
             self.ingress_runtime = Some(ingress_runtime);
@@ -113,6 +102,7 @@ impl TaskCenterBuilder {
             self.ingress_runtime_handle.unwrap(),
             self.default_runtime,
             self.ingress_runtime,
+            self.pause_time,
         ))
     }
 }
