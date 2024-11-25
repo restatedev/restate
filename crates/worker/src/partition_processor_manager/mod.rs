@@ -28,28 +28,15 @@ use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
-use crate::metric_definitions::PARTITION_IS_ACTIVE;
-use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
-use crate::metric_definitions::PARTITION_LABEL;
-use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
-use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
-use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
-use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
-use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
-use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
-use crate::partition_processor_manager::processor_state::{
-    LeaderEpochToken, ProcessorState, StartedProcessor,
-};
-use crate::partition_processor_manager::snapshot_task::SnapshotPartitionTask;
-use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 use restate_bifrost::Bifrost;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
 use restate_core::worker_api::{
     ProcessorsManagerCommand, ProcessorsManagerHandle, SnapshotCreated, SnapshotError,
     SnapshotResult,
 };
-use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskHandle, TaskKind};
+use restate_core::{
+    cancellation_watcher, Metadata, ShutdownError, TaskCenterFutureExt, TaskHandle, TaskKind,
+};
 use restate_core::{RuntimeRootTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_invoker_impl::{BuildError, ChannelStatusReader};
@@ -76,14 +63,28 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::GenerationalNodeId;
 
+use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
+use crate::metric_definitions::PARTITION_IS_ACTIVE;
+use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
+use crate::metric_definitions::PARTITION_LABEL;
+use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
+use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
+use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
+use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
+use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
+use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
+use crate::partition_processor_manager::processor_state::{
+    LeaderEpochToken, ProcessorState, StartedProcessor,
+};
+use crate::partition_processor_manager::snapshot_task::SnapshotPartitionTask;
+use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
+
 pub struct PartitionProcessorManager {
-    task_center: TaskCenter,
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
     processor_states: BTreeMap<PartitionId, ProcessorState>,
     name_cache: BTreeMap<PartitionId, &'static str>,
 
-    metadata: Metadata,
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
     incoming_update_processors: MessageStream<ControlProcessors>,
@@ -166,10 +167,8 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
 impl PartitionProcessorManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        task_center: TaskCenter,
         health_status: HealthStatus<WorkerStatus>,
         updateable_config: Live<Configuration>,
-        metadata: Metadata,
         metadata_store_client: MetadataStoreClient,
         partition_store_manager: PartitionStoreManager,
         router_builder: &mut MessageRouterBuilder,
@@ -180,12 +179,10 @@ impl PartitionProcessorManager {
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
         Self {
-            task_center,
             health_status,
             updateable_config,
             processor_states: BTreeMap::default(),
             name_cache: Default::default(),
-            metadata,
             metadata_store_client,
             partition_store_manager,
             incoming_update_processors,
@@ -230,9 +227,10 @@ impl PartitionProcessorManager {
             persisted_lsns_tx,
         );
         TaskCenter::spawn_child(TaskKind::Watchdog, "persisted-lsn-watchdog", watchdog.run())?;
+        let metadata = Metadata::current();
 
-        let mut logs_version_watcher = self.metadata.watch(MetadataKind::Logs);
-        let mut partition_table_version_watcher = self.metadata.watch(MetadataKind::PartitionTable);
+        let mut logs_version_watcher = metadata.watch(MetadataKind::Logs);
+        let mut partition_table_version_watcher = metadata.watch(MetadataKind::PartitionTable);
 
         let mut latest_snapshot_check_interval = tokio::time::interval(Duration::from_secs(5));
         latest_snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -295,7 +293,7 @@ impl PartitionProcessorManager {
         match self.processor_states.get(&partition_id) {
             None => {
                 // ignore shutdown errors
-                let _ = self.task_center.spawn(
+                let _ = TaskCenter::current().spawn(
                     TaskKind::Disposable,
                     "partition-processor-rpc-response",
                     None,
@@ -311,11 +309,7 @@ impl PartitionProcessorManager {
                 );
             }
             Some(processor_state) => {
-                processor_state.try_send_rpc(
-                    partition_id,
-                    partition_processor_rpc,
-                    &self.task_center,
-                );
+                processor_state.try_send_rpc(partition_id, partition_processor_rpc);
             }
         }
     }
@@ -350,9 +344,7 @@ impl PartitionProcessorManager {
                                             Self::obtain_new_leader_epoch(
                                                 partition_id,
                                                 leader_epoch_token,
-                                                self.task_center.clone(),
                                                 self.metadata_store_client.clone(),
-                                                self.metadata.my_node_id(),
                                                 &mut self.asynchronous_operations,
                                             );
                                         }
@@ -419,7 +411,7 @@ impl PartitionProcessorManager {
                                         partition_id,
                                         command: ProcessorCommand::from(restart_as),
                                     },
-                                    &self.metadata.partition_table_ref(),
+                                    &Metadata::with_current(|m| m.partition_table_ref()),
                                 );
                             }
                         }
@@ -466,41 +458,33 @@ impl PartitionProcessorManager {
         partition_id: PartitionId,
         runtime_task_handle: RuntimeRootTaskHandle<anyhow::Result<()>>,
     ) {
-        let tc = self.task_center.clone();
-        self.asynchronous_operations.spawn(async move {
-            tc.run_in_scope("await-runtime-task-result", Some(partition_id), async {
+        self.asynchronous_operations.spawn(
+            async move {
                 let result = runtime_task_handle.await;
                 AsynchronousEvent {
                     partition_id,
                     inner: EventKind::Stopped(result),
                 }
-            })
-            .await
-        });
+            }
+            .in_current_tc(),
+        );
     }
 
     fn obtain_new_leader_epoch(
         partition_id: PartitionId,
         leader_epoch_token: LeaderEpochToken,
-        task_center: TaskCenter,
         metadata_store_client: MetadataStoreClient,
-        my_node_id: GenerationalNodeId,
         asynchronous_operations: &mut JoinSet<AsynchronousEvent>,
     ) {
-        asynchronous_operations.spawn(async move {
-            task_center
-                .run_in_scope(
-                    "obtain-new-leader-epoch",
-                    Some(partition_id),
-                    Self::obtain_new_leader_epoch_task(
-                        leader_epoch_token,
-                        partition_id,
-                        metadata_store_client,
-                        my_node_id,
-                    ),
-                )
-                .await
-        });
+        asynchronous_operations.spawn(
+            Self::obtain_new_leader_epoch_task(
+                leader_epoch_token,
+                partition_id,
+                metadata_store_client,
+                Metadata::with_current(|m| m.my_node_id()),
+            )
+            .in_current_tc(),
+        );
     }
 
     fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
@@ -579,20 +563,22 @@ impl PartitionProcessorManager {
     }
 
     fn on_control_processors(&mut self) {
+        let (current_logs_version, current_partition_table_version) =
+            Metadata::with_current(|m| (m.logs_version(), m.partition_table_version()));
         if self
             .pending_control_processors
             .as_ref()
             .is_some_and(|control_processors| {
-                control_processors.min_logs_table_version <= self.metadata.logs_version()
+                control_processors.min_logs_table_version <= current_logs_version
                     && control_processors.min_partition_table_version
-                        <= self.metadata.partition_table_version()
+                        <= current_partition_table_version
             })
         {
             let control_processors = self
                 .pending_control_processors
                 .take()
                 .expect("must be some");
-            let partition_table = self.metadata.partition_table_snapshot();
+            let partition_table = Metadata::with_current(|m| m.partition_table_snapshot());
 
             for control_processor in control_processors.commands {
                 self.on_control_processor(control_processor, &partition_table);
@@ -623,9 +609,7 @@ impl PartitionProcessorManager {
                             Self::obtain_new_leader_epoch(
                                 partition_id,
                                 leader_epoch_token,
-                                self.task_center.clone(),
                                 self.metadata_store_client.clone(),
-                                self.metadata.my_node_id(),
                                 &mut self.asynchronous_operations,
                             );
                         }
@@ -644,18 +628,21 @@ impl PartitionProcessorManager {
 
                     // We spawn the partition processors start tasks on the blocking thread pool due to a macOS issue
                     // where doing otherwise appears to starve the Tokio event loop, causing very slow startup.
-                    let handle = self.task_center.spawn_blocking_unmanaged(
+                    let handle = TaskCenter::current().spawn_blocking_unmanaged(
                         "starting-partition-processor",
                         starting_task.run(),
                     );
 
-                    self.asynchronous_operations.spawn(async move {
-                        let result = handle.await.expect("task must not panic");
-                        AsynchronousEvent {
-                            partition_id,
-                            inner: EventKind::Started(result),
+                    self.asynchronous_operations.spawn(
+                        async move {
+                            let result = handle.await.expect("task must not panic");
+                            AsynchronousEvent {
+                                partition_id,
+                                inner: EventKind::Started(result),
+                            }
                         }
-                    });
+                        .in_current_tc(),
+                    );
 
                     self.processor_states.insert(
                         partition_id,
@@ -792,7 +779,7 @@ impl PartitionProcessorManager {
                     node_name: config.common.node_name().into(),
                 };
 
-                let spawn_task_result = restate_core::task_center().spawn_unmanaged(
+                let spawn_task_result = TaskCenter::current().spawn_unmanaged(
                     TaskKind::PartitionSnapshotProducer,
                     "create-snapshot",
                     Some(partition_id),
@@ -845,11 +832,9 @@ impl PartitionProcessorManager {
 
         SpawnPartitionProcessorTask::new(
             task_name,
-            self.metadata.my_node_id(),
             partition_id,
             key_range,
             self.updateable_config.clone(),
-            self.metadata.clone(),
             self.bifrost.clone(),
             self.partition_store_manager.clone(),
         )
@@ -912,7 +897,7 @@ mod tests {
     use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::BifrostService;
     use restate_core::network::MockPeerConnection;
-    use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, TestCoreEnvBuilder};
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder2};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StorageOptions};
@@ -932,7 +917,7 @@ mod tests {
     /// This test ensures that the lifecycle of partition processors is properly managed by the
     /// [`PartitionProcessorManager`]. See https://github.com/restatedev/restate/issues/2258 for
     /// more details.
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn proper_partition_processor_lifecycle() -> googletest::Result<()> {
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
         let node_id = GenerationalNodeId::new(42, 42);
@@ -946,109 +931,99 @@ mod tests {
         nodes_config.upsert_node(node_config);
 
         let mut env_builder =
-            TestCoreEnvBuilder::with_incoming_only_connector().set_nodes_config(nodes_config);
-        let tc = env_builder.tc.clone();
-        async {
-            let health_status = HealthStatus::default();
+            TestCoreEnvBuilder2::with_incoming_only_connector().set_nodes_config(nodes_config);
+        let health_status = HealthStatus::default();
 
-            RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-            let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
-            let bifrost = bifrost_svc.handle();
+        let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
+        let bifrost = bifrost_svc.handle();
 
-            let partition_store_manager = PartitionStoreManager::create(
-                Constant::new(StorageOptions::default()),
-                Constant::new(RocksDbOptions::default()).boxed(),
-                &[(PartitionId::MIN, 0..=PartitionKey::MAX)],
-            )
-            .await?;
-
-            let partition_processor_manager = PartitionProcessorManager::new(
-                env_builder.tc.clone(),
-                health_status,
-                Live::from_value(Configuration::default()),
-                env_builder.metadata.clone(),
-                env_builder.metadata_store_client.clone(),
-                partition_store_manager,
-                &mut env_builder.router_builder,
-                bifrost,
-            );
-
-            let env = env_builder.build().await;
-            let processors_manager_handle = partition_processor_manager.handle();
-
-            bifrost_svc.start().await.into_test_result()?;
-            TaskCenter::current().spawn(
-                TaskKind::SystemService,
-                "partition-processor-manager",
-                None,
-                partition_processor_manager.run(),
-            )?;
-
-            let connection = MockPeerConnection::connect(
-                node_id,
-                env.metadata.nodes_config_version(),
-                env.metadata.nodes_config_ref().cluster_name().to_owned(),
-                env.networking.connection_manager(),
-                10,
-            )
-            .await
-            .into_test_result()?;
-
-            let start_processor_command = ControlProcessors {
-                min_logs_table_version: Version::MIN,
-                min_partition_table_version: Version::MIN,
-                commands: vec![ControlProcessor {
-                    partition_id: PartitionId::MIN,
-                    command: ProcessorCommand::Follower,
-                }],
-            };
-            let stop_processor_command = ControlProcessors {
-                min_logs_table_version: Version::MIN,
-                min_partition_table_version: Version::MIN,
-                commands: vec![ControlProcessor {
-                    partition_id: PartitionId::MIN,
-                    command: ProcessorCommand::Stop,
-                }],
-            };
-
-            // let's check whether we can start and stop the partition processor multiple times
-            for i in 0..=10 {
-                connection
-                    .send_raw(
-                        if i % 2 == 0 {
-                            start_processor_command.clone()
-                        } else {
-                            stop_processor_command.clone()
-                        },
-                        Header::default(),
-                    )
-                    .await
-                    .into_test_result()?;
-            }
-
-            loop {
-                let current_state = processors_manager_handle.get_state().await?;
-
-                if current_state.contains_key(&PartitionId::MIN) {
-                    // wait until we see the PartitionId::MIN partition processor running
-                    break;
-                } else {
-                    // make sure that we eventually start the partition processor
-                    connection
-                        .send_raw(start_processor_command.clone(), Header::default())
-                        .await
-                        .into_test_result()?;
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            }
-
-            googletest::Result::Ok(())
-        }
-        .in_tc(&tc)
+        let partition_store_manager = PartitionStoreManager::create(
+            Constant::new(StorageOptions::default()),
+            Constant::new(RocksDbOptions::default()).boxed(),
+            &[(PartitionId::MIN, 0..=PartitionKey::MAX)],
+        )
         .await?;
 
-        tc.shutdown_node("test completed", 0).await;
+        let partition_processor_manager = PartitionProcessorManager::new(
+            health_status,
+            Live::from_value(Configuration::default()),
+            env_builder.metadata_store_client.clone(),
+            partition_store_manager,
+            &mut env_builder.router_builder,
+            bifrost,
+        );
+
+        let env = env_builder.build().await;
+        let processors_manager_handle = partition_processor_manager.handle();
+
+        bifrost_svc.start().await.into_test_result()?;
+        TaskCenter::current().spawn(
+            TaskKind::SystemService,
+            "partition-processor-manager",
+            None,
+            partition_processor_manager.run(),
+        )?;
+
+        let connection = MockPeerConnection::connect(
+            node_id,
+            env.metadata.nodes_config_version(),
+            env.metadata.nodes_config_ref().cluster_name().to_owned(),
+            env.networking.connection_manager(),
+            10,
+        )
+        .await
+        .into_test_result()?;
+
+        let start_processor_command = ControlProcessors {
+            min_logs_table_version: Version::MIN,
+            min_partition_table_version: Version::MIN,
+            commands: vec![ControlProcessor {
+                partition_id: PartitionId::MIN,
+                command: ProcessorCommand::Follower,
+            }],
+        };
+        let stop_processor_command = ControlProcessors {
+            min_logs_table_version: Version::MIN,
+            min_partition_table_version: Version::MIN,
+            commands: vec![ControlProcessor {
+                partition_id: PartitionId::MIN,
+                command: ProcessorCommand::Stop,
+            }],
+        };
+
+        // let's check whether we can start and stop the partition processor multiple times
+        for i in 0..=10 {
+            connection
+                .send_raw(
+                    if i % 2 == 0 {
+                        start_processor_command.clone()
+                    } else {
+                        stop_processor_command.clone()
+                    },
+                    Header::default(),
+                )
+                .await
+                .into_test_result()?;
+        }
+
+        loop {
+            let current_state = processors_manager_handle.get_state().await?;
+
+            if current_state.contains_key(&PartitionId::MIN) {
+                // wait until we see the PartitionId::MIN partition processor running
+                break;
+            } else {
+                // make sure that we eventually start the partition processor
+                connection
+                    .send_raw(start_processor_command.clone(), Header::default())
+                    .await
+                    .into_test_result()?;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+
         RocksDbManager::get().shutdown().await;
         Ok(())
     }
