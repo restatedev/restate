@@ -95,6 +95,8 @@ pub enum TaskKind {
     SystemService,
     #[strum(props(OnCancel = "abort", runtime = "ingress"))]
     Ingress,
+    /// Kafka ingestion related task
+    Kafka,
     PartitionProcessor,
     /// Longer-running, low-priority tasks that is responsible for the export, and potentially
     /// upload to remote storage, of partition store snapshots.
