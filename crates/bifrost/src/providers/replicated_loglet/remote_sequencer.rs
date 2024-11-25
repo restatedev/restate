@@ -17,8 +17,10 @@ use std::{
 };
 
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
+use tracing::{debug, instrument, Span};
 
 use restate_core::{
+    cancellation_watcher,
     network::{
         rpc_router::{RpcRouter, RpcToken},
         NetworkError, NetworkSendError, Networking, Outgoing, TransportConnect, WeakConnection,
@@ -33,7 +35,6 @@ use restate_types::{
     replicated_loglet::ReplicatedLogletParams,
     GenerationalNodeId,
 };
-use tracing::instrument;
 
 use super::rpc_routers::SequencersRpc;
 use crate::loglet::{
@@ -107,7 +108,7 @@ where
     }
 
     #[instrument(
-        level="trace",
+        level="debug",
         skip_all,
         fields(
             otel.name = "replicated_loglet::remote_sequencer: append",
@@ -122,13 +123,6 @@ where
 
         let len = u32::try_from(payloads.len()).expect("batch sizes fit in u32");
 
-        let permits = self
-            .record_permits
-            .clone()
-            .acquire_many_owned(len)
-            .await
-            .unwrap();
-
         let mut connection = self.get_connection().await?;
 
         let mut msg = Append {
@@ -140,36 +134,43 @@ where
             payloads,
         };
 
-        let rpc_token = loop {
+        let loglet_commit = loop {
+            let permits = self
+                .record_permits
+                .clone()
+                .acquire_many_owned(len)
+                .await
+                .unwrap();
             match connection
-                .send(&self.sequencers_rpc.append, self.params.sequencer, msg)
+                .send(
+                    permits,
+                    &self.sequencers_rpc.append,
+                    self.params.sequencer,
+                    msg,
+                )
                 .await
             {
-                Ok(token) => break token,
+                Ok(loglet_commit) => break loglet_commit,
                 Err(err) => {
                     match err.source {
-                        NetworkError::ConnectError(_)
-                        | NetworkError::ConnectionClosed(_)
-                        | NetworkError::Timeout(_) => {
-                            // we retry to re-connect one time
+                        err @ NetworkError::Full => return Err(err.into()),
+                        _ => {
+                            // we retry on any other network error
                             connection = self.renew_connection(connection).await?;
 
                             msg = err.original;
                             continue;
                         }
-                        err => return Err(err.into()),
                     }
                 }
             };
         };
-        let (commit_token, commit_resolver) = LogletCommit::deferred();
 
-        connection.resolve_on_appended(permits, rpc_token, commit_resolver);
-
-        Ok(commit_token)
+        Ok(loglet_commit)
     }
 
     /// Gets or starts a new remote sequencer connection
+    #[instrument(level = "debug", skip_all)]
     async fn get_connection(&self) -> Result<RemoteSequencerConnection, NetworkError> {
         let mut guard = self.connection.lock().await;
         if let Some(connection) = guard.deref() {
@@ -190,6 +191,7 @@ where
 
     /// Renew a connection to a remote sequencer. This guarantees that only a single connection
     /// to the sequencer is available.
+    #[instrument(level = "debug", skip_all, fields(renewed = false))]
     async fn renew_connection(
         &self,
         old: RemoteSequencerConnection,
@@ -202,10 +204,13 @@ where
             return Ok(current.clone());
         }
 
+        debug!("Renewing connection to {}", current.inner.peer());
         let connection = self
             .networking
             .node_connection(self.params.sequencer)
             .await?;
+
+        Span::current().record("renewed", true);
 
         let connection =
             RemoteSequencerConnection::start(self.known_global_tail.clone(), connection)?;
@@ -228,26 +233,32 @@ where
 #[derive(Clone)]
 struct RemoteSequencerConnection {
     inner: WeakConnection,
-    tx: mpsc::UnboundedSender<RemoteInflightAppend>,
+    inflight: mpsc::Sender<RemoteInflightAppend>,
 }
 
 impl RemoteSequencerConnection {
+    #[instrument(level = "debug", name = "connection_start", skip_all)]
     fn start(
         known_global_tail: TailOffsetWatch,
         connection: WeakConnection,
     ) -> Result<Self, ShutdownError> {
-        let (tx, rx) = mpsc::unbounded_channel();
+        // todo: make configurable ?
+        let (inflight_sender, inflight_receiver) = mpsc::channel(128);
 
         task_center().spawn(
-            TaskKind::NetworkMessageHandler,
+            TaskKind::SequencerAppender,
             "remote-sequencer-connection",
             None,
-            Self::handle_appended_responses(known_global_tail, connection.clone(), rx),
+            Self::handle_appended_responses(
+                known_global_tail,
+                connection.clone(),
+                inflight_receiver,
+            ),
         )?;
 
         Ok(Self {
             inner: connection,
-            tx,
+            inflight: inflight_sender,
         })
     }
 
@@ -256,39 +267,36 @@ impl RemoteSequencerConnection {
     /// It's up to the caller to retry on [`NetworkError`]
     pub async fn send(
         &self,
+        permit: OwnedSemaphorePermit,
         rpc_router: &RpcRouter<Append>,
         sequencer: GenerationalNodeId,
         msg: Append,
-    ) -> Result<RpcToken<Appended>, NetworkSendError<Append>> {
+    ) -> Result<LogletCommit, NetworkSendError<Append>> {
+        // by reserving the a spot on the inflight sender we make sure
+        // that this commit will be drained even if the handle_appended_responses task
+        // is shutting down.
+        let inflight_permit = self.inflight.clone().reserve_owned().await.map_err(|_| {
+            NetworkSendError::new(
+                msg.clone(),
+                NetworkError::ConnectionClosed(self.inner.peer()),
+            )
+        })?;
+
         let outgoing = Outgoing::new(sequencer, msg).assign_connection(self.inner.clone());
 
-        rpc_router
+        let rpc_token = rpc_router
             .send_on_connection(outgoing)
             .await
-            .map_err(|err| NetworkSendError::new(err.original.into_body(), err.source))
-    }
+            .map_err(|err| NetworkSendError::new(err.original.into_body(), err.source))?;
 
-    pub fn resolve_on_appended(
-        &self,
-        permit: OwnedSemaphorePermit,
-        rpc_token: RpcToken<Appended>,
-        commit_resolver: LogletCommitResolver,
-    ) {
-        let inflight_append = RemoteInflightAppend {
-            rpc_token,
+        let (commit_token, commit_resolver) = LogletCommit::deferred();
+        inflight_permit.send(RemoteInflightAppend {
             commit_resolver,
             permit,
-        };
+            rpc_token,
+        });
 
-        if let Err(err) = self.tx.send(inflight_append) {
-            // if we failed to push this to be processed by the connection reactor task
-            // then we need to notify the caller
-            err.0
-                .commit_resolver
-                .error(AppendError::retryable(NetworkError::ConnectionClosed(
-                    self.inner.peer(),
-                )));
-        }
+        Ok(commit_token)
     }
 
     /// Handle all [`Appended`] responses
@@ -296,32 +304,70 @@ impl RemoteSequencerConnection {
     /// This task will run until the [`AppendStream`] is dropped. Once dropped
     /// all pending commits will be resolved with an error. it's up to the enqueuer
     /// to retry if needed.
+    #[instrument(level = "debug", skip_all)]
     async fn handle_appended_responses(
         known_global_tail: TailOffsetWatch,
         connection: WeakConnection,
-        mut rx: mpsc::UnboundedReceiver<RemoteInflightAppend>,
+        mut inflight: mpsc::Receiver<RemoteInflightAppend>,
     ) -> anyhow::Result<()> {
         let mut closed = std::pin::pin!(connection.closed());
+        let cancelled = cancellation_watcher();
 
+        let termination_err = tokio::select! {
+            _ = &mut closed => {
+                AppendError::retryable(NetworkError::ConnectionClosed(connection.peer()))
+            }
+            _ = cancelled => {
+                AppendError::Shutdown(ShutdownError)
+            }
+            err = Self::handler_loop(known_global_tail, connection.peer(), &mut inflight) => {
+                err
+            }
+        };
+
+        // close channel to stop any further appends calls on the same connection
+        inflight.close();
+
+        // Drain and resolve ALL pending appends on this connection.
+        //
+        // todo(azmy): The order of the RemoteInflightAppend's on the channel
+        // does not necessary matches the actual append calls. This is
+        // since sending on the connection and pushing on the rx channel is not an atomic
+        // operation. Which means that, it's possible when we are draining
+        // the pending requests here that we also end up cancelling some inflight appends
+        // that has already received a positive response from the sequencer.
+        //
+        // For now this should not be a problem since they can (possibly) retry
+        // to do the write again later.
+        debug!(cause=%termination_err, "Draining inflight channel");
+        let mut count = 0;
+        while let Some(inflight) = inflight.recv().await {
+            inflight.commit_resolver.error(termination_err.clone());
+            count += 1;
+        }
+
+        debug!("Drained {count} inflight commits as {}", termination_err);
+
+        Ok(())
+    }
+
+    async fn handler_loop(
+        known_global_tail: TailOffsetWatch,
+        peer: GenerationalNodeId,
+        inflight: &mut mpsc::Receiver<RemoteInflightAppend>,
+    ) -> AppendError {
         // handle all rpc tokens in an infinite loop
         // this loop only breaks when it encounters a terminal
         // AppendError.
         // When this happens, the receiver channel is closed
         // and drained. The same error is then used to resolve
         // all pending tokens
-        let err = loop {
-            let inflight = tokio::select! {
-                inflight = rx.recv() => {
-                    inflight
+        loop {
+            let inflight = match inflight.recv().await {
+                Some(inflight) => inflight,
+                None => {
+                    return AppendError::retryable(NetworkError::ConnectionClosed(peer));
                 }
-                _ = &mut closed => {
-                    break AppendError::retryable(NetworkError::ConnectionClosed(connection.peer()));
-                }
-            };
-
-            let Some(inflight) = inflight else {
-                // connection was dropped.
-                break AppendError::retryable(NetworkError::ConnectionClosed(connection.peer()));
             };
 
             let RemoteInflightAppend {
@@ -330,21 +376,12 @@ impl RemoteSequencerConnection {
                 permit: _permit,
             } = inflight;
 
-            let appended = tokio::select! {
-                incoming = rpc_token.recv() => {
-                    incoming.map_err(AppendError::Shutdown)
-                },
-                _ = &mut closed => {
-                    Err(AppendError::retryable(NetworkError::ConnectionClosed(connection.peer())))
-                }
-            };
-
-            let appended = match appended {
+            let appended = match rpc_token.recv().await {
                 Ok(appended) => appended.into_body(),
                 Err(err) => {
                     // this can only be a terminal error (either shutdown or connection is closing)
-                    commit_resolver.error(err.clone());
-                    break err;
+                    commit_resolver.error(AppendError::Shutdown(err));
+                    return AppendError::Shutdown(err);
                 }
             };
 
@@ -363,7 +400,7 @@ impl RemoteSequencerConnection {
                     // A sealed status returns a terminal error since we can immediately cancel
                     // all inflight append jobs.
                     commit_resolver.sealed();
-                    break AppendError::Sealed;
+                    return AppendError::Sealed;
                 }
                 SequencerStatus::UnknownLogId
                 | SequencerStatus::UnknownSegmentIndex
@@ -375,30 +412,11 @@ impl RemoteSequencerConnection {
                     // While the UnknownLoglet status is non-terminal for the connection
                     // (since only one request is bad),
                     // the AppendError for the caller is terminal
+                    debug!(error=%err, "Resolve commit with error");
                     commit_resolver.error(AppendError::other(err));
                 }
             }
-        };
-
-        // close channel to stop any further appends calls on the same connection
-        rx.close();
-
-        // Drain and resolve ALL pending appends on this connection.
-        //
-        // todo(azmy): The order of the RemoteInflightAppend's on the channel
-        // does not necessary matches the actual append calls. This is
-        // since sending on the connection and pushing on the rx channel is not an atomic
-        // operation. Which means that, it's possible when we are draining
-        // the pending requests here that we also end up cancelling some inflight appends
-        // that has already received a positive response from the sequencer.
-        //
-        // For now this should not be a problem since they can (possibly) retry
-        // to do the write again later.
-        while let Some(inflight) = rx.recv().await {
-            inflight.commit_resolver.error(err.clone());
         }
-
-        Ok(())
     }
 }
 
