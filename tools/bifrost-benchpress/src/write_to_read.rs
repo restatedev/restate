@@ -45,18 +45,13 @@ pub struct WriteToReadOpts {
     payload_size: usize,
 }
 
-pub async fn run(
-    _common_args: &Arguments,
-    args: &WriteToReadOpts,
-    tc: TaskCenter,
-    bifrost: Bifrost,
-) -> Result<()> {
+pub async fn run(_common_args: &Arguments, args: &WriteToReadOpts, bifrost: Bifrost) -> Result<()> {
     let clock = quanta::Clock::new();
     // Create two tasks, one that writes to the log continously and another one that reads from the
     // log and measures the latency. Collect latencies in a histogram and print the histogram
     // before the test ends.
     let reader_task: TaskHandle<Result<_>> =
-        tc.spawn_unmanaged(TaskKind::PartitionProcessor, "test-log-reader", None, {
+        TaskCenter::spawn_unmanaged(TaskKind::PartitionProcessor, "test-log-reader", {
             let clock = clock.clone();
             let args = args.clone();
             let bifrost = bifrost.clone();
@@ -91,7 +86,7 @@ pub async fn run(
         })?;
 
     let writer_task: TaskHandle<Result<_>> =
-        tc.spawn_unmanaged(TaskKind::PartitionProcessor, "test-log-appender", None, {
+        TaskCenter::spawn_unmanaged(TaskKind::PartitionProcessor, "test-log-appender", {
             let clock = clock.clone();
             let bifrost = bifrost.clone();
             let args = args.clone();
@@ -104,7 +99,7 @@ pub async fn run(
                         args.write_buffer_size,
                         args.max_batch_size,
                     )?
-                    .start("writer", None)?;
+                    .start("writer")?;
                 let sender = appender_handle.sender();
                 let start = Instant::now();
                 for counter in 1..=args.num_records {
@@ -145,6 +140,6 @@ pub async fn run(
     println!();
     print_latencies("append latency", append_latency);
     print_latencies("write-to-read latency", read_latency);
-    tc.shutdown_node("completed", 0).await;
+    TaskCenter::shutdown_node("completed", 0).await;
     Ok(())
 }
