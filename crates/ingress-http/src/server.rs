@@ -247,7 +247,7 @@ mod tests {
     use http_body_util::Full;
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
-    use restate_core::TestCoreEnv2;
+    use restate_core::TestCoreEnv;
     use restate_core::{TaskCenter, TaskKind};
     use restate_test_util::assert_eq;
     use restate_types::health::Health;
@@ -335,7 +335,7 @@ mod tests {
     }
 
     async fn bootstrap_test(mock_request_dispatcher: MockRequestDispatcher) -> SocketAddr {
-        let _env = TestCoreEnv2::create_with_single_node(1, 1).await;
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let health = Health::default();
 
         // Create the ingress and start it

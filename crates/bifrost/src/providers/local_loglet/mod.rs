@@ -282,7 +282,7 @@ mod tests {
     use test_log::test;
 
     use crate::loglet::Loglet;
-    use restate_core::{TaskCenter, TestCoreEnvBuilder2};
+    use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
@@ -307,7 +307,7 @@ mod tests {
     }
 
     async fn create_loglet() -> anyhow::Result<Arc<LocalLoglet>> {
-        let _node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let _node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -345,7 +345,7 @@ mod tests {
 
     #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
     async fn local_loglet_append_after_seal_concurrent() -> googletest::Result<()> {
-        let _node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let _node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;

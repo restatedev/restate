@@ -156,7 +156,7 @@ impl PersistedLogLsnWatchdog {
 #[cfg(test)]
 mod tests {
     use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
-    use restate_core::{TaskCenter, TaskKind, TestCoreEnv2};
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::fsm_table::FsmTable;
@@ -174,7 +174,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn persisted_log_lsn_watchdog_detects_applied_lsns() -> anyhow::Result<()> {
-        let _node_env = TestCoreEnv2::create_with_single_node(1, 1).await;
+        let _node_env = TestCoreEnv::create_with_single_node(1, 1).await;
         let storage_options = StorageOptions::default();
         let rocksdb_options = RocksDbOptions::default();
 

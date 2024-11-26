@@ -896,7 +896,7 @@ mod tests {
     use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::BifrostService;
     use restate_core::network::MockPeerConnection;
-    use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder2};
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StorageOptions};
@@ -930,7 +930,7 @@ mod tests {
         nodes_config.upsert_node(node_config);
 
         let mut env_builder =
-            TestCoreEnvBuilder2::with_incoming_only_connector().set_nodes_config(nodes_config);
+            TestCoreEnvBuilder::with_incoming_only_connector().set_nodes_config(nodes_config);
         let health_status = HealthStatus::default();
 
         RocksDbManager::init(Constant::new(CommonOptions::default()));
