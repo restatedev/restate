@@ -58,7 +58,6 @@ pub enum Error {
 }
 
 pub struct Service<T> {
-    metadata: Metadata,
     networking: Networking<T>,
     bifrost: Bifrost,
     cluster_state_refresher: ClusterStateRefresher<T>,
@@ -83,7 +82,6 @@ where
         mut configuration: Live<Configuration>,
         health_status: HealthStatus<AdminStatus>,
         bifrost: Bifrost,
-        metadata: Metadata,
         networking: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
         server_builder: &mut NetworkServerBuilder,
@@ -93,7 +91,7 @@ where
         let (command_tx, command_rx) = mpsc::channel(2);
 
         let cluster_state_refresher =
-            ClusterStateRefresher::new(metadata.clone(), networking.clone(), router_builder);
+            ClusterStateRefresher::new(networking.clone(), router_builder);
 
         let processor_manager_client =
             PartitionProcessorManagerClient::new(networking.clone(), router_builder);
@@ -119,7 +117,6 @@ where
         Service {
             configuration,
             health_status,
-            metadata,
             networking,
             bifrost,
             cluster_state_refresher,
@@ -226,7 +223,7 @@ impl<T: TransportConnect> Service<T> {
         TaskCenter::spawn_child(
             TaskKind::SystemService,
             "cluster-controller-metadata-sync",
-            sync_cluster_controller_metadata(self.metadata.clone()),
+            sync_cluster_controller_metadata(),
         )?;
 
         let mut shutdown = std::pin::pin!(cancellation_watcher());
@@ -393,12 +390,13 @@ impl<T: TransportConnect> Service<T> {
     }
 }
 
-async fn sync_cluster_controller_metadata(metadata: Metadata) -> anyhow::Result<()> {
+async fn sync_cluster_controller_metadata() -> anyhow::Result<()> {
     // todo make this configurable
     let mut interval = time::interval(Duration::from_secs(10));
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut cancel = std::pin::pin!(cancellation_watcher());
+    let metadata = Metadata::current();
 
     loop {
         tokio::select! {
@@ -510,7 +508,6 @@ mod tests {
             Live::from_value(Configuration::default()),
             HealthStatus::default(),
             bifrost.clone(),
-            builder.metadata.clone(),
             builder.networking.clone(),
             &mut builder.router_builder,
             &mut NetworkServerBuilder::default(),
@@ -792,7 +789,6 @@ mod tests {
             Live::from_value(config),
             HealthStatus::default(),
             bifrost.clone(),
-            builder.metadata.clone(),
             builder.networking.clone(),
             &mut builder.router_builder,
             &mut server_builder,

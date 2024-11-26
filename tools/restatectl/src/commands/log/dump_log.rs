@@ -80,7 +80,6 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
             Live::from_value(config.metadata_store.clone())
                 .map(|c| &c.rocksdb)
                 .boxed(),
-            &TaskCenter::current(),
         )
         .await?;
         debug!("Metadata store client created");
@@ -90,10 +89,9 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
         let mut router_builder = MessageRouterBuilder::default();
         metadata_manager.register_in_message_router(&mut router_builder);
 
-        TaskCenter::current().spawn(
+        TaskCenter::spawn(
             TaskKind::SystemService,
             "metadata-manager",
-            None,
             metadata_manager.run(),
         )?;
 

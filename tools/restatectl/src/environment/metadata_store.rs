@@ -22,7 +22,6 @@ pub async fn start_metadata_store(
     metadata_store_client_options: MetadataStoreClientOptions,
     opts: BoxedLiveLoad<MetadataStoreOptions>,
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    task_center: &TaskCenter,
 ) -> anyhow::Result<MetadataStoreClient> {
     let health_status = HealthStatus::default();
     let service = LocalMetadataStoreService::from_options(
@@ -31,10 +30,9 @@ pub async fn start_metadata_store(
         updateables_rocksdb_options,
     );
 
-    task_center.spawn(
+    TaskCenter::spawn(
         TaskKind::MetadataStore,
         "local-metadata-store",
-        None,
         async move {
             service.run().await?;
             Ok(())
