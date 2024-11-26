@@ -40,7 +40,10 @@ impl TaskCenterMonitoring for Handle {
 
     fn managed_runtime_metrics(&self) -> Vec<(&'static str, RuntimeMetrics)> {
         let guard = self.inner.managed_runtimes.lock();
-        guard.iter().map(|(k, v)| (*k, v.metrics())).collect()
+        guard
+            .iter()
+            .map(|(k, v)| (*k, v.runtime_handle().metrics()))
+            .collect()
     }
 
     /// How long has the task-center been running?

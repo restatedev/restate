@@ -38,7 +38,7 @@ use restate_core::{
     cancellation_watcher, my_node_id, Metadata, ShutdownError, TaskCenterFutureExt, TaskHandle,
     TaskKind,
 };
-use restate_core::{RuntimeRootTaskHandle, TaskCenter};
+use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
@@ -456,7 +456,7 @@ impl PartitionProcessorManager {
     fn await_runtime_task_result(
         &mut self,
         partition_id: PartitionId,
-        runtime_task_handle: RuntimeRootTaskHandle<anyhow::Result<()>>,
+        runtime_task_handle: RuntimeTaskHandle<anyhow::Result<()>>,
     ) {
         self.asynchronous_operations.spawn(
             async move {
@@ -881,7 +881,7 @@ struct AsynchronousEvent {
 
 #[derive(strum::IntoStaticStr)]
 enum EventKind {
-    Started(anyhow::Result<(StartedProcessor, RuntimeRootTaskHandle<anyhow::Result<()>>)>),
+    Started(anyhow::Result<(StartedProcessor, RuntimeTaskHandle<anyhow::Result<()>>)>),
     Stopped(anyhow::Result<()>),
     NewLeaderEpoch {
         leader_epoch_token: LeaderEpochToken,

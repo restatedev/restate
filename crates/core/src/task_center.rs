@@ -181,7 +181,7 @@ impl TaskCenter {
         runtime_name: &'static str,
         partition_id: Option<PartitionId>,
         root_future: impl FnOnce() -> F + Send + 'static,
-    ) -> Result<RuntimeRootTaskHandle<anyhow::Result<()>>, RuntimeError>
+    ) -> Result<RuntimeTaskHandle<anyhow::Result<()>>, RuntimeError>
     where
         F: Future<Output = anyhow::Result<()>> + 'static,
     {
@@ -276,7 +276,7 @@ struct TaskCenterInner {
     pause_time: bool,
     default_runtime_handle: tokio::runtime::Handle,
     ingress_runtime_handle: tokio::runtime::Handle,
-    managed_runtimes: Mutex<HashMap<&'static str, Arc<tokio::runtime::Runtime>>>,
+    managed_runtimes: Mutex<HashMap<&'static str, OwnedRuntimeHandle>>,
     start_time: Instant,
     /// We hold on to the owned Runtime to ensure it's dropped when task center is dropped. If this
     /// is None, it means that it's the responsibility of the Handle owner to correctly drop
@@ -555,7 +555,7 @@ impl TaskCenterInner {
         runtime_name: &'static str,
         partition_id: Option<PartitionId>,
         root_future: impl FnOnce() -> F + Send + 'static,
-    ) -> Result<RuntimeRootTaskHandle<anyhow::Result<()>>, RuntimeError>
+    ) -> Result<RuntimeTaskHandle<anyhow::Result<()>>, RuntimeError>
     where
         F: Future<Output = anyhow::Result<()>> + 'static,
     {
@@ -590,7 +590,10 @@ impl TaskCenterInner {
 
         let rt_handle = Arc::new(rt);
 
-        runtimes_guard.insert(runtime_name, rt_handle.clone());
+        runtimes_guard.insert(
+            runtime_name,
+            OwnedRuntimeHandle::new(runtime_name, cancel.clone(), rt_handle.clone()),
+        );
 
         // release the lock.
         drop(runtimes_guard);
@@ -625,16 +628,22 @@ impl TaskCenterInner {
             })
             .unwrap();
 
-        Ok(RuntimeRootTaskHandle {
-            inner_handle: result_rx,
-            cancellation_token: cancel,
-        })
+        Ok(RuntimeTaskHandle::new(runtime_name, cancel, result_rx))
     }
 
+    /// Runs **only** after the inner main thread has completed work and no other owner exists for
+    /// the runtime handle.
     fn drop_runtime(self: &Arc<Self>, name: &'static str) {
         let mut runtimes_guard = self.managed_runtimes.lock();
-        if runtimes_guard.remove(name).is_some() {
-            trace!("Runtime {} was dropped", name);
+        if let Some(runtime) = runtimes_guard.remove(name) {
+            // We must be the only owner of runtime at this point.
+            let name = runtime.name().to_owned();
+            debug!("Runtime {} completed", runtime.name());
+            let owner = Arc::into_inner(runtime.into_inner());
+            if let Some(runtime) = owner {
+                runtime.shutdown_timeout(Duration::from_secs(2));
+                trace!("Runtime {} shutdown completed", name);
+            }
         }
     }
 
@@ -803,6 +812,7 @@ impl TaskCenterInner {
         } else {
             info!(%reason, "** Shutdown requested");
         }
+        self.initiate_managed_runtimes_shutdown();
         self.cancel_tasks(None, None).await;
         self.shutdown_managed_runtimes();
         // notify outer components that we have completed the shutdown.
@@ -906,10 +916,23 @@ impl TaskCenterInner {
         }
     }
 
+    fn initiate_managed_runtimes_shutdown(self: &Arc<Self>) {
+        let runtimes = self.managed_runtimes.lock();
+        for (name, runtime) in runtimes.iter() {
+            // asking the root task in the runtime to shutdown gracefully.
+            runtime.cancel();
+            trace!("Asked runtime {} to shutdown gracefully", name);
+        }
+    }
+
     fn shutdown_managed_runtimes(self: &Arc<Self>) {
         let mut runtimes = self.managed_runtimes.lock();
         for (_, runtime) in runtimes.drain() {
-            if let Some(runtime) = Arc::into_inner(runtime) {
+            if let Some(runtime) = Arc::into_inner(runtime.into_inner()) {
+                // This really isn't doing much, but it's left here for completion.
+                // The reason is: If the runtime is still running, then it'll hold the Arc until it
+                // finishes gracefully, yielding None here. If the runtime completed, it'll
+                // self-shutdown prior to reaching this point.
                 runtime.shutdown_background();
             }
         }

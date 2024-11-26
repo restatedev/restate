@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::instrument;
 
 use restate_bifrost::Bifrost;
-use restate_core::{Metadata, RuntimeRootTaskHandle, TaskCenter, TaskKind};
+use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind};
 use restate_invoker_impl::Service as InvokerService;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -66,7 +66,7 @@ impl SpawnPartitionProcessorTask {
     )]
     pub async fn run(
         self,
-    ) -> anyhow::Result<(StartedProcessor, RuntimeRootTaskHandle<anyhow::Result<()>>)> {
+    ) -> anyhow::Result<(StartedProcessor, RuntimeTaskHandle<anyhow::Result<()>>)> {
         let Self {
             task_name,
             partition_id,
@@ -145,7 +145,7 @@ impl SpawnPartitionProcessorTask {
         )?;
 
         let state = StartedProcessor::new(
-            root_task_handle.cancellation_token(),
+            root_task_handle.cancellation_token().clone(),
             key_range,
             control_tx,
             status_reader,
