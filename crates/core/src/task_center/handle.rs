@@ -19,7 +19,7 @@ use tracing::instrument;
 use crate::{Metadata, ShutdownError};
 
 use super::{
-    RuntimeError, RuntimeRootTaskHandle, TaskCenterInner, TaskContext, TaskHandle, TaskId, TaskKind,
+    RuntimeError, RuntimeTaskHandle, TaskCenterInner, TaskContext, TaskHandle, TaskId, TaskKind,
 };
 
 #[derive(Clone, derive_more::Debug)]
@@ -83,7 +83,7 @@ impl Handle {
         runtime_name: &'static str,
         partition_id: Option<PartitionId>,
         root_future: impl FnOnce() -> F + Send + 'static,
-    ) -> Result<RuntimeRootTaskHandle<anyhow::Result<()>>, RuntimeError>
+    ) -> Result<RuntimeTaskHandle<anyhow::Result<()>>, RuntimeError>
     where
         F: Future<Output = anyhow::Result<()>> + 'static,
     {

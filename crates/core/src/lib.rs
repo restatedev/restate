@@ -46,7 +46,7 @@ pub use metadata::{
 };
 pub use task_center::{
     cancellation_token, cancellation_watcher, is_cancellation_requested, my_node_id, AsyncRuntime,
-    MetadataFutureExt, RuntimeError, RuntimeRootTaskHandle, TaskCenter, TaskCenterBuildError,
+    MetadataFutureExt, RuntimeError, RuntimeTaskHandle, TaskCenter, TaskCenterBuildError,
     TaskCenterBuilder, TaskCenterFutureExt, TaskContext, TaskHandle, TaskId, TaskKind,
 };
 
