@@ -68,6 +68,9 @@ impl PartitionStoreManager {
                 cf_options(per_partition_memory_budget),
             )
             .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
+            // This is added as an experiment. We might make this configurable to let users decide
+            // on the trade-off between shutdown time and startup catchup time.
+            .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
             .build()
             .expect("valid spec");
 
