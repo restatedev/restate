@@ -403,25 +403,19 @@ impl Loglet for MemoryLoglet {
 mod tests {
     use super::*;
 
-    use restate_core::TestCoreEnvBuilder;
+    use restate_core::TestCoreEnvBuilder2;
 
     macro_rules! run_test {
         ($test:ident) => {
             paste::paste! {
-                #[tokio::test(start_paused = true)]
+                #[restate_core::test(start_paused = true)]
                 async fn [<memory_loglet_  $test>]() -> googletest::Result<()> {
-                let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
-                    .set_provider_kind(ProviderKind::InMemory)
-                    .build()
-                    .await;
-                node_env
-                    .tc
-                    .run_in_scope("test", None, async {
-                        let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
-                        crate::loglet::loglet_tests::$test(loglet).await
-                    })
-                    .await?;
-                Ok(())
+                    let _node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+                        .set_provider_kind(ProviderKind::InMemory)
+                        .build()
+                        .await;
+                    let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
+                    crate::loglet::loglet_tests::$test(loglet).await
                 }
             }
         };

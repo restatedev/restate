@@ -18,7 +18,7 @@ use rocksdb::{BlockBasedOptions, Cache, LogLevel, WriteBufferManager};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
+use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 use restate_serde_util::ByteCount;
 use restate_types::config::{
     CommonOptions, Configuration, RocksDbLogLevel, RocksDbOptions, StatisticsLevel,
@@ -121,14 +121,12 @@ impl RocksDbManager {
 
         DB_MANAGER.set(manager).expect("DBManager initialized once");
         // Start db monitoring.
-        task_center()
-            .spawn(
-                TaskKind::SystemService,
-                "db-manager",
-                None,
-                DbWatchdog::run(Self::get(), watchdog_rx, base_opts),
-            )
-            .expect("run db watchdog");
+        TaskCenter::spawn(
+            TaskKind::SystemService,
+            "db-manager",
+            DbWatchdog::run(Self::get(), watchdog_rx, base_opts),
+        )
+        .expect("run db watchdog");
 
         Self::get()
     }

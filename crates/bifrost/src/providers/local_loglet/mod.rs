@@ -278,11 +278,11 @@ impl Loglet for LocalLoglet {
 mod tests {
     use futures::TryStreamExt;
     use googletest::prelude::eq;
-    use googletest::{assert_that, elements_are};
+    use googletest::{assert_that, elements_are, IntoTestResult};
     use test_log::test;
 
     use crate::loglet::Loglet;
-    use restate_core::TestCoreEnvBuilder;
+    use restate_core::{TaskCenter, TestCoreEnvBuilder2};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
@@ -294,55 +294,47 @@ mod tests {
     macro_rules! run_test {
         ($test:ident) => {
             paste::paste! {
-                #[tokio::test(start_paused = true)]
+                #[restate_core::test(start_paused = true)]
                 async fn [<local_loglet_  $test>]() -> googletest::Result<()> {
-                    run_in_test_env(crate::loglet::loglet_tests::$test).await
+                    let loglet = create_loglet().await.into_test_result()?;
+                    crate::loglet::loglet_tests::$test(loglet).await?;
+                    TaskCenter::shutdown_node("test completed", 0).await;
+                    RocksDbManager::get().shutdown().await;
+                    Ok(())
                 }
             }
         };
     }
 
-    async fn run_in_test_env<F, O>(mut future: F) -> googletest::Result<()>
-    where
-        F: FnMut(Arc<dyn Loglet>) -> O,
-        O: std::future::Future<Output = googletest::Result<()>>,
-    {
-        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+    async fn create_loglet() -> anyhow::Result<Arc<LocalLoglet>> {
+        let _node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
 
-        node_env
-            .tc
-            .run_in_scope("test", None, async {
-                let config = Live::from_value(Configuration::default());
-                RocksDbManager::init(config.clone().map(|c| &c.common));
-                let params = LogletParams::from("42".to_string());
+        let config = Live::from_value(Configuration::default());
+        RocksDbManager::init(config.clone().map(|c| &c.common));
+        let params = LogletParams::from("42".to_string());
 
-                let log_store = RocksDbLogStore::create(
-                    &config.pinned().bifrost.local,
-                    config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
-                )
-                .await?;
+        let log_store = RocksDbLogStore::create(
+            &config.pinned().bifrost.local,
+            config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
+        )
+        .await?;
 
-                let log_writer = log_store
-                    .create_writer()
-                    .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+        let log_writer = log_store
+            .create_writer()
+            .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
 
-                let loglet = Arc::new(LocalLoglet::create(
-                    params
-                        .parse()
-                        .expect("loglet params can be converted into u64"),
-                    log_store,
-                    log_writer,
-                )?);
+        let loglet = Arc::new(LocalLoglet::create(
+            params
+                .parse()
+                .expect("loglet params can be converted into u64"),
+            log_store,
+            log_writer,
+        )?);
 
-                future(loglet).await
-            })
-            .await?;
-        node_env.tc.shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
-        Ok(())
+        Ok(loglet)
     }
 
     run_test!(gapless_loglet_smoke_test);
@@ -351,85 +343,77 @@ mod tests {
     run_test!(append_after_seal);
     run_test!(seal_empty);
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
     async fn local_loglet_append_after_seal_concurrent() -> googletest::Result<()> {
-        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+        let _node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
 
-        node_env
-            .tc
-            .run_in_scope("test", None, async {
-                let config = Live::from_value(Configuration::default());
-                RocksDbManager::init(config.clone().map(|c| &c.common));
+        let config = Live::from_value(Configuration::default());
+        RocksDbManager::init(config.clone().map(|c| &c.common));
 
-                let log_store = RocksDbLogStore::create(
-                    &config.pinned().bifrost.local,
-                    config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
-                )
-                .await?;
+        let log_store = RocksDbLogStore::create(
+            &config.pinned().bifrost.local,
+            config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
+        )
+        .await?;
 
-                let log_writer = log_store
-                    .create_writer()
-                    .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+        let log_writer = log_store
+            .create_writer()
+            .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
 
-                // Run the test 10 times
-                for i in 1..=10 {
-                    let loglet = Arc::new(LocalLoglet::create(
-                        i,
-                        log_store.clone(),
-                        log_writer.clone(),
-                    )?);
-                    crate::loglet::loglet_tests::append_after_seal_concurrent(loglet).await?;
-                }
+        // Run the test 10 times
+        for i in 1..=10 {
+            let loglet = Arc::new(LocalLoglet::create(
+                i,
+                log_store.clone(),
+                log_writer.clone(),
+            )?);
+            crate::loglet::loglet_tests::append_after_seal_concurrent(loglet).await?;
+        }
 
-                googletest::Result::Ok(())
-            })
-            .await?;
-        node_env.tc.shutdown_node("test completed", 0).await;
+        TaskCenter::shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn read_stream_with_filters() -> googletest::Result<()> {
-        run_in_test_env(|loglet| async {
-            let batch: Arc<[Record]> = vec![
-                ("record-1", Keys::Single(1)).into(),
-                ("record-2", Keys::Single(2)).into(),
-                ("record-3", Keys::Single(1)).into(),
+        let loglet = create_loglet().await.into_test_result()?;
+        let batch: Arc<[Record]> = vec![
+            ("record-1", Keys::Single(1)).into(),
+            ("record-2", Keys::Single(2)).into(),
+            ("record-3", Keys::Single(1)).into(),
+        ]
+        .into();
+        let offset = loglet.enqueue_batch(batch).await?.await?;
+
+        let key_filter = KeyFilter::Include(1);
+        let read_stream = loglet
+            .create_read_stream(key_filter, LogletOffset::OLDEST, Some(offset))
+            .await?;
+
+        let records: Vec<_> = read_stream
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .map(|log_entry| {
+                (
+                    log_entry.sequence_number(),
+                    log_entry.decode_unchecked::<String>(),
+                )
+            })
+            .collect();
+
+        assert_that!(
+            records,
+            elements_are![
+                eq((LogletOffset::from(1), "record-1".to_owned())),
+                eq((LogletOffset::from(3), "record-3".to_owned()))
             ]
-            .into();
-            let offset = loglet.enqueue_batch(batch).await?.await?;
+        );
 
-            let key_filter = KeyFilter::Include(1);
-            let read_stream = loglet
-                .create_read_stream(key_filter, LogletOffset::OLDEST, Some(offset))
-                .await?;
-
-            let records: Vec<_> = read_stream
-                .try_collect::<Vec<_>>()
-                .await?
-                .into_iter()
-                .map(|log_entry| {
-                    (
-                        log_entry.sequence_number(),
-                        log_entry.decode_unchecked::<String>(),
-                    )
-                })
-                .collect();
-
-            assert_that!(
-                records,
-                elements_are![
-                    eq((LogletOffset::from(1), "record-1".to_owned())),
-                    eq((LogletOffset::from(3), "record-3".to_owned()))
-                ]
-            );
-
-            Ok(())
-        })
-        .await
+        Ok(())
     }
 }

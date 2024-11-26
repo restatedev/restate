@@ -33,7 +33,6 @@ use crate::providers::replicated_loglet::tasks::PeriodicTailChecker;
 use crate::Error;
 
 pub struct Factory<T> {
-    task_center: TaskCenter,
     metadata_store_client: MetadataStoreClient,
     networking: Networking<T>,
     logserver_rpc_routers: LogServersRpc,
@@ -44,7 +43,6 @@ pub struct Factory<T> {
 
 impl<T: TransportConnect> Factory<T> {
     pub fn new(
-        task_center: TaskCenter,
         metadata_store_client: MetadataStoreClient,
         networking: Networking<T>,
         record_cache: RecordCache,
@@ -61,7 +59,6 @@ impl<T: TransportConnect> Factory<T> {
         let sequencer_rpc_routers = SequencersRpc::new(router_builder);
         // todo(asoli): Create a handler to answer to control plane monitoring questions
         Self {
-            task_center,
             metadata_store_client,
             networking,
             logserver_rpc_routers,
@@ -81,7 +78,6 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
     async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
         metric_definitions::describe_metrics();
         let provider = Arc::new(ReplicatedLogletProvider::new(
-            self.task_center.clone(),
             self.metadata_store_client,
             self.networking,
             self.logserver_rpc_routers,
@@ -90,23 +86,17 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
         ));
         // run the request pump. The request pump handles/routes incoming messages to our
         // locally hosted sequencers.
-        self.task_center.spawn(
-            TaskKind::NetworkMessageHandler,
-            "sequencers-ingress",
-            None,
-            {
-                let request_pump = self.request_pump;
-                let provider = provider.clone();
-                async { request_pump.run(provider).await }
-            },
-        )?;
+        TaskCenter::spawn(TaskKind::NetworkMessageHandler, "sequencers-ingress", {
+            let request_pump = self.request_pump;
+            let provider = provider.clone();
+            request_pump.run(provider)
+        })?;
 
         Ok(provider)
     }
 }
 
 pub(super) struct ReplicatedLogletProvider<T> {
-    task_center: TaskCenter,
     active_loglets: DashMap<(LogId, SegmentIndex), Arc<ReplicatedLoglet<T>>>,
     _metadata_store_client: MetadataStoreClient,
     networking: Networking<T>,
@@ -117,7 +107,6 @@ pub(super) struct ReplicatedLogletProvider<T> {
 
 impl<T: TransportConnect> ReplicatedLogletProvider<T> {
     fn new(
-        task_center: TaskCenter,
         metadata_store_client: MetadataStoreClient,
         networking: Networking<T>,
         logserver_rpc_routers: LogServersRpc,
@@ -125,7 +114,6 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
         record_cache: RecordCache,
     ) -> Self {
         Self {
-            task_center,
             active_loglets: Default::default(),
             _metadata_store_client: metadata_store_client,
             networking,
@@ -186,10 +174,9 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                 );
                 let key_value = entry.insert(Arc::new(loglet));
                 let loglet = Arc::downgrade(key_value.value());
-                let _ = self.task_center.spawn(
+                let _ = TaskCenter::spawn(
                     TaskKind::BifrostBackgroundLowPriority,
                     "periodic-tail-checker",
-                    None,
                     // todo: configuration
                     PeriodicTailChecker::run(loglet_id, loglet, Duration::from_secs(2)),
                 );

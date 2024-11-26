@@ -17,7 +17,6 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use tracing::{trace, warn};
 
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle};
-use restate_types::identifiers::PartitionId;
 use restate_types::storage::StorageEncode;
 
 use crate::error::EnqueueError;
@@ -58,17 +57,12 @@ where
     /// Start the background appender as a TaskCenter background task. Note that the task will not
     /// automatically react to TaskCenter's shutdown signal, it gives control over the shutdown
     /// behaviour to the owner of [`AppenderHandle`] to drain or drop when appropriate.
-    pub fn start(
-        self,
-        name: &'static str,
-        partition_id: Option<PartitionId>,
-    ) -> Result<AppenderHandle<T>, ShutdownError> {
+    pub fn start(self, name: &'static str) -> Result<AppenderHandle<T>, ShutdownError> {
         let (tx, rx) = tokio::sync::mpsc::channel(self.queue_capacity);
 
-        let handle = TaskCenter::current().spawn_unmanaged(
+        let handle = TaskCenter::spawn_unmanaged(
             restate_core::TaskKind::BifrostAppender,
             name,
-            partition_id,
             self.run(rx),
         )?;
 

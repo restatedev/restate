@@ -123,7 +123,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     assert!(loglet.read_opt(Lsn::new(end)).await?.is_none());
 
     let handle1: TaskHandle<googletest::Result<()>> =
-        TaskCenter::current().spawn_unmanaged(TaskKind::TestRunner, "read", None, {
+        TaskCenter::spawn_unmanaged(TaskKind::TestRunner, "read", {
             let loglet = loglet.clone();
             async move {
                 // read future record 4
@@ -140,7 +140,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
 
     // Waiting for 10
     let handle2: TaskHandle<googletest::Result<()>> =
-        TaskCenter::current().spawn_unmanaged(TaskKind::TestRunner, "read", None, {
+        TaskCenter::spawn_unmanaged(TaskKind::TestRunner, "read", {
             let loglet = loglet.clone();
             async move {
                 // read future record 10

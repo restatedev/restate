@@ -21,7 +21,7 @@ use tracing::{debug, instrument, trace};
 
 use restate_core::{
     network::{rpc_router::RpcRouter, Networking, TransportConnect},
-    task_center, ShutdownError, TaskKind,
+    ShutdownError, TaskCenter, TaskKind,
 };
 use restate_types::{
     config::Configuration,
@@ -269,7 +269,7 @@ impl<T: TransportConnect> Sequencer<T> {
 
         let fut = self.in_flight.track_future(appender.run());
 
-        task_center().spawn(TaskKind::SequencerAppender, "sequencer-appender", None, fut)?;
+        TaskCenter::spawn(TaskKind::SequencerAppender, "sequencer-appender", fut)?;
 
         Ok(loglet_commit)
     }

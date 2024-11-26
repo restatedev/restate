@@ -234,6 +234,13 @@ impl TaskCenter {
         Self::current().cancel_tasks(kind, partition_id).await
     }
 
+    /// Triggers a shutdown of the system. All running tasks will be asked gracefully
+    /// to cancel but we will only wait for tasks with a TaskKind that has the property
+    /// "OnCancel" set to "wait".
+    pub async fn shutdown_node(reason: &str, exit_code: i32) {
+        Self::current().shutdown_node(reason, exit_code).await
+    }
+
     #[track_caller]
     pub fn shutdown_managed_runtimes() {
         Self::with_current(|tc| tc.shutdown_managed_runtimes())
