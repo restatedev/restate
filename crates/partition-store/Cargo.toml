@@ -39,7 +39,7 @@ static_assertions = { workspace = true }
 strum = { workspace = true }
 sync_wrapper = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
 
