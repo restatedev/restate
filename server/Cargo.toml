@@ -69,6 +69,7 @@ restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-local-cluster-runner = { workspace = true }
 restate-test-util = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

@@ -28,7 +28,7 @@ use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
 use restate_core::metadata_store::{
     retry_on_network_error, MetadataStoreClient, Precondition, ReadWriteError, WriteError,
 };
-use restate_core::{metadata, task_center, Metadata, MetadataWriter, ShutdownError};
+use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -324,7 +324,7 @@ fn try_provisioning(
         #[cfg(feature = "replicated-loglet")]
         ProviderKind::Replicated => build_new_replicated_loglet_configuration(
             ReplicatedLogletId::new(log_id, SegmentIndex::OLDEST),
-            metadata().nodes_config_ref().as_ref(),
+            &Metadata::with_current(|m| m.nodes_config_ref()),
             observed_cluster_state,
             None,
             node_set_selector_hints.preferred_sequencer(&log_id),
@@ -494,7 +494,7 @@ impl LogletConfiguration {
             LogletConfiguration::Replicated(configuration) => {
                 build_new_replicated_loglet_configuration(
                     configuration.loglet_id.next(),
-                    &metadata().nodes_config_ref(),
+                    &Metadata::with_current(|m| m.nodes_config_ref()),
                     observed_cluster_state,
                     Some(configuration),
                     preferred_sequencer,
@@ -621,7 +621,7 @@ struct LogsControllerInner {
     logs_state: HashMap<LogId, LogState, Xxh3Builder>,
     logs_write_in_progress: Option<Version>,
 
-    // We are storing the logs explicitly (not relying on metadata()) because we need a fixed
+    // We are storing the logs explicitly (not relying on Metadata::current()) because we need a fixed
     // snapshot to keep logs_state in sync.
     current_logs: Arc<Logs>,
     retry_policy: RetryPolicy,
@@ -1024,15 +1024,11 @@ impl LogsController {
             Event::LogsTailUpdates { updates }
         };
 
-        let tc = task_center();
-        self.async_operations.spawn(async move {
-            tc.run_in_scope(
-                "log-controller-refresh-tail",
-                None,
-                find_tail.instrument(trace_span!("scheduled-find-tail")),
-            )
-            .await
-        });
+        self.async_operations.spawn(
+            find_tail
+                .instrument(trace_span!("scheduled-find-tail"))
+                .in_current_tc(),
+        );
     }
 
     pub fn on_observed_cluster_state_update(
@@ -1093,12 +1089,10 @@ impl LogsController {
         logs: Arc<Logs>,
         mut debounce: Option<RetryIter<'static>>,
     ) {
-        let tc = task_center().clone();
         let metadata_store_client = self.metadata_store_client.clone();
         let metadata_writer = self.metadata_writer.clone();
 
         self.async_operations.spawn(async move {
-            tc.run_in_scope("logs-controller-write-logs", None, async {
                 if let Some(debounce) = &mut debounce {
                     let delay = debounce.next().unwrap_or(FALLBACK_MAX_RETRY_DELAY);
                     debug!(?delay, %previous_version, "Wait before attempting to write logs");
@@ -1153,9 +1147,7 @@ impl LogsController {
 
                 let version = logs.version();
                 Event::WriteLogsSucceeded(version)
-            })
-                .await
-        });
+        }.in_current_tc());
     }
 
     fn seal_log(
@@ -1164,13 +1156,12 @@ impl LogsController {
         segment_index: SegmentIndex,
         mut debounce: Option<RetryIter<'static>>,
     ) {
-        let tc = task_center().clone();
         let bifrost = self.bifrost.clone();
         let metadata_store_client = self.metadata_store_client.clone();
         let metadata_writer = self.metadata_writer.clone();
 
-        self.async_operations.spawn(async move {
-            tc.run_in_scope("logs-controller-seal-log", None, async {
+        self.async_operations.spawn(
+            async move {
                 if let Some(debounce) = &mut debounce {
                     let delay = debounce.next().unwrap_or(FALLBACK_MAX_RETRY_DELAY);
                     debug!(?delay, %log_id, %segment_index, "Wait before attempting to seal log");
@@ -1205,9 +1196,9 @@ impl LogsController {
                         }
                     }
                 }
-            })
-            .await
-        });
+            }
+            .in_current_tc(),
+        );
     }
 
     pub async fn run_async_operations(&mut self) -> Result<Never> {

@@ -24,7 +24,7 @@ use test_log::test;
 
 mod common;
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn node_id_mismatch() -> googletest::Result<()> {
     let base_config = Configuration::default();
 
@@ -72,7 +72,7 @@ async fn node_id_mismatch() -> googletest::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn cluster_name_mismatch() -> googletest::Result<()> {
     let base_config = Configuration::default();
 
@@ -115,7 +115,7 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn replicated_loglet() -> googletest::Result<()> {
     let mut base_config = Configuration::default();
     base_config.bifrost.default_provider = ProviderKind::Replicated;

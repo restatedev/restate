@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use restate_core::network::{Networking, TransportConnect};
-use restate_core::{ShutdownError, TaskCenter};
+use restate_core::{ShutdownError, TaskCenterFutureExt};
 use restate_types::logs::{KeyFilter, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetDigest, LogServerRequestHeader};
 use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
@@ -78,7 +78,6 @@ use super::digests::Digests;
 /// known_global_tail. This is a best-effort phase and it should not block the completion of the repair task.
 pub struct RepairTail<T> {
     my_params: ReplicatedLogletParams,
-    task_center: TaskCenter,
     networking: Networking<T>,
     logservers_rpc: LogServersRpc,
     record_cache: RecordCache,
@@ -98,7 +97,6 @@ impl<T: TransportConnect> RepairTail<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         my_params: ReplicatedLogletParams,
-        task_center: TaskCenter,
         networking: Networking<T>,
         logservers_rpc: LogServersRpc,
         record_cache: RecordCache,
@@ -109,7 +107,6 @@ impl<T: TransportConnect> RepairTail<T> {
         let digests = Digests::new(&my_params, start_offset, target_tail);
         RepairTail {
             my_params,
-            task_center,
             networking,
             logservers_rpc,
             record_cache,
@@ -139,27 +136,24 @@ impl<T: TransportConnect> RepairTail<T> {
                 to_offset: self.digests.target_tail().prev(),
             };
             get_digest_requests.spawn({
-                let tc = self.task_center.clone();
                 let networking = self.networking.clone();
                 let logservers_rpc = self.logservers_rpc.clone();
                 let peer = *node;
                 async move {
-                    tc.run_in_scope("get-digest-from-node", None, async move {
-                        loop {
-                            // todo: handle retries with exponential backoff...
-                            let Ok(incoming) = logservers_rpc
-                                .get_digest
-                                .call(&networking, peer, msg.clone())
-                                .await
-                            else {
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                                continue;
-                            };
-                            return incoming;
-                        }
-                    })
-                    .await
+                    loop {
+                        // todo: handle retries with exponential backoff...
+                        let Ok(incoming) = logservers_rpc
+                            .get_digest
+                            .call(&networking, peer, msg.clone())
+                            .await
+                        else {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        };
+                        return incoming;
+                    }
                 }
+                .in_current_tc()
             });
         }
 

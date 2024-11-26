@@ -1033,8 +1033,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use restate_core::TaskKind;
-    use restate_core::TestCoreEnv;
+    use restate_core::{TaskCenter, TaskKind};
     use restate_invoker_api::entry_enricher;
     use restate_invoker_api::test_util::EmptyStorageReader;
     use restate_invoker_api::InvokerHandle;
@@ -1193,10 +1192,8 @@ mod tests {
         }
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn input_order_is_maintained() {
-        let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
-        let tc = node_env.tc;
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure
             .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, Some(1)))
@@ -1221,14 +1218,12 @@ mod tests {
 
         let mut handle = service.handle();
 
-        let invoker_task_id = tc
-            .spawn(
-                TaskKind::SystemService,
-                "invoker",
-                None,
-                service.run(Constant::new(invoker_options)),
-            )
-            .unwrap();
+        let invoker_task_id = TaskCenter::spawn(
+            TaskKind::SystemService,
+            "invoker",
+            service.run(Constant::new(invoker_options)),
+        )
+        .unwrap();
 
         let partition_leader_epoch = (PartitionId::from(0), LeaderEpoch::INITIAL);
         let invocation_target = InvocationTarget::mock_service();
@@ -1260,10 +1255,13 @@ mod tests {
         // the invocation and we won't see a result for the invocation (failure because the deployment cannot be resolved).
         check!(let Some(_) = output_rx.recv().await);
 
-        tc.cancel_task(invoker_task_id).unwrap().await.unwrap();
+        TaskCenter::cancel_task(invoker_task_id)
+            .unwrap()
+            .await
+            .unwrap();
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn quota_allows_one_concurrent_invocation() {
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure
@@ -1359,7 +1357,7 @@ mod tests {
         assert!(!service_inner.quota.is_slot_available());
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn reclaim_quota_after_abort() {
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure

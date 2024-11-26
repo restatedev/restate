@@ -33,12 +33,12 @@ use crate::network::{
     ConnectionManager, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder,
     NetworkError, Networking, ProtocolError, TransportConnect,
 };
-use crate::{spawn_metadata_manager, MetadataBuilder, TaskCenterFutureExt, TaskId};
+use crate::{spawn_metadata_manager, task_center, MetadataBuilder, TaskCenterFutureExt, TaskId};
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{TaskCenter, TaskCenterBuilder};
 
 pub struct TestCoreEnvBuilder<T> {
-    pub tc: TaskCenter,
+    pub tc: task_center::Handle,
     pub my_node_id: GenerationalNodeId,
     pub metadata_manager: MetadataManager,
     pub metadata_writer: MetadataWriter,
@@ -58,7 +58,8 @@ impl TestCoreEnvBuilder<FailingConnector> {
             .default_runtime_handle(tokio::runtime::Handle::current())
             .ingress_runtime_handle(tokio::runtime::Handle::current())
             .build()
-            .expect("task_center builds");
+            .expect("task_center builds")
+            .to_handle();
         let metadata_builder = MetadataBuilder::default();
         let net_opts = NetworkingOptions::default();
         let connection_manager =
@@ -73,7 +74,10 @@ impl TestCoreEnvBuilder<FailingConnector> {
     }
 }
 impl<T: TransportConnect> TestCoreEnvBuilder<T> {
-    pub fn with_transport_connector(tc: TaskCenter, connector: Arc<T>) -> TestCoreEnvBuilder<T> {
+    pub fn with_transport_connector(
+        tc: task_center::Handle,
+        connector: Arc<T>,
+    ) -> TestCoreEnvBuilder<T> {
         let metadata_builder = MetadataBuilder::default();
         let net_opts = NetworkingOptions::default();
         let connection_manager =
@@ -88,7 +92,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
     }
 
     pub fn with_networking(
-        tc: TaskCenter,
+        tc: task_center::Handle,
         networking: Networking<T>,
         metadata_builder: MetadataBuilder,
     ) -> Self {
@@ -103,7 +107,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 10);
         let scheduling_plan =
             SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes);
-        tc.try_set_global_metadata_inner(metadata.clone());
+        tc.try_set_global_metadata(metadata.clone());
 
         // Use memory-loglet as a default if in test-mode
         #[cfg(any(test, feature = "test-util"))]
@@ -246,7 +250,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
 
 // This might need to be moved to a better place in the future.
 pub struct TestCoreEnv<T> {
-    pub tc: TaskCenter,
+    pub tc: task_center::Handle,
     pub metadata: Metadata,
     pub metadata_writer: MetadataWriter,
     pub networking: Networking<T>,

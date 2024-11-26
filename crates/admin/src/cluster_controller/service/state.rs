@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::TransportConnect;
-use restate_core::{Metadata, MetadataWriter};
+use restate_core::{my_node_id, Metadata, MetadataWriter};
 use restate_types::cluster::cluster_state::{AliveNode, NodeState};
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::identifiers::PartitionId;
@@ -50,24 +50,26 @@ where
     T: TransportConnect,
 {
     pub async fn update(&mut self, service: &Service<T>) -> anyhow::Result<()> {
-        let nodes_config = service.metadata.nodes_config_ref();
-        let maybe_leader = nodes_config
-            .get_admin_nodes()
-            .filter(|node| {
-                service
-                    .observed_cluster_state
-                    .is_node_alive(node.current_generation)
-            })
-            .map(|node| node.current_generation)
-            .sorted()
-            .next();
+        let maybe_leader = {
+            let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+            nodes_config
+                .get_admin_nodes()
+                .filter(|node| {
+                    service
+                        .observed_cluster_state
+                        .is_node_alive(node.current_generation)
+                })
+                .map(|node| node.current_generation)
+                .sorted()
+                .next()
+        };
 
         // A Cluster Controller is a leader if the node holds the smallest PlainNodeID
         // If no other node was found to take leadership, we assume leadership
 
         let is_leader = match maybe_leader {
             None => true,
-            Some(leader) => leader == service.metadata.my_node_id(),
+            Some(leader) => leader == my_node_id(),
         };
 
         match (is_leader, &self) {
@@ -160,6 +162,8 @@ where
     async fn from_service(service: &Service<T>) -> anyhow::Result<Leader<T>> {
         let configuration = service.configuration.pinned();
 
+        let metadata = Metadata::current();
+
         let scheduler = Scheduler::init(
             &configuration,
             service.metadata_store_client.clone(),
@@ -169,7 +173,7 @@ where
 
         let logs_controller = LogsController::init(
             &configuration,
-            service.metadata.clone(),
+            metadata.clone(),
             service.bifrost.clone(),
             service.metadata_store_client.clone(),
             service.metadata_writer.clone(),
@@ -184,16 +188,16 @@ where
         find_logs_tail_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         let mut leader = Self {
-            metadata: service.metadata.clone(),
+            metadata: metadata.clone(),
             bifrost: service.bifrost.clone(),
             metadata_store_client: service.metadata_store_client.clone(),
             metadata_writer: service.metadata_writer.clone(),
-            logs_watcher: service.metadata.watch(MetadataKind::Logs),
-            nodes_config: service.metadata.updateable_nodes_config(),
-            partition_table_watcher: service.metadata.watch(MetadataKind::PartitionTable),
+            logs_watcher: metadata.watch(MetadataKind::Logs),
+            nodes_config: metadata.updateable_nodes_config(),
+            partition_table_watcher: metadata.watch(MetadataKind::PartitionTable),
             cluster_state_watcher: service.cluster_state_refresher.cluster_state_watcher(),
-            partition_table: service.metadata.updateable_partition_table(),
-            logs: service.metadata.updateable_logs_metadata(),
+            partition_table: metadata.updateable_partition_table(),
+            logs: metadata.updateable_logs_metadata(),
             find_logs_tail_interval,
             log_trim_interval,
             log_trim_threshold,

@@ -22,7 +22,7 @@ mod tests {
     use futures_util::StreamExt;
     use googletest::prelude::*;
     use restate_bifrost::loglet::AppendError;
-    use restate_core::{cancellation_token, metadata, task_center};
+    use restate_core::{cancellation_token, Metadata, TaskCenterFutureExt};
     use test_log::test;
 
     use restate_types::{
@@ -49,7 +49,7 @@ mod tests {
         )
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn test_append_local_sequencer_three_logserver() -> Result<()> {
         run_in_test_env(
             Configuration::default(),
@@ -76,7 +76,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn test_seal_local_sequencer_three_logserver() -> Result<()> {
         run_in_test_env(
             Configuration::default(),
@@ -114,7 +114,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn three_logserver_gapless_smoke_test() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
@@ -128,7 +128,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn three_logserver_readstream() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
@@ -142,7 +142,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn three_logserver_readstream_with_trims() -> googletest::Result<()> {
         // For this test to work, we need to disable the record cache to ensure we
         // observer the moving trimpoint.
@@ -166,7 +166,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn three_logserver_append_after_seal() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
@@ -178,7 +178,7 @@ mod tests {
         .await
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
     async fn three_logserver_append_after_seal_concurrent() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
@@ -192,7 +192,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn three_logserver_seal_empty() -> googletest::Result<()> {
         run_in_test_env(
             Configuration::default(),
@@ -204,7 +204,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+    #[test(restate_core::test(flavor = "multi_thread", worker_threads = 4))]
     async fn bifrost_append_and_seal_concurrent() -> googletest::Result<()> {
         const TEST_DURATION: Duration = Duration::from_secs(10);
         const SEAL_PERIOD: Duration = Duration::from_secs(1);
@@ -218,8 +218,7 @@ mod tests {
             |test_env| async move {
                 let log_id = LogId::new(0);
 
-                let tc = task_center();
-                let metadata = metadata();
+                let metadata = Metadata::current();
 
 
                 let mut appenders: JoinSet<googletest::Result<_>> = JoinSet::new();
@@ -229,30 +228,25 @@ mod tests {
                     appenders.spawn({
                         let bifrost = test_env.bifrost.clone();
                         let cancel_appenders = cancel_appenders.clone();
-                        let tc = tc.clone();
                         async move {
-                            tc.run_in_scope("append", None, async move {
-                                let mut i = 1;
-                                let mut committed = Vec::new();
-                                while !cancel_appenders.is_cancelled() {
-                                    let offset = bifrost
-                                        .append(
-                                            log_id,
-                                            format!("appender-{}-record{}", appender_id, i),
-                                        )
-                                        .await?;
-                                    i += 1;
-                                    committed.push(offset);
-                                }
-                                Ok(committed)
-                            })
-                            .await
-                        }
+                            let mut i = 1;
+                            let mut committed = Vec::new();
+                            while !cancel_appenders.is_cancelled() {
+                                let offset = bifrost
+                                    .append(
+                                        log_id,
+                                        format!("appender-{}-record{}", appender_id, i),
+                                    )
+                                    .await?;
+                                i += 1;
+                                committed.push(offset);
+                            }
+                            Ok(committed)
+                        }.in_current_tc()
                     });
                 }
 
                 let mut sealer_handle: JoinHandle<googletest::Result<()>> = tokio::task::spawn({
-                    let tc = tc.clone();
                     let (bifrost, metadata_writer, metadata_store_client) = (
                         test_env.bifrost.clone(),
                         test_env.metadata_writer.clone(),
@@ -270,37 +264,33 @@ mod tests {
                             &metadata_store_client,
                         );
 
-                        tc.run_in_scope("sealer", None, async move {
-                            let mut last_loglet_id = None;
+                        let mut last_loglet_id = None;
 
-                            while !cancellation_token.is_cancelled() {
-                                tokio::time::sleep(SEAL_PERIOD).await;
+                        while !cancellation_token.is_cancelled() {
+                            tokio::time::sleep(SEAL_PERIOD).await;
 
-                                let mut params = ReplicatedLogletParams::deserialize_from(
-                                    chain.live_load().tail().config.params.as_ref(),
-                                )?;
-                                if last_loglet_id == Some(params.loglet_id) {
-                                    fail!("Could not seal as metadata has not caught up from the last seal (version={})", metadata.logs_version())?;
-                                }
-                                last_loglet_id = Some(params.loglet_id);
-                                eprintln!("Sealing loglet {} and creating new loglet {}", params.loglet_id, params.loglet_id.next());
-                                params.loglet_id = params.loglet_id.next();
-
-                                bifrost_admin
-                                    .seal_and_extend_chain(
-                                        log_id,
-                                        None,
-                                        Version::MIN,
-                                        ProviderKind::Replicated,
-                                        LogletParams::from(params.serialize()?),
-                                    )
-                                    .await?;
+                            let mut params = ReplicatedLogletParams::deserialize_from(
+                                chain.live_load().tail().config.params.as_ref(),
+                            )?;
+                            if last_loglet_id == Some(params.loglet_id) {
+                                fail!("Could not seal as metadata has not caught up from the last seal (version={})", metadata.logs_version())?;
                             }
+                            last_loglet_id = Some(params.loglet_id);
+                            eprintln!("Sealing loglet {} and creating new loglet {}", params.loglet_id, params.loglet_id.next());
+                            params.loglet_id = params.loglet_id.next();
 
-                            Ok(())
-                        })
-                        .await
-                    }
+                            bifrost_admin
+                                .seal_and_extend_chain(
+                                    log_id,
+                                    None,
+                                    Version::MIN,
+                                    ProviderKind::Replicated,
+                                    LogletParams::from(params.serialize()?),
+                                )
+                                .await?;
+                        }
+                        Ok(())
+                    }.in_current_tc()
                 });
 
                 tokio::select! {

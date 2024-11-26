@@ -15,7 +15,6 @@ use hdrhistogram::Histogram;
 use tracing::info;
 
 use restate_bifrost::Bifrost;
-use restate_core::TaskCenter;
 use restate_types::logs::{LogId, WithKeys};
 
 use crate::util::{print_latencies, DummyPayload};
@@ -37,7 +36,6 @@ pub struct AppendLatencyOpts {
 pub async fn run(
     _common_args: &Arguments,
     args: &AppendLatencyOpts,
-    _tc: TaskCenter,
     bifrost: Bifrost,
 ) -> anyhow::Result<()> {
     let blob = BytesMut::zeroed(args.payload_size).freeze();

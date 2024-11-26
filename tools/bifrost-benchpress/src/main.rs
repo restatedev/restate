@@ -14,13 +14,15 @@ use std::time::Duration;
 use clap::Parser;
 use codederror::CodedError;
 use metrics_exporter_prometheus::PrometheusBuilder;
+use restate_core::task_center::TaskCenterMonitoring;
 use tracing::trace;
 
 use bifrost_benchpress::util::{print_prometheus_stats, print_rocksdb_stats};
 use bifrost_benchpress::{append_latency, write_to_read, Arguments, Command};
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_core::{
-    spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter, TaskCenterBuilder,
+    spawn_metadata_manager, task_center, MetadataBuilder, MetadataManager, TaskCenter,
+    TaskCenterBuilder,
 };
 use restate_errors::fmt::RestateCode;
 use restate_metadata_store::{MetadataStoreClient, Precondition};
@@ -98,10 +100,10 @@ fn main() -> anyhow::Result<()> {
 
         match args.command {
             Command::WriteToRead(ref opts) => {
-                write_to_read::run(&args, opts, task_center.clone(), bifrost).await?;
+                write_to_read::run(&args, opts, bifrost).await?;
             }
             Command::AppendLatency(ref opts) => {
-                append_latency::run(&args, opts, task_center.clone(), bifrost).await?;
+                append_latency::run(&args, opts, bifrost).await?;
             }
         }
         // record tokio's runtime metrics
@@ -142,11 +144,12 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (TaskCenter, Bifrost) {
+fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (task_center::Handle, Bifrost) {
     let tc = TaskCenterBuilder::default()
         .options(config.pinned().common.clone())
         .build()
-        .expect("task_center builds");
+        .expect("task_center builds")
+        .to_handle();
 
     let bifrost = tc.block_on(async move {
         let metadata_builder = MetadataBuilder::default();

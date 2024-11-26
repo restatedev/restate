@@ -11,7 +11,6 @@
 use bytes::BytesMut;
 use enumset::EnumSet;
 use futures::stream::BoxStream;
-use restate_types::storage::StorageCodec;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -21,15 +20,15 @@ use restate_core::network::protobuf::node_svc::{
 };
 use restate_core::network::ConnectionManager;
 use restate_core::network::{ProtocolError, TransportConnect};
-use restate_core::{
-    metadata, MetadataKind, TargetVersion, TaskCenter, TaskCenterFutureExt, TaskKind,
-};
+use restate_core::task_center::TaskCenterMonitoring;
+use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
 use restate_types::health::Health;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::node::Message;
+use restate_types::storage::StorageCodec;
 
 pub struct NodeSvcHandler<T> {
-    task_center: TaskCenter,
+    task_center: task_center::Handle,
     cluster_name: String,
     roles: EnumSet<Role>,
     health: Health,
@@ -38,7 +37,7 @@ pub struct NodeSvcHandler<T> {
 
 impl<T: TransportConnect> NodeSvcHandler<T> {
     pub fn new(
-        task_center: TaskCenter,
+        task_center: task_center::Handle,
         cluster_name: String,
         roles: EnumSet<Role>,
         health: Health,
@@ -63,24 +62,22 @@ impl<T: TransportConnect> NodeSvc for NodeSvcHandler<T> {
         let metadata_server_status = self.health.current_metadata_server_status();
         let log_server_status = self.health.current_log_server_status();
         let age_s = self.task_center.age().as_secs();
-        self.task_center.run_in_scope_sync(|| {
-            let metadata = metadata();
-            Ok(Response::new(IdentResponse {
-                status: node_status.into(),
-                node_id: Some(metadata.my_node_id().into()),
-                roles: self.roles.iter().map(|r| r.to_string()).collect(),
-                cluster_name: self.cluster_name.clone(),
-                age_s,
-                admin_status: admin_status.into(),
-                worker_status: worker_status.into(),
-                metadata_server_status: metadata_server_status.into(),
-                log_server_status: log_server_status.into(),
-                nodes_config_version: metadata.nodes_config_version().into(),
-                logs_version: metadata.logs_version().into(),
-                schema_version: metadata.schema_version().into(),
-                partition_table_version: metadata.partition_table_version().into(),
-            }))
-        })
+        let metadata = Metadata::current();
+        Ok(Response::new(IdentResponse {
+            status: node_status.into(),
+            node_id: Some(metadata.my_node_id().into()),
+            roles: self.roles.iter().map(|r| r.to_string()).collect(),
+            cluster_name: self.cluster_name.clone(),
+            age_s,
+            admin_status: admin_status.into(),
+            worker_status: worker_status.into(),
+            metadata_server_status: metadata_server_status.into(),
+            log_server_status: log_server_status.into(),
+            nodes_config_version: metadata.nodes_config_version().into(),
+            logs_version: metadata.logs_version().into(),
+            schema_version: metadata.schema_version().into(),
+            partition_table_version: metadata.partition_table_version().into(),
+        }))
     }
 
     type CreateConnectionStream = BoxStream<'static, Result<Message, Status>>;
@@ -102,7 +99,6 @@ impl<T: TransportConnect> NodeSvc for NodeSvcHandler<T> {
         let output_stream = self
             .connections
             .accept_incoming_connection(transformed)
-            .in_current_tc_as_task(TaskKind::InPlace, "accept-connection")
             .await?;
 
         // For uniformity with outbound connections, we map all responses to Ok, we never rely on
@@ -116,7 +112,7 @@ impl<T: TransportConnect> NodeSvc for NodeSvcHandler<T> {
         request: Request<GetMetadataRequest>,
     ) -> Result<Response<GetMetadataResponse>, Status> {
         let request = request.into_inner();
-        let metadata = metadata();
+        let metadata = Metadata::current();
         let kind = request.kind.into();
         if request.sync {
             metadata

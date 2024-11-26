@@ -17,8 +17,8 @@ use googletest::IntoTestResult;
 
 use restate_bifrost::{loglet::Loglet, Bifrost, BifrostAdmin};
 use restate_core::metadata_store::Precondition;
-use restate_core::TaskCenterFutureExt;
-use restate_core::{metadata_store::MetadataStoreClient, MetadataWriter, TaskCenterBuilder};
+use restate_core::TaskCenter;
+use restate_core::{metadata_store::MetadataStoreClient, MetadataWriter};
 use restate_local_cluster_runner::{
     cluster::{Cluster, MaybeTempDir, StartedCluster},
     node::{BinarySource, Node},
@@ -121,76 +121,66 @@ where
         log_server_count,
     );
 
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .ingress_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-
     // ensure base dir lives longer than the node, otherwise it sees shutdown errors
     // this will still respect LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true
     let base_dir: MaybeTempDir = tempfile::tempdir()?.into();
 
-    async {
-        RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+    RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
 
-        let cluster = Cluster::builder()
-            .base_dir(base_dir.as_path().to_owned())
-            .nodes(nodes)
-            .build()
-            .start()
-            .await?;
+    let cluster = Cluster::builder()
+        .base_dir(base_dir.as_path().to_owned())
+        .nodes(nodes)
+        .build()
+        .start()
+        .await?;
 
-        cluster.wait_healthy(Duration::from_secs(30)).await?;
+    cluster.wait_healthy(Duration::from_secs(30)).await?;
 
-        let loglet_params = ReplicatedLogletParams {
-            loglet_id: ReplicatedLogletId::new(LogId::from(1u32), SegmentIndex::OLDEST),
-            sequencer,
-            replication,
-            // node 1 is the metadata, 2..=count+1 are logservers
-            nodeset: (2..=log_server_count + 1).collect(),
-        };
-        let loglet_params = loglet_params.serialize()?;
+    let loglet_params = ReplicatedLogletParams {
+        loglet_id: ReplicatedLogletId::new(LogId::from(1u32), SegmentIndex::OLDEST),
+        sequencer,
+        replication,
+        // node 1 is the metadata, 2..=count+1 are logservers
+        nodeset: (2..=log_server_count + 1).collect(),
+    };
+    let loglet_params = loglet_params.serialize()?;
 
-        let chain = Chain::new(ProviderKind::Replicated, LogletParams::from(loglet_params));
-        let mut logs_builder = LogsBuilder::default();
-        logs_builder.add_log(LogId::MIN, chain)?;
+    let chain = Chain::new(ProviderKind::Replicated, LogletParams::from(loglet_params));
+    let mut logs_builder = LogsBuilder::default();
+    logs_builder.add_log(LogId::MIN, chain)?;
 
-        let metadata_store_client = cluster.nodes[0]
-            .metadata_client()
-            .await
-            .map_err(|err| TestAssertionFailure::create(err.to_string()))?;
-        metadata_store_client
-            .put(
-                BIFROST_CONFIG_KEY.clone(),
-                &logs_builder.build(),
-                Precondition::None,
-            )
-            .await?;
-
-        // join a new node to the cluster solely to act as a bifrost client
-        // it will have node id log_server_count+2
-        let (bifrost, loglet, metadata_writer, metadata_store_client) = replicated_loglet_client(
-            base_config,
-            &cluster,
-            PlainNodeId::new(log_server_count + 2),
+    let metadata_store_client = cluster.nodes[0]
+        .metadata_client()
+        .await
+        .map_err(|err| TestAssertionFailure::create(err.to_string()))?;
+    metadata_store_client
+        .put(
+            BIFROST_CONFIG_KEY.clone(),
+            &logs_builder.build(),
+            Precondition::None,
         )
         .await?;
 
-        // global metadata should now be set, running in scope sets it in the task center context
-        future(TestEnv {
-            bifrost,
-            loglet,
-            cluster,
-            metadata_writer,
-            metadata_store_client,
-        })
-        .await
-    }
-    .in_tc(&tc)
+    // join a new node to the cluster solely to act as a bifrost client
+    // it will have node id log_server_count+2
+    let (bifrost, loglet, metadata_writer, metadata_store_client) = replicated_loglet_client(
+        base_config,
+        &cluster,
+        PlainNodeId::new(log_server_count + 2),
+    )
     .await?;
 
-    tc.shutdown_node("test completed", 0).await;
+    // global metadata should now be set, running in scope sets it in the task center context
+    future(TestEnv {
+        bifrost,
+        loglet,
+        cluster,
+        metadata_writer,
+        metadata_store_client,
+    })
+    .await?;
+
+    TaskCenter::shutdown_node("test completed", 0).await;
     RocksDbManager::get().shutdown().await;
     Ok(())
 }

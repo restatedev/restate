@@ -158,10 +158,9 @@ impl BifrostService {
             .map_err(|_| anyhow::anyhow!("bifrost must be initialized only once"))?;
 
         // We spawn the watchdog as a background long-running task
-        TaskCenter::current().spawn(
+        TaskCenter::spawn(
             TaskKind::BifrostBackgroundHighPriority,
             "bifrost-watchdog",
-            None,
             self.watchdog.run(),
         )?;
 

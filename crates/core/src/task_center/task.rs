@@ -17,11 +17,11 @@ use tokio_util::sync::CancellationToken;
 
 use restate_types::identifiers::PartitionId;
 
-use super::{TaskId, TaskKind};
+use super::{TaskId, TaskKind, TASK_CONTEXT};
 use crate::ShutdownError;
 
 #[derive(Clone)]
-pub(super) struct TaskContext {
+pub struct TaskContext {
     /// It's nice to have a unique ID for each task.
     pub(super) id: TaskId,
     pub(super) name: &'static str,
@@ -31,6 +31,59 @@ pub(super) struct TaskContext {
     /// Tasks associated with a specific partition ID will have this set. This allows
     /// for cancellation of tasks associated with that partition.
     pub(super) partition_id: Option<PartitionId>,
+}
+
+impl TaskContext {
+    /// Access to current task-center task context
+    #[track_caller]
+    pub fn current() -> Self {
+        Self::with_current(Clone::clone)
+    }
+    #[track_caller]
+    pub fn with_current<F, R>(f: F) -> R
+    where
+        F: FnOnce(&TaskContext) -> R,
+    {
+        TASK_CONTEXT
+            .try_with(|ctx| f(ctx))
+            .expect("called outside task-center task")
+    }
+
+    pub fn try_with_current<F, R>(f: F) -> Option<R>
+    where
+        F: FnOnce(&Self) -> R,
+    {
+        TASK_CONTEXT.try_with(|tc| f(tc)).ok()
+    }
+
+    /// Access to current task-center task context
+    pub fn try_current() -> Option<Self> {
+        Self::try_with_current(Clone::clone)
+    }
+
+    pub fn id(&self) -> TaskId {
+        self.id
+    }
+
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    pub fn kind(&self) -> TaskKind {
+        self.kind
+    }
+
+    pub fn partition_id(&self) -> Option<PartitionId> {
+        self.partition_id
+    }
+
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation_token
+    }
+
+    pub fn cancel(&self) {
+        self.cancellation_token.cancel()
+    }
 }
 
 pub(super) struct Task<R = ()> {

@@ -16,7 +16,7 @@ use restate_types::time::MillisSinceEpoch;
 use std::time::{Duration, SystemTime};
 use test_log::test;
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn send_with_delay() {
     let mut test_env = TestEnv::create().await;
 
@@ -74,7 +74,7 @@ async fn send_with_delay() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn send_with_delay_to_locked_virtual_object() {
     let mut test_env = TestEnv::create().await;
 
@@ -152,7 +152,7 @@ async fn send_with_delay_to_locked_virtual_object() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn send_with_delay_and_idempotency_key() {
     let mut test_env = TestEnv::create().await;
 

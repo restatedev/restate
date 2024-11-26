@@ -22,7 +22,7 @@ use std::time::Duration;
 #[rstest]
 #[case(true)]
 #[case(false)]
-#[tokio::test]
+#[restate_core::test]
 async fn start_workflow_method(#[case] disable_idempotency_table: bool) {
     let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 
@@ -186,7 +186,7 @@ async fn start_workflow_method(#[case] disable_idempotency_table: bool) {
 #[rstest]
 #[case(true)]
 #[case(false)]
-#[tokio::test]
+#[restate_core::test]
 async fn attach_by_workflow_key(#[case] disable_idempotency_table: bool) {
     let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 
@@ -324,7 +324,7 @@ async fn attach_by_workflow_key(#[case] disable_idempotency_table: bool) {
 #[rstest]
 #[case(true)]
 #[case(false)]
-#[tokio::test]
+#[restate_core::test]
 async fn purge_completed_workflow(#[case] disable_idempotency_table: bool) {
     let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 

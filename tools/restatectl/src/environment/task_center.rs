@@ -55,9 +55,10 @@ where
         .ingress_runtime_handle(tokio::runtime::Handle::current())
         .options(config.common.clone())
         .build()
-        .expect("task_center builds");
+        .expect("task_center builds")
+        .to_handle();
 
-    let result = task_center.run_in_scope_sync(|| fn_body(config)).await;
+    let result = task_center.run_sync(|| fn_body(config)).await;
 
     task_center.shutdown_node("finished", 0).await;
     result

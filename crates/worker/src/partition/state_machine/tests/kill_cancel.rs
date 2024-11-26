@@ -22,7 +22,7 @@ use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::service_protocol;
 use test_log::test;
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn kill_inboxed_invocation() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
 
@@ -108,7 +108,7 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn kill_call_tree() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
 
@@ -218,7 +218,7 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn cancel_invoked_invocation() -> Result<(), Error> {
     let mut test_env = TestEnv::create().await;
 
@@ -331,7 +331,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn cancel_suspended_invocation() -> Result<(), Error> {
     let mut test_env = TestEnv::create().await;
 
@@ -448,7 +448,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn cancel_invocation_entry_referring_to_previous_entry() {
     let mut test_env = TestEnv::create().await;
 

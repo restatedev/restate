@@ -9,11 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use metrics_exporter_prometheus::PrometheusHandle;
-use restate_core::TaskCenter;
+use restate_core::task_center;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct NodeCtrlHandlerState {
     #[builder(default)]
     pub prometheus_handle: Option<PrometheusHandle>,
-    pub task_center: TaskCenter,
+    pub task_center: task_center::Handle,
 }

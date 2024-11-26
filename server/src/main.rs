@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use codederror::CodedError;
+use restate_core::TaskCenter;
 use tokio::io;
 use tracing::error;
 use tracing::{info, trace, warn};
@@ -161,8 +162,7 @@ fn main() {
         .options(Configuration::pinned().common.clone())
         .build()
         .expect("task_center builds");
-    tc.block_on({
-        let tc = tc.clone();
+    tc.handle().block_on({
         async move {
             // Apply tracing config globally
             // We need to apply this first to log correctly
@@ -213,9 +213,9 @@ fn main() {
             // We ignore errors since we will wait for shutdown below anyway.
             // This starts node roles and the rest of the system async under tasks managed by
             // the TaskCenter.
-            let _ = tc.spawn(TaskKind::SystemBoot, "init", None, node.unwrap().start());
+            let _ = TaskCenter::spawn(TaskKind::SystemBoot, "init", node.unwrap().start());
 
-            let task_center_watch = tc.shutdown_token();
+            let task_center_watch = TaskCenter::current().shutdown_token();
             tokio::pin!(task_center_watch);
 
             let config_update_watcher = Configuration::watcher();
@@ -231,7 +231,7 @@ fn main() {
                         let shutdown_with_timeout = tokio::time::timeout(
                             Configuration::pinned().common.shutdown_grace_period(),
                             async {
-                                tc.shutdown_node(&signal_reason, 0).await;
+                                TaskCenter::shutdown_node(&signal_reason, 0).await;
                                 rocksdb_manager.shutdown().await;
                             }
                         );

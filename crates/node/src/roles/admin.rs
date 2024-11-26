@@ -62,12 +62,11 @@ impl<T: TransportConnect> AdminRole<T> {
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
         health_status: HealthStatus<AdminStatus>,
-        task_center: TaskCenter,
         bifrost: Bifrost,
         updateable_config: Live<Configuration>,
-        metadata: Metadata,
         partition_routing: PartitionRouting,
         networking: Networking<T>,
+        metadata: Metadata,
         metadata_writer: MetadataWriter,
         server_builder: &mut NetworkServerBuilder,
         router_builder: &mut MessageRouterBuilder,
@@ -87,18 +86,14 @@ impl<T: TransportConnect> AdminRole<T> {
             query_context
         } else {
             let remote_scanner_manager = RemoteScannerManager::new(
-                create_remote_scanner_service(
-                    networking.clone(),
-                    task_center.clone(),
-                    router_builder,
-                ),
-                create_partition_locator(partition_routing, metadata.clone()),
+                create_remote_scanner_service(networking.clone(), router_builder),
+                create_partition_locator(partition_routing),
             );
 
             // need to create a remote query context since we are not co-located with a worker role
             QueryContext::create(
                 &config.admin.query_engine,
-                SelectPartitionsFromMetadata::new(metadata.clone()),
+                SelectPartitionsFromMetadata,
                 None,
                 Option::<EmptyInvokerStatusHandle>::None,
                 metadata.updateable_schema(),
@@ -122,7 +117,6 @@ impl<T: TransportConnect> AdminRole<T> {
                 updateable_config.clone(),
                 health_status,
                 bifrost,
-                metadata,
                 networking,
                 router_builder,
                 server_builder,

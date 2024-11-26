@@ -156,7 +156,7 @@ impl PersistedLogLsnWatchdog {
 #[cfg(test)]
 mod tests {
     use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
-    use restate_core::{TaskKind, TestCoreEnv};
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnv2};
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::fsm_table::FsmTable;
@@ -172,15 +172,13 @@ mod tests {
     use tokio::sync::watch;
     use tokio::time::Instant;
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn persisted_log_lsn_watchdog_detects_applied_lsns() -> anyhow::Result<()> {
-        let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let _node_env = TestCoreEnv2::create_with_single_node(1, 1).await;
         let storage_options = StorageOptions::default();
         let rocksdb_options = RocksDbOptions::default();
 
-        node_env
-            .tc
-            .run_in_scope_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
 
         let all_partition_keys = RangeInclusive::new(0, PartitionKey::MAX);
         let partition_store_manager = PartitionStoreManager::create(
@@ -210,12 +208,7 @@ mod tests {
 
         let now = Instant::now();
 
-        node_env.tc.spawn(
-            TaskKind::Watchdog,
-            "persiste-log-lsn-test",
-            None,
-            watchdog.run(),
-        )?;
+        TaskCenter::spawn(TaskKind::Watchdog, "persiste-log-lsn-test", watchdog.run())?;
 
         assert!(
             tokio::time::timeout(Duration::from_secs(1), watch_rx.changed())
@@ -261,6 +254,8 @@ mod tests {
             watch_rx.borrow().get(&PartitionId::MIN),
             Some(&next_persisted_lsn)
         );
+
+        RocksDbManager::get().shutdown().await;
 
         Ok(())
     }

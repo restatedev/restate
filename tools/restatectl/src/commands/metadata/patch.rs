@@ -15,7 +15,6 @@ use json_patch::Patch;
 use tracing::debug;
 
 use restate_core::metadata_store::{MetadataStoreClient, Precondition};
-use restate_core::TaskCenter;
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
@@ -90,7 +89,6 @@ async fn patch_value_direct(
             Live::from_value(config.metadata_store.clone())
                 .map(|c| &c.rocksdb)
                 .boxed(),
-            &TaskCenter::current(),
         )
         .await?;
         debug!("Metadata store client created");

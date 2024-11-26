@@ -19,24 +19,25 @@ use crate::task_center::TaskContext;
 use crate::Metadata;
 
 use super::{
-    GlobalOverrides, TaskCenter, TaskId, TaskKind, CURRENT_TASK_CENTER, OVERRIDES, TASK_CONTEXT,
+    GlobalOverrides, Handle, TaskCenter, TaskId, TaskKind, CURRENT_TASK_CENTER, OVERRIDES,
+    TASK_CONTEXT,
 };
 
 type TaskCenterFuture<F> =
-    TaskLocalFuture<TaskCenter, TaskLocalFuture<GlobalOverrides, TaskLocalFuture<TaskContext, F>>>;
+    TaskLocalFuture<Handle, TaskLocalFuture<GlobalOverrides, TaskLocalFuture<TaskContext, F>>>;
 
 /// Adds the ability to override task-center for a future and all its children
 pub trait TaskCenterFutureExt: Sized {
     /// Ensures that a future will run within a task-center context. This will inherit the current
     /// task context (if there is one). Otherwise, it'll run in the context of the root task (task-id=0).
-    fn in_tc(self, task_center: &TaskCenter) -> WithTaskCenter<Self>;
+    fn in_tc(self, task_center: &Handle) -> WithTaskCenter<Self>;
 
     /// Lets task-center treat this future as a pseudo-task. It gets its own TaskId and an
     /// independent cancellation token. However, task-center will not spawn this as a task nor
     /// manage its lifecycle.
     fn in_tc_as_task(
         self,
-        task_center: &TaskCenter,
+        task_center: &Handle,
         kind: TaskKind,
         name: &'static str,
     ) -> WithTaskCenter<Self>;
@@ -67,7 +68,7 @@ impl<F, O> TaskCenterFutureExt for F
 where
     F: Future<Output = O>,
 {
-    fn in_tc(self, task_center: &TaskCenter) -> WithTaskCenter<Self> {
+    fn in_tc(self, task_center: &Handle) -> WithTaskCenter<Self> {
         let ctx = task_center.with_task_context(Clone::clone);
 
         let inner = CURRENT_TASK_CENTER.scope(
@@ -82,7 +83,7 @@ where
 
     fn in_tc_as_task(
         self,
-        task_center: &TaskCenter,
+        task_center: &Handle,
         kind: TaskKind,
         name: &'static str,
     ) -> WithTaskCenter<Self> {
@@ -106,10 +107,12 @@ where
 
     /// Ensures that a future will run within a task-center context. This will inherit the current
     /// task context (if there is one). Otherwise, it'll run in the context of the root task (task-id=0).
+    #[track_caller]
     fn in_current_tc(self) -> WithTaskCenter<Self> {
         TaskCenter::with_current(|tc| self.in_tc(tc))
     }
 
+    #[track_caller]
     fn in_current_tc_as_task(self, kind: TaskKind, name: &'static str) -> WithTaskCenter<Self> {
         TaskCenter::with_current(|tc| self.in_tc_as_task(tc, kind, name))
     }

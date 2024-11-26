@@ -13,7 +13,7 @@ use tonic::codec::CompressionEncoding;
 
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
 use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportConnect};
-use restate_core::task_center;
+use restate_core::TaskCenter;
 use restate_types::config::CommonOptions;
 use restate_types::health::Health;
 
@@ -31,10 +31,9 @@ impl NetworkServer {
         mut server_builder: NetworkServerBuilder,
         options: CommonOptions,
     ) -> Result<(), anyhow::Error> {
-        let tc = task_center();
         // Configure Metric Exporter
         let mut state_builder = NodeCtrlHandlerStateBuilder::default();
-        state_builder.task_center(tc.clone());
+        state_builder.task_center(TaskCenter::current());
 
         if !options.disable_prometheus {
             state_builder.prometheus_handle(Some(install_global_prometheus_recorder(&options)));
@@ -51,7 +50,7 @@ impl NetworkServer {
 
         server_builder.register_grpc_service(
             NodeSvcServer::new(NodeSvcHandler::new(
-                tc,
+                TaskCenter::current(),
                 options.cluster_name().to_owned(),
                 options.roles,
                 health,

@@ -35,7 +35,8 @@ use restate_core::worker_api::{
     SnapshotResult,
 };
 use restate_core::{
-    cancellation_watcher, Metadata, ShutdownError, TaskCenterFutureExt, TaskHandle, TaskKind,
+    cancellation_watcher, my_node_id, Metadata, ShutdownError, TaskCenterFutureExt, TaskHandle,
+    TaskKind,
 };
 use restate_core::{RuntimeRootTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
@@ -293,10 +294,9 @@ impl PartitionProcessorManager {
         match self.processor_states.get(&partition_id) {
             None => {
                 // ignore shutdown errors
-                let _ = TaskCenter::current().spawn(
+                let _ = TaskCenter::spawn(
                     TaskKind::Disposable,
                     "partition-processor-rpc-response",
-                    None,
                     async move {
                         partition_processor_rpc
                             .to_rpc_response(Err(PartitionProcessorRpcError::NotLeader(
@@ -481,7 +481,7 @@ impl PartitionProcessorManager {
                 leader_epoch_token,
                 partition_id,
                 metadata_store_client,
-                Metadata::with_current(|m| m.my_node_id()),
+                my_node_id(),
             )
             .in_current_tc(),
         );
@@ -628,7 +628,7 @@ impl PartitionProcessorManager {
 
                     // We spawn the partition processors start tasks on the blocking thread pool due to a macOS issue
                     // where doing otherwise appears to starve the Tokio event loop, causing very slow startup.
-                    let handle = TaskCenter::current().spawn_blocking_unmanaged(
+                    let handle = TaskCenter::spawn_blocking_unmanaged(
                         "starting-partition-processor",
                         starting_task.run(),
                     );
@@ -779,10 +779,9 @@ impl PartitionProcessorManager {
                     node_name: config.common.node_name().into(),
                 };
 
-                let spawn_task_result = TaskCenter::current().spawn_unmanaged(
+                let spawn_task_result = TaskCenter::spawn_unmanaged(
                     TaskKind::PartitionSnapshotProducer,
                     "create-snapshot",
-                    Some(partition_id),
                     create_snapshot_task.run(),
                 );
 
@@ -959,10 +958,9 @@ mod tests {
         let processors_manager_handle = partition_processor_manager.handle();
 
         bifrost_svc.start().await.into_test_result()?;
-        TaskCenter::current().spawn(
+        TaskCenter::spawn(
             TaskKind::SystemService,
             "partition-processor-manager",
-            None,
             partition_processor_manager.run(),
         )?;
 

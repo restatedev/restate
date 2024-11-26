@@ -387,10 +387,9 @@ impl Default for VersionWatch {
 }
 
 pub fn spawn_metadata_manager(metadata_manager: MetadataManager) -> Result<TaskId, ShutdownError> {
-    TaskCenter::current().spawn(
+    TaskCenter::spawn(
         TaskKind::MetadataBackgroundSync,
         "metadata-manager",
-        None,
         metadata_manager.run(),
     )
 }

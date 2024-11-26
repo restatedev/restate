@@ -13,7 +13,6 @@ use clap::Parser;
 use cling::{Collect, Run};
 use tracing::debug;
 
-use restate_core::TaskCenter;
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
@@ -68,7 +67,6 @@ async fn get_value_direct(opts: &GetValueOpts) -> anyhow::Result<Option<GenericM
             Live::from_value(config.metadata_store.clone())
                 .map(|c| &c.rocksdb)
                 .boxed(),
-            &TaskCenter::current(),
         )
         .await?;
         debug!("Metadata store client created");

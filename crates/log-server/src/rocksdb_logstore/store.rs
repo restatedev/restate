@@ -497,7 +497,7 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
-    use restate_core::{TaskCenter, TaskCenterBuilder, TaskCenterFutureExt};
+    use restate_core::TaskCenter;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
@@ -512,33 +512,24 @@ mod tests {
     use crate::logstore::LogStore;
     use crate::metadata::LogStoreMarker;
     use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
-    use crate::setup_panic_handler;
 
-    async fn setup() -> Result<(TaskCenter, RocksDbLogStore)> {
-        setup_panic_handler();
-        let tc = TaskCenterBuilder::default_for_tests().build()?;
-        let log_store = async {
-            let config = Live::from_value(Configuration::default());
-            let common_rocks_opts = config.clone().map(|c| &c.common);
-            RocksDbManager::init(common_rocks_opts);
-            // create logstore.
-            let builder = RocksDbLogStoreBuilder::create(
-                config.clone().map(|c| &c.log_server).boxed(),
-                config.map(|c| &c.log_server.rocksdb).boxed(),
-                RecordCache::new(1_000_000),
-            )
-            .await?;
-            let log_store = builder.start(Default::default()).await?;
-            Result::Ok(log_store)
-        }
-        .in_tc(&tc)
+    async fn setup() -> Result<RocksDbLogStore> {
+        let config = Live::from_value(Configuration::default());
+        let common_rocks_opts = config.clone().map(|c| &c.common);
+        RocksDbManager::init(common_rocks_opts);
+        // create logstore.
+        let builder = RocksDbLogStoreBuilder::create(
+            config.clone().map(|c| &c.log_server).boxed(),
+            config.map(|c| &c.log_server.rocksdb).boxed(),
+            RecordCache::new(1_000_000),
+        )
         .await?;
-        Ok((tc, log_store))
+        Ok(builder.start(Default::default()).await?)
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn test_log_store_marker() -> Result<()> {
-        let (tc, log_store) = setup().await?;
+        let log_store = setup().await?;
 
         let marker = log_store.load_marker().await?;
         assert!(marker.is_none());
@@ -554,14 +545,14 @@ mod tests {
         let marker_again = log_store.load_marker().await?;
         assert_that!(marker_again, some(eq(marker)));
 
-        tc.shutdown_node("test completed", 0).await;
+        TaskCenter::shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn test_load_loglet_state() -> Result<()> {
-        let (tc, log_store) = setup().await?;
+        let log_store = setup().await?;
         // fresh/unknown loglet
         let loglet_id_1 = ReplicatedLogletId::new_unchecked(88);
         let loglet_id_2 = ReplicatedLogletId::new_unchecked(89);
@@ -646,14 +637,14 @@ mod tests {
             some(eq(&GenerationalNodeId::new(2, 212)))
         );
 
-        tc.shutdown_node("test completed", 0).await;
+        TaskCenter::shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn test_digest() -> Result<()> {
-        let (tc, log_store) = setup().await?;
+        let log_store = setup().await?;
         let loglet_id_1 = ReplicatedLogletId::new_unchecked(88);
         let loglet_id_2 = ReplicatedLogletId::new_unchecked(89);
         let sequencer_1 = GenerationalNodeId::new(5, 213);
@@ -812,7 +803,7 @@ mod tests {
             ]
         );
 
-        tc.shutdown_node("test completed", 0).await;
+        TaskCenter::shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }

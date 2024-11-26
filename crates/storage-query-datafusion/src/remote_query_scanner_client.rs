@@ -12,22 +12,24 @@ use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use crate::{decode_record_batch, encode_schema};
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use tracing::warn;
+
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Incoming, MessageRouterBuilder, Networking, TransportConnect};
-use restate_core::TaskCenter;
+use restate_core::{task_center, TaskCenter, TaskCenterFutureExt, TaskKind};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
     RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened,
 };
 use restate_types::NodeId;
-use tracing::warn;
+
+use crate::{decode_record_batch, encode_schema};
 
 // ----- rpc service definition -----
 
@@ -55,12 +57,11 @@ pub trait RemoteScannerService: Send + Sync + Debug + 'static {
 // ----- service proxy -----
 pub fn create_remote_scanner_service<T: TransportConnect>(
     network: Networking<T>,
-    task_center: TaskCenter,
     router_builder: &mut MessageRouterBuilder,
 ) -> Arc<dyn RemoteScannerService> {
     Arc::new(RemoteScannerServiceProxy::new(
         network,
-        task_center,
+        TaskCenter::current(),
         router_builder,
     ))
 }
@@ -165,7 +166,7 @@ pub fn remote_scan_as_datafusion_stream(
 #[derive(Clone)]
 struct RemoteScannerServiceProxy<T> {
     networking: Networking<T>,
-    task_center: TaskCenter,
+    task_center: task_center::Handle,
     open_rpc: RpcRouter<RemoteQueryScannerOpen>,
     next_rpc: RpcRouter<RemoteQueryScannerNext>,
     close_rpc: RpcRouter<RemoteQueryScannerClose>,
@@ -180,7 +181,7 @@ impl<T> Debug for RemoteScannerServiceProxy<T> {
 impl<T: TransportConnect> RemoteScannerServiceProxy<T> {
     fn new(
         networking: Networking<T>,
-        task_center: TaskCenter,
+        task_center: task_center::Handle,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         Self {
@@ -200,15 +201,16 @@ impl<T: TransportConnect> RemoteScannerService for RemoteScannerServiceProxy<T> 
         peer: NodeId,
         req: RemoteQueryScannerOpen,
     ) -> Result<RemoteQueryScannerOpened, DataFusionError> {
-        self.task_center
-            .run_in_scope("RemoteScannerServiceProxy::open", None, async {
-                self.open_rpc
-                    .call(&self.networking, peer, req)
-                    .await
-                    .map_err(|e| DataFusionError::External(e.into()))
-                    .map(Incoming::into_body)
-            })
+        self.open_rpc
+            .call(&self.networking, peer, req)
+            .in_tc_as_task(
+                &self.task_center,
+                TaskKind::InPlace,
+                "RemoteScannerServiceProxy::open",
+            )
             .await
+            .map_err(|e| DataFusionError::External(e.into()))
+            .map(Incoming::into_body)
     }
 
     async fn next_batch(
@@ -216,15 +218,16 @@ impl<T: TransportConnect> RemoteScannerService for RemoteScannerServiceProxy<T> 
         peer: NodeId,
         req: RemoteQueryScannerNext,
     ) -> Result<RemoteQueryScannerNextResult, DataFusionError> {
-        self.task_center
-            .run_in_scope("RemoteScannerServiceProxy::next_batch", None, async {
-                self.next_rpc
-                    .call(&self.networking, peer, req)
-                    .await
-                    .map_err(|e| DataFusionError::External(e.into()))
-                    .map(Incoming::into_body)
-            })
+        self.next_rpc
+            .call(&self.networking, peer, req)
+            .in_tc_as_task(
+                &self.task_center,
+                TaskKind::InPlace,
+                "RemoteScannerServiceProxy::next_batch",
+            )
             .await
+            .map_err(|e| DataFusionError::External(e.into()))
+            .map(Incoming::into_body)
     }
 
     async fn close(
@@ -232,14 +235,15 @@ impl<T: TransportConnect> RemoteScannerService for RemoteScannerServiceProxy<T> 
         peer: NodeId,
         req: RemoteQueryScannerClose,
     ) -> Result<RemoteQueryScannerClosed, DataFusionError> {
-        self.task_center
-            .run_in_scope("RemoteScannerServiceProxy::close", None, async {
-                self.close_rpc
-                    .call(&self.networking, peer, req)
-                    .await
-                    .map_err(|e| DataFusionError::External(e.into()))
-                    .map(Incoming::into_body)
-            })
+        self.close_rpc
+            .call(&self.networking, peer, req)
+            .in_tc_as_task(
+                &self.task_center,
+                TaskKind::InPlace,
+                "RemoteScannerServiceProxy::close",
+            )
             .await
+            .map_err(|e| DataFusionError::External(e.into()))
+            .map(Incoming::into_body)
     }
 }

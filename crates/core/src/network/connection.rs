@@ -490,13 +490,12 @@ pub mod test_util {
         // Allow for messages received on this connection to be processed by a given message handler.
         pub fn process_with_message_handler<H: MessageHandler + Send + Sync + 'static>(
             self,
-            task_center: &TaskCenter,
             handler: H,
         ) -> anyhow::Result<(WeakConnection, TaskHandle<anyhow::Result<()>>)> {
             let mut router = MessageRouterBuilder::default();
             router.add_message_handler(handler);
             let router = router.build();
-            self.process_with_message_router(task_center, router)
+            self.process_with_message_router(router)
         }
 
         // Allow for messages received on this connection to be processed by a given message router.
@@ -504,7 +503,6 @@ pub mod test_util {
         // drop the receive stream (simulates connection loss).
         pub fn process_with_message_router<R: Handler + 'static>(
             self,
-            task_center: &TaskCenter,
             router: R,
         ) -> anyhow::Result<(WeakConnection, TaskHandle<anyhow::Result<()>>)> {
             let Self {
@@ -530,10 +528,9 @@ pub mod test_util {
                 connection,
                 recv_stream,
             };
-            let handle = task_center.spawn_unmanaged(
+            let handle = TaskCenter::spawn_unmanaged(
                 TaskKind::ConnectionReactor,
                 "test-message-processor",
-                None,
                 async move { message_processor.run().await },
             )?;
             Ok((weak, handle))
@@ -542,7 +539,6 @@ pub mod test_util {
         // Allow for messages received on this connection to be forwarded to the supplied sender.
         pub fn forward_to_sender(
             self,
-            task_center: &TaskCenter,
             sender: mpsc::Sender<(GenerationalNodeId, Incoming<BinaryMessage>)>,
         ) -> anyhow::Result<(WeakConnection, TaskHandle<anyhow::Result<()>>)> {
             let handler = ForwardingHandler {
@@ -550,7 +546,7 @@ pub mod test_util {
                 inner_sender: sender,
             };
 
-            self.process_with_message_router(task_center, handler)
+            self.process_with_message_router(handler)
         }
     }
 
