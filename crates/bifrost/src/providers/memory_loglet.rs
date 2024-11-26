@@ -403,7 +403,7 @@ impl Loglet for MemoryLoglet {
 mod tests {
     use super::*;
 
-    use restate_core::TestCoreEnvBuilder2;
+    use restate_core::TestCoreEnvBuilder;
 
     macro_rules! run_test {
         ($test:ident) => {

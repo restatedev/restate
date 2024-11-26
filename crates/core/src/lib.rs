@@ -54,10 +54,4 @@ pub use task_center::{
 mod test_env;
 
 #[cfg(any(test, feature = "test-util"))]
-mod test_env2;
-
-#[cfg(any(test, feature = "test-util"))]
-pub use test_env::{create_mock_nodes_config, NoOpMessageHandler, TestCoreEnv, TestCoreEnvBuilder};
-
-#[cfg(any(test, feature = "test-util"))]
-pub use test_env2::{TestCoreEnv2, TestCoreEnvBuilder2};
+pub use test_env::{TestCoreEnv, TestCoreEnvBuilder};

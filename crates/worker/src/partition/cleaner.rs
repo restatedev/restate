@@ -168,7 +168,7 @@ mod tests {
 
     use futures::{stream, Stream};
     use googletest::prelude::*;
-    use restate_core::{Metadata, TaskCenter, TaskKind, TestCoreEnvBuilder2};
+    use restate_core::{Metadata, TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
     };
@@ -213,7 +213,7 @@ mod tests {
     // Start paused makes sure the timer is immediately fired
     #[test(restate_core::test(start_paused = true))]
     pub async fn cleanup_works() {
-        let _env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let _env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,

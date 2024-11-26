@@ -496,8 +496,8 @@ mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
-    use restate_core::TestCoreEnvBuilder2;
-    use restate_core::{TaskCenter, TaskKind, TestCoreEnv2};
+    use restate_core::TestCoreEnvBuilder;
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::CommonOptions;
     use restate_types::live::Constant;
@@ -514,7 +514,7 @@ mod tests {
     #[traced_test]
     async fn test_append_smoke() -> googletest::Result<()> {
         let num_partitions = 5;
-        let _ = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let _ = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 num_partitions,
@@ -586,7 +586,7 @@ mod tests {
 
     #[restate_core::test(start_paused = true)]
     async fn test_lazy_initialization() -> googletest::Result<()> {
-        let _ = TestCoreEnv2::create_with_single_node(1, 1).await;
+        let _ = TestCoreEnv::create_with_single_node(1, 1).await;
         let delay = Duration::from_secs(5);
         // This memory provider adds a delay to its loglet initialization, we want
         // to ensure that appends do not fail while waiting for the loglet;
@@ -604,7 +604,7 @@ mod tests {
     #[test(restate_core::test(flavor = "multi_thread", worker_threads = 2))]
     async fn trim_log_smoke_test() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
-        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -676,7 +676,7 @@ mod tests {
     #[restate_core::test(start_paused = true)]
     async fn test_read_across_segments() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
-        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
@@ -862,7 +862,7 @@ mod tests {
     #[traced_test]
     async fn test_appends_correctly_handle_reconfiguration() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
-        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
