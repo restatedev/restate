@@ -11,7 +11,7 @@
 use crate::consumer_task::KafkaDeduplicationId;
 use bytes::Bytes;
 use restate_bifrost::Bifrost;
-use restate_core::metadata;
+use restate_core::{my_node_id, Metadata};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{
     partitioner, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
@@ -190,7 +190,7 @@ impl DispatchKafkaEvent for KafkaIngressDispatcher {
         let envelope = wrap_service_invocation_in_envelope(
             partition_key,
             inner,
-            metadata().my_node_id(),
+            my_node_id(),
             deduplication_id.to_string(),
             deduplication_index,
         );
@@ -215,7 +215,7 @@ fn wrap_service_invocation_in_envelope(
     let header = Header {
         source: Source::Ingress {
             node_id: from_node_id,
-            nodes_config_version: metadata().nodes_config_version(),
+            nodes_config_version: Metadata::with_current(|m| m.nodes_config_version()),
         },
         dest: Destination::Processor {
             partition_key,

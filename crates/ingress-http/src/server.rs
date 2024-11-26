@@ -17,7 +17,7 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
-use restate_core::{cancellation_watcher, task_center, TaskKind};
+use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
@@ -202,7 +202,7 @@ where
         ));
 
         // Spawn a tokio task to serve the connection
-        task_center().spawn(TaskKind::Ingress, "ingress", None, async move {
+        TaskCenter::spawn(TaskKind::Ingress, "ingress", async move {
             let shutdown = cancellation_watcher();
             let auto_connection = auto::Builder::new(TaskCenterExecutor);
             let serve_connection_fut = auto_connection.serve_connection(io, handler);
@@ -231,7 +231,7 @@ where
     Fut::Output: Send + 'static,
 {
     fn execute(&self, fut: Fut) {
-        let _ = task_center().spawn(TaskKind::Ingress, "ingress", None, async {
+        let _ = TaskCenter::spawn(TaskKind::Ingress, "ingress", async {
             fut.await;
             Ok(())
         });
@@ -247,7 +247,8 @@ mod tests {
     use http_body_util::Full;
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
-    use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
+    use restate_core::TestCoreEnv2;
+    use restate_core::{TaskCenter, TaskKind};
     use restate_test_util::assert_eq;
     use restate_types::health::Health;
     use restate_types::identifiers::WithInvocationId;
@@ -270,7 +271,7 @@ mod tests {
         pub greeting: String,
     }
 
-    #[tokio::test]
+    #[restate_core::test]
     #[traced_test]
     async fn test_http_post() {
         let mut mock_dispatcher = MockRequestDispatcher::default();
@@ -303,7 +304,7 @@ mod tests {
                 })))
             });
 
-        let (address, handle) = bootstrap_test(mock_dispatcher).await;
+        let address = bootstrap_test(mock_dispatcher).await;
 
         // Send the request
         let client = Client::builder(TokioExecutor::new())
@@ -331,14 +332,10 @@ mod tests {
         let response_bytes = response_body.collect().await.unwrap().to_bytes();
         let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
         restate_test_util::assert_eq!(response_value.greeting, "Igal");
-
-        handle.close().await;
     }
 
-    async fn bootstrap_test(
-        mock_request_dispatcher: MockRequestDispatcher,
-    ) -> (SocketAddr, TestHandle) {
-        let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
+    async fn bootstrap_test(mock_request_dispatcher: MockRequestDispatcher) -> SocketAddr {
+        let _env = TestCoreEnv2::create_with_single_node(1, 1).await;
         let health = Health::default();
 
         // Create the ingress and start it
@@ -349,22 +346,11 @@ mod tests {
             Arc::new(mock_request_dispatcher),
             health.ingress_status(),
         );
-        node_env
-            .tc
-            .spawn(TaskKind::SystemService, "ingress", None, ingress.run())
-            .unwrap();
+        TaskCenter::spawn(TaskKind::SystemService, "ingress", ingress.run()).unwrap();
 
         // Wait server to start
         let address = start_signal.await.unwrap();
 
-        (address, TestHandle(node_env.tc))
-    }
-
-    struct TestHandle(TaskCenter);
-
-    impl TestHandle {
-        async fn close(self) {
-            self.0.cancel_tasks(None, None).await;
-        }
+        address
     }
 }

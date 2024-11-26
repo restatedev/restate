@@ -228,10 +228,9 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             Ok(())
         };
 
-        let handle = TaskCenter::current().spawn_unmanaged(
+        let handle = TaskCenter::spawn_unmanaged(
             restate_core::TaskKind::Disposable,
             "cluster-state-refresh",
-            None,
             refresh,
         )?;
 

@@ -29,7 +29,7 @@ use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use googletest::matcher::Matcher;
 use googletest::{all, assert_that, pat, property};
-use restate_core::{task_center, TaskCenter, TaskCenterBuilder};
+use restate_core::TaskCenter;
 use restate_invoker_api::{EffectKind, InvokeInputJournal};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
@@ -69,8 +69,6 @@ use test_log::test;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 pub struct TestEnv {
-    #[allow(dead_code)]
-    task_center: TaskCenter,
     state_machine: StateMachine<ProtobufRawEntryCodec>,
     // TODO for the time being we use rocksdb storage because we have no mocks for storage interfaces.
     //  Perhaps we could make these tests faster by having those.
@@ -79,7 +77,7 @@ pub struct TestEnv {
 
 impl TestEnv {
     pub async fn shutdown(self) {
-        self.task_center.shutdown_node("test complete", 0).await;
+        TaskCenter::shutdown_node("test complete", 0).await;
         RocksDbManager::get().shutdown().await;
     }
 
@@ -123,43 +121,33 @@ impl TestEnv {
                 None => FmtSpan::NONE,
             }).with_test_writer().try_init();
 
-        let tc = TaskCenterBuilder::default()
-            .default_runtime_handle(tokio::runtime::Handle::current())
-            .ingress_runtime_handle(tokio::runtime::Handle::current())
-            .build()
-            .expect("task_center builds");
-
-        tc.run_in_scope("init", None, async {
-            RocksDbManager::init(Constant::new(CommonOptions::default()));
-            let worker_options = Live::from_value(WorkerOptions::default());
-            info!(
-                "Using RocksDB temp directory {}",
-                worker_options.pinned().storage.data_dir().display()
-            );
-            let manager = PartitionStoreManager::create(
-                worker_options.clone().map(|c| &c.storage),
-                worker_options.clone().map(|c| &c.storage.rocksdb).boxed(),
-                &[],
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let worker_options = Live::from_value(WorkerOptions::default());
+        info!(
+            "Using RocksDB temp directory {}",
+            worker_options.pinned().storage.data_dir().display()
+        );
+        let manager = PartitionStoreManager::create(
+            worker_options.clone().map(|c| &c.storage),
+            worker_options.clone().map(|c| &c.storage.rocksdb).boxed(),
+            &[],
+        )
+        .await
+        .unwrap();
+        let rocksdb_storage = manager
+            .open_partition_store(
+                PartitionId::MIN,
+                RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
+                OpenMode::CreateIfMissing,
+                &worker_options.pinned().storage.rocksdb,
             )
             .await
             .unwrap();
-            let rocksdb_storage = manager
-                .open_partition_store(
-                    PartitionId::MIN,
-                    RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
-                    OpenMode::CreateIfMissing,
-                    &worker_options.pinned().storage.rocksdb,
-                )
-                .await
-                .unwrap();
 
-            Self {
-                task_center: task_center(),
-                state_machine,
-                storage: rocksdb_storage,
-            }
-        })
-        .await
+        Self {
+            state_machine,
+            storage: rocksdb_storage,
+        }
     }
 
     pub async fn apply(&mut self, command: Command) -> Vec<Action> {
@@ -193,7 +181,7 @@ impl TestEnv {
 
 type TestResult = Result<(), anyhow::Error>;
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn start_invocation() -> TestResult {
     let mut test_env = TestEnv::create().await;
     let id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -204,7 +192,7 @@ async fn start_invocation() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn shared_invocation_skips_inbox() -> TestResult {
     let mut test_env = TestEnv::create().await;
 
@@ -249,7 +237,7 @@ async fn shared_invocation_skips_inbox() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn awakeable_completion_received_before_entry() -> TestResult {
     let mut test_env = TestEnv::create().await;
     let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -353,7 +341,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn complete_awakeable_with_success() {
     let mut test_env = TestEnv::create().await;
     let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -396,7 +384,7 @@ async fn complete_awakeable_with_success() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn complete_awakeable_with_failure() {
     let mut test_env = TestEnv::create().await;
     let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -442,7 +430,7 @@ async fn complete_awakeable_with_failure() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn invoke_with_headers() -> TestResult {
     let mut test_env = TestEnv::create().await;
     let service_id = ServiceId::mock_random();
@@ -485,7 +473,7 @@ async fn invoke_with_headers() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn mutate_state() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
     let invocation_target = InvocationTarget::mock_virtual_object();
@@ -554,7 +542,7 @@ async fn mutate_state() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn clear_all_user_states() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
     let service_id = ServiceId::new("MySvc", "my-key");
@@ -591,7 +579,7 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn get_state_keys() -> TestResult {
     let mut test_env = TestEnv::create().await;
     let service_id = ServiceId::mock_random();
@@ -632,7 +620,7 @@ async fn get_state_keys() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn get_invocation_id_entry() {
     let mut test_env = TestEnv::create().await;
     let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -721,7 +709,7 @@ async fn get_invocation_id_entry() {
     test_env.shutdown().await;
 }
 
-#[tokio::test]
+#[restate_core::test]
 async fn attach_invocation_entry() {
     let mut test_env = TestEnv::create().await;
     let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -765,7 +753,7 @@ async fn attach_invocation_entry() {
     test_env.shutdown().await;
 }
 
-#[tokio::test]
+#[restate_core::test]
 async fn get_invocation_output_entry() {
     let mut test_env = TestEnv::create().await;
     let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -826,7 +814,7 @@ async fn get_invocation_output_entry() {
     test_env.shutdown().await;
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let mut test_env = TestEnv::create().await;
     let invocation_target = InvocationTarget::mock_virtual_object();
@@ -933,7 +921,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn truncate_outbox_from_empty() -> Result<(), Error> {
     // An outbox message with index 0 has been successfully processed, and must now be truncated
     let outbox_index = 0;
@@ -955,7 +943,7 @@ async fn truncate_outbox_from_empty() -> Result<(), Error> {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn truncate_outbox_with_gap() -> Result<(), Error> {
     // The outbox contains items [3..=5], and the range must be truncated after message 5 is processed
     let outbox_head_index = 3;
@@ -988,7 +976,7 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResult {
     let mut test_env = TestEnv::create().await;
 
@@ -1100,7 +1088,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     Ok(())
 }
 
-#[test(tokio::test)]
+#[test(restate_core::test)]
 async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
     let mut test_env = TestEnv::create().await;
     let invocation_id = InvocationId::mock_random();

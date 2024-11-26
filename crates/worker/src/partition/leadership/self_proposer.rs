@@ -11,7 +11,7 @@
 use crate::partition::leadership::Error;
 use futures::never::Never;
 use restate_bifrost::{Bifrost, CommitToken};
-use restate_core::Metadata;
+use restate_core::my_node_id;
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::logs::LogId;
@@ -33,7 +33,6 @@ pub struct SelfProposer {
     partition_id: PartitionId,
     epoch_sequence_number: EpochSequenceNumber,
     bifrost_appender: restate_bifrost::AppenderHandle<Envelope>,
-    metadata: Metadata,
 }
 
 impl SelfProposer {
@@ -41,7 +40,6 @@ impl SelfProposer {
         partition_id: PartitionId,
         epoch_sequence_number: EpochSequenceNumber,
         bifrost: &Bifrost,
-        metadata: Metadata,
     ) -> Result<Self, Error> {
         let bifrost_appender = bifrost
             .create_background_appender(
@@ -49,13 +47,12 @@ impl SelfProposer {
                 BIFROST_QUEUE_SIZE,
                 MAX_BIFROST_APPEND_BATCH,
             )?
-            .start("self-appender", Some(partition_id))?;
+            .start("self-appender")?;
 
         Ok(Self {
             partition_id,
             epoch_sequence_number,
             bifrost_appender,
-            metadata,
         })
     }
 
@@ -97,7 +94,7 @@ impl SelfProposer {
         let esn = self.epoch_sequence_number;
         self.epoch_sequence_number = self.epoch_sequence_number.next();
 
-        let my_node_id = self.metadata.my_node_id();
+        let my_node_id = my_node_id();
         Header {
             dest: Destination::Processor {
                 partition_key,

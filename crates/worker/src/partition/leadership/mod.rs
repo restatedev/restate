@@ -23,7 +23,7 @@ use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::Reciprocal;
-use restate_core::{metadata, my_node_id, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{my_node_id, ShutdownError, TaskCenter, TaskKind};
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
@@ -227,7 +227,6 @@ where
             self.partition_processor_metadata.partition_id,
             EpochSequenceNumber::new(leader_epoch),
             &self.bifrost,
-            metadata(),
         )?;
 
         self_proposer

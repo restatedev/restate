@@ -213,21 +213,14 @@ impl MessageSender {
 
 #[derive(Clone)]
 pub struct ConsumerTask {
-    task_center: TaskCenter,
     client_config: ClientConfig,
     topics: Vec<String>,
     sender: MessageSender,
 }
 
 impl ConsumerTask {
-    pub fn new(
-        task_center: TaskCenter,
-        client_config: ClientConfig,
-        topics: Vec<String>,
-        sender: MessageSender,
-    ) -> Self {
+    pub fn new(client_config: ClientConfig, topics: Vec<String>, sender: MessageSender) -> Self {
         Self {
-            task_center,
             client_config,
             topics,
             sender,
@@ -313,7 +306,7 @@ impl ConsumerTask {
             }
         };
         for task_id in topic_partition_tasks.into_values() {
-            self.task_center.cancel_task(task_id);
+            TaskCenter::cancel_task(task_id);
         }
         result
     }

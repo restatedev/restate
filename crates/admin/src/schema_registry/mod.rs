@@ -21,7 +21,7 @@ use std::time::Duration;
 use tracing::subscriber::NoSubscriber;
 
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::{metadata, MetadataWriter};
+use restate_core::{Metadata, MetadataWriter};
 use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
 use restate_types::metadata_store::keys::SCHEMA_INFORMATION_KEY;
@@ -132,7 +132,7 @@ impl<V> SchemaRegistry<V> {
 
         let (id, services) = if !apply_mode.should_apply() {
             let mut updater = SchemaUpdater::new(
-                metadata().schema().deref().clone(),
+                Metadata::with_current(|m| m.schema()).deref().clone(),
                 self.experimental_feature_kafka_ingress_next,
             );
 
@@ -303,38 +303,33 @@ impl<V> SchemaRegistry<V> {
     }
 
     pub fn list_services(&self) -> Vec<ServiceMetadata> {
-        metadata().schema().list_services()
+        Metadata::with_current(|m| m.schema()).list_services()
     }
 
     pub fn get_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
-        metadata().schema().resolve_latest_service(&service_name)
+        Metadata::with_current(|m| m.schema()).resolve_latest_service(&service_name)
     }
 
     pub fn get_service_openapi(&self, service_name: impl AsRef<str>) -> Option<serde_json::Value> {
-        metadata()
-            .schema()
-            .resolve_latest_service_openapi(&service_name)
+        Metadata::with_current(|m| m.schema()).resolve_latest_service_openapi(&service_name)
     }
 
     pub fn get_deployment(
         &self,
         deployment_id: DeploymentId,
     ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
-        metadata()
-            .schema()
-            .get_deployment_and_services(&deployment_id)
+        Metadata::with_current(|m| m.schema()).get_deployment_and_services(&deployment_id)
     }
 
     pub fn list_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
-        metadata().schema().get_deployments()
+        Metadata::with_current(|m| m.schema()).get_deployments()
     }
 
     pub fn list_service_handlers(
         &self,
         service_name: impl AsRef<str>,
     ) -> Option<Vec<HandlerMetadata>> {
-        metadata()
-            .schema()
+        Metadata::with_current(|m| m.schema())
             .resolve_latest_service(&service_name)
             .map(|m| m.handlers)
     }
@@ -344,8 +339,7 @@ impl<V> SchemaRegistry<V> {
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
     ) -> Option<HandlerMetadata> {
-        metadata()
-            .schema()
+        Metadata::with_current(|m| m.schema())
             .resolve_latest_service(&service_name)
             .and_then(|m| {
                 m.handlers
@@ -355,11 +349,11 @@ impl<V> SchemaRegistry<V> {
     }
 
     pub fn get_subscription(&self, subscription_id: SubscriptionId) -> Option<Subscription> {
-        metadata().schema().get_subscription(subscription_id)
+        Metadata::with_current(|m| m.schema()).get_subscription(subscription_id)
     }
 
     pub fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
-        metadata().schema().list_subscriptions(filters)
+        Metadata::with_current(|m| m.schema()).list_subscriptions(filters)
     }
 }
 

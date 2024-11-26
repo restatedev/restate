@@ -19,7 +19,7 @@ use restate_core::metadata_store::{
     WriteError,
 };
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
-use restate_core::{metadata, ShutdownError, SyncError, TaskCenter, TaskKind};
+use restate_core::{Metadata, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::cluster_controller::{
     ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
 };
@@ -464,13 +464,15 @@ impl<T: TransportConnect> Scheduler<T> {
             );
         }
 
+        let (cur_partition_table_version, cur_logs_version) =
+            Metadata::with_current(|m| (m.partition_table_version(), m.logs_version()));
         for (node_id, commands) in commands.into_iter() {
             // only send control processors message if there are commands to send
             if !commands.is_empty() {
                 let control_processors = ControlProcessors {
                     // todo: Maybe remove unneeded partition table version
-                    min_partition_table_version: metadata().partition_table_version(),
-                    min_logs_table_version: metadata().logs_version(),
+                    min_partition_table_version: cur_partition_table_version,
+                    min_logs_table_version: cur_logs_version,
                     commands,
                 };
 
@@ -579,9 +581,7 @@ mod tests {
         HashSet, PartitionProcessorPlacementHints, Scheduler,
     };
     use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
-    use restate_core::{
-        metadata, TaskCenterBuilder, TaskCenterFutureExt, TestCoreEnv, TestCoreEnvBuilder,
-    };
+    use restate_core::{Metadata, TestCoreEnv2, TestCoreEnvBuilder2};
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
@@ -612,47 +612,43 @@ mod tests {
         }
     }
 
-    #[test(tokio::test)]
+    #[test(restate_core::test)]
     async fn empty_leadership_changes_dont_modify_plan() -> googletest::Result<()> {
-        let test_env = TestCoreEnv::create_with_single_node(0, 0).await;
+        let test_env = TestCoreEnv2::create_with_single_node(0, 0).await;
         let metadata_store_client = test_env.metadata_store_client.clone();
         let networking = test_env.networking.clone();
 
-        async {
-            let initial_scheduling_plan = metadata_store_client
-                .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
-                .await
-                .expect("scheduling plan");
-            let mut scheduler = Scheduler::init(
-                Configuration::pinned().as_ref(),
-                metadata_store_client.clone(),
-                networking,
+        let initial_scheduling_plan = metadata_store_client
+            .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+            .await
+            .expect("scheduling plan");
+        let mut scheduler = Scheduler::init(
+            Configuration::pinned().as_ref(),
+            metadata_store_client.clone(),
+            networking,
+        )
+        .await?;
+        let observed_cluster_state = ObservedClusterState::default();
+
+        scheduler
+            .on_observed_cluster_state(
+                &observed_cluster_state,
+                &Metadata::with_current(|m| m.nodes_config_ref()),
+                NoPlacementHints,
             )
             .await?;
-            let observed_cluster_state = ObservedClusterState::default();
 
-            scheduler
-                .on_observed_cluster_state(
-                    &observed_cluster_state,
-                    &metadata().nodes_config_ref(),
-                    NoPlacementHints,
-                )
-                .await?;
+        let scheduling_plan = metadata_store_client
+            .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+            .await
+            .expect("scheduling plan");
 
-            let scheduling_plan = metadata_store_client
-                .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
-                .await
-                .expect("scheduling plan");
+        assert_eq!(initial_scheduling_plan, scheduling_plan);
 
-            assert_eq!(initial_scheduling_plan, scheduling_plan);
-
-            Ok(())
-        }
-        .in_tc(&test_env.tc)
-        .await
+        Ok(())
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn schedule_partitions_with_replication_factor() -> googletest::Result<()> {
         schedule_partitions(ReplicationStrategy::Factor(
             NonZero::new(3).expect("non-zero"),
@@ -661,7 +657,7 @@ mod tests {
         Ok(())
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn schedule_partitions_with_all_nodes_replication() -> googletest::Result<()> {
         schedule_partitions(ReplicationStrategy::OnAllNodes).await?;
         Ok(())
@@ -690,15 +686,11 @@ mod tests {
             nodes_config.upsert_node(node_config);
         }
 
-        let tc = TaskCenterBuilder::default_for_tests()
-            .build()
-            .expect("task_center builds");
-
         // network messages going to other nodes are written to `tx`
         let (tx, control_recv) = mpsc::channel(100);
-        let connector = MessageCollectorMockConnector::new(tc.clone(), 10, tx.clone());
+        let connector = MessageCollectorMockConnector::new(10, tx.clone());
 
-        let mut builder = TestCoreEnvBuilder::with_transport_connector(tc, connector);
+        let mut builder = TestCoreEnvBuilder2::with_transport_connector(connector);
         builder.router_builder.add_raw_handler(
             TargetName::ControlProcessors,
             // network messages going to my node is also written to `tx`
@@ -730,82 +722,76 @@ mod tests {
 
         let networking = builder.networking.clone();
 
-        let env = builder
+        let _env = builder
             .set_nodes_config(nodes_config.clone())
             .set_partition_table(partition_table.clone())
             .set_scheduling_plan(initial_scheduling_plan)
             .build()
             .await;
-        async move {
-            let mut scheduler = Scheduler::init(
-                Configuration::pinned().as_ref(),
-                metadata_store_client.clone(),
-                networking,
-            )
-            .await?;
-            let mut observed_cluster_state = ObservedClusterState::default();
+        let mut scheduler = Scheduler::init(
+            Configuration::pinned().as_ref(),
+            metadata_store_client.clone(),
+            networking,
+        )
+        .await?;
+        let mut observed_cluster_state = ObservedClusterState::default();
 
-            for _ in 0..num_scheduling_rounds {
-                let cluster_state = random_cluster_state(&node_ids, num_partitions);
+        for _ in 0..num_scheduling_rounds {
+            let cluster_state = random_cluster_state(&node_ids, num_partitions);
 
-                observed_cluster_state.update(&cluster_state);
-                scheduler
-                    .on_observed_cluster_state(
-                        &observed_cluster_state,
-                        &metadata().nodes_config_ref(),
-                        NoPlacementHints,
-                    )
-                    .await?;
-                // collect all control messages from the network to build up the effective scheduling plan
-                let control_messages = control_recv
-                    .as_mut()
-                    .take_until(tokio::time::sleep(Duration::from_secs(10)))
-                    .collect::<Vec<_>>()
-                    .await;
+            observed_cluster_state.update(&cluster_state);
+            scheduler
+                .on_observed_cluster_state(
+                    &observed_cluster_state,
+                    &Metadata::with_current(|m| m.nodes_config_ref()),
+                    NoPlacementHints,
+                )
+                .await?;
+            // collect all control messages from the network to build up the effective scheduling plan
+            let control_messages = control_recv
+                .as_mut()
+                .take_until(tokio::time::sleep(Duration::from_secs(10)))
+                .collect::<Vec<_>>()
+                .await;
 
-                let observed_cluster_state =
-                    derive_observed_cluster_state(&cluster_state, control_messages);
-                let target_scheduling_plan = metadata_store_client
-                    .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
-                    .await?
-                    .expect("the scheduler should have created a scheduling plan");
+            let observed_cluster_state =
+                derive_observed_cluster_state(&cluster_state, control_messages);
+            let target_scheduling_plan = metadata_store_client
+                .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+                .await?
+                .expect("the scheduler should have created a scheduling plan");
 
-                // assert that the effective scheduling plan aligns with the target scheduling plan
-                assert_that!(
-                    observed_cluster_state,
-                    matches_scheduling_plan(&target_scheduling_plan)
-                );
+            // assert that the effective scheduling plan aligns with the target scheduling plan
+            assert_that!(
+                observed_cluster_state,
+                matches_scheduling_plan(&target_scheduling_plan)
+            );
 
-                let alive_nodes: HashSet<_> = cluster_state
-                    .alive_nodes()
-                    .map(|node| node.generational_node_id.as_plain())
-                    .collect();
+            let alive_nodes: HashSet<_> = cluster_state
+                .alive_nodes()
+                .map(|node| node.generational_node_id.as_plain())
+                .collect();
 
-                for (_, target_state) in target_scheduling_plan.iter() {
-                    // assert that every partition has a leader which is part of the alive nodes set
-                    assert!(target_state
-                        .leader
-                        .is_some_and(|leader| alive_nodes.contains(&leader)));
+            for (_, target_state) in target_scheduling_plan.iter() {
+                // assert that every partition has a leader which is part of the alive nodes set
+                assert!(target_state
+                    .leader
+                    .is_some_and(|leader| alive_nodes.contains(&leader)));
 
-                    // assert that the replication strategy was respected
-                    match replication_strategy {
-                        ReplicationStrategy::OnAllNodes => {
-                            assert_eq!(target_state.node_set, alive_nodes)
-                        }
-                        ReplicationStrategy::Factor(replication_factor) => assert_eq!(
-                            target_state.node_set.len(),
-                            alive_nodes.len().min(
-                                usize::try_from(replication_factor.get())
-                                    .expect("u32 fits into usize")
-                            )
-                        ),
+                // assert that the replication strategy was respected
+                match replication_strategy {
+                    ReplicationStrategy::OnAllNodes => {
+                        assert_eq!(target_state.node_set, alive_nodes)
                     }
+                    ReplicationStrategy::Factor(replication_factor) => assert_eq!(
+                        target_state.node_set.len(),
+                        alive_nodes.len().min(
+                            usize::try_from(replication_factor.get()).expect("u32 fits into usize")
+                        )
+                    ),
                 }
             }
-            googletest::Result::Ok(())
         }
-        .in_tc(&env.tc)
-        .await?;
 
         Ok(())
     }

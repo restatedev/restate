@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use test_log::test;
 
 use restate_core::network::FailingConnector;
-use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+use restate_core::{TaskCenter, TaskKind, TestCoreEnv2, TestCoreEnvBuilder2};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
     self, reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
@@ -62,167 +62,152 @@ impl Versioned for Value {
 flexbuffers_storage_encode_decode!(Value);
 
 /// Tests basic operations of the metadata store.
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(restate_core::test(flavor = "multi_thread", worker_threads = 2))]
 async fn basic_metadata_store_operations() -> anyhow::Result<()> {
-    let (client, env) = create_test_environment(&MetadataStoreOptions::default()).await?;
+    let (client, _env) = create_test_environment(&MetadataStoreOptions::default()).await?;
 
-    env.tc
-        .run_in_scope("test", None, async move {
-            let key: ByteString = "key".into();
-            let value = Value {
-                version: Version::MIN,
-                value: "test_value".to_owned(),
-            };
+    let key: ByteString = "key".into();
+    let value = Value {
+        version: Version::MIN,
+        value: "test_value".to_owned(),
+    };
 
-            let next_value = Value {
-                version: Version::from(2),
-                value: "next_value".to_owned(),
-            };
+    let next_value = Value {
+        version: Version::from(2),
+        value: "next_value".to_owned(),
+    };
 
-            let other_value = Value {
-                version: Version::MIN,
-                value: "other_value".to_owned(),
-            };
+    let other_value = Value {
+        version: Version::MIN,
+        value: "other_value".to_owned(),
+    };
 
-            // first get should be empty
-            assert!(client.get::<Value>(key.clone()).await?.is_none());
+    // first get should be empty
+    assert!(client.get::<Value>(key.clone()).await?.is_none());
 
-            // put initial value
-            client.put(key.clone(), &value, Precondition::None).await?;
+    // put initial value
+    client.put(key.clone(), &value, Precondition::None).await?;
 
-            assert_eq!(
-                client.get_version(key.clone()).await?,
-                Some(value.version())
-            );
-            assert_eq!(client.get(key.clone()).await?, Some(value));
+    assert_eq!(
+        client.get_version(key.clone()).await?,
+        Some(value.version())
+    );
+    assert_eq!(client.get(key.clone()).await?, Some(value));
 
-            // fail to overwrite existing value
-            assert!(matches!(
-                client
-                    .put(key.clone(), &other_value, Precondition::DoesNotExist)
-                    .await,
-                Err(WriteError::FailedPrecondition(_))
-            ));
+    // fail to overwrite existing value
+    assert!(matches!(
+        client
+            .put(key.clone(), &other_value, Precondition::DoesNotExist)
+            .await,
+        Err(WriteError::FailedPrecondition(_))
+    ));
 
-            // fail to overwrite existing value with wrong version
-            assert!(matches!(
-                client
-                    .put(
-                        key.clone(),
-                        &other_value,
-                        Precondition::MatchesVersion(Version::INVALID)
-                    )
-                    .await,
-                Err(WriteError::FailedPrecondition(_))
-            ));
+    // fail to overwrite existing value with wrong version
+    assert!(matches!(
+        client
+            .put(
+                key.clone(),
+                &other_value,
+                Precondition::MatchesVersion(Version::INVALID)
+            )
+            .await,
+        Err(WriteError::FailedPrecondition(_))
+    ));
 
-            // overwrite with matching version precondition
-            client
-                .put(
-                    key.clone(),
-                    &next_value,
-                    Precondition::MatchesVersion(Version::MIN),
-                )
-                .await?;
-            assert_eq!(client.get(key.clone()).await?, Some(next_value));
-
-            // try to delete value with wrong version should fail
-            assert!(matches!(
-                client
-                    .delete(key.clone(), Precondition::MatchesVersion(Version::MIN))
-                    .await,
-                Err(WriteError::FailedPrecondition(_))
-            ));
-
-            // delete should succeed with the right precondition
-            client
-                .delete(key.clone(), Precondition::MatchesVersion(Version::from(2)))
-                .await?;
-            assert!(client.get::<Value>(key.clone()).await?.is_none());
-
-            // unconditional delete
-            client
-                .put(key.clone(), &other_value, Precondition::None)
-                .await?;
-            client.delete(key.clone(), Precondition::None).await?;
-            assert!(client.get::<Value>(key.clone()).await?.is_none());
-
-            Ok::<(), anyhow::Error>(())
-        })
+    // overwrite with matching version precondition
+    client
+        .put(
+            key.clone(),
+            &next_value,
+            Precondition::MatchesVersion(Version::MIN),
+        )
         .await?;
+    assert_eq!(client.get(key.clone()).await?, Some(next_value));
 
-    env.tc.shutdown_node("shutdown", 0).await;
+    // try to delete value with wrong version should fail
+    assert!(matches!(
+        client
+            .delete(key.clone(), Precondition::MatchesVersion(Version::MIN))
+            .await,
+        Err(WriteError::FailedPrecondition(_))
+    ));
+
+    // delete should succeed with the right precondition
+    client
+        .delete(key.clone(), Precondition::MatchesVersion(Version::from(2)))
+        .await?;
+    assert!(client.get::<Value>(key.clone()).await?.is_none());
+
+    // unconditional delete
+    client
+        .put(key.clone(), &other_value, Precondition::None)
+        .await?;
+    client.delete(key.clone(), Precondition::None).await?;
+    assert!(client.get::<Value>(key.clone()).await?.is_none());
 
     Ok(())
 }
 
 /// Tests multiple concurrent operations issued by the same client
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(restate_core::test(flavor = "multi_thread", worker_threads = 2))]
 async fn concurrent_operations() -> anyhow::Result<()> {
-    let (client, env) = create_test_environment(&MetadataStoreOptions::default()).await?;
+    let (client, _env) = create_test_environment(&MetadataStoreOptions::default()).await?;
 
-    env.tc
-        .run_in_scope("test", None, async move {
-            let mut concurrent_operations = FuturesUnordered::default();
+    let mut concurrent_operations = FuturesUnordered::default();
 
-            for key in 1u32..=10 {
-                for _instance in 0..key {
-                    let client = client.clone();
-                    let key = ByteString::from(key.to_string());
-                    concurrent_operations.push(async move {
-                        loop {
-                            let value = client.get::<Value>(key.clone()).await?;
+    for key in 1u32..=10 {
+        for _instance in 0..key {
+            let client = client.clone();
+            let key = ByteString::from(key.to_string());
+            concurrent_operations.push(async move {
+                loop {
+                    let value = client.get::<Value>(key.clone()).await?;
 
-                            let result = if let Some(value) = value {
-                                let previous_version = value.version();
-                                client
-                                    .put(
-                                        key.clone(),
-                                        &value.next_version(),
-                                        Precondition::MatchesVersion(previous_version),
-                                    )
-                                    .await
-                            } else {
-                                client
-                                    .put(key.clone(), &Value::default(), Precondition::DoesNotExist)
-                                    .await
-                            };
+                    let result = if let Some(value) = value {
+                        let previous_version = value.version();
+                        client
+                            .put(
+                                key.clone(),
+                                &value.next_version(),
+                                Precondition::MatchesVersion(previous_version),
+                            )
+                            .await
+                    } else {
+                        client
+                            .put(key.clone(), &Value::default(), Precondition::DoesNotExist)
+                            .await
+                    };
 
-                            match result {
-                                Ok(()) => return Ok::<(), anyhow::Error>(()),
-                                Err(WriteError::FailedPrecondition(_)) => continue,
-                                Err(err) => return Err(err.into()),
-                            }
-                        }
-                    });
+                    match result {
+                        Ok(()) => return Ok::<(), anyhow::Error>(()),
+                        Err(WriteError::FailedPrecondition(_)) => continue,
+                        Err(err) => return Err(err.into()),
+                    }
                 }
-            }
+            });
+        }
+    }
 
-            while let Some(result) = concurrent_operations.next().await {
-                result?;
-            }
+    while let Some(result) = concurrent_operations.next().await {
+        result?;
+    }
 
-            // sanity check
-            for key in 1u32..=10 {
-                let metadata_key = ByteString::from(key.to_string());
-                let value = client
-                    .get::<Value>(metadata_key)
-                    .await?
-                    .map(|v| v.version());
+    // sanity check
+    for key in 1u32..=10 {
+        let metadata_key = ByteString::from(key.to_string());
+        let value = client
+            .get::<Value>(metadata_key)
+            .await?
+            .map(|v| v.version());
 
-                assert_eq!(value, Some(Version::from(key)));
-            }
+        assert_eq!(value, Some(Version::from(key)));
+    }
 
-            Ok::<(), anyhow::Error>(())
-        })
-        .await?;
-
-    env.tc.shutdown_node("shutdown", 0).await;
     Ok(())
 }
 
 /// Tests that the metadata store stores values durably so that they can be read after a restart.
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+#[test(restate_core::test(flavor = "multi_thread", worker_threads = 2))]
 async fn durable_storage() -> anyhow::Result<()> {
     // get current base dir and use this for subsequent tests.
     let base_path = reset_base_temp_dir_and_retain();
@@ -231,34 +216,26 @@ async fn durable_storage() -> anyhow::Result<()> {
     assert!(base_path.starts_with(tmp));
     assert_eq!(base_path.join("local-metadata-store"), opts.data_dir());
 
-    let (client, env) = create_test_environment(&opts).await?;
+    let (client, _env) = create_test_environment(&opts).await?;
 
     // write data
-    env.tc
-        .run_in_scope("write-data", None, async move {
-            for key in 1u32..=10 {
-                let value = key.to_string();
-                let metadata_key = ByteString::from(value.clone());
-                client
-                    .put(
-                        metadata_key,
-                        &Value {
-                            version: Version::from(key),
-                            value,
-                        },
-                        Precondition::DoesNotExist,
-                    )
-                    .await?;
-            }
-
-            Ok::<(), anyhow::Error>(())
-        })
-        .await?;
+    for key in 1u32..=10 {
+        let value = key.to_string();
+        let metadata_key = ByteString::from(value.clone());
+        client
+            .put(
+                metadata_key,
+                &Value {
+                    version: Version::from(key),
+                    value,
+                },
+                Precondition::DoesNotExist,
+            )
+            .await?;
+    }
 
     // restart the metadata store
-    env.tc
-        .cancel_tasks(Some(TaskKind::MetadataStore), None)
-        .await;
+    TaskCenter::cancel_tasks(Some(TaskKind::MetadataStore), None).await;
     // reset RocksDbManager to allow restarting the metadata store
     RocksDbManager::get().reset().await?;
 
@@ -277,31 +254,24 @@ async fn durable_storage() -> anyhow::Result<()> {
         metadata_store_client_opts,
         metadata_store_opts.clone().boxed(),
         metadata_store_opts.map(|c| &c.rocksdb).boxed(),
-        &env.tc,
     )
     .await?;
 
     // validate data
-    env.tc
-        .run_in_scope("validate-data", None, async move {
-            for key in 1u32..=10 {
-                let value = key.to_string();
-                let metadata_key = ByteString::from(value.clone());
+    for key in 1u32..=10 {
+        let value = key.to_string();
+        let metadata_key = ByteString::from(value.clone());
 
-                assert_eq!(
-                    client.get(metadata_key).await?,
-                    Some(Value {
-                        version: Version::from(key),
-                        value
-                    })
-                );
-            }
+        assert_eq!(
+            client.get(metadata_key).await?,
+            Some(Value {
+                version: Version::from(key),
+                value
+            })
+        );
+    }
 
-            Ok::<(), anyhow::Error>(())
-        })
-        .await?;
-
-    env.tc.shutdown_node("shutdown", 0).await;
+    TaskCenter::shutdown_node("shutdown", 0).await;
     std::fs::remove_dir_all(base_path)?;
     Ok(())
 }
@@ -310,7 +280,7 @@ async fn durable_storage() -> anyhow::Result<()> {
 /// connected to it.
 async fn create_test_environment(
     opts: &MetadataStoreOptions,
-) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv<FailingConnector>)> {
+) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv2<FailingConnector>)> {
     // Setup metadata store on unix domain socket.
     let mut config = Configuration::default();
     let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
@@ -325,19 +295,16 @@ async fn create_test_environment(
 
     restate_types::config::set_current_config(config.clone());
     let config = Live::from_value(config);
-    let env = TestCoreEnvBuilder::with_incoming_only_connector()
+    let env = TestCoreEnvBuilder2::with_incoming_only_connector()
         .build()
         .await;
 
-    let task_center = &env.tc;
-
-    task_center.run_sync(|| RocksDbManager::init(config.clone().map(|c| &c.common)));
+    RocksDbManager::init(config.clone().map(|c| &c.common));
 
     let client = start_metadata_store(
         config.pinned().common.metadata_store_client.clone(),
         config.clone().map(|c| &c.metadata_store).boxed(),
         config.clone().map(|c| &c.metadata_store.rocksdb).boxed(),
-        task_center,
     )
     .await?;
 
@@ -348,7 +315,6 @@ async fn start_metadata_store(
     metadata_store_client_options: MetadataStoreClientOptions,
     opts: BoxedLiveLoad<MetadataStoreOptions>,
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    task_center: &TaskCenter,
 ) -> anyhow::Result<MetadataStoreClient> {
     let health_status = HealthStatus::default();
     let service = LocalMetadataStoreService::from_options(
@@ -357,10 +323,9 @@ async fn start_metadata_store(
         updateables_rocksdb_options,
     );
 
-    task_center.spawn(
+    TaskCenter::spawn(
         TaskKind::MetadataStore,
         "local-metadata-store",
-        None,
         async move {
             service.run().await?;
             Ok(())
