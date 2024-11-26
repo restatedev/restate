@@ -95,7 +95,7 @@ pub fn spawn_restate(config: Configuration) -> task_center::Handle {
         .options(config.common.clone())
         .build()
         .expect("task_center builds")
-        .to_handle();
+        .into_handle();
     restate_types::config::set_current_config(config.clone());
     let updateable_config = Configuration::updateable();
 

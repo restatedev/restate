@@ -463,8 +463,8 @@ fn parse_knobs(mut input: ItemFn, config: FinalConfig) -> TokenStream {
                 .build()
                 .expect("Failed building task-center");
 
-            let ret = rt.block_on(#body_ident.in_tc(&task_center.handle()));
-            rt.block_on(task_center.to_handle().shutdown_node("completed", 0));
+            let ret = rt.block_on(#body_ident.in_tc(&task_center.to_handle()));
+            rt.block_on(task_center.into_handle().shutdown_node("completed", 0));
             ret
         }
     };

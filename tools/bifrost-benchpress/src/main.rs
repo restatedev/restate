@@ -149,7 +149,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (task_center
         .options(config.pinned().common.clone())
         .build()
         .expect("task_center builds")
-        .to_handle();
+        .into_handle();
 
     let bifrost = tc.block_on(async move {
         let metadata_builder = MetadataBuilder::default();

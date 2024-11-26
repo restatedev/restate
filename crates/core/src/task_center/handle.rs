@@ -222,13 +222,23 @@ impl OwnedHandle {
         }
     }
 
-    pub fn handle(&self) -> Handle {
+    pub fn to_handle(&self) -> Handle {
         Handle::new(&self.inner)
     }
 
-    pub fn to_handle(self) -> Handle {
+    pub fn into_handle(self) -> Handle {
         Handle { inner: self.inner }
     }
+
+    /// Sets the current task_center but doesn't create a task. Use this when you need to run a
+    /// future within task_center scope.
+    pub fn block_on<F, O>(&self, future: F) -> O
+    where
+        F: Future<Output = O>,
+    {
+        self.inner.block_on(future)
+    }
+
     /// The exit code that the process should exit with.
     pub fn exit_code(&self) -> i32 {
         self.inner.current_exit_code.load(Ordering::Relaxed)
