@@ -174,7 +174,7 @@ async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut 
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_invocation_status() {
     let mut rocksdb = storage_test_environment().await;
     let mut txn = rocksdb.transaction();
@@ -184,7 +184,7 @@ async fn test_invocation_status() {
     verify_all_svc_with_status_invoked(&mut txn).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_migration() {
     let mut rocksdb = storage_test_environment().await;
 

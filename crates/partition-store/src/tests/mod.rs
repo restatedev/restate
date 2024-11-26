@@ -17,7 +17,6 @@ use futures::Stream;
 use tokio_stream::StreamExt;
 
 use crate::{OpenMode, PartitionStore, PartitionStoreManager};
-use restate_core::TaskCenterBuilder;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
 use restate_types::config::{CommonOptions, WorkerOptions};
@@ -47,12 +46,7 @@ async fn storage_test_environment_with_manager() -> (PartitionStoreManager, Part
     //
     // create a rocksdb storage from options
     //
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .ingress_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    tc.run_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
+    RocksDbManager::init(Constant::new(CommonOptions::default()));
     let worker_options = Live::from_value(WorkerOptions::default());
     let manager = PartitionStoreManager::create(
         worker_options.clone().map(|c| &c.storage),
@@ -75,7 +69,7 @@ async fn storage_test_environment_with_manager() -> (PartitionStoreManager, Part
     (manager, store)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_read_write() {
     let (manager, store) = storage_test_environment_with_manager().await;
 

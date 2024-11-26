@@ -16,20 +16,13 @@ use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use googletest::all;
 use googletest::prelude::{assert_that, eq};
-use restate_core::TaskCenterBuilder;
 use restate_storage_api::idempotency_table::{IdempotencyMetadata, IdempotencyTable};
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_idempotency_key() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut engine = tc
-        .run_in_scope("mock-query-engine", None, MockQueryEngine::create())
-        .await;
+    let mut engine = MockQueryEngine::create().await;
 
     let mut tx = engine.partition_store().transaction();
     let invocation_id_1 = InvocationId::mock_random();

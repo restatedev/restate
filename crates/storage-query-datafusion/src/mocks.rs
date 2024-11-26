@@ -19,7 +19,6 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
-use restate_core::task_center;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
@@ -161,7 +160,7 @@ impl MockQueryEngine {
             + 'static,
     ) -> Self {
         // Prepare Rocksdb
-        task_center().run_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
         let worker_options = Live::from_value(WorkerOptions::default());
         let manager = PartitionStoreManager::create(
             worker_options.clone().map(|c| &c.storage),
