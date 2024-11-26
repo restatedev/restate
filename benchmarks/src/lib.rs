@@ -18,7 +18,7 @@ use futures_util::{future, TryFutureExt};
 use http::header::CONTENT_TYPE;
 use http::Uri;
 use pprof::flamegraph::Options;
-use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind};
+use restate_core::{task_center, TaskCenter, TaskCenterBuilder, TaskKind};
 use restate_node::Node;
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{

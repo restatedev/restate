@@ -150,7 +150,7 @@ impl Worker {
 
         let remote_scanner_manager = RemoteScannerManager::new(
             create_remote_scanner_service(networking, router_builder),
-            create_partition_locator(partition_routing),
+            create_partition_locator(partition_routing, metadata.clone()),
         );
         let schema = metadata.updateable_schema();
         let storage_query_context = QueryContext::create(

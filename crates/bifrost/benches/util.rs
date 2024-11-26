@@ -12,8 +12,8 @@ use std::sync::Arc;
 use tracing::warn;
 
 use restate_core::{
-    spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter, TaskCenterBuilder,
-    TaskCenterFutureExt,
+    spawn_metadata_manager, task_center, MetadataBuilder, MetadataManager, TaskCenter,
+    TaskCenterBuilder, TaskCenterFutureExt,
 };
 use restate_metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
@@ -26,14 +26,15 @@ pub async fn spawn_environment(
     config: Configuration,
     num_logs: u16,
     provider: ProviderKind,
-) -> TaskCenter {
+) -> task_center::Handle {
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {
         warn!("Failed to increase the number of open file descriptors limit.");
     }
     let tc = TaskCenterBuilder::default()
         .options(config.common.clone())
         .build()
-        .expect("task_center builds");
+        .expect("task_center builds")
+        .to_handle();
 
     async {
         restate_types::config::set_current_config(config.clone());

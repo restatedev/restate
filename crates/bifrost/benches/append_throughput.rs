@@ -15,6 +15,7 @@ use std::ops::Range;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use futures::stream::{FuturesOrdered, FuturesUnordered};
 use futures::StreamExt;
+use restate_core::TaskCenterFutureExt;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -122,13 +123,9 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
         .sample_size(10)
         .throughput(Throughput::Elements(count_per_run))
         .bench_function("sequential_single_log", |bencher| {
-            bencher.to_async(&test_runner_rt).iter(|| {
-                tc.run_in_scope(
-                    "bench",
-                    None,
-                    append_seq(bifrost.clone(), LogId::new(1), count_per_run),
-                )
-            });
+            bencher
+                .to_async(&test_runner_rt)
+                .iter(|| append_seq(bifrost.clone(), LogId::new(1), count_per_run).in_tc(&tc));
         });
 
     // Concurrent single log
@@ -141,15 +138,12 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
                 count_per_run,
                 |bencher, &count_per_run| {
                     bencher.to_async(&test_runner_rt).iter(|| {
-                        tc.run_in_scope(
-                            "bench",
-                            None,
-                            append_records_concurrent_single_log(
-                                bifrost.clone(),
-                                LogId::new(1),
-                                count_per_run,
-                            ),
+                        append_records_concurrent_single_log(
+                            bifrost.clone(),
+                            LogId::new(1),
+                            count_per_run,
                         )
+                        .in_tc(&tc)
                     });
                 },
             );
@@ -167,15 +161,12 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
                 count_per_run,
                 |bencher, &count_per_run| {
                     bencher.to_async(&test_runner_rt).iter(|| {
-                        tc.run_in_scope(
-                            "bench",
-                            None,
-                            append_records_multi_log(
-                                bifrost.clone(),
-                                0..num_logs_per_run,
-                                count_per_run,
-                            ),
+                        append_records_multi_log(
+                            bifrost.clone(),
+                            0..num_logs_per_run,
+                            count_per_run,
                         )
+                        .in_tc(&tc)
                     });
                 },
             );
