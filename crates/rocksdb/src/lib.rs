@@ -438,6 +438,7 @@ impl RocksDb {
                 );
                 return;
             }
+            let start = Instant::now();
 
             debug!(
             db = %self.name,
@@ -447,6 +448,13 @@ impl RocksDb {
                     db = %self.name,
                     "Failed to flush memtables: {}",
                     e
+                );
+            } else {
+                info!(
+                    db = %self.name,
+                    "{} column families flushed in {:?}",
+                    cfs_to_flush.len(),
+                    start.elapsed(),
                 );
             }
             self.db.cancel_all_background_work(true);
