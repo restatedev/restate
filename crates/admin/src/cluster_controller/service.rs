@@ -482,9 +482,8 @@ mod tests {
     use restate_core::network::{
         FailingConnector, Incoming, MessageHandler, MockPeerConnection, NetworkServerBuilder,
     };
-    use restate_core::{
-        NoOpMessageHandler, TaskCenter, TaskKind, TestCoreEnv2, TestCoreEnvBuilder2,
-    };
+    use restate_core::test_env::NoOpMessageHandler;
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::{AdminOptions, Configuration};
     use restate_types::health::HealthStatus;
@@ -500,7 +499,7 @@ mod tests {
     #[test(restate_core::test)]
     async fn manual_log_trim() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
-        let mut builder = TestCoreEnvBuilder2::with_incoming_only_connector();
+        let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
 
@@ -775,11 +774,11 @@ mod tests {
     async fn create_test_env<F>(
         config: Configuration,
         mut modify_builder: F,
-    ) -> anyhow::Result<(TestCoreEnv2<FailingConnector>, Bifrost)>
+    ) -> anyhow::Result<(TestCoreEnv<FailingConnector>, Bifrost)>
     where
-        F: FnMut(TestCoreEnvBuilder2<FailingConnector>) -> TestCoreEnvBuilder2<FailingConnector>,
+        F: FnMut(TestCoreEnvBuilder<FailingConnector>) -> TestCoreEnvBuilder<FailingConnector>,
     {
-        let mut builder = TestCoreEnvBuilder2::with_incoming_only_connector();
+        let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
 

@@ -778,12 +778,12 @@ mod tests {
     use restate_types::Version;
 
     use crate::network::MockPeerConnection;
-    use crate::{self as restate_core, TestCoreEnv2, TestCoreEnvBuilder2};
+    use crate::{self as restate_core, TestCoreEnv, TestCoreEnvBuilder};
 
     // Test handshake with a client
     #[restate_core::test]
     async fn test_hello_welcome_handshake() -> Result<()> {
-        let _env = TestCoreEnv2::create_with_single_node(1, 1).await;
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let metadata = Metadata::current();
         let connections = ConnectionManager::new_incoming_only(metadata.clone());
 
@@ -802,7 +802,7 @@ mod tests {
 
     #[restate_core::test(start_paused = true)]
     async fn test_hello_welcome_timeout() -> Result<()> {
-        let _env = TestCoreEnv2::create_with_single_node(1, 1).await;
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let metadata = Metadata::current();
         let net_opts = NetworkingOptions::default();
         let (_tx, rx) = mpsc::channel(1);
@@ -824,7 +824,7 @@ mod tests {
 
     #[restate_core::test]
     async fn test_bad_handshake() -> Result<()> {
-        let test_setup = TestCoreEnv2::create_with_single_node(1, 1).await;
+        let test_setup = TestCoreEnv::create_with_single_node(1, 1).await;
         let metadata = test_setup.metadata;
         let (tx, rx) = mpsc::channel(1);
         let my_node_id = metadata.my_node_id();
@@ -900,7 +900,7 @@ mod tests {
 
     #[restate_core::test]
     async fn test_node_generation() -> Result<()> {
-        let _env = TestCoreEnv2::create_with_single_node(1, 2).await;
+        let _env = TestCoreEnv::create_with_single_node(1, 2).await;
         let metadata = Metadata::current();
         let (tx, rx) = mpsc::channel(1);
         let mut my_node_id = metadata.my_node_id();
@@ -995,7 +995,7 @@ mod tests {
         );
         nodes_config.upsert_node(node_config);
 
-        let test_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let test_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_nodes_config(nodes_config)
             .build()
             .await;

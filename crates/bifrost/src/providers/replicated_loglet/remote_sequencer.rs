@@ -493,7 +493,7 @@ mod test {
 
     use restate_core::{
         network::{Incoming, MessageHandler, MockConnector},
-        TestCoreEnv2, TestCoreEnvBuilder2,
+        TestCoreEnv, TestCoreEnvBuilder,
     };
     use restate_types::{
         logs::{LogId, LogletOffset, Record, SequenceNumber, TailState},
@@ -553,7 +553,7 @@ mod test {
     }
 
     struct TestEnv {
-        pub core_env: TestCoreEnv2<MockConnector>,
+        pub core_env: TestCoreEnv<MockConnector>,
         pub remote_sequencer: RemoteSequencer<MockConnector>,
     }
 
@@ -565,7 +565,7 @@ mod test {
         let (connector, _receiver) = MockConnector::new(100);
         let connector = Arc::new(connector);
 
-        let mut builder = TestCoreEnvBuilder2::with_transport_connector(Arc::clone(&connector))
+        let mut builder = TestCoreEnvBuilder::with_transport_connector(Arc::clone(&connector))
             .add_mock_nodes_config()
             .add_message_handler(sequencer);
 

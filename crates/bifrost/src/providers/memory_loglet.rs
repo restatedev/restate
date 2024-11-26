@@ -403,14 +403,14 @@ impl Loglet for MemoryLoglet {
 mod tests {
     use super::*;
 
-    use restate_core::TestCoreEnvBuilder2;
+    use restate_core::TestCoreEnvBuilder;
 
     macro_rules! run_test {
         ($test:ident) => {
             paste::paste! {
                 #[restate_core::test(start_paused = true)]
                 async fn [<memory_loglet_  $test>]() -> googletest::Result<()> {
-                    let _node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+                    let _node_env = TestCoreEnvBuilder::with_incoming_only_connector()
                         .set_provider_kind(ProviderKind::InMemory)
                         .build()
                         .await;

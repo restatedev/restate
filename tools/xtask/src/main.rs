@@ -19,7 +19,7 @@ use schemars::gen::SchemaSettings;
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::TaskKind;
-use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv2};
+use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::table_docs;
@@ -102,7 +102,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     );
 
     // We start the Meta service, then download the openapi schema generated
-    let node_env = TestCoreEnv2::create_with_single_node(1, 1).await;
+    let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
     let bifrost = Bifrost::init_in_memory().await;
 
     let admin_service = AdminService::new(
