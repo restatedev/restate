@@ -17,7 +17,7 @@ use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use anyhow::Context;
 use rdkafka::error::KafkaError;
 use restate_bifrost::Bifrost;
-use restate_core::{cancellation_watcher, task_center};
+use restate_core::cancellation_watcher;
 use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::live::LiveLoad;
@@ -142,7 +142,6 @@ impl Service {
 
         // Create the consumer task
         let consumer_task = consumer_task::ConsumerTask::new(
-            task_center(),
             client_config,
             vec![topic.to_string()],
             MessageSender::new(

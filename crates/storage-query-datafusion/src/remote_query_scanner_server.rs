@@ -105,8 +105,6 @@ impl RemoteQueryScannerServer {
         let mut scanners: HashMap<ScannerId, Scanner> = Default::default();
         let mut interval = time::interval(expire_old_scanners_after);
 
-        let node_id = my_node_id();
-
         loop {
             tokio::select! {
                         biased;
@@ -119,7 +117,7 @@ impl RemoteQueryScannerServer {
                         },
                         Some(scan_req) = open_stream.next() => {
                             next_scanner_id += 1;
-                            let scanner_id = ScannerId(node_id, next_scanner_id);
+                            let scanner_id = ScannerId(my_node_id(), next_scanner_id);
                             Self::on_open(scanner_id, scan_req, &mut scanners, query_context.clone()).await;
                         },
                         Some(next_req) = next_stream.next() => {

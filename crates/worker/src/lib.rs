@@ -29,7 +29,7 @@ use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
-use restate_core::{task_center, Metadata, TaskKind};
+use restate_core::{Metadata, TaskKind};
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_metadata_store::MetadataStoreClient;
@@ -149,7 +149,7 @@ impl Worker {
         router_builder.add_message_handler(partition_processor_manager.message_handler());
 
         let remote_scanner_manager = RemoteScannerManager::new(
-            create_remote_scanner_service(networking, task_center(), router_builder),
+            create_remote_scanner_service(networking, router_builder),
             create_partition_locator(partition_routing, metadata.clone()),
         );
         let schema = metadata.updateable_schema();

@@ -283,10 +283,9 @@ impl ProcessorState {
     ) {
         match self {
             ProcessorState::Starting { .. } => {
-                let _ = TaskCenter::current().spawn(
+                let _ = TaskCenter::spawn(
                     TaskKind::Disposable,
                     "partition-processor-rpc",
-                    None,
                     async move {
                         partition_processor_rpc
                             .into_outgoing(Err(PartitionProcessorRpcError::Starting))
@@ -304,10 +303,9 @@ impl ProcessorState {
                 {
                     match err {
                         TrySendError::Full(req) => {
-                            let _ = TaskCenter::current().spawn(
+                            let _ = TaskCenter::spawn(
                                 TaskKind::Disposable,
                                 "partition-processor-rpc",
-                                None,
                                 async move {
                                     req.into_outgoing(Err(PartitionProcessorRpcError::Busy))
                                         .send()
@@ -317,10 +315,9 @@ impl ProcessorState {
                             );
                         }
                         TrySendError::Closed(req) => {
-                            let _ = TaskCenter::current().spawn(
+                            let _ = TaskCenter::spawn(
                                 TaskKind::Disposable,
                                 "partition-processor-rpc",
-                                None,
                                 async move {
                                     req.into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
                                         partition_id,
@@ -335,10 +332,9 @@ impl ProcessorState {
                 }
             }
             ProcessorState::Stopping { .. } => {
-                let _ = TaskCenter::current().spawn(
+                let _ = TaskCenter::spawn(
                     TaskKind::Disposable,
                     "partition-processor-rpc",
-                    None,
                     async move {
                         partition_processor_rpc
                             .into_outgoing(Err(PartitionProcessorRpcError::Stopping))

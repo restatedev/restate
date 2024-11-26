@@ -46,8 +46,8 @@ pub use metadata::{
 };
 pub use task_center::{
     cancellation_token, cancellation_watcher, is_cancellation_requested, my_node_id, AsyncRuntime,
-    MetadataFutureExt, RuntimeError, TaskCenter, TaskCenterBuildError, TaskCenterBuilder,
-    TaskCenterFutureExt, TaskContext, TaskHandle, TaskId, TaskKind,
+    MetadataFutureExt, RuntimeError, RuntimeRootTaskHandle, TaskCenter, TaskCenterBuildError,
+    TaskCenterBuilder, TaskCenterFutureExt, TaskContext, TaskHandle, TaskId, TaskKind,
 };
 
 #[cfg(any(test, feature = "test-util"))]

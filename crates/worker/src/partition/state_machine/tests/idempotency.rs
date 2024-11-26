@@ -27,7 +27,7 @@ use std::time::Duration;
 #[rstest]
 #[case(true)]
 #[case(false)]
-#[tokio::test]
+#[restate_core::test]
 async fn start_and_complete_idempotent_invocation(#[case] disable_idempotency_table: bool) {
     let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 
@@ -133,7 +133,7 @@ async fn start_and_complete_idempotent_invocation(#[case] disable_idempotency_ta
 #[rstest]
 #[case(true)]
 #[case(false)]
-#[tokio::test]
+#[restate_core::test]
 async fn start_and_complete_idempotent_invocation_neo_table(
     #[case] disable_idempotency_table: bool,
 ) {
@@ -245,7 +245,7 @@ async fn start_and_complete_idempotent_invocation_neo_table(
 #[rstest]
 #[case(true)]
 #[case(false)]
-#[tokio::test]
+#[restate_core::test]
 async fn complete_already_completed_invocation(#[case] disable_idempotency_table: bool) {
     let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 
@@ -304,7 +304,7 @@ async fn complete_already_completed_invocation(#[case] disable_idempotency_table
 #[rstest]
 #[case(true)]
 #[case(false)]
-#[tokio::test]
+#[restate_core::test]
 async fn attach_with_service_invocation_command_while_executing(
     #[case] disable_idempotency_table: bool,
 ) {
@@ -403,7 +403,7 @@ async fn attach_with_service_invocation_command_while_executing(
 #[case(true, false)]
 #[case(false, true)]
 #[case(false, false)]
-#[tokio::test]
+#[restate_core::test]
 async fn attach_with_send_service_invocation(
     #[case] disable_idempotency_table: bool,
     #[case] use_same_request_id: bool,
@@ -526,7 +526,7 @@ async fn attach_with_send_service_invocation(
 #[rstest]
 #[case(true)]
 #[case(false)]
-#[tokio::test]
+#[restate_core::test]
 async fn attach_inboxed_with_send_service_invocation(#[case] disable_idempotency_table: bool) {
     let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 
@@ -622,7 +622,7 @@ async fn attach_inboxed_with_send_service_invocation(#[case] disable_idempotency
 #[rstest]
 #[case(true)]
 #[case(false)]
-#[tokio::test]
+#[restate_core::test]
 async fn attach_command(#[case] disable_idempotency_table: bool) {
     let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 
@@ -715,7 +715,7 @@ async fn attach_command(#[case] disable_idempotency_table: bool) {
     test_env.shutdown().await;
 }
 
-#[tokio::test]
+#[restate_core::test]
 async fn attach_command_without_blocking_inflight() {
     let mut test_env = TestEnv::create().await;
 
@@ -775,7 +775,7 @@ async fn attach_command_without_blocking_inflight() {
 #[rstest]
 #[case(true)]
 #[case(false)]
-#[tokio::test]
+#[restate_core::test]
 async fn purge_completed_idempotent_invocation(#[case] disable_idempotency_table: bool) {
     let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
 

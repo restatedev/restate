@@ -257,22 +257,20 @@ mod tests {
             ),
         ]);
 
-        TaskCenter::current()
-            .spawn(
-                TaskKind::Cleaner,
-                "cleaner",
-                Some(PartitionId::MIN),
-                Cleaner::new(
-                    PartitionId::MIN,
-                    LeaderEpoch::INITIAL,
-                    mock_storage,
-                    bifrost.clone(),
-                    RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
-                    Duration::from_secs(1),
-                )
-                .run(),
+        TaskCenter::spawn(
+            TaskKind::Cleaner,
+            "cleaner",
+            Cleaner::new(
+                PartitionId::MIN,
+                LeaderEpoch::INITIAL,
+                mock_storage,
+                bifrost.clone(),
+                RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
+                Duration::from_secs(1),
             )
-            .unwrap();
+            .run(),
+        )
+        .unwrap();
 
         // By yielding once we let the cleaner task run, and perform the cleanup
         tokio::task::yield_now().await;

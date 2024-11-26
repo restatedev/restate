@@ -25,7 +25,7 @@ use tracing_test::traced_test;
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
 };
-use restate_core::TestCoreEnv;
+use restate_core::TestCoreEnv2;
 use restate_test_util::{assert, assert_eq};
 use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId, WithInvocationId};
 use restate_types::invocation::{
@@ -48,7 +48,7 @@ use super::Handler;
 use crate::handler::responses::X_RESTATE_ID;
 use crate::MockRequestDispatcher;
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn call_service() {
     let greeting_req = GreetingRequest {
@@ -105,7 +105,7 @@ async fn call_service() {
     assert_eq!(response_value.greeting, "Igal");
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn call_service_with_get() {
     let req = hyper::Request::builder()
@@ -165,7 +165,7 @@ async fn call_service_with_get() {
     assert_eq!(response_value.greeting, "Igal");
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn call_virtual_object() {
     let greeting_req = GreetingRequest {
@@ -220,7 +220,7 @@ async fn call_virtual_object() {
     assert_eq!(response_value.greeting, "Igal");
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn send_service() {
     let greeting_req = GreetingRequest {
@@ -265,7 +265,7 @@ async fn send_service() {
     let _: SendResponse = serde_json::from_slice(&response_bytes).unwrap();
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn send_with_delay_service() {
     let greeting_req = GreetingRequest {
@@ -312,7 +312,7 @@ async fn send_with_delay_service() {
     let _: SendResponse = serde_json::from_slice(&response_bytes).unwrap();
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn send_virtual_object() {
     let greeting_req = GreetingRequest {
@@ -358,7 +358,7 @@ async fn send_virtual_object() {
     let _: SendResponse = serde_json::from_slice(&response_bytes).unwrap();
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn idempotency_key_parsing() {
     let greeting_req = GreetingRequest {
@@ -423,7 +423,7 @@ async fn idempotency_key_parsing() {
     assert_eq!(response_value.greeting, "Igal");
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn idempotency_key_and_send() {
     let greeting_req = GreetingRequest {
@@ -478,7 +478,7 @@ async fn idempotency_key_and_send() {
     let _: SendResponse = serde_json::from_slice(&response_bytes).unwrap();
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn idempotency_key_and_send_with_different_invocation_id() {
     let greeting_req = GreetingRequest {
@@ -539,7 +539,7 @@ async fn idempotency_key_and_send_with_different_invocation_id() {
     assert_eq!(send_response.invocation_id, expected_invocation_id);
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn attach_with_invocation_id() {
     let invocation_id = InvocationId::mock_random();
@@ -594,7 +594,7 @@ async fn attach_with_invocation_id() {
     assert_eq!(response_value.greeting, "Igal");
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn attach_with_idempotency_id_to_unkeyed_service() {
     let mock_schemas = MockSchemas::default().with_service_and_target(
@@ -650,7 +650,7 @@ async fn attach_with_idempotency_id_to_unkeyed_service() {
     assert_eq!(response_value.greeting, "Igal");
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn attach_with_idempotency_id_to_keyed_service() {
     let mock_schemas = MockSchemas::default().with_service_and_target(
@@ -713,7 +713,7 @@ async fn attach_with_idempotency_id_to_keyed_service() {
     assert_eq!(response_value.greeting, "Igal");
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn get_output_with_invocation_id() {
     let invocation_id = InvocationId::mock_random();
@@ -768,7 +768,7 @@ async fn get_output_with_invocation_id() {
     assert_eq!(response_value.greeting, "Igal");
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn get_output_with_workflow_key() {
     let service_id = ServiceId::new("MyWorkflow", "my-key");
@@ -830,7 +830,7 @@ async fn get_output_with_workflow_key() {
     assert_eq!(response_value.greeting, "Igal");
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn bad_path_service() {
     let response = handle(
@@ -861,7 +861,7 @@ async fn bad_path_service() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn bad_path_virtual_object() {
     let response = handle(
@@ -892,7 +892,7 @@ async fn bad_path_virtual_object() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn unknown_service() {
     let response = handle(
@@ -907,7 +907,7 @@ async fn unknown_service() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn unknown_handler() {
     let response = handle(
@@ -920,7 +920,7 @@ async fn unknown_handler() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn private_service() {
     let response = handle_with_schemas_and_dispatcher(
@@ -941,7 +941,7 @@ async fn private_service() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn invalid_input() {
     let response = handle_with_schemas_and_dispatcher(
@@ -970,7 +970,7 @@ async fn invalid_input() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn set_custom_content_type_on_response() {
     let mock_schemas = MockSchemas::default().with_service_and_target(
@@ -1018,7 +1018,7 @@ async fn set_custom_content_type_on_response() {
     );
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn set_custom_content_type_on_empty_response() {
     let mock_schemas = MockSchemas::default().with_service_and_target(
@@ -1069,7 +1069,7 @@ async fn set_custom_content_type_on_empty_response() {
     );
 }
 
-#[tokio::test]
+#[restate_core::test]
 #[traced_test]
 async fn health() {
     let req = hyper::Request::builder()
@@ -1135,17 +1135,13 @@ where
     <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     <B as http_body::Body>::Data: Send + Sync + 'static,
 {
-    let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let _env = TestCoreEnv2::create_with_single_node(1, 1).await;
 
     req.extensions_mut()
         .insert(ConnectInfo::new("0.0.0.0:0".parse().unwrap()));
     req.extensions_mut().insert(opentelemetry::Context::new());
 
-    let handler_fut = node_env.tc.run_in_scope(
-        "ingress",
-        None,
-        Handler::new(Live::from_value(schemas), Arc::new(dispatcher)).oneshot(req),
-    );
+    let handler_fut = Handler::new(Live::from_value(schemas), Arc::new(dispatcher)).oneshot(req);
 
     handler_fut.await.unwrap()
 }
