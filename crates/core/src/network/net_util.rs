@@ -28,7 +28,7 @@ use restate_types::config::{MetadataStoreClientOptions, NetworkingOptions};
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 
-use crate::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
+use crate::{cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskKind};
 
 pub fn create_tonic_channel_from_advertised_address<T: CommonClientConnectionOptions>(
     address: AdvertisedAddress,
@@ -231,12 +231,12 @@ where
 
 #[derive(Clone)]
 struct TaskCenterExecutor {
-    task_center: TaskCenter,
+    task_center: task_center::Handle,
     name: &'static str,
 }
 
 impl TaskCenterExecutor {
-    fn new(task_center: TaskCenter, name: &'static str) -> Self {
+    fn new(task_center: task_center::Handle, name: &'static str) -> Self {
         Self { task_center, name }
     }
 }
@@ -248,7 +248,7 @@ where
 {
     fn execute(&self, fut: F) {
         // ignore shutdown error
-        self.task_center.run_in_scope_sync(|| {
+        self.task_center.run_sync(|| {
             let _ = TaskCenter::spawn_child(TaskKind::RpcConnection, self.name, async move {
                 // ignore the future output
                 let _ = fut.await;

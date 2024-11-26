@@ -26,9 +26,7 @@ use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
 use restate_types::{NodeId, Version, Versioned};
 
 use crate::metadata_store::MetadataStoreClient;
-use crate::{
-    cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind,
-};
+use crate::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind};
 
 pub type CommandSender = mpsc::Sender<Command>;
 pub type CommandReceiver = mpsc::Receiver<Command>;
@@ -190,16 +188,10 @@ impl PartitionRoutingRefresher {
             let partition_to_node_mappings = self.inner.clone();
             let metadata_store_client = self.metadata_store_client.clone();
 
-            let task = task_center().spawn_unmanaged(
+            let task = TaskCenter::spawn_unmanaged(
                 TaskKind::Disposable,
                 "refresh-routing-information",
-                None,
-                {
-                    async move {
-                        sync_routing_information(partition_to_node_mappings, metadata_store_client)
-                            .await;
-                    }
-                },
+                sync_routing_information(partition_to_node_mappings, metadata_store_client),
             );
             self.inflight_refresh_task = task.ok();
         } else {
@@ -209,13 +201,11 @@ impl PartitionRoutingRefresher {
 }
 
 pub fn spawn_partition_routing_refresher(
-    tc: &TaskCenter,
     partition_routing_refresher: PartitionRoutingRefresher,
 ) -> Result<TaskId, ShutdownError> {
-    tc.spawn(
+    TaskCenter::spawn(
         TaskKind::MetadataBackgroundSync,
         "partition-routing-refresher",
-        None,
         partition_routing_refresher.run(),
     )
 }

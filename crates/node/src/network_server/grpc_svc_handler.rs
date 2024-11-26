@@ -63,7 +63,7 @@ impl<T: TransportConnect> NodeSvc for NodeSvcHandler<T> {
         let metadata_server_status = self.health.current_metadata_server_status();
         let log_server_status = self.health.current_log_server_status();
         let age_s = self.task_center.age().as_secs();
-        self.task_center.run_in_scope_sync(|| {
+        self.task_center.run_sync(|| {
             let metadata = metadata();
             Ok(Response::new(IdentResponse {
                 status: node_status.into(),

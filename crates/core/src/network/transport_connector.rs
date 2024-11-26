@@ -105,7 +105,7 @@ pub mod test_util {
 
     use super::{NetworkError, ProtocolError};
     use crate::network::{Incoming, MockPeerConnection, PartialPeerConnection, WeakConnection};
-    use crate::{TaskCenter, TaskHandle, TaskKind};
+    use crate::{my_node_id, TaskCenter, TaskHandle, TaskKind};
 
     #[derive(Clone)]
     pub struct MockConnector {
@@ -148,7 +148,7 @@ pub mod test_util {
 
             let peer_connection = PartialPeerConnection {
                 my_node_id: node_id,
-                peer: crate::metadata().my_node_id(),
+                peer: my_node_id(),
                 sender,
                 recv_stream: output_stream.boxed(),
                 created: Instant::now(),
@@ -177,7 +177,6 @@ pub mod test_util {
 
     impl MessageCollectorMockConnector {
         pub fn new(
-            task_center: TaskCenter,
             sendbuf: usize,
             sender: mpsc::Sender<(GenerationalNodeId, Incoming<BinaryMessage>)>,
         ) -> Arc<Self> {
@@ -188,20 +187,17 @@ pub mod test_util {
             });
 
             // start acceptor
-            let _ = task_center
-                .clone()
-                .spawn(TaskKind::TestRunner, "test-connection-acceptor", None, {
-                    let connector = connector.clone();
-                    async move {
-                        while let Some(connection) = new_connections.recv().await {
-                            let (connection, task) =
-                                connection.forward_to_sender(&task_center, sender.clone())?;
-                            connector.tasks.lock().push((connection, task));
-                        }
-                        Ok(())
+            TaskCenter::spawn(TaskKind::RpcConnection, "test-connection-acceptor", {
+                let connector = connector.clone();
+                async move {
+                    while let Some(connection) = new_connections.recv().await {
+                        let (connection, task) = connection.forward_to_sender(sender.clone())?;
+                        connector.tasks.lock().push((connection, task));
                     }
-                })
-                .unwrap();
+                    Ok(())
+                }
+            })
+            .unwrap();
             connector
         }
     }
