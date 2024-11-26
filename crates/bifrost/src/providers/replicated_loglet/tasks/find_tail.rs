@@ -15,7 +15,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, Outgoing, TransportConnect};
-use restate_core::TaskCenter;
+use restate_core::TaskCenterFutureExt;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, LogletOffset, RecordCache, SequenceNumber};
@@ -49,7 +49,6 @@ pub struct FindTailTask<T> {
     log_id: LogId,
     segment_index: SegmentIndex,
     my_params: ReplicatedLogletParams,
-    task_center: TaskCenter,
     networking: Networking<T>,
     logservers_rpc: LogServersRpc,
     sequencers_rpc: SequencersRpc,
@@ -72,7 +71,6 @@ pub enum FindTailResult {
 impl<T: TransportConnect> FindTailTask<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        task_center: TaskCenter,
         log_id: LogId,
         segment_index: SegmentIndex,
         my_params: ReplicatedLogletParams,
@@ -83,7 +81,6 @@ impl<T: TransportConnect> FindTailTask<T> {
         record_cache: RecordCache,
     ) -> Self {
         Self {
-            task_center,
             log_id,
             segment_index,
             networking,
@@ -189,7 +186,6 @@ impl<T: TransportConnect> FindTailTask<T> {
             let mut inflight_info_requests = JoinSet::new();
             for node in effective_nodeset.iter() {
                 inflight_info_requests.spawn({
-                    let tc = self.task_center.clone();
                     let networking = self.networking.clone();
                     let get_loglet_info_rpc = self.logservers_rpc.get_loglet_info.clone();
                     let known_global_tail = self.known_global_tail.clone();
@@ -201,9 +197,9 @@ impl<T: TransportConnect> FindTailTask<T> {
                             get_loglet_info_rpc: &get_loglet_info_rpc,
                             known_global_tail: &known_global_tail,
                         };
-                        tc.run_in_scope("find-tail-on-node", None, task.run(&networking))
-                            .await
+                        task.run(&networking).await
                     }
+                    .in_current_tc()
                 });
             }
 
@@ -307,7 +303,6 @@ impl<T: TransportConnect> FindTailTask<T> {
                             // We can start repair.
                             match RepairTail::new(
                                 self.my_params.clone(),
-                                self.task_center.clone(),
                                 self.networking.clone(),
                                 self.logservers_rpc.clone(),
                                 self.record_cache.clone(),
@@ -418,16 +413,8 @@ impl<T: TransportConnect> FindTailTask<T> {
                             known_global_tail: self.known_global_tail.clone(),
                         };
                         inflight_tail_update_watches.spawn({
-                            let tc = self.task_center.clone();
                             let networking = self.networking.clone();
-                            async move {
-                                tc.run_in_scope(
-                                    "wait-for-tail-on-node",
-                                    None,
-                                    task.run(max_local_tail, networking),
-                                )
-                                .await
-                            }
+                            task.run(max_local_tail, networking).in_current_tc()
                         });
                     }
                     loop {

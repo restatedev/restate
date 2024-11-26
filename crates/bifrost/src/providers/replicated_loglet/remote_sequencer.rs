@@ -23,7 +23,7 @@ use restate_core::{
         rpc_router::{RpcRouter, RpcToken},
         NetworkError, NetworkSendError, Networking, Outgoing, TransportConnect, WeakConnection,
     },
-    task_center, ShutdownError, TaskKind,
+    ShutdownError, TaskCenter, TaskKind,
 };
 use restate_types::{
     config::Configuration,
@@ -238,10 +238,9 @@ impl RemoteSequencerConnection {
     ) -> Result<Self, ShutdownError> {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        task_center().spawn(
+        TaskCenter::spawn(
             TaskKind::NetworkMessageHandler,
             "remote-sequencer-connection",
-            None,
             Self::handle_appended_responses(known_global_tail, connection.clone(), rx),
         )?;
 
@@ -494,7 +493,7 @@ mod test {
 
     use restate_core::{
         network::{Incoming, MessageHandler, MockConnector},
-        TaskCenterBuilder, TestCoreEnv, TestCoreEnvBuilder,
+        TestCoreEnv2, TestCoreEnvBuilder2,
     };
     use restate_types::{
         logs::{LogId, LogletOffset, Record, SequenceNumber, TailState},
@@ -554,7 +553,7 @@ mod test {
     }
 
     struct TestEnv {
-        pub core_env: TestCoreEnv<MockConnector>,
+        pub core_env: TestCoreEnv2<MockConnector>,
         pub remote_sequencer: RemoteSequencer<MockConnector>,
     }
 
@@ -564,17 +563,11 @@ mod test {
         F: FnOnce(TestEnv) -> O,
     {
         let (connector, _receiver) = MockConnector::new(100);
-        let tc = TaskCenterBuilder::default()
-            .default_runtime_handle(tokio::runtime::Handle::current())
-            .ingress_runtime_handle(tokio::runtime::Handle::current())
-            .build()
-            .expect("task_center builds");
         let connector = Arc::new(connector);
 
-        let mut builder =
-            TestCoreEnvBuilder::with_transport_connector(tc.clone(), Arc::clone(&connector))
-                .add_mock_nodes_config()
-                .add_message_handler(sequencer);
+        let mut builder = TestCoreEnvBuilder2::with_transport_connector(Arc::clone(&connector))
+            .add_mock_nodes_config()
+            .add_message_handler(sequencer);
 
         let sequencer_rpc = SequencersRpc::new(&mut builder.router_builder);
 
@@ -595,20 +588,14 @@ mod test {
         );
 
         let core_env = builder.build().await;
-        core_env
-            .tc
-            .clone()
-            .run_in_scope("test", None, async {
-                let env = TestEnv {
-                    core_env,
-                    remote_sequencer,
-                };
-                test(env).await;
-            })
-            .await;
+        let env = TestEnv {
+            core_env,
+            remote_sequencer,
+        };
+        test(env).await;
     }
 
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_remote_stream_ok() {
         let handler = SequencerMockHandler::default();
 
@@ -636,7 +623,7 @@ mod test {
         .await;
     }
 
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_remote_stream_sealed() {
         let handler = SequencerMockHandler::with_reply_status(SequencerStatus::Sealed);
 

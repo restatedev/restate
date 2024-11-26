@@ -119,10 +119,9 @@ impl<S: LogStore> LogletWorker<S> {
         let (wait_for_tail_tx, wait_for_tail_rx) = mpsc::unbounded_channel();
         let (get_digest_tx, get_digest_rx) = mpsc::unbounded_channel();
         // todo
-        let tc_handle = TaskCenter::current().spawn_unmanaged(
+        let tc_handle = TaskCenter::spawn_unmanaged(
             TaskKind::LogletWriter,
             "loglet-worker",
-            None,
             writer.run(
                 store_rx,
                 release_rx,
@@ -421,111 +420,97 @@ impl<S: LogStore> LogletWorker<S> {
     fn process_wait_for_tail(&mut self, msg: Incoming<WaitForTail>) {
         let loglet_state = self.loglet_state.clone();
         // fails on shutdown, in this case, we ignore the request
-        let _ = TaskCenter::current().spawn(
-            TaskKind::Disposable,
-            "logserver-tail-monitor",
-            None,
-            async move {
-                let (reciprocal, msg) = msg.split();
-                let local_tail_watch = loglet_state.get_local_tail_watch();
-                // If shutdown happened, this task will be disposed of and we won't send
-                // the response.
-                match msg.query {
-                    TailUpdateQuery::LocalTail(target_offset) => {
-                        local_tail_watch.wait_for_offset_or_seal(target_offset).await?;
-                    }
-                    TailUpdateQuery::GlobalTail(target_global_tail) => {
-                        let global_tail_tracker = loglet_state.get_global_tail_tracker();
-                        tokio::select! {
-                            res = global_tail_tracker.wait_for_offset(target_global_tail) => { res.map(|_|()) },
-                            // Are we locally sealed?
-                            res = local_tail_watch.wait_for_seal() => { res },
-                        }?;
-                    }
-                    TailUpdateQuery::LocalOrGlobal(target_offset) => {
-                        let global_tail_tracker = loglet_state.get_global_tail_tracker();
-                        tokio::select! {
-                            res = global_tail_tracker.wait_for_offset(target_offset) => { res.map(|_|()) },
-                            res = local_tail_watch.wait_for_offset_or_seal(target_offset) => { res.map(|_|()) },
-                        }?;
-                    }
-                };
+        let _ = TaskCenter::spawn(TaskKind::Disposable, "logserver-tail-monitor", async move {
+            let (reciprocal, msg) = msg.split();
+            let local_tail_watch = loglet_state.get_local_tail_watch();
+            // If shutdown happened, this task will be disposed of and we won't send
+            // the response.
+            match msg.query {
+                TailUpdateQuery::LocalTail(target_offset) => {
+                    local_tail_watch
+                        .wait_for_offset_or_seal(target_offset)
+                        .await?;
+                }
+                TailUpdateQuery::GlobalTail(target_global_tail) => {
+                    let global_tail_tracker = loglet_state.get_global_tail_tracker();
+                    tokio::select! {
+                        res = global_tail_tracker.wait_for_offset(target_global_tail) => { res.map(|_|()) },
+                        // Are we locally sealed?
+                        res = local_tail_watch.wait_for_seal() => { res },
+                    }?;
+                }
+                TailUpdateQuery::LocalOrGlobal(target_offset) => {
+                    let global_tail_tracker = loglet_state.get_global_tail_tracker();
+                    tokio::select! {
+                        res = global_tail_tracker.wait_for_offset(target_offset) => { res.map(|_|()) },
+                        res = local_tail_watch.wait_for_offset_or_seal(target_offset) => { res.map(|_|()) },
+                    }?;
+                }
+            };
 
-                let update =
-                    TailUpdated::new(loglet_state.local_tail(), loglet_state.known_global_tail());
-                let _ = reciprocal.prepare(update).send().await;
-                Ok(())
-            },
-        );
+            let update =
+                TailUpdated::new(loglet_state.local_tail(), loglet_state.known_global_tail());
+            let _ = reciprocal.prepare(update).send().await;
+            Ok(())
+        });
     }
 
     fn process_get_records(&mut self, msg: Incoming<GetRecords>) {
         let log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
         // fails on shutdown, in this case, we ignore the request
-        let _ = TaskCenter::current().spawn(
-            TaskKind::Disposable,
-            "logserver-get-records",
-            None,
-            async move {
-                let (reciprocal, msg) = msg.split();
-                let from_offset = msg.from_offset;
-                // validate that from_offset <= to_offset
-                if msg.from_offset > msg.to_offset {
-                    let response = reciprocal
-                        .prepare(Records::empty(from_offset).with_status(Status::Malformed));
-                    // ship the response to the original connection
-                    let _ = response.send().await;
-                    return Ok(());
-                }
-                let records = match log_store.read_records(msg, &loglet_state).await {
-                    Ok(records) => records,
-                    Err(_) => Records::new(
-                        loglet_state.local_tail(),
-                        loglet_state.known_global_tail(),
-                        from_offset,
-                    )
-                    .with_status(Status::Disabled),
-                };
+        let _ = TaskCenter::spawn(TaskKind::Disposable, "logserver-get-records", async move {
+            let (reciprocal, msg) = msg.split();
+            let from_offset = msg.from_offset;
+            // validate that from_offset <= to_offset
+            if msg.from_offset > msg.to_offset {
+                let response =
+                    reciprocal.prepare(Records::empty(from_offset).with_status(Status::Malformed));
                 // ship the response to the original connection
-                let _ = reciprocal.prepare(records).send().await;
-                Ok(())
-            },
-        );
+                let _ = response.send().await;
+                return Ok(());
+            }
+            let records = match log_store.read_records(msg, &loglet_state).await {
+                Ok(records) => records,
+                Err(_) => Records::new(
+                    loglet_state.local_tail(),
+                    loglet_state.known_global_tail(),
+                    from_offset,
+                )
+                .with_status(Status::Disabled),
+            };
+            // ship the response to the original connection
+            let _ = reciprocal.prepare(records).send().await;
+            Ok(())
+        });
     }
 
     fn process_get_digest(&mut self, msg: Incoming<GetDigest>) {
         let log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
         // fails on shutdown, in this case, we ignore the request
-        let _ = TaskCenter::current().spawn(
-            TaskKind::Disposable,
-            "logserver-get-digest",
-            None,
-            async move {
-                let (reciprocal, msg) = msg.split();
-                // validation. Note that to_offset is inclusive.
-                if msg.from_offset > msg.to_offset {
-                    let response =
-                        reciprocal.prepare(Digest::empty().with_status(Status::Malformed));
-                    // ship the response to the original connection
-                    let _ = response.send().await;
-                    return Ok(());
-                }
-                let digest = match log_store.get_records_digest(msg, &loglet_state).await {
-                    Ok(digest) => digest,
-                    Err(_) => Digest::new(
-                        loglet_state.local_tail(),
-                        loglet_state.known_global_tail(),
-                        Default::default(),
-                    )
-                    .with_status(Status::Disabled),
-                };
+        let _ = TaskCenter::spawn(TaskKind::Disposable, "logserver-get-digest", async move {
+            let (reciprocal, msg) = msg.split();
+            // validation. Note that to_offset is inclusive.
+            if msg.from_offset > msg.to_offset {
+                let response = reciprocal.prepare(Digest::empty().with_status(Status::Malformed));
                 // ship the response to the original connection
-                let _ = reciprocal.prepare(digest).send().await;
-                Ok(())
-            },
-        );
+                let _ = response.send().await;
+                return Ok(());
+            }
+            let digest = match log_store.get_records_digest(msg, &loglet_state).await {
+                Ok(digest) => digest,
+                Err(_) => Digest::new(
+                    loglet_state.local_tail(),
+                    loglet_state.known_global_tail(),
+                    Default::default(),
+                )
+                .with_status(Status::Disabled),
+            };
+            // ship the response to the original connection
+            let _ = reciprocal.prepare(digest).send().await;
+            Ok(())
+        });
     }
 
     fn process_trim(&mut self, msg: Incoming<Trim>) {
@@ -536,47 +521,54 @@ impl<S: LogStore> LogletWorker<S> {
         // fails on shutdown, in this case, we ignore the request
         let mut loglet_state = self.loglet_state.clone();
         let log_store = self.log_store.clone();
-        let _ =
-            TaskCenter::current()
-            .spawn(TaskKind::Disposable, "logserver-trim", None, async move {
-                let loglet_id = msg.body().header.loglet_id;
-                let new_trim_point = msg.body().trim_point;
-                // cannot trim beyond the global known tail (if known) or the local_tail whichever is higher.
-                let local_tail = loglet_state.local_tail();
-                let known_global_tail = loglet_state.known_global_tail();
-                let high_watermark = known_global_tail.max(local_tail.offset());
-                if new_trim_point < LogletOffset::OLDEST || new_trim_point >= high_watermark {
-                    let _ = msg.to_rpc_response(Trimmed::new(loglet_state.local_tail(), known_global_tail).with_status(Status::Malformed)).send().await;
-                    return Ok(());
-                }
+        let _ = TaskCenter::spawn(TaskKind::Disposable, "logserver-trim", async move {
+            let loglet_id = msg.body().header.loglet_id;
+            let new_trim_point = msg.body().trim_point;
+            // cannot trim beyond the global known tail (if known) or the local_tail whichever is higher.
+            let local_tail = loglet_state.local_tail();
+            let known_global_tail = loglet_state.known_global_tail();
+            let high_watermark = known_global_tail.max(local_tail.offset());
+            if new_trim_point < LogletOffset::OLDEST || new_trim_point >= high_watermark {
+                let _ = msg
+                    .to_rpc_response(
+                        Trimmed::new(loglet_state.local_tail(), known_global_tail)
+                            .with_status(Status::Malformed),
+                    )
+                    .send()
+                    .await;
+                return Ok(());
+            }
 
-                let (reciprocal, mut msg) = msg.split();
-                // The trim point cannot be at or exceed the local_tail, we clip to the
-                // local_tail-1 if that's the case.
-                msg.trim_point = msg.trim_point.min(local_tail.offset().prev());
+            let (reciprocal, mut msg) = msg.split();
+            // The trim point cannot be at or exceed the local_tail, we clip to the
+            // local_tail-1 if that's the case.
+            msg.trim_point = msg.trim_point.min(local_tail.offset().prev());
 
-
-                let body = if loglet_state.update_trim_point(msg.trim_point) {
-                    match log_store.enqueue_trim(msg).await?.await {
-                        Ok(_) => Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail()).with_status(Status::Ok),
-                        Err(_) => {
-                            warn!(
-                                %loglet_id,
-                                "Log-store is disabled, and its trim-point will falsely be reported as {} since we couldn't commit that to the log-store. Trim-point will be correct after restart.",
-                                new_trim_point
-                            );
-                            Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail()).with_status(Status::Disabled)
-                        }
+            let body = if loglet_state.update_trim_point(msg.trim_point) {
+                match log_store.enqueue_trim(msg).await?.await {
+                    Ok(_) => {
+                        Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
+                            .with_status(Status::Ok)
                     }
-                } else {
-                    // it's already trimmed
-                    Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
-                };
+                    Err(_) => {
+                        warn!(
+                            %loglet_id,
+                            "Log-store is disabled, and its trim-point will falsely be reported as {} since we couldn't commit that to the log-store. Trim-point will be correct after restart.",
+                            new_trim_point
+                        );
+                        Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
+                            .with_status(Status::Disabled)
+                    }
+                }
+            } else {
+                // it's already trimmed
+                Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
+            };
 
-                // ship the response to the original connection
-                let _ = reciprocal.prepare(body).send().await;
-                Ok(())
-            });
+            // ship the response to the original connection
+            let _ = reciprocal.prepare(body).send().await;
+            Ok(())
+        });
     }
 
     async fn process_seal(

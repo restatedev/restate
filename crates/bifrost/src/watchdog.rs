@@ -54,10 +54,9 @@ impl Watchdog {
         match cmd {
             WatchdogCommand::ScheduleMetadataSync => {
                 let bifrost = self.inner.clone();
-                let _ = TaskCenter::current().spawn(
+                let _ = TaskCenter::spawn(
                     TaskKind::MetadataBackgroundSync,
                     "bifrost-metadata-sync",
-                    None,
                     async move {
                         bifrost
                             .sync_metadata()
@@ -70,10 +69,9 @@ impl Watchdog {
             WatchdogCommand::WatchProvider(provider) => {
                 self.live_providers.push(provider.clone());
                 // TODO: Convert to a managed background task
-                let _ = TaskCenter::current().spawn(
+                let _ = TaskCenter::spawn(
                     TaskKind::BifrostBackgroundHighPriority,
                     "bifrost-provider-on-start",
-                    None,
                     async move {
                         provider.post_start().await;
                         Ok(())

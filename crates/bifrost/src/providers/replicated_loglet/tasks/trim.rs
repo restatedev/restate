@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_core::TaskCenterFutureExt;
 use tokio::task::JoinSet;
 use tracing::{debug, trace, warn};
 
 use restate_core::network::{Incoming, Networking, TransportConnect};
-use restate_core::task_center;
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Status, Trim, Trimmed};
@@ -118,7 +118,6 @@ impl<'a> TrimTask<'a> {
                 let networking = networking.clone();
                 let trim_rpc_router = self.logservers_rpc.trim.clone();
                 let known_global_tail = self.known_global_tail.clone();
-                let tc = task_center();
 
                 async move {
                     let task = RunOnSingleNode::new(
@@ -132,16 +131,10 @@ impl<'a> TrimTask<'a> {
                             .log_server_retry_policy
                             .clone(),
                     );
-                    (
-                        node_id,
-                        tc.run_in_scope(
-                            "trim-on-node",
-                            None,
-                            task.run(on_trim_response, &networking),
-                        )
-                        .await,
-                    )
+
+                    (node_id, task.run(on_trim_response, &networking).await)
                 }
+                .in_current_tc()
             });
         }
 

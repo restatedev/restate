@@ -881,7 +881,7 @@ mod tests {
         // create an appender
         let stop_signal = Arc::new(AtomicBool::default());
         let append_counter = Arc::new(AtomicUsize::new(0));
-        let _ = TaskCenter::current().spawn(TaskKind::TestRunner, "append-records", None, {
+        let _ = TaskCenter::spawn(TaskKind::TestRunner, "append-records", {
             let append_counter = append_counter.clone();
             let stop_signal = stop_signal.clone();
             let bifrost = bifrost.clone();

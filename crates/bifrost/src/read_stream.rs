@@ -490,28 +490,22 @@ mod tests {
         let read_counter = Arc::new(AtomicUsize::new(0));
         // spawn a reader that reads 5 records and exits.
         let counter_clone = read_counter.clone();
-        let id = TaskCenter::current().spawn(
-            TaskKind::TestRunner,
-            "read-records",
-            None,
-            async move {
-                for i in 6..=10 {
-                    let record = reader.next().await.expect("to never terminate")?;
-                    let expected_lsn = Lsn::from(i);
-                    counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    assert_that!(record.sequence_number(), eq(expected_lsn));
-                    assert_that!(reader.read_pointer(), ge(record.sequence_number()));
-                    assert_that!(
-                        record.decode_unchecked::<String>(),
-                        eq(format!("record{}", expected_lsn))
-                    );
-                }
-                Ok(())
-            },
-        )?;
+        let id = TaskCenter::spawn(TaskKind::TestRunner, "read-records", async move {
+            for i in 6..=10 {
+                let record = reader.next().await.expect("to never terminate")?;
+                let expected_lsn = Lsn::from(i);
+                counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                assert_that!(record.sequence_number(), eq(expected_lsn));
+                assert_that!(reader.read_pointer(), ge(record.sequence_number()));
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq(format!("record{}", expected_lsn))
+                );
+            }
+            Ok(())
+        })?;
 
-        let reader_bg_handle =
-            TaskCenter::with_current(|tc| tc.take_task(id)).expect("read-records task to exist");
+        let reader_bg_handle = TaskCenter::take_task(id).expect("read-records task to exist");
 
         tokio::task::yield_now().await;
         // Not finished, we still didn't append records

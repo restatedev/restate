@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tracing::{info, trace};
 
 use restate_core::network::{NetworkError, Networking, TransportConnect};
-use restate_core::{task_center, ShutdownError, TaskHandle, TaskKind};
+use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_types::config::Configuration;
 use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetRecords, LogServerRequestHeader, MaybeRecord};
@@ -122,10 +122,9 @@ impl ReadStreamTask {
             stats: Stats::default(),
             move_beyond_global_tail,
         };
-        let handle = task_center().spawn_unmanaged(
+        let handle = TaskCenter::spawn_unmanaged(
             TaskKind::ReplicatedLogletReadStream,
             "replicatedloglet-read-stream",
-            None,
             task.run(networking),
         )?;
 

@@ -16,7 +16,7 @@ use tracing::{debug, trace, warn};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, TransportConnect};
-use restate_core::{cancellation_watcher, task_center, ShutdownError};
+use restate_core::{cancellation_watcher, ShutdownError, TaskCenterFutureExt};
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
     Digest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
@@ -233,13 +233,8 @@ impl Digests {
                 let networking = networking.clone();
                 let msg = msg.clone();
                 let store_rpc = store_rpc.clone();
-                let tc = task_center();
-                async move {
-                    tc.run_in_scope("repair-store", None, async move {
-                        (node, store_rpc.call(&networking, node, msg).await)
-                    })
-                    .await
-                }
+
+                async move { (node, store_rpc.call(&networking, node, msg).await) }.in_current_tc()
             });
         }
         let mut cancel = std::pin::pin!(cancellation_watcher());

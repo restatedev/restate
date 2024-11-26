@@ -15,7 +15,6 @@ use futures::stream::BoxStream;
 use tracing::{debug, info, instrument};
 
 use restate_core::network::{Networking, TransportConnect};
-use restate_core::task_center;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{
     KeyFilter, LogId, LogletOffset, Record, RecordCache, SequenceNumber, TailState,
@@ -239,7 +238,6 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
             }
             SequencerAccess::Remote { .. } => {
                 let task = FindTailTask::new(
-                    task_center(),
                     self.log_id,
                     self.segment_index,
                     self.my_params.clone(),
@@ -347,7 +345,7 @@ mod tests {
     use test_log::test;
 
     use restate_core::network::NetworkServerBuilder;
-    use restate_core::TestCoreEnvBuilder;
+    use restate_core::{TaskCenter, TestCoreEnvBuilder2};
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{set_current_config, Configuration};
@@ -378,7 +376,7 @@ mod tests {
         let config = Live::from_value(config);
 
         let mut node_env =
-            TestCoreEnvBuilder::with_incoming_only_connector().add_mock_nodes_config();
+            TestCoreEnvBuilder2::with_incoming_only_connector().add_mock_nodes_config();
         let mut server_builder = NetworkServerBuilder::default();
 
         let logserver_rpc = LogServersRpc::new(&mut node_env.router_builder);
@@ -396,42 +394,36 @@ mod tests {
 
         let node_env = node_env.build().await;
 
-        node_env
-            .tc
-            .clone()
-            .run_in_scope("test", None, async {
-                RocksDbManager::init(config.clone().map(|c| &c.common));
+        RocksDbManager::init(config.clone().map(|c| &c.common));
 
-                log_server
-                    .start(node_env.metadata_writer.clone(), &mut server_builder)
-                    .await
-                    .into_test_result()?;
+        log_server
+            .start(node_env.metadata_writer.clone(), &mut server_builder)
+            .await
+            .into_test_result()?;
 
-                let loglet = Arc::new(ReplicatedLoglet::new(
-                    LogId::new(1),
-                    SegmentIndex::from(1),
-                    loglet_params,
-                    node_env.networking.clone(),
-                    logserver_rpc,
-                    sequencer_rpc,
-                    record_cache.clone(),
-                ));
+        let loglet = Arc::new(ReplicatedLoglet::new(
+            LogId::new(1),
+            SegmentIndex::from(1),
+            loglet_params,
+            node_env.networking.clone(),
+            logserver_rpc,
+            sequencer_rpc,
+            record_cache.clone(),
+        ));
 
-                let env = TestEnv {
-                    loglet,
-                    record_cache,
-                };
+        let env = TestEnv {
+            loglet,
+            record_cache,
+        };
 
-                future(env).await
-            })
-            .await?;
-        node_env.tc.shutdown_node("test completed", 0).await;
+        future(env).await?;
+        TaskCenter::shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
     // ** Single-node replicated-loglet smoke tests **
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn test_append_local_sequencer_single_node() -> Result<()> {
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
@@ -474,7 +466,7 @@ mod tests {
     }
 
     // ** Single-node replicated-loglet seal **
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn test_seal_local_sequencer_single_node() -> Result<()> {
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
@@ -522,7 +514,7 @@ mod tests {
 
     // # Loglet Spec Tests On Single Node
     // ** Single-node replicated-loglet **
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn single_node_gapless_loglet_smoke_test() -> Result<()> {
         let record_cache = RecordCache::new(1_000_000);
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
@@ -538,7 +530,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn single_node_single_loglet_readstream() -> Result<()> {
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
@@ -554,7 +546,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn single_node_single_loglet_readstream_with_trims() -> Result<()> {
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
@@ -577,7 +569,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn single_node_append_after_seal() -> Result<()> {
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
@@ -593,7 +585,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn single_node_append_after_seal_concurrent() -> Result<()> {
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
@@ -610,7 +602,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test(start_paused = true))]
+    #[test(restate_core::test(start_paused = true))]
     async fn single_node_seal_empty() -> Result<()> {
         let loglet_id = ReplicatedLogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
