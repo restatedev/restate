@@ -18,14 +18,15 @@ use std::fmt::Display;
 
 use exporter::RuntimeModifierSpanExporter;
 use opentelemetry::trace::{TraceError, TracerProvider};
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{global, InstrumentationScope, KeyValue};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
-use opentelemetry_otlp::{SpanExporterBuilder, WithExportConfig};
+use opentelemetry_otlp::{SpanExporter, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::BatchSpanProcessor;
 use pretty::Pretty;
 use tonic::codegen::http::HeaderMap;
 use tonic::metadata::MetadataMap;
+use tonic::transport::ClientTlsConfig;
 use tracing::{info, warn, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::filter::{Filtered, ParseError};
@@ -96,13 +97,12 @@ fn build_services_tracing(common_opts: &CommonOptions) -> Result<(), Error> {
 
     let header_map = HeaderMap::from_iter(HashMap::from(opts.tracing_headers.clone()));
 
-    let exporter = SpanExporterBuilder::from(
-        opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_endpoint(endpoint)
-            .with_metadata(MetadataMap::from_headers(header_map.clone())),
-    )
-    .build_span_exporter()?;
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .with_tls_config(ClientTlsConfig::new().with_native_roots())
+        .with_endpoint(endpoint)
+        .with_metadata(MetadataMap::from_headers(header_map.clone()))
+        .build()?;
 
     let exporter = UserServiceModifierSpanExporter::new(exporter);
 
@@ -170,13 +170,12 @@ where
         let header_map =
             HeaderMap::from_iter(HashMap::from(common_opts.tracing.tracing_headers.clone()));
 
-        let exporter = SpanExporterBuilder::from(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(endpoint)
-                .with_metadata(MetadataMap::from_headers(header_map)),
-        )
-        .build_span_exporter()?;
+        let exporter = SpanExporter::builder()
+            .with_tonic()
+            .with_tls_config(ClientTlsConfig::new().with_native_roots())
+            .with_endpoint(endpoint)
+            .with_metadata(MetadataMap::from_headers(header_map))
+            .build()?;
 
         let exporter = RuntimeModifierSpanExporter::new(exporter);
         tracer_provider_builder = tracer_provider_builder.with_span_processor(
@@ -199,11 +198,11 @@ where
     }
 
     let provider = tracer_provider_builder.build();
-
-    let tracer = provider
-        .tracer_builder("opentelemetry-otlp")
-        .with_version(env!("CARGO_PKG_VERSION"))
-        .build();
+    let tracer = provider.tracer_with_scope(
+        InstrumentationScope::builder("restate")
+            .with_version(env!("CARGO_PKG_VERSION"))
+            .build(),
+    );
 
     global::set_text_map_propagator(TraceContextPropagator::new());
 
@@ -428,9 +427,7 @@ macro_rules! invocation_span {
             use restate_types::invocation::SpanRelation;
             use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-            let tracer = opentelemetry::global::tracer_provider()
-                .tracer_builder("services")
-                .build();
+            let tracer = opentelemetry::global::tracer_provider().tracer_with_scope(opentelemetry::InstrumentationScope::builder("services").build());
 
             let builder = tracer
                 .span_builder($name)
