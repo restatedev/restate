@@ -349,8 +349,6 @@ mod tests {
         TaskCenter::spawn(TaskKind::SystemService, "ingress", ingress.run()).unwrap();
 
         // Wait server to start
-        let address = start_signal.await.unwrap();
-
-        address
+        start_signal.await.unwrap()
     }
 }
