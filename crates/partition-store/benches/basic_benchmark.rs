@@ -44,7 +44,8 @@ fn basic_writing_reading_benchmark(c: &mut Criterion) {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(rt.handle().clone())
         .build()
-        .expect("task_center builds");
+        .expect("task_center builds")
+        .to_handle();
 
     let worker_options = WorkerOptions::default();
     tc.run_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));

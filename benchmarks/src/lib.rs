@@ -86,7 +86,7 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
         .is_success(),);
 }
 
-pub fn spawn_restate(config: Configuration) -> TaskCenter {
+pub fn spawn_restate(config: Configuration) -> task_center::Handle {
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {
         warn!("Failed to increase the number of open file descriptors limit.");
     }
@@ -94,19 +94,19 @@ pub fn spawn_restate(config: Configuration) -> TaskCenter {
     let tc = TaskCenterBuilder::default()
         .options(config.common.clone())
         .build()
-        .expect("task_center builds");
-    let cloned_tc = tc.clone();
+        .expect("task_center builds")
+        .to_handle();
     restate_types::config::set_current_config(config.clone());
     let updateable_config = Configuration::updateable();
 
     tc.block_on(async {
         RocksDbManager::init(Constant::new(config.common));
 
-        tc.spawn(TaskKind::SystemBoot, "restate", None, async move {
+        TaskCenter::spawn(TaskKind::SystemBoot, "restate", async move {
             let node = Node::create(updateable_config)
                 .await
                 .expect("Restate node must build");
-            cloned_tc.run_in_scope("startup", None, node.start()).await
+            node.start().await
         })
         .unwrap();
     });
