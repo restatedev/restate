@@ -345,7 +345,7 @@ mod tests {
     use test_log::test;
 
     use restate_core::network::NetworkServerBuilder;
-    use restate_core::{TaskCenter, TestCoreEnvBuilder2};
+    use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{set_current_config, Configuration};
@@ -376,7 +376,7 @@ mod tests {
         let config = Live::from_value(config);
 
         let mut node_env =
-            TestCoreEnvBuilder2::with_incoming_only_connector().add_mock_nodes_config();
+            TestCoreEnvBuilder::with_incoming_only_connector().add_mock_nodes_config();
         let mut server_builder = NetworkServerBuilder::default();
 
         let logserver_rpc = LogServersRpc::new(&mut node_env.router_builder);

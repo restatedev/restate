@@ -581,7 +581,7 @@ mod tests {
         HashSet, PartitionProcessorPlacementHints, Scheduler,
     };
     use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
-    use restate_core::{Metadata, TestCoreEnv2, TestCoreEnvBuilder2};
+    use restate_core::{Metadata, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
@@ -614,7 +614,7 @@ mod tests {
 
     #[test(restate_core::test)]
     async fn empty_leadership_changes_dont_modify_plan() -> googletest::Result<()> {
-        let test_env = TestCoreEnv2::create_with_single_node(0, 0).await;
+        let test_env = TestCoreEnv::create_with_single_node(0, 0).await;
         let metadata_store_client = test_env.metadata_store_client.clone();
         let networking = test_env.networking.clone();
 
@@ -690,7 +690,7 @@ mod tests {
         let (tx, control_recv) = mpsc::channel(100);
         let connector = MessageCollectorMockConnector::new(10, tx.clone());
 
-        let mut builder = TestCoreEnvBuilder2::with_transport_connector(connector);
+        let mut builder = TestCoreEnvBuilder::with_transport_connector(connector);
         builder.router_builder.add_raw_handler(
             TargetName::ControlProcessors,
             // network messages going to my node is also written to `tx`

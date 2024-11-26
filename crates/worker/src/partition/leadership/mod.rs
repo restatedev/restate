@@ -590,7 +590,7 @@ mod tests {
     use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
-    use restate_core::{TaskCenter, TestCoreEnv2};
+    use restate_core::{TaskCenter, TestCoreEnv};
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
@@ -614,7 +614,7 @@ mod tests {
 
     #[test(restate_core::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
-        let _env = TestCoreEnv2::create_with_single_node(0, 0).await;
+        let _env = TestCoreEnv::create_with_single_node(0, 0).await;
         let storage_options = StorageOptions::default();
         let rocksdb_options = RocksDbOptions::default();
 

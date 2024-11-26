@@ -454,7 +454,7 @@ mod tests {
 
     use restate_bifrost::{Bifrost, LogEntry};
     use restate_core::network::FailingConnector;
-    use restate_core::{TaskCenter, TaskKind, TestCoreEnv2, TestCoreEnvBuilder2};
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_storage_api::StorageError;
     use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
@@ -622,7 +622,7 @@ mod tests {
 
     struct ShuffleEnv<OR> {
         #[allow(dead_code)]
-        env: TestCoreEnv2<FailingConnector>,
+        env: TestCoreEnv<FailingConnector>,
         bifrost: Bifrost,
         shuffle: Shuffle<OR>,
     }
@@ -631,7 +631,7 @@ mod tests {
         outbox_reader: OR,
     ) -> ShuffleEnv<OR> {
         // set numbers of partitions to 1 to easily find all sent messages by the shuffle
-        let env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,

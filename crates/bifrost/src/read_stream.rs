@@ -445,7 +445,7 @@ mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
-    use restate_core::{MetadataKind, TargetVersion, TaskCenter, TaskKind, TestCoreEnvBuilder2};
+    use restate_core::{MetadataKind, TargetVersion, TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{CommonOptions, Configuration};
     use restate_types::live::{Constant, Live};
@@ -461,7 +461,7 @@ mod tests {
     async fn test_readstream_one_loglet() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let _ = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let _ = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -541,7 +541,7 @@ mod tests {
     async fn test_read_stream_with_trim() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -634,7 +634,7 @@ mod tests {
     async fn test_readstream_simple_multi_loglet() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -790,7 +790,7 @@ mod tests {
     async fn test_readstream_sealed_multi_loglet() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -908,7 +908,7 @@ mod tests {
     async fn test_readstream_prefix_trimmed() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let node_env = TestCoreEnvBuilder2::with_incoming_only_connector()
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;

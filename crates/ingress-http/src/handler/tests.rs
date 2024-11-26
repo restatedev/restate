@@ -25,7 +25,7 @@ use tracing_test::traced_test;
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
 };
-use restate_core::TestCoreEnv2;
+use restate_core::TestCoreEnv;
 use restate_test_util::{assert, assert_eq};
 use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId, WithInvocationId};
 use restate_types::invocation::{
@@ -1135,7 +1135,7 @@ where
     <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     <B as http_body::Body>::Data: Send + Sync + 'static,
 {
-    let _env = TestCoreEnv2::create_with_single_node(1, 1).await;
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
     req.extensions_mut()
         .insert(ConnectInfo::new("0.0.0.0:0".parse().unwrap()));

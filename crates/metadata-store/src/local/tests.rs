@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use test_log::test;
 
 use restate_core::network::FailingConnector;
-use restate_core::{TaskCenter, TaskKind, TestCoreEnv2, TestCoreEnvBuilder2};
+use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
     self, reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
@@ -280,7 +280,7 @@ async fn durable_storage() -> anyhow::Result<()> {
 /// connected to it.
 async fn create_test_environment(
     opts: &MetadataStoreOptions,
-) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv2<FailingConnector>)> {
+) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv<FailingConnector>)> {
     // Setup metadata store on unix domain socket.
     let mut config = Configuration::default();
     let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
@@ -295,7 +295,7 @@ async fn create_test_environment(
 
     restate_types::config::set_current_config(config.clone());
     let config = Live::from_value(config);
-    let env = TestCoreEnvBuilder2::with_incoming_only_connector()
+    let env = TestCoreEnvBuilder::with_incoming_only_connector()
         .build()
         .await;
 
