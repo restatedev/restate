@@ -218,6 +218,7 @@ pub struct LogletConfig {
 }
 
 impl LogletConfig {
+    #[cfg(any(test, feature = "memory-loglet"))]
     pub fn for_testing() -> Self {
         Self {
             kind: ProviderKind::InMemory,
