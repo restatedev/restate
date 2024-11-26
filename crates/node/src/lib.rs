@@ -23,11 +23,11 @@ use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
 use restate_core::partitions::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
+use restate_core::TaskKind;
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
     TaskCenter,
 };
-use restate_core::{task_center, TaskKind};
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
 use restate_metadata_store::local::LocalMetadataStoreService;
@@ -122,7 +122,6 @@ pub struct Node {
 
 impl Node {
     pub async fn create(updateable_config: Live<Configuration>) -> Result<Self, BuildError> {
-        let tc = task_center();
         let health = Health::default();
         health.node_status().update(NodeStatus::StartingUp);
         let mut server_builder = NetworkServerBuilder::default();
@@ -172,7 +171,6 @@ impl Node {
         // replicated-loglet
         #[cfg(feature = "replicated-loglet")]
         let replicated_loglet_factory = restate_bifrost::providers::replicated_loglet::Factory::new(
-            tc.clone(),
             metadata_store_client.clone(),
             networking.clone(),
             record_cache.clone(),
@@ -256,12 +254,11 @@ impl Node {
             Some(
                 AdminRole::create(
                     health.admin_status(),
-                    tc.clone(),
                     bifrost.clone(),
                     updateable_config.clone(),
-                    metadata,
                     partition_routing_refresher.partition_routing(),
                     networking.clone(),
+                    metadata,
                     metadata_manager.writer(),
                     &mut server_builder,
                     &mut router_builder,
@@ -310,15 +307,12 @@ impl Node {
     }
 
     pub async fn start(mut self) -> Result<(), anyhow::Error> {
-        let tc = task_center();
-
         let config = self.updateable_config.pinned();
 
         if let Some(metadata_store) = self.metadata_store_role {
-            tc.spawn(
+            TaskCenter::spawn(
                 TaskKind::MetadataStore,
                 "local-metadata-store",
-                None,
                 async move {
                     metadata_store.run().await?;
                     Ok(())
@@ -403,21 +397,21 @@ impl Node {
                 let admin_node_id = admin_node.current_generation;
                 let networking = self.networking.clone();
 
-                tc.spawn_unmanaged(TaskKind::Disposable, "announce-node-at-admin-node", None, async move {
-                    if let Err(err) = networking
-                        .node_connection(admin_node_id)
-                        .await
-                    {
-                        info!("Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}");
-                    }
-                })?;
+                TaskCenter::spawn_unmanaged(
+                    TaskKind::Disposable,
+                    "announce-node-at-admin-node",
+                    async move {
+                        if let Err(err) = networking.node_connection(admin_node_id).await {
+                            info!("Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}");
+                        }
+                    },
+                )?;
             }
         }
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
         // Need to run start in new tc scope to have access to metadata()
-        tc.run_in_scope("bifrost-init", None, self.bifrost.start())
-            .await?;
+        self.bifrost.start().await?;
 
         #[cfg(feature = "replicated-loglet")]
         if let Some(log_server) = self.log_server {
@@ -427,23 +421,18 @@ impl Node {
         }
 
         if let Some(admin_role) = self.admin_role {
-            tc.spawn(TaskKind::SystemBoot, "admin-init", None, admin_role.start())?;
+            TaskCenter::spawn(TaskKind::SystemBoot, "admin-init", admin_role.start())?;
         }
 
         if let Some(worker_role) = self.worker_role {
-            tc.spawn(
-                TaskKind::SystemBoot,
-                "worker-init",
-                None,
-                worker_role.start(),
-            )?;
+            TaskCenter::spawn(TaskKind::SystemBoot, "worker-init", worker_role.start())?;
         }
 
         if let Some(ingress_role) = self.ingress_role {
             TaskCenter::spawn_child(TaskKind::Ingress, "ingress-http", ingress_role.run())?;
         }
 
-        tc.spawn(TaskKind::RpcServer, "node-rpc-server", None, {
+        TaskCenter::spawn(TaskKind::RpcServer, "node-rpc-server", {
             let health = self.health.clone();
             let common_options = config.common.clone();
             let connection_manager = self.networking.connection_manager().clone();
@@ -463,7 +452,7 @@ impl Node {
 
         let my_roles = my_node_config.roles;
         // Report that the node is running when all roles are ready
-        let _ = tc.spawn(TaskKind::Disposable, "status-report", None, async move {
+        let _ = TaskCenter::spawn(TaskKind::Disposable, "status-report", async move {
             self.health
                 .node_status()
                 .wait_for_value(NodeStatus::Alive)

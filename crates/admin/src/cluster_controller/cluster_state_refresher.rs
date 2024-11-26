@@ -30,7 +30,6 @@ use restate_types::time::MillisSinceEpoch;
 use restate_types::Version;
 
 pub struct ClusterStateRefresher<T> {
-    metadata: Metadata,
     network_sender: Networking<T>,
     get_state_router: RpcRouter<GetNodeState>,
     in_flight_refresh: Option<TaskHandle<anyhow::Result<()>>>,
@@ -39,11 +38,7 @@ pub struct ClusterStateRefresher<T> {
 }
 
 impl<T: TransportConnect> ClusterStateRefresher<T> {
-    pub fn new(
-        metadata: Metadata,
-        network_sender: Networking<T>,
-        router_builder: &mut MessageRouterBuilder,
-    ) -> Self {
+    pub fn new(network_sender: Networking<T>, router_builder: &mut MessageRouterBuilder) -> Self {
         let get_state_router = RpcRouter::new(router_builder);
 
         let initial_state = ClusterState {
@@ -57,7 +52,6 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             watch::channel(Arc::from(initial_state));
 
         Self {
-            metadata,
             network_sender,
             get_state_router,
             in_flight_refresh: None,
@@ -99,7 +93,6 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             self.get_state_router.clone(),
             self.network_sender.clone(),
             Arc::clone(&self.cluster_state_update_tx),
-            self.metadata.clone(),
         )?;
 
         Ok(())
@@ -109,10 +102,10 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
         get_state_router: RpcRouter<GetNodeState>,
         network_sender: Networking<T>,
         cluster_state_tx: Arc<watch::Sender<Arc<ClusterState>>>,
-        metadata: Metadata,
     ) -> Result<Option<TaskHandle<anyhow::Result<()>>>, ShutdownError> {
         let refresh = async move {
             let last_state = Arc::clone(&cluster_state_tx.borrow());
+            let metadata = Metadata::current();
             // make sure we have a partition table that equals or newer than last refresh
             let partition_table_version = metadata
                 .wait_for_version(
