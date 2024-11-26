@@ -723,7 +723,6 @@ impl TaskCenterInner {
             std::boxed::Box<dyn std::any::Any + std::marker::Send>,
         >,
     ) {
-        //let inner = self.inner.clone();
         // Remove our entry from the tasks map.
         let Some(task) = self.managed_tasks.lock().remove(&task_id) else {
             // This can happen if the task ownership was taken by calling take_task(id);
@@ -788,7 +787,6 @@ impl TaskCenterInner {
     }
 
     async fn shutdown_node(self: &Arc<Self>, reason: &str, exit_code: i32) {
-        //let inner = self.inner.clone();
         if self
             .shutdown_requested
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -861,7 +859,6 @@ impl TaskCenterInner {
         kind: Option<TaskKind>,
         partition_id: Option<PartitionId>,
     ) {
-        //let inner = self.inner.clone();
         let mut victims = Vec::new();
 
         {
@@ -1037,7 +1034,7 @@ mod tests {
             .default_runtime_handle(tokio::runtime::Handle::current())
             .ingress_runtime_handle(tokio::runtime::Handle::current())
             .build()?
-            .to_handle();
+            .into_handle();
         let start = tokio::time::Instant::now();
         tc.spawn(TaskKind::RoleRunner, "worker-role", async {
             info!("Hello async");

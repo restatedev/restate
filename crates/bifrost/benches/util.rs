@@ -34,7 +34,7 @@ pub async fn spawn_environment(
         .options(config.common.clone())
         .build()
         .expect("task_center builds")
-        .to_handle();
+        .into_handle();
 
     async {
         restate_types::config::set_current_config(config.clone());

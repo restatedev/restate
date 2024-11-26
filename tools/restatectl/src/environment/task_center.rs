@@ -56,7 +56,7 @@ where
         .options(config.common.clone())
         .build()
         .expect("task_center builds")
-        .to_handle();
+        .into_handle();
 
     let result = task_center.run_sync(|| fn_body(config)).await;
 

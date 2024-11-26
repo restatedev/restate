@@ -209,7 +209,7 @@ async fn main() -> anyhow::Result<()> {
     let tc = TaskCenterBuilder::default_for_tests()
         .build()
         .expect("building task-center should not fail")
-        .to_handle();
+        .into_handle();
     let task = env::args().nth(1);
     match task {
         None => print_help(),

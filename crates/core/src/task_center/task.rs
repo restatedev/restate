@@ -53,7 +53,7 @@ impl TaskContext {
     where
         F: FnOnce(&Self) -> R,
     {
-        TASK_CONTEXT.try_with(|tc| f(tc)).ok()
+        TASK_CONTEXT.try_with(|ctx| f(ctx)).ok()
     }
 
     /// Access to current task-center task context

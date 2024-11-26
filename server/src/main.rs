@@ -162,7 +162,7 @@ fn main() {
         .options(Configuration::pinned().common.clone())
         .build()
         .expect("task_center builds");
-    tc.handle().block_on({
+    tc.block_on({
         async move {
             // Apply tracing config globally
             // We need to apply this first to log correctly

@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 memory-loglet = ["restate-bifrost/memory-loglet", "restate-admin/memory-loglet"]
-replicated-loglet = ["restate-bifrost/replicated-loglet"]
+replicated-loglet = ["restate-bifrost/replicated-loglet", "restate-admin/replicated-loglet"]
 options_schema = [
     "dep:schemars",
     "restate-admin/options_schema",
