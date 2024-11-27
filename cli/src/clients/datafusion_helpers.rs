@@ -270,9 +270,7 @@ pub async fn find_active_invocations_simple(
     client: &DataFusionHttpClient,
     filter: &str,
 ) -> Result<Vec<SimpleInvocation>> {
-    let query = format!(
-        "SELECT id, target, status FROM sys_invocation WHERE {filter}"
-    );
+    let query = format!("SELECT id, target, status FROM sys_invocation WHERE {filter}");
     let rows = client
         .run_query_and_map_results::<SimpleInvocationRowResult>(query)
         .await?
@@ -1092,9 +1090,7 @@ pub(crate) async fn get_state_keys(
     } else {
         format!("service_name = '{service}'")
     };
-    let sql = format!(
-        "SELECT service_name, service_key, key, value FROM state WHERE {filter}"
-    );
+    let sql = format!("SELECT service_name, service_key, key, value FROM state WHERE {filter}");
     let query_result_iter = client
         .run_query_and_map_results::<StateKeysQueryResult>(sql)
         .await?;

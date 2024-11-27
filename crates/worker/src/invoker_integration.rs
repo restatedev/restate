@@ -274,9 +274,7 @@ where
                     if let Err(e) = id.parse::<InvocationId>() {
                         return Err(InvocationError::new(
                             codes::BAD_REQUEST,
-                            format!(
-                                "The given invocation id '{id}' to cancel is invalid: {e}"
-                            ),
+                            format!("The given invocation id '{id}' to cancel is invalid: {e}"),
                         ));
                     }
                 }
@@ -293,9 +291,7 @@ where
                     if let Err(e) = id.parse::<InvocationId>() {
                         return Err(InvocationError::new(
                             codes::BAD_REQUEST,
-                            format!(
-                                "The given invocation id '{id}' to attach is invalid: {e}"
-                            ),
+                            format!("The given invocation id '{id}' to attach is invalid: {e}"),
                         ));
                     }
                 }
@@ -314,9 +310,7 @@ where
                     if let Err(e) = id.parse::<InvocationId>() {
                         return Err(InvocationError::new(
                             codes::BAD_REQUEST,
-                            format!(
-                                "The given invocation id '{id}' to get output is invalid: {e}"
-                            ),
+                            format!("The given invocation id '{id}' to get output is invalid: {e}"),
                         ));
                     }
                 }
