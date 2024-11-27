@@ -12,10 +12,14 @@ mod storage;
 mod store;
 
 use crate::network::{
-    ConnectionManager, MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, Networking,
+    ConnectionManager, Message, MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer,
+    Networking,
 };
 use crate::raft::store::BuildError;
 use crate::{network, MetadataStoreRunner};
+use anyhow::Context;
+use bytes::{BufMut, Bytes};
+use protobuf::Message as ProtobufMessage;
 use restate_core::network::NetworkServerBuilder;
 use restate_types::config::{RaftOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
@@ -50,4 +54,20 @@ pub async fn create_store(
         health_status,
         server_builder,
     ))
+}
+
+impl Message for raft::prelude::Message {
+    fn to(&self) -> u64 {
+        self.to
+    }
+
+    fn serialize(&self, buffer: impl BufMut) {
+        let mut writer = buffer.writer();
+        self.write_to_writer(&mut writer)
+            .expect("should be able to write message");
+    }
+
+    fn deserialize(bytes: &Bytes) -> anyhow::Result<Self> {
+        ProtobufMessage::parse_from_carllerche_bytes(bytes).context("failed deserializing message")
+    }
 }

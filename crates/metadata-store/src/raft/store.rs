@@ -66,7 +66,7 @@ pub enum Error {
 pub struct RaftMetadataStore {
     _logger: slog::Logger,
     raw_node: RawNode<RocksDbStorage>,
-    networking: Networking,
+    networking: Networking<Message>,
     raft_rx: mpsc::Receiver<Message>,
     tick_interval: time::Interval,
 
@@ -81,7 +81,7 @@ impl RaftMetadataStore {
     pub async fn create(
         raft_options: &RaftOptions,
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-        mut networking: Networking,
+        mut networking: Networking<Message>,
         raft_rx: mpsc::Receiver<Message>,
     ) -> Result<Self, BuildError> {
         let (request_tx, request_rx) = mpsc::channel(2);
@@ -251,7 +251,7 @@ impl RaftMetadataStore {
 
     fn send_messages(&mut self, messages: Vec<Message>) {
         for message in messages {
-            if let Err(err) = self.networking.try_send(message) {
+            if let Err(err) = self.networking.try_send(message.to, message) {
                 debug!("failed sending message: {err}");
             }
         }
