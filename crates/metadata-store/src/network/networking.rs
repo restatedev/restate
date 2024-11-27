@@ -31,6 +31,8 @@ use tracing::{debug, trace};
 pub enum TrySendError<T> {
     #[error("failed sending message")]
     Send(T),
+    #[error("connecting to peer")]
+    Connecting(T),
     #[error("unknown peer: {0}")]
     UnknownPeer(u64),
     #[error(transparent)]
@@ -81,7 +83,7 @@ impl Networking {
         } else if let Some(address) = self.addresses.get(&target) {
             if let Some(task_handle) = self.connection_attempts.remove(&target) {
                 if !task_handle.is_finished() {
-                    return Ok(());
+                    return Err(TrySendError::Connecting(message));
                 } else {
                     match task_handle.now_or_never().expect("should be finished") {
                         Ok(result) => {
@@ -107,6 +109,7 @@ impl Networking {
                     &Configuration::pinned().networking,
                 )?,
             );
+            return Err(TrySendError::Connecting(message));
         } else {
             return Err(TrySendError::UnknownPeer(target));
         }
