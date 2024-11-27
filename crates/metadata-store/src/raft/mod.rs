@@ -8,10 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod connection_manager;
-pub mod grpc_svc;
-mod handler;
-mod networking;
 pub mod service;
 mod storage;
 mod store;

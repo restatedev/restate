@@ -12,12 +12,8 @@ use crate::grpc::handler::MetadataStoreHandler;
 use crate::grpc::server::GrpcServer;
 use crate::grpc::service_builder::GrpcServiceBuilder;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
-use crate::raft::connection_manager::ConnectionManager;
-use crate::raft::grpc_svc::raft_metadata_store_svc_server::RaftMetadataStoreSvcServer;
-use crate::raft::handler::RaftMetadataStoreHandler;
-use crate::raft::networking::Networking;
 use crate::raft::store::RaftMetadataStore;
-use crate::{grpc_svc, Error, MetadataStoreService};
+use crate::{grpc_svc, network, Error, MetadataStoreService};
 use assert2::let_assert;
 use futures::TryFutureExt;
 use restate_core::{TaskCenter, TaskKind};
@@ -26,6 +22,7 @@ use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
 use tokio::sync::mpsc;
+use crate::network::{ConnectionManager, Networking, RaftMetadataStoreHandler, RaftMetadataStoreSvcServer};
 
 pub struct RaftMetadataStoreService {
     health_status: HealthStatus<MetadataServerStatus>,
@@ -70,6 +67,8 @@ impl MetadataStoreService for RaftMetadataStoreService {
         builder.add_service(MetadataStoreSvcServer::new(MetadataStoreHandler::new(
             store.request_sender(),
         )));
+
+        builder.register_file_descriptor_set_for_reflection(network::FILE_DESCRIPTOR_SET);
         builder.add_service(RaftMetadataStoreSvcServer::new(
             RaftMetadataStoreHandler::new(connection_manager),
         ));
