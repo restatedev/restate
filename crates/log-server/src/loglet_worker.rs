@@ -1150,7 +1150,7 @@ mod tests {
             assert_that!(record.is_data(), eq(true));
             let data = record.try_unwrap_data().unwrap();
             let original: String = data.decode().unwrap();
-            assert_that!(original, eq(format!("record{}", i)));
+            assert_that!(original, eq(format!("record{i}")));
         }
 
         // We expect to see [2, FILTERED(5), 10, 11]. No trim gaps.
@@ -1196,7 +1196,7 @@ mod tests {
                 assert_that!(record.is_data(), eq(true));
                 let data = record.try_unwrap_data().unwrap();
                 let original: String = data.decode().unwrap();
-                assert_that!(original, eq(format!("record{}", i)));
+                assert_that!(original, eq(format!("record{i}")));
             }
         }
 
@@ -1244,7 +1244,7 @@ mod tests {
                 assert_that!(record.is_data(), eq(true));
                 let data = record.try_unwrap_data().unwrap();
                 let original: String = data.decode().unwrap();
-                assert_that!(original, eq(format!("record{}", i)));
+                assert_that!(original, eq(format!("record{i}")));
             }
         }
 
@@ -1406,7 +1406,7 @@ mod tests {
                 assert_that!(record.is_data(), eq(true));
                 let data = record.try_unwrap_data().unwrap();
                 let original: String = data.decode().unwrap();
-                assert_that!(original, eq(format!("record{}", i)));
+                assert_that!(original, eq(format!("record{i}")));
             }
         }
 

@@ -567,8 +567,7 @@ impl Node {
 
                     assert!(
                         nodes_config.find_node_by_id(plain_node_id).is_err(),
-                        "duplicate plain node id '{}'",
-                        plain_node_id
+                        "duplicate plain node id '{plain_node_id}'"
                     );
 
                     let my_node_id = plain_node_id.with_generation(1);

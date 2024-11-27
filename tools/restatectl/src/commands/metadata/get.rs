@@ -42,7 +42,7 @@ async fn get_value(opts: &GetValueOpts) -> anyhow::Result<()> {
     };
 
     let value = serde_json::to_string_pretty(&value).map_err(|e| anyhow::anyhow!(e))?;
-    println!("{}", value);
+    println!("{value}");
 
     Ok(())
 }

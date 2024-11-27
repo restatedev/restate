@@ -235,7 +235,7 @@ mod tests {
                                 let offset = bifrost
                                     .append(
                                         log_id,
-                                        format!("appender-{}-record{}", appender_id, i),
+                                        format!("appender-{appender_id}-record{i}"),
                                     )
                                     .await?;
                                 i += 1;
@@ -322,8 +322,7 @@ mod tests {
                     assert_that!(committed_len, ge(0));
                     let tail_record = committed.last().unwrap();
                     println!(
-                        "Committed len={}, last appended={}",
-                        committed_len, tail_record
+                        "Committed len={committed_len}, last appended={tail_record}"
                     );
                     // ensure that all committed records are unique
                     for offset in committed {

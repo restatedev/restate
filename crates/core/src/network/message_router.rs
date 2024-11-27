@@ -155,7 +155,7 @@ impl MessageRouterBuilder {
         let wrapped = MessageHandlerWrapper { inner: handler };
         let target = H::MessageType::TARGET;
         if self.handlers.insert(target, Box::new(wrapped)).is_some() {
-            panic!("Handler for target {} has been registered already!", target);
+            panic!("Handler for target {target} has been registered already!");
         }
         self
     }
@@ -168,7 +168,7 @@ impl MessageRouterBuilder {
         handler: Box<dyn Handler<Error = CodecError> + Send + Sync>,
     ) -> &mut Self {
         if self.handlers.insert(target, handler).is_some() {
-            panic!("Handler for target {} has been registered already!", target);
+            panic!("Handler for target {target} has been registered already!");
         }
         self
     }
@@ -186,7 +186,7 @@ impl MessageRouterBuilder {
         let wrapped = StreamHandlerWrapper { sender: tx };
         let target = M::TARGET;
         if self.handlers.insert(target, Box::new(wrapped)).is_some() {
-            panic!("Handler for target {} has been registered already!", target);
+            panic!("Handler for target {target} has been registered already!");
         }
         Box::pin(ReceiverStream::new(rx))
     }

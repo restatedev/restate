@@ -107,7 +107,7 @@ impl SpawnPartitionProcessorTask {
             invoker.handle(),
         );
 
-        let invoker_name = Box::leak(Box::new(format!("invoker-{}", partition_id)));
+        let invoker_name = Box::leak(Box::new(format!("invoker-{partition_id}")));
         let invoker_config = configuration.clone().map(|c| &c.worker.invoker);
 
         let root_task_handle = TaskCenter::current().start_runtime(

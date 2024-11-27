@@ -40,7 +40,7 @@ pub(crate) fn compute_ordering(schema: SchemaRef) -> Option<Vec<PhysicalSortExpr
 #[inline]
 pub(crate) fn format_using<'a>(output: &'a mut String, what: &impl std::fmt::Display) -> &'a str {
     output.clear();
-    if let Err(e) = write!(output, "{}", what) {
+    if let Err(e) = write!(output, "{what}") {
         error!(error = %e, "Cannot format the string")
     }
     output

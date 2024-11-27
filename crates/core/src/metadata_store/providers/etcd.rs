@@ -70,7 +70,7 @@ impl ToVersion for &KeyValue {
         // This is done instead of implementing the tombstone mechanism directly into the the Etcd store implementation because
         // delete is not used right now, and also because the Etcd implementation is a temporary solution.
         let version = Version::from(u32::try_from(self.version()).map_err(|e| {
-            ReadError::Internal(format!("[etcd] key version exceeds max u32: {}", e))
+            ReadError::Internal(format!("[etcd] key version exceeds max u32: {e}"))
         })?);
 
         Ok(version)

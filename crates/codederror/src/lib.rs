@@ -213,16 +213,16 @@ impl<T: CodedError> Display for DecoratedError<'_, T> {
         write!(f, "{}", self.this.deref())?;
         if f.alternate() {
             if let Some(description) = self.this.code().and_then(|c| c.description) {
-                write!(f, "\n\n{}", description)?;
+                write!(f, "\n\n{description}")?;
             }
         }
 
         if let Some(help) = self.this.code().and_then(|c| c.help) {
             if f.alternate() {
                 // Add new lines after description
-                write!(f, "\n\n{}", help)?;
+                write!(f, "\n\n{help}")?;
             } else {
-                write!(f, ". {}", help)?;
+                write!(f, ". {help}")?;
             }
         }
 

@@ -126,8 +126,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
         debug_assert_eq!(
             entry.header().is_completed(),
             Some(false),
-            "Entry '{:?}' is already completed",
-            entry
+            "Entry '{entry:?}' is already completed"
         );
 
         // Prepare the result to serialize in protobuf

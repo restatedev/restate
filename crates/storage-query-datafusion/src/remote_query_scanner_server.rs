@@ -194,7 +194,7 @@ impl RemoteQueryScannerServer {
 
                 RemoteQueryScannerNextResult::Failure {
                     scanner_id,
-                    message: format!("{}", e),
+                    message: format!("{e}"),
                 }
             }
         }

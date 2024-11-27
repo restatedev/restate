@@ -69,6 +69,6 @@ async fn generate_log_metadata(opts: &GenerateLogMetadataOpts) -> anyhow::Result
     } else {
         serde_json::to_string(&logs)?
     };
-    println!("{}", output);
+    println!("{output}");
     Ok(())
 }

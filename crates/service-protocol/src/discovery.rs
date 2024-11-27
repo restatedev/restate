@@ -330,8 +330,7 @@ impl ServiceDiscovery {
         {
             return Err(DiscoveryError::BadResponse(
                 format!(
-                    "min protocol version must be in [1, {}]",
-                    MAX_SERVICE_PROTOCOL_VERSION_VALUE
+                    "min protocol version must be in [1, {MAX_SERVICE_PROTOCOL_VERSION_VALUE}]"
                 )
                 .into(),
             ));
@@ -342,8 +341,7 @@ impl ServiceDiscovery {
         {
             return Err(DiscoveryError::BadResponse(
                 format!(
-                    "max protocol version must be in [1, {}]",
-                    MAX_SERVICE_PROTOCOL_VERSION_VALUE
+                    "max protocol version must be in [1, {MAX_SERVICE_PROTOCOL_VERSION_VALUE}]"
                 )
                 .into(),
             ));

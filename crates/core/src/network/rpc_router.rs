@@ -607,7 +607,7 @@ mod test {
                 barrier_handle_message.wait().await;
                 response_tracker_handle_message.handle_message(Incoming::from_parts(
                     TestResponse {
-                        text: format!("{}", idx),
+                        text: format!("{idx}"),
                     },
                     WeakConnection::new_closed(GenerationalNodeId::new(0, 0)),
                     1,

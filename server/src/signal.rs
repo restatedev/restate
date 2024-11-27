@@ -38,7 +38,7 @@ pub(super) async fn sigusr_dump_config() {
             Err(e) => warn!("Failed to dump configuration: {}", e),
             Ok(config) => {
                 let mut stderr = std::io::stderr().lock();
-                let _ = writeln!(&mut stderr, "{}", config);
+                let _ = writeln!(&mut stderr, "{config}");
             }
         }
     }

@@ -111,7 +111,7 @@ fn tokio_builder(prefix: &'static str, common_opts: &CommonOptions) -> tokio::ru
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder.enable_all().thread_name_fn(move || {
         let id = WORKER_ID.fetch_add(1, Ordering::Relaxed);
-        format!("rs:{}-{}", prefix, id)
+        format!("rs:{prefix}-{id}")
     });
 
     builder.worker_threads(common_opts.default_thread_pool_size());

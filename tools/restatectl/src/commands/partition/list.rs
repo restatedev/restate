@@ -338,8 +338,8 @@ fn render_mode(planned: RunMode, effective: RunMode, outdated_leadership_epoch: 
             .add_attribute(Attribute::Bold),
         (RunMode::Leader, true, true) => Cell::new("Leader").fg(Color::Red),
         (RunMode::Follower, true, _) => Cell::new("Follower"),
-        (_, false, false) => Cell::new(format!("{}->{}", effective, planned)).fg(Color::Magenta),
-        (_, false, true) => Cell::new(format!("{}->{}", effective, planned)).fg(Color::Red),
+        (_, false, false) => Cell::new(format!("{effective}->{planned}")).fg(Color::Magenta),
+        (_, false, true) => Cell::new(format!("{effective}->{planned}")).fg(Color::Red),
         (RunMode::Unknown, _, _) => Cell::new("UNKNOWN").fg(Color::Red),
     }
 }

@@ -192,7 +192,7 @@ impl TunnelRenderer {
         );
 
         for line in output.lines() {
-            let _ = writeln!(lock, "{}", line);
+            let _ = writeln!(lock, "{line}");
         }
 
         let _ = execute!(stdout, crossterm::terminal::EndSynchronizedUpdate,);

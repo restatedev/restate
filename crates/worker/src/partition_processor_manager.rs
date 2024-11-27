@@ -848,7 +848,7 @@ impl PartitionProcessorManager {
         let task_name = self
             .name_cache
             .entry(partition_id)
-            .or_insert_with(|| Box::leak(Box::new(format!("pp-{}", partition_id))));
+            .or_insert_with(|| Box::leak(Box::new(format!("pp-{partition_id}"))));
 
         SpawnPartitionProcessorTask::new(
             task_name,

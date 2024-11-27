@@ -60,7 +60,7 @@ pub(crate) async fn patch_value(opts: &PatchValueOpts) -> anyhow::Result<()> {
     };
 
     let value = serde_json::to_string_pretty(&value).map_err(|e| anyhow::anyhow!(e))?;
-    println!("{}", value);
+    println!("{value}");
 
     Ok(())
 }

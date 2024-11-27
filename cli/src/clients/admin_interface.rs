@@ -66,7 +66,7 @@ impl AdminClientInterface for AdminClient {
     async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>> {
         let url = self
             .base_url
-            .join(&format!("/services/{}", name))
+            .join(&format!("/services/{name}"))
             .expect("Bad url!");
 
         self.run(reqwest::Method::GET, url).await
@@ -79,7 +79,7 @@ impl AdminClientInterface for AdminClient {
     ) -> reqwest::Result<Envelope<ServiceMetadata>> {
         let url = self
             .base_url
-            .join(&format!("/services/{}", name))
+            .join(&format!("/services/{name}"))
             .expect("Bad url!");
 
         self.run_with_body(reqwest::Method::PATCH, url, modify_service_request)
@@ -97,7 +97,7 @@ impl AdminClientInterface for AdminClient {
     ) -> reqwest::Result<Envelope<DetailedDeploymentResponse>> {
         let url = self
             .base_url
-            .join(&format!("/deployments/{}", id))
+            .join(&format!("/deployments/{id}"))
             .expect("Bad url!");
         self.run(reqwest::Method::GET, url).await
     }
@@ -105,10 +105,10 @@ impl AdminClientInterface for AdminClient {
     async fn remove_deployment(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>> {
         let mut url = self
             .base_url
-            .join(&format!("/deployments/{}", id))
+            .join(&format!("/deployments/{id}"))
             .expect("Bad url!");
 
-        url.set_query(Some(&format!("force={}", force)));
+        url.set_query(Some(&format!("force={force}")));
 
         self.run(reqwest::Method::DELETE, url).await
     }
@@ -124,7 +124,7 @@ impl AdminClientInterface for AdminClient {
     async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
         let mut url = self
             .base_url
-            .join(&format!("/invocations/{}", id))
+            .join(&format!("/invocations/{id}"))
             .expect("Bad url!");
 
         url.set_query(Some("mode=purge"));
@@ -135,7 +135,7 @@ impl AdminClientInterface for AdminClient {
     async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>> {
         let mut url = self
             .base_url
-            .join(&format!("/invocations/{}", id))
+            .join(&format!("/invocations/{id}"))
             .expect("Bad url!");
 
         url.set_query(Some(&format!(

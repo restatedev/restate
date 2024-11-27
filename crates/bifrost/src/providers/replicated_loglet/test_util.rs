@@ -19,9 +19,9 @@ pub fn generate_logserver_node(
 ) -> NodeConfig {
     let id: PlainNodeId = id.into();
     NodeConfig::new(
-        format!("node-{}", id),
+        format!("node-{id}"),
         GenerationalNodeId::new(id.into(), 1),
-        format!("unix:/tmp/my_socket-{}", id).parse().unwrap(),
+        format!("unix:/tmp/my_socket-{id}").parse().unwrap(),
         Role::LogServer.into(),
         LogServerConfig { storage_state },
     )

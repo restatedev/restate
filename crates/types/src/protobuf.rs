@@ -55,7 +55,7 @@ pub mod cluster {
                 RunMode::Leader => "Leader",
                 RunMode::Follower => "Follower",
             };
-            write!(f, "{}", o)
+            write!(f, "{o}")
         }
     }
 }

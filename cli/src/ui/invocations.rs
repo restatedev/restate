@@ -75,14 +75,14 @@ pub fn invocation_status_note(invocation: &Invocation) -> String {
             if let Some(modified_at) = invocation.state_modified_at {
                 let invoking_since = chrono::Local::now().signed_duration_since(modified_at);
                 let dur = duration_to_human_precise(invoking_since, Tense::Present);
-                msg.push_str(&format!("{}.", dur));
+                msg.push_str(&format!("{dur}."));
             };
-            msg.push_str(&format!(" Retried {} time(s).", num_retries,));
+            msg.push_str(&format!(" Retried {num_retries} time(s).",));
 
             if let Some(next_retry) = invocation.next_retry_at {
                 let next_retry = next_retry.signed_duration_since(chrono::Local::now());
                 let next_retry = duration_to_human_precise(next_retry, Tense::Future);
-                msg.push_str(&format!(" Next retry in {})", next_retry));
+                msg.push_str(&format!(" Next retry in {next_retry})"));
             }
 
             msg.push(')');
@@ -188,7 +188,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
                 "".to_string()
             },
             if let Some(server) = &invocation.last_attempt_server {
-                format!(" using {}", server)
+                format!(" using {server}")
             } else {
                 "".to_string()
             }
@@ -229,10 +229,10 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
                         .last_failure_entry_name
                         .as_deref()
                         .and_then(|s| if s.is_empty() { None } else { Some(s) })
-                        .map(|n| format!(" [{}]", n))
+                        .map(|n| format!(" [{n}]"))
                         .or_else(|| invocation
                             .last_failure_entry_index
-                            .map(|idx| format!(" [{}]", idx)))
+                            .map(|idx| format!(" [{idx}]")))
                         .unwrap_or("".to_string())
                 ),
             );

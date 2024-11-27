@@ -58,8 +58,7 @@ impl TryFrom<u8> for StorageCodecKind {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         StorageCodecKind::from_repr(value).ok_or(StorageDecodeError::ReadingCodec(format!(
-            "unknown discriminant '{}'",
-            value
+            "unknown discriminant '{value}'"
         )))
     }
 }
@@ -368,8 +367,7 @@ pub fn decode_from_flexbuffers<T: DeserializeOwned, B: Buf>(
 
     if buf.remaining() < length {
         return Err(flexbuffers::DeserializationError::custom(format!(
-            "insufficient data: expecting {} bytes for flexbuffers",
-            length
+            "insufficient data: expecting {length} bytes for flexbuffers"
         )));
     }
 
@@ -405,9 +403,9 @@ mod tests {
     #[test]
     fn test_polybytes() {
         let bytes = PolyBytes::Bytes(Bytes::from_static(b"hello"));
-        assert_eq!(format!("{:?}", bytes), "Bytes(5 bytes)");
+        assert_eq!(format!("{bytes:?}"), "Bytes(5 bytes)");
         let typed = PolyBytes::Typed(Arc::new("hello".to_string()));
-        assert_eq!(format!("{:?}", typed), "Typed");
+        assert_eq!(format!("{typed:?}"), "Typed");
         // can be downcasted.
         let a: Arc<dyn StorageEncode> = Arc::new("hello".to_string());
         assert!(a.is::<String>());

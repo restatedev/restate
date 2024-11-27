@@ -260,8 +260,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                         if max_local_tail < current_known_global {
                             // what? Something went seriously wrong.
                             panic!(
-                                "max_local_tail={} is less than known_global_tail={}",
-                                max_local_tail, current_known_global
+                                "max_local_tail={max_local_tail} is less than known_global_tail={current_known_global}"
                             );
                         } else if max_local_tail == current_known_global ||
                         // max_local_tail > known_global_tail

@@ -159,8 +159,7 @@ pub mod test_util {
             if self.new_connection_sender.send(peer_connection).is_err() {
                 // receiver has closed, cannot accept connections
                 return Err(NetworkError::Unavailable(format!(
-                    "MockConnector has been terminated, cannot connect to {}",
-                    node_id
+                    "MockConnector has been terminated, cannot connect to {node_id}"
                 )));
             }
             let incoming = ReceiverStream::new(rx).map(Ok);

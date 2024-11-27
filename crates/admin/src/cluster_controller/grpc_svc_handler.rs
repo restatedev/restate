@@ -62,7 +62,7 @@ impl ClusterCtrlSvcHandler {
         self.metadata_store_client
             .get::<Logs>(BIFROST_CONFIG_KEY.clone())
             .await
-            .map_err(|error| Status::unknown(format!("Failed to get log metadata: {:?}", error)))?
+            .map_err(|error| Status::unknown(format!("Failed to get log metadata: {error:?}")))?
             .ok_or(Status::not_found("Missing log metadata"))
     }
 }
@@ -118,13 +118,12 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         );
 
         let trim_point = trim_point
-            .map_err(|err| Status::internal(format!("Failed to find log trim point: {:?}", err)))?;
+            .map_err(|err| Status::internal(format!("Failed to find log trim point: {err:?}")))?;
 
         let nodes_config = nodes_config
             .map_err(|error| {
                 Status::unknown(format!(
-                    "Failed to get nodes configuration metadata: {:?}",
-                    error
+                    "Failed to get nodes configuration metadata: {error:?}"
                 ))
             })?
             .ok_or(Status::not_found("Missing nodes configuration"))?;
@@ -150,8 +149,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .await
             .map_err(|error| {
                 Status::unknown(format!(
-                    "Failed to get nodes configuration metadata: {:?}",
-                    error
+                    "Failed to get nodes configuration metadata: {error:?}"
                 ))
             })?
             .ok_or(Status::not_found("Missing nodes configuration"))?;

@@ -25,8 +25,8 @@ pub enum TailState<Offset = Lsn> {
 impl<O: Display> Display for TailState<O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Open(n) => write!(f, "{}", n),
-            Self::Sealed(n) => write!(f, "{} (S)", n),
+            Self::Open(n) => write!(f, "{n}"),
+            Self::Sealed(n) => write!(f, "{n} (S)"),
         }
     }
 }

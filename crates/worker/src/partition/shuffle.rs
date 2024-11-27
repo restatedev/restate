@@ -614,8 +614,7 @@ mod tests {
 
             assert!(
                 message_found,
-                "Expected message {:?} was not found in received messages",
-                expected_message
+                "Expected message {expected_message:?} was not found in received messages"
             );
         }
     }

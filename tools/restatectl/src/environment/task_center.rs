@@ -38,7 +38,7 @@ where
         Ok(c) => c,
         Err(e) => {
             // We cannot use tracing here as it's not configured yet
-            eprintln!("{:?}", e);
+            eprintln!("{e:?}");
             std::process::exit(1);
         }
     };

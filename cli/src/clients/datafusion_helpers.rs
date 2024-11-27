@@ -245,7 +245,7 @@ impl Display for JournalEntryType {
             JournalEntryType::ClearState => write!(f, "ClearState"),
             JournalEntryType::Run => write!(f, "Run"),
             JournalEntryType::GetPromise(_) => write!(f, "Promise"),
-            JournalEntryType::Other(s) => write!(f, "{}", s),
+            JournalEntryType::Other(s) => write!(f, "{s}"),
         }
     }
 }
@@ -271,8 +271,7 @@ pub async fn find_active_invocations_simple(
     filter: &str,
 ) -> Result<Vec<SimpleInvocation>> {
     let query = format!(
-        "SELECT id, target, status FROM sys_invocation WHERE {}",
-        filter
+        "SELECT id, target, status FROM sys_invocation WHERE {filter}"
     );
     let rows = client
         .run_query_and_map_results::<SimpleInvocationRowResult>(query)
@@ -352,9 +351,8 @@ pub async fn count_deployment_active_inv(
         .run_count_agg_query(format!(
             "SELECT COUNT(id) AS inv_count \
             FROM sys_invocation_status \
-            WHERE pinned_deployment_id = '{}' \
-            GROUP BY pinned_deployment_id",
-            deployment_id
+            WHERE pinned_deployment_id = '{deployment_id}' \
+            GROUP BY pinned_deployment_id"
         ))
         .await?)
 }
@@ -464,9 +462,8 @@ pub async fn count_deployment_active_inv_by_method(
             target_handler_name,
             COUNT(id) AS inv_count
             FROM sys_invocation_status
-            WHERE pinned_deployment_id = '{}'
-            GROUP BY pinned_deployment_id, target_service_name, target_handler_name",
-        deployment_id
+            WHERE pinned_deployment_id = '{deployment_id}'
+            GROUP BY pinned_deployment_id, target_service_name, target_handler_name"
     );
 
     for batch in client.run_query(query).await?.batches {
@@ -505,9 +502,8 @@ pub async fn get_service_status(
                 MIN(created_at),
                 FIRST_VALUE(id ORDER BY created_at ASC)
              FROM sys_invocation_status
-             WHERE status == 'inboxed' AND target_service_name IN {}
-             GROUP BY target_service_name, target_handler_name",
-            query_filter
+             WHERE status == 'inboxed' AND target_service_name IN {query_filter}
+             GROUP BY target_service_name, target_handler_name"
         );
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
@@ -548,10 +544,9 @@ pub async fn get_service_status(
                 MIN(created_at),
                 FIRST_VALUE(id ORDER BY created_at ASC)
             FROM sys_invocation
-            WHERE target_service_name IN {}
+            WHERE target_service_name IN {query_filter}
             GROUP BY target_service_name, target_handler_name, status
-            ORDER BY target_handler_name",
-            query_filter
+            ORDER BY target_handler_name"
         );
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
@@ -644,10 +639,9 @@ pub async fn get_locked_keys_status(
                 service_key,
                 COUNT(id)
              FROM sys_inbox
-             WHERE service_name IN {}
+             WHERE service_name IN {query_filter}
              GROUP BY service_name, service_key
-             ORDER BY COUNT(id) DESC",
-            query_filter
+             ORDER BY COUNT(id) DESC"
         );
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
@@ -684,9 +678,8 @@ pub async fn get_locked_keys_status(
                 first_value(last_start_at),
                 sum(retry_count)
             FROM sys_invocation
-            WHERE status != 'pending' AND target_service_name IN {}
-            GROUP BY target_service_name, target_service_key, status",
-            query_filter
+            WHERE status != 'pending' AND target_service_name IN {query_filter}
+            GROUP BY target_service_name, target_service_key, status"
         );
 
         let resp = client.run_query(query).await?;
@@ -949,7 +942,7 @@ pub async fn get_service_invocations(
     // Active invocations analysis
     Ok(find_active_invocations(
         client,
-        &format!("WHERE inv.target_service_name = '{}'", service),
+        &format!("WHERE inv.target_service_name = '{service}'"),
         "",
         "ORDER BY inv.created_at DESC",
         limit_active,
@@ -974,7 +967,7 @@ pub async fn get_invocation(
 ) -> Result<Option<Invocation>> {
     Ok(find_active_invocations(
         client,
-        &format!("WHERE inv.id = '{}'", invocation_id),
+        &format!("WHERE inv.id = '{invocation_id}'"),
         "",
         "",
         1,
@@ -1028,10 +1021,9 @@ pub async fn get_invocation_journal(
             {select_promise_column}
         FROM sys_journal sj
         WHERE
-            sj.id = '{}'
+            sj.id = '{invocation_id}'
         ORDER BY index DESC
-        LIMIT {}",
-        invocation_id, JOURNAL_QUERY_LIMIT,
+        LIMIT {JOURNAL_QUERY_LIMIT}",
     );
 
     let my_invocation_id: InvocationId = invocation_id.parse().expect("Invocation ID is not valid");
@@ -1096,13 +1088,12 @@ pub(crate) async fn get_state_keys(
     key: Option<&str>,
 ) -> Result<HashMap<ServiceId, HashMap<String, Bytes>>> {
     let filter = if let Some(k) = key {
-        format!("service_name = '{}' AND service_key = '{}'", service, k)
+        format!("service_name = '{service}' AND service_key = '{k}'")
     } else {
-        format!("service_name = '{}'", service)
+        format!("service_name = '{service}'")
     };
     let sql = format!(
-        "SELECT service_name, service_key, key, value FROM state WHERE {}",
-        filter
+        "SELECT service_name, service_key, key, value FROM state WHERE {filter}"
     );
     let query_result_iter = client
         .run_query_and_map_results::<StateKeysQueryResult>(sql)

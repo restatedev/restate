@@ -283,9 +283,9 @@ fn write_nodes(node_set: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> std::fmt:
     write!(f, "[")?;
     let mut nodes = node_set.0.iter();
     if let Some(node) = nodes.next() {
-        write!(f, "{}", node)?;
+        write!(f, "{node}")?;
         for node in nodes {
-            write!(f, ", {}", node)?;
+            write!(f, ", {node}")?;
         }
     }
     write!(f, "]")
@@ -295,9 +295,9 @@ fn write_nodes_sorted(node_set: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> st
     write!(f, "[")?;
     let mut nodes = node_set.0.iter().sorted();
     if let Some(node) = nodes.next() {
-        write!(f, "{}", node)?;
+        write!(f, "{node}")?;
         for node in nodes {
-            write!(f, ", {}", node)?;
+            write!(f, ", {node}")?;
         }
     }
     write!(f, "]")

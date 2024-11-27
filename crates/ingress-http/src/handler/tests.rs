@@ -552,8 +552,7 @@ async fn attach_with_invocation_id() {
 
     let req = hyper::Request::builder()
         .uri(format!(
-            "http://localhost/restate/invocation/{}/attach",
-            invocation_id
+            "http://localhost/restate/invocation/{invocation_id}/attach"
         ))
         .method(Method::GET)
         .header("content-type", "application/json")
@@ -726,8 +725,7 @@ async fn get_output_with_invocation_id() {
 
     let req = hyper::Request::builder()
         .uri(format!(
-            "http://localhost/restate/invocation/{}/output",
-            invocation_id
+            "http://localhost/restate/invocation/{invocation_id}/output"
         ))
         .method(Method::GET)
         .header("content-type", "application/json")

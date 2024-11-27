@@ -732,7 +732,7 @@ mod tests {
         // left intentionally to debug tests
         println!("Scenario 1");
         for entry in &digest.entries {
-            println!("{}", entry);
+            println!("{entry}");
         }
 
         assert_that!(
@@ -779,7 +779,7 @@ mod tests {
         // left intentionally to debug tests
         println!("Scenario 2");
         for entry in &digest.entries {
-            println!("{}", entry);
+            println!("{entry}");
         }
 
         assert_that!(

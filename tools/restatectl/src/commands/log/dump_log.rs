@@ -136,8 +136,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
             let lsn = record.sequence_number();
             let envelope = record.try_decode::<Envelope>().unwrap().with_context(|| {
                 format!(
-                    "Error decoding record at lsn={} from log_id={}",
-                    lsn, log_id
+                    "Error decoding record at lsn={lsn} from log_id={log_id}"
                 )
             })?;
 

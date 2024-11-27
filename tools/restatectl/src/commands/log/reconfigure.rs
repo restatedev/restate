@@ -142,7 +142,7 @@ async fn replicated_loglet_params(
     let log_id = LogId::from(opts.log_id);
     let chain = logs
         .chain(&log_id)
-        .with_context(|| format!("Unknown log id '{}'", log_id))?;
+        .with_context(|| format!("Unknown log id '{log_id}'"))?;
 
     let tail_index = opts
         .segment_index

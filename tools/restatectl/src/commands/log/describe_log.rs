@@ -253,7 +253,7 @@ fn render_effective_nodeset(
     nodes_configuration: &NodesConfiguration,
 ) -> Cell {
     let effective_node_set = params.nodeset.to_effective(nodes_configuration);
-    let mut cell = Cell::new(format!("{:#}", effective_node_set));
+    let mut cell = Cell::new(format!("{effective_node_set:#}"));
     if is_tail && effective_node_set.len() < params.replication.num_copies() as usize {
         cell = cell.fg(Color::Red);
     }

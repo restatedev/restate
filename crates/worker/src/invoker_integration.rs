@@ -251,7 +251,7 @@ where
                     .map_err(|e| {
                         InvocationError::new(
                             codes::BAD_REQUEST,
-                            format!("Invalid awakeable identifier: {}", e),
+                            format!("Invalid awakeable identifier: {e}"),
                         )
                     })?
                     .into_inner();
@@ -275,8 +275,7 @@ where
                         return Err(InvocationError::new(
                             codes::BAD_REQUEST,
                             format!(
-                                "The given invocation id '{}' to cancel is invalid: {}",
-                                id, e
+                                "The given invocation id '{id}' to cancel is invalid: {e}"
                             ),
                         ));
                     }
@@ -295,8 +294,7 @@ where
                         return Err(InvocationError::new(
                             codes::BAD_REQUEST,
                             format!(
-                                "The given invocation id '{}' to attach is invalid: {}",
-                                id, e
+                                "The given invocation id '{id}' to attach is invalid: {e}"
                             ),
                         ));
                     }
@@ -317,8 +315,7 @@ where
                         return Err(InvocationError::new(
                             codes::BAD_REQUEST,
                             format!(
-                                "The given invocation id '{}' to get output is invalid: {}",
-                                id, e
+                                "The given invocation id '{id}' to get output is invalid: {e}"
                             ),
                         ));
                     }
@@ -345,8 +342,7 @@ fn check_workflow_type(
         return Err(InvocationError::new(
             codes::BAD_REQUEST,
             format!(
-                "The service type {} does not support the entry type {}, only Workflow supports it",
-                service_type, entry_type
+                "The service type {service_type} does not support the entry type {entry_type}, only Workflow supports it"
             ),
         ));
     }
@@ -362,8 +358,7 @@ fn can_read_state(
         return Err(InvocationError::new(
             codes::BAD_REQUEST,
             format!(
-                "The service/handler type {} does not have state and, therefore, does not support the entry type {}",
-                invocation_target_type, entry_type
+                "The service/handler type {invocation_target_type} does not have state and, therefore, does not support the entry type {entry_type}"
             ),
         ));
     }
@@ -380,8 +375,7 @@ fn can_write_state(
         return Err(InvocationError::new(
             codes::BAD_REQUEST,
             format!(
-                "The service/handler type {} has no exclusive state access and, therefore, does not support the entry type {}",
-                invocation_target_type, entry_type
+                "The service/handler type {invocation_target_type} has no exclusive state access and, therefore, does not support the entry type {entry_type}"
             ),
         ));
     }

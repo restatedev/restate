@@ -81,8 +81,7 @@ impl Error {
 
     fn version_mismatch(expected: Version, actual: Option<Version>) -> Self {
         Error::FailedPrecondition(format!(
-            "Expected version '{}' but found version '{:?}'",
-            expected, actual
+            "Expected version '{expected}' but found version '{actual:?}'"
         ))
     }
 }
