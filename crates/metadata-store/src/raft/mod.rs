@@ -12,7 +12,7 @@ mod storage;
 mod store;
 
 use crate::network::{
-    ConnectionManager, Networking, RaftMetadataStoreHandler, RaftMetadataStoreSvcServer,
+    ConnectionManager, MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, Networking,
 };
 use crate::raft::store::BuildError;
 use crate::{network, MetadataStoreRunner};
@@ -41,7 +41,7 @@ pub async fn create_store(
     .await?;
 
     server_builder.register_grpc_service(
-        RaftMetadataStoreSvcServer::new(RaftMetadataStoreHandler::new(connection_manager)),
+        MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(connection_manager)),
         network::FILE_DESCRIPTOR_SET,
     );
 
