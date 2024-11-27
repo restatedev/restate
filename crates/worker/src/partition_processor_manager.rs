@@ -214,8 +214,7 @@ impl PartitionProcessorManager {
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
-        let shutdown = cancellation_watcher();
-        tokio::pin!(shutdown);
+        let mut shutdown = std::pin::pin!(cancellation_watcher());
 
         let (persisted_lsns_tx, persisted_lsns_rx) = watch::channel(BTreeMap::default());
         self.persisted_lsns_rx = Some(persisted_lsns_rx);
@@ -275,12 +274,41 @@ impl PartitionProcessorManager {
                     }
                 }
                 _ = &mut shutdown => {
-                    self.health_status.update(WorkerStatus::Unknown);
-                    for task in self.snapshot_export_tasks.iter() {
-                        task.cancel();
-                    }
-                    return Ok(());
+                    break
                 }
+            }
+        }
+
+        self.shutdown().await;
+        Ok(())
+    }
+
+    async fn shutdown(&mut self) {
+        debug!("Shutting down partition processor manager.");
+
+        self.health_status.update(WorkerStatus::Unknown);
+
+        for task in self.snapshot_export_tasks.iter() {
+            task.cancel();
+        }
+
+        // stop all running processors
+        for processor_state in self.processor_states.values_mut() {
+            processor_state.stop();
+        }
+
+        // await that all running processors terminate
+        self.await_processors_termination().await;
+    }
+
+    async fn await_processors_termination(&mut self) {
+        while let Some(event) = self.asynchronous_operations.join_next().await {
+            let event = event.expect("asynchronous operations must not panic");
+            self.on_asynchronous_event(event);
+
+            if self.processor_states.is_empty() {
+                // all processors have terminated :-)
+                break;
             }
         }
     }
@@ -626,16 +654,9 @@ impl PartitionProcessorManager {
                     let starting_task = self
                         .start_partition_processor_task(partition_id, partition_key_range.clone());
 
-                    // We spawn the partition processors start tasks on the blocking thread pool due to a macOS issue
-                    // where doing otherwise appears to starve the Tokio event loop, causing very slow startup.
-                    let handle = TaskCenter::spawn_blocking_unmanaged(
-                        "starting-partition-processor",
-                        starting_task.run(),
-                    );
-
                     self.asynchronous_operations.spawn(
                         async move {
-                            let result = handle.await.expect("task must not panic");
+                            let result = starting_task.run();
                             AsynchronousEvent {
                                 partition_id,
                                 inner: EventKind::Started(result),

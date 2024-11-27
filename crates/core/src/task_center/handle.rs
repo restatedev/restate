@@ -150,19 +150,6 @@ impl Handle {
         self.inner.metadata()
     }
 
-    /// Spawn a potentially thread-blocking future on a dedicated thread pool
-    pub fn spawn_blocking_unmanaged<F, O>(
-        &self,
-        name: &'static str,
-        future: F,
-    ) -> tokio::task::JoinHandle<O>
-    where
-        F: Future<Output = O> + Send + 'static,
-        O: Send + 'static,
-    {
-        self.inner.spawn_blocking_unmanaged(name, future)
-    }
-
     /// Take control over the running task from task-center. This returns None if the task was not
     /// found, completed, or has been cancelled.
     pub fn take_task(&self, task_id: TaskId) -> Option<TaskHandle<()>> {

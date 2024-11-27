@@ -190,19 +190,6 @@ impl TaskCenter {
         })
     }
 
-    /// Spawn a potentially thread-blocking future on a dedicated thread pool
-    #[track_caller]
-    pub fn spawn_blocking_unmanaged<F, O>(
-        name: &'static str,
-        future: F,
-    ) -> tokio::task::JoinHandle<O>
-    where
-        F: Future<Output = O> + Send + 'static,
-        O: Send + 'static,
-    {
-        Self::with_current(|tc| tc.spawn_blocking_unmanaged(name, future))
-    }
-
     /// Take control over the running task from task-center. This returns None if the task was not
     /// found, completed, or has been cancelled.
     #[track_caller]
@@ -529,22 +516,6 @@ impl TaskCenterInner {
         drop(handle_mut);
 
         Ok(id)
-    }
-
-    // Spawn a future in its own thread
-    pub fn spawn_blocking_unmanaged<F, O>(
-        self: &Arc<Self>,
-        name: &'static str,
-        future: F,
-    ) -> tokio::task::JoinHandle<O>
-    where
-        F: Future<Output = O> + Send + 'static,
-        O: Send + 'static,
-    {
-        let rt_handle = self.default_runtime_handle.clone();
-        let future = future.in_tc_as_task(&Handle::new(self), TaskKind::InPlace, name);
-        self.default_runtime_handle
-            .spawn_blocking(move || rt_handle.block_on(future))
     }
 
     /// Starts the `root_future` on a new runtime. The runtime is stopped once the root future
