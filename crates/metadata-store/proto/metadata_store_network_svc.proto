@@ -11,14 +11,14 @@ syntax = "proto3";
 
 import "google/protobuf/empty.proto";
 
-package dev.restate.raft_metadata_store_svc;
+package dev.restate.metadata_store_network_svc;
 
-// Grpc service definition for the RaftMetadataStore implementation.
-service RaftMetadataStoreSvc {
-  rpc Raft(stream RaftMessage) returns (stream RaftMessage);
+// Grpc service definition for the metadata store network implementation.
+service MetadataStoreNetworkSvc {
+  rpc ConnectTo(stream NetworkMessage) returns (stream NetworkMessage);
 }
 
-message RaftMessage {
-  bytes message = 1;
+message NetworkMessage {
+  bytes payload = 1;
 }
 
