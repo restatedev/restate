@@ -64,9 +64,7 @@ impl SpawnPartitionProcessorTask {
             partition_id=%self.partition_id,
         )
     )]
-    pub async fn run(
-        self,
-    ) -> anyhow::Result<(StartedProcessor, RuntimeTaskHandle<anyhow::Result<()>>)> {
+    pub fn run(self) -> anyhow::Result<(StartedProcessor, RuntimeTaskHandle<anyhow::Result<()>>)> {
         let Self {
             task_name,
             partition_id,
@@ -119,16 +117,15 @@ impl SpawnPartitionProcessorTask {
             {
                 let options = options.clone();
                 let key_range = key_range.clone();
-                let partition_store = partition_store_manager
-                    .open_partition_store(
-                        partition_id,
-                        key_range,
-                        OpenMode::CreateIfMissing,
-                        &options.storage.rocksdb,
-                    )
-                    .await?;
-
                 move || async move {
+                    let partition_store = partition_store_manager
+                        .open_partition_store(
+                            partition_id,
+                            key_range,
+                            OpenMode::CreateIfMissing,
+                            &options.storage.rocksdb,
+                        )
+                        .await?;
                     TaskCenter::spawn_child(
                         TaskKind::SystemService,
                         invoker_name,
