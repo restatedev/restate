@@ -13,6 +13,7 @@ mod grpc_svc;
 pub mod local;
 pub mod raft;
 mod util;
+mod network;
 
 use bytestring::ByteString;
 use restate_core::metadata_store::VersionedValue;

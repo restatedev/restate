@@ -1,4 +1,4 @@
-// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2024 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::raft::connection_manager::ConnectionManager;
-use crate::raft::grpc_svc::RaftMessage;
-use crate::raft::handler::RAFT_PEER_METADATA_KEY;
 use bytes::{BufMut, BytesMut};
 use futures::FutureExt;
 use protobuf::Message as ProtobufMessage;
@@ -26,6 +23,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
 use tonic::IntoStreamingRequest;
 use tracing::{debug, trace};
+use crate::network::connection_manager::ConnectionManager;
+use crate::network::grpc_svc::RaftMessage;
+use crate::network::handler::RAFT_PEER_METADATA_KEY;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrySendError<T> {
@@ -131,7 +131,7 @@ impl Networking {
                 );
 
                 async move {
-                    let mut raft_client = crate::raft::grpc_svc::raft_metadata_store_svc_client::RaftMetadataStoreSvcClient::new(channel);
+                    let mut raft_client = crate::network::grpc_svc::raft_metadata_store_svc_client::RaftMetadataStoreSvcClient::new(channel);
                     let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
 
                     let mut request = ReceiverStream::new(outgoing_rx).into_streaming_request();
