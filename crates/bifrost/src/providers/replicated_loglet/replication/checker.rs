@@ -280,7 +280,7 @@ impl<'a, Attribute: Display> Display for NodeSetChecker<'a, Attribute> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[")?;
         for (node, attr) in self.node_attribute.iter() {
-            write!(f, "{} => {}, ", node, attr)?;
+            write!(f, "{node} => {attr}, ")?;
         }
         write!(f, "]")
     }

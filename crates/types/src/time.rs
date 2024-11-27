@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn millis_should_not_overflow() {
         let t: SystemTime = MillisSinceEpoch::new(u64::MAX).into();
-        println!("{:?}", t);
+        println!("{t:?}");
     }
 
     #[test]
@@ -204,7 +204,7 @@ mod tests {
         // it's ~580 years from unix epoch until u64 wouldn't become sufficient to store nanos.
         let t = NanosSinceEpoch::now().as_u64();
         assert!(t < u64::MAX);
-        println!("{:?}", t);
+        println!("{t:?}");
     }
 
     #[test]

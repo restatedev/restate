@@ -470,7 +470,7 @@ fn find_cf_handle<'a>(
     // At the moment, everything is in one cf
     db.inner()
         .cf_handle(data_cf_name)
-        .unwrap_or_else(|| panic!("Access a column family that must exist: {}", data_cf_name))
+        .unwrap_or_else(|| panic!("Access a column family that must exist: {data_cf_name}"))
 }
 
 impl Storage for PartitionStore {
@@ -617,9 +617,7 @@ fn assert_partition_key(
 ) {
     let partition_key = partition_key.partition_key();
     assert!(partition_key_range.contains(&partition_key),
-            "Partition key '{}' is not part of PartitionStore's partition '{:?}'. This indicates a bug.",
-            partition_key,
-            partition_key_range);
+            "Partition key '{partition_key}' is not part of PartitionStore's partition '{partition_key_range:?}'. This indicates a bug.");
 }
 
 impl<'a> Transaction for PartitionStoreTransaction<'a> {

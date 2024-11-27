@@ -304,7 +304,7 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
             let sanitized_cf_name = formatting::sanitize_label_value(cf);
             let mut cf_labels = Vec::with_capacity(labels.len() + 1);
             labels.clone_into(&mut cf_labels);
-            cf_labels.push(format!("cf=\"{}\"", sanitized_cf_name));
+            cf_labels.push(format!("cf=\"{sanitized_cf_name}\""));
             for (property, unit) in ROCKSDB_CF_PROPERTIES {
                 format_rocksdb_property_for_prometheus(
                     &mut out,

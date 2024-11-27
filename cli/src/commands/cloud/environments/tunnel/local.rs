@@ -83,7 +83,7 @@ pub(crate) async fn run_local(
     // use a closure as impl trait associated types are not yet allowed
     let proxy = |inner, request| async move { proxy(inner, request).await };
 
-    let url = Url::parse(&format!("http://localhost:{}", port)).unwrap();
+    let url = Url::parse(&format!("http://localhost:{port}")).unwrap();
 
     let handler = Handler {
         status: HandlerStatus::AwaitingStart,

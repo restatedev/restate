@@ -34,7 +34,7 @@ impl Display for Spread {
             if i != 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", id)?;
+            write!(f, "{id}")?;
         }
         write!(f, "]")
     }

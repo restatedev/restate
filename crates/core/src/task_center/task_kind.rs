@@ -163,7 +163,7 @@ impl TaskKind {
             "inherit" => AsyncRuntime::Inherit,
             "default" => AsyncRuntime::Default,
             "ingress" => AsyncRuntime::Ingress,
-            _ => panic!("Invalid runtime for task kind: {}", self),
+            _ => panic!("Invalid runtime for task kind: {self}"),
         }
     }
 }

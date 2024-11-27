@@ -547,7 +547,7 @@ impl TaskCenterInner {
         }
 
         // todo: configure the runtime according to a new runtime kind perhaps?
-        let thread_builder = std::thread::Builder::new().name(format!("rt:{}", runtime_name));
+        let thread_builder = std::thread::Builder::new().name(format!("rt:{runtime_name}"));
         let mut builder = tokio::runtime::Builder::new_current_thread();
 
         #[cfg(any(test, feature = "test-util"))]

@@ -267,7 +267,7 @@ pub fn create_mock_nodes_config(node_id: u32, generation: u32) -> NodesConfigura
     let node_id = GenerationalNodeId::new(node_id, generation);
     let roles = Role::Admin | Role::Worker;
     let my_node = NodeConfig::new(
-        format!("MyNode-{}", node_id),
+        format!("MyNode-{node_id}"),
         node_id,
         address,
         roles,

@@ -163,7 +163,7 @@ where
             let thread = std::thread::current();
             if self.display_thread_name {
                 if let Some(name) = thread.name() {
-                    write!(writer, "{}", name)?;
+                    write!(writer, "{name}")?;
                     if self.display_thread_id {
                         writer.write_char(' ')?;
                     }
@@ -200,7 +200,7 @@ where
                 .get::<FormattedFields<N>>()
                 .expect("Unable to find FormattedFields in extensions; this is a bug");
             if !fields.is_empty() {
-                write!(writer, "{}", fields)?;
+                write!(writer, "{fields}")?;
             }
             writer.write_char('\n')?;
         }
@@ -275,7 +275,7 @@ impl<'a> PrettyVisitor<'a> {
     }
 
     fn write_padded(&mut self, value: &impl fmt::Debug) {
-        self.result = write!(self.writer, "\n  {:?}", value);
+        self.result = write!(self.writer, "\n  {value:?}");
     }
 
     fn bold(&self) -> Style {
@@ -294,7 +294,7 @@ impl<'a> field::Visit for PrettyVisitor<'a> {
         }
 
         if field.name() == "message" {
-            self.record_debug(field, &format_args!("{}", value))
+            self.record_debug(field, &format_args!("{value}"))
         } else {
             self.record_debug(field, &value)
         }
@@ -307,7 +307,7 @@ impl<'a> field::Visit for PrettyVisitor<'a> {
                 &format_args!("{}, {}.sources: {}", value, field, ErrorSourceList(source)),
             )
         } else {
-            self.record_debug(field, &format_args!("{}", value))
+            self.record_debug(field, &format_args!("{value}"))
         }
     }
 
@@ -328,7 +328,7 @@ impl<'a> field::Visit for PrettyVisitor<'a> {
             name if name.starts_with("r#") => {
                 self.write_padded(&format_args!("  {}: {:?}", &name[2..], value))
             }
-            name => self.write_padded(&format_args!("  {}: {:?}", name, value)),
+            name => self.write_padded(&format_args!("  {name}: {value:?}")),
         };
     }
 }
@@ -353,7 +353,7 @@ impl<'a> Display for ErrorSourceList<'a> {
         let mut list = f.debug_list();
         let mut curr = Some(self.0);
         while let Some(curr_err) = curr {
-            list.entry(&format_args!("{}", curr_err));
+            list.entry(&format_args!("{curr_err}"));
             curr = curr_err.source();
         }
         list.finish()
@@ -380,7 +380,7 @@ impl<'a> RestateErrorCodeWriter<'a> {
 impl<'a> field::Visit for RestateErrorCodeWriter<'a> {
     fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
         if field.name() == "restate.error.code" {
-            self.result = writeln!(self.writer, "{:#?}", value)
+            self.result = writeln!(self.writer, "{value:#?}")
         }
     }
 }

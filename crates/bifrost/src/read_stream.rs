@@ -499,7 +499,7 @@ mod tests {
                 assert_that!(reader.read_pointer(), ge(record.sequence_number()));
                 assert_that!(
                     record.decode_unchecked::<String>(),
-                    eq(format!("record{}", expected_lsn))
+                    eq(format!("record{expected_lsn}"))
                 );
             }
             Ok(())
@@ -513,7 +513,7 @@ mod tests {
 
         // append 5 records to the log
         for i in 1..=5 {
-            let lsn = appender.append(format!("record{}", i)).await?;
+            let lsn = appender.append(format!("record{i}")).await?;
             info!(?lsn, "appended record");
             assert_eq!(Lsn::from(i), lsn);
         }
@@ -526,7 +526,7 @@ mod tests {
 
         // write 5 more records.
         for i in 6..=10 {
-            appender.append(format!("record{}", i)).await?;
+            appender.append(format!("record{i}")).await?;
         }
 
         // reader has finished
@@ -599,7 +599,7 @@ mod tests {
 
         // append lsns [11..20]
         for i in 11..=20 {
-            let lsn = appender.append(format!("record{}", i)).await?;
+            let lsn = appender.append(format!("record{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);
         }
 
@@ -618,7 +618,7 @@ mod tests {
             assert!(record.is_data_record());
             assert_that!(
                 record.decode_unchecked::<String>(),
-                eq(format!("record{}", lsn))
+                eq(format!("record{lsn}"))
             );
         }
         // we are at tail. polling should return pending.
@@ -669,7 +669,7 @@ mod tests {
 
         // append 10 records [1..10]
         for i in 1..=10 {
-            let lsn = appender.append(format!("segment-1-{}", i)).await?;
+            let lsn = appender.append(format!("segment-1-{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);
         }
 
@@ -680,7 +680,7 @@ mod tests {
             assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
             assert_that!(
                 record.decode_unchecked::<String>(),
-                eq(format!("segment-1-{}", i))
+                eq(format!("segment-1-{i}"))
             );
         }
 
@@ -704,7 +704,7 @@ mod tests {
             assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
             assert_that!(
                 record.decode_unchecked::<String>(),
-                eq(format!("segment-1-{}", i))
+                eq(format!("segment-1-{i}"))
             );
         }
 
@@ -753,8 +753,8 @@ mod tests {
 
         // append 5 more records into the new loglet.
         for i in 11..=15 {
-            let lsn = appender.append(format!("segment-2-{}", i)).await?;
-            println!("appended record={}", lsn);
+            let lsn = appender.append(format!("segment-2-{i}")).await?;
+            println!("appended record={lsn}");
             assert_eq!(Lsn::from(i), lsn);
         }
 
@@ -765,7 +765,7 @@ mod tests {
             assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
             assert_that!(
                 record.decode_unchecked::<String>(),
-                eq(format!("segment-2-{}", i))
+                eq(format!("segment-2-{i}"))
             );
         }
         // We are at tail. validate.
@@ -819,7 +819,7 @@ mod tests {
 
         // append 10 records [1..10]
         for i in 1..=10 {
-            let lsn = appender.append(format!("segment-1-{}", i)).await?;
+            let lsn = appender.append(format!("segment-1-{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);
         }
 
@@ -865,7 +865,7 @@ mod tests {
 
         // append 5 more records into the new loglet.
         for i in 11..=15 {
-            let lsn = appender.append(format!("segment-2-{}", i)).await?;
+            let lsn = appender.append(format!("segment-2-{i}")).await?;
             info!(?lsn, "appended record");
             assert_eq!(Lsn::from(i), lsn);
         }
@@ -880,7 +880,7 @@ mod tests {
             assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
             assert_that!(
                 record.decode_unchecked::<String>(),
-                eq(format!("segment-1-{}", i))
+                eq(format!("segment-1-{i}"))
             );
         }
 
@@ -891,7 +891,7 @@ mod tests {
             assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
             assert_that!(
                 record.decode_unchecked::<String>(),
-                eq(format!("segment-2-{}", i))
+                eq(format!("segment-2-{i}"))
             );
         }
 
@@ -957,7 +957,7 @@ mod tests {
 
         // append a few records
         for i in 10..=13 {
-            let lsn = appender.append(format!("record-{}", i)).await?;
+            let lsn = appender.append(format!("record-{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);
         }
 
@@ -973,7 +973,7 @@ mod tests {
             assert_that!(record.sequence_number(), eq(Lsn::new(i)));
             assert_that!(
                 record.decode_unchecked::<String>(),
-                eq(format!("record-{}", i))
+                eq(format!("record-{i}"))
             );
         }
 

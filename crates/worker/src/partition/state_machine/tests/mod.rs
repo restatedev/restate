@@ -115,7 +115,7 @@ impl TestEnv {
                         _ => panic!("test-log: RUST_LOG_SPAN_EVENTS must contain filters separated by `,`.\n\t\
                   For example: `active` or `new,close`\n\t\
                   Supported filters: new, enter, exit, close, active, full\n\t\
-                  Got: {}", value),
+                  Got: {value}"),
                     }).fold(FmtSpan::NONE, |acc, filter| filter | acc)
                 }
                 None => FmtSpan::NONE,

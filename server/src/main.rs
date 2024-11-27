@@ -225,7 +225,7 @@ fn main() {
                 tokio::select! {
                     signal_name = signal::shutdown() => {
                         shutdown = true;
-                        let signal_reason = format!("received signal {}", signal_name);
+                        let signal_reason = format!("received signal {signal_name}");
 
 
                         let shutdown_with_timeout = tokio::time::timeout(

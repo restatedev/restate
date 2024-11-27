@@ -45,15 +45,15 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
 
     let q = opts.query.trim();
     let filter = if let Ok(id) = q.parse::<InvocationId>() {
-        format!("id = '{}'", id)
+        format!("id = '{id}'")
     } else {
         match q.find('/').unwrap_or_default() {
-            0 => format!("target LIKE '{}/%'", q),
+            0 => format!("target LIKE '{q}/%'"),
             // If there's one slash, let's add the wildcard depending on the service type,
             // so we discriminate correctly with serviceName/handlerName with workflowName/workflowKey
-            1 => format!("(target = '{}' AND target_service_ty = 'service') OR (target LIKE '{}/%' AND target_service_ty != 'service'))", q, q),
+            1 => format!("(target = '{q}' AND target_service_ty = 'service') OR (target LIKE '{q}/%' AND target_service_ty != 'service'))"),
             // Can only be exact match here
-            _ => format!("target LIKE '{}'", q),
+            _ => format!("target LIKE '{q}'"),
         }
     };
 

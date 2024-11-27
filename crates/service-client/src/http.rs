@@ -127,7 +127,7 @@ impl HttpClient {
                     path.path().strip_prefix('/').unwrap_or(path.path()),
                 );
                 let path = if let Some(query) = existing_path.query() {
-                    format!("{}?{}", path, query)
+                    format!("{path}?{query}")
                 } else {
                     path
                 };

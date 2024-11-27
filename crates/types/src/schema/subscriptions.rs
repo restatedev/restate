@@ -31,7 +31,7 @@ impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Source::Kafka { cluster, topic, .. } => {
-                write!(f, "kafka://{}/{}", cluster, topic)
+                write!(f, "kafka://{cluster}/{topic}")
             }
         }
     }
@@ -90,7 +90,7 @@ impl fmt::Display for Sink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Sink::DeprecatedService { name, handler, .. } => {
-                write!(f, "service://{}/{}", name, handler)
+                write!(f, "service://{name}/{handler}")
             }
             Sink::Invocation {
                 event_invocation_target_template:
@@ -104,7 +104,7 @@ impl fmt::Display for Sink {
                 event_invocation_target_template:
                     EventInvocationTargetTemplate::Workflow { name, handler, .. },
             } => {
-                write!(f, "service://{}/{}", name, handler)
+                write!(f, "service://{name}/{handler}")
             }
         }
     }

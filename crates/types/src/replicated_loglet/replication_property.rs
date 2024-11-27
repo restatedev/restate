@@ -89,15 +89,13 @@ impl ReplicationProperty {
         for (s, r) in &self.0 {
             if *s < scope && *r < replication_factor.into() {
                 return Err(ReplicationPropertyError(format!(
-                    "Cannot set {{\"{}\": {}}} as it conflicts with {{\"{}\": {}}}",
-                    scope, replication_factor, s, r
+                    "Cannot set {{\"{scope}\": {replication_factor}}} as it conflicts with {{\"{s}\": {r}}}"
                 )));
             }
 
             if *s > scope && *r > replication_factor.into() {
                 return Err(ReplicationPropertyError(format!(
-                    "Cannot set {{\"{}\": {}}} as it conflicts with {{\"{}\": {}}}",
-                    scope, replication_factor, s, r
+                    "Cannot set {{\"{scope}\": {replication_factor}}} as it conflicts with {{\"{s}\": {r}}}"
                 )));
             }
         }
@@ -138,14 +136,14 @@ impl Display for ReplicationProperty {
             write!(
                 f,
                 "{}: {}",
-                format!("{:?}", scope).to_lowercase(),
+                format!("{scope:?}").to_lowercase(),
                 replication_factor
             )?;
             for (scope, replication_factor) in iter {
                 write!(
                     f,
                     ", {}: {}",
-                    format!("{:?}", scope).to_lowercase(),
+                    format!("{scope:?}").to_lowercase(),
                     replication_factor
                 )?;
             }

@@ -1450,9 +1450,9 @@ pub mod tests {
 
     pub fn node(id: u32, roles: EnumSet<Role>, storage_state: StorageState) -> NodeConfig {
         NodeConfig::new(
-            format!("node-{}", id),
+            format!("node-{id}"),
             PlainNodeId::from(id).with_generation(1),
-            format!("https://node-{}", id).parse().unwrap(),
+            format!("https://node-{id}").parse().unwrap(),
             roles,
             LogServerConfig { storage_state },
         )

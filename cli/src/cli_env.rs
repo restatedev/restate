@@ -109,7 +109,7 @@ impl Display for EnvironmentSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Argument => write!(f, "argument"),
-            Self::Environment => write!(f, "${}", ENVIRONMENT_ENV),
+            Self::Environment => write!(f, "${ENVIRONMENT_ENV}"),
             Self::File => write!(f, "file"),
             Self::None => write!(f, "default"),
         }
@@ -196,11 +196,11 @@ impl CliEnv {
             figment
                 .join((
                     "ingress_base_url",
-                    Url::parse(&format!("{}://{}:8080/", restate_host_scheme, restate_host))?,
+                    Url::parse(&format!("{restate_host_scheme}://{restate_host}:8080/"))?,
                 ))
                 .join((
                     "admin_base_url",
-                    Url::parse(&format!("{}://{}:9070/", restate_host_scheme, restate_host))?,
+                    Url::parse(&format!("{restate_host_scheme}://{restate_host}:9070/"))?,
                 ))
         } else {
             figment

@@ -72,7 +72,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     let end: u64 = start + 3;
     for i in start..end {
         // Append i
-        let offset = loglet.append(format!("record{}", i).into()).await?;
+        let offset = loglet.append(format!("record{i}").into()).await?;
         assert_eq!(Lsn::new(i), offset);
         assert_eq!(None, loglet.get_trim_point().await?);
         {
@@ -259,7 +259,7 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
             assert!(reader.read_pointer() > expected_offset);
             assert_that!(
                 record.decode_unchecked::<String>(),
-                eq(format!("record{}", expected_offset))
+                eq(format!("record{expected_offset}"))
             );
         }
         Ok(())
@@ -271,7 +271,7 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
 
     // append 5 records to the log (offsets [1-5])
     for i in 1..=5 {
-        let offset = loglet.append(format!("record{}", i).into()).await?;
+        let offset = loglet.append(format!("record{i}").into()).await?;
         info!(?offset, "appended record");
         assert_eq!(Lsn::new(i), offset);
     }
@@ -284,7 +284,7 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
 
     // write 5 more records.
     for i in 6..=10 {
-        loglet.append(format!("record{}", i).into()).await?;
+        loglet.append(format!("record{i}").into()).await?;
     }
 
     // reader has finished
@@ -319,7 +319,7 @@ pub async fn single_loglet_readstream_with_trims(
 
     // append 10 records. Offsets [1..10]
     for i in 1..=10 {
-        loglet.append(format!("record{}", i).into()).await?;
+        loglet.append(format!("record{i}").into()).await?;
     }
 
     // Lsn(5) is trimmed, 5 records left [6..10]
@@ -351,7 +351,7 @@ pub async fn single_loglet_readstream_with_trims(
         assert!(record.is_data_record());
         assert_that!(
             record.decode_unchecked::<String>(),
-            eq(format!("record{}", offset))
+            eq(format!("record{offset}"))
         );
     }
     assert!(!read_stream.is_terminated());
@@ -380,7 +380,7 @@ pub async fn single_loglet_readstream_with_trims(
 
     // Add 10 more records [11..20]
     for i in 11..=20 {
-        loglet.append(format!("record{}", i).into()).await?;
+        loglet.append(format!("record{i}").into()).await?;
     }
 
     // When reading record 8, it's acceptable to observe the record, or the trim gap. Both are
@@ -410,7 +410,7 @@ pub async fn single_loglet_readstream_with_trims(
         assert!(record.is_data_record());
         assert_that!(
             record.decode_unchecked::<String>(),
-            eq(format!("record{}", i))
+            eq(format!("record{i}"))
         );
     }
     // we are at tail. polling should return pending.
@@ -440,14 +440,14 @@ pub async fn append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()
 
     // append 5 records. Offsets [1..5]
     for i in 1..=5 {
-        loglet.append(format!("record{}", i).into()).await?;
+        loglet.append(format!("record{i}").into()).await?;
     }
 
     loglet.seal().await?;
 
     // attempt to append 5 records. Offsets [6..10]. Expected to fail since seal happened on the same client.
     for i in 6..=10 {
-        let res = loglet.append(format!("record{}", i).into()).await;
+        let res = loglet.append(format!("record{i}").into()).await;
         assert_that!(res, err(pat!(AppendError::Sealed)));
     }
 
@@ -494,11 +494,11 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
                 let mut warmup = true;
                 loop {
                     let res = loglet
-                        .append(format!("appender-{}-record{}", appender_id, i).into())
+                        .append(format!("appender-{appender_id}-record{i}").into())
                         .await;
                     i += 1;
                     if i > WARMUP_APPENDS && warmup {
-                        println!("appender({}) - warmup complete....", appender_id);
+                        println!("appender({appender_id}) - warmup complete....");
                         append_barrier.wait().await;
                         warmup = false;
                     }
@@ -507,7 +507,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
                             committed.push(offset);
                         }
                         Err(AppendError::Sealed) => {
-                            println!("append failed({}) => SEALED", i);
+                            println!("append failed({i}) => SEALED");
                             break;
                         }
                         Err(AppendError::Shutdown(_)) => {
@@ -541,8 +541,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
 
     // Wait for some warmup appends
     println!(
-        "Awaiting all appenders to reach at least {} appends",
-        WARMUP_APPENDS
+        "Awaiting all appenders to reach at least {WARMUP_APPENDS} appends"
     );
     append_barrier.wait().await;
     // Go places and do other things.
@@ -561,8 +560,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
     assert!(tail.is_sealed());
     let first_observed_seal = first_observed_seal.await?;
     println!(
-        "Sealed tail={:?}, first observed seal at={}",
-        tail, first_observed_seal
+        "Sealed tail={tail:?}, first observed seal at={first_observed_seal}"
     );
 
     let mut all_committed = BTreeSet::new();
@@ -575,8 +573,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
         // tail must be beyond seal point
         assert_that!(tail.offset(), gt(tail_record));
         println!(
-            "Committed len={}, last appended={}",
-            committed_len, tail_record
+            "Committed len={committed_len}, last appended={tail_record}"
         );
         // ensure that all committed records are unique
         assert!(all_committed.insert(tail_record));

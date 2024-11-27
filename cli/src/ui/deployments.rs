@@ -40,7 +40,7 @@ pub fn render_deployment_url(deployment: &Deployment) -> String {
 pub fn render_deployment_type(deployment: &Deployment) -> String {
     match deployment {
         Deployment::Http { http_version, .. } => {
-            format!("{:?}", http_version)
+            format!("{http_version:?}")
         }
         Deployment::Lambda { .. } => "AWS Lambda".to_string(),
     }
@@ -80,7 +80,7 @@ pub fn render_deployment_status(status: DeploymentStatus) -> Cell {
         DeploymentStatus::Draining => Color::Yellow,
         DeploymentStatus::Drained => Color::Grey,
     };
-    Cell::new(format!("{:?}", status)).fg(color)
+    Cell::new(format!("{status:?}")).fg(color)
 }
 
 pub fn render_active_invocations(active_inv: i64) -> Cell {

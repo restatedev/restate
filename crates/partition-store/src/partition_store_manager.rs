@@ -232,7 +232,7 @@ impl PartitionStoreManager {
 }
 
 fn cf_for_partition(partition_id: PartitionId) -> CfName {
-    CfName::from(format!("{}{}", PARTITION_CF_PREFIX, partition_id))
+    CfName::from(format!("{PARTITION_CF_PREFIX}{partition_id}"))
 }
 
 #[inline]

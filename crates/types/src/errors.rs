@@ -210,7 +210,7 @@ impl InvocationError {
     pub fn service_not_found(service: impl fmt::Display) -> Self {
         Self {
             code: codes::NOT_FOUND,
-            message: Cow::Owned(format!("Service '{}' not found. Check whether the deployment containing the service is registered.", service)),
+            message: Cow::Owned(format!("Service '{service}' not found. Check whether the deployment containing the service is registered.")),
             description: None,
         }
     }
@@ -221,7 +221,7 @@ impl InvocationError {
     ) -> Self {
         Self {
             code: codes::NOT_FOUND,
-            message: Cow::Owned(format!("Service handler '{}/{}' not found. Check whether you've registered the correct version of your service.", service, handler)),
+            message: Cow::Owned(format!("Service handler '{service}/{handler}' not found. Check whether you've registered the correct version of your service.")),
             description: None,
         }
     }

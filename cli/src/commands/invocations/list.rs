@@ -84,21 +84,21 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     if !opts.service.is_empty() {
         active_filters.push(format!(
             "inv.target_service_name IN ({})",
-            opts.service.iter().map(|x| format!("'{}'", x)).format(",")
+            opts.service.iter().map(|x| format!("'{x}'")).format(",")
         ));
     }
 
     if !opts.handler.is_empty() {
         active_filters.push(format!(
             "inv.target_handler_name IN ({})",
-            opts.handler.iter().map(|x| format!("'{}'", x)).format(",")
+            opts.handler.iter().map(|x| format!("'{x}'")).format(",")
         ));
     }
 
     if !opts.key.is_empty() {
         active_filters.push(format!(
             "inv.target_service_key IN ({})",
-            opts.key.iter().map(|x| format!("'{}'", x)).format(",")
+            opts.key.iter().map(|x| format!("'{x}'")).format(",")
         ));
     }
 
@@ -115,7 +115,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     if !opts.deployment.is_empty() {
         active_filters.push(format!(
             "(inv.pinned_deployment_id IN ({0}) OR inv.last_attempt_deployment_id IN ({0}))",
-            opts.deployment.iter().map(|x| format!("'{}'", x)).join(",")
+            opts.deployment.iter().map(|x| format!("'{x}'")).join(",")
         ));
     }
 
@@ -129,7 +129,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         // Apply status filters
         post_filters.push(format!(
             "status IN ({})",
-            statuses.iter().map(|x| format!("'{}'", x)).format(",")
+            statuses.iter().map(|x| format!("'{x}'")).format(",")
         ));
     }
 

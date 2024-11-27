@@ -140,7 +140,7 @@ pub async fn run(State(env): State<CliEnv>) {
             .take_while(|value| *value <= MAX_ADMIN_API_VERSION)
             .map(|value| value.as_repr())
             .join(",");
-        table.add_row(vec!["Supported admin API", &format!("[{}]", versions)]);
+        table.add_row(vec!["Supported admin API", &format!("[{versions}]")]);
     }
 
     table.add_row(vec!["Git SHA", build_info::RESTATE_CLI_COMMIT_SHA]);
@@ -177,7 +177,7 @@ pub async fn run(State(env): State<CliEnv>) {
                                 duration_to_human_rough(delta, chrono_humanize::Tense::Present);
                             table.add_row(vec![
                                 "Logged in?",
-                                &format!("true (expires in {})", left),
+                                &format!("true (expires in {left})"),
                             ]);
                         } else {
                             table.add_row(vec!["Logged in?", "false (token expired)"]);

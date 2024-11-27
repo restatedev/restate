@@ -476,8 +476,7 @@ impl MaybeLoglet {
             MaybeLoglet::Some(loglet) => loglet,
             MaybeLoglet::Trim { next_base_lsn } => {
                 panic!(
-                    "Expected Loglet, found Trim segment with next_base_lsn={}",
-                    next_base_lsn
+                    "Expected Loglet, found Trim segment with next_base_lsn={next_base_lsn}"
                 )
             }
         }
@@ -892,16 +891,16 @@ mod tests {
                     i += 1;
                     if i % 2 == 0 {
                         // append individual record
-                        let lsn = appender.append(format!("record{}", i)).await?;
-                        println!("Appended {}", lsn);
+                        let lsn = appender.append(format!("record{i}")).await?;
+                        println!("Appended {lsn}");
                     } else {
                         // append batch
                         let mut payloads = Vec::with_capacity(10);
                         for j in 1..=10 {
-                            payloads.push(format!("record-in-batch{}-{}", i, j));
+                            payloads.push(format!("record-in-batch{i}-{j}"));
                         }
                         let lsn = appender.append_batch(payloads).await?;
-                        println!("Appended batch {}", lsn);
+                        println!("Appended batch {lsn}");
                     }
                     append_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     tokio::time::sleep(Duration::from_millis(1)).await;
@@ -931,7 +930,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(500)).await;
             let counter_now = append_counter.load(Ordering::Relaxed);
             assert_that!(counter_now, eq(append_counter_during_seal));
-            println!("Appends are stalling, counter={}", counter_now);
+            println!("Appends are stalling, counter={counter_now}");
         }
 
         for i in 1..=5 {
@@ -953,7 +952,7 @@ mod tests {
                     new_segment_params,
                 )
                 .await?;
-            println!("Seal {}", i);
+            println!("Seal {i}");
             assert_that!(
                 bifrost
                     .inner

@@ -327,8 +327,7 @@ async fn render_locked_keys(
                             Styled(Style::Notice, num_retries)
                         };
                         notes = Cell::new(format!(
-                            "Retried {} time(s). Next retry {}.",
-                            num_retries, next_retry,
+                            "Retried {num_retries} time(s). Next retry {next_retry}.",
                         ));
                     }
                     _ => {}

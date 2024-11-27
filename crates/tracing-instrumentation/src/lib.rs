@@ -332,7 +332,7 @@ impl TracingGuard {
                     *f = new_filter;
                 }
                 // don't use logging here, tracing will panic!
-                Err(e) => eprintln!("Failed to reload log filter: '{}'", e),
+                Err(e) => eprintln!("Failed to reload log filter: '{e}'"),
             }
         });
     }

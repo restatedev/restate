@@ -2291,7 +2291,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     id = invocation_id,
                     name = match journal_entry.deserialize_name::<Codec>()?.as_deref() {
                         None | Some("") => Cow::Borrowed("run"),
-                        Some(name) => Cow::Owned(format!("run {}", name)),
+                        Some(name) => Cow::Owned(format!("run {name}")),
                     },
                     tags = (rpc.service = invocation_metadata
                         .invocation_target
@@ -2619,7 +2619,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 .storage
                 .get_journal_entry(invocation_id, i)
                 .await?
-                .unwrap_or_else(|| panic!("There should be a journal entry at index {}", i))
+                .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"))
             {
                 if e.ty() == EntryType::Output {
                     output_entry = Some(e);
@@ -3585,7 +3585,7 @@ impl<'a> fmt::Display for CompletionResultFmt<'a> {
         match self.0 {
             CompletionResult::Empty => write!(f, "Empty"),
             CompletionResult::Success(_) => write!(f, "Success"),
-            CompletionResult::Failure(code, reason) => write!(f, "Failure({}, {})", code, reason),
+            CompletionResult::Failure(code, reason) => write!(f, "Failure({code}, {reason})"),
         }
     }
 }

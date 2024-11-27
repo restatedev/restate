@@ -1072,9 +1072,9 @@ mod tests {
         for _ in 0..100000 {
             let expected = InvocationId::mock_random();
             let serialized = expected.to_string();
-            assert_eq!(38, serialized.len(), "{} => {:?}", serialized, expected);
+            assert_eq!(38, serialized.len(), "{serialized} => {expected:?}");
             let parsed = InvocationId::from_str(&serialized).unwrap();
-            assert_eq!(expected, parsed, "serialized: {}", serialized);
+            assert_eq!(expected, parsed, "serialized: {serialized}");
         }
     }
 
@@ -1098,9 +1098,7 @@ mod tests {
             assert_eq!(
                 error,
                 InvocationId::from_str(bad).unwrap_err(),
-                "invocation id: '{}' fails with {}",
-                bad,
-                error
+                "invocation id: '{bad}' fails with {error}"
             )
         }
     }

@@ -779,7 +779,7 @@ where
             match (last_dsn, &dedup_information.sequence_number) {
                 (DedupSequenceNumber::Esn(last_esn), DedupSequenceNumber::Esn(esn)) => last_esn >= *esn,
                 (DedupSequenceNumber::Sn(last_sn), DedupSequenceNumber::Sn(sn)) => last_sn >= *sn,
-                (last_dsn, dsn) => panic!("sequence number types do not match: last sequence number '{:?}', received sequence number '{:?}'", last_dsn, dsn),
+                (last_dsn, dsn) => panic!("sequence number types do not match: last sequence number '{last_dsn:?}', received sequence number '{dsn:?}'"),
             }
         } else {
             false

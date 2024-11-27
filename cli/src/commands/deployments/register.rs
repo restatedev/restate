@@ -81,8 +81,8 @@ enum DeploymentEndpoint {
 impl Display for DeploymentEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DeploymentEndpoint::Uri(uri) => write!(f, "URL {}", uri),
-            DeploymentEndpoint::Lambda(arn) => write!(f, "AWS Lambda ARN {}", arn),
+            DeploymentEndpoint::Uri(uri) => write!(f, "URL {uri}"),
+            DeploymentEndpoint::Lambda(arn) => write!(f, "AWS Lambda ARN {arn}"),
         }
     }
 }
@@ -444,8 +444,7 @@ async fn resolve_deployment(
     progress.enable_steady_tick(std::time::Duration::from_millis(120));
 
     progress.set_message(format!(
-        "Fetching information about existing deployments at {}",
-        deployment_id,
+        "Fetching information about existing deployments at {deployment_id}",
     ));
 
     let deployment = client

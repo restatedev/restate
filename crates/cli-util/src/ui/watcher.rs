@@ -76,7 +76,7 @@ fn handle_error() {
     let _ = execute!(stdout, cursor::Show, LeaveAlternateScreen, ResetColor);
     // Print everything we buffered and clear the buffer
     if let Some(b) = crate::ui::output::stdout().take_buffer() {
-        let _ = write!(stdout, "{}", b);
+        let _ = write!(stdout, "{b}");
     }
 }
 
@@ -98,7 +98,7 @@ fn print_the_output(interval: f32) -> Result<()> {
                 queue!(lock, Clear(ClearType::UntilNewLine))?;
                 break;
             }
-            let _ = writeln!(lock, "{}", line);
+            let _ = writeln!(lock, "{line}");
             queue!(lock, Clear(ClearType::UntilNewLine))?;
         }
     }

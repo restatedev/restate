@@ -40,6 +40,6 @@ async fn generate_partition_table(opts: &GeneratePartitionTableOpts) -> anyhow::
     } else {
         serde_json::to_string(&table)?
     };
-    println!("{}", output);
+    println!("{output}");
     Ok(())
 }

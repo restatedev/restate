@@ -118,21 +118,20 @@ impl<'a> fmt::Display for TimerKeyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.kind {
             TimerKeyKind::NeoInvoke { invocation_uuid } => {
-                write!(f, "Delayed invocation '{}'", invocation_uuid)
+                write!(f, "Delayed invocation '{invocation_uuid}'")
             }
             TimerKeyKind::Invoke { invocation_uuid } => {
-                write!(f, "Delayed invocation '{}'", invocation_uuid)
+                write!(f, "Delayed invocation '{invocation_uuid}'")
             }
             TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
             } => write!(
                 f,
-                "Complete journal entry [{}] for '{}'",
-                journal_index, invocation_uuid
+                "Complete journal entry [{journal_index}] for '{invocation_uuid}'"
             ),
             TimerKeyKind::CleanInvocationStatus { invocation_uuid } => {
-                write!(f, "Clean invocation status '{}'", invocation_uuid)
+                write!(f, "Clean invocation status '{invocation_uuid}'")
             }
         }
     }

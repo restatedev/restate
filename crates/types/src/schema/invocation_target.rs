@@ -199,7 +199,7 @@ impl fmt::Display for InputValidationRule {
         match self {
             InputValidationRule::NoBodyAndContentType => write!(f, "none"),
             InputValidationRule::ContentType { content_type } => {
-                write!(f, "{}", content_type)
+                write!(f, "{content_type}")
             }
             InputValidationRule::JsonValue {
                 content_type,
@@ -316,8 +316,8 @@ impl fmt::Display for InputContentType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InputContentType::Any => write!(f, "*/*"),
-            InputContentType::MimeType(t) => write!(f, "{}/*", t),
-            InputContentType::MimeTypeAndSubtype(t, st) => write!(f, "{}/{}", t, st),
+            InputContentType::MimeType(t) => write!(f, "{t}/*"),
+            InputContentType::MimeTypeAndSubtype(t, st) => write!(f, "{t}/{st}"),
         }
     }
 }
@@ -443,9 +443,9 @@ fn try_display_json_detailed_info<D: fmt::Display>(
     default: impl FnOnce() -> D,
 ) -> fmt::Result {
     if let Some(serde_json::Value::String(title)) = schema.get("title") {
-        write!(f, "JSON '{}'", title)
+        write!(f, "JSON '{title}'")
     } else if let Some(serde_json::Value::String(ty)) = schema.get("type") {
-        write!(f, "JSON {}", ty)
+        write!(f, "JSON {ty}")
     } else {
         write!(f, "{}", default())
     }

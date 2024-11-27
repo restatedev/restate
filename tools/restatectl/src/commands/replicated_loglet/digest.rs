@@ -92,8 +92,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
     for node_id in nodeset.iter() {
         let node = nodes_config.find_node_by_id(*node_id).with_context(|| {
             format!(
-                "Node {} doesn't seem to exist in nodes configuration",
-                node_id
+                "Node {node_id} doesn't seem to exist in nodes configuration"
             )
         })?;
         info!(
@@ -141,10 +140,10 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
     let mut records_table = Table::new_styled();
     let node_ids = nodeset.iter().sorted().map(|n| {
         match digests.is_sealed(n) {
-            Some(true) => Cell::new(format!("{}(S)", n)).fg(Color::Magenta),
+            Some(true) => Cell::new(format!("{n}(S)")).fg(Color::Magenta),
             Some(false) => Cell::new(n.to_string()),
             // we didn't hear from this node
-            None => Cell::new(format!("{}(E)", n)).fg(Color::Red),
+            None => Cell::new(format!("{n}(E)")).fg(Color::Red),
         }
     });
     let mut heading = vec![Cell::new("OFFSET")];

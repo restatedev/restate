@@ -266,7 +266,7 @@ impl fmt::Display for InvocationTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/", self.service_name())?;
         if let Some(key) = self.key() {
-            write!(f, "{}/", key)?;
+            write!(f, "{key}/")?;
         }
         write!(f, "{}", self.handler_name())?;
         Ok(())

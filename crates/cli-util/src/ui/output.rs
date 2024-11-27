@@ -90,7 +90,7 @@ impl Write for Console {
                 .map_err(|_| std::fmt::Error),
             BufferedOutput::Memory(ref buf) => {
                 let mut guard = buf.lock().unwrap();
-                write!(guard, "{}", s)
+                write!(guard, "{s}")
             }
         }
     }

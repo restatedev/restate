@@ -707,7 +707,7 @@ mod tests {
         let_assert!(Err(StorageError::Generic(err)) = result);
         assert_eq!(
             err.to_string(),
-            format!("unknown key kind: {:x?}", unknown_key_prefix)
+            format!("unknown key kind: {unknown_key_prefix:x?}")
         );
     }
 

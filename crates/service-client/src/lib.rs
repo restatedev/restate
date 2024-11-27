@@ -251,7 +251,7 @@ impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Http(uri, _) => uri.fmt(f),
-            Self::Lambda(arn, _) => write!(f, "lambda://{}", arn),
+            Self::Lambda(arn, _) => write!(f, "lambda://{arn}"),
         }
     }
 }
