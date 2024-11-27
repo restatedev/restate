@@ -46,6 +46,8 @@ pub trait RocksAccess {
         default_cf_options: rocksdb::Options,
         cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
     ) -> Result<(), RocksError>;
+    /// Create a column family from a snapshot. The data files referenced by
+    /// `metadata` will be moved into the RocksDB data directory.
     fn import_cf(
         &self,
         name: CfName,
@@ -163,7 +165,7 @@ impl RocksAccess for rocksdb::DB {
         let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
 
         let mut import_opts = ImportColumnFamilyOptions::default();
-        import_opts.set_move_files(false); // keep the snapshot files intact
+        import_opts.set_move_files(true);
 
         Ok(Self::create_column_family_with_import(
             self,
