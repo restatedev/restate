@@ -175,10 +175,7 @@ pub async fn run(State(env): State<CliEnv>) {
                         if delta > chrono::TimeDelta::zero() {
                             let left =
                                 duration_to_human_rough(delta, chrono_humanize::Tense::Present);
-                            table.add_row(vec![
-                                "Logged in?",
-                                &format!("true (expires in {left})"),
-                            ]);
+                            table.add_row(vec!["Logged in?", &format!("true (expires in {left})")]);
                         } else {
                             table.add_row(vec!["Logged in?", "false (token expired)"]);
                         }

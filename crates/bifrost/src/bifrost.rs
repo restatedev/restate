@@ -475,9 +475,7 @@ impl MaybeLoglet {
         match self {
             MaybeLoglet::Some(loglet) => loglet,
             MaybeLoglet::Trim { next_base_lsn } => {
-                panic!(
-                    "Expected Loglet, found Trim segment with next_base_lsn={next_base_lsn}"
-                )
+                panic!("Expected Loglet, found Trim segment with next_base_lsn={next_base_lsn}")
             }
         }
     }

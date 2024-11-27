@@ -374,9 +374,7 @@ mod tests {
                 assert_eq!(socket_addr.ip(), IpAddr::V6(Ipv6Addr::UNSPECIFIED));
                 assert_eq!(socket_addr.port(), 8080);
             }
-            _ => panic!(
-                "Expected BindAddress::Socket with IPv6, got {bind_address:?}"
-            ),
+            _ => panic!("Expected BindAddress::Socket with IPv6, got {bind_address:?}"),
         }
     }
 

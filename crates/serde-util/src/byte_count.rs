@@ -321,9 +321,7 @@ mod tests {
         #[track_caller]
         fn check_str(s: &str) {
             assert_eq!(
-                serde_json::from_str::<Config>(&format!("{s:?}"))
-                    .unwrap()
-                    .0,
+                serde_json::from_str::<Config>(&format!("{s:?}")).unwrap().0,
                 s.parse().unwrap()
             );
         }

@@ -540,9 +540,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
     });
 
     // Wait for some warmup appends
-    println!(
-        "Awaiting all appenders to reach at least {WARMUP_APPENDS} appends"
-    );
+    println!("Awaiting all appenders to reach at least {WARMUP_APPENDS} appends");
     append_barrier.wait().await;
     // Go places and do other things.
     for _ in 0..5 {
@@ -559,9 +557,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
     let tail = loglet.find_tail().await?;
     assert!(tail.is_sealed());
     let first_observed_seal = first_observed_seal.await?;
-    println!(
-        "Sealed tail={tail:?}, first observed seal at={first_observed_seal}"
-    );
+    println!("Sealed tail={tail:?}, first observed seal at={first_observed_seal}");
 
     let mut all_committed = BTreeSet::new();
     while let Some(handle) = appenders.join_next().await {
@@ -572,9 +568,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
         let tail_record = committed.pop().unwrap();
         // tail must be beyond seal point
         assert_that!(tail.offset(), gt(tail_record));
-        println!(
-            "Committed len={committed_len}, last appended={tail_record}"
-        );
+        println!("Committed len={committed_len}, last appended={tail_record}");
         // ensure that all committed records are unique
         assert!(all_committed.insert(tail_record));
         for offset in committed {

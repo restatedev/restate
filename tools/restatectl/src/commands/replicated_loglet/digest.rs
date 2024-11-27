@@ -91,9 +91,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
     let mut digests = DigestsHelper::new(&loglet_ref.params, opts.from.into(), opts.to.into());
     for node_id in nodeset.iter() {
         let node = nodes_config.find_node_by_id(*node_id).with_context(|| {
-            format!(
-                "Node {node_id} doesn't seem to exist in nodes configuration"
-            )
+            format!("Node {node_id} doesn't seem to exist in nodes configuration")
         })?;
         info!(
             "Requesting digest from node {} at {}",
