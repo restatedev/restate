@@ -189,13 +189,9 @@ impl PartitionStoreManager {
             "Importing partition store snapshot"
         );
 
-        if let Err(e) = self
-            .rocksdb
+        self.rocksdb
             .import_cf(cf_name.clone(), opts, import_metadata)
-            .await
-        {
-            return Err(e);
-        }
+            .await?;
 
         assert!(self.rocksdb.inner().cf_handle(&cf_name).is_some());
         let partition_store = PartitionStore::new(
