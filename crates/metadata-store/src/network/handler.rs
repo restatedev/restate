@@ -1,4 +1,4 @@
-// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2024 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::raft::connection_manager::{ConnectionError, ConnectionManager};
-use crate::raft::grpc_svc::raft_metadata_store_svc_server::RaftMetadataStoreSvc;
-use crate::raft::grpc_svc::RaftMessage;
+use crate::network::connection_manager::ConnectionError;
+use crate::network::grpc_svc::raft_metadata_store_svc_server::RaftMetadataStoreSvc;
+use crate::network::grpc_svc::RaftMessage;
+use crate::network::ConnectionManager;
 use std::str::FromStr;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
