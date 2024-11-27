@@ -14,7 +14,7 @@ mod handler;
 mod networking;
 
 pub use connection_manager::ConnectionManager;
-pub use grpc_svc::FILE_DESCRIPTOR_SET;
-pub use grpc_svc::raft_metadata_store_svc_server::RaftMetadataStoreSvcServer;
-pub use handler::RaftMetadataStoreHandler;
+pub use grpc_svc::metadata_store_network_svc_server::MetadataStoreNetworkSvcServer;
+pub use grpc_svc::{NetworkMessage, FILE_DESCRIPTOR_SET};
+pub use handler::MetadataStoreNetworkHandler;
 pub use networking::Networking;

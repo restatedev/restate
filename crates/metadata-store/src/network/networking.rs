@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::network::connection_manager::ConnectionManager;
+use crate::network::handler::PEER_METADATA_KEY;
+use crate::network::NetworkMessage;
 use bytes::{BufMut, BytesMut};
 use futures::FutureExt;
 use protobuf::Message as ProtobufMessage;
@@ -23,9 +26,6 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
 use tonic::IntoStreamingRequest;
 use tracing::{debug, trace};
-use crate::network::connection_manager::ConnectionManager;
-use crate::network::grpc_svc::RaftMessage;
-use crate::network::handler::RAFT_PEER_METADATA_KEY;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrySendError<T> {
@@ -70,13 +70,13 @@ impl Networking {
                 .expect("should be able to write message");
             self.serde_buffer = writer.into_inner();
 
-            // todo: Maybe send message directly w/o indirection through RaftMessage
-            let raft_message = RaftMessage {
-                message: self.serde_buffer.split().freeze(),
+            // todo: Maybe send message directly w/o indirection through NetworkMessage
+            let network_message = NetworkMessage {
+                payload: self.serde_buffer.split().freeze(),
             };
 
             connection
-                .try_send(raft_message)
+                .try_send(network_message)
                 .map_err(|_err| TrySendError::Send(message))?;
         } else if let Some(address) = self.addresses.get(&target) {
             if let Some(task_handle) = self.connection_attempts.remove(&target) {
@@ -131,17 +131,17 @@ impl Networking {
                 );
 
                 async move {
-                    let mut raft_client = crate::network::grpc_svc::raft_metadata_store_svc_client::RaftMetadataStoreSvcClient::new(channel);
+                    let mut network_client = crate::network::grpc_svc::metadata_store_network_svc_client::MetadataStoreNetworkSvcClient::new(channel);
                     let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
 
                     let mut request = ReceiverStream::new(outgoing_rx).into_streaming_request();
                     // send our identity alongside with the request to the target
                     request.metadata_mut().insert(
-                        RAFT_PEER_METADATA_KEY,
+                        PEER_METADATA_KEY,
                         MetadataValue::try_from(connection_manager.identity().to_string())?,
                     );
 
-                    let incoming_rx = raft_client.raft(request).await?;
+                    let incoming_rx = network_client.connect_to(request).await?;
 
                     connection_manager.run_connection(
                         target,
