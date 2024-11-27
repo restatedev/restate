@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use rocksdb::ExportImportFilesMetaData;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::cf_options;
 use crate::snapshots::LocalPartitionSnapshot;
@@ -149,8 +149,7 @@ impl PartitionStoreManager {
         let mut guard = self.lookup.lock().await;
         if guard.live.contains_key(&partition_id) {
             warn!(
-                ?partition_id,
-                ?snapshot,
+                %partition_id,
                 "The partition store is already open, refusing to import snapshot"
             );
             return Err(RocksError::AlreadyOpen);
@@ -160,21 +159,22 @@ impl PartitionStoreManager {
         let cf_exists = self.rocksdb.inner().cf_handle(&cf_name).is_some();
         if cf_exists {
             warn!(
-                ?partition_id,
-                ?cf_name,
-                ?snapshot,
+                %partition_id,
+                %cf_name,
                 "The column family for partition already exists in the database, cannot import snapshot"
             );
             return Err(RocksError::ColumnFamilyExists);
         }
+
+        // todo(pavel): validate that the snapshot key range fully covers the partition key range
 
         let mut import_metadata = ExportImportFilesMetaData::default();
         import_metadata.set_db_comparator_name(snapshot.db_comparator_name.as_str());
         import_metadata.set_files(&snapshot.files);
 
         info!(
-            ?partition_id,
-            lsn = ?snapshot.min_applied_lsn,
+            %partition_id,
+            min_lsn = %snapshot.min_applied_lsn,
             path = ?snapshot.base_dir,
             "Importing partition store snapshot"
         );
@@ -184,7 +184,6 @@ impl PartitionStoreManager {
             .import_cf(cf_name.clone(), opts, import_metadata)
             .await
         {
-            error!(?partition_id, "Failed to import snapshot");
             return Err(e);
         }
 

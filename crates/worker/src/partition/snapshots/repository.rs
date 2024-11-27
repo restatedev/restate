@@ -25,6 +25,8 @@ use serde_with::serde_as;
 use tempfile::TempDir;
 use tokio::io;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tokio_util::io::StreamReader;
 use tracing::{debug, info, instrument, warn};
 use url::Url;
@@ -58,6 +60,13 @@ pub struct SnapshotRepository {
     /// Ingested snapshots staging location.
     staging_dir: PathBuf,
 }
+
+/// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
+/// API error to attempt a multipart put below this size, apart from the final segment.
+const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
+
+/// Maximum number of concurrent downloads when getting snapshots from the repository.
+const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
 
 #[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -325,6 +334,12 @@ impl SnapshotRepository {
 
     /// Discover and download the latest snapshot available. Dropping the returned
     /// `LocalPartitionSnapshot` will delete the local snapshot data files.
+    #[instrument(
+        level = "debug",
+        skip_all,
+        err,
+        fields(%partition_id),
+    )]
     pub(crate) async fn get_latest(
         &self,
         partition_id: PartitionId,
@@ -388,7 +403,9 @@ impl SnapshotRepository {
             "Getting snapshot data",
         );
 
-        // todo(pavel): stream the data from the object store
+        let directory = snapshot_dir.path().to_string_lossy().to_string();
+        let concurrency_limiter = Arc::new(Semaphore::new(DOWNLOAD_CONCURRENCY_LIMIT));
+        let mut downloads = JoinSet::new();
         for file in &mut snapshot_metadata.files {
             let filename = file.name.trim_start_matches("/");
             let key = object_store::path::Path::from(format!(
@@ -399,14 +416,39 @@ impl SnapshotRepository {
                 filename = filename,
             ));
             let file_path = snapshot_dir.path().join(filename);
-            let mut file_data = StreamReader::new(self.object_store.get(&key).await?.into_stream());
-            let mut snapshot_file = tokio::fs::File::create_new(&file_path).await?;
-            let size = io::copy(&mut file_data, &mut snapshot_file).await?;
-            debug!(%key, ?size, "Downloaded snapshot data file to {:?}", file_path);
-            // Patch paths to point to the local staging directory
-            file.directory = snapshot_dir.path().to_string_lossy().to_string();
+            let concurrency_limiter = Arc::clone(&concurrency_limiter);
+            let object_store = Arc::clone(&self.object_store);
+
+            downloads.spawn(async move {
+                let _permit = concurrency_limiter.acquire().await?;
+                let mut file_data = StreamReader::new(object_store.get(&key).await?.into_stream());
+                let mut snapshot_file = tokio::fs::File::create_new(&file_path).await?;
+                let size = io::copy(&mut file_data, &mut snapshot_file).await?;
+                debug!(%key, ?size, "Downloaded snapshot data file to {:?}", file_path);
+                anyhow::Ok(())
+            });
+            // patch the directory path to reflect the actual location on the restoring node
+            file.directory = directory.clone();
         }
 
+        loop {
+            match downloads.join_next().await {
+                None => {
+                    break;
+                }
+                Some(Err(e)) => {
+                    downloads.abort_all();
+                    return Err(e.into());
+                }
+                Some(Ok(_)) => {}
+            }
+        }
+
+        info!(
+            snapshot_id = %snapshot_metadata.snapshot_id,
+            path = ?snapshot_dir.path(),
+            "Downloaded partition snapshot",
+        );
         Ok(Some(LocalPartitionSnapshot {
             base_dir: snapshot_dir.into_path(),
             min_applied_lsn: snapshot_metadata.min_applied_lsn,
@@ -537,10 +579,6 @@ impl PutSnapshotError {
         }
     }
 }
-
-/// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
-/// API error to attempt a multipart put below this size, apart from the final segment.
-const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
 
 // The object_store `put_multipart` method does not currently support PutMode, so we don't pass this
 // at all; however since we upload snapshots to a unique path on every attempt, we don't expect any
