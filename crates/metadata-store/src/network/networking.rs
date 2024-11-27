@@ -11,16 +11,13 @@
 use crate::network::connection_manager::ConnectionManager;
 use crate::network::handler::PEER_METADATA_KEY;
 use crate::network::NetworkMessage;
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use futures::FutureExt;
-use protobuf::Message as ProtobufMessage;
-use raft::prelude::Message;
 use restate_core::network::net_util;
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::net::AdvertisedAddress;
 use std::collections::HashMap;
-use std::mem;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
@@ -40,16 +37,19 @@ pub enum TrySendError<T> {
 }
 
 #[derive(derive_more::Debug)]
-pub struct Networking {
-    connection_manager: ConnectionManager,
+pub struct Networking<M> {
+    connection_manager: ConnectionManager<M>,
     addresses: HashMap<u64, AdvertisedAddress>,
     #[debug(skip)]
     connection_attempts: HashMap<u64, TaskHandle<anyhow::Result<()>>>,
     serde_buffer: BytesMut,
 }
 
-impl Networking {
-    pub fn new(connection_manager: ConnectionManager) -> Self {
+impl<M> Networking<M>
+where
+    M: Message + Clone + Send + 'static,
+{
+    pub fn new(connection_manager: ConnectionManager<M>) -> Self {
         Networking {
             connection_manager,
             addresses: HashMap::default(),
@@ -62,15 +62,9 @@ impl Networking {
         self.addresses.insert(peer, address);
     }
 
-    pub fn try_send(&mut self, message: Message) -> Result<(), TrySendError<Message>> {
-        let target = message.to;
-
+    pub fn try_send(&mut self, target: u64, message: M) -> Result<(), TrySendError<M>> {
         if let Some(connection) = self.connection_manager.get_connection(target) {
-            let mut writer = mem::take(&mut self.serde_buffer).writer();
-            message
-                .write_to_writer(&mut writer)
-                .expect("should be able to write message");
-            self.serde_buffer = writer.into_inner();
+            message.serialize(&mut self.serde_buffer);
 
             // todo: Maybe send message directly w/o indirection through NetworkMessage
             let network_message = NetworkMessage {
@@ -118,7 +112,7 @@ impl Networking {
     }
 
     fn try_connecting_to(
-        connection_manager: ConnectionManager,
+        connection_manager: ConnectionManager<M>,
         target: u64,
         address: AdvertisedAddress,
         networking_options: &NetworkingOptions,
@@ -157,4 +151,18 @@ impl Networking {
             },
         )
     }
+}
+
+/// A message that can be sent over the network
+pub trait Message {
+    /// The target of the message
+    fn to(&self) -> u64;
+
+    /// Serialize the message into the buffer
+    fn serialize(&self, buffer: impl BufMut);
+
+    /// Deserialize the message from the bytes
+    fn deserialize(bytes: &Bytes) -> anyhow::Result<Self>
+    where
+        Self: Sized;
 }
