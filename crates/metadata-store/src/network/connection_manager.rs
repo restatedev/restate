@@ -1,4 +1,4 @@
-// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2024 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::raft::grpc_svc::RaftMessage;
+use crate::network::grpc_svc::RaftMessage;
 use futures::StreamExt;
 use protobuf::Message as ProtobufMessage;
 use raft::prelude::Message;
