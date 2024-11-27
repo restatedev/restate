@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::network::grpc_svc::RaftMessage;
 use futures::StreamExt;
 use protobuf::Message as ProtobufMessage;
 use raft::prelude::Message;
@@ -20,6 +19,8 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codegen::BoxStream;
 use tracing::{debug, instrument};
+
+use crate::network::NetworkMessage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
@@ -48,8 +49,8 @@ impl ConnectionManager {
     pub fn accept_connection(
         &self,
         raft_peer: u64,
-        incoming_rx: tonic::Streaming<RaftMessage>,
-    ) -> Result<BoxStream<RaftMessage>, ConnectionError> {
+        incoming_rx: tonic::Streaming<NetworkMessage>,
+    ) -> Result<BoxStream<NetworkMessage>, ConnectionError> {
         let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
         self.run_connection(raft_peer, outgoing_tx, incoming_rx)?;
 
@@ -62,8 +63,8 @@ impl ConnectionManager {
     pub fn run_connection(
         &self,
         remote_peer: u64,
-        outgoing_tx: mpsc::Sender<RaftMessage>,
-        incoming_rx: tonic::Streaming<RaftMessage>,
+        outgoing_tx: mpsc::Sender<NetworkMessage>,
+        incoming_rx: tonic::Streaming<NetworkMessage>,
     ) -> Result<(), ConnectionError> {
         let mut guard = self.inner.connections.lock().unwrap();
 
@@ -101,7 +102,7 @@ struct ConnectionReactor {
 
 impl ConnectionReactor {
     #[instrument(level = "debug", skip_all, fields(remote_peer = %self.remote_peer))]
-    async fn run(self, mut incoming_rx: tonic::Streaming<RaftMessage>) -> anyhow::Result<()> {
+    async fn run(self, mut incoming_rx: tonic::Streaming<NetworkMessage>) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         debug!("Run connection reactor");
 
@@ -115,7 +116,7 @@ impl ConnectionReactor {
                         Some(message) => {
                             match message {
                                 Ok(message) => {
-                                    let message = Message::parse_from_carllerche_bytes(&message.message)?;
+                                    let message = Message::parse_from_carllerche_bytes(&message.payload)?;
 
                                     assert_eq!(message.to, self.connection_manager.identity, "Expect to only receive messages for peer '{}'", self.connection_manager.identity);
 
@@ -174,15 +175,15 @@ impl ConnectionManagerInner {
 
 #[derive(Debug, Clone)]
 pub struct Connection {
-    tx: mpsc::Sender<RaftMessage>,
+    tx: mpsc::Sender<NetworkMessage>,
 }
 
 impl Connection {
-    pub fn new(tx: mpsc::Sender<RaftMessage>) -> Self {
+    pub fn new(tx: mpsc::Sender<NetworkMessage>) -> Self {
         Connection { tx }
     }
 
-    pub fn try_send(&self, message: RaftMessage) -> Result<(), TrySendError<RaftMessage>> {
+    pub fn try_send(&self, message: NetworkMessage) -> Result<(), TrySendError<NetworkMessage>> {
         self.tx.try_send(message)
     }
 }
