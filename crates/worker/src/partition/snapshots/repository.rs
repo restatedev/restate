@@ -23,7 +23,9 @@ use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tempfile::TempDir;
+use tokio::io;
 use tokio::io::AsyncReadExt;
+use tokio_util::io::StreamReader;
 use tracing::{debug, info, instrument, warn};
 use url::Url;
 
@@ -397,9 +399,10 @@ impl SnapshotRepository {
                 filename = filename,
             ));
             let file_path = snapshot_dir.path().join(filename);
-            let file_data = self.object_store.get(&key).await?;
-            tokio::fs::write(&file_path, file_data.bytes().await?).await?;
-            debug!(%key, "Downloaded snapshot data file to {:?}", file_path);
+            let mut file_data = StreamReader::new(self.object_store.get(&key).await?.into_stream());
+            let mut snapshot_file = tokio::fs::File::create_new(&file_path).await?;
+            let size = io::copy(&mut file_data, &mut snapshot_file).await?;
+            debug!(%key, ?size, "Downloaded snapshot data file to {:?}", file_path);
             // Patch paths to point to the local staging directory
             file.directory = snapshot_dir.path().to_string_lossy().to_string();
         }
