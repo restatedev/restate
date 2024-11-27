@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::raft::networking::Networking;
+use crate::network::Networking;
 use crate::raft::storage;
 use crate::raft::storage::RocksDbStorage;
 use crate::{
