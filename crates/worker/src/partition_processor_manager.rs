@@ -654,16 +654,9 @@ impl PartitionProcessorManager {
                     let starting_task = self
                         .start_partition_processor_task(partition_id, partition_key_range.clone());
 
-                    // We spawn the partition processors start tasks on the blocking thread pool due to a macOS issue
-                    // where doing otherwise appears to starve the Tokio event loop, causing very slow startup.
-                    let handle = TaskCenter::spawn_blocking_unmanaged(
-                        "starting-partition-processor",
-                        starting_task.run(),
-                    );
-
                     self.asynchronous_operations.spawn(
                         async move {
-                            let result = handle.await.expect("task must not panic");
+                            let result = starting_task.run();
                             AsynchronousEvent {
                                 partition_id,
                                 inner: EventKind::Started(result),
