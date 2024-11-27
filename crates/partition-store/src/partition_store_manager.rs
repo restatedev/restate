@@ -166,7 +166,17 @@ impl PartitionStoreManager {
             return Err(RocksError::ColumnFamilyExists);
         }
 
-        // todo(pavel): validate that the snapshot key range fully covers the partition key range
+        if snapshot.key_range.start() > partition_key_range.start()
+            || snapshot.key_range.end() < partition_key_range.end()
+        {
+            warn!(
+                %partition_id,
+                snapshot_range = ?snapshot.key_range,
+                partition_range = ?partition_key_range,
+                "The snapshot key range does not fully cover the partition key range"
+            );
+            return Err(RocksError::SnapshotKeyRangeMismatch);
+        }
 
         let mut import_metadata = ExportImportFilesMetaData::default();
         import_metadata.set_db_comparator_name(snapshot.db_comparator_name.as_str());

@@ -30,6 +30,9 @@ pub enum RocksError {
     #[error("already exists")]
     #[code(unknown)]
     ColumnFamilyExists,
+    #[error("invalid key range for partition")]
+    #[code(unknown)]
+    SnapshotKeyRangeMismatch,
     #[error(transparent)]
     #[code(unknown)]
     Other(#[from] rocksdb::Error),
