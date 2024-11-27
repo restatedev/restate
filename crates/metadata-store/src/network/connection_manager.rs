@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::network::Message;
+use crate::network::NetworkMessage;
 use futures::StreamExt;
-use protobuf::Message as ProtobufMessage;
-use raft::prelude::Message;
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -19,8 +19,6 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codegen::BoxStream;
 use tracing::{debug, instrument};
-
-use crate::network::NetworkMessage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
@@ -31,12 +29,15 @@ pub enum ConnectionError {
 }
 
 #[derive(Clone, derive_more::Debug)]
-pub struct ConnectionManager {
-    inner: Arc<ConnectionManagerInner>,
+pub struct ConnectionManager<M> {
+    inner: Arc<ConnectionManagerInner<M>>,
 }
 
-impl ConnectionManager {
-    pub fn new(identity: u64, router: mpsc::Sender<Message>) -> Self {
+impl<M> ConnectionManager<M>
+where
+    M: Message + Send + 'static,
+{
+    pub fn new(identity: u64, router: mpsc::Sender<M>) -> Self {
         ConnectionManager {
             inner: Arc::new(ConnectionManagerInner::new(identity, router)),
         }
@@ -95,12 +96,15 @@ impl ConnectionManager {
     }
 }
 
-struct ConnectionReactor {
+struct ConnectionReactor<M> {
     remote_peer: u64,
-    connection_manager: Arc<ConnectionManagerInner>,
+    connection_manager: Arc<ConnectionManagerInner<M>>,
 }
 
-impl ConnectionReactor {
+impl<M> ConnectionReactor<M>
+where
+    M: Message,
+{
     #[instrument(level = "debug", skip_all, fields(remote_peer = %self.remote_peer))]
     async fn run(self, mut incoming_rx: tonic::Streaming<NetworkMessage>) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
@@ -116,9 +120,9 @@ impl ConnectionReactor {
                         Some(message) => {
                             match message {
                                 Ok(message) => {
-                                    let message = Message::parse_from_carllerche_bytes(&message.payload)?;
+                                    let message = M::deserialize(&message.payload)?;
 
-                                    assert_eq!(message.to, self.connection_manager.identity, "Expect to only receive messages for peer '{}'", self.connection_manager.identity);
+                                    assert_eq!(message.to(), self.connection_manager.identity, "Expect to only receive messages for peer '{}'", self.connection_manager.identity);
 
                                     if self.connection_manager.router.send(message).await.is_err() {
                                         // system is shutting down
@@ -145,7 +149,7 @@ impl ConnectionReactor {
     }
 }
 
-impl Drop for ConnectionReactor {
+impl<M> Drop for ConnectionReactor<M> {
     fn drop(&mut self) {
         debug!(remote_peer = %self.remote_peer, "Close connection");
         self.connection_manager
@@ -157,14 +161,14 @@ impl Drop for ConnectionReactor {
 }
 
 #[derive(Debug)]
-struct ConnectionManagerInner {
+struct ConnectionManagerInner<M> {
     identity: u64,
     connections: Mutex<HashMap<u64, Connection>>,
-    router: mpsc::Sender<Message>,
+    router: mpsc::Sender<M>,
 }
 
-impl ConnectionManagerInner {
-    pub fn new(identity: u64, router: mpsc::Sender<Message>) -> Self {
+impl<M> ConnectionManagerInner<M> {
+    pub fn new(identity: u64, router: mpsc::Sender<M>) -> Self {
         ConnectionManagerInner {
             identity,
             router,
