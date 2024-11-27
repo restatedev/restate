@@ -13,12 +13,16 @@ use crate::grpc::server::GrpcServer;
 use crate::grpc::service_builder::GrpcServiceBuilder;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
 use crate::network::{
-    ConnectionManager, MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, Networking,
+    ConnectionManager, Message, MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer,
+    Networking,
 };
 use crate::raft::store::RaftMetadataStore;
 use crate::{grpc_svc, network, Error, MetadataStoreService};
+use anyhow::Context;
 use assert2::let_assert;
+use bytes::{BufMut, Bytes};
 use futures::TryFutureExt;
+use protobuf::Message as ProtobufMessage;
 use restate_core::{TaskCenter, TaskKind};
 use restate_types::config::{Kind, MetadataStoreOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
@@ -87,5 +91,21 @@ impl MetadataStoreService for RaftMetadataStoreService {
         store.run().await.map_err(Error::generic)?;
 
         Ok(())
+    }
+}
+
+impl Message for raft::prelude::Message {
+    fn to(&self) -> u64 {
+        self.to
+    }
+
+    fn serialize(&self, buffer: impl BufMut) {
+        let mut writer = buffer.writer();
+        self.write_to_writer(&mut writer)
+            .expect("should be able to write message");
+    }
+
+    fn deserialize(bytes: &Bytes) -> anyhow::Result<Self> {
+        ProtobufMessage::parse_from_carllerche_bytes(bytes).context("failed deserializing message")
     }
 }
