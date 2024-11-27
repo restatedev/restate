@@ -1,4 +1,4 @@
-// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2024 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-tonic::include_proto!("dev.restate.raft_metadata_store_svc");
+tonic::include_proto!("dev.restate.metadata_store_network_svc");
 
 pub const FILE_DESCRIPTOR_SET: &[u8] =
-    tonic::include_file_descriptor_set!("raft_metadata_store_svc");
+    tonic::include_file_descriptor_set!("metadata_store_network_svc");

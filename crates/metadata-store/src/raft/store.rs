@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::network::Networking;
 use crate::raft::storage;
 use crate::raft::storage::RocksDbStorage;
 use crate::{
@@ -34,7 +35,6 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
-use crate::network::Networking;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
