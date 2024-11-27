@@ -11,7 +11,7 @@
 use crate::network::connection_manager::ConnectionError;
 use crate::network::grpc_svc::metadata_store_network_svc_server::MetadataStoreNetworkSvc;
 use crate::network::grpc_svc::NetworkMessage;
-use crate::network::ConnectionManager;
+use crate::network::{ConnectionManager, Message};
 use std::str::FromStr;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -19,18 +19,21 @@ use tonic::{Request, Response, Status, Streaming};
 pub const PEER_METADATA_KEY: &str = "x-restate-metadata-store-peer";
 
 #[derive(Debug)]
-pub struct MetadataStoreNetworkHandler {
-    connection_manager: ConnectionManager,
+pub struct MetadataStoreNetworkHandler<M> {
+    connection_manager: ConnectionManager<M>,
 }
 
-impl MetadataStoreNetworkHandler {
-    pub fn new(connection_manager: ConnectionManager) -> Self {
+impl<M> MetadataStoreNetworkHandler<M> {
+    pub fn new(connection_manager: ConnectionManager<M>) -> Self {
         Self { connection_manager }
     }
 }
 
 #[async_trait::async_trait]
-impl MetadataStoreNetworkSvc for MetadataStoreNetworkHandler {
+impl<M> MetadataStoreNetworkSvc for MetadataStoreNetworkHandler<M>
+where
+    M: Message + Send + 'static,
+{
     type ConnectToStream = BoxStream<NetworkMessage>;
 
     async fn connect_to(
