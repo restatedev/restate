@@ -8,19 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod connection_manager;
-pub mod grpc_svc;
-mod handler;
-mod networking;
 mod storage;
 mod store;
 
-use crate::raft::connection_manager::ConnectionManager;
-use crate::raft::grpc_svc::raft_metadata_store_svc_server::RaftMetadataStoreSvcServer;
-use crate::raft::handler::RaftMetadataStoreHandler;
-use crate::raft::networking::Networking;
+use crate::network::{
+    ConnectionManager, Networking, RaftMetadataStoreHandler, RaftMetadataStoreSvcServer,
+};
 use crate::raft::store::BuildError;
-use crate::MetadataStoreRunner;
+use crate::{network, MetadataStoreRunner};
 use restate_core::network::NetworkServerBuilder;
 use restate_types::config::{RaftOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
@@ -47,7 +42,7 @@ pub async fn create_store(
 
     server_builder.register_grpc_service(
         RaftMetadataStoreSvcServer::new(RaftMetadataStoreHandler::new(connection_manager)),
-        grpc_svc::FILE_DESCRIPTOR_SET,
+        network::FILE_DESCRIPTOR_SET,
     );
 
     Ok(MetadataStoreRunner::new(

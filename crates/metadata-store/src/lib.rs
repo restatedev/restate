@@ -11,6 +11,7 @@
 mod grpc;
 mod grpc_svc;
 pub mod local;
+mod network;
 pub mod raft;
 mod util;
 
