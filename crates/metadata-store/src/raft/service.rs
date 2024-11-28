@@ -24,7 +24,7 @@ use bytes::{Buf, BufMut};
 use futures::TryFutureExt;
 use protobuf::Message as ProtobufMessage;
 use restate_core::{TaskCenter, TaskKind};
-use restate_types::config::{Kind, MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::{MetadataStoreKind, MetadataStoreOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -54,10 +54,10 @@ impl RaftMetadataStoreService {
 impl MetadataStoreService for RaftMetadataStoreService {
     async fn run(mut self) -> Result<(), Error> {
         let store_options = self.options.live_load();
-        let_assert!(Kind::Raft(raft_options) = &store_options.kind);
+        let_assert!(MetadataStoreKind::Raft(raft_options) = &store_options.kind);
 
         let (router_tx, router_rx) = mpsc::channel(128);
-        let connection_manager = ConnectionManager::new(raft_options.id, router_tx);
+        let connection_manager = ConnectionManager::new(raft_options.id.get(), router_tx);
         let store = RaftMetadataStore::create(
             raft_options,
             self.rocksdb_options,

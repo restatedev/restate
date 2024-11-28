@@ -36,7 +36,7 @@ use restate_metadata_store::raft::service::RaftMetadataStoreService;
 use restate_metadata_store::{
     BoxedMetadataStoreService, MetadataStoreClient, MetadataStoreService,
 };
-use restate_types::config::{CommonOptions, Configuration, Kind};
+use restate_types::config::{CommonOptions, Configuration, MetadataStoreKind};
 use restate_types::errors::GenericError;
 use restate_types::health::{Health, HealthStatus};
 use restate_types::live::Live;
@@ -311,7 +311,7 @@ impl Node {
         health_status: HealthStatus<MetadataServerStatus>,
     ) -> BoxedMetadataStoreService {
         match updateable_config.pinned().metadata_store.kind {
-            Kind::Local => LocalMetadataStoreService::from_options(
+            MetadataStoreKind::Local => LocalMetadataStoreService::from_options(
                 health_status,
                 updateable_config.clone().map(|c| &c.metadata_store).boxed(),
                 updateable_config
@@ -320,7 +320,7 @@ impl Node {
                     .boxed(),
             )
             .boxed(),
-            Kind::Raft(_) => RaftMetadataStoreService::new(
+            MetadataStoreKind::Raft(_) => RaftMetadataStoreService::new(
                 health_status,
                 updateable_config.clone().map(|c| &c.metadata_store).boxed(),
                 updateable_config
@@ -329,7 +329,7 @@ impl Node {
                     .boxed(),
             )
             .boxed(),
-            Kind::Omnipaxos(_) => OmnipaxosMetadataStoreService::new(
+            MetadataStoreKind::Omnipaxos(_) => OmnipaxosMetadataStoreService::new(
                 health_status,
                 updateable_config.clone().map(|c| &c.metadata_store).boxed(),
                 updateable_config

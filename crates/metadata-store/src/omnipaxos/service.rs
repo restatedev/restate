@@ -23,7 +23,7 @@ use assert2::let_assert;
 use bytes::{Buf, BufMut};
 use futures::TryFutureExt;
 use restate_core::{TaskCenter, TaskKind};
-use restate_types::config::{Kind, MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::{MetadataStoreKind, MetadataStoreOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -54,7 +54,7 @@ impl OmnipaxosMetadataStoreService {
 impl MetadataStoreService for OmnipaxosMetadataStoreService {
     async fn run(mut self) -> Result<(), Error> {
         let store_options = self.options.live_load();
-        let_assert!(Kind::Omnipaxos(omnipaxos_options) = &store_options.kind);
+        let_assert!(MetadataStoreKind::Omnipaxos(omnipaxos_options) = &store_options.kind);
 
         let (router_tx, router_rx) = mpsc::channel(128);
         let connection_manager = ConnectionManager::new(omnipaxos_options.id.into(), router_tx);
