@@ -25,7 +25,7 @@ pub use restate_core::metadata_store::{
     MetadataStoreClient, Precondition, ReadError, ReadModifyWriteError, WriteError,
 };
 use restate_core::network::NetworkServerBuilder;
-use restate_types::config::{Kind, MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::{MetadataStoreKind, MetadataStoreOptions, RocksDbOptions};
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
@@ -197,7 +197,7 @@ pub async fn create_metadata_store(
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<BoxedMetadataStoreService> {
     match metadata_store_options.kind {
-        Kind::Local => local::create_store(
+        MetadataStoreKind::Local => local::create_store(
             metadata_store_options,
             rocksdb_options,
             health_status,
@@ -206,13 +206,13 @@ pub async fn create_metadata_store(
         .await
         .map_err(anyhow::Error::from)
         .map(|store| store.boxed()),
-        Kind::Raft(ref raft_options) => {
+        MetadataStoreKind::Raft(ref raft_options) => {
             raft::create_store(raft_options, rocksdb_options, health_status, server_builder)
                 .await
                 .map_err(anyhow::Error::from)
                 .map(|store| store.boxed())
         }
-        Kind::Omnipaxos(ref omnipaxos_options) => omnipaxos::create_store(
+        MetadataStoreKind::Omnipaxos(ref omnipaxos_options) => omnipaxos::create_store(
             omnipaxos_options,
             rocksdb_options,
             health_status,
