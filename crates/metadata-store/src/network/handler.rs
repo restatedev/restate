@@ -10,8 +10,7 @@
 
 use crate::network::connection_manager::ConnectionError;
 use crate::network::grpc_svc::metadata_store_network_svc_server::MetadataStoreNetworkSvc;
-use crate::network::grpc_svc::NetworkMessage;
-use crate::network::{ConnectionManager, Message};
+use crate::network::{grpc_svc, ConnectionManager, NetworkMessage};
 use std::str::FromStr;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -32,13 +31,13 @@ impl<M> MetadataStoreNetworkHandler<M> {
 #[async_trait::async_trait]
 impl<M> MetadataStoreNetworkSvc for MetadataStoreNetworkHandler<M>
 where
-    M: Message + Send + 'static,
+    M: NetworkMessage + Send + 'static,
 {
-    type ConnectToStream = BoxStream<NetworkMessage>;
+    type ConnectToStream = BoxStream<grpc_svc::NetworkMessage>;
 
     async fn connect_to(
         &self,
-        request: Request<Streaming<NetworkMessage>>,
+        request: Request<Streaming<grpc_svc::NetworkMessage>>,
     ) -> Result<Response<Self::ConnectToStream>, Status> {
         let peer_metadata =
             request

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,7 @@ pub enum Kind {
     #[default]
     Local,
     Raft(RaftOptions),
+    Omnipaxos(OmniPaxosOptions),
 }
 
 impl MetadataStoreOptions {
@@ -134,4 +135,15 @@ pub struct RaftOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "Vec<(u64, String)>"))]
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub peers: HashMap<u64, AdvertisedAddress>,
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct OmniPaxosOptions {
+    pub id: NonZeroU64,
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<(u64, String)>"))]
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    pub peers: HashMap<NonZeroU64, AdvertisedAddress>,
 }
