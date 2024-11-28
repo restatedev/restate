@@ -59,13 +59,18 @@ pub struct MetadataStoreOptions {
     /// # Type of metadata store to start
     ///
     /// The type of metadata store to start when running the metadata store role.
-    pub kind: Kind,
+    #[serde(flatten)]
+    pub kind: MetadataStoreKind,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "kebab-case"
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[serde(rename_all = "kebab-case")]
-pub enum Kind {
+pub enum MetadataStoreKind {
     #[default]
     Local,
     Raft(RaftOptions),
@@ -121,20 +126,20 @@ impl Default for MetadataStoreOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.01,
             rocksdb,
-            kind: Kind::default(),
+            kind: MetadataStoreKind::default(),
         }
     }
 }
 
 #[serde_as]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct RaftOptions {
-    pub id: u64,
+    pub id: NonZeroU64,
     #[cfg_attr(feature = "schemars", schemars(with = "Vec<(u64, String)>"))]
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    pub peers: HashMap<u64, AdvertisedAddress>,
+    pub peers: HashMap<NonZeroU64, AdvertisedAddress>,
 }
 
 #[serde_as]
