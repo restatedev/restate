@@ -193,6 +193,9 @@ async fn download_example(repo_handler: RepoHandler<'_>, asset: Asset) -> Result
         return Err(e);
     }
 
+    // Remove the zip file
+    let _ = tokio::fs::remove_file(&zip_out_file_path).await;
+
     // Ready to rock!
     c_println!(
         "The example is ready in the directory {}",
