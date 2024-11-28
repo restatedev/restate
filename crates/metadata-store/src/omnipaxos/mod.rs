@@ -10,10 +10,23 @@
 
 use crate::Request;
 use omnipaxos::messages::Message;
+use restate_rocksdb::RocksError;
 
 mod service;
+mod storage;
 mod store;
 
 pub use service::OmnipaxosMetadataStoreService;
 
 type OmniPaxosMessage = Message<Request>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    #[error("failed building OmniPaxos: {0}")]
+    OmniPaxos(#[from] omnipaxos::errors::ConfigError),
+    #[error("failed opening RocksDb: {0}")]
+    OpeningRocksDb(#[from] RocksError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {}
