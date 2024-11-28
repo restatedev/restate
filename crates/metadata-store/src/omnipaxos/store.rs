@@ -10,50 +10,42 @@
 
 use crate::kv_memory_storage::KvMemoryStorage;
 use crate::network::Networking;
-use crate::omnipaxos::OmniPaxosMessage;
+use crate::omnipaxos::storage::RocksDbStorage;
+use crate::omnipaxos::{BuildError, Error, OmniPaxosMessage};
 use crate::{
     MetadataStoreBackend, MetadataStoreRequest, Request, RequestError, RequestReceiver,
     RequestSender,
 };
 use futures::TryFutureExt;
 use omnipaxos::storage::{Entry, NoSnapshot};
-use omnipaxos::util::LogEntry;
+use omnipaxos::util::{LogEntry, NodeId};
 use omnipaxos::{ClusterConfig, OmniPaxosConfig, ProposeErr, ServerConfig};
-use omnipaxos_storage::memory_storage::MemoryStorage;
 use restate_core::cancellation_watcher;
-use restate_types::config::{OmniPaxosOptions, RocksDbOptions};
+use restate_types::config::{Configuration, OmniPaxosOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
-type OmniPaxos = omnipaxos::OmniPaxos<Request, MemoryStorage<Request>>;
+type OmniPaxos = omnipaxos::OmniPaxos<Request, RocksDbStorage<Request>>;
 
 impl Entry for Request {
     type Snapshot = NoSnapshot;
 }
-
-#[derive(Debug, thiserror::Error)]
-pub enum BuildError {
-    #[error("failed building OmniPaxos: {0}")]
-    OmniPaxos(#[from] omnipaxos::errors::ConfigError),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {}
-
 pub struct OmnipaxosMetadataStore {
-    _rocks_db_options: BoxedLiveLoad<RocksDbOptions>,
     networking: Networking<OmniPaxosMessage>,
     msg_rx: mpsc::Receiver<OmniPaxosMessage>,
     request_tx: RequestSender,
     request_rx: RequestReceiver,
     omni_paxos: OmniPaxos,
 
-    last_applied_index: u64,
+    own_node_id: NodeId,
+    is_leader: bool,
+
+    last_applied_index: usize,
 
     kv_storage: KvMemoryStorage,
 }
@@ -71,11 +63,18 @@ impl OmnipaxosMetadataStore {
             networking.register_address(peer.get(), address.clone());
         }
 
+        let rocksdb_storage =
+            RocksDbStorage::create(&Configuration::pinned().metadata_store, rocks_db_options)
+                .await?;
+
+        let own_node_id = omni_paxos_options.id.get();
+
         // todo read configuration from persistent storage
         let server_config = ServerConfig {
-            pid: omni_paxos_options.id.into(),
+            pid: own_node_id,
             // todo make configurable
             election_tick_timeout: 5,
+            resend_message_tick_timeout: 20,
             ..ServerConfig::default()
         };
 
@@ -94,17 +93,22 @@ impl OmnipaxosMetadataStore {
             cluster_config,
         };
 
-        let omni_paxos = op_config.build(MemoryStorage::default())?;
+        let omni_paxos = op_config.build(rocksdb_storage)?;
+
+        let is_leader = omni_paxos
+            .get_current_leader()
+            .is_some_and(|(node_id, _)| node_id == own_node_id);
 
         Ok(Self {
+            own_node_id,
             omni_paxos,
-            _rocks_db_options: rocks_db_options,
             networking,
             msg_rx,
             request_tx,
             request_rx,
             kv_storage: KvMemoryStorage::default(),
             last_applied_index: 0,
+            is_leader,
         })
     }
 
@@ -133,6 +137,8 @@ impl OmnipaxosMetadataStore {
                 },
             }
 
+            self.check_leadership();
+
             self.send_outgoing_messages();
             self.handle_decided_entries();
         }
@@ -142,8 +148,28 @@ impl OmnipaxosMetadataStore {
         Ok(())
     }
 
+    fn check_leadership(&mut self) {
+        let previous_is_leader = self.is_leader;
+        self.is_leader = self
+            .omni_paxos
+            .get_current_leader()
+            .is_some_and(|(node_id, _)| node_id == self.own_node_id);
+
+        if previous_is_leader && !self.is_leader {
+            // we lost leadership :-(
+            self.kv_storage
+                .fail_callbacks(|| RequestError::Unavailable("lost leadership".into()));
+        }
+    }
+
     fn handle_request(&mut self, request: MetadataStoreRequest) {
         let (callback, request) = request.split_request();
+        trace!("Handle metadata store request: {request:?}");
+
+        if !self.is_leader {
+            callback.fail(RequestError::Unavailable("not leader".into()));
+            return;
+        }
 
         if let Err(err) = self.omni_paxos.append(request) {
             info!("Failed processing request: {err:?}");
@@ -154,6 +180,7 @@ impl OmnipaxosMetadataStore {
     }
 
     fn handle_omni_paxos_message(&mut self, msg: OmniPaxosMessage) {
+        trace!("Handle omni paxos message: {msg:?}");
         self.omni_paxos.handle_incoming(msg);
     }
 
