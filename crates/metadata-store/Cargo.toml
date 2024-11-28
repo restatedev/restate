@@ -20,6 +20,7 @@ restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 assert2 = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
@@ -37,6 +38,7 @@ prost = { workspace = true }
 prost-types = { workspace = true }
 protobuf = "2.28.0"
 raft = { version = "0.7.0" }
+rand = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }

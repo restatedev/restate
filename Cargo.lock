@@ -6674,6 +6674,7 @@ name = "restate-metadata-store"
 version = "1.1.6"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "assert2",
  "async-trait",
  "bytes",
@@ -6693,6 +6694,7 @@ dependencies = [
  "prost-types",
  "protobuf",
  "raft",
+ "rand",
  "restate-core",
  "restate-rocksdb",
  "restate-types",
