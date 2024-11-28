@@ -8,36 +8,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::kv_memory_storage::KvMemoryStorage;
 use crate::network::Networking;
 use crate::raft::storage;
 use crate::raft::storage::RocksDbStorage;
 use crate::{
-    MetadataStoreBackend, MetadataStoreRequest, PreconditionViolation, RequestError,
-    RequestReceiver, RequestSender,
+    Callback, MetadataStoreBackend, Request, RequestError, RequestReceiver, RequestSender,
 };
-use assert2::let_assert;
-use bytes::{Bytes, BytesMut};
-use bytestring::ByteString;
 use futures::TryFutureExt;
 use protobuf::{Message as ProtobufMessage, ProtobufError};
 use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
 use raft::{Config, RawNode};
 use restate_core::cancellation_watcher;
-use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_types::config::{Configuration, RaftOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
-use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
-use restate_types::{flexbuffers_storage_encode_decode, Version};
+use restate_types::storage::StorageDecodeError;
 use slog::o;
-use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 use tracing_slog::TracingSlogDrain;
-use ulid::Ulid;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -70,8 +63,7 @@ pub struct RaftMetadataStore {
     raft_rx: mpsc::Receiver<Message>,
     tick_interval: time::Interval,
 
-    callbacks: HashMap<Ulid, Callback>,
-    kv_entries: HashMap<ByteString, VersionedValue>,
+    kv_storage: KvMemoryStorage,
 
     request_tx: RequestSender,
     request_rx: RequestReceiver,
@@ -121,8 +113,7 @@ impl RaftMetadataStore {
             raft_rx,
             networking,
             tick_interval,
-            callbacks: HashMap::default(),
-            kv_entries: HashMap::default(),
+            kv_storage: KvMemoryStorage::default(),
             request_rx,
             request_tx,
         })
@@ -150,7 +141,7 @@ impl RaftMetadataStore {
                 Some(request) = self.request_rx.recv() => {
                     // todo: Unclear whether every replica should be allowed to propose. Maybe
                     //  only the leader should propose and respond to clients.
-                    let (callback, request) = Self::split_request(request);
+                    let (callback, request) = request.split_request();
 
                     if let Err(err) = request
                         .encode_to_vec()
@@ -246,12 +237,12 @@ impl RaftMetadataStore {
     }
 
     fn register_callback(&mut self, callback: Callback) {
-        self.callbacks.insert(callback.request_id, callback);
+        self.kv_storage.register_callback(callback);
     }
 
     fn send_messages(&mut self, messages: Vec<Message>) {
         for message in messages {
-            if let Err(err) = self.networking.try_send(message.to, message) {
+            if let Err(err) = self.networking.try_send(message) {
                 debug!("failed sending message: {err}");
             }
         }
@@ -279,113 +270,7 @@ impl RaftMetadataStore {
 
     fn handle_normal_entry(&mut self, entry: Entry) -> Result<(), Error> {
         let request = Request::decode_from_bytes(entry.data).map_err(Error::DecodeRequest)?;
-        self.handle_request(request);
-
-        Ok(())
-    }
-
-    fn handle_request(&mut self, request: Request) {
-        match request.kind {
-            RequestKind::Get { key } => {
-                let result = self.get(key);
-                if let Some(callback) = self.callbacks.remove(&request.request_id) {
-                    callback.complete_get(result);
-                }
-            }
-            RequestKind::GetVersion { key } => {
-                let result = self.get_version(key);
-                if let Some(callback) = self.callbacks.remove(&request.request_id) {
-                    callback.complete_get_version(result);
-                }
-            }
-            RequestKind::Put {
-                key,
-                value,
-                precondition,
-            } => {
-                let result = self.put(key, value, precondition);
-                if let Some(callback) = self.callbacks.remove(&request.request_id) {
-                    callback.complete_put(result.map_err(Into::into));
-                }
-            }
-            RequestKind::Delete { key, precondition } => {
-                let result = self.delete(key, precondition);
-                if let Some(callback) = self.callbacks.remove(&request.request_id) {
-                    callback.complete_delete(result.map_err(Into::into));
-                }
-            }
-        }
-    }
-
-    fn get(&self, key: ByteString) -> Option<VersionedValue> {
-        self.kv_entries.get(&key).cloned()
-    }
-
-    fn get_version(&self, key: ByteString) -> Option<Version> {
-        self.kv_entries.get(&key).map(|entry| entry.version)
-    }
-
-    fn put(
-        &mut self,
-        key: ByteString,
-        value: VersionedValue,
-        precondition: Precondition,
-    ) -> Result<(), PreconditionViolation> {
-        match precondition {
-            Precondition::None => {
-                self.kv_entries.insert(key, value);
-            }
-            Precondition::DoesNotExist => {
-                if self.kv_entries.contains_key(&key) {
-                    return Err(PreconditionViolation::kv_pair_exists());
-                }
-
-                self.kv_entries.insert(key, value);
-            }
-            Precondition::MatchesVersion(expected_version) => {
-                let actual_version = self.kv_entries.get(&key).map(|entry| entry.version);
-
-                if actual_version == Some(expected_version) {
-                    self.kv_entries.insert(key, value);
-                } else {
-                    return Err(PreconditionViolation::version_mismatch(
-                        expected_version,
-                        actual_version,
-                    ));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn delete(
-        &mut self,
-        key: ByteString,
-        precondition: Precondition,
-    ) -> Result<(), PreconditionViolation> {
-        match precondition {
-            Precondition::None => {
-                self.kv_entries.remove(&key);
-            }
-            Precondition::DoesNotExist => {
-                if self.kv_entries.contains_key(&key) {
-                    return Err(PreconditionViolation::kv_pair_exists());
-                }
-            }
-            Precondition::MatchesVersion(expected_version) => {
-                let actual_version = self.kv_entries.get(&key).map(|entry| entry.version);
-
-                if actual_version == Some(expected_version) {
-                    self.kv_entries.remove(&key);
-                } else {
-                    return Err(PreconditionViolation::version_mismatch(
-                        expected_version,
-                        actual_version,
-                    ));
-                }
-            }
-        }
+        self.kv_storage.handle_request(request);
 
         Ok(())
     }
@@ -413,172 +298,6 @@ impl RaftMetadataStore {
         self.raw_node.mut_store().store_conf_state(cs).await?;
         Ok(())
     }
-
-    fn split_request(request: MetadataStoreRequest) -> (Callback, Request) {
-        let (request_kind, callback_kind) = match request {
-            MetadataStoreRequest::Get { key, result_tx } => {
-                (RequestKind::Get { key }, CallbackKind::Get { result_tx })
-            }
-            MetadataStoreRequest::GetVersion { key, result_tx } => (
-                RequestKind::GetVersion { key },
-                CallbackKind::GetVersion { result_tx },
-            ),
-            MetadataStoreRequest::Put {
-                key,
-                value,
-                precondition,
-                result_tx,
-            } => (
-                RequestKind::Put {
-                    key,
-                    value,
-                    precondition,
-                },
-                CallbackKind::Put { result_tx },
-            ),
-            MetadataStoreRequest::Delete {
-                key,
-                precondition,
-                result_tx,
-            } => (
-                RequestKind::Delete { key, precondition },
-                CallbackKind::Delete { result_tx },
-            ),
-        };
-
-        let request_id = Ulid::new();
-
-        let callback = Callback {
-            request_id,
-            kind: callback_kind,
-        };
-
-        let request = Request {
-            request_id,
-            kind: request_kind,
-        };
-
-        (callback, request)
-    }
-}
-
-struct Callback {
-    request_id: Ulid,
-    kind: CallbackKind,
-}
-
-impl Callback {
-    fn fail(self, err: impl Into<RequestError>) {
-        match self.kind {
-            CallbackKind::Get { result_tx } => {
-                // err only if the oneshot receiver has gone away
-                let _ = result_tx.send(Err(err.into()));
-            }
-            CallbackKind::GetVersion { result_tx } => {
-                // err only if the oneshot receiver has gone away
-                let _ = result_tx.send(Err(err.into()));
-            }
-            CallbackKind::Put { result_tx } => {
-                // err only if the oneshot receiver has gone away
-                let _ = result_tx.send(Err(err.into()));
-            }
-            CallbackKind::Delete { result_tx } => {
-                // err only if the oneshot receiver has gone away
-                let _ = result_tx.send(Err(err.into()));
-            }
-        };
-    }
-
-    fn complete_get(self, result: Option<VersionedValue>) {
-        let_assert!(
-            CallbackKind::Get { result_tx } = self.kind,
-            "expected 'Get' callback"
-        );
-        // err if caller has gone
-        let _ = result_tx.send(Ok(result));
-    }
-
-    fn complete_get_version(self, result: Option<Version>) {
-        let_assert!(
-            CallbackKind::GetVersion { result_tx } = self.kind,
-            "expected 'GetVersion' callback"
-        );
-        // err if caller has gone
-        let _ = result_tx.send(Ok(result));
-    }
-
-    fn complete_put(self, result: Result<(), RequestError>) {
-        let_assert!(
-            CallbackKind::Put { result_tx } = self.kind,
-            "expected 'Put' callback"
-        );
-        // err if caller has gone
-        let _ = result_tx.send(result);
-    }
-
-    fn complete_delete(self, result: Result<(), RequestError>) {
-        let_assert!(
-            CallbackKind::Delete { result_tx } = self.kind,
-            "expected 'Delete' callback"
-        );
-        // err if caller has gone
-        let _ = result_tx.send(result);
-    }
-}
-
-enum CallbackKind {
-    Get {
-        result_tx: oneshot::Sender<Result<Option<VersionedValue>, RequestError>>,
-    },
-    GetVersion {
-        result_tx: oneshot::Sender<Result<Option<Version>, RequestError>>,
-    },
-    Put {
-        result_tx: oneshot::Sender<Result<(), RequestError>>,
-    },
-    Delete {
-        result_tx: oneshot::Sender<Result<(), RequestError>>,
-    },
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct Request {
-    request_id: Ulid,
-    kind: RequestKind,
-}
-
-flexbuffers_storage_encode_decode!(Request);
-
-impl Request {
-    fn encode_to_vec(&self) -> Result<Vec<u8>, StorageEncodeError> {
-        let mut buffer = BytesMut::new();
-        // todo: Removing support for BufMut requires an extra copy from BytesMut to Vec :-(
-        StorageCodec::encode(self, &mut buffer)?;
-        Ok(buffer.to_vec())
-    }
-
-    fn decode_from_bytes(mut bytes: Bytes) -> Result<Self, StorageDecodeError> {
-        StorageCodec::decode::<Request, _>(&mut bytes)
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-enum RequestKind {
-    Get {
-        key: ByteString,
-    },
-    GetVersion {
-        key: ByteString,
-    },
-    Put {
-        key: ByteString,
-        value: VersionedValue,
-        precondition: Precondition,
-    },
-    Delete {
-        key: ByteString,
-        precondition: Precondition,
-    },
 }
 
 impl From<raft::Error> for RequestError {
