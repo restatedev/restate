@@ -1,4 +1,4 @@
-// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2024 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -16,27 +16,27 @@ use crate::network::{
     ConnectionManager, MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, NetworkMessage,
     Networking,
 };
-use crate::raft::store::RaftMetadataStore;
+use crate::omnipaxos::store::OmnipaxosMetadataStore;
+use crate::omnipaxos::OmniPaxosMessage;
 use crate::{grpc_svc, network, Error, MetadataStoreService};
-use anyhow::Context;
 use assert2::let_assert;
 use bytes::{Buf, BufMut};
 use futures::TryFutureExt;
-use protobuf::Message as ProtobufMessage;
 use restate_core::{TaskCenter, TaskKind};
 use restate_types::config::{Kind, MetadataStoreOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
+use restate_types::storage::{decode_from_flexbuffers, encode_as_flexbuffers};
 use tokio::sync::mpsc;
 
-pub struct RaftMetadataStoreService {
+pub struct OmnipaxosMetadataStoreService {
     health_status: HealthStatus<MetadataServerStatus>,
     options: BoxedLiveLoad<MetadataStoreOptions>,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
 }
 
-impl RaftMetadataStoreService {
+impl OmnipaxosMetadataStoreService {
     pub fn new(
         health_status: HealthStatus<MetadataServerStatus>,
         options: BoxedLiveLoad<MetadataStoreOptions>,
@@ -51,15 +51,15 @@ impl RaftMetadataStoreService {
 }
 
 #[async_trait::async_trait]
-impl MetadataStoreService for RaftMetadataStoreService {
+impl MetadataStoreService for OmnipaxosMetadataStoreService {
     async fn run(mut self) -> Result<(), Error> {
         let store_options = self.options.live_load();
-        let_assert!(Kind::Raft(raft_options) = &store_options.kind);
+        let_assert!(Kind::Omnipaxos(omnipaxos_options) = &store_options.kind);
 
         let (router_tx, router_rx) = mpsc::channel(128);
-        let connection_manager = ConnectionManager::new(raft_options.id, router_tx);
-        let store = RaftMetadataStore::create(
-            raft_options,
+        let connection_manager = ConnectionManager::new(omnipaxos_options.id.into(), router_tx);
+        let store = OmnipaxosMetadataStore::create(
+            omnipaxos_options,
             self.rocksdb_options,
             Networking::new(connection_manager.clone()),
             router_rx,
@@ -84,7 +84,7 @@ impl MetadataStoreService for RaftMetadataStoreService {
 
         TaskCenter::spawn_child(
             TaskKind::RpcServer,
-            "metadata-store-grpc",
+            "omnipaxos-metadata-store-grpc",
             grpc_server.run(self.health_status).map_err(Into::into),
         )?;
 
@@ -94,19 +94,19 @@ impl MetadataStoreService for RaftMetadataStoreService {
     }
 }
 
-impl NetworkMessage for raft::prelude::Message {
+impl NetworkMessage for OmniPaxosMessage {
     fn to(&self) -> u64 {
-        self.to
+        self.get_receiver()
     }
 
     fn serialize<B: BufMut>(&self, buffer: &mut B) {
-        let mut writer = buffer.writer();
-        self.write_to_writer(&mut writer)
-            .expect("should be able to write message");
+        encode_as_flexbuffers(self, buffer).expect("serialization should not fail");
     }
 
-    fn deserialize<B: Buf>(buffer: &mut B) -> anyhow::Result<Self> {
-        ProtobufMessage::parse_from_reader(&mut buffer.reader())
-            .context("failed deserializing message")
+    fn deserialize<B: Buf>(buffer: &mut B) -> anyhow::Result<Self>
+    where
+        Self: Sized,
+    {
+        decode_from_flexbuffers(buffer).map_err(Into::into)
     }
 }
