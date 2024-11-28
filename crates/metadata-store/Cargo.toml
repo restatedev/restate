@@ -26,13 +26,13 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
+flexbuffers = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
-omnipaxos = { version = "0.2.2", features = ["macros", "logging", "serde"]}
-omnipaxos_storage = { version = "0.2.2" }
+omnipaxos = { git = "https://github.com/haraldng/omnipaxos", rev = "1b6dd0d84c2c74dd1ed0dd73fad6ce980d9a1c5a", features = ["macros", "logging", "serde"]}
 prost = { workspace = true }
 prost-types = { workspace = true }
 protobuf = "2.28.0"
