@@ -78,7 +78,7 @@ pub fn node_dir() -> PathBuf {
 }
 
 #[cfg(not(any(test, feature = "test-util")))]
-fn data_dir(dir: &str) -> PathBuf {
+pub fn data_dir(dir: &str) -> PathBuf {
     node_dir().join(dir)
 }
 
