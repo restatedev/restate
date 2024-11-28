@@ -8,8 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytestring::ByteString;
+use rand::seq::SliceRandom;
+use std::sync::Arc;
+use std::time::Duration;
 use tonic::transport::Channel;
 use tonic::{Code, Status};
 
@@ -19,6 +23,7 @@ use restate_core::metadata_store::{
 use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
 use restate_core::network::net_util::CommonClientConnectionOptions;
 use restate_types::net::AdvertisedAddress;
+use restate_types::retries::RetryPolicy;
 use restate_types::Version;
 
 use crate::grpc::pb_conversions::ConversionError;
@@ -28,31 +33,81 @@ use crate::grpc_svc::{DeleteRequest, GetRequest, PutRequest};
 /// Client end to interact with the metadata store.
 #[derive(Debug, Clone)]
 pub struct GrpcMetadataStoreClient {
-    svc_client: MetadataStoreSvcClient<Channel>,
+    channels: Arc<Vec<Channel>>,
+    svc_client: Arc<ArcSwap<MetadataStoreSvcClient<Channel>>>,
 }
 
 impl GrpcMetadataStoreClient {
     pub fn new<T: CommonClientConnectionOptions>(
-        metadata_store_address: AdvertisedAddress,
+        metadata_store_addresses: Vec<AdvertisedAddress>,
         options: &T,
     ) -> Self {
-        let channel = create_tonic_channel_from_advertised_address(metadata_store_address, options);
+        assert!(
+            !metadata_store_addresses.is_empty(),
+            "At least one metadata store needs to be configured"
+        );
+        let channels: Vec<_> = metadata_store_addresses
+            .into_iter()
+            .map(|address| create_tonic_channel_from_advertised_address(address, options))
+            .collect();
+        let svc_client = MetadataStoreSvcClient::new(
+            channels
+                .first()
+                .expect("at least one address mus be configured")
+                .clone(),
+        );
 
         Self {
-            svc_client: MetadataStoreSvcClient::new(channel),
+            channels: Arc::new(channels),
+            svc_client: Arc::new(ArcSwap::from_pointee(svc_client)),
         }
+    }
+
+    fn retry_policy() -> RetryPolicy {
+        RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.0,
+            Some(20),
+            Some(Duration::from_secs(2)),
+        )
+    }
+
+    fn choose_different_endpoint(&self) {
+        // let's try another endpoint
+        let mut rng = rand::thread_rng();
+        let new_svc_client = MetadataStoreSvcClient::new(
+            self.channels
+                .choose(&mut rng)
+                .expect("at least one channel be present")
+                .clone(),
+        );
+        self.svc_client.store(Arc::new(new_svc_client))
     }
 }
 
 #[async_trait]
 impl MetadataStore for GrpcMetadataStoreClient {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
-        let response = self
-            .svc_client
-            .clone()
-            .get(GetRequest { key: key.into() })
-            .await
-            .map_err(map_status_to_read_error)?;
+        let retry_policy = Self::retry_policy();
+
+        let response = retry_policy
+            .retry(|| async {
+                let mut client = self.svc_client.load().as_ref().clone();
+
+                let response = client
+                    .get(GetRequest {
+                        key: key.clone().into(),
+                    })
+                    .await
+                    .map_err(map_status_to_read_error);
+
+                if response.is_err() {
+                    self.choose_different_endpoint();
+                }
+
+                response
+            })
+            .await?;
 
         response
             .into_inner()
@@ -61,12 +116,26 @@ impl MetadataStore for GrpcMetadataStoreClient {
     }
 
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
-        let response = self
-            .svc_client
-            .clone()
-            .get_version(GetRequest { key: key.into() })
-            .await
-            .map_err(map_status_to_read_error)?;
+        let retry_policy = Self::retry_policy();
+
+        let response = retry_policy
+            .retry(|| async {
+                let mut client = self.svc_client.load().as_ref().clone();
+
+                let response = client
+                    .get_version(GetRequest {
+                        key: key.clone().into(),
+                    })
+                    .await
+                    .map_err(map_status_to_read_error);
+
+                if response.is_err() {
+                    self.choose_different_endpoint();
+                }
+
+                response
+            })
+            .await?;
 
         Ok(response.into_inner().into())
     }
@@ -77,28 +146,54 @@ impl MetadataStore for GrpcMetadataStoreClient {
         value: VersionedValue,
         precondition: Precondition,
     ) -> Result<(), WriteError> {
-        self.svc_client
-            .clone()
-            .put(PutRequest {
-                key: key.into(),
-                value: Some(value.into()),
-                precondition: Some(precondition.into()),
+        let retry_policy = Self::retry_policy();
+
+        retry_policy
+            .retry(|| async {
+                let mut client = self.svc_client.load().as_ref().clone();
+
+                let response = client
+                    .put(PutRequest {
+                        key: key.clone().into(),
+                        value: Some(value.clone().into()),
+                        precondition: Some(precondition.clone().into()),
+                    })
+                    .await
+                    .map_err(map_status_to_write_error);
+
+                if response.is_err() {
+                    self.choose_different_endpoint();
+                }
+
+                response
             })
-            .await
-            .map_err(map_status_to_write_error)?;
+            .await?;
 
         Ok(())
     }
 
     async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
-        self.svc_client
-            .clone()
-            .delete(DeleteRequest {
-                key: key.into(),
-                precondition: Some(precondition.into()),
+        let retry_policy = Self::retry_policy();
+
+        retry_policy
+            .retry(|| async {
+                let mut client = self.svc_client.load().as_ref().clone();
+
+                let response = client
+                    .delete(DeleteRequest {
+                        key: key.clone().into(),
+                        precondition: Some(precondition.clone().into()),
+                    })
+                    .await
+                    .map_err(map_status_to_write_error);
+
+                if response.is_err() {
+                    self.choose_different_endpoint();
+                }
+
+                response
             })
-            .await
-            .map_err(map_status_to_write_error)?;
+            .await?;
 
         Ok(())
     }

@@ -90,7 +90,9 @@ impl OmnipaxosMetadataStore {
 
         let omni_paxos = op_config.build(rocksdb_storage)?;
 
-        let is_leader = omni_paxos.get_current_leader().is_some_and(|(node_id, _)| node_id == own_node_id);
+        let is_leader = omni_paxos
+            .get_current_leader()
+            .is_some_and(|(node_id, _)| node_id == own_node_id);
 
         Ok(Self {
             own_node_id,
@@ -143,11 +145,15 @@ impl OmnipaxosMetadataStore {
 
     fn check_leadership(&mut self) {
         let previous_is_leader = self.is_leader;
-        self.is_leader = self.omni_paxos.get_current_leader().is_some_and(|(node_id, _)| node_id == self.own_node_id);
+        self.is_leader = self
+            .omni_paxos
+            .get_current_leader()
+            .is_some_and(|(node_id, _)| node_id == self.own_node_id);
 
         if previous_is_leader && !self.is_leader {
             // we lost leadership :-(
-            self.kv_storage.fail_callbacks(|| RequestError::Unavailable("lost leadership".into()));
+            self.kv_storage
+                .fail_callbacks(|| RequestError::Unavailable("lost leadership".into()));
         }
     }
 
