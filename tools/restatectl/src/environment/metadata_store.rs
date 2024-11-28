@@ -40,7 +40,7 @@ pub async fn start_metadata_store(
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
     metadata_store_client_options.metadata_store_client = config::MetadataStoreClient::Embedded {
-        address: AdvertisedAddress::Uds(uds),
+        addresses: vec![AdvertisedAddress::Uds(uds)],
     };
 
     let rpc_server_health_status = HealthStatus::default();
