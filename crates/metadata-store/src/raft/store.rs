@@ -79,7 +79,7 @@ impl RaftMetadataStore {
         let (request_tx, request_rx) = mpsc::channel(2);
 
         let config = Config {
-            id: raft_options.id,
+            id: raft_options.id.get(),
             ..Default::default()
         };
 
@@ -89,13 +89,13 @@ impl RaftMetadataStore {
             RocksDbStorage::create(metadata_store_options.live_load(), rocksdb_options).await?;
 
         // todo: Only write configuration on initialization
-        let voters: Vec<_> = raft_options.peers.keys().cloned().collect();
+        let voters: Vec<_> = raft_options.peers.keys().map(|peer| peer.get()).collect();
         let conf_state = ConfState::from((voters, vec![]));
         storage.store_conf_state(conf_state).await?;
 
         // todo: Persist address information with configuration
         for (peer, address) in &raft_options.peers {
-            networking.register_address(*peer, address.clone());
+            networking.register_address(peer.get(), address.clone());
         }
 
         let drain = TracingSlogDrain;
