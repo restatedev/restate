@@ -13,7 +13,6 @@ use bytestring::ByteString;
 use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_types::Version;
 use std::collections::HashMap;
-use tracing::debug;
 use ulid::Ulid;
 
 #[derive(Default)]
@@ -25,7 +24,6 @@ pub struct KvMemoryStorage {
 impl KvMemoryStorage {
     pub fn register_callback(&mut self, callback: Callback) {
         self.callbacks.insert(callback.request_id, callback);
-        debug!("Pending callbacks: {}", self.callbacks.len());
     }
 
     pub fn fail_callbacks<F: Fn() -> RequestError>(&mut self, cause: F) {
@@ -35,11 +33,6 @@ impl KvMemoryStorage {
     }
 
     pub fn handle_request(&mut self, request: Request) {
-        debug!("Handle request: {request:?}");
-        debug!(
-            "Pending callbacks before handling request: {}",
-            self.callbacks.len()
-        );
         match request.kind {
             RequestKind::Get { key } => {
                 let result = self.get(key);
@@ -70,11 +63,6 @@ impl KvMemoryStorage {
                 }
             }
         }
-
-        debug!(
-            "Pending callbacks after handling request: {}",
-            self.callbacks.len()
-        );
     }
 
     pub fn get(&self, key: ByteString) -> Option<VersionedValue> {
