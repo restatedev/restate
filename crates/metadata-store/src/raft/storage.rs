@@ -17,7 +17,7 @@ use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::{data_dir, MetadataStoreOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
 use rocksdb::{BoundColumnFamily, ReadOptions, WriteBatch, WriteOptions, DB};
 use std::mem::size_of;
@@ -86,7 +86,7 @@ impl RocksDbStorage {
         let cfs = vec![CfName::new(RAFT_CF)];
         let db_spec = DbSpecBuilder::new(
             db_name.clone(),
-            options.data_dir(),
+            data_dir("raft-metadata-store"),
             util::db_options(options),
         )
         .add_cf_pattern(
