@@ -12,6 +12,7 @@ use crate::{network, MetadataStoreRunner, Request};
 use bytes::{Buf, BufMut};
 use omnipaxos::messages::Message;
 use restate_core::network::NetworkServerBuilder;
+use restate_rocksdb::RocksError;
 use restate_types::config::{OmniPaxosOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
@@ -23,11 +24,23 @@ use crate::network::{
     ConnectionManager, MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, NetworkMessage,
     Networking,
 };
-use crate::omnipaxos::store::{BuildError, OmnipaxosMetadataStore};
+use crate::omnipaxos::store::OmnipaxosMetadataStore;
 
+mod storage;
 mod store;
 
 type OmniPaxosMessage = Message<Request>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    #[error("failed building OmniPaxos: {0}")]
+    OmniPaxos(#[from] omnipaxos::errors::ConfigError),
+    #[error("failed opening RocksDb: {0}")]
+    OpeningRocksDb(#[from] RocksError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {}
 
 pub(crate) async fn create_store(
     omnipaxos_options: &OmniPaxosOptions,
