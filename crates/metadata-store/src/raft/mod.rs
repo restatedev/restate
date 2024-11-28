@@ -35,7 +35,7 @@ pub async fn create_store(
     server_builder: &mut NetworkServerBuilder,
 ) -> Result<MetadataStoreRunner<RaftMetadataStore>, BuildError> {
     let (router_tx, router_rx) = mpsc::channel(128);
-    let connection_manager = ConnectionManager::new(raft_options.id, router_tx);
+    let connection_manager = ConnectionManager::new(raft_options.id.get(), router_tx);
     let store = RaftMetadataStore::create(
         raft_options,
         rocksdb_options,
