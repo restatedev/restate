@@ -514,8 +514,8 @@ pub enum ObjectStoreCredentials {
 pub enum MetadataStoreClient {
     /// Connects to an embedded metadata store that is run by nodes that run with the MetadataStore role.
     Embedded {
-        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-        address: AdvertisedAddress,
+        #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
+        addresses: Vec<AdvertisedAddress>,
     },
     /// Uses external etcd as metadata store.
     /// The addresses are formatted as `host:port`
@@ -537,9 +537,9 @@ impl Default for MetadataStoreClientOptions {
     fn default() -> Self {
         Self {
             metadata_store_client: MetadataStoreClient::Embedded {
-                address: "http://127.0.0.1:5122"
+                addresses: vec!["http://127.0.0.1:5122"
                     .parse()
-                    .expect("valid metadata store address"),
+                    .expect("valid metadata store address")],
             },
             metadata_store_connect_timeout: Duration::from_secs(5).into(),
             metadata_store_keep_alive_interval: Duration::from_secs(40).into(),

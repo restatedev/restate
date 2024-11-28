@@ -311,7 +311,7 @@ async fn start_metadata_store(
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
     metadata_store_client_options.metadata_store_client = config::MetadataStoreClient::Embedded {
-        address: AdvertisedAddress::Uds(uds),
+        addresses: vec![AdvertisedAddress::Uds(uds)],
     };
 
     let rpc_server_health_status = HealthStatus::default();
@@ -334,7 +334,7 @@ async fn start_metadata_store(
     )?;
 
     assert2::let_assert!(
-        config::MetadataStoreClient::Embedded { address } =
+        config::MetadataStoreClient::Embedded { addresses } =
             metadata_store_client_options.metadata_store_client.clone()
     );
 
@@ -342,7 +342,7 @@ async fn start_metadata_store(
         .wait_for_value(NodeRpcStatus::Ready)
         .await;
 
-    let grpc_client = GrpcMetadataStoreClient::new(address, &metadata_store_client_options);
+    let grpc_client = GrpcMetadataStoreClient::new(addresses, &metadata_store_client_options);
     let client = MetadataStoreClient::new(
         grpc_client,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),

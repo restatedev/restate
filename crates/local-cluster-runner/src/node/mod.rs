@@ -188,7 +188,7 @@ impl Node {
             );
             let metadata_node_address = metadata_node.advertised_address().clone();
             *metadata_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-                address: metadata_node_address.clone(),
+                addresses: vec![metadata_node_address.clone()],
             };
 
             nodes.push(metadata_node);
@@ -217,7 +217,7 @@ impl Node {
                 roles,
             );
             *node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-                address: metadata_node_address.clone(),
+                addresses: vec![metadata_node_address.clone()],
             };
             nodes.push(node);
         }
@@ -237,15 +237,17 @@ impl Node {
         let base_dir = base_dir.into();
 
         // ensure file paths are relative to the base dir
-        if let MetadataStoreClient::Embedded {
-            address: AdvertisedAddress::Uds(file),
-        } = &mut self
+        if let MetadataStoreClient::Embedded { addresses } = &mut self
             .base_config
             .common
             .metadata_store_client
             .metadata_store_client
         {
-            *file = base_dir.join(&*file)
+            for advertised_address in addresses {
+                if let AdvertisedAddress::Uds(file) = advertised_address {
+                    *file = base_dir.join(&*file)
+                }
+            }
         }
         if self.base_config.common.bind_address.is_none() {
             // Derive bind_address from advertised_address

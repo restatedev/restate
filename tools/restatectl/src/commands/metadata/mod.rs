@@ -109,8 +109,8 @@ pub async fn create_metadata_store_client(
 ) -> anyhow::Result<MetadataStoreClient> {
     let client = match opts.remote_service_type {
         RemoteServiceType::Restate => restate_types::config::MetadataStoreClient::Embedded {
-            address: AdvertisedAddress::from_str(opts.address.as_str())
-                .map_err(|e| anyhow::anyhow!("Failed to parse address: {}", e))?,
+            addresses: vec![AdvertisedAddress::from_str(opts.address.as_str())
+                .map_err(|e| anyhow::anyhow!("Failed to parse address: {}", e))?],
         },
         RemoteServiceType::Etcd => restate_types::config::MetadataStoreClient::Etcd {
             addresses: opts
