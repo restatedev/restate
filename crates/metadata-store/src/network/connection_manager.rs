@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::network::Message;
+use crate::network::grpc_svc;
 use crate::network::NetworkMessage;
 use futures::StreamExt;
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -35,7 +36,7 @@ pub struct ConnectionManager<M> {
 
 impl<M> ConnectionManager<M>
 where
-    M: Message + Send + 'static,
+    M: NetworkMessage + Send + 'static,
 {
     pub fn new(identity: u64, router: mpsc::Sender<M>) -> Self {
         ConnectionManager {
@@ -50,8 +51,8 @@ where
     pub fn accept_connection(
         &self,
         raft_peer: u64,
-        incoming_rx: tonic::Streaming<NetworkMessage>,
-    ) -> Result<BoxStream<NetworkMessage>, ConnectionError> {
+        incoming_rx: tonic::Streaming<grpc_svc::NetworkMessage>,
+    ) -> Result<BoxStream<grpc_svc::NetworkMessage>, ConnectionError> {
         let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
         self.run_connection(raft_peer, outgoing_tx, incoming_rx)?;
 
@@ -64,8 +65,8 @@ where
     pub fn run_connection(
         &self,
         remote_peer: u64,
-        outgoing_tx: mpsc::Sender<NetworkMessage>,
-        incoming_rx: tonic::Streaming<NetworkMessage>,
+        outgoing_tx: mpsc::Sender<grpc_svc::NetworkMessage>,
+        incoming_rx: tonic::Streaming<grpc_svc::NetworkMessage>,
     ) -> Result<(), ConnectionError> {
         let mut guard = self.inner.connections.lock().unwrap();
 
@@ -103,10 +104,13 @@ struct ConnectionReactor<M> {
 
 impl<M> ConnectionReactor<M>
 where
-    M: Message,
+    M: NetworkMessage,
 {
     #[instrument(level = "debug", skip_all, fields(remote_peer = %self.remote_peer))]
-    async fn run(self, mut incoming_rx: tonic::Streaming<NetworkMessage>) -> anyhow::Result<()> {
+    async fn run(
+        self,
+        mut incoming_rx: tonic::Streaming<grpc_svc::NetworkMessage>,
+    ) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         debug!("Run connection reactor");
 
@@ -120,7 +124,8 @@ where
                         Some(message) => {
                             match message {
                                 Ok(message) => {
-                                    let message = M::deserialize(&message.payload)?;
+                                    let mut cursor = Cursor::new(&message.payload);
+                                    let message = M::deserialize(&mut cursor)?;
 
                                     assert_eq!(message.to(), self.connection_manager.identity, "Expect to only receive messages for peer '{}'", self.connection_manager.identity);
 
@@ -179,15 +184,18 @@ impl<M> ConnectionManagerInner<M> {
 
 #[derive(Debug, Clone)]
 pub struct Connection {
-    tx: mpsc::Sender<NetworkMessage>,
+    tx: mpsc::Sender<grpc_svc::NetworkMessage>,
 }
 
 impl Connection {
-    pub fn new(tx: mpsc::Sender<NetworkMessage>) -> Self {
+    pub fn new(tx: mpsc::Sender<grpc_svc::NetworkMessage>) -> Self {
         Connection { tx }
     }
 
-    pub fn try_send(&self, message: NetworkMessage) -> Result<(), TrySendError<NetworkMessage>> {
+    pub fn try_send(
+        &self,
+        message: grpc_svc::NetworkMessage,
+    ) -> Result<(), TrySendError<grpc_svc::NetworkMessage>> {
         self.tx.try_send(message)
     }
 }

@@ -43,7 +43,7 @@ use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::GenericError;
 use restate_types::health::Health;
 use restate_types::live::Live;
-use restate_types::logs::metadata::{ProviderConfiguration, Logs, LogsConfiguration};
+use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
