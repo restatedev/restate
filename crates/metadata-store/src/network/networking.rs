@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use crate::network::connection_manager::ConnectionManager;
+use crate::network::grpc_svc;
 use crate::network::handler::PEER_METADATA_KEY;
-use crate::network::NetworkMessage;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use futures::FutureExt;
 use restate_core::network::net_util;
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
@@ -47,7 +47,7 @@ pub struct Networking<M> {
 
 impl<M> Networking<M>
 where
-    M: Message + Clone + Send + 'static,
+    M: NetworkMessage + Clone + Send + 'static,
 {
     pub fn new(connection_manager: ConnectionManager<M>) -> Self {
         Networking {
@@ -62,12 +62,13 @@ where
         self.addresses.insert(peer, address);
     }
 
-    pub fn try_send(&mut self, target: u64, message: M) -> Result<(), TrySendError<M>> {
+    pub fn try_send(&mut self, message: M) -> Result<(), TrySendError<M>> {
+        let target = message.to();
         if let Some(connection) = self.connection_manager.get_connection(target) {
             message.serialize(&mut self.serde_buffer);
 
             // todo: Maybe send message directly w/o indirection through NetworkMessage
-            let network_message = NetworkMessage {
+            let network_message = grpc_svc::NetworkMessage {
                 payload: self.serde_buffer.split().freeze(),
             };
 
@@ -151,15 +152,15 @@ where
 }
 
 /// A message that can be sent over the network
-pub trait Message {
+pub trait NetworkMessage {
     /// The target of the message
     fn to(&self) -> u64;
 
     /// Serialize the message into the buffer
-    fn serialize(&self, buffer: impl BufMut);
+    fn serialize<B: BufMut>(&self, buffer: &mut B);
 
     /// Deserialize the message from the bytes
-    fn deserialize(bytes: &Bytes) -> anyhow::Result<Self>
+    fn deserialize<B: Buf>(buffer: &mut B) -> anyhow::Result<Self>
     where
         Self: Sized;
 }
