@@ -147,7 +147,7 @@ where
     let resource = opentelemetry_sdk::Resource::new(vec![
         KeyValue::new(
             opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-            service_name.clone(),
+            format!("{}@{}", service_name, common_opts.node_name()),
         ),
         KeyValue::new(
             opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE,
