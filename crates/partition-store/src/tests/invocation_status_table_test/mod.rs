@@ -172,7 +172,7 @@ async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
     );
 }
 
-async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut T) {
+async fn verify_all_svc_with_status_invoked_or_killed<T: InvocationStatusTable>(txn: &mut T) {
     let actual = txn
         .all_invoked_or_killed_invocations()
         .try_collect::<Vec<_>>()
@@ -207,7 +207,7 @@ async fn test_invocation_status() {
     populate_data(&mut txn).await;
 
     verify_point_lookups(&mut txn).await;
-    verify_all_svc_with_status_invoked(&mut txn).await;
+    verify_all_svc_with_status_invoked_or_killed(&mut txn).await;
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]

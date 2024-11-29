@@ -166,7 +166,7 @@ fn delete_invocation_status<S: StorageAccess>(storage: &mut S, invocation_id: &I
     storage.delete_key(&create_invocation_status_key(invocation_id));
 }
 
-fn invoked_invocations<S: StorageAccess>(
+fn invoked_or_killed_invocations<S: StorageAccess>(
     storage: &mut S,
     partition_key_range: RangeInclusive<PartitionKey>,
 ) -> Vec<Result<InvokedOrKilledInvocationStatusLite>> {
@@ -185,7 +185,7 @@ fn invoked_invocations<S: StorageAccess>(
     invocations.extend(storage.for_each_key_value_in_place(
         FullScanPartitionKeyRange::<InvocationStatusKey>(partition_key_range),
         |mut k, mut v| {
-            let result = read_invoked_full_invocation_id(&mut k, &mut v).transpose();
+            let result = read_invoked_or_killed_status_lite(&mut k, &mut v).transpose();
             if let Some(res) = result {
                 TableScanIterationDecision::Emit(res)
             } else {
@@ -254,7 +254,7 @@ fn read_invoked_v1_full_invocation_id(
     }
 }
 
-fn read_invoked_full_invocation_id(
+fn read_invoked_or_killed_status_lite(
     mut k: &mut &[u8],
     v: &mut &[u8],
 ) -> Result<Option<InvokedOrKilledInvocationStatusLite>> {
@@ -291,7 +291,7 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
     fn all_invoked_or_killed_invocations(
         &mut self,
     ) -> impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send {
-        stream::iter(invoked_invocations(
+        stream::iter(invoked_or_killed_invocations(
             self,
             self.partition_key_range().clone(),
         ))
@@ -317,7 +317,7 @@ impl<'a> ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'a> {
     fn all_invoked_or_killed_invocations(
         &mut self,
     ) -> impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send {
-        stream::iter(invoked_invocations(
+        stream::iter(invoked_or_killed_invocations(
             self,
             self.partition_key_range().clone(),
         ))

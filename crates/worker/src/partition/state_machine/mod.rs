@@ -906,6 +906,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 .await?
             }
             InvocationStatus::Killed(_) => {
+                trace!("Received kill command for an already killed invocation with id '{invocation_id}'.");
                 // Nothing to do here really, let's send again the abort signal to the invoker just in case
                 Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, true);
             }
@@ -988,6 +989,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 .await?
             }
             InvocationStatus::Killed(_) => {
+                trace!(
+                    "Received cancel command for an already killed invocation '{invocation_id}'."
+                );
                 // Nothing to do here really, let's send again the abort signal to the invoker just in case
                 Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, true);
             }
@@ -1002,7 +1006,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                // TODO
                 Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
             }
         };
@@ -1717,6 +1720,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 invocation_id,
                 invocation_metadata.invocation_target.clone(),
                 invocation_metadata.journal_metadata.span_context.clone(),
+                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
                 unsafe { invocation_metadata.timestamps.creation_time() },
                 match &response_result {
                     ResponseResult::Success(_) => Ok(()),
@@ -1739,6 +1743,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 invocation_id,
                 invocation_target.clone(),
                 invocation_metadata.journal_metadata.span_context.clone(),
+                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
                 unsafe { invocation_metadata.timestamps.creation_time() },
                 Ok(()),
             );

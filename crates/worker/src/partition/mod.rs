@@ -217,15 +217,13 @@ where
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
 
-        let experimental_features = if disable_idempotency_table {
-            ExperimentalFeature::DisableIdempotencyTable.into()
-        } else {
-            EnumSet::empty()
-        } | if invocation_status_killed {
-            ExperimentalFeature::InvocationStatusKilled.into()
-        } else {
-            EnumSet::empty()
-        };
+        let mut experimental_features = EnumSet::empty();
+        if disable_idempotency_table {
+            experimental_features |= ExperimentalFeature::DisableIdempotencyTable;
+        }
+        if invocation_status_killed {
+            experimental_features |= ExperimentalFeature::InvocationStatusKilled;
+        }
 
         let state_machine = StateMachine::new(
             inbox_seq_number,
