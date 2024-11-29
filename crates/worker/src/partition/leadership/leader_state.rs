@@ -11,7 +11,7 @@
 use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_HANDLE_LEADER_ACTIONS};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::self_proposer::SelfProposer;
-use crate::partition::leadership::{ActionEffect, Error, TimerService};
+use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
 use crate::partition::shuffle::HintSender;
 use crate::partition::state_machine::Action;
 use crate::partition::{respond_to_rpc, shuffle};
@@ -67,7 +67,7 @@ pub struct LeaderState {
     >,
     awaiting_rpc_self_propose: FuturesUnordered<SelfAppendFuture>,
 
-    invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
+    invoker_stream: InvokerStream,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
     pub pending_cleanup_timers_to_schedule: VecDeque<(InvocationId, Duration)>,
     cleaner_task_id: TaskId,
@@ -84,7 +84,7 @@ impl LeaderState {
         shuffle_hint_tx: HintSender,
         timer_service: TimerService,
         self_proposer: SelfProposer,
-        invoker_rx: tokio::sync::mpsc::Receiver<restate_invoker_api::Effect>,
+        invoker_rx: InvokerStream,
         shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
     ) -> Self {
         LeaderState {
@@ -99,7 +99,7 @@ impl LeaderState {
             self_proposer,
             awaiting_rpc_actions: Default::default(),
             awaiting_rpc_self_propose: Default::default(),
-            invoker_stream: ReceiverStream::new(invoker_rx),
+            invoker_stream: invoker_rx,
             shuffle_stream: ReceiverStream::new(shuffle_rx),
             pending_cleanup_timers_to_schedule: Default::default(),
         }
@@ -392,8 +392,11 @@ impl LeaderState {
                 .notify_completion(partition_leader_epoch, invocation_id, completion)
                 .await
                 .map_err(Error::Invoker)?,
-            Action::AbortInvocation(invocation_id) => invoker_tx
-                .abort_invocation(partition_leader_epoch, invocation_id)
+            Action::AbortInvocation {
+                invocation_id,
+                acknowledge,
+            } => invoker_tx
+                .abort_invocation(partition_leader_epoch, invocation_id, acknowledge)
                 .await
                 .map_err(Error::Invoker)?,
             Action::IngressResponse {

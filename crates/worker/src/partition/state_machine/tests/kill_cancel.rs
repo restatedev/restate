@@ -27,7 +27,7 @@ use test_log::test;
 #[rstest]
 #[case(ExperimentalFeature::InvocationStatusKilled.into())]
 #[case(EnumSet::empty())]
-#[test(restate_core::test)]
+#[restate_core::test]
 async fn kill_inboxed_invocation(
     #[case] experimental_features: EnumSet<ExperimentalFeature>,
 ) -> anyhow::Result<()> {
