@@ -3623,7 +3623,7 @@ dependencies = [
  "log",
  "num-format",
  "once_cell",
- "quick-xml",
+ "quick-xml 0.26.0",
  "rgb",
  "str_stack",
 ]
@@ -4607,18 +4607,27 @@ dependencies = [
 
 [[package]]
 name = "object_store"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25a0c4b3a0e31f8b66f71ad8064521efa773910196e2cde791436f13409f3b45"
+checksum = "6eb4c22c6154a1e759d7099f9ffad7cc5ef8245f9efbab4a41b92623079c82f3"
 dependencies = [
  "async-trait",
+ "base64 0.22.0",
  "bytes",
  "chrono",
  "futures",
  "humantime",
+ "hyper 1.4.1",
  "itertools 0.13.0",
+ "md-5",
  "parking_lot",
  "percent-encoding",
+ "quick-xml 0.36.2",
+ "rand",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
  "snafu 0.8.5",
  "tokio",
  "tracing",
@@ -5482,6 +5491,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.36.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5808,6 +5827,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls 0.23.11",
+ "rustls-native-certs 0.7.1",
  "rustls-pemfile 2.1.2",
  "rustls-pki-types",
  "serde",
@@ -6084,6 +6104,7 @@ dependencies = [
  "axum",
  "bytes",
  "bytestring",
+ "ciborium",
  "dashmap",
  "derive_builder",
  "derive_more",
@@ -6100,6 +6121,7 @@ dependencies = [
  "hyper 1.4.1",
  "hyper-util",
  "metrics",
+ "object_store",
  "once_cell",
  "opentelemetry",
  "parking_lot",

@@ -9,5 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod etcd;
+mod objstore;
 
 pub use etcd::EtcdMetadataStore;
+pub use objstore::create_object_store_based_meta_store;

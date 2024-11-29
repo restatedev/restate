@@ -13,6 +13,7 @@ mod store;
 
 mod service;
 
+use restate_core::metadata_store::providers::create_object_store_based_meta_store;
 use restate_core::metadata_store::{providers::EtcdMetadataStore, MetadataStoreClient};
 use restate_types::{
     config::{MetadataStoreClient as MetadataStoreClientConfig, MetadataStoreClientOptions},
@@ -39,6 +40,10 @@ pub async fn create_client(
         }
         MetadataStoreClientConfig::Etcd { addresses } => {
             let store = EtcdMetadataStore::new(addresses, &metadata_store_client_options).await?;
+            MetadataStoreClient::new(store, backoff_policy)
+        }
+        conf @ MetadataStoreClientConfig::ObjectStore { .. } => {
+            let store = create_object_store_based_meta_store(conf).await?;
             MetadataStoreClient::new(store, backoff_policy)
         }
     };
