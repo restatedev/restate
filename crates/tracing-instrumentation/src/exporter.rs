@@ -156,16 +156,14 @@ pub(crate) use service_per_crate::RuntimeModifierSpanExporter;
 #[cfg(not(feature = "service_per_crate"))]
 mod service_per_binary {
     use futures::future::BoxFuture;
-    use opentelemetry::{Key, KeyValue, Value};
+    use opentelemetry::KeyValue;
     use opentelemetry_sdk::{
         export::trace::{SpanData, SpanExporter},
         Resource,
     };
-    use opentelemetry_semantic_conventions::attribute::{SERVICE_INSTANCE_ID, SERVICE_NAME};
+    use opentelemetry_semantic_conventions::attribute::SERVICE_INSTANCE_ID;
 
     use super::GLOBAL_NODE_ID;
-
-    const SERVICE_NAME_KEY: Key = Key::from_static_str(SERVICE_NAME);
 
     #[derive(Debug)]
     pub(crate) struct RuntimeModifierSpanExporter<E>
@@ -205,20 +203,6 @@ mod service_per_binary {
                 let attributes = vec![
                     // sets the SERVICE_INSTANCE_ID
                     KeyValue::new(SERVICE_INSTANCE_ID, node_id.to_string()),
-                    // overrides the SERVICE_NAME with `SERVICE_NAME @NODE-ID``
-                    self.resource
-                        .iter()
-                        .find(|(k, _)| **k == SERVICE_NAME_KEY)
-                        .map(|(_, v)| {
-                            KeyValue::new(
-                                SERVICE_NAME_KEY,
-                                Value::from(format!("{}@{}", v, node_id.as_plain())),
-                            )
-                        })
-                        .unwrap_or(KeyValue::new(
-                            SERVICE_NAME_KEY,
-                            node_id.as_plain().to_string(),
-                        )),
                 ];
 
                 self.resource = self.resource.merge(&Resource::new(attributes));
