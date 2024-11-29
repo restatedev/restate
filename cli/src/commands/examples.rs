@@ -194,7 +194,7 @@ async fn download_example(repo_handler: RepoHandler<'_>, asset: Asset) -> Result
     }
 
     // Remove the zip file
-    if let Err(_) = tokio::fs::remove_file(&zip_out_file_path).await {
+    if (tokio::fs::remove_file(&zip_out_file_path).await).is_err() {
         c_println!(
             "{} Couldn't cleanup the zip file {}",
             Styled(Style::Warn, "Warning:"),
