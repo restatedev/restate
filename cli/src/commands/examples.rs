@@ -193,6 +193,15 @@ async fn download_example(repo_handler: RepoHandler<'_>, asset: Asset) -> Result
         return Err(e);
     }
 
+    // Remove the zip file
+    if (tokio::fs::remove_file(&zip_out_file_path).await).is_err() {
+        c_println!(
+            "{} Couldn't cleanup the zip file {}",
+            Styled(Style::Warn, "Warning:"),
+            zip_out_file_path.display()
+        )
+    }
+
     // Ready to rock!
     c_println!(
         "The example is ready in the directory {}",
