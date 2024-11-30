@@ -18,7 +18,7 @@ use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
 use bytes::BytesMut;
 use object_store::aws::AmazonS3Builder;
-use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload};
+use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::io::AsyncReadExt;
@@ -233,20 +233,22 @@ impl SnapshotRepository {
         // By performing a CAS on the latest snapshot pointer, we can ensure strictly monotonic updates.
         let maybe_stored = match self.object_store.get(&latest_path).await {
             Ok(result) => {
-                let attributes = result.attributes.clone();
-                let parse_result: serde_json::Result<LatestSnapshot> =
-                    serde_json::from_slice(result.bytes().await?.iter().as_slice());
-                parse_result
-                    .inspect_err(|e| {
-                        info!(
-                            repository_latest_lsn = "unknown",
-                            new_snapshot_lsn = ?snapshot.min_applied_lsn,
-                            "Failed to parse stored latest snapshot pointer, will update it: {}",
-                            e
-                        )
-                    })
-                    .ok()
-                    .map(|metadata| (attributes, metadata))
+                let version = UpdateVersion {
+                    e_tag: result.meta.e_tag.clone(),
+                    version: result.meta.version.clone(),
+                };
+                let latest: LatestSnapshot = serde_json::from_slice(
+                    result.bytes().await?.iter().as_slice(),
+                )
+                .inspect_err(|e| {
+                    debug!(
+                        repository_latest_lsn = "unknown",
+                        new_snapshot_lsn = ?snapshot.min_applied_lsn,
+                        "Failed to parse stored latest snapshot pointer, refusing to update it: {}",
+                        e
+                    )
+                })?;
+                Some((latest, version))
             }
             Err(object_store::Error::NotFound { .. }) => {
                 debug!(
@@ -261,11 +263,10 @@ impl SnapshotRepository {
             }
         };
 
-        if maybe_stored
-            .as_ref()
-            .is_some_and(|(_, stored)| stored.min_applied_lsn >= snapshot.min_applied_lsn)
-        {
-            let repository_latest_lsn = maybe_stored.expect("is some").1.min_applied_lsn;
+        if maybe_stored.as_ref().is_some_and(|(latest_stored, _)| {
+            latest_stored.min_applied_lsn >= snapshot.min_applied_lsn
+        }) {
+            let repository_latest_lsn = maybe_stored.expect("is some").0.min_applied_lsn;
             info!(
                 ?repository_latest_lsn,
                 new_snapshot_lsn = ?snapshot.min_applied_lsn,
@@ -279,9 +280,8 @@ impl SnapshotRepository {
 
         let latest_json = PutPayload::from(serde_json::to_string_pretty(&latest)?);
         let conditions = maybe_stored
-            .map(|(attributes, _)| PutOptions {
-                mode: PutMode::Overwrite,
-                attributes,
+            .map(|(_, version)| PutOptions {
+                mode: PutMode::Update(version),
                 ..PutOptions::default()
             })
             .unwrap_or_else(|| PutOptions {
