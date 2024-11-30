@@ -80,6 +80,8 @@ pub enum SnapshotError {
     /// Partition Processor is not fully caught up.
     #[error("Partition processor state does not permit snapshotting")]
     InvalidState(PartitionId),
+    #[error("Snapshot destination is not configured")]
+    RepositoryNotConfigured(PartitionId),
     /// Database snapshot export error.
     #[error("Snapshot export failed: {1}")]
     SnapshotExport(PartitionId, #[source] anyhow::Error),
@@ -97,6 +99,7 @@ impl SnapshotError {
             SnapshotError::PartitionNotFound(partition_id) => *partition_id,
             SnapshotError::SnapshotInProgress(partition_id) => *partition_id,
             SnapshotError::InvalidState(partition_id) => *partition_id,
+            SnapshotError::RepositoryNotConfigured(partition_id) => *partition_id,
             SnapshotError::SnapshotExport(partition_id, _) => *partition_id,
             SnapshotError::SnapshotIo(partition_id, _) => *partition_id,
             SnapshotError::RepositoryIo(partition_id, _) => *partition_id,

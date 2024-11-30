@@ -104,7 +104,6 @@ datafusion = { version = "42.0.0", default-features = false, features = [
     "regex_expressions",
     "unicode_expressions",
 ] }
-object_store = { version = "0.11.1"}
 datafusion-expr = { version = "42.0.0" }
 derive_builder = "0.20.0"
 derive_more = { version = "1", features = ["full"] }
@@ -141,7 +140,7 @@ metrics-exporter-prometheus = { version = "0.15", default-features = false, feat
     "async-runtime",
 ] }
 moka = "0.12.5"
-object_store = { version = "0.11.1", features = ["aws"] }
+object_store = { git = "https://github.com/apache/arrow-rs", rev = "c60ce14bfe144058ce77801ab8f8dec814aa8fe9", features = ["aws"] }
 once_cell = "1.18"
 opentelemetry = { version = "0.24.0" }
 opentelemetry-http = { version = "0.13.0" }

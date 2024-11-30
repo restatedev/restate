@@ -85,10 +85,11 @@ restate-service-protocol = { workspace = true, features = ["test-util"] }
 restate-storage-api = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true, features = ["prost"] }
 restate-types = { workspace = true, features = ["test-util"] }
-prost = { workspace = true }
 
-rstest = { workspace = true }
 googletest = { workspace = true }
+prost = { workspace = true }
+rocksdb = { workspace = true }
+rstest = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
 tracing-subscriber = { workspace = true }

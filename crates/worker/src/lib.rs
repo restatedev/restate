@@ -140,6 +140,15 @@ impl Worker {
         )
         .await?;
 
+        let snapshots_options = &config.worker.snapshots;
+        if snapshots_options.snapshot_interval_num_records.is_some()
+            && snapshots_options.destination.is_none()
+        {
+            return Err(BuildError::SnapshotRepository(anyhow::anyhow!(
+                "Periodic snapshot interval set without a specified snapshot destination"
+            )));
+        }
+
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             updateable_config.clone(),
@@ -147,7 +156,7 @@ impl Worker {
             partition_store_manager.clone(),
             router_builder,
             bifrost,
-            SnapshotRepository::create(config.common.base_dir(), &config.worker.snapshots)
+            SnapshotRepository::create(snapshots_options)
                 .await
                 .map_err(BuildError::SnapshotRepository)?,
         );

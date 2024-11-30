@@ -2090,7 +2090,7 @@ dependencies = [
  "itertools 0.13.0",
  "log",
  "num_cpus",
- "object_store",
+ "object_store 0.11.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot",
  "paste",
  "pin-project-lite",
@@ -2134,7 +2134,7 @@ dependencies = [
  "instant",
  "libc",
  "num_cpus",
- "object_store",
+ "object_store 0.11.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "paste",
  "sqlparser",
  "tokio",
@@ -2164,7 +2164,7 @@ dependencies = [
  "futures",
  "hashbrown 0.14.5",
  "log",
- "object_store",
+ "object_store 0.11.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot",
  "rand",
  "tempfile",
@@ -4637,6 +4637,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6eb4c22c6154a1e759d7099f9ffad7cc5ef8245f9efbab4a41b92623079c82f3"
 dependencies = [
  "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "humantime",
+ "itertools 0.13.0",
+ "parking_lot",
+ "percent-encoding",
+ "snafu 0.8.5",
+ "tokio",
+ "tracing",
+ "url",
+ "walkdir",
+]
+
+[[package]]
+name = "object_store"
+version = "0.11.1"
+source = "git+https://github.com/apache/arrow-rs?rev=c60ce14bfe144058ce77801ab8f8dec814aa8fe9#c60ce14bfe144058ce77801ab8f8dec814aa8fe9"
+dependencies = [
+ "async-trait",
  "base64 0.22.0",
  "bytes",
  "chrono",
@@ -4647,7 +4667,7 @@ dependencies = [
  "md-5",
  "parking_lot",
  "percent-encoding",
- "quick-xml 0.36.2",
+ "quick-xml 0.37.1",
  "rand",
  "reqwest",
  "ring",
@@ -5517,9 +5537,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.36.2"
+version = "0.37.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
+checksum = "f22f29bdff3987b4d8632ef95fd6424ec7e4e0a57e2f4fc63e489e75357f6a03"
 dependencies = [
  "memchr",
  "serde",
@@ -6146,7 +6166,7 @@ dependencies = [
  "hyper 1.4.1",
  "hyper-util",
  "metrics",
- "object_store",
+ "object_store 0.11.1 (git+https://github.com/apache/arrow-rs?rev=c60ce14bfe144058ce77801ab8f8dec814aa8fe9)",
  "once_cell",
  "opentelemetry",
  "parking_lot",
@@ -7059,7 +7079,7 @@ dependencies = [
  "humantime",
  "itertools 0.13.0",
  "metrics",
- "object_store",
+ "object_store 0.11.1 (git+https://github.com/apache/arrow-rs?rev=c60ce14bfe144058ce77801ab8f8dec814aa8fe9)",
  "opentelemetry",
  "parking_lot",
  "pin-project",
@@ -7087,6 +7107,7 @@ dependencies = [
  "restate-types",
  "restate-wal-protocol",
  "rstest",
+ "rust-rocksdb",
  "schemars",
  "serde",
  "serde_json",

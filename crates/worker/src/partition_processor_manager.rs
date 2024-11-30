@@ -103,7 +103,7 @@ pub struct PartitionProcessorManager {
 
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
-    snapshot_repository: SnapshotRepository,
+    snapshot_repository: Option<SnapshotRepository>,
 }
 
 struct PendingSnapshotTask {
@@ -175,7 +175,7 @@ impl PartitionProcessorManager {
         partition_store_manager: PartitionStoreManager,
         router_builder: &mut MessageRouterBuilder,
         bifrost: Bifrost,
-        snapshot_repository: SnapshotRepository,
+        snapshot_repository: Option<SnapshotRepository>,
     ) -> Self {
         let incoming_update_processors = router_builder.subscribe_to_stream(2);
         let incoming_partition_processor_rpc = router_builder.subscribe_to_stream(128);
@@ -702,16 +702,18 @@ impl PartitionProcessorManager {
             }
         };
 
+        let snapshot_repository = self.snapshot_repository.clone();
+        let Some(snapshot_repository) = snapshot_repository else {
+            let _ = sender.send(Err(SnapshotError::RepositoryNotConfigured(partition_id)));
+            return;
+        };
+
         if !processor_state.should_publish_snapshots() {
             let _ = sender.send(Err(SnapshotError::InvalidState(partition_id)));
             return;
         }
 
-        self.spawn_create_snapshot_task(
-            partition_id,
-            self.snapshot_repository.clone(),
-            Some(sender),
-        );
+        self.spawn_create_snapshot_task(partition_id, snapshot_repository, Some(sender));
     }
 
     fn on_create_snapshot_task_completed(
@@ -783,7 +785,11 @@ impl PartitionProcessorManager {
                 last_applied_lsn = %status.last_applied_log_lsn.unwrap_or(SequenceNumber::INVALID),
                 "Requesting partition snapshot",
             );
-            self.spawn_create_snapshot_task(partition_id, self.snapshot_repository.clone(), None);
+            self.spawn_create_snapshot_task(
+                partition_id,
+                self.snapshot_repository.clone().expect("is some"), // validated on startup
+                None,
+            );
         }
     }
 
@@ -924,9 +930,7 @@ enum EventKind {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::snapshots::SnapshotRepository;
     use crate::partition_processor_manager::PartitionProcessorManager;
-    use crate::BuildError;
     use googletest::IntoTestResult;
     use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::BifrostService;
@@ -934,9 +938,7 @@ mod tests {
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{
-        CommonOptions, Configuration, RocksDbOptions, SnapshotsOptions, StorageOptions,
-    };
+    use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StorageOptions};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::{Constant, Live};
@@ -948,7 +950,6 @@ mod tests {
     use restate_types::protobuf::node::Header;
     use restate_types::{GenerationalNodeId, Version};
     use std::time::Duration;
-    use tempfile::TempDir;
     use test_log::test;
 
     /// This test ensures that the lifecycle of partition processors is properly managed by the
@@ -983,7 +984,6 @@ mod tests {
         )
         .await?;
 
-        let snapshots_options = SnapshotsOptions::default();
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             Live::from_value(Configuration::default()),
@@ -991,9 +991,7 @@ mod tests {
             partition_store_manager,
             &mut env_builder.router_builder,
             bifrost,
-            SnapshotRepository::create(TempDir::new()?.into_path(), &snapshots_options)
-                .await
-                .map_err(BuildError::SnapshotRepository)?,
+            None,
         );
 
         let env = env_builder.build().await;

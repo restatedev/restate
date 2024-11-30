@@ -17,7 +17,7 @@ use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
 use bytes::BytesMut;
-use object_store::aws::AmazonS3Builder;
+use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -33,7 +33,7 @@ use restate_types::logs::Lsn;
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
 /// The repository wraps access to an object store "bucket" that contains snapshot metadata and data
-/// optimised for efficient retrieval. The bucket layout is split into two top-level prefixes for
+/// optimized for efficient retrieval. The bucket layout is split into two top-level prefixes for
 /// snapshot metadata and data respectively. While full snapshot archives contain all relevant
 /// metadata, this split layout allows for efficient retrieval of only the metadata upfront. It also
 /// enables us to evolve the data storage layout independently in the future.
@@ -81,29 +81,21 @@ pub struct LatestSnapshot {
 
 impl SnapshotRepository {
     pub async fn create(
-        base_dir: PathBuf,
         snapshots_options: &SnapshotsOptions,
-    ) -> anyhow::Result<SnapshotRepository> {
+    ) -> anyhow::Result<Option<SnapshotRepository>> {
         let destination = if let Some(ref destination) = snapshots_options.destination {
-            destination.clone()
+            Url::parse(destination).context("Failed parsing snapshot repository URL")?
         } else {
-            base_dir
-                .join("pp-snapshots")
-                .into_os_string()
-                .into_string()
-                .map(|path| format!("file://{path}"))
-                .map_err(|e| anyhow!("Unable to convert path to string: {:?}", e))?
+            return Ok(None);
         };
-        let destination =
-            Url::parse(&destination).context("Failed parsing snapshot repository URL")?;
 
-        // AWS-specific ergonomics optimization: without explicit configuration, we set up the AWS
-        // SDK credentials provider so that the conventional environment variables and config
-        // locations just work. This makes object_store behave similarly to the Lambda invoker.
-        let object_store: Arc<dyn ObjectStore> = if destination.scheme() == "s3"
-            && destination.query().is_none()
-            && snapshots_options.additional_options.is_empty()
-        {
+        // Ergonomics and security optimization: we use the AWS SDK configuration and credentials
+        // provider so that the conventional environment variables and config locations just work.
+        // The object_store crate has its own configuration mechanism which doesn't understand many
+        // of the AWS conventions and this differs quite a lot from the Lambda integration. This
+        // mechanism allows us to infer the region and securely obtain session credentials without
+        // hard-coded configuration.
+        let object_store: Arc<dyn ObjectStore> = if destination.scheme() == "s3" {
             debug!("Using AWS SDK credentials provider");
             let aws_region = aws_config::load_defaults(BehaviorVersion::v2024_03_28())
                 .await
@@ -114,6 +106,7 @@ impl SnapshotRepository {
             let store = AmazonS3Builder::new()
                 .with_url(destination.clone())
                 .with_region(aws_region.to_string())
+                .with_conditional_put(S3ConditionalPut::ETagMatch)
                 .with_credentials(Arc::new(AwsSdkCredentialsProvider {
                     credentials_provider: DefaultCredentialsChain::builder().build().await,
                 }))
@@ -121,10 +114,9 @@ impl SnapshotRepository {
 
             Arc::new(store)
         } else {
-            debug!("Using object_store credentials configuration");
-            object_store::parse_url_opts(&destination, &snapshots_options.additional_options)?
-                .0
-                .into()
+            // This should only be used for file:// destinations at this point.
+            debug!("Using object_store configuration loading mechanism");
+            object_store::parse_url(&destination)?.0.into()
         };
 
         // prefix must be stripped of any leading slash and, unless zero-length, end in a single "/" character
@@ -134,11 +126,11 @@ impl SnapshotRepository {
             prefix => format!("{}/", prefix.trim_start_matches('/').trim_end_matches('/')),
         };
 
-        Ok(SnapshotRepository {
+        Ok(Some(SnapshotRepository {
             object_store,
             destination,
             prefix,
-        })
+        }))
     }
 
     /// Write a partition snapshot to the snapshot repository.
@@ -244,10 +236,11 @@ impl SnapshotRepository {
                     debug!(
                         repository_latest_lsn = "unknown",
                         new_snapshot_lsn = ?snapshot.min_applied_lsn,
-                        "Failed to parse stored latest snapshot pointer, refusing to update it: {}",
+                        "Failed to parse stored latest snapshot pointer, refusing to overwrite: {}",
                         e
                     )
-                })?;
+                })
+                .map_err(|e| anyhow!("Failed to parse latest snapshot metadata: {}", e))?;
                 Some((latest, version))
             }
             Err(object_store::Error::NotFound { .. }) => {
@@ -278,10 +271,15 @@ impl SnapshotRepository {
             ));
         }
 
+        // The object_store file provider supports create-if-not-exists but not update-version on put
+        let use_conditional_update = !matches!(self.destination.scheme(), "file");
         let latest_json = PutPayload::from(serde_json::to_string_pretty(&latest)?);
         let conditions = maybe_stored
             .map(|(_, version)| PutOptions {
-                mode: PutMode::Update(version),
+                mode: match use_conditional_update {
+                    true => PutMode::Update(version),
+                    false => PutMode::Overwrite,
+                },
                 ..PutOptions::default()
             })
             .unwrap_or_else(|| PutOptions {
@@ -313,14 +311,15 @@ impl SnapshotRepository {
 const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
 
 async fn put_snapshot_object(
-    snapshot_path: &Path,
+    file_path: &Path,
     key: &object_store::path::Path,
     object_store: &Arc<dyn ObjectStore>,
 ) -> anyhow::Result<object_store::PutResult> {
-    let mut snapshot = tokio::fs::File::open(snapshot_path).await?;
+    debug!(path = ?file_path, "Putting snapshot object from local file");
+    let mut snapshot = tokio::fs::File::open(file_path).await?;
 
     if snapshot.metadata().await?.len() < MULTIPART_UPLOAD_CHUNK_SIZE_BYTES as u64 {
-        let payload = PutPayload::from(tokio::fs::read(snapshot_path).await?);
+        let payload = PutPayload::from(tokio::fs::read(file_path).await?);
         return object_store.put(key, payload).await.map_err(|e| e.into());
     }
 
@@ -393,5 +392,196 @@ impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
             secret_key: creds.secret_access_key().to_string(),
             token: creds.session_token().map(|t| t.to_string()),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::SystemTime;
+
+    use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
+    use restate_types::config::SnapshotsOptions;
+    use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
+    use restate_types::logs::{Lsn, SequenceNumber};
+    use tempfile::TempDir;
+    use tokio::io::AsyncWriteExt;
+    use tracing::info;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{fmt, EnvFilter};
+    use url::Url;
+
+    use super::SnapshotRepository;
+
+    #[tokio::test]
+    async fn test_repository_local() -> anyhow::Result<()> {
+        tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(EnvFilter::from_default_env())
+            .init();
+
+        let snapshot_source = TempDir::new()?;
+        let source_dir = snapshot_source.path().to_path_buf();
+
+        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data.write_all(b"snapshot-data").await?;
+
+        let snapshot = mock_snapshot_metadata(
+            "/data.sst".to_owned(),
+            source_dir.to_string_lossy().to_string(),
+        );
+
+        let snapshots_destination = TempDir::new()?;
+        let opts = SnapshotsOptions {
+            destination: Some(
+                Url::from_file_path(snapshots_destination.path())
+                    .unwrap()
+                    .to_string(),
+            ),
+            ..SnapshotsOptions::default()
+        };
+        let repository = SnapshotRepository::create(&opts).await?.unwrap();
+
+        repository.put(&snapshot, source_dir).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_unparsable_latest() -> anyhow::Result<()> {
+        tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(EnvFilter::from_default_env())
+            .init();
+
+        let snapshot_source = TempDir::new()?;
+        let source_dir = snapshot_source.path().to_path_buf();
+
+        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data.write_all(b"snapshot-data").await?;
+
+        let snapshot = mock_snapshot_metadata(
+            "/data.sst".to_owned(),
+            source_dir.to_string_lossy().to_string(),
+        );
+
+        let snapshots_destination: TempDir = TempDir::new()?;
+        let destination_dir = snapshots_destination.path().to_owned();
+        let opts = SnapshotsOptions {
+            destination: Some(
+                Url::from_file_path(snapshots_destination.path())
+                    .unwrap()
+                    .to_string(),
+            ),
+            ..SnapshotsOptions::default()
+        };
+        let repository = SnapshotRepository::create(&opts).await?.unwrap();
+
+        // Write invalid JSON to latest.json
+        let latest_path = destination_dir.join(format!("{}/latest.json", PartitionId::MIN));
+        tokio::fs::create_dir_all(latest_path.parent().unwrap()).await?;
+        info!("Creating file: {:?}", latest_path);
+        let mut latest = tokio::fs::File::create(&latest_path).await?;
+        latest.write_all(b"not valid json").await?;
+
+        assert!(repository.put(&snapshot, source_dir).await.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_update_existing_snapshot_with_newer() -> anyhow::Result<()> {
+        tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(EnvFilter::from_default_env())
+            .init();
+
+        let snapshot_source = TempDir::new()?;
+        let source_dir = snapshot_source.path().to_path_buf();
+
+        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data.write_all(b"snapshot-data").await?;
+
+        let mut snapshot1 = mock_snapshot_metadata(
+            "/data.sst".to_owned(),
+            source_dir.to_string_lossy().to_string(),
+        );
+        snapshot1.min_applied_lsn = Lsn::new(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)?
+                .as_millis() as u64,
+        );
+
+        let snapshots_destination = TempDir::new()?;
+        // #[cfg(not(feature = "s3-integration-test"))]
+        let opts = SnapshotsOptions {
+            destination: Some(
+                Url::from_file_path(snapshots_destination.path())
+                    .unwrap()
+                    .to_string(),
+            ),
+            ..SnapshotsOptions::default()
+        };
+
+        // We can't do this due to running tests with --all-features but the following
+        // code may be used to test conditional updates on S3:
+        //
+        // #[cfg(feature = "s3-integration-test")]
+        // let opts = SnapshotsOptions {
+        //     destination: Some(format!(
+        //         "s3://{}/integration-test",
+        //         std::env::var("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME")
+        //             .expect("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME must be set")
+        //     )),
+        //     ..SnapshotsOptions::default()
+        // };
+
+        let repository = SnapshotRepository::create(&opts).await?.unwrap();
+
+        repository.put(&snapshot1, source_dir.clone()).await?;
+
+        let snapshot_source = TempDir::new()?;
+        let source_dir = snapshot_source.path().to_path_buf();
+
+        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data.write_all(b"snapshot-data").await?;
+
+        let mut snapshot2 = mock_snapshot_metadata(
+            "/data.sst".to_owned(),
+            source_dir.to_string_lossy().to_string(),
+        );
+        snapshot2.min_applied_lsn = snapshot1.min_applied_lsn.next();
+
+        repository.put(&snapshot2, source_dir).await?;
+
+        Ok(())
+    }
+
+    fn mock_snapshot_metadata(file_name: String, directory: String) -> PartitionSnapshotMetadata {
+        PartitionSnapshotMetadata {
+            version: SnapshotFormatVersion::V1,
+            cluster_name: "test-cluster".to_string(),
+            node_name: "node".to_string(),
+            partition_id: PartitionId::MIN,
+            created_at: humantime::Timestamp::from(SystemTime::now()),
+            snapshot_id: SnapshotId::new(),
+            key_range: PartitionKey::MIN..=PartitionKey::MAX,
+            min_applied_lsn: Lsn::new(1),
+            db_comparator_name: "leveldb.BytewiseComparator".to_string(),
+            // this is totally bogus but it doesn't matter since we won't be importing it into RocksDB
+            files: vec![rocksdb::LiveFile {
+                column_family_name: "data-0".to_owned(),
+                name: file_name,
+                directory,
+                size: 0,
+                level: 0,
+                start_key: Some(vec![0]),
+                end_key: Some(vec![0xff, 0xff]),
+                num_entries: 0,
+                num_deletions: 0,
+                smallest_seqno: 0,
+                largest_seqno: 0,
+            }],
+        }
     }
 }
