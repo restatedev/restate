@@ -60,6 +60,8 @@ pub struct SnapshotRepository {
     prefix: String,
     /// Ingested snapshots staging location.
     staging_dir: PathBuf,
+    /// Expected cluster name for the snapshots in this repository.
+    cluster_name: String,
 }
 
 /// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
@@ -117,6 +119,7 @@ impl SnapshotRepository {
     pub async fn create_if_configured(
         snapshots_options: &SnapshotsOptions,
         staging_dir: PathBuf,
+        cluster_name: String,
     ) -> anyhow::Result<Option<SnapshotRepository>> {
         let mut destination = if let Some(ref destination) = snapshots_options.destination {
             Url::parse(destination).context("Failed parsing snapshot repository URL")?
@@ -144,6 +147,7 @@ impl SnapshotRepository {
             destination,
             prefix,
             staging_dir,
+            cluster_name,
         }))
     }
 
@@ -390,6 +394,13 @@ impl SnapshotRepository {
                 "Unsupported snapshot format version: {:?}",
                 snapshot_metadata.version
             ));
+        }
+
+        if snapshot_metadata.cluster_name != self.cluster_name {
+            panic!("Snapshot does not match the cluster name of latest snapshot at destination in snapshot id {}! Expected: cluster name=\"{}\", found: \"{}\"",
+                   snapshot_metadata.snapshot_id,
+                   self.cluster_name,
+                   snapshot_metadata.cluster_name);
         }
 
         // The snapshot ingest directory should be on the same filesystem as the partition store
@@ -754,9 +765,13 @@ mod tests {
             ),
             ..SnapshotsOptions::default()
         };
-        let repository = SnapshotRepository::create_if_configured(&opts, TempDir::new().unwrap().into_path())
-            .await?
-            .unwrap();
+        let repository = SnapshotRepository::create_if_configured(
+            &opts,
+            TempDir::new().unwrap().into_path(),
+            "cluster".to_owned(),
+        )
+        .await?
+        .unwrap();
 
         // Write invalid JSON to latest.json
         let latest_path = destination_dir.join(format!("{}/latest.json", PartitionId::MIN));
@@ -830,9 +845,13 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::create_if_configured(&opts, TempDir::new().unwrap().into_path())
-            .await?
-            .unwrap();
+        let repository = SnapshotRepository::create_if_configured(
+            &opts,
+            TempDir::new().unwrap().into_path(),
+            "cluster".to_owned(),
+        )
+        .await?
+        .unwrap();
 
         repository.put(&snapshot1, source_dir.clone()).await?;
 
