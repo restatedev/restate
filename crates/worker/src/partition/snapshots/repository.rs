@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use async_trait::async_trait;
@@ -22,7 +23,7 @@ use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::io::AsyncReadExt;
-use tracing::{debug, info, instrument, trace};
+use tracing::{debug, info, instrument, warn};
 use url::Url;
 
 use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
@@ -83,18 +84,20 @@ impl SnapshotRepository {
     pub async fn create(
         snapshots_options: &SnapshotsOptions,
     ) -> anyhow::Result<Option<SnapshotRepository>> {
-        let destination = if let Some(ref destination) = snapshots_options.destination {
+        let mut destination = if let Some(ref destination) = snapshots_options.destination {
             Url::parse(destination).context("Failed parsing snapshot repository URL")?
         } else {
             return Ok(None);
         };
+        // Prevent passing configuration options to object_store via the destination URL.
+        destination.set_query(None);
 
-        // Ergonomics and security optimization: we use the AWS SDK configuration and credentials
-        // provider so that the conventional environment variables and config locations just work.
-        // The object_store crate has its own configuration mechanism which doesn't understand many
-        // of the AWS conventions and this differs quite a lot from the Lambda integration. This
-        // mechanism allows us to infer the region and securely obtain session credentials without
-        // hard-coded configuration.
+        // We use the AWS SDK configuration and credentials provider so that the conventional AWS
+        // environment variables and config files work as expected. The object_store crate has its
+        // own configuration mechanism which doesn't support many of the AWS conventions. This
+        // differs quite a lot from the Lambda invoker which uses the AWS SDK, and that would be a
+        // very surprising inconsistency for customers. This mechanism allows us to infer the region
+        // and securely obtain session credentials without any hard-coded configuration.
         let object_store: Arc<dyn ObjectStore> = if destination.scheme() == "s3" {
             debug!("Using AWS SDK credentials provider");
             let aws_region = aws_config::load_defaults(BehaviorVersion::v2024_03_28())
@@ -110,16 +113,24 @@ impl SnapshotRepository {
                 .with_credentials(Arc::new(AwsSdkCredentialsProvider {
                     credentials_provider: DefaultCredentialsChain::builder().build().await,
                 }))
+                .with_retry(object_store::RetryConfig {
+                    max_retries: 8,
+                    retry_timeout: Duration::from_secs(60),
+                    backoff: object_store::BackoffConfig {
+                        init_backoff: Duration::from_millis(100),
+                        max_backoff: Duration::from_secs(5),
+                        base: 2.,
+                    },
+                })
                 .build()?;
 
             Arc::new(store)
         } else {
-            // This should only be used for file:// destinations at this point.
-            debug!("Using object_store configuration loading mechanism");
             object_store::parse_url(&destination)?.0.into()
         };
 
-        // prefix must be stripped of any leading slash and, unless zero-length, end in a single "/" character
+        // The prefix must be stripped of any leading slash and, unless it is empty, must end in a
+        // single "/" character.
         let prefix: String = destination.path().into();
         let prefix = match prefix.as_str() {
             "" | "/" => "".to_string(),
@@ -150,6 +161,46 @@ impl SnapshotRepository {
     ) -> anyhow::Result<()> {
         debug!("Publishing partition snapshot to: {}", self.destination);
 
+        let put_result = self
+            .put_snapshot_inner(snapshot, local_snapshot_path.as_path())
+            .await;
+
+        // We only log the error here since (a) it's relatively unlikely for rmdir to fail, and (b)
+        // if we've uploaded the snapshot, we should get the response back to the caller. Logging at
+        // WARN level as repeated failures could compromise the cluster.
+        let _ = tokio::fs::remove_dir_all(local_snapshot_path.as_path())
+            .await
+            .inspect_err(|e| warn!("Failed to delete local snapshot files: {}", e));
+
+        match put_result {
+            Ok(_) => Ok(()),
+            Err(put_error) => {
+                for filename in put_error.uploaded_files {
+                    let path = object_store::path::Path::from(format!(
+                        "{}{}",
+                        put_error.full_snapshot_path, filename
+                    ));
+
+                    // We disregard errors at this point; the snapshot repository pruning mechanism
+                    // should catch these eventually.
+                    let _ = self.object_store.delete(&path).await.inspect_err(|e| {
+                        info!(
+                            "Failed to delete file from partially uploaded snapshot: {}",
+                            e
+                        )
+                    });
+                }
+                Err(put_error.error)
+            }
+        }
+    }
+
+    // It is the outer put method's responsibility to clean up partial progress.
+    async fn put_snapshot_inner(
+        &self,
+        snapshot: &PartitionSnapshotMetadata,
+        local_snapshot_path: &Path,
+    ) -> Result<(), PutSnapshotError> {
         // A unique snapshot path within the partition prefix. We pad the LSN to ensure correct
         // lexicographic sorting.
         let relative_snapshot_path = format!(
@@ -165,10 +216,10 @@ impl SnapshotRepository {
 
         debug!(
             "Uploading snapshot from {:?} to {}",
-            local_snapshot_path.as_path(),
-            full_snapshot_path
+            local_snapshot_path, full_snapshot_path
         );
 
+        let mut progress = SnapshotUploadProgress::with_snapshot_path(full_snapshot_path.clone());
         for file in &snapshot.files {
             let filename = file.name.trim_start_matches("/");
             let key = object_store::path::Path::from(format!(
@@ -176,17 +227,21 @@ impl SnapshotRepository {
                 full_snapshot_path.as_str(),
                 filename
             ));
+
             let put_result = put_snapshot_object(
                 local_snapshot_path.join(filename).as_path(),
                 &key,
                 &self.object_store,
             )
-            .await?;
+            .await
+            .map_err(|e| PutSnapshotError::from(e, &progress))?;
+
             debug!(
                 etag = put_result.e_tag.unwrap_or_default(),
                 ?key,
                 "Put snapshot data file completed",
             );
+            progress.push(file.name.clone());
         }
 
         let metadata_key = object_store::path::Path::from(format!(
@@ -196,16 +251,44 @@ impl SnapshotRepository {
         let metadata_json_payload = PutPayload::from(
             serde_json::to_string_pretty(snapshot).expect("Can always serialize JSON"),
         );
+
         let put_result = self
             .object_store
             .put(&metadata_key, metadata_json_payload)
-            .await?;
+            .await
+            .map_err(|e| PutSnapshotError::from(e, &progress))?;
+        progress.push("/metadata.json".to_owned());
+
         debug!(
             etag = put_result.e_tag.unwrap_or_default(),
             key = ?metadata_key,
             "Successfully published snapshot metadata",
         );
 
+        let latest_path = object_store::path::Path::from(format!(
+            "{prefix}{partition_id}/latest.json",
+            prefix = self.prefix,
+            partition_id = snapshot.partition_id,
+        ));
+
+        // By performing a CAS on the latest snapshot pointer, we can ensure strictly monotonic updates.
+        let maybe_stored = self
+            .get_latest_snapshot_metadata_for_update(snapshot, &latest_path)
+            .await
+            .map_err(|e| PutSnapshotError::from(e, &progress))?;
+        if maybe_stored.as_ref().is_some_and(|(latest_stored, _)| {
+            latest_stored.min_applied_lsn >= snapshot.min_applied_lsn
+        }) {
+            let repository_latest_lsn = maybe_stored.expect("is some").0.min_applied_lsn;
+            info!(
+                ?repository_latest_lsn,
+                new_snapshot_lsn = ?snapshot.min_applied_lsn,
+                "The newly uploaded snapshot is no newer than the already-stored latest snapshot, will not update latest pointer"
+            );
+            return Ok(());
+        }
+
+        // Construct the new "latest snapshot" pointer
         let latest = LatestSnapshot {
             version: snapshot.version,
             cluster_name: snapshot.cluster_name.clone(),
@@ -216,14 +299,47 @@ impl SnapshotRepository {
             min_applied_lsn: snapshot.min_applied_lsn,
             path: relative_snapshot_path,
         };
-        let latest_path = object_store::path::Path::from(format!(
-            "{prefix}{partition_id}/latest.json",
-            prefix = self.prefix,
-            partition_id = snapshot.partition_id,
-        ));
+        let latest_json = PutPayload::from(
+            serde_json::to_string_pretty(&latest)
+                .map_err(|e| PutSnapshotError::from(e, &progress))?,
+        );
 
-        // By performing a CAS on the latest snapshot pointer, we can ensure strictly monotonic updates.
-        let maybe_stored = match self.object_store.get(&latest_path).await {
+        // The object_store file provider supports create-if-not-exists but not update-version on put
+        let use_conditional_update = !matches!(self.destination.scheme(), "file");
+        let conditions = maybe_stored
+            .map(|(_, version)| PutOptions {
+                mode: match use_conditional_update {
+                    true => PutMode::Update(version),
+                    false => PutMode::Overwrite,
+                },
+                ..PutOptions::default()
+            })
+            .unwrap_or_else(|| PutOptions {
+                mode: PutMode::Create,
+                ..PutOptions::default()
+            });
+
+        let put_result = self
+            .object_store
+            .put_opts(&latest_path, latest_json, conditions)
+            .await
+            .map_err(|e| PutSnapshotError::from(e, &progress))?;
+
+        debug!(
+            etag = put_result.e_tag.unwrap_or_default(),
+            key = ?latest_path,
+            "Successfully updated latest snapshot pointer",
+        );
+
+        Ok(())
+    }
+
+    async fn get_latest_snapshot_metadata_for_update(
+        &self,
+        snapshot: &PartitionSnapshotMetadata,
+        path: &object_store::path::Path,
+    ) -> anyhow::Result<Option<(LatestSnapshot, UpdateVersion)>> {
+        match self.object_store.get(path).await {
             Ok(result) => {
                 let version = UpdateVersion {
                     e_tag: result.meta.e_tag.clone(),
@@ -241,7 +357,11 @@ impl SnapshotRepository {
                     )
                 })
                 .map_err(|e| anyhow!("Failed to parse latest snapshot metadata: {}", e))?;
-                Some((latest, version))
+                if snapshot.cluster_name != latest.cluster_name {
+                    // This indicates a seriuos misconfiguration and we should complain loudly
+                    bail!("Snapshot does not match the cluster name of latest snapshot at destination!");
+                }
+                Ok(Some((latest, version)))
             }
             Err(object_store::Error::NotFound { .. }) => {
                 debug!(
@@ -249,60 +369,49 @@ impl SnapshotRepository {
                     new_snapshot_lsn = ?snapshot.min_applied_lsn,
                     "No latest snapshot pointer found, will create one"
                 );
-                None
+                Ok(None)
             }
             Err(e) => {
                 bail!("Failed to get latest snapshot pointer: {}", e);
             }
-        };
-
-        if maybe_stored.as_ref().is_some_and(|(latest_stored, _)| {
-            latest_stored.min_applied_lsn >= snapshot.min_applied_lsn
-        }) {
-            let repository_latest_lsn = maybe_stored.expect("is some").0.min_applied_lsn;
-            info!(
-                ?repository_latest_lsn,
-                new_snapshot_lsn = ?snapshot.min_applied_lsn,
-                "Newly created snapshot is not newer than the latest stored snapshot, will not update latest pointer"
-            );
-            return Err(anyhow!(
-                "Snapshot repository already contains snapshot at LSN {}",
-                repository_latest_lsn,
-            ));
         }
+    }
+}
 
-        // The object_store file provider supports create-if-not-exists but not update-version on put
-        let use_conditional_update = !matches!(self.destination.scheme(), "file");
-        let latest_json = PutPayload::from(serde_json::to_string_pretty(&latest)?);
-        let conditions = maybe_stored
-            .map(|(_, version)| PutOptions {
-                mode: match use_conditional_update {
-                    true => PutMode::Update(version),
-                    false => PutMode::Overwrite,
-                },
-                ..PutOptions::default()
-            })
-            .unwrap_or_else(|| PutOptions {
-                mode: PutMode::Create,
-                ..PutOptions::default()
-            });
-        let put_result = self
-            .object_store
-            .put_opts(&latest_path, latest_json, conditions)
-            .await?;
-        debug!(
-            etag = put_result.e_tag.unwrap_or_default(),
-            key = ?latest_path,
-            "Successfully updated latest snapshot pointer",
-        );
+struct SnapshotUploadProgress {
+    pub full_snapshot_path: String,
+    pub uploaded_files: Vec<String>,
+}
 
-        tokio::fs::remove_dir_all(local_snapshot_path.as_path()).await?;
-        trace!(
-            "Removed local snapshot files: {}",
-            local_snapshot_path.display()
-        );
+impl SnapshotUploadProgress {
+    fn with_snapshot_path(full_snapshot_path: String) -> Self {
+        SnapshotUploadProgress {
+            full_snapshot_path,
+            uploaded_files: vec![],
+        }
+    }
 
-        Ok(())
+    fn push(&mut self, filename: String) {
+        self.uploaded_files.push(filename);
+    }
+}
+
+struct PutSnapshotError {
+    pub full_snapshot_path: String,
+    pub uploaded_files: Vec<String>,
+    pub error: anyhow::Error,
+}
+
+impl PutSnapshotError {
+    fn from<E>(error: E, progress: &SnapshotUploadProgress) -> Self
+    where
+        E: Into<anyhow::Error>,
+    {
+        PutSnapshotError {
+            error: error.into(),
+            full_snapshot_path: progress.full_snapshot_path.clone(),
+            uploaded_files: progress.uploaded_files.clone(),
+        }
     }
 }
 
