@@ -362,8 +362,7 @@ impl SnapshotRepository {
             Err(e) => return Err(e.into()),
         };
 
-        let latest: LatestSnapshot =
-            serde_json::from_slice(latest.bytes().await?.iter().as_slice())?;
+        let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
         debug!("Latest snapshot metadata: {:?}", latest);
 
         let snapshot_metadata_path = object_store::path::Path::from(format!(
@@ -377,14 +376,15 @@ impl SnapshotRepository {
         let snapshot_metadata = match snapshot_metadata {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => {
-                info!("Latest snapshot points to a snapshot that was not found in the repository!");
+                // todo(pavel): revisit whether we shouldn't just panic at this point - this is a bad sign!
+                warn!("Latest snapshot points to a snapshot that was not found in the repository!");
                 return Ok(None); // arguably this could also be an error
             }
             Err(e) => return Err(e.into()),
         };
 
         let mut snapshot_metadata: PartitionSnapshotMetadata =
-            serde_json::from_slice(snapshot_metadata.bytes().await?.iter().as_slice())?;
+            serde_json::from_slice(&snapshot_metadata.bytes().await?)?;
         if snapshot_metadata.version != SnapshotFormatVersion::V1 {
             return Err(anyhow!(
                 "Unsupported snapshot format version: {:?}",
@@ -471,7 +471,7 @@ impl SnapshotRepository {
                 }
                 Some(Ok(Err(error))) => {
                     abort_tasks(downloads).await;
-                    return Err(error.into());
+                    return Err(error);
                 }
                 Some(Ok(Ok(_))) => {}
             }
@@ -503,7 +503,7 @@ impl SnapshotRepository {
                     version: result.meta.version.clone(),
                 };
                 let latest: LatestSnapshot = serde_json::from_slice(
-                    result.bytes().await?.iter().as_slice(),
+                    &result.bytes().await?,
                 )
                 .inspect_err(|e| {
                     debug!(
@@ -672,7 +672,7 @@ async fn put_snapshot_object(
 
 async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
     join_set.abort_all();
-    while let Some(_) = join_set.join_next().await {}
+    while join_set.join_next().await.is_some() {}
 }
 
 #[derive(Debug)]
