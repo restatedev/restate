@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -406,8 +407,10 @@ impl SnapshotRepository {
         let directory = snapshot_dir.path().to_string_lossy().to_string();
         let concurrency_limiter = Arc::new(Semaphore::new(DOWNLOAD_CONCURRENCY_LIMIT));
         let mut downloads = JoinSet::new();
+        let mut task_handles = HashMap::with_capacity(snapshot_metadata.files.len());
         for file in &mut snapshot_metadata.files {
             let filename = file.name.trim_start_matches("/");
+            let expected_size = file.size;
             let key = object_store::path::Path::from(format!(
                 "{prefix}{partition_id}/{path}/{filename}",
                 prefix = self.prefix,
@@ -419,14 +422,34 @@ impl SnapshotRepository {
             let concurrency_limiter = Arc::clone(&concurrency_limiter);
             let object_store = Arc::clone(&self.object_store);
 
-            downloads.spawn(async move {
+            let handle = downloads.build_task().name(filename).spawn(async move {
                 let _permit = concurrency_limiter.acquire().await?;
-                let mut file_data = StreamReader::new(object_store.get(&key).await?.into_stream());
-                let mut snapshot_file = tokio::fs::File::create_new(&file_path).await?;
-                let size = io::copy(&mut file_data, &mut snapshot_file).await?;
+                let mut file_data = StreamReader::new(
+                    object_store
+                        .get(&key)
+                        .await
+                        .map_err(|e| anyhow!("Failed to download snapshot file {:?}: {}", key, e))?
+                        .into_stream(),
+                );
+                let mut snapshot_file =
+                    tokio::fs::File::create_new(&file_path).await.map_err(|e| {
+                        anyhow!("Failed to create snapshot file {:?}: {}", file_path, e)
+                    })?;
+                let size = io::copy(&mut file_data, &mut snapshot_file)
+                    .await
+                    .map_err(|e| anyhow!("Failed to download snapshot file {:?}: {}", key, e))?;
+                if size != expected_size as u64 {
+                    return Err(anyhow!(
+                        "Downloaded snapshot file {:?} has unexpected size: expected {}, got {}",
+                        key,
+                        expected_size,
+                        size
+                    ));
+                }
                 debug!(%key, ?size, "Downloaded snapshot data file to {:?}", file_path);
                 anyhow::Ok(())
-            });
+            })?;
+            task_handles.insert(handle.id(), filename.to_string());
             // patch the directory path to reflect the actual location on the restoring node
             file.directory = directory.clone();
         }
@@ -434,13 +457,23 @@ impl SnapshotRepository {
         loop {
             match downloads.join_next().await {
                 None => {
+                    debug!("All download tasks completed");
                     break;
                 }
-                Some(Err(e)) => {
-                    downloads.abort_all();
-                    return Err(e.into());
+                Some(Err(join_error)) => {
+                    let failed = task_handles.get(&join_error.id());
+                    abort_tasks(downloads).await;
+                    return Err(anyhow!(
+                        "Failed to download snapshot file {:?}: {}",
+                        failed,
+                        join_error
+                    ));
                 }
-                Some(Ok(_)) => {}
+                Some(Ok(Err(error))) => {
+                    abort_tasks(downloads).await;
+                    return Err(error.into());
+                }
+                Some(Ok(Ok(_))) => {}
             }
         }
 
@@ -635,6 +668,11 @@ async fn put_snapshot_object(
             Err(e)
         }
     }
+}
+
+async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
+    join_set.abort_all();
+    while let Some(_) = join_set.join_next().await {}
 }
 
 #[derive(Debug)]
