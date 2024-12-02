@@ -91,6 +91,13 @@
               },
               "name": {
                 "type": "string"
+              },
+              "ownershipType": {
+                "type": "string",
+                "enum": [
+                  "OWNED",
+                  "SECONDARY_OWNED"
+                ]
               }
             },
             "required": [
@@ -130,6 +137,40 @@
         "name"
       ]
     },
+    "DeleteAccountRequest": {
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId"
+      ]
+    },
+    "DeleteAccountResponse": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "ok": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ok"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
     "UpdateAccountRequest": {
       "type": "object",
       "properties": {
@@ -152,6 +193,13 @@
         },
         "name": {
           "type": "string"
+        },
+        "ownershipType": {
+          "type": "string",
+          "enum": [
+            "OWNED",
+            "SECONDARY_OWNED"
+          ]
         }
       },
       "required": [
@@ -168,6 +216,9 @@
       "type": "object",
       "properties": {
         "name": {
+          "type": "string"
+        },
+        "region": {
           "type": "string"
         }
       },
@@ -204,12 +255,16 @@
               "environmentId": {
                 "type": "string"
               },
+              "region": {
+                "type": "string"
+              },
               "name": {
                 "type": "string"
               }
             },
             "required": [
               "environmentId",
+              "region",
               "name"
             ]
           }
@@ -234,6 +289,9 @@
       "type": "object",
       "properties": {
         "environmentId": {
+          "type": "string"
+        },
+        "region": {
           "type": "string"
         },
         "name": {
@@ -274,15 +332,25 @@
         },
         "adminBaseUrl": {
           "type": "string"
+        },
+        "tunnelBaseUrl": {
+          "type": "string"
+        },
+        "proxyBaseUrl": {
+          "type": "string"
         }
       },
       "required": [
         "environmentId",
+        "region",
         "name",
         "status",
+        "signingPublicKey",
         "apiKeys",
         "ingressBaseUrl",
-        "adminBaseUrl"
+        "adminBaseUrl",
+        "tunnelBaseUrl",
+        "proxyBaseUrl"
       ]
     },
     "DestroyEnvironmentRequest": {
@@ -343,7 +411,7 @@
         "rst:role::FullAccess",
         "rst:role::IngressAccess",
         "rst:role::AdminAccess",
-        "rst:role::ResolveAwakeableAccess"
+        "rst:role::CompleteAwakeableAccess"
       ],
       "description": "A role identifier specifying a particular level of access for a principal.",
       "example": "rst:role::FullAccess"
@@ -554,6 +622,73 @@
       },
       "required": [
         "lines"
+      ]
+    },
+    "ListAccountSecondaryOwnersRequest": {
+      "type": "object"
+    },
+    "ListAccountSecondaryOwnersResponse": {
+      "type": "object",
+      "properties": {
+        "secondaryOwnersUserIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "secondaryOwnersUserIds"
+      ]
+    },
+    "AddAccountSecondaryOwnerRequest": {
+      "type": "object",
+      "properties": {
+        "secondaryOwnerUserId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "secondaryOwnerUserId"
+      ]
+    },
+    "AddAccountSecondaryOwnerResponse": {
+      "type": "object",
+      "properties": {
+        "secondaryOwnersUserIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "secondaryOwnersUserIds"
+      ]
+    },
+    "RemoveAccountSecondaryOwnerRequest": {
+      "type": "object",
+      "properties": {
+        "secondaryOwnerUserId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "secondaryOwnerUserId"
+      ]
+    },
+    "RemoveAccountSecondaryOwnerResponse": {
+      "type": "object",
+      "properties": {
+        "secondaryOwnersUserIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "secondaryOwnersUserIds"
       ]
     }
   },
