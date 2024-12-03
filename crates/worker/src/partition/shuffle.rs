@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
+use std::sync::Arc;
 
 use async_channel::{TryRecvError, TrySendError};
 use tokio::sync::mpsc;
@@ -225,7 +226,7 @@ where
             move |msg| {
                 let bifrost = bifrost.clone();
                 async move {
-                    append_envelope_to_bifrost(&bifrost, msg).await?;
+                    append_envelope_to_bifrost(&bifrost, Arc::new(msg)).await?;
                     Ok(())
                 }
             },
@@ -259,10 +260,8 @@ mod state_machine {
     use std::cmp::Ordering;
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::Arc;
-    use std::time::Duration;
     use tokio_util::sync::ReusableBoxFuture;
-    use tracing::{debug, trace};
+    use tracing::trace;
 
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::message::MessageIndex;
@@ -285,7 +284,7 @@ mod state_machine {
     enum State<SendFuture> {
         Idle,
         ReadingOutbox,
-        Sending(#[pin] SendFuture, Arc<Envelope>),
+        Sending(#[pin] SendFuture),
     }
 
     #[pin_project]
@@ -314,7 +313,7 @@ mod state_machine {
     impl<'a, OutboxReader, SendOp, SendFuture> StateMachine<'a, OutboxReader, SendOp, SendFuture>
     where
         SendFuture: Future<Output = Result<(), anyhow::Error>>,
-        SendOp: Fn(Arc<Envelope>) -> SendFuture,
+        SendOp: Fn(Envelope) -> SendFuture,
         OutboxReader: shuffle::OutboxReader + Send + Sync + 'static,
     {
         pub(super) fn new(
@@ -359,13 +358,13 @@ mod state_machine {
 
                             match seq_number.cmp(this.current_sequence_number) {
                                 Ordering::Equal => {
-                                    let envelope = Arc::new(wrap_outbox_message_in_envelope(
+                                    let envelope = wrap_outbox_message_in_envelope(
                                         message.clone(),
                                         seq_number,
                                         this.metadata,
-                                    ));
-                                    let send_future = (this.send_operation)(Arc::clone(&envelope));
-                                    this.state.set(State::Sending(send_future, envelope));
+                                    );
+                                    let send_future = (this.send_operation)(envelope);
+                                    this.state.set(State::Sending(send_future));
                                     break;
                                 }
                                 Ordering::Greater => {
@@ -397,42 +396,30 @@ mod state_machine {
 
                             *this.current_sequence_number = seq_number;
 
-                            let envelope = Arc::new(wrap_outbox_message_in_envelope(
-                                message,
-                                seq_number,
-                                this.metadata,
-                            ));
-                            let send_future = (this.send_operation)(Arc::clone(&envelope));
+                            let envelope =
+                                wrap_outbox_message_in_envelope(message, seq_number, this.metadata);
+                            let send_future = (this.send_operation)(envelope);
 
-                            this.state.set(State::Sending(send_future, envelope));
+                            this.state.set(State::Sending(send_future));
                         } else {
                             this.state.set(State::Idle);
                         }
                     }
-                    StateProj::Sending(send_future, envelope) => {
-                        if let Err(err) = send_future.await {
-                            debug!("Retrying failed shuffle attempt: {err}");
+                    StateProj::Sending(send_future) => {
+                        send_future.await?;
 
-                            let send_future = (this.send_operation)(Arc::clone(envelope));
-                            let envelope = Arc::clone(envelope);
-                            this.state.set(State::Sending(send_future, envelope));
+                        let successfully_shuffled_sequence_number = *this.current_sequence_number;
+                        *this.current_sequence_number += 1;
 
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                        } else {
-                            let successfully_shuffled_sequence_number =
-                                *this.current_sequence_number;
-                            *this.current_sequence_number += 1;
+                        this.read_future.set(get_next_message(
+                            this.outbox_reader
+                                .take()
+                                .expect("outbox reader should be available"),
+                            *this.current_sequence_number,
+                        ));
+                        this.state.set(State::ReadingOutbox);
 
-                            this.read_future.set(get_next_message(
-                                this.outbox_reader
-                                    .take()
-                                    .expect("outbox reader should be available"),
-                                *this.current_sequence_number,
-                            ));
-                            this.state.set(State::ReadingOutbox);
-
-                            return Ok(successfully_shuffled_sequence_number);
-                        }
+                        return Ok(successfully_shuffled_sequence_number);
                     }
                 }
             }

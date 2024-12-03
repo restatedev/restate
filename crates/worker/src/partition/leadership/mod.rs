@@ -83,10 +83,7 @@ impl Error {
         }
     }
 
-    fn task_failed(
-        name: &'static str,
-        err: impl std::error::Error + Send + Sync + 'static,
-    ) -> Self {
+    fn task_failed(name: &'static str, err: impl Into<GenericError>) -> Self {
         Error::TaskFailed {
             name,
             cause: TaskTermination::Failure(err.into()),
@@ -343,8 +340,8 @@ where
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
 
-            let shuffle_task_id =
-                TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle.run())?;
+            let shuffle_task_handle =
+                TaskCenter::spawn_unmanaged(TaskKind::Shuffle, "shuffle", shuffle.run())?;
 
             let cleaner = Cleaner::new(
                 self.partition_processor_metadata.partition_id,
@@ -367,7 +364,7 @@ where
                     .partition_processor_metadata
                     .partition_key_range
                     .start(),
-                shuffle_task_id,
+                shuffle_task_handle,
                 cleaner_task_id,
                 shuffle_hint_tx,
                 timer_service,
