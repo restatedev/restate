@@ -69,7 +69,7 @@ jobs:
             network=host
       
       - name: Cache sccache
-        uses: actions/cache@v4
+        uses: WarpBuilds/cache@v1
         with:
           path: sccache-cache
           key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
