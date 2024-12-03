@@ -65,13 +65,8 @@ pub(crate) async fn run_local(
         .wrap_connector(http_connector);
 
     let request_identity_key =
-        environment_info
-            .signing_public_key
-            .as_deref()
-            .map(|signing_public_key| {
-                super::request_identity::parse_public_key(signing_public_key)
-                    .expect("Problem validating request identity public key")
-            });
+        super::request_identity::parse_public_key(&environment_info.signing_public_key)
+            .expect("Problem validating request identity public key");
 
     let retry_policy = RetryPolicy::exponential(
         Duration::from_millis(10),
@@ -179,7 +174,7 @@ impl<Proxy: Clone> Clone for Handler<Proxy> {
 pub(crate) struct HandlerInner {
     pub opts: super::Tunnel,
     pub tunnel_renderer: Arc<TunnelRenderer>,
-    pub request_identity_key: Option<jsonwebtoken::DecodingKey>,
+    pub request_identity_key: jsonwebtoken::DecodingKey,
     pub environment_id: String,
     pub bearer_token: String,
     pub client: reqwest::Client,
@@ -482,23 +477,21 @@ pub(crate) async fn proxy(
     inner: Arc<HandlerInner>,
     request: reqwest::Request,
 ) -> Result<Response<Body>, StartError> {
-    if let Some(request_identity_key) = &inner.request_identity_key {
-        if let Err(err) = super::request_identity::validate_request_identity(
-            request_identity_key,
-            request.headers(),
-            request.url().path(),
-        ) {
-            error!("Failed to validate request identity: {}", err);
+    if let Err(err) = super::request_identity::validate_request_identity(
+        &inner.request_identity_key,
+        request.headers(),
+        request.url().path(),
+    ) {
+        error!("Failed to validate request identity: {}", err);
 
-            inner.tunnel_renderer.store_error(format!(
-                "Request identity error, are you discovering from the right environment?\n  {err}"
-            ));
+        inner.tunnel_renderer.store_error(format!(
+            "Request identity error, are you discovering from the right environment?\n  {err}"
+        ));
 
-            return Ok(Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .body(Body::default())
-                .unwrap());
-        }
+        return Ok(Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(Body::default())
+            .unwrap());
     }
 
     let mut result = match inner.client.execute(request).await {
