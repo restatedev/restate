@@ -57,7 +57,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Setup caching
+      # this is needed to be able to load and push a multiplatform image in one step
+      - name: Set up Docker containerd snapshotter
+        uses: crazy-max/ghaction-setup-docker@v3
+        with:
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
       - name: Set up QEMU dependency
         uses: docker/setup-qemu-action@v3
 
@@ -69,6 +79,7 @@ jobs:
             network=host
       
       - name: Cache sccache
+        id: cache
         uses: WarpBuilds/cache@v1
         with:
           path: sccache-cache
@@ -117,17 +128,19 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build${{inputs.uploadImageAsTarball != true && ' and push ' || ' '}}Docker image
+      - name: Build${{(inputs.uploadImageAsTarball != true || github.ref == 'refs/heads/main') && ' and push ' || ' '}}Docker image
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: "docker/Dockerfile"
-          push: ${{ inputs.uploadImageAsTarball != true }}
+          # push if we aren't uploading as a tarball, or if this is main'
+          push: ${{ inputs.uploadImageAsTarball != true || github.ref == 'refs/heads/main' }}
           tags: ${{ steps.meta.outputs.tags }}
           load: ${{ inputs.uploadImageAsTarball == true }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
+          # on main, always push both platforms, otherwise use platform input
+          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
           network: host
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
@@ -148,25 +161,3 @@ jobs:
           path: restate.tar
           retention-days: 1
           if-no-files-found: error
-
-      # Even if uploadImageAsTarball, push main images
-      # This won't actually build again, it'll just use cache
-      - name: Push Docker image
-        if: ${{ inputs.uploadImageAsTarball && github.ref == 'refs/heads/main' }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: "docker/Dockerfile"
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          load: false
-          labels: ${{ steps.meta.outputs.labels }}
-          # ignore inputs.platforms as we always need to push both arm64 and amd64 docker images
-          platforms: 'linux/arm64,linux/amd64'
-          network: host
-          build-args: |
-            CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
-            RESTATE_FEATURES=${{ inputs.features || '' }}
-          cache-from: type=gha,url=http://127.0.0.1:49160/
-          cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max
-    
