@@ -16,23 +16,41 @@ import "google/protobuf/empty.proto";
 package restate.cluster_ctrl;
 
 service ClusterCtrlSvc {
-  rpc GetClusterState(ClusterStateRequest) returns(ClusterStateResponse);
+  rpc GetClusterState(ClusterStateRequest) returns (ClusterStateResponse);
 
-  rpc ListLogs(ListLogsRequest) returns(ListLogsResponse);
+  rpc ListLogs(ListLogsRequest) returns (ListLogsResponse);
 
-  rpc DescribeLog(DescribeLogRequest) returns(DescribeLogResponse);
+  rpc DescribeLog(DescribeLogRequest) returns (DescribeLogResponse);
 
-  rpc ListNodes(ListNodesRequest) returns(ListNodesResponse);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
 
-  rpc TrimLog(TrimLogRequest) returns(google.protobuf.Empty);
+  rpc TrimLog(TrimLogRequest) returns (google.protobuf.Empty);
 
   rpc CreatePartitionSnapshot(CreatePartitionSnapshotRequest)
-      returns(CreatePartitionSnapshotResponse);
+      returns (CreatePartitionSnapshotResponse);
 
   rpc SealAndExtendChain(SealAndExtendChainRequest)
-      returns(SealAndExtendChainResponse);
+      returns (SealAndExtendChainResponse);
 
-  rpc FindTail(FindTailRequest) returns(FindTailResponse);
+  rpc FindTail(FindTailRequest) returns (FindTailResponse);
+
+  rpc GetClusterConfiguration(GetClusterConfigurationRequest)
+      returns (GetClusterConfigurationResponse);
+
+  rpc SetClusterConfiguration(SetClusterConfigurationRequest)
+      returns (SetClusterConfigurationResponse);
+}
+
+message SetClusterConfigurationResponse {}
+message SetClusterConfigurationRequest {
+  uint32 expected_version = 1;
+  restate.cluster.ClusterConfiguration cluster_configuration = 2;
+}
+
+message GetClusterConfigurationRequest {}
+message GetClusterConfigurationResponse {
+  uint32 version = 1;
+  restate.cluster.ClusterConfiguration cluster_configuration = 2;
 }
 
 message ClusterStateRequest {}
@@ -46,7 +64,11 @@ message ListLogsResponse {
   bytes logs = 1;
 }
 
-enum TailState { TailState_UNKNOWN = 0; OPEN = 1; SEALED = 2; }
+enum TailState {
+  TailState_UNKNOWN = 0;
+  OPEN = 1;
+  SEALED = 2;
+}
 
 message DescribeLogRequest { uint32 log_id = 1; }
 

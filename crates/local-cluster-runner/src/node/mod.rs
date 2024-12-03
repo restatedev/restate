@@ -173,8 +173,6 @@ impl Node {
 
         {
             let mut base_config = base_config.clone();
-            // let any node write the initial NodesConfiguration
-            base_config.common.allow_bootstrap = true;
             base_config.common.force_node_id = Some(PlainNodeId::new(0));
             nodes.push(Self::new_test_node(
                 "metadata-node",

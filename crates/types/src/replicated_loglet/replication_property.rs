@@ -58,7 +58,7 @@ impl LocationScope {
 pub struct ReplicationPropertyError(String);
 
 /// The replication policy for appends
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq)]
 pub struct ReplicationProperty(BTreeMap<LocationScope, u8>);
 
 impl ReplicationProperty {

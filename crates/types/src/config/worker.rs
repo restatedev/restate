@@ -287,6 +287,7 @@ impl StorageOptions {
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
         if self.num_partitions_to_share_memory_budget.is_none() {
+            // todo(azmy): this value needs to eventually come from cluster configuration seed.
             self.num_partitions_to_share_memory_budget = Some(common.bootstrap_num_partitions);
         }
 

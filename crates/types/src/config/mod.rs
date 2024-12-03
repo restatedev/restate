@@ -52,6 +52,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use super::live::{LiveLoad, Pinned};
+use crate::cluster_controller::ClusterConfigurationSeed;
 use crate::errors::GenericError;
 use crate::live::Live;
 use crate::nodes_config::Role;
@@ -230,5 +231,17 @@ impl Configuration {
     /// Dumps the configuration to a string
     pub fn dump(&self) -> Result<String, GenericError> {
         Ok(toml::to_string_pretty(self)?)
+    }
+
+    /// Getter for the default cluster configuration
+    pub fn default_cluster_configuration(&self) -> ClusterConfigurationSeed {
+        match &self.common.default_cluster_configuration {
+            Some(custom_config) => custom_config.clone(),
+            None => ClusterConfigurationSeed {
+                default_provider: self.bifrost.default_provider,
+                num_partitions: self.common.bootstrap_num_partitions,
+                ..Default::default()
+            },
+        }
     }
 }
