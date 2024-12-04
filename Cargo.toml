@@ -161,7 +161,7 @@ reqwest = { version = "0.12.5", default-features = false, features = [
     "stream",
 ] }
 rlimit = { version = "0.10.1" }
-rocksdb = { version = "0.29.0", package = "rust-rocksdb", features = ["multi-threaded-cf"], git = "https://github.com/restatedev/rust-rocksdb", rev = "8f832b7e742e0d826fb9fed05a62e4bd747969bf" }
+rocksdb = { version = "0.29.0", package = "rust-rocksdb", features = ["multi-threaded-cf", "jemalloc"], git = "https://github.com/restatedev/rust-rocksdb", rev = "8f832b7e742e0d826fb9fed05a62e4bd747969bf" }
 rstest = "0.23.0"
 rustls = { version = "0.23.11", default-features = false, features = ["ring"] }
 schemars = { version = "0.8", features = ["bytes", "enumset"] }
@@ -179,8 +179,7 @@ tempfile = "3.6.0"
 test-log = { version = "0.2.11", default-features = false, features = [
     "trace",
 ] }
-# tikv-jemallocator has not yet been released with musl target support, so we pin a main commit
-tikv-jemallocator = { git = "https://github.com/restatedev/jemallocator", rev = "7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0", default-features = false }
+tikv-jemallocator = "0.6"
 thiserror = "1.0"
 tokio = { version = "1.41.1", default-features = false, features = [
     "rt-multi-thread",
