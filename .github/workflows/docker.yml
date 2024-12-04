@@ -149,7 +149,7 @@ jobs:
           # push if we aren't uploading as a tarball, or if this is main
           outputs: |
             ${{ (inputs.uploadImageAsTarball != true || github.ref == 'refs/heads/main') && 'type=registry' || '' }}
-            ${{ inputs.uploadImageAsTarball == true && 'type=tar,dest=restate.tar' || '' }}
+            ${{ inputs.uploadImageAsTarball == true && 'type=oci,dest=restate.tar' || '' }}
           labels: ${{ steps.meta.outputs.labels }}
           # on main, always push both platforms, otherwise use platform input
           platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
