@@ -14,6 +14,7 @@ mod find_tail;
 mod gen_metadata;
 pub mod list_logs;
 mod reconfigure;
+mod seal;
 mod trim_log;
 
 use std::{ops::RangeInclusive, str::FromStr};
@@ -38,9 +39,13 @@ pub enum Logs {
     Dump(dump_log::DumpLogOpts),
     /// Trim a log to a particular Log Sequence Number (LSN)
     Trim(trim_log::TrimLogOpts),
-    /// Reconfigure a log by sealing the tail segment
+    /// Reconfigure a log manually by sealing the tail segment
     /// and extending the chain with a new one
+    /// It's always preferred to use `seal` if possible
     Reconfigure(reconfigure::ReconfigureOpts),
+    /// Force cluster controller to seal a loglet and
+    /// recreate it with latest cluster configuration.
+    Seal(seal::SealOpts),
     /// Find and show tail state of a log
     FindTail(find_tail::FindTailOpts),
 }

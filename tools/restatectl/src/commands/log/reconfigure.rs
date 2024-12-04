@@ -17,7 +17,8 @@ use tonic::transport::Channel;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{ListLogsRequest, SealAndExtendChainRequest};
-use restate_cli_util::{c_eprintln, c_println};
+use restate_cli_util::ui::console::confirm_or_exit;
+use restate_cli_util::{c_eprintln, c_println, c_warn};
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::LogId;
 use restate_types::protobuf::common::Version;
@@ -85,6 +86,17 @@ async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> any
         #[cfg(feature = "replicated-loglet")]
         ProviderKind::Replicated => replicated_loglet_params(&mut client, opts).await?,
     };
+
+    c_warn!(
+        r#"
+It's recommended to use `restatectl log seal` to force a reconfiguration of a loglet.
+`seal` unlike `reconfigure` will respect cluster configuration.
+
+Only use `reconfigure` if you need to force a certain setup.
+    "#
+    );
+
+    confirm_or_exit("Proceed anyway?")?;
 
     let response = client
         .seal_and_extend_chain(SealAndExtendChainRequest {

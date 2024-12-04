@@ -21,6 +21,7 @@ use serde_with::serde_as;
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 
 use super::{AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions};
+use crate::cluster_controller::ClusterConfigurationSeed;
 use crate::net::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
 use crate::retries::RetryPolicy;
@@ -56,6 +57,12 @@ pub struct CommonOptions {
 
     /// If true, then a new cluster is bootstrapped. This node *must* have an admin
     /// role and a new nodes configuration will be created that includes this node.
+    ///
+    /// bootstrap is allowed by default, unless it's set explicitly in config files
+    ///
+    /// Default: true
+    ///
+    /// [deprecated]
     pub allow_bootstrap: bool,
 
     /// The working directory which this Restate node should use for relative paths. The default is
@@ -75,6 +82,54 @@ pub struct CommonOptions {
     /// Address that other nodes will use to connect to this node. Default is `http://127.0.0.1:5122/`
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub advertised_address: AdvertisedAddress,
+
+    /// # Cluster configuration
+    ///
+    /// Setup initial cluster configuration. By default cluster
+    /// configuration is set to `default`.
+    ///
+    /// Default configuration uses `replicated` provider type with
+    /// replication factor of one.
+    ///
+    /// This is a sane default for a single node setup that works out of
+    /// the box. If you are planning on running multi-node setup it's then
+    /// advised to set this to `empty` and then use `restatectl` to setup
+    /// the required configuration.
+    pub cluster_configuration: ClusterConfigurationType,
+
+    /// # Cluster configuration seed
+    ///
+    /// This configuration is used to populate the cluster configuration on
+    /// bootstrap. If `allow-bootstrap` is not enabled, cluster-configuration-seed
+    /// is not used.
+    ///
+    /// After bootstrapping changes to this configuration have no effect.
+    ///
+    /// NOTE: This is a hidden configuration section to override default
+    /// cluster configuration. To override you need to explicitly include
+    /// the following section in your node config-file
+    ///
+    /// `
+    /// [default-cluster-configuration]
+    /// default-provider = "replicated"
+    /// num-partitions = 24
+    /// nodeset-selection-strategy = "strict-fault-tolerant-greedy"
+    /// partition-processor-replication-strategy = "on-all-nodes"
+    ///
+    /// [default-cluster-configuration.replication-property]
+    /// node = 1
+    /// `
+    ///
+    /// Or via ENV vars
+    /// `
+    /// export RESTATE_DEFAULT_CLUSTER_CONFIGURATION__DEFAULT_PROVIDER="replicated"
+    /// export RESTATE_DEFAULT_CLUSTER_CONFIGURATION__NUM_PARTITIONS=24
+    /// export RESTATE_DEFAULT_CLUSTER_CONFIGURATION__REPLICATION_PROPERTY__NODE=1
+    /// export RESTATE_DEFAULT_CLUSTER_CONFIGURATION__NODESET_SELECTION_STRATEGY="strict-fault-tolerant-greedy"
+    /// export RESTATE_DEFAULT_CLUSTER_CONFIGURATION__PARTITION_PROCESSOR_REPLICATION_STRATEGY="on-all-nodes"
+    /// `
+    #[serde(skip_serializing)]
+    pub(crate) default_cluster_configuration: Option<ClusterConfigurationSeed>,
 
     /// # Partitions
     ///
@@ -225,12 +280,6 @@ pub struct CommonOptions {
     ///
     /// The retry policy for node network error
     pub network_error_retry_policy: RetryPolicy,
-
-    /// # Automatically provision number of configured partitions
-    ///
-    /// If this option is set to `false`, then one needs to manually write a partition table to
-    /// the metadata store. Without a partition table, the cluster will not start.
-    pub auto_provision_partitions: bool,
 }
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| {
@@ -342,10 +391,12 @@ impl Default for CommonOptions {
             //   a. The safe rollback version supports log-server (at least supports parsing the
             //   config with the log-server role)
             //   b. When log-server becomes enabled by default.
+            // todo (azmy): restate v1.1.3 already has support for LogServer role. So it's safe
+            // now to keep the LogServer role in the default enabled roles
             //
             // todo remove `- Role::Ingress` when the safe rollback version supports ingress
             //   see "roles_compat_test" test below.
-            roles: EnumSet::all() - Role::LogServer - Role::HttpIngress,
+            roles: EnumSet::all() - Role::HttpIngress,
             node_name: None,
             force_node_id: None,
             cluster_name: "localcluster".to_owned(),
@@ -385,9 +436,31 @@ impl Default for CommonOptions {
                 Some(15),
                 Some(Duration::from_secs(5)),
             ),
-            auto_provision_partitions: true,
+            cluster_configuration: ClusterConfigurationType::default(),
+            default_cluster_configuration: None,
         }
     }
+}
+
+/// # Cluster Configuration
+#[serde_as]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum ClusterConfigurationType {
+    #[default]
+    /// Use default cluster configuration
+    ///
+    /// This uses both `bootstrap-num-partitions` a
+    /// and `bifrost/default-provider` to seed the cluster
+    /// configuration.
+    Default,
+    /// No default cluster configuration. Configuration
+    /// then has to be initialized manually.
+    ///
+    /// To manually configure the cluster you can use
+    /// the `restatectl cluster config set` command.
+    Empty,
 }
 
 /// # Service Client options
@@ -646,9 +719,6 @@ mod tests {
     #[test]
     fn roles_compat_test() {
         let opts = CommonOptions::default();
-        // make sure we don't add log-server by default until previous version can parse nodes
-        // configuration with this role.
-        assert!(!opts.roles.contains(Role::LogServer));
         // make sure we don't add ingress by default until previous version can parse nodes
         // configuration with this role.
         assert!(!opts.roles.contains(Role::HttpIngress));
