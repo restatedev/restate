@@ -8,10 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
+mod cluster_configuration_manager;
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use cluster_configuration_manager::ClusterConfigurationManager;
 use futures::future::OptionFuture;
 use itertools::Itertools;
+use restate_types::cluster_controller::ClusterConfiguration;
 use tokio::sync::watch;
 use tokio::time;
 use tokio::time::{Interval, MissedTickBehavior};
@@ -135,10 +141,10 @@ pub enum LeaderEvent {
     TrimLogs,
     LogsUpdate,
     PartitionTableUpdate,
+    ClusterConfigurationUpdate,
 }
 
 pub struct Leader<T> {
-    metadata: Metadata,
     bifrost: Bifrost,
     metadata_store_client: MetadataStoreClient,
     metadata_writer: MetadataWriter,
@@ -153,6 +159,11 @@ pub struct Leader<T> {
     cluster_state_watcher: ClusterStateWatcher,
     logs: Live<Logs>,
     log_trim_threshold: Lsn,
+
+    // configuration watcher
+    configuration_refresh_interval: Interval,
+    cluster_configuration_manager: ClusterConfigurationManager,
+    cluster_configuration_watch: watch::Receiver<Option<Arc<ClusterConfiguration>>>,
 }
 
 impl<T> Leader<T>
@@ -162,7 +173,13 @@ where
     async fn from_service(service: &Service<T>) -> anyhow::Result<Leader<T>> {
         let configuration = service.configuration.pinned();
 
-        let metadata = Metadata::current();
+        let mut cluster_configuration_manager = ClusterConfigurationManager::new(
+            service.configuration.clone(),
+            service.metadata_store_client.clone(),
+            service.metadata_writer.clone(),
+        );
+
+        cluster_configuration_manager.initialize().await?;
 
         let scheduler = Scheduler::init(
             &configuration,
@@ -173,7 +190,6 @@ where
 
         let logs_controller = LogsController::init(
             &configuration,
-            metadata.clone(),
             service.bifrost.clone(),
             service.metadata_store_client.clone(),
             service.metadata_writer.clone(),
@@ -187,8 +203,12 @@ where
             time::interval(configuration.admin.log_tail_update_interval.into());
         find_logs_tail_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+        // todo(azmy): make configurable;
+        let mut configuration_refresh_interval = time::interval(Duration::from_secs(5));
+        configuration_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        let metadata = Metadata::current();
         let mut leader = Self {
-            metadata: metadata.clone(),
             bifrost: service.bifrost.clone(),
             metadata_store_client: service.metadata_store_client.clone(),
             metadata_writer: service.metadata_writer.clone(),
@@ -203,6 +223,9 @@ where
             log_trim_threshold,
             logs_controller,
             scheduler,
+            configuration_refresh_interval,
+            cluster_configuration_watch: cluster_configuration_manager.watch(),
+            cluster_configuration_manager,
         };
 
         leader.logs_watcher.mark_changed();
@@ -215,8 +238,13 @@ where
         &mut self,
         observed_cluster_state: &ObservedClusterState,
     ) -> anyhow::Result<()> {
-        let nodes_config = &self.nodes_config.live_load();
+        let Some(cluster_configuration) = self.cluster_configuration_watch.borrow().clone() else {
+            return Ok(());
+        };
+
+        let nodes_config = self.nodes_config.live_load();
         self.logs_controller.on_observed_cluster_state_update(
+            &cluster_configuration,
             nodes_config,
             observed_cluster_state,
             SchedulingPlanNodeSetSelectorHints::from(&self.scheduler),
@@ -246,6 +274,13 @@ where
                 _ = OptionFuture::from(self.log_trim_interval.as_mut().map(|interval| interval.tick())) => {
                     return Ok(LeaderEvent::TrimLogs);
                 }
+                _ = self.configuration_refresh_interval.tick() => {
+                    self.cluster_configuration_manager.schedule_refresh()?;
+                }
+                _ = self.cluster_configuration_watch.changed() => {
+                    debug!("Detected cluster configuration change version");
+                    return Ok(LeaderEvent::ClusterConfigurationUpdate);
+                }
                 result = self.logs_controller.run_async_operations() => {
                     result?;
                 }
@@ -271,29 +306,55 @@ where
             LeaderEvent::PartitionTableUpdate => {
                 self.on_partition_table_update().await?;
             }
+            LeaderEvent::ClusterConfigurationUpdate => {
+                self.on_cluster_configuration_update().await?;
+            }
         }
 
         Ok(())
     }
 
+    async fn on_cluster_configuration_update(&mut self) -> anyhow::Result<()> {
+        // right now we don't take any action on reconfiguration
+        Ok(())
+    }
+
     async fn on_logs_update(&mut self) -> anyhow::Result<()> {
         self.logs_controller
-            .on_logs_update(self.metadata.logs_ref())?;
-        // tell the scheduler about potentially newly provisioned logs
-        self.scheduler
-            .on_logs_update(self.logs.live_load(), self.partition_table.live_load())
-            .await?;
+            .on_logs_update(Metadata::with_current(|m| m.logs_ref()))?;
+
+        let configuration = self.cluster_configuration_watch.borrow().clone();
+        if let Some(configuration) = configuration {
+            // tell the scheduler about potentially newly provisioned logs
+            self.scheduler
+                .on_logs_update(
+                    &configuration,
+                    self.logs.live_load(),
+                    self.partition_table.live_load(),
+                )
+                .await?;
+        }
 
         Ok(())
     }
 
     async fn on_partition_table_update(&mut self) -> anyhow::Result<()> {
         let partition_table = self.partition_table.live_load();
-        let logs = self.logs.live_load();
 
         self.logs_controller
             .on_partition_table_update(partition_table);
-        self.scheduler.on_logs_update(logs, partition_table).await?;
+
+        let configuration = self.cluster_configuration_watch.borrow().clone();
+        if let Some(configuration) = configuration {
+            // tell the scheduler about potentially newly provisioned logs
+            self.scheduler
+                .on_logs_update(
+                    &configuration,
+                    self.logs.live_load(),
+                    self.partition_table.live_load(),
+                )
+                .await?;
+        }
 
         Ok(())
     }

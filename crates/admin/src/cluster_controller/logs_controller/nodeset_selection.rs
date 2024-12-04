@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::max;
+use std::cmp::{max, Ordering};
 
+use itertools::Itertools;
 use rand::prelude::IteratorRandom;
 use rand::Rng;
 use tracing::trace;
 
+use restate_types::cluster_controller::NodeSetSelectionStrategy;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::{LocationScope, NodeSet, ReplicationProperty};
 
@@ -52,18 +54,19 @@ impl<'a> NodeSetSelector<'a> {
     ) -> bool {
         let current_writable =
             WritableNodeSet::from(nodeset, self.cluster_state, self.nodes_config);
-        let candidates = WritableNodeSet::from_cluster(self.cluster_state, self.nodes_config);
+        let alive_nodeset = WritableNodeSet::from_cluster(self.cluster_state, self.nodes_config);
+        let full_nodeset = FullNodeSet::from_nodes_config(self.nodes_config);
 
-        let (nodeset_min_size, nodeset_max_size) =
-            nodeset_size_range(&strategy, replication_property, &candidates);
+        let nodeset_size = nodeset_size_range(&strategy, replication_property, full_nodeset.len());
 
-        if current_writable.len() == nodeset_max_size {
+        if current_writable.len() == nodeset_size.target_size {
             return false;
         }
 
         // todo: we should check the current segment for sealability, otherwise we might propose
         //  reconfiguration when we are virtually certain to get stuck!
-        candidates.len() >= nodeset_min_size && candidates.len() > current_writable.len()
+        alive_nodeset.len() >= nodeset_size.minimum_size
+            && alive_nodeset.len() > current_writable.len()
     }
 
     /// Picks a set of storage nodes for a replicated loglet out of the available pool. Only alive,
@@ -82,15 +85,15 @@ impl<'a> NodeSetSelector<'a> {
         }
 
         // Only consider alive, writable storage nodes.
-        let candidates = WritableNodeSet::from_cluster(self.cluster_state, self.nodes_config);
+        let alive_nodeset = WritableNodeSet::from_cluster(self.cluster_state, self.nodes_config);
+        let full_nodeset = FullNodeSet::from_nodes_config(self.nodes_config);
 
-        let (nodeset_min_size, nodeset_target_size) =
-            nodeset_size_range(&strategy, replication_property, &candidates);
+        let nodeset_size = nodeset_size_range(&strategy, replication_property, full_nodeset.len());
 
-        if candidates.len() < nodeset_min_size {
+        if full_nodeset.len() < nodeset_size.optimal_size {
             trace!(
-                candidate_nodes_count = ?candidates.len(),
-                ?nodeset_min_size,
+                candidate_nodes_count = ?alive_nodeset.len(),
+                ?nodeset_size.minimum_size,
                 cluster_state = ?self.cluster_state,
                 nodes_config = ?self.nodes_config,
                 "Not enough writeable nodes to meet the minimum replication requirements"
@@ -103,17 +106,51 @@ impl<'a> NodeSetSelector<'a> {
                 let mut nodes = preferred_nodes
                     .iter()
                     .copied()
-                    .filter(|node_id| candidates.0.contains(node_id))
-                    .choose_multiple(rng, nodeset_target_size);
+                    .filter(|node_id| alive_nodeset.contains(node_id))
+                    .choose_multiple(rng, nodeset_size.target_size);
 
-                if nodes.len() < nodeset_target_size {
-                    let remaining = nodeset_target_size - nodes.len();
+                if nodes.len() < nodeset_size.target_size {
+                    let remaining = nodeset_size.target_size - nodes.len();
                     nodes.extend(
-                        candidates
-                            .into_iter()
+                        alive_nodeset
+                            .iter()
                             .filter(|node_id| !preferred_nodes.contains(node_id))
                             .choose_multiple(rng, remaining),
                     );
+                }
+
+                if nodes.len() < nodeset_size.minimum_size {
+                    trace!(
+                        "Failed to place replicated loglet: insufficient writeable nodes to meet minimum size requirement {} < {}",
+                        nodes.len(),
+                        nodeset_size.minimum_size,
+                    );
+
+                    return Err(NodeSelectionError::InsufficientWriteableNodes);
+                }
+
+                // last possibility is if the selected nodeset is still
+                // smaller than optimal we try to extend from the full nodeset
+                // which includes possibly dead nodes
+                if nodes.len() < nodeset_size.optimal_size {
+                    // greedy approach: Every other node that is not
+                    // already in the set.
+                    let remaining = nodeset_size.optimal_size - nodes.len();
+
+                    let extension = full_nodeset
+                        .iter()
+                        .filter(|node_id| !alive_nodeset.contains(node_id))
+                        .cloned()
+                        .sorted_by(|l, r| {
+                            match (preferred_nodes.contains(l), preferred_nodes.contains(r)) {
+                                (true, true) | (false, false) => Ordering::Equal,
+                                (true, false) => Ordering::Less,
+                                (false, true) => Ordering::Greater,
+                            }
+                        })
+                        .take(remaining);
+
+                    nodes.extend(extension);
                 }
 
                 let nodes_len = nodes.len();
@@ -127,12 +164,16 @@ impl<'a> NodeSetSelector<'a> {
             }
         };
 
+        // even with all possible dead node we still can't reach the optimal
+        // nodeset size. This means there are not enough nodes in the cluster
+        // we still return an error.
+
         // todo: implement location scope-aware selection
-        if nodeset.len() < nodeset_min_size {
+        if nodeset.len() < nodeset_size.optimal_size {
             trace!(
-                "Failed to place replicated loglet: insufficient writeable nodes to meet minimum size requirement {} < {}",
+                "Failed to place replicated loglet: insufficient writeable nodes to meet optimal size requirement {} < {}",
                 nodeset.len(),
-                nodeset_min_size,
+                nodeset_size.minimum_size,
             );
             return Err(NodeSelectionError::InsufficientWriteableNodes);
         }
@@ -141,11 +182,27 @@ impl<'a> NodeSetSelector<'a> {
     }
 }
 
+#[derive(Debug)]
+struct NodeSetSizeRange {
+    /// Absolute minimum size of the nodeset
+    /// That satisfies the replication property
+    /// with given strategy.
+    ///
+    /// Going under this minimum size will lose
+    /// write availability
+    minimum_size: usize,
+    /// The optimal number of nodes to satisfy
+    /// the replication property with given strategy
+    optimal_size: usize,
+    /// The proposed number of nodes to use if possible
+    target_size: usize,
+}
+
 fn nodeset_size_range(
     strategy: &NodeSetSelectionStrategy,
     replication_property: &ReplicationProperty,
-    candidates: &WritableNodeSet,
-) -> (usize, usize) {
+    cluster_size: usize,
+) -> NodeSetSizeRange {
     let min_copies = replication_property.num_copies();
 
     // ReplicationFactor(f+1) implies a minimum of 2f+1 nodes. At this point we are only
@@ -162,37 +219,18 @@ fn nodeset_size_range(
         "The calculated minimum nodeset size can not be less than the replication factor"
     );
 
-    let (nodeset_min_size, nodeset_target_size) = match strategy {
+    let (nodeset_optimal_size, nodeset_target_size) = match strategy {
         NodeSetSelectionStrategy::StrictFaultTolerantGreedy => (
             optimal_fault_tolerant_nodeset_size,
-            max(optimal_fault_tolerant_nodeset_size, candidates.len()),
+            max(optimal_fault_tolerant_nodeset_size, cluster_size),
         ),
     };
 
-    (nodeset_min_size, nodeset_target_size)
-}
-
-/// Nodeset selection strategy for picking cluster members to host replicated logs. Note that this
-/// concerns loglet replication configuration across storage servers during log bootstrap or cluster
-/// reconfiguration, for example when expanding capacity.
-///
-/// It is expected that the Bifrost data plane will deal with short-term server unavailability.
-/// Therefore, we can afford to aim high with our nodeset selections and optimise for maximum
-/// possible fault tolerance. It is the data plane's responsibility to achieve availability within
-/// this nodeset during periods of individual node downtime.
-///
-/// Finally, nodeset selection is orthogonal to log sequencer placement.
-#[cfg(feature = "replicated-loglet")]
-#[derive(Debug, Clone, Default)]
-pub enum NodeSetSelectionStrategy {
-    /// Selects an optimal nodeset size based on the replication factor. The nodeset size is at
-    /// least 2f+1, calculated by working backwards from a replication factor of f+1. If there are
-    /// more nodes available in the cluster, the strategy will use them.
-    ///
-    /// This strategy will never suggest a nodeset smaller than 2f+1, thus ensuring that there is
-    /// always plenty of fault tolerance built into the loglet. This is a safe default choice.
-    #[default]
-    StrictFaultTolerantGreedy,
+    NodeSetSizeRange {
+        minimum_size: min_copies.into(),
+        optimal_size: nodeset_optimal_size,
+        target_size: nodeset_target_size,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -202,9 +240,7 @@ pub enum NodeSelectionError {
 }
 
 /// Utility for filtering only nodes suitable to be a nodeset member based on cluster configuration.
-#[derive(
-    Debug, Clone, Eq, PartialEq, derive_more::Display, derive_more::Into, derive_more::IntoIterator,
-)]
+#[derive(Debug, Clone, Eq, PartialEq, derive_more::Into, derive_more::Deref)]
 struct WritableNodeSet(NodeSet);
 
 impl WritableNodeSet {
@@ -246,9 +282,27 @@ impl WritableNodeSet {
                 .collect(),
         )
     }
+}
 
-    pub fn len(&self) -> usize {
-        self.0.len()
+/// Set of all log server that are possibly available
+#[derive(Debug, Clone, Eq, PartialEq, derive_more::Into, derive_more::Deref)]
+struct FullNodeSet(NodeSet);
+
+impl FullNodeSet {
+    /// Constructs a new nodeset consisting of only alive, read-write storage nodes cluster-wide.
+    pub fn from_nodes_config(nodes_config: &NodesConfiguration) -> Self {
+        Self(
+            nodes_config
+                .iter()
+                .filter_map(|(node_id, config)| {
+                    if config.log_server_config.storage_state.can_write_to() {
+                        Some(node_id)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        )
     }
 }
 
@@ -398,11 +452,13 @@ pub mod tests {
             &mut thread_rng(),
             &initial_nodeset, // preferred nodes
         );
-        assert_eq!(
-            selection,
-            Err(NodeSelectionError::InsufficientWriteableNodes),
-            "The strict FT strategy does not compromise on the minimum 2f+1 nodeset size"
-        );
+
+        // while one node is dead, the selector can still satisfy a write quorum
+        // based on supplied replication property. The dead node will be included
+        // in the nodeset.
+        assert!(selection.is_ok());
+        let initial_nodeset = selection.unwrap();
+        assert_eq!(initial_nodeset, NodeSet::from([1, 2, 3]));
 
         nodes.add_dedicated_log_server_node(4);
 
@@ -413,5 +469,29 @@ pub mod tests {
             &initial_nodeset, // preferred nodes
         );
         assert_eq!(selection.unwrap(), NodeSet::from([2, 3, 4]));
+    }
+
+    #[test]
+    fn test_select_log_servers_respects_replication_factor_not_sufficient() {
+        let nodes = MockNodes::builder().with_mixed_server_nodes([1, 2]).build();
+
+        let replication =
+            ReplicationProperty::with_scope(LocationScope::Node, 2.try_into().unwrap());
+
+        // initial selection - no prior preferences
+        let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
+            NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
+            &replication,
+            &mut thread_rng(),
+            &NodeSet::empty(),
+        );
+
+        // in this case, the entire cluster does not have enough nodes for an optimal
+        // nodeset.
+        assert_eq!(
+            selection,
+            Err(NodeSelectionError::InsufficientWriteableNodes),
+            "The strict FT strategy does not compromise on the minimum 2f+1 nodeset size"
+        );
     }
 }

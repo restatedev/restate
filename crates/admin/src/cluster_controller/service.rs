@@ -22,7 +22,7 @@ use tonic::codec::CompressionEncoding;
 use tracing::{debug, info};
 
 use restate_bifrost::{Bifrost, BifrostAdmin};
-use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
+use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{
     MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking, TransportConnect,
@@ -37,12 +37,10 @@ use restate_types::health::HealthStatus;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn};
-use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
-use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::AdminStatus;
-use restate_types::{GenerationalNodeId, Version};
+use restate_types::GenerationalNodeId;
 
 use super::cluster_state_refresher::ClusterStateRefresher;
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
@@ -215,8 +213,6 @@ impl<T: TransportConnect> Service<T> {
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
-        self.init_partition_table().await?;
-
         let mut config_watcher = Configuration::watcher();
         let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
 
@@ -272,37 +268,6 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
-    async fn init_partition_table(&mut self) -> anyhow::Result<()> {
-        let configuration = self.configuration.live_load();
-
-        let partition_table = retry_on_network_error(
-            configuration.common.network_error_retry_policy.clone(),
-            || {
-                self.metadata_store_client
-                    .get_or_insert(PARTITION_TABLE_KEY.clone(), || {
-                        let partition_table = if configuration.common.auto_provision_partitions {
-                            PartitionTable::with_equally_sized_partitions(
-                                Version::MIN,
-                                configuration.common.bootstrap_num_partitions(),
-                            )
-                        } else {
-                            PartitionTable::with_equally_sized_partitions(Version::MIN, 0)
-                        };
-
-                        debug!("Initializing the partition table with '{partition_table:?}'");
-
-                        partition_table
-                    })
-            },
-        )
-        .await?;
-
-        self.metadata_writer
-            .update(Arc::new(partition_table))
-            .await?;
-
-        Ok(())
-    }
     /// Triggers a snapshot creation for the given partition by issuing an RPC
     /// to the node hosting the active leader.
     async fn create_partition_snapshot(

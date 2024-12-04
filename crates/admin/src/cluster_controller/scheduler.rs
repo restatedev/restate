@@ -21,7 +21,8 @@ use restate_core::metadata_store::{
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{Metadata, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::cluster_controller::{
-    ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
+    ClusterConfiguration, ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder,
+    TargetPartitionState,
 };
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
@@ -149,6 +150,7 @@ impl<T: TransportConnect> Scheduler<T> {
 
     pub async fn on_logs_update(
         &mut self,
+        cluster_configuration: &ClusterConfiguration,
         logs: &Logs,
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
@@ -160,14 +162,26 @@ impl<T: TransportConnect> Scheduler<T> {
                 let partition_id = (*log_id).into();
 
                 // add the partition to the scheduling plan if we aren't already scheduling it
-                if !builder.contains_partition(&partition_id) {
+                if builder.contains_partition(&partition_id) {
+                    builder.modify_partition(&partition_id, |partition| {
+                        if partition.replication_strategy
+                            != cluster_configuration.partition_processor_replication_strategy
+                        {
+                            partition.replication_strategy =
+                                cluster_configuration.partition_processor_replication_strategy;
+                            return true;
+                        }
+
+                        false
+                    });
+                } else {
                     // check whether the provisioned log is actually needed
                     if let Some(partition) = partition_table.get_partition(&partition_id) {
                         builder.insert_partition(
                             partition_id,
                             TargetPartitionState::new(
                                 partition.key_range.clone(),
-                                ReplicationStrategy::OnAllNodes,
+                                cluster_configuration.partition_processor_replication_strategy,
                             ),
                         )
                     }

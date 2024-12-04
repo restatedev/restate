@@ -18,9 +18,8 @@ pub mod keys {
     pub static BIFROST_CONFIG_KEY: ByteString = ByteString::from_static("bifrost_config");
     pub static PARTITION_TABLE_KEY: ByteString = ByteString::from_static("partition_table");
     pub static PARTITION_PROCESSOR_EPOCH_PREFIX: &str = "pp_epoch";
-
+    pub static CLUSTER_CONFIG_KEY: ByteString = ByteString::from_static("cluster_config");
     pub static SCHEMA_INFORMATION_KEY: ByteString = ByteString::from_static("schema_registry");
-
     pub static SCHEDULING_PLAN_KEY: ByteString = ByteString::from_static("scheduling_plan");
 
     pub fn partition_processor_epoch_key(partition_id: PartitionId) -> ByteString {

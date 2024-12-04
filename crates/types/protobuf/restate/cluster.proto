@@ -76,3 +76,38 @@ message PartitionProcessorStatus {
   // Set if replay_status is CATCHING_UP
   optional restate.common.Lsn target_tail_lsn = 11;
 }
+
+message NodeSetSelectionStrategyStrictFaultTolerantGreedy {}
+
+message NodeSetSelectionStrategy {
+  oneof strategy {
+    NodeSetSelectionStrategyStrictFaultTolerantGreedy
+        strict_fault_tolerant_greedy = 1;
+  }
+}
+
+message PartitionProcessorReplicationReplicationStrategyOnAllNodes {}
+message PartitionProcessorReplicationReplicationStrategyFactor {
+  uint32 factor = 1;
+}
+
+message ReplicationStrategy {
+  oneof strategy {
+    PartitionProcessorReplicationReplicationStrategyOnAllNodes on_all_nodes = 1;
+    PartitionProcessorReplicationReplicationStrategyFactor factor = 2;
+  }
+}
+
+message ReplicationProperty {
+  uint32 node = 1;
+  optional uint32 zone = 2;
+  optional uint32 region = 3;
+}
+
+message ClusterConfiguration {
+  string default_provider = 1;
+  uint32 num_partitions = 2;
+  ReplicationProperty replication_property = 3;
+  NodeSetSelectionStrategy nodeset_selection_strategy = 4;
+  ReplicationStrategy partition_processor_replication_strategy = 5;
+}
