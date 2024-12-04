@@ -31,6 +31,16 @@ on:
 
   workflow_dispatch:
     inputs:
+      uploadImageAsTarball:
+        description: 'uploads the Docker image additionally as a tarball'
+        required: false
+        default: false
+        type: boolean
+      platforms:
+        description: 'platforms for docker build step'
+        required: false
+        default: ''
+        type: string
       debug:
         description: 'include debug symbols in built image'
         required: false
@@ -135,9 +145,11 @@ jobs:
           context: .
           file: "docker/Dockerfile"
           # push if we aren't uploading as a tarball, or if this is main'
-          push: ${{ inputs.uploadImageAsTarball != true || github.ref == 'refs/heads/main' }}
           tags: ${{ steps.meta.outputs.tags }}
-          load: ${{ inputs.uploadImageAsTarball == true }}
+          # push if we aren't uploading as a tarball, or if this is main
+          outputs: |
+            ${{ (inputs.uploadImageAsTarball != true || github.ref == 'refs/heads/main') && 'type=registry' || '' }}
+            ${{ inputs.uploadImageAsTarball == true && 'type=tar,dest=restate.tar' || '' }}
           labels: ${{ steps.meta.outputs.labels }}
           # on main, always push both platforms, otherwise use platform input
           platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
@@ -148,11 +160,6 @@ jobs:
           cache-from: type=gha,url=http://127.0.0.1:49160/
           cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max
     
-      - name: Save docker image as tar
-        if: ${{ inputs.uploadImageAsTarball }}
-        run: |
-          docker save -o restate.tar ${{ steps.build.outputs.imageid }}
-
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball }}
         uses: actions/upload-artifact@v4
