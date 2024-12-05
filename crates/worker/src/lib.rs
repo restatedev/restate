@@ -156,7 +156,7 @@ impl Worker {
             partition_store_manager.clone(),
             router_builder,
             bifrost,
-            SnapshotRepository::create(snapshots_options)
+            SnapshotRepository::create_if_configured(snapshots_options)
                 .await
                 .map_err(BuildError::SnapshotRepository)?,
         );

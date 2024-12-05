@@ -1,4 +1,4 @@
-// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024 - 2025 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -81,7 +81,8 @@ pub struct LatestSnapshot {
 }
 
 impl SnapshotRepository {
-    pub async fn create(
+    /// Creates an instance of the repository if a snapshots destination is configured.
+    pub async fn create_if_configured(
         snapshots_options: &SnapshotsOptions,
     ) -> anyhow::Result<Option<SnapshotRepository>> {
         let mut destination = if let Some(ref destination) = snapshots_options.destination {
@@ -90,6 +91,9 @@ impl SnapshotRepository {
             return Ok(None);
         };
         // Prevent passing configuration options to object_store via the destination URL.
+        destination
+            .query()
+            .inspect(|params| info!("Snapshot destination parameters ignored: {params}"));
         destination.set_query(None);
 
         // We use the AWS SDK configuration and credentials provider so that the conventional AWS
@@ -236,7 +240,7 @@ impl SnapshotRepository {
                 &mut buf,
             )
             .await
-            .map_err(|e| PutSnapshotError::from(e, &progress))?;
+            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
 
             debug!(
                 etag = put_result.e_tag.unwrap_or_default(),
@@ -258,7 +262,7 @@ impl SnapshotRepository {
             .object_store
             .put(&metadata_key, metadata_json_payload)
             .await
-            .map_err(|e| PutSnapshotError::from(e, &progress))?;
+            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
         progress.push("/metadata.json".to_owned());
 
         debug!(
@@ -277,7 +281,7 @@ impl SnapshotRepository {
         let maybe_stored = self
             .get_latest_snapshot_metadata_for_update(snapshot, &latest_path)
             .await
-            .map_err(|e| PutSnapshotError::from(e, &progress))?;
+            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
         if maybe_stored.as_ref().is_some_and(|(latest_stored, _)| {
             latest_stored.min_applied_lsn >= snapshot.min_applied_lsn
         }) {
@@ -303,7 +307,7 @@ impl SnapshotRepository {
         };
         let latest_json = PutPayload::from(
             serde_json::to_string_pretty(&latest)
-                .map_err(|e| PutSnapshotError::from(e, &progress))?,
+                .map_err(|e| PutSnapshotError::from(e, progress.clone()))?,
         );
 
         // The object_store file provider supports create-if-not-exists but not update-version on put
@@ -325,7 +329,7 @@ impl SnapshotRepository {
             .object_store
             .put_opts(&latest_path, latest_json, conditions)
             .await
-            .map_err(|e| PutSnapshotError::from(e, &progress))?;
+            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
 
         debug!(
             etag = put_result.e_tag.unwrap_or_default(),
@@ -360,7 +364,7 @@ impl SnapshotRepository {
                 })
                 .map_err(|e| anyhow!("Failed to parse latest snapshot metadata: {}", e))?;
                 if snapshot.cluster_name != latest.cluster_name {
-                    // This indicates a seriuos misconfiguration and we should complain loudly
+                    // This indicates a serious misconfiguration and we should complain loudly
                     bail!("Snapshot does not match the cluster name of latest snapshot at destination!");
                 }
                 Ok(Some((latest, version)))
@@ -380,6 +384,7 @@ impl SnapshotRepository {
     }
 }
 
+#[derive(Clone, Debug)]
 struct SnapshotUploadProgress {
     pub full_snapshot_path: String,
     pub uploaded_files: Vec<String>,
@@ -405,14 +410,14 @@ struct PutSnapshotError {
 }
 
 impl PutSnapshotError {
-    fn from<E>(error: E, progress: &SnapshotUploadProgress) -> Self
+    fn from<E>(error: E, progress: SnapshotUploadProgress) -> Self
     where
         E: Into<anyhow::Error>,
     {
         PutSnapshotError {
             error: error.into(),
-            full_snapshot_path: progress.full_snapshot_path.clone(),
-            uploaded_files: progress.uploaded_files.clone(),
+            full_snapshot_path: progress.full_snapshot_path,
+            uploaded_files: progress.uploaded_files,
         }
     }
 }
@@ -551,7 +556,9 @@ mod tests {
             ),
             ..SnapshotsOptions::default()
         };
-        let repository = SnapshotRepository::create(&opts).await?.unwrap();
+        let repository = SnapshotRepository::create_if_configured(&opts)
+            .await?
+            .unwrap();
 
         repository.put(&snapshot, source_dir).await?;
 
@@ -586,7 +593,9 @@ mod tests {
             ),
             ..SnapshotsOptions::default()
         };
-        let repository = SnapshotRepository::create(&opts).await?.unwrap();
+        let repository = SnapshotRepository::create_if_configured(&opts)
+            .await?
+            .unwrap();
 
         // Write invalid JSON to latest.json
         let latest_path = destination_dir.join(format!("{}/latest.json", PartitionId::MIN));
@@ -647,7 +656,9 @@ mod tests {
         //     ..SnapshotsOptions::default()
         // };
 
-        let repository = SnapshotRepository::create(&opts).await?.unwrap();
+        let repository = SnapshotRepository::create_if_configured(&opts)
+            .await?
+            .unwrap();
 
         repository.put(&snapshot1, source_dir.clone()).await?;
 
@@ -679,7 +690,7 @@ mod tests {
             key_range: PartitionKey::MIN..=PartitionKey::MAX,
             min_applied_lsn: Lsn::new(1),
             db_comparator_name: "leveldb.BytewiseComparator".to_string(),
-            // this is totally bogus but it doesn't matter since we won't be importing it into RocksDB
+            // this is totally bogus, but it doesn't matter since we won't be importing it into RocksDB
             files: vec![rocksdb::LiveFile {
                 column_family_name: "data-0".to_owned(),
                 name: file_name,
