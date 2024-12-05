@@ -60,6 +60,7 @@ impl ServiceOpenAPI {
         let mut get_output_paths = Paths::builder();
         for (handler_name, handler_schemas) in handlers {
             let operation_id = handler_name;
+            let summary = Some(handler_name.clone());
 
             if !handler_schemas.target_meta.public {
                 // We don't generate the OpenAPI route for that.
@@ -72,10 +73,10 @@ impl ServiceOpenAPI {
                 infer_handler_response(operation_id, handler_schemas, &mut schemas_collector);
 
             let call_item = PathItem::builder()
-                .summary(Some(format!("Call {service_name}/{handler_name}")))
                 .operation(
                     HttpMethod::Post,
                     Operation::builder()
+                        .summary(summary.clone())
                         .operation_id(Some(operation_id.clone()))
                         .description(Some(
                             handler_schemas
@@ -89,7 +90,6 @@ impl ServiceOpenAPI {
                                 }),
                         ))
                         .parameters(Some(call_parameters.clone()))
-                        .tag(service_name.to_string())
                         .request_body(request_body.clone())
                         .response("200", response.clone())
                         .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
@@ -99,10 +99,10 @@ impl ServiceOpenAPI {
             rpc_paths = rpc_paths.path(format!("{root_path}{handler_name}"), call_item);
 
             let send_item = PathItem::builder()
-                .summary(Some(format!("Send to {service_name}/{handler_name}")))
                 .operation(
                     HttpMethod::Post,
                     Operation::builder()
+                        .summary(summary.clone())
                         .operation_id(Some(format!("{operation_id}Send")))
                         .description(Some(
                             handler_schemas
@@ -115,7 +115,7 @@ impl ServiceOpenAPI {
                         ))
                         .parameters(Some(call_parameters.clone()))
                         .parameter(parameters_ref(DELAY_PARAMETER_REF_NAME))
-                        .tag(service_name.to_string())
+                        .tag(SEND_TAG_NAME.to_string())
                         .request_body(request_body)
                         .response("200", responses_ref(SEND_RESPONSE_REF_NAME))
                         .response("202", responses_ref(SEND_RESPONSE_REF_NAME))
@@ -131,10 +131,10 @@ impl ServiceOpenAPI {
                     == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
                 {
                     let attach_item = PathItem::builder()
-                        .summary(Some(format!("Attach to {service_name} workflow")))
                         .operation(
                             HttpMethod::Get,
                             Operation::builder()
+                                .summary(summary.clone())
                                 .operation_id(Some(format!("{operation_id}Attach")))
                                 .description(Some(
                                     handler_schemas
@@ -148,7 +148,7 @@ impl ServiceOpenAPI {
                                         }),
                                 ))
                                 .parameters(Some(attach_get_output_parameters.clone()))
-                                .tag(service_name.to_string())
+                                .tag(ATTACH_TAG_NAME.to_string())
                                 .response("200", response.clone())
                                 .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
                                 .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
@@ -161,10 +161,10 @@ impl ServiceOpenAPI {
                     );
 
                     let output_item = PathItem::builder()
-                        .summary(Some(format!("Get output of {service_name} workflow")))
                         .operation(
                             HttpMethod::Get,
                             Operation::builder()
+                                .summary(summary.clone())
                                 .operation_id(Some(format!("{operation_id}Output")))
                                 .description(Some(
                                     handler_schemas
@@ -178,7 +178,7 @@ impl ServiceOpenAPI {
                                         }),
                                 ))
                                 .parameters(Some(attach_get_output_parameters.clone()))
-                                .tag(service_name.to_string())
+                                .tag(GET_OUTPUT_TAG_NAME.to_string())
                                 .response("200", response)
                                 .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
                                 .response("470", responses_ref(INVOCATION_NOT_READY_RESPONSE_REF_NAME))
@@ -194,10 +194,10 @@ impl ServiceOpenAPI {
             } else {
                 // We add attach/get output for each individual handler with idempotency key
                 let attach_item = PathItem::builder()
-                    .summary(Some(format!("Attach to {service_name}/{handler_name} invocation using idempotency key")))
                     .operation(
                         HttpMethod::Get,
                         Operation::builder()
+                            .summary(summary.clone())
                             .operation_id(Some(format!("{operation_id}Attach")))
                             .description(Some(
                                 handler_schemas
@@ -211,7 +211,7 @@ impl ServiceOpenAPI {
                                     }),
                             ))
                             .parameters(Some(attach_get_output_parameters.clone()))
-                            .tag(service_name.to_string())
+                            .tag(ATTACH_TAG_NAME.to_string())
                             .response("200", response.clone())
                             .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
                             .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
@@ -226,10 +226,10 @@ impl ServiceOpenAPI {
                 );
 
                 let output_item = PathItem::builder()
-                    .summary(Some(format!("Get output of {service_name}/{handler_name} invocation using idempotency key")))
                     .operation(
                         HttpMethod::Get,
                         Operation::builder()
+                            .summary(summary.clone())
                             .operation_id(Some(format!("{operation_id}Output")))
                             .description(Some(
                                 handler_schemas
@@ -243,7 +243,7 @@ impl ServiceOpenAPI {
                                     }),
                             ))
                             .parameters(Some(attach_get_output_parameters.clone()))
-                            .tag(service_name.to_string())
+                            .tag(GET_OUTPUT_TAG_NAME.to_string())
                             .response("200", response)
                             .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
                             .response("470", responses_ref(INVOCATION_NOT_READY_RESPONSE_REF_NAME))
@@ -307,6 +307,7 @@ impl ServiceOpenAPI {
                         .build(),
                 )
                 .paths(paths)
+                .tags(Some(restate_tags()))
                 .components(Some(components))
                 .build(),
         )
@@ -690,6 +691,44 @@ fn error_response_json_schema() -> Value {
         "required": ["message"],
         "additionalProperties": false
     })
+}
+
+const REQUEST_RESPONSE_TAG_NAME: &str = "Request Response";
+const SEND_TAG_NAME: &str = "Send";
+const ATTACH_TAG_NAME: &str = "Attach";
+const GET_OUTPUT_TAG_NAME: &str = "Get Output";
+
+fn restate_tags() -> Vec<Tag> {
+    vec![
+        Tag::builder()
+            .name(REQUEST_RESPONSE_TAG_NAME)
+            .description(Some("Request response to handler".to_string()))
+            .external_docs(Some(ExternalDocs::new(
+                "https://docs.restate.dev/invoke/http",
+            )))
+            .build(),
+        Tag::builder()
+            .name(SEND_TAG_NAME)
+            .description(Some("Send to handler".to_string()))
+            .external_docs(Some(ExternalDocs::new(
+                "https://docs.restate.dev/invoke/http",
+            )))
+            .build(),
+        Tag::builder()
+            .name(ATTACH_TAG_NAME)
+            .description(Some("Attach to invocation".to_string()))
+            .external_docs(Some(ExternalDocs::new(
+                "https://docs.restate.dev/invoke/http",
+            )))
+            .build(),
+        Tag::builder()
+            .name(ATTACH_TAG_NAME)
+            .description(Some("Get invocation output".to_string()))
+            .external_docs(Some(ExternalDocs::new(
+                "https://docs.restate.dev/invoke/http",
+            )))
+            .build(),
+    ]
 }
 
 // We need to normalize all the $refs in the schema to append the ref_prefix
