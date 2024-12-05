@@ -549,42 +549,6 @@ mod tests {
     use restate_types::logs::{Lsn, SequenceNumber};
 
     #[tokio::test]
-    async fn test_repository_local() -> anyhow::Result<()> {
-        tracing_subscriber::registry()
-            .with(fmt::layer())
-            .with(EnvFilter::from_default_env())
-            .init();
-
-        let snapshot_source = TempDir::new()?;
-        let source_dir = snapshot_source.path().to_path_buf();
-
-        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
-        data.write_all(b"snapshot-data").await?;
-
-        let snapshot = mock_snapshot_metadata(
-            "/data.sst".to_owned(),
-            source_dir.to_string_lossy().to_string(),
-        );
-
-        let snapshots_destination = TempDir::new()?;
-        let opts = SnapshotsOptions {
-            destination: Some(
-                Url::from_file_path(snapshots_destination.path())
-                    .unwrap()
-                    .to_string(),
-            ),
-            ..SnapshotsOptions::default()
-        };
-        let repository = SnapshotRepository::create_if_configured(&opts)
-            .await?
-            .unwrap();
-
-        repository.put(&snapshot, source_dir).await?;
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_overwrite_unparsable_latest() -> anyhow::Result<()> {
         tracing_subscriber::registry()
             .with(fmt::layer())
@@ -629,9 +593,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_existing_snapshot_local_filesystem() -> anyhow::Result<()> {
+    async fn test_put_snapshot_local_filesystem() -> anyhow::Result<()> {
         let snapshots_destination = TempDir::new()?;
-        test_update_existing_snapshot_with_newer(
+        test_put_snapshot(
             Url::from_file_path(snapshots_destination.path())
                 .unwrap()
                 .to_string(),
@@ -641,15 +605,14 @@ mod tests {
 
     /// For this test to run, set RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME to a writable S3 bucket name
     #[tokio::test]
-    async fn test_update_existing_snapshot_s3() -> anyhow::Result<()> {
+    async fn test_put_snapshot_s3() -> anyhow::Result<()> {
         let Ok(bucket_name) = std::env::var("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME") else {
             return Ok(());
         };
-        test_update_existing_snapshot_with_newer(format!("s3://{bucket_name}/integration-test"))
-            .await
+        test_put_snapshot(format!("s3://{bucket_name}/integration-test")).await
     }
 
-    async fn test_update_existing_snapshot_with_newer(destination: String) -> anyhow::Result<()> {
+    async fn test_put_snapshot(destination: String) -> anyhow::Result<()> {
         tracing_subscriber::registry()
             .with(fmt::layer())
             .with(EnvFilter::from_default_env())
@@ -657,6 +620,19 @@ mod tests {
 
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
+
+        let destination_url = Url::parse(destination.as_str())?;
+        let path = destination_url.path().to_string();
+        let object_store = super::create_object_store_client(destination_url).await?;
+
+        let latest = object_store
+            .get(&Path::from(format!(
+                "{}/{}/latest.json",
+                path,
+                PartitionId::MIN,
+            )))
+            .await;
+        assert!(matches!(latest, Err(object_store::Error::NotFound { .. })));
 
         let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
         data.write_all(b"snapshot-data").await?;
@@ -672,15 +648,9 @@ mod tests {
         );
 
         let opts = SnapshotsOptions {
-            destination: Some(destination.clone()),
+            destination: Some(destination),
             ..SnapshotsOptions::default()
         };
-
-        eprintln!("Destination: {}", destination);
-
-        let destination = Url::parse(destination.as_str())?;
-        let path = destination.path().to_string();
-        let object_store = super::create_object_store_client(destination).await?;
 
         let repository = SnapshotRepository::create_if_configured(&opts)
             .await?
