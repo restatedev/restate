@@ -113,6 +113,7 @@ async fn kill_inboxed_invocation(
 }
 
 #[rstest]
+// No need to test Invocation status killed experimental feature with cancel, as it has no impact
 #[case(ExperimentalFeature::InvocationStatusKilled.into(), TerminationFlavor::Kill)]
 #[case(EnumSet::empty(), TerminationFlavor::Kill)]
 #[case(EnumSet::empty(), TerminationFlavor::Cancel)]
