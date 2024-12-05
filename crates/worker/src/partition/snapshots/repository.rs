@@ -648,9 +648,15 @@ mod tests {
         );
 
         let opts = SnapshotsOptions {
-            destination: Some(destination),
+            destination: Some(destination.clone()),
             ..SnapshotsOptions::default()
         };
+
+        eprintln!("Destination: {}", destination);
+
+        let destination = Url::parse(destination.as_str())?;
+        let path = destination.path().to_string();
+        let object_store = super::create_object_store_client(destination).await?;
 
         let repository = SnapshotRepository::create_if_configured(&opts)
             .await?
