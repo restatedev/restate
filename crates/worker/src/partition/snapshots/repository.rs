@@ -320,11 +320,11 @@ impl SnapshotRepository {
                 },
                 ..PutOptions::default()
             })
-            .unwrap_or_else(|| PutOptions {
-                mode: PutMode::Create,
-                ..PutOptions::default()
-            });
+            .unwrap_or_else(|| PutOptions::from(PutMode::Create));
 
+        // Note: this call may return an error on concurrent modification. Since we don't expect any
+        // contention (here), and this doesn't cause any correctness issues, we don't bother with
+        // retrying the entire put_snapshot attempt on object_store::Error::Precondition.
         let put_result = self
             .object_store
             .put_opts(&latest_path, latest_json, conditions)
@@ -426,6 +426,9 @@ impl PutSnapshotError {
 /// API error to attempt a multipart put below this size, apart from the final segment.
 const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
 
+// The object_store `put_multipart` method does not currently support PutMode, so we don't pass this
+// at all; however since we upload snapshots to a unique path on every attempt, we don't expect any
+// conflicts to arise.
 async fn put_snapshot_object(
     file_path: &Path,
     key: &object_store::path::Path,
@@ -610,7 +613,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_existing_snapshot_local_filesystem() -> anyhow::Result<()> {
-        let snapshots_destination = TempDir::new().unwrap();
+        let snapshots_destination = TempDir::new()?;
         test_update_existing_snapshot_with_newer(
             Url::from_file_path(snapshots_destination.path())
                 .unwrap()
