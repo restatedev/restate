@@ -513,12 +513,11 @@ impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
-
     use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
     use restate_types::config::SnapshotsOptions;
     use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
     use restate_types::logs::{Lsn, SequenceNumber};
+    use std::time::SystemTime;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
     use tracing::info;
@@ -610,7 +609,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_existing_snapshot_with_newer() -> anyhow::Result<()> {
+    async fn test_update_existing_snapshot_local_filesystem() -> anyhow::Result<()> {
+        let snapshots_destination = TempDir::new().unwrap();
+        test_update_existing_snapshot_with_newer(
+            Url::from_file_path(snapshots_destination.path())
+                .unwrap()
+                .to_string(),
+        )
+        .await
+    }
+
+    /// For this test to run, set RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME to a writable S3 bucket name
+    #[tokio::test]
+    async fn test_update_existing_snapshot_s3() -> anyhow::Result<()> {
+        let Ok(bucket_name) = std::env::var("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME") else {
+            return Ok(());
+        };
+        test_update_existing_snapshot_with_newer(format!("s3://{bucket_name}/integration-test"))
+            .await
+    }
+
+    async fn test_update_existing_snapshot_with_newer(destination: String) -> anyhow::Result<()> {
         tracing_subscriber::registry()
             .with(fmt::layer())
             .with(EnvFilter::from_default_env())
@@ -632,29 +651,10 @@ mod tests {
                 .as_millis() as u64,
         );
 
-        let snapshots_destination = TempDir::new()?;
-        // #[cfg(not(feature = "s3-integration-test"))]
         let opts = SnapshotsOptions {
-            destination: Some(
-                Url::from_file_path(snapshots_destination.path())
-                    .unwrap()
-                    .to_string(),
-            ),
+            destination: Some(destination.to_string()),
             ..SnapshotsOptions::default()
         };
-
-        // We can't do this due to running tests with --all-features but the following
-        // code may be used to test conditional updates on S3:
-        //
-        // #[cfg(feature = "s3-integration-test")]
-        // let opts = SnapshotsOptions {
-        //     destination: Some(format!(
-        //         "s3://{}/integration-test",
-        //         std::env::var("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME")
-        //             .expect("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME must be set")
-        //     )),
-        //     ..SnapshotsOptions::default()
-        // };
 
         let repository = SnapshotRepository::create_if_configured(&opts)
             .await?
