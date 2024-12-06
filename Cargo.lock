@@ -7084,6 +7084,7 @@ dependencies = [
  "codederror",
  "derive_builder",
  "derive_more",
+ "enumset",
  "futures",
  "googletest",
  "humantime",

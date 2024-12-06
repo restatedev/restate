@@ -119,6 +119,7 @@ message InvocationStatusV2 {
     INBOXED = 2;
     INVOKED = 3;
     SUSPENDED = 4;
+    KILLED = 6;
     COMPLETED = 5;
   }
 

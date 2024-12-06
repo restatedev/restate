@@ -47,7 +47,10 @@ pub enum Action {
         invocation_id: InvocationId,
         completion: Completion,
     },
-    AbortInvocation(InvocationId),
+    AbortInvocation {
+        invocation_id: InvocationId,
+        acknowledge: bool,
+    },
     IngressResponse {
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: Option<InvocationId>,

@@ -18,6 +18,7 @@ pub use actions::{Action, ActionCollector};
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
+use enumset::EnumSet;
 use futures::{StreamExt, TryStreamExt};
 use metrics::{histogram, Histogram};
 use restate_invoker_api::InvokeInputJournal;
@@ -45,10 +46,9 @@ use restate_storage_api::Result as StorageResult;
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::{
-    InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
-    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
-    NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
-    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR, ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
+    CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
+    NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
@@ -90,6 +90,16 @@ use std::time::Instant;
 use tracing::error;
 use utils::SpanExt;
 
+#[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
+pub enum ExperimentalFeature {
+    /// This is used to disable writing to idempotency table/virtual object status table for idempotent invocations/workflow invocations.
+    /// From Restate 1.2 invocation ids are generated deterministically, so this additional index is not needed.
+    DisableIdempotencyTable,
+    /// If true, kill should wait for end signal from invoker, in order to implement the restart functionality.
+    /// This is enabled by experimental_feature_kill_and_restart.
+    InvocationStatusKilled,
+}
+
 pub struct StateMachine<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
@@ -100,9 +110,8 @@ pub struct StateMachine<Codec> {
     partition_key_range: RangeInclusive<PartitionKey>,
     latency: Histogram,
 
-    /// This is used to disable writing to idempotency table/virtual object status table for idempotent invocations/workflow invocations.
-    /// From Restate 1.2 invocation ids are generated deterministically, so this additional index is not needed.
-    disable_idempotency_table: bool,
+    /// Enabled experimental features.
+    experimental_features: EnumSet<ExperimentalFeature>,
 
     _codec: PhantomData<Codec>,
 }
@@ -160,7 +169,7 @@ impl<Codec> StateMachine<Codec> {
         outbox_seq_number: MessageIndex,
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
-        disable_idempotency_table: bool,
+        experimental_features: EnumSet<ExperimentalFeature>,
     ) -> Self {
         let latency =
             histogram!(crate::metric_definitions::PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
@@ -170,7 +179,7 @@ impl<Codec> StateMachine<Codec> {
             outbox_head_seq_number,
             partition_key_range,
             latency,
-            disable_idempotency_table,
+            experimental_features,
             _codec: PhantomData,
         }
     }
@@ -287,11 +296,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
             Command::Timer(timer) => self.on_timer(&mut ctx, timer).await,
             Command::TerminateInvocation(invocation_termination) => {
-                self.try_terminate_invocation(&mut ctx, invocation_termination)
+                self.on_terminate_invocation(&mut ctx, invocation_termination)
                     .await
             }
             Command::PurgeInvocation(purge_invocation_request) => {
-                self.try_purge_invocation(&mut ctx, purge_invocation_request.invocation_id)
+                self.on_purge_invocation(&mut ctx, purge_invocation_request.invocation_id)
                     .await
             }
             Command::PatchState(mutation) => {
@@ -482,7 +491,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
             // Store the invocation id mapping if we have to and continue the processing
             // TODO get rid of this code when we remove the usage of the virtual object table for workflows
-            if is_workflow_run && !self.disable_idempotency_table {
+            if is_workflow_run
+                && !self
+                    .experimental_features
+                    .contains(ExperimentalFeature::DisableIdempotencyTable)
+            {
                 ctx.storage
                         .put_virtual_object_status(
                             &service_invocation
@@ -494,7 +507,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .await;
             }
             // TODO get rid of this code when we remove the idempotency table
-            if has_idempotency_key && !self.disable_idempotency_table {
+            if has_idempotency_key
+                && !self
+                    .experimental_features
+                    .contains(ExperimentalFeature::DisableIdempotencyTable)
+            {
                 Self::do_store_idempotency_id(
                     ctx,
                     service_invocation
@@ -563,6 +580,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             .await?
                     }
                 }
+            }
+            InvocationStatus::Killed(metadata) => {
+                self.send_response_to_sinks(
+                    ctx,
+                    service_invocation.response_sink.take().into_iter(),
+                    KILLED_INVOCATION_ERROR,
+                    Some(invocation_id),
+                    None,
+                    Some(&metadata.invocation_target),
+                )
+                .await?;
             }
             InvocationStatus::Completed(completed) => {
                 // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
@@ -810,7 +838,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn try_terminate_invocation<
+    async fn on_terminate_invocation<
         State: VirtualObjectStatusTable
             + InvocationStatusTable
             + InboxTable
@@ -828,12 +856,12 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }: InvocationTermination,
     ) -> Result<(), Error> {
         match termination_flavor {
-            TerminationFlavor::Kill => self.try_kill_invocation(ctx, invocation_id).await,
-            TerminationFlavor::Cancel => self.try_cancel_invocation(ctx, invocation_id).await,
+            TerminationFlavor::Kill => self.on_kill_invocation(ctx, invocation_id).await,
+            TerminationFlavor::Cancel => self.on_cancel_invocation(ctx, invocation_id).await,
         }
     }
 
-    async fn try_kill_invocation<
+    async fn on_kill_invocation<
         State: VirtualObjectStatusTable
             + InvocationStatusTable
             + InboxTable
@@ -841,6 +869,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + StateTable
             + JournalTable
             + OutboxTable
+            + TimerTable
             + FsmTable,
     >(
         &mut self,
@@ -850,8 +879,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         let status = ctx.get_invocation_status(&invocation_id).await?;
 
         match status {
-            InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. } => {
-                self.kill_invocation(ctx, invocation_id, metadata).await?;
+            InvocationStatus::Invoked(metadata) => {
+                self.kill_invoked_invocation(ctx, invocation_id, metadata)
+                    .await?;
+            }
+            InvocationStatus::Suspended { metadata, .. } => {
+                self.kill_suspended_invocation(ctx, invocation_id, metadata)
+                    .await?;
             }
             InvocationStatus::Inboxed(inboxed) => {
                 self.terminate_inboxed_invocation(
@@ -862,7 +896,24 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 )
                 .await?
             }
-            _ => {
+            InvocationStatus::Scheduled(scheduled) => {
+                self.terminate_scheduled_invocation(
+                    ctx,
+                    TerminationFlavor::Kill,
+                    invocation_id,
+                    scheduled,
+                )
+                .await?
+            }
+            InvocationStatus::Killed(_) => {
+                trace!("Received kill command for an already killed invocation with id '{invocation_id}'.");
+                // Nothing to do here really, let's send again the abort signal to the invoker just in case
+                Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, true);
+            }
+            InvocationStatus::Completed(_) => {
+                debug!("Received kill command for completed invocation '{invocation_id}'. To cleanup the invocation after it's been completed, use the purge invocation command.");
+            }
+            InvocationStatus::Free => {
                 trace!("Received kill command for unknown invocation with id '{invocation_id}'.");
                 // We still try to send the abort signal to the invoker,
                 // as it might be the case that previously the user sent an abort signal
@@ -870,14 +921,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                Self::do_send_abort_invocation_to_invoker(ctx, invocation_id);
+                Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
             }
         };
 
         Ok(())
     }
 
-    async fn try_cancel_invocation<
+    async fn on_cancel_invocation<
         State: VirtualObjectStatusTable
             + InvocationStatusTable
             + InboxTable
@@ -928,7 +979,26 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 )
                 .await?
             }
-            _ => {
+            InvocationStatus::Scheduled(scheduled) => {
+                self.terminate_scheduled_invocation(
+                    ctx,
+                    TerminationFlavor::Cancel,
+                    invocation_id,
+                    scheduled,
+                )
+                .await?
+            }
+            InvocationStatus::Killed(_) => {
+                trace!(
+                    "Received cancel command for an already killed invocation '{invocation_id}'."
+                );
+                // Nothing to do here really, let's send again the abort signal to the invoker just in case
+                Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, true);
+            }
+            InvocationStatus::Completed(_) => {
+                debug!("Received cancel command for completed invocation '{invocation_id}'. To cleanup the invocation after it's been completed, use the purge invocation command.");
+            }
+            InvocationStatus::Free => {
                 trace!("Received cancel command for unknown invocation with id '{invocation_id}'.");
                 // We still try to send the abort signal to the invoker,
                 // as it might be the case that previously the user sent an abort signal
@@ -936,7 +1006,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                Self::do_send_abort_invocation_to_invoker(ctx, invocation_id);
+                Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
             }
         };
 
@@ -1002,7 +1072,67 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn kill_invocation<
+    async fn terminate_scheduled_invocation<
+        State: InvocationStatusTable + TimerTable + OutboxTable + FsmTable,
+    >(
+        &mut self,
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        termination_flavor: TerminationFlavor,
+        invocation_id: InvocationId,
+        scheduled_invocation: ScheduledInvocation,
+    ) -> Result<(), Error> {
+        let error = match termination_flavor {
+            TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
+            TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
+        };
+
+        let ScheduledInvocation {
+            metadata:
+                PreFlightInvocationMetadata {
+                    response_sinks,
+                    span_context,
+                    invocation_target,
+                    execution_time,
+                    ..
+                },
+        } = scheduled_invocation;
+
+        // Reply back to callers with error, and publish end trace
+        self.send_response_to_sinks(
+            ctx,
+            response_sinks,
+            &error,
+            Some(invocation_id),
+            None,
+            Some(&invocation_target),
+        )
+        .await?;
+
+        // Delete timer
+        if let Some(execution_time) = execution_time {
+            Self::do_delete_timer(
+                ctx,
+                TimerKey::neo_invoke(execution_time.as_u64(), invocation_id.invocation_uuid()),
+            )
+            .await?;
+        } else {
+            warn!("Scheduled invocations must always have an execution time.");
+        }
+        Self::do_free_invocation(ctx, invocation_id).await;
+
+        self.notify_invocation_result(
+            ctx,
+            invocation_id,
+            invocation_target,
+            span_context,
+            MillisSinceEpoch::now(),
+            Err((error.code(), error.to_string())),
+        );
+
+        Ok(())
+    }
+
+    async fn kill_invoked_invocation<
         State: InboxTable
             + VirtualObjectStatusTable
             + InvocationStatusTable
@@ -1020,9 +1150,61 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         self.kill_child_invocations(ctx, &invocation_id, metadata.journal_metadata.length)
             .await?;
 
-        self.fail_invocation(ctx, invocation_id, metadata, KILLED_INVOCATION_ERROR)
+        if self
+            .experimental_features
+            .contains(ExperimentalFeature::InvocationStatusKilled)
+        {
+            debug_if_leader!(
+                ctx.is_leader,
+                restate.invocation.id = %invocation_id,
+                "Effect: Store killed invocation"
+            );
+
+            ctx.storage
+                .put_invocation_status(&invocation_id, &InvocationStatus::Killed(metadata))
+                .await;
+            Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, true);
+        } else {
+            self.end_invocation(
+                ctx,
+                invocation_id,
+                metadata,
+                Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
+            )
             .await?;
-        Self::do_send_abort_invocation_to_invoker(ctx, invocation_id);
+            Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
+        }
+        Ok(())
+    }
+
+    async fn kill_suspended_invocation<
+        State: InboxTable
+            + VirtualObjectStatusTable
+            + InvocationStatusTable
+            + VirtualObjectStatusTable
+            + StateTable
+            + JournalTable
+            + OutboxTable
+            + FsmTable,
+    >(
+        &mut self,
+        ctx: &mut StateMachineApplyContext<'_, State>,
+        invocation_id: InvocationId,
+        metadata: InFlightInvocationMetadata,
+    ) -> Result<(), Error> {
+        self.kill_child_invocations(ctx, &invocation_id, metadata.journal_metadata.length)
+            .await?;
+
+        // No need to go through the Killed state when we're suspended,
+        // because it means we already got a terminal state from the invoker.
+        self.end_invocation(
+            ctx,
+            invocation_id,
+            metadata,
+            Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
+        )
+        .await?;
+        Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
         Ok(())
     }
 
@@ -1179,7 +1361,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }
     }
 
-    async fn try_purge_invocation<
+    async fn on_purge_invocation<
         State: InvocationStatusTable
             + IdempotencyTable
             + VirtualObjectStatusTable
@@ -1276,7 +1458,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 self.on_service_invocation(ctx, service_invocation).await
             }
             Timer::CleanInvocationStatus(invocation_id) => {
-                self.try_purge_invocation(ctx, invocation_id).await
+                self.on_purge_invocation(ctx, invocation_id).await
             }
             Timer::NeoInvoke(invocation_id) => self.on_neo_invoke_timer(ctx, invocation_id).await,
         }
@@ -1355,17 +1537,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         let status = ctx
             .get_invocation_status(&invoker_effect.invocation_id)
             .await?;
-
-        match status {
-            InvocationStatus::Invoked(invocation_metadata) => {
-                self.on_invoker_effect(ctx, invoker_effect, invocation_metadata)
-                    .await?
-            }
-            _ => {
-                trace!("Received invoker effect for unknown service invocation. Ignoring the effect and aborting.");
-                Self::do_send_abort_invocation_to_invoker(ctx, invoker_effect.invocation_id);
-            }
-        };
+        self.on_invoker_effect(ctx, invoker_effect, status).await?;
         self.latency.record(start.elapsed());
 
         Ok(())
@@ -1388,8 +1560,29 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             invocation_id,
             kind,
         }: InvokerEffect,
-        invocation_metadata: InFlightInvocationMetadata,
+        invocation_status: InvocationStatus,
     ) -> Result<(), Error> {
+        let is_status_invoked = matches!(invocation_status, InvocationStatus::Invoked(_));
+        let is_status_killed = matches!(invocation_status, InvocationStatus::Killed(_));
+
+        if !is_status_invoked && !is_status_killed {
+            trace!("Received invoker effect for invocation not in invoked nor killed status. Ignoring the effect.");
+            Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
+            return Ok(());
+        }
+        if is_status_killed
+            && !matches!(kind, InvokerEffectKind::Failed(_) | InvokerEffectKind::End)
+        {
+            warn!(
+                "Received non terminal invoker effect for killed invocation. Ignoring the effect."
+            );
+            return Ok(());
+        }
+
+        let invocation_metadata = invocation_status
+            .into_invocation_metadata()
+            .expect("Must be present if status is killed or invoked");
+
         match kind {
             InvokerEffectKind::PinnedDeployment(pinned_deployment) => {
                 Self::do_store_pinned_deployment(
@@ -1447,12 +1640,27 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 }
             }
             InvokerEffectKind::End => {
-                self.end_invocation(ctx, invocation_id, invocation_metadata)
-                    .await?;
+                self.end_invocation(
+                    ctx,
+                    invocation_id,
+                    invocation_metadata,
+                    if is_status_killed {
+                        // It doesn't matter that the invocation successfully completed, we return failed anyway in this case.
+                        Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR))
+                    } else {
+                        None
+                    },
+                )
+                .await?;
             }
             InvokerEffectKind::Failed(e) => {
-                self.fail_invocation(ctx, invocation_id, invocation_metadata, e)
-                    .await?;
+                self.end_invocation(
+                    ctx,
+                    invocation_id,
+                    invocation_metadata,
+                    Some(ResponseResult::Failure(e)),
+                )
+                .await?;
             }
         }
 
@@ -1472,26 +1680,19 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         invocation_metadata: InFlightInvocationMetadata,
+        // If given, this will override any Output Entry available in the journal table
+        response_result_override: Option<ResponseResult>,
     ) -> Result<(), Error> {
+        let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
         let completion_retention_time = invocation_metadata.completion_retention_duration;
-
-        self.notify_invocation_result(
-            ctx,
-            invocation_id,
-            invocation_metadata.invocation_target.clone(),
-            invocation_metadata.journal_metadata.span_context.clone(),
-            unsafe { invocation_metadata.timestamps.creation_time() },
-            Ok(()),
-        );
-
-        // Pop from inbox
-        Self::consume_inbox(ctx, &invocation_metadata.invocation_target).await?;
 
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention_time.is_zero() {
-            let result = if let Some(output_entry) = self
+            let response_result = if let Some(response_result) = response_result_override {
+                response_result
+            } else if let Some(output_entry) = self
                 .read_last_output_entry(ctx, &invocation_id, journal_length)
                 .await?
             {
@@ -1506,21 +1707,46 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             self.send_response_to_sinks(
                 ctx,
                 invocation_metadata.response_sinks.clone(),
-                result.clone(),
+                response_result.clone(),
                 Some(invocation_id),
                 None,
                 Some(&invocation_metadata.invocation_target),
             )
             .await?;
 
+            // Notify invocation result
+            self.notify_invocation_result(
+                ctx,
+                invocation_id,
+                invocation_metadata.invocation_target.clone(),
+                invocation_metadata.journal_metadata.span_context.clone(),
+                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
+                unsafe { invocation_metadata.timestamps.creation_time() },
+                match &response_result {
+                    ResponseResult::Success(_) => Ok(()),
+                    ResponseResult::Failure(err) => Err((err.code(), err.message().to_owned())),
+                },
+            );
+
             // Store the completed status, if needed
             if !completion_retention_time.is_zero() {
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
-                    result,
+                    response_result,
                 );
                 Self::do_store_completed_invocation(ctx, invocation_id, completed_invocation).await;
             }
+        } else {
+            // Just notify Ok, no need to read the output entry
+            self.notify_invocation_result(
+                ctx,
+                invocation_id,
+                invocation_target.clone(),
+                invocation_metadata.journal_metadata.span_context.clone(),
+                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
+                unsafe { invocation_metadata.timestamps.creation_time() },
+                Ok(()),
+            );
         }
 
         // If no retention, immediately cleanup the invocation status
@@ -1529,64 +1755,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }
         Self::do_drop_journal(ctx, invocation_id, journal_length).await;
 
-        Ok(())
-    }
-
-    async fn fail_invocation<
-        State: InboxTable
-            + VirtualObjectStatusTable
-            + InvocationStatusTable
-            + VirtualObjectStatusTable
-            + StateTable
-            + JournalTable
-            + OutboxTable
-            + FsmTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-        invocation_metadata: InFlightInvocationMetadata,
-        error: InvocationError,
-    ) -> Result<(), Error> {
-        let journal_length = invocation_metadata.journal_metadata.length;
-
-        self.notify_invocation_result(
-            ctx,
-            invocation_id,
-            invocation_metadata.invocation_target.clone(),
-            invocation_metadata.journal_metadata.span_context.clone(),
-            unsafe { invocation_metadata.timestamps.creation_time() },
-            Err((error.code(), error.to_string())),
-        );
-
-        let response_result = ResponseResult::from(error);
-
-        // Send responses out
-        self.send_response_to_sinks(
-            ctx,
-            invocation_metadata.response_sinks.clone(),
-            response_result.clone(),
-            Some(invocation_id),
-            None,
-            Some(&invocation_metadata.invocation_target),
-        )
-        .await?;
-
-        // Pop from inbox
-        Self::consume_inbox(ctx, &invocation_metadata.invocation_target).await?;
-
-        // Store the completed status or free it
-        if !invocation_metadata.completion_retention_duration.is_zero() {
-            let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
-                invocation_metadata,
-                response_result,
-            );
-            Self::do_store_completed_invocation(ctx, invocation_id, completed_invocation).await;
-        } else {
-            Self::do_free_invocation(ctx, invocation_id).await;
-        }
-
-        Self::do_drop_journal(ctx, invocation_id, journal_length).await;
+        // Consume inbox and move on
+        Self::consume_inbox(ctx, &invocation_target).await?;
 
         Ok(())
     }
@@ -2785,6 +2955,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     .await?;
                 }
             }
+            InvocationStatus::Killed(metadata) => {
+                self.send_response_to_sinks(
+                    ctx,
+                    vec![attach_invocation_request.response_sink],
+                    KILLED_INVOCATION_ERROR,
+                    Some(invocation_id),
+                    None,
+                    Some(&metadata.invocation_target),
+                )
+                .await?;
+            }
             InvocationStatus::Completed(completed) => {
                 // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
                 let completion_expiry_time = unsafe { completed.completion_expiry_time() };
@@ -3487,11 +3668,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     fn do_send_abort_invocation_to_invoker<State>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
+        acknowledge: bool,
     ) {
         debug_if_leader!(ctx.is_leader, restate.invocation.id = %invocation_id, "Effect: Send abort command to invoker");
 
-        ctx.action_collector
-            .push(Action::AbortInvocation(invocation_id));
+        ctx.action_collector.push(Action::AbortInvocation {
+            invocation_id,
+            acknowledge,
+        });
     }
 
     async fn do_mutate_state<State: StateTable>(

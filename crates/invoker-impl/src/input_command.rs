@@ -45,6 +45,7 @@ pub(crate) enum InputCommand<SR> {
     Abort {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        acknowledge: bool,
     },
 
     /// Command used to clean up internal state when a partition leader is going away
@@ -129,11 +130,13 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        acknowledge: bool,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Abort {
                 partition,
                 invocation_id,
+                acknowledge,
             })
             .map_err(|_| NotRunningError)
     }

@@ -49,7 +49,7 @@ impl TimerKey {
         }
     }
 
-    fn neo_invoke(timestamp: u64, invocation_uuid: InvocationUuid) -> Self {
+    pub fn neo_invoke(timestamp: u64, invocation_uuid: InvocationUuid) -> Self {
         TimerKey {
             timestamp,
             kind: TimerKeyKind::NeoInvoke { invocation_uuid },

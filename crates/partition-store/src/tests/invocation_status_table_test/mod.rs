@@ -22,7 +22,8 @@ use googletest::prelude::*;
 use once_cell::sync::Lazy;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, InvocationStatusV1,
-    JournalMetadata, ReadOnlyInvocationStatusTable, StatusTimestamps,
+    InvokedOrKilledInvocationStatusLite, JournalMetadata, ReadOnlyInvocationStatusTable,
+    StatusTimestamps,
 };
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
@@ -94,6 +95,19 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
     })
 }
 
+fn killed_status(invocation_target: InvocationTarget) -> InvocationStatus {
+    InvocationStatus::Killed(InFlightInvocationMetadata {
+        invocation_target,
+        journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
+        pinned_deployment: None,
+        response_sinks: HashSet::new(),
+        timestamps: StatusTimestamps::init(MillisSinceEpoch::new(0)),
+        source: Source::Ingress(*RPC_REQUEST_ID),
+        completion_retention_duration: Duration::ZERO,
+        idempotency_key: None,
+    })
+}
+
 fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Suspended {
         metadata: InFlightInvocationMetadata {
@@ -131,7 +145,7 @@ async fn populate_data<T: InvocationStatusTable>(txn: &mut T) {
 
     txn.put_invocation_status(
         &INVOCATION_ID_4,
-        &invoked_status(INVOCATION_TARGET_4.clone()),
+        &killed_status(INVOCATION_TARGET_4.clone()),
     )
     .await;
 
@@ -154,22 +168,34 @@ async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
         txn.get_invocation_status(&INVOCATION_ID_4)
             .await
             .expect("should not fail"),
-        invoked_status(INVOCATION_TARGET_4.clone())
+        killed_status(INVOCATION_TARGET_4.clone())
     );
 }
 
-async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut T) {
+async fn verify_all_svc_with_status_invoked_or_killed<T: InvocationStatusTable>(txn: &mut T) {
     let actual = txn
-        .all_invoked_invocations()
+        .all_invoked_or_killed_invocations()
         .try_collect::<Vec<_>>()
         .await
         .unwrap();
     assert_that!(
         actual,
         unordered_elements_are![
-            eq((*INVOCATION_ID_1, INVOCATION_TARGET_1.clone())),
-            eq((*INVOCATION_ID_2, INVOCATION_TARGET_2.clone())),
-            eq((*INVOCATION_ID_4, INVOCATION_TARGET_4.clone()))
+            eq(InvokedOrKilledInvocationStatusLite {
+                invocation_id: *INVOCATION_ID_1,
+                invocation_target: INVOCATION_TARGET_1.clone(),
+                is_invoked: true,
+            }),
+            eq(InvokedOrKilledInvocationStatusLite {
+                invocation_id: *INVOCATION_ID_2,
+                invocation_target: INVOCATION_TARGET_2.clone(),
+                is_invoked: true,
+            }),
+            eq(InvokedOrKilledInvocationStatusLite {
+                invocation_id: *INVOCATION_ID_4,
+                invocation_target: INVOCATION_TARGET_4.clone(),
+                is_invoked: false,
+            }),
         ]
     );
 }
@@ -181,7 +207,7 @@ async fn test_invocation_status() {
     populate_data(&mut txn).await;
 
     verify_point_lookups(&mut txn).await;
-    verify_all_svc_with_status_invoked(&mut txn).await;
+    verify_all_svc_with_status_invoked_or_killed(&mut txn).await;
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]

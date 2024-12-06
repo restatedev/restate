@@ -27,7 +27,6 @@ use ::tracing::info;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
-use googletest::matcher::Matcher;
 use googletest::{all, assert_that, pat, property};
 use restate_core::TaskCenter;
 use restate_invoker_api::{EffectKind, InvokeInputJournal};
@@ -82,16 +81,18 @@ impl TestEnv {
     }
 
     pub async fn create() -> Self {
-        Self::create_with_options(false).await
+        Self::create_with_experimental_features(Default::default()).await
     }
 
-    pub async fn create_with_options(disable_idempotency_table: bool) -> Self {
+    pub async fn create_with_experimental_features(
+        experimental_features: EnumSet<ExperimentalFeature>,
+    ) -> Self {
         Self::create_with_state_machine(StateMachine::new(
             0,    /* inbox_seq_number */
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
-            disable_idempotency_table,
+            experimental_features,
         ))
         .await
     }
@@ -955,7 +956,7 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
             outbox_tail_index,
             Some(outbox_head_index),
             PartitionKey::MIN..=PartitionKey::MAX,
-            false,
+            EnumSet::empty(),
         ))
         .await;
 

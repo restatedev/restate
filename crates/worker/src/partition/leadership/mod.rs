@@ -17,8 +17,9 @@ use std::mem;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
-use futures::{StreamExt, TryStreamExt};
+use futures::{stream, StreamExt, TryStreamExt};
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
@@ -28,11 +29,13 @@ use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
-use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
+use restate_storage_api::invocation_status_table::{
+    InvokedOrKilledInvocationStatusLite, ReadOnlyInvocationStatusTable,
+};
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::timer_table::{TimerKey, TimerTable};
 use restate_timer::TokioClock;
-use restate_types::errors::GenericError;
+use restate_types::errors::{GenericError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::message::MessageIndex;
@@ -50,9 +53,12 @@ use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
+use crate::partition::types::{InvokerEffect, InvokerEffectKind};
 use crate::partition::{respond_to_rpc, shuffle};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
+type InvokerStream =
+    stream::Chain<stream::Iter<std::vec::IntoIter<InvokerEffect>>, ReceiverStream<InvokerEffect>>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -385,8 +391,10 @@ where
         partition_key_range: RangeInclusive<PartitionKey>,
         partition_store: &mut PartitionStore,
         channel_size: usize,
-    ) -> Result<mpsc::Receiver<restate_invoker_api::Effect>, Error> {
+    ) -> Result<InvokerStream, Error> {
         let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
+
+        let mut killed_invocations_effects = vec![];
 
         invoker_handle
             .register_partition(
@@ -399,27 +407,45 @@ where
             .map_err(Error::Invoker)?;
 
         {
-            let invoked_invocations = partition_store.all_invoked_invocations();
-            tokio::pin!(invoked_invocations);
+            let invoked_or_killed_invocations = partition_store.all_invoked_or_killed_invocations();
+            tokio::pin!(invoked_or_killed_invocations);
 
             let mut count = 0;
-            while let Some(invocation_id_and_target) = invoked_invocations.next().await {
-                let (invocation_id, invocation_target) = invocation_id_and_target?;
-                invoker_handle
-                    .invoke(
-                        partition_leader_epoch,
+            while let Some(invoked_or_killed_invocation) =
+                invoked_or_killed_invocations.next().await
+            {
+                let InvokedOrKilledInvocationStatusLite {
+                    invocation_id,
+                    invocation_target,
+                    is_invoked,
+                } = invoked_or_killed_invocation?;
+                if is_invoked {
+                    invoker_handle
+                        .invoke(
+                            partition_leader_epoch,
+                            invocation_id,
+                            invocation_target,
+                            InvokeInputJournal::NoCachedJournal,
+                        )
+                        .await
+                        .map_err(Error::Invoker)?;
+                } else {
+                    // For killed invocations, there's no need to go through the invoker
+                    // We simply return here the effect as if the invoker produced that.
+                    killed_invocations_effects.push(InvokerEffect {
                         invocation_id,
-                        invocation_target,
-                        InvokeInputJournal::NoCachedJournal,
-                    )
-                    .await
-                    .map_err(Error::Invoker)?;
+                        kind: InvokerEffectKind::Failed(KILLED_INVOCATION_ERROR),
+                    });
+                }
                 count += 1;
             }
             debug!("Leader partition resumed {} invocations", count);
         }
 
-        Ok(invoker_rx)
+        Ok(
+            futures::stream::iter(killed_invocations_effects)
+                .chain(ReceiverStream::new(invoker_rx)),
+        )
     }
 
     async fn become_follower(&mut self) {

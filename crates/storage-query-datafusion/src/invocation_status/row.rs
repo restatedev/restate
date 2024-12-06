@@ -83,6 +83,10 @@ pub(crate) fn append_invocation_status_row(
             row.status("suspended");
             fill_in_flight_invocation_metadata(&mut row, output, metadata);
         }
+        InvocationStatus::Killed(metadata) => {
+            row.status("killed");
+            fill_in_flight_invocation_metadata(&mut row, output, metadata);
+        }
         InvocationStatus::Free => {
             row.status("free");
         }

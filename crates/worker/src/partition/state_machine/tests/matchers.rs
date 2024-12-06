@@ -52,11 +52,21 @@ pub mod actions {
 
     use crate::partition::state_machine::Action;
     use restate_types::identifiers::InvocationId;
-    use restate_types::invocation::{InvocationResponse, ResponseResult};
+    use restate_types::invocation::{InvocationTarget, ResponseResult};
 
     pub fn invoke_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
         pat!(Action::Invoke {
             invocation_id: eq(invocation_id)
+        })
+    }
+
+    pub fn invoke_for_id_and_target(
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
+    ) -> impl Matcher<ActualT = Action> {
+        pat!(Action::Invoke {
+            invocation_id: eq(invocation_id),
+            invocation_target: eq(invocation_target)
         })
     }
 
@@ -109,16 +119,36 @@ pub mod actions {
         response_result_matcher: impl Matcher<ActualT = ResponseResult> + 'static,
     ) -> impl Matcher<ActualT = Action> {
         pat!(Action::NewOutboxMessage {
-            message: pat!(
-                restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(pat!(
-                    InvocationResponse {
-                        id: eq(caller_invocation_id),
-                        entry_index: eq(caller_entry_index),
-                        result: response_result_matcher
-                    }
-                ))
+            message: outbox::invocation_response_to_partition_processor(
+                caller_invocation_id,
+                caller_entry_index,
+                response_result_matcher
             )
         })
+    }
+}
+
+pub mod outbox {
+    use super::*;
+
+    use restate_storage_api::outbox_table::OutboxMessage;
+    use restate_types::identifiers::InvocationId;
+    use restate_types::invocation::{InvocationResponse, ResponseResult};
+
+    pub fn invocation_response_to_partition_processor(
+        caller_invocation_id: InvocationId,
+        caller_entry_index: EntryIndex,
+        response_result_matcher: impl Matcher<ActualT = ResponseResult> + 'static,
+    ) -> impl Matcher<ActualT = OutboxMessage> {
+        pat!(
+            restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(pat!(
+                InvocationResponse {
+                    id: eq(caller_invocation_id),
+                    entry_index: eq(caller_entry_index),
+                    result: response_result_matcher
+                }
+            ))
+        )
     }
 }
 

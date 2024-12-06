@@ -471,6 +471,28 @@ pub mod v1 {
                                 .collect(),
                         },
                     ),
+                    invocation_status_v2::Status::Killed => {
+                        Ok(crate::invocation_status_table::InvocationStatus::Killed(
+                            crate::invocation_status_table::InFlightInvocationMetadata {
+                                response_sinks,
+                                timestamps,
+                                invocation_target,
+                                journal_metadata: crate::invocation_status_table::JournalMetadata {
+                                    length: journal_length,
+                                    span_context: expect_or_fail!(span_context)?.try_into()?,
+                                },
+                                pinned_deployment: derive_pinned_deployment(
+                                    deployment_id,
+                                    service_protocol_version,
+                                )?,
+                                source,
+                                completion_retention_duration: completion_retention_duration
+                                    .unwrap_or_default()
+                                    .try_into()?,
+                                idempotency_key: idempotency_key.map(ByteString::from),
+                            },
+                        ))
+                    }
                     invocation_status_v2::Status::Completed => {
                         Ok(crate::invocation_status_table::InvocationStatus::Completed(
                             crate::invocation_status_table::CompletedInvocation {
@@ -518,6 +540,7 @@ pub mod v1 {
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
+                        // SAFETY: We're only mapping data types here
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                         inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
@@ -570,6 +593,7 @@ pub mod v1 {
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
+                        // SAFETY: We're only mapping data types here
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                         inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
@@ -625,6 +649,7 @@ pub mod v1 {
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
+                            // SAFETY: We're only mapping data types here
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                             inboxed_transition_time: unsafe {
@@ -689,6 +714,7 @@ pub mod v1 {
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
+                            // SAFETY: We're only mapping data types here
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                             inboxed_transition_time: unsafe {
@@ -728,6 +754,69 @@ pub mod v1 {
                             result: None,
                         }
                     }
+                    crate::invocation_status_table::InvocationStatus::Killed(
+                        crate::invocation_status_table::InFlightInvocationMetadata {
+                            invocation_target,
+                            journal_metadata,
+                            pinned_deployment,
+                            response_sinks,
+                            timestamps,
+                            source,
+                            completion_retention_duration,
+                            idempotency_key,
+                        },
+                    ) => {
+                        let (deployment_id, service_protocol_version) = match pinned_deployment {
+                            None => (None, None),
+                            Some(pinned_deployment) => (
+                                Some(pinned_deployment.deployment_id.to_string()),
+                                Some(pinned_deployment.service_protocol_version.as_repr()),
+                            ),
+                        };
+
+                        InvocationStatusV2 {
+                            status: invocation_status_v2::Status::Killed.into(),
+                            invocation_target: Some(invocation_target.into()),
+                            source: Some(source.into()),
+                            span_context: Some(journal_metadata.span_context.into()),
+                            // SAFETY: We're only mapping data types here
+                            creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                            modification_time: unsafe { timestamps.modification_time() }.as_u64(),
+                            inboxed_transition_time: unsafe {
+                                timestamps.inboxed_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
+                            scheduled_transition_time: unsafe {
+                                timestamps.scheduled_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
+                            running_transition_time: unsafe {
+                                timestamps.running_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
+                            completed_transition_time: unsafe {
+                                timestamps.completed_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
+                            response_sinks: response_sinks
+                                .into_iter()
+                                .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                                .collect(),
+                            argument: None,
+                            headers: vec![],
+                            execution_time: None,
+                            completion_retention_duration: Some(
+                                completion_retention_duration.into(),
+                            ),
+                            idempotency_key: idempotency_key.map(|key| key.to_string()),
+                            inbox_sequence_number: None,
+                            journal_length: journal_metadata.length,
+                            deployment_id,
+                            service_protocol_version,
+                            waiting_for_completed_entries: vec![],
+                            result: None,
+                        }
+                    }
                     crate::invocation_status_table::InvocationStatus::Completed(
                         crate::invocation_status_table::CompletedInvocation {
                             invocation_target,
@@ -743,6 +832,7 @@ pub mod v1 {
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
+                        // SAFETY: We're only mapping data types here
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                         inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
@@ -856,6 +946,9 @@ pub mod v1 {
                     crate::invocation_status_table::InvocationStatus::Scheduled(_) => {
                         panic!("Unexpected conversion to old InvocationStatus when using Scheduled variant. This is a bug in the table implementation.")
                     }
+                    crate::invocation_status_table::InvocationStatus::Killed(_) => {
+                        panic!("Unexpected conversion to old InvocationStatus when using Killed variant. This is a bug in the table implementation.")
+                    }
                 };
 
                 InvocationStatus {
@@ -966,6 +1059,7 @@ pub mod v1 {
                     source,
                     completion_retention_duration: completion_retention_time,
                     idempotency_key,
+                    ..
                 } = value;
 
                 let (deployment_id, service_protocol_version) = match pinned_deployment {

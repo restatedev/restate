@@ -25,11 +25,13 @@ use rstest::*;
 use std::time::Duration;
 
 #[rstest]
-#[case(true)]
-#[case(false)]
+#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
+#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn start_and_complete_idempotent_invocation(#[case] disable_idempotency_table: bool) {
-    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
+async fn start_and_complete_idempotent_invocation(
+    #[case] experimental_features: EnumSet<ExperimentalFeature>,
+) {
+    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -59,7 +61,7 @@ async fn start_and_complete_idempotent_invocation(#[case] disable_idempotency_ta
     );
 
     // Assert idempotency key mapping exists only with idempotency table writes enabled
-    if disable_idempotency_table {
+    if experimental_features.contains(ExperimentalFeature::DisableIdempotencyTable) {
         assert_that!(
             test_env
                 .storage()
@@ -131,13 +133,13 @@ async fn start_and_complete_idempotent_invocation(#[case] disable_idempotency_ta
 }
 
 #[rstest]
-#[case(true)]
-#[case(false)]
+#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
+#[case(EnumSet::empty())]
 #[restate_core::test]
 async fn start_and_complete_idempotent_invocation_neo_table(
-    #[case] disable_idempotency_table: bool,
+    #[case] experimental_features: EnumSet<ExperimentalFeature>,
 ) {
-    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
+    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -167,7 +169,7 @@ async fn start_and_complete_idempotent_invocation_neo_table(
     );
 
     // Assert idempotency key mapping exists only with idempotency table writes enabled
-    if disable_idempotency_table {
+    if experimental_features.contains(ExperimentalFeature::DisableIdempotencyTable) {
         assert_that!(
             test_env
                 .storage()
@@ -243,11 +245,13 @@ async fn start_and_complete_idempotent_invocation_neo_table(
 }
 
 #[rstest]
-#[case(true)]
-#[case(false)]
+#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
+#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn complete_already_completed_invocation(#[case] disable_idempotency_table: bool) {
-    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
+async fn complete_already_completed_invocation(
+    #[case] experimental_features: EnumSet<ExperimentalFeature>,
+) {
+    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
@@ -302,13 +306,13 @@ async fn complete_already_completed_invocation(#[case] disable_idempotency_table
 }
 
 #[rstest]
-#[case(true)]
-#[case(false)]
+#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
+#[case(EnumSet::empty())]
 #[restate_core::test]
 async fn attach_with_service_invocation_command_while_executing(
-    #[case] disable_idempotency_table: bool,
+    #[case] experimental_features: EnumSet<ExperimentalFeature>,
 ) {
-    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
+    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -399,16 +403,16 @@ async fn attach_with_service_invocation_command_while_executing(
 }
 
 #[rstest]
-#[case(true, true)]
-#[case(true, false)]
-#[case(false, true)]
-#[case(false, false)]
+#[case(ExperimentalFeature::DisableIdempotencyTable.into(), true)]
+#[case(ExperimentalFeature::DisableIdempotencyTable.into(), false)]
+#[case(EnumSet::empty(), true)]
+#[case(EnumSet::empty(), false)]
 #[restate_core::test]
 async fn attach_with_send_service_invocation(
-    #[case] disable_idempotency_table: bool,
+    #[case] experimental_features: EnumSet<ExperimentalFeature>,
     #[case] use_same_request_id: bool,
 ) {
-    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
+    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -524,11 +528,13 @@ async fn attach_with_send_service_invocation(
 }
 
 #[rstest]
-#[case(true)]
-#[case(false)]
+#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
+#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn attach_inboxed_with_send_service_invocation(#[case] disable_idempotency_table: bool) {
-    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
+async fn attach_inboxed_with_send_service_invocation(
+    #[case] experimental_features: EnumSet<ExperimentalFeature>,
+) {
+    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let request_id_1 = PartitionProcessorRpcRequestId::default();
@@ -620,11 +626,11 @@ async fn attach_inboxed_with_send_service_invocation(#[case] disable_idempotency
 }
 
 #[rstest]
-#[case(true)]
-#[case(false)]
+#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
+#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn attach_command(#[case] disable_idempotency_table: bool) {
-    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
+async fn attach_command(#[case] experimental_features: EnumSet<ExperimentalFeature>) {
+    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let completion_retention = Duration::from_secs(60) * 60 * 24;
@@ -773,11 +779,13 @@ async fn attach_command_without_blocking_inflight() {
 }
 
 #[rstest]
-#[case(true)]
-#[case(false)]
+#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
+#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn purge_completed_idempotent_invocation(#[case] disable_idempotency_table: bool) {
-    let mut test_env = TestEnv::create_with_options(disable_idempotency_table).await;
+async fn purge_completed_idempotent_invocation(
+    #[case] experimental_features: EnumSet<ExperimentalFeature>,
+) {
+    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();

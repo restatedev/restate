@@ -117,6 +117,24 @@ jobs:
         RUST_LOG=info,restate_invoker=trace,restate_ingress_http=trace,restate_bifrost=trace,restate_log_server=trace,restate_core::partitions=trace,restate=debug
       testArtifactOutput: sdk-java-kafka-next-gen-integration-test-report
 
+  sdk-java-invocation-status-killed:
+    name: Run SDK-Java integration tests with InvocationStatusKilled
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    secrets: inherit
+    needs: docker
+    uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      envVars: |
+        RESTATE_WORKER__EXPERIMENTAL_FEATURE_INVOCATION_STATUS_KILLED=true
+        RUST_LOG=info,restate_invoker=trace,restate_ingress_http=trace,restate_bifrost=trace,restate_log_server=trace,restate_core::partitions=trace,restate=debug
+      testArtifactOutput: sdk-java-invocation-status-killed-integration-test-report
+
   sdk-python:
     name: Run SDK-Python integration tests
     permissions:
