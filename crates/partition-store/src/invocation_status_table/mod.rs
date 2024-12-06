@@ -17,8 +17,8 @@ use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::invocation_status_table::{
-    InvocationStatus, InvocationStatusTable, InvocationStatusV1,
-    InvokedOrKilledInvocationStatusLite, ReadOnlyInvocationStatusTable,
+    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
+    InvocationStatusV1, InvokedOrKilledInvocationStatusLite, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
@@ -258,20 +258,19 @@ fn read_invoked_or_killed_status_lite(
     mut k: &mut &[u8],
     v: &mut &[u8],
 ) -> Result<Option<InvokedOrKilledInvocationStatusLite>> {
-    // TODO this can be improved by simply parsing InvocationTarget and the Status enum
     let invocation_id = invocation_id_from_key_bytes(&mut k)?;
-    let invocation_status = StorageCodec::decode::<InvocationStatus, _>(v)
+    let invocation_status = StorageCodec::decode::<InvocationLite, _>(v)
         .map_err(|err| StorageError::Generic(err.into()))?;
-    if let InvocationStatus::Invoked(invocation_meta) = invocation_status {
+    if let InvocationStatusDiscriminants::Invoked = invocation_status.status {
         Ok(Some(InvokedOrKilledInvocationStatusLite {
             invocation_id,
-            invocation_target: invocation_meta.invocation_target,
+            invocation_target: invocation_status.invocation_target,
             is_invoked: true,
         }))
-    } else if let InvocationStatus::Killed(invocation_meta) = invocation_status {
+    } else if let InvocationStatusDiscriminants::Killed = invocation_status.status {
         Ok(Some(InvokedOrKilledInvocationStatusLite {
             invocation_id,
-            invocation_target: invocation_meta.invocation_target,
+            invocation_target: invocation_status.invocation_target,
             is_invoked: false,
         }))
     } else {

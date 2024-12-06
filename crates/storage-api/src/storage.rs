@@ -103,10 +103,11 @@ pub mod v1 {
             virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
             EnrichedEntryHeader, EntryResult, EpochSequenceNumber, Header, IdempotencyId,
             IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
-            InvocationStatus, InvocationStatusV2, InvocationTarget, JournalEntry, JournalEntryId,
-            JournalMeta, KvPair, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
-            ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext, SpanRelation,
-            StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
+            InvocationStatus, InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalEntry,
+            JournalEntryId, JournalMeta, KvPair, OutboxMessage, Promise, ResponseResult,
+            SequenceNumber, ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source,
+            SpanContext, SpanRelation, StateMutation, SubmitNotificationSink, Timer,
+            VirtualObjectStatus,
         };
         use crate::StorageError;
         use restate_types::errors::{IdDecodeError, InvocationError};
@@ -864,6 +865,56 @@ pub mod v1 {
                         panic!("Unexpected serialization of Free status. This is a bug of the invocation status table")
                     }
                 }
+            }
+        }
+
+        impl TryFrom<InvocationV2Lite> for crate::invocation_status_table::InvocationLite {
+            type Error = ConversionError;
+
+            fn try_from(value: InvocationV2Lite) -> Result<Self, Self::Error> {
+                let InvocationV2Lite {
+                    status,
+                    invocation_target,
+                } = value;
+
+                let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
+                let status = match status.try_into().unwrap_or_default() {
+                    invocation_status_v2::Status::Scheduled => {
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Scheduled
+                    }
+                    invocation_status_v2::Status::Inboxed => {
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Inboxed
+                    }
+                    invocation_status_v2::Status::Invoked => {
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Invoked
+                    }
+                    invocation_status_v2::Status::Suspended => {
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Suspended
+                    }
+                    invocation_status_v2::Status::Killed => {
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Killed
+                    }
+                    invocation_status_v2::Status::Completed => {
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Completed
+                    }
+                    _ => {
+                        return Err(ConversionError::unexpected_enum_variant(
+                            "status",
+                            value.status,
+                        ))
+                    }
+                };
+
+                Ok((crate::invocation_status_table::InvocationLite {
+                    status,
+                    invocation_target,
+                }))
+            }
+        }
+
+        impl From<crate::invocation_status_table::InvocationLite> for InvocationV2Lite {
+            fn from(_: crate::invocation_status_table::InvocationLite) -> Self {
+                panic!("Unexpected usage of InvocationLite, this data structure can be used only for reading, and never for writing")
             }
         }
 

@@ -351,6 +351,25 @@ impl InvocationStatus {
 
 protobuf_storage_encode_decode!(InvocationStatus, crate::storage::v1::InvocationStatusV2);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvocationStatusDiscriminants {
+    Scheduled,
+    Inboxed,
+    Invoked,
+    Suspended,
+    Killed,
+    Completed,
+}
+
+/// Lite status of an invocation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct InvocationLite {
+    pub status: InvocationStatusDiscriminants,
+    pub invocation_target: InvocationTarget,
+}
+
+protobuf_storage_encode_decode!(InvocationLite, crate::storage::v1::InvocationV2Lite);
+
 /// Wrapper used by the table implementation only for the migration, don't use it!
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct InvocationStatusV1(pub InvocationStatus);
