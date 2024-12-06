@@ -515,18 +515,22 @@ impl LogletConfiguration {
 
     fn node_set_iter(&self) -> impl Iterator<Item = &PlainNodeId> {
         match self {
+            #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(configuration) => {
                 itertools::Either::Left(configuration.nodeset.iter())
             }
             LogletConfiguration::Local(_) => itertools::Either::Right(iter::empty()),
+            #[cfg(any(test, feature = "memory-loglet"))]
             LogletConfiguration::Memory(_) => itertools::Either::Right(iter::empty()),
         }
     }
 
     fn sequencer_node(&self) -> Option<GenerationalNodeId> {
         match self {
+            #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(configuration) => Some(configuration.sequencer),
             LogletConfiguration::Local(_) => None,
+            #[cfg(any(test, feature = "memory-loglet"))]
             LogletConfiguration::Memory(_) => None,
         }
     }
