@@ -75,15 +75,21 @@ pub struct SnapshotCreated {
 pub enum SnapshotError {
     #[error("Partition {0} not found")]
     PartitionNotFound(PartitionId),
-    #[error("Snapshot creation already in progress for partition {0}")]
+    #[error("Snapshot creation already in progress")]
     SnapshotInProgress(PartitionId),
-    #[error("Partition processor state does not allow snapshot export {0}")]
+    /// Partition Processor is not fully caught up.
+    #[error("Partition processor state does not permit snapshotting")]
     InvalidState(PartitionId),
-    #[error("Snapshot failed for partition {0}: {1}")]
-    SnapshotExportError(PartitionId, #[source] anyhow::Error),
-    #[error("Snapshot failed for partition {0}: {1}")]
-    SnapshotMetadataHeaderError(PartitionId, #[source] io::Error),
-    #[error("Internal error creating snapshot for partition {0}: {1}")]
+    #[error("Snapshot destination is not configured")]
+    RepositoryNotConfigured(PartitionId),
+    /// Database snapshot export error.
+    #[error("Snapshot export failed: {1}")]
+    SnapshotExport(PartitionId, #[source] anyhow::Error),
+    #[error("Snapshot IO error: {1}")]
+    SnapshotIo(PartitionId, #[source] io::Error),
+    #[error("Snapshot repository IO error: {1}")]
+    RepositoryIo(PartitionId, #[source] anyhow::Error),
+    #[error("Internal error creating snapshot: {1}")]
     Internal(PartitionId, String),
 }
 
@@ -93,8 +99,10 @@ impl SnapshotError {
             SnapshotError::PartitionNotFound(partition_id) => *partition_id,
             SnapshotError::SnapshotInProgress(partition_id) => *partition_id,
             SnapshotError::InvalidState(partition_id) => *partition_id,
-            SnapshotError::SnapshotExportError(partition_id, _) => *partition_id,
-            SnapshotError::SnapshotMetadataHeaderError(partition_id, _) => *partition_id,
+            SnapshotError::RepositoryNotConfigured(partition_id) => *partition_id,
+            SnapshotError::SnapshotExport(partition_id, _) => *partition_id,
+            SnapshotError::SnapshotIo(partition_id, _) => *partition_id,
+            SnapshotError::RepositoryIo(partition_id, _) => *partition_id,
             SnapshotError::Internal(partition_id, _) => *partition_id,
         }
     }

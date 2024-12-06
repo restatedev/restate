@@ -449,7 +449,7 @@ where
     ) -> anyhow::Result<SnapshotId> {
         // todo(pavel): make snapshot RPC timeout configurable, especially if this includes remote upload in the future
         let response = tokio::time::timeout(
-            Duration::from_secs(30),
+            Duration::from_secs(90),
             self.create_snapshot_router.call(
                 &self.network_sender,
                 node_id,

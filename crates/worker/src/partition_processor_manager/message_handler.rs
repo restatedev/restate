@@ -14,7 +14,7 @@ use restate_core::{TaskCenter, TaskKind};
 use restate_types::net::partition_processor_manager::{
     CreateSnapshotRequest, CreateSnapshotResponse, SnapshotError,
 };
-use tracing::{debug, warn};
+use tracing::warn;
 
 /// RPC message handler for Partition Processor management operations.
 pub struct PartitionProcessorManagerMessageHandler {
@@ -45,26 +45,12 @@ impl MessageHandler for PartitionProcessorManagerMessageHandler {
                     .await;
 
                 match create_snapshot_result.as_ref() {
-                    Ok(snapshot) => {
-                        debug!(
-                            partition_id = %msg.body().partition_id,
-                            %snapshot,
-                            "Create snapshot successfully completed",
-                        );
-                        msg.to_rpc_response(CreateSnapshotResponse {
-                            result: Ok(snapshot.snapshot_id),
-                        })
-                    }
-                    Err(err) => {
-                        warn!(
-                            partition_id = %msg.body().partition_id,
-                            "Create snapshot failed: {}",
-                            err
-                        );
-                        msg.to_rpc_response(CreateSnapshotResponse {
-                            result: Err(SnapshotError::SnapshotCreationFailed(err.to_string())),
-                        })
-                    }
+                    Ok(snapshot) => msg.to_rpc_response(CreateSnapshotResponse {
+                        result: Ok(snapshot.snapshot_id),
+                    }),
+                    Err(err) => msg.to_rpc_response(CreateSnapshotResponse {
+                        result: Err(SnapshotError::SnapshotCreationFailed(err.to_string())),
+                    }),
                 }
                 .send()
                 .await

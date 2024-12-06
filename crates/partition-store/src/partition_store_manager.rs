@@ -212,13 +212,13 @@ impl PartitionStoreManager {
         // RocksDB will create the snapshot directory but the parent must exist first:
         tokio::fs::create_dir_all(snapshot_base_path)
             .await
-            .map_err(|e| SnapshotError::SnapshotExportError(partition_id, e.into()))?;
+            .map_err(|e| SnapshotError::SnapshotIo(partition_id, e))?;
         let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
 
         partition_store
             .create_snapshot(snapshot_dir)
             .await
-            .map_err(|e| SnapshotError::SnapshotExportError(partition_id, e.into()))
+            .map_err(|e| SnapshotError::SnapshotExport(partition_id, e.into()))
     }
 
     pub async fn drop_partition(&self, partition_id: PartitionId) {

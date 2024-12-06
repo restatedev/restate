@@ -11,9 +11,9 @@
 mod message_handler;
 mod persisted_lsn_watchdog;
 mod processor_state;
-mod snapshot_task;
 mod spawn_processor_task;
 
+use restate_types::identifiers::SnapshotId;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
@@ -49,7 +49,7 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, SnapshotId};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -72,12 +72,12 @@ use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
 use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
+use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
 use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
 use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
-use crate::partition_processor_manager::snapshot_task::SnapshotPartitionTask;
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 
 pub struct PartitionProcessorManager {
@@ -103,6 +103,7 @@ pub struct PartitionProcessorManager {
 
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
+    snapshot_repository: Option<SnapshotRepository>,
 }
 
 struct PendingSnapshotTask {
@@ -174,6 +175,7 @@ impl PartitionProcessorManager {
         partition_store_manager: PartitionStoreManager,
         router_builder: &mut MessageRouterBuilder,
         bifrost: Bifrost,
+        snapshot_repository: Option<SnapshotRepository>,
     ) -> Self {
         let incoming_update_processors = router_builder.subscribe_to_stream(2);
         let incoming_partition_processor_rpc = router_builder.subscribe_to_stream(128);
@@ -198,6 +200,7 @@ impl PartitionProcessorManager {
             asynchronous_operations: JoinSet::default(),
             snapshot_export_tasks: FuturesUnordered::default(),
             pending_snapshots: HashMap::default(),
+            snapshot_repository,
         }
     }
 
@@ -699,15 +702,24 @@ impl PartitionProcessorManager {
             }
         };
 
+        let snapshot_repository = self.snapshot_repository.clone();
+        let Some(snapshot_repository) = snapshot_repository else {
+            let _ = sender.send(Err(SnapshotError::RepositoryNotConfigured(partition_id)));
+            return;
+        };
+
         if !processor_state.should_publish_snapshots() {
             let _ = sender.send(Err(SnapshotError::InvalidState(partition_id)));
             return;
         }
 
-        self.spawn_create_snapshot_task(partition_id, Some(sender));
+        self.spawn_create_snapshot_task(partition_id, snapshot_repository, Some(sender));
     }
 
-    fn on_create_snapshot_task_completed(&mut self, result: SnapshotResultInternal) {
+    fn on_create_snapshot_task_completed(
+        &mut self,
+        result: Result<PartitionSnapshotMetadata, SnapshotError>,
+    ) {
         let (partition_id, response) = match result {
             Ok(metadata) => {
                 self.archived_lsns
@@ -773,7 +785,11 @@ impl PartitionProcessorManager {
                 last_applied_lsn = %status.last_applied_log_lsn.unwrap_or(SequenceNumber::INVALID),
                 "Requesting partition snapshot",
             );
-            self.spawn_create_snapshot_task(partition_id, None);
+            self.spawn_create_snapshot_task(
+                partition_id,
+                self.snapshot_repository.clone().expect("is some"), // validated on startup
+                None,
+            );
         }
     }
 
@@ -782,6 +798,7 @@ impl PartitionProcessorManager {
     fn spawn_create_snapshot_task(
         &mut self,
         partition_id: PartitionId,
+        snapshot_repository: SnapshotRepository,
         sender: Option<oneshot::Sender<SnapshotResult>>,
     ) {
         match self.pending_snapshots.entry(partition_id) {
@@ -798,6 +815,7 @@ impl PartitionProcessorManager {
                     partition_store_manager: self.partition_store_manager.clone(),
                     cluster_name: config.common.cluster_name().into(),
                     node_name: config.common.node_name().into(),
+                    snapshot_repository,
                 };
 
                 let spawn_task_result = TaskCenter::spawn_unmanaged(
@@ -973,6 +991,7 @@ mod tests {
             partition_store_manager,
             &mut env_builder.router_builder,
             bifrost,
+            None,
         );
 
         let env = env_builder.build().await;

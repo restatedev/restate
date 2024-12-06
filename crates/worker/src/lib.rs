@@ -47,6 +47,7 @@ use restate_types::live::Live;
 use restate_types::protobuf::common::WorkerStatus;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
+use crate::partition::snapshots::SnapshotRepository;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
 pub use self::error::*;
@@ -61,7 +62,7 @@ type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
 pub enum BuildError {
-    Datafusion(
+    DataFusion(
         #[from]
         #[code]
         restate_storage_query_datafusion::BuildError,
@@ -80,6 +81,9 @@ pub enum BuildError {
     ),
     #[code(unknown)]
     Invoker(#[from] restate_invoker_impl::BuildError),
+    #[error("failed constructing partition snapshot repository: {0}")]
+    #[code(unknown)]
+    SnapshotRepository(#[from] anyhow::Error),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -136,6 +140,15 @@ impl Worker {
         )
         .await?;
 
+        let snapshots_options = &config.worker.snapshots;
+        if snapshots_options.snapshot_interval_num_records.is_some()
+            && snapshots_options.destination.is_none()
+        {
+            return Err(BuildError::SnapshotRepository(anyhow::anyhow!(
+                "Periodic snapshot interval set without a specified snapshot destination"
+            )));
+        }
+
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             updateable_config.clone(),
@@ -143,6 +156,9 @@ impl Worker {
             partition_store_manager.clone(),
             router_builder,
             bifrost,
+            SnapshotRepository::create_if_configured(snapshots_options)
+                .await
+                .map_err(BuildError::SnapshotRepository)?,
         );
 
         // handle RPCs
