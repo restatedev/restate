@@ -41,6 +41,7 @@ use pgwire::api::{ClientInfo, PgWireHandlerFactory, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use pgwire::tokio::process_socket;
+use restate_core::{TaskCenter, TaskKind};
 use restate_storage_query_datafusion::context::QueryContext;
 use tracing::warn;
 
@@ -96,13 +97,18 @@ pub fn spawn_connection(
     incoming_socket: TcpStream,
     addr: SocketAddr,
 ) {
-    tokio::spawn(async move {
-        let result = process_socket(incoming_socket, None, factory).await;
+    // fails only if we are shutting down
+    let _ = TaskCenter::spawn_child(
+        TaskKind::RpcConnection,
+        "postgres-query-connection",
+        async move {
+            let result = process_socket(incoming_socket, None, factory).await;
 
-        if let Err(err) = result {
-            warn!("Failed processing socket for connection '{addr}': {err}");
-        }
-    });
+            if let Err(err) = result {
+                warn!("Failed processing socket for connection '{addr}': {err}");
+            }
+        },
+    );
 }
 
 pub struct DfSessionService {
