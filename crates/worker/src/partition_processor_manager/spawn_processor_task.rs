@@ -11,7 +11,7 @@
 use std::ops::RangeInclusive;
 
 use tokio::sync::{mpsc, watch};
-use tracing::instrument;
+use tracing::{debug, info, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind};
@@ -26,6 +26,7 @@ use restate_types::schema::Schema;
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
+use crate::partition::snapshots::SnapshotRepository;
 use crate::partition_processor_manager::processor_state::StartedProcessor;
 use crate::PartitionProcessorBuilder;
 
@@ -36,6 +37,7 @@ pub struct SpawnPartitionProcessorTask {
     configuration: Live<Configuration>,
     bifrost: Bifrost,
     partition_store_manager: PartitionStoreManager,
+    snapshot_repository: Option<SnapshotRepository>,
 }
 
 impl SpawnPartitionProcessorTask {
@@ -47,6 +49,7 @@ impl SpawnPartitionProcessorTask {
         configuration: Live<Configuration>,
         bifrost: Bifrost,
         partition_store_manager: PartitionStoreManager,
+        snapshot_repository: Option<SnapshotRepository>,
     ) -> Self {
         Self {
             task_name,
@@ -55,6 +58,7 @@ impl SpawnPartitionProcessorTask {
             configuration,
             bifrost,
             partition_store_manager,
+            snapshot_repository,
         }
     }
 
@@ -72,6 +76,7 @@ impl SpawnPartitionProcessorTask {
             configuration,
             bifrost,
             partition_store_manager,
+            snapshot_repository,
         } = self;
 
         let config = configuration.pinned();
@@ -117,15 +122,90 @@ impl SpawnPartitionProcessorTask {
             {
                 let options = options.clone();
                 let key_range = key_range.clone();
+
                 move || async move {
-                    let partition_store = partition_store_manager
-                        .open_partition_store(
-                            partition_id,
-                            key_range,
-                            OpenMode::CreateIfMissing,
-                            &options.storage.rocksdb,
-                        )
-                        .await?;
+                    let partition_store = if !partition_store_manager
+                        .has_partition_store(pp_builder.partition_id)
+                        .await
+                    {
+                        let snapshot = if snapshot_repository.is_none() {
+                            debug!(
+                                partition_id = %partition_id,
+                                "No snapshot repository configured",
+                            );
+                            None
+                        } else {
+                            debug!(
+                                partition_id = %partition_id,
+                                "Looking for partition snapshot from which to bootstrap partition store",
+                            );
+                            snapshot_repository.expect("is some").get_latest(partition_id).await?
+                        };
+
+
+                        if let Some(snapshot) = snapshot {
+                            info!(
+                                partition_id = %partition_id,
+                                "Found snapshot to bootstrap partition, restoring it",
+                            );
+
+                            let snapshot_path = snapshot.base_dir.clone();
+                            match partition_store_manager
+                                .open_partition_store_from_snapshot(
+                                    partition_id,
+                                    key_range.clone(),
+                                    snapshot,
+                                    &options.storage.rocksdb,
+                                )
+                                .await {
+                                Ok(partition_store) => {
+                                    let res = tokio::fs::remove_dir_all(&snapshot_path).await;
+                                    if let Err(e) = res {
+                                        // This is not critical; since we move the SST files into RocksDB on import, at
+                                        // worst the snapshot metadata file will be retained.
+                                        warn!(
+                                            partition_id = %partition_id,
+                                            ?snapshot_path,
+                                            "Failed to remove local snapshot directory, continuing with startup: {:?}",
+                                            e
+                                        );
+                                    }
+                                    partition_store
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        partition_id = %partition_id,
+                                        ?snapshot_path,
+                                        "Failed to import snapshot, local copy retained"
+                                    );
+                                    return Err(anyhow::anyhow!(e));
+                                }
+                            }
+                        } else {
+                            info!(
+                                    partition_id = %partition_id,
+                                    "No snapshot found to bootstrap partition, creating new store",
+                                );
+                            partition_store_manager
+                                .open_partition_store(
+                                    partition_id,
+                                    key_range,
+                                    OpenMode::CreateIfMissing,
+                                    &options.storage.rocksdb,
+                                )
+                                .await?
+                        }
+                    } else {
+                        partition_store_manager
+                            .open_partition_store(
+                                partition_id,
+                                key_range,
+                                OpenMode::OpenExisting,
+                                &options.storage.rocksdb,
+                            )
+                            .await?
+                    };
+
                     TaskCenter::spawn_child(
                         TaskKind::SystemService,
                         invoker_name,

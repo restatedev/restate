@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use rocksdb::ExportImportFilesMetaData;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::cf_options;
 use crate::snapshots::LocalPartitionSnapshot;
@@ -86,9 +86,11 @@ impl PartitionStoreManager {
         })
     }
 
-    pub async fn has_partition(&self, partition_id: PartitionId) -> bool {
-        let guard = self.lookup.lock().await;
-        guard.live.contains_key(&partition_id)
+    /// Check whether we have a partition store for the given partition id, irrespective of whether
+    /// the store is open or not.
+    pub async fn has_partition_store(&self, partition_id: PartitionId) -> bool {
+        let cf_name = cf_for_partition(partition_id);
+        self.rocksdb.inner().cf_handle(&cf_name).is_some()
     }
 
     pub async fn get_partition_store(&self, partition_id: PartitionId) -> Option<PartitionStore> {
@@ -147,8 +149,7 @@ impl PartitionStoreManager {
         let mut guard = self.lookup.lock().await;
         if guard.live.contains_key(&partition_id) {
             warn!(
-                ?partition_id,
-                ?snapshot,
+                %partition_id,
                 "The partition store is already open, refusing to import snapshot"
             );
             return Err(RocksError::AlreadyOpen);
@@ -158,12 +159,23 @@ impl PartitionStoreManager {
         let cf_exists = self.rocksdb.inner().cf_handle(&cf_name).is_some();
         if cf_exists {
             warn!(
-                ?partition_id,
-                ?cf_name,
-                ?snapshot,
+                %partition_id,
+                %cf_name,
                 "The column family for partition already exists in the database, cannot import snapshot"
             );
             return Err(RocksError::ColumnFamilyExists);
+        }
+
+        if snapshot.key_range.start() > partition_key_range.start()
+            || snapshot.key_range.end() < partition_key_range.end()
+        {
+            warn!(
+                %partition_id,
+                snapshot_range = ?snapshot.key_range,
+                partition_range = ?partition_key_range,
+                "The snapshot key range does not fully cover the partition key range"
+            );
+            return Err(RocksError::SnapshotKeyRangeMismatch);
         }
 
         let mut import_metadata = ExportImportFilesMetaData::default();
@@ -171,19 +183,15 @@ impl PartitionStoreManager {
         import_metadata.set_files(&snapshot.files);
 
         info!(
-            ?partition_id,
-            min_applied_lsn = ?snapshot.min_applied_lsn,
-            "Initializing partition store from snapshot"
+            %partition_id,
+            min_lsn = %snapshot.min_applied_lsn,
+            path = ?snapshot.base_dir,
+            "Importing partition store snapshot"
         );
 
-        if let Err(e) = self
-            .rocksdb
+        self.rocksdb
             .import_cf(cf_name.clone(), opts, import_metadata)
-            .await
-        {
-            error!(?partition_id, "Failed to import snapshot");
-            return Err(e);
-        }
+            .await?;
 
         assert!(self.rocksdb.inner().cf_handle(&cf_name).is_some());
         let partition_store = PartitionStore::new(

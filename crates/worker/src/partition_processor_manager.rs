@@ -875,6 +875,7 @@ impl PartitionProcessorManager {
             self.updateable_config.clone(),
             self.bifrost.clone(),
             self.partition_store_manager.clone(),
+            self.snapshot_repository.clone(),
         )
     }
 

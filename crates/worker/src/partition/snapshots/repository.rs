@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,11 +23,18 @@ use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use tempfile::TempDir;
+use tokio::io;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+use tokio_util::io::StreamReader;
 use tracing::{debug, info, instrument, warn};
 use url::Url;
 
-use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
+use restate_partition_store::snapshots::{
+    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
+};
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
@@ -50,7 +58,18 @@ pub struct SnapshotRepository {
     object_store: Arc<dyn ObjectStore>,
     destination: Url,
     prefix: String,
+    /// Ingested snapshots staging location.
+    staging_dir: PathBuf,
+    /// Expected cluster name for the snapshots in this repository.
+    cluster_name: String,
 }
+
+/// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
+/// API error to attempt a multipart put below this size, apart from the final segment.
+const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
+
+/// Maximum number of concurrent downloads when getting snapshots from the repository.
+const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
 
 #[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -99,6 +118,8 @@ impl SnapshotRepository {
     /// Creates an instance of the repository if a snapshots destination is configured.
     pub async fn create_if_configured(
         snapshots_options: &SnapshotsOptions,
+        staging_dir: PathBuf,
+        cluster_name: String,
     ) -> anyhow::Result<Option<SnapshotRepository>> {
         let mut destination = if let Some(ref destination) = snapshots_options.destination {
             Url::parse(destination).context("Failed parsing snapshot repository URL")?
@@ -125,6 +146,8 @@ impl SnapshotRepository {
             object_store,
             destination,
             prefix,
+            staging_dir,
+            cluster_name,
         }))
     }
 
@@ -314,6 +337,173 @@ impl SnapshotRepository {
         )
     }
 
+    /// Discover and download the latest snapshot available. It is the caller's responsibility
+    /// to delete the snapshot directory when it is no longer needed.
+    #[instrument(
+        level = "debug",
+        skip_all,
+        err,
+        fields(%partition_id),
+    )]
+    pub(crate) async fn get_latest(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
+        let latest_path = object_store::path::Path::from(format!(
+            "{prefix}{partition_id}/latest.json",
+            prefix = self.prefix,
+            partition_id = partition_id,
+        ));
+
+        let latest = self.object_store.get(&latest_path).await;
+
+        let latest = match latest {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => {
+                debug!("Latest snapshot data not found in repository");
+                return Ok(None);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
+        debug!("Latest snapshot metadata: {:?}", latest);
+
+        let snapshot_metadata_path = object_store::path::Path::from(format!(
+            "{prefix}{partition_id}/{path}/metadata.json",
+            prefix = self.prefix,
+            partition_id = partition_id,
+            path = latest.path,
+        ));
+        let snapshot_metadata = self.object_store.get(&snapshot_metadata_path).await;
+
+        let snapshot_metadata = match snapshot_metadata {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => {
+                // todo(pavel): revisit whether we shouldn't just panic at this point - this is a bad sign!
+                warn!("Latest snapshot points to a snapshot that was not found in the repository!");
+                return Ok(None); // arguably this could also be an error
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut snapshot_metadata: PartitionSnapshotMetadata =
+            serde_json::from_slice(&snapshot_metadata.bytes().await?)?;
+        if snapshot_metadata.version != SnapshotFormatVersion::V1 {
+            return Err(anyhow!(
+                "Unsupported snapshot format version: {:?}",
+                snapshot_metadata.version
+            ));
+        }
+
+        if snapshot_metadata.cluster_name != self.cluster_name {
+            // todo(pavel): revisit whether we shouldn't just panic at this point - this is a bad sign!
+            warn!("Snapshot does not match the cluster name of latest snapshot at destination in snapshot id {}! Expected: cluster name=\"{}\", found: \"{}\"",
+                   snapshot_metadata.snapshot_id,
+                   self.cluster_name,
+                   snapshot_metadata.cluster_name);
+            return Ok(None); // perhaps this needs to be a configuration error
+        }
+
+        // The snapshot ingest directory should be on the same filesystem as the partition store
+        // to minimize IO and disk space usage during import.
+        let snapshot_dir = TempDir::with_prefix_in(
+            format!("{}-", snapshot_metadata.snapshot_id),
+            &self.staging_dir,
+        )?;
+        debug!(
+            snapshot_id = %snapshot_metadata.snapshot_id,
+            path = ?snapshot_dir.path(),
+            "Getting snapshot data",
+        );
+
+        let directory = snapshot_dir.path().to_string_lossy().to_string();
+        let concurrency_limiter = Arc::new(Semaphore::new(DOWNLOAD_CONCURRENCY_LIMIT));
+        let mut downloads = JoinSet::new();
+        let mut task_handles = HashMap::with_capacity(snapshot_metadata.files.len());
+        for file in &mut snapshot_metadata.files {
+            let filename = file.name.trim_start_matches("/");
+            let expected_size = file.size;
+            let key = object_store::path::Path::from(format!(
+                "{prefix}{partition_id}/{path}/{filename}",
+                prefix = self.prefix,
+                partition_id = partition_id,
+                path = latest.path,
+                filename = filename,
+            ));
+            let file_path = snapshot_dir.path().join(filename);
+            let concurrency_limiter = Arc::clone(&concurrency_limiter);
+            let object_store = Arc::clone(&self.object_store);
+
+            let handle = downloads.build_task().name(filename).spawn(async move {
+                let _permit = concurrency_limiter.acquire().await?;
+                let mut file_data = StreamReader::new(
+                    object_store
+                        .get(&key)
+                        .await
+                        .map_err(|e| anyhow!("Failed to download snapshot file {:?}: {}", key, e))?
+                        .into_stream(),
+                );
+                let mut snapshot_file =
+                    tokio::fs::File::create_new(&file_path).await.map_err(|e| {
+                        anyhow!("Failed to create snapshot file {:?}: {}", file_path, e)
+                    })?;
+                let size = io::copy(&mut file_data, &mut snapshot_file)
+                    .await
+                    .map_err(|e| anyhow!("Failed to download snapshot file {:?}: {}", key, e))?;
+                if size != expected_size as u64 {
+                    return Err(anyhow!(
+                        "Downloaded snapshot file {:?} has unexpected size: expected {}, got {}",
+                        key,
+                        expected_size,
+                        size
+                    ));
+                }
+                debug!(%key, ?size, "Downloaded snapshot data file to {:?}", file_path);
+                anyhow::Ok(())
+            })?;
+            task_handles.insert(handle.id(), filename.to_string());
+            // patch the directory path to reflect the actual location on the restoring node
+            file.directory = directory.clone();
+        }
+
+        loop {
+            match downloads.join_next().await {
+                None => {
+                    debug!("All download tasks completed");
+                    break;
+                }
+                Some(Err(join_error)) => {
+                    let failed = task_handles.get(&join_error.id());
+                    abort_tasks(downloads).await;
+                    return Err(anyhow!(
+                        "Failed to download snapshot file {:?}: {}",
+                        failed,
+                        join_error
+                    ));
+                }
+                Some(Ok(Err(error))) => {
+                    abort_tasks(downloads).await;
+                    return Err(error);
+                }
+                Some(Ok(Ok(_))) => {}
+            }
+        }
+
+        info!(
+            snapshot_id = %snapshot_metadata.snapshot_id,
+            path = ?snapshot_dir.path(),
+            "Downloaded partition snapshot",
+        );
+        Ok(Some(LocalPartitionSnapshot {
+            base_dir: snapshot_dir.into_path(),
+            min_applied_lsn: snapshot_metadata.min_applied_lsn,
+            db_comparator_name: snapshot_metadata.db_comparator_name,
+            files: snapshot_metadata.files,
+            key_range: snapshot_metadata.key_range.clone(),
+        }))
+    }
+
     async fn get_latest_snapshot_metadata_for_update(
         &self,
         snapshot: &PartitionSnapshotMetadata,
@@ -326,7 +516,7 @@ impl SnapshotRepository {
                     version: result.meta.version.clone(),
                 };
                 let latest: LatestSnapshot = serde_json::from_slice(
-                    result.bytes().await?.iter().as_slice(),
+                    &result.bytes().await?,
                 )
                 .inspect_err(|e| {
                     debug!(
@@ -436,10 +626,6 @@ impl PutSnapshotError {
     }
 }
 
-/// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
-/// API error to attempt a multipart put below this size, apart from the final segment.
-const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
-
 // The object_store `put_multipart` method does not currently support PutMode, so we don't pass this
 // at all; however since we upload snapshots to a unique path on every attempt, we don't expect any
 // conflicts to arise.
@@ -495,6 +681,11 @@ async fn put_snapshot_object(
             Err(e)
         }
     }
+}
+
+async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
+    join_set.abort_all();
+    while join_set.join_next().await.is_some() {}
 }
 
 #[derive(Debug)]
@@ -558,12 +749,14 @@ mod tests {
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
 
-        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
-        data.write_all(b"snapshot-data").await?;
+        let data = b"snapshot-data";
+        let mut data_file = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data_file.write_all(data).await?;
 
         let snapshot = mock_snapshot_metadata(
             "/data.sst".to_owned(),
             source_dir.to_string_lossy().to_string(),
+            data.len(),
         );
 
         let snapshots_destination: TempDir = TempDir::new()?;
@@ -576,9 +769,13 @@ mod tests {
             ),
             ..SnapshotsOptions::default()
         };
-        let repository = SnapshotRepository::create_if_configured(&opts)
-            .await?
-            .unwrap();
+        let repository = SnapshotRepository::create_if_configured(
+            &opts,
+            TempDir::new().unwrap().into_path(),
+            "cluster".to_owned(),
+        )
+        .await?
+        .unwrap();
 
         // Write invalid JSON to latest.json
         let latest_path = destination_dir.join(format!("{}/latest.json", PartitionId::MIN));
@@ -634,12 +831,14 @@ mod tests {
             .await;
         assert!(matches!(latest, Err(object_store::Error::NotFound { .. })));
 
-        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
-        data.write_all(b"snapshot-data").await?;
+        let data = b"snapshot-data";
+        let mut data_file = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data_file.write_all(data).await?;
 
         let mut snapshot1 = mock_snapshot_metadata(
             "/data.sst".to_owned(),
             source_dir.to_string_lossy().to_string(),
+            data.len(),
         );
         snapshot1.min_applied_lsn = Lsn::new(
             SystemTime::now()
@@ -652,9 +851,13 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::create_if_configured(&opts)
-            .await?
-            .unwrap();
+        let repository = SnapshotRepository::create_if_configured(
+            &opts,
+            TempDir::new().unwrap().into_path(),
+            "cluster".to_owned(),
+        )
+        .await?
+        .unwrap();
 
         repository.put(&snapshot1, source_dir.clone()).await?;
 
@@ -691,12 +894,14 @@ mod tests {
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
 
-        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
-        data.write_all(b"snapshot-data").await?;
+        let data = b"snapshot-data";
+        let mut data_file = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data_file.write_all(data).await?;
 
         let mut snapshot2 = mock_snapshot_metadata(
             "/data.sst".to_owned(),
             source_dir.to_string_lossy().to_string(),
+            data.len(),
         );
         snapshot2.min_applied_lsn = snapshot1.min_applied_lsn.next();
 
@@ -717,13 +922,26 @@ mod tests {
             latest
         );
 
+        let latest = repository.get_latest(PartitionId::MIN).await?.unwrap();
+        assert_eq!(latest.min_applied_lsn, snapshot2.min_applied_lsn);
+        let local_path = latest.base_dir.as_path().to_string_lossy().to_string();
+        drop(latest);
+
+        let local_dir_exists = tokio::fs::try_exists(&local_path).await?;
+        assert!(local_dir_exists);
+        tokio::fs::remove_dir_all(&local_path).await?;
+
         Ok(())
     }
 
-    fn mock_snapshot_metadata(file_name: String, directory: String) -> PartitionSnapshotMetadata {
+    fn mock_snapshot_metadata(
+        file_name: String,
+        directory: String,
+        size: usize,
+    ) -> PartitionSnapshotMetadata {
         PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
-            cluster_name: "test-cluster".to_string(),
+            cluster_name: "cluster".to_string(),
             node_name: "node".to_string(),
             partition_id: PartitionId::MIN,
             created_at: humantime::Timestamp::from(SystemTime::now()),
@@ -736,7 +954,7 @@ mod tests {
                 column_family_name: "data-0".to_owned(),
                 name: file_name,
                 directory,
-                size: 0,
+                size,
                 level: 0,
                 start_key: Some(vec![0]),
                 end_key: Some(vec![0xff, 0xff]),
