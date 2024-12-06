@@ -8,9 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
-
+use anyhow::Context;
 use async_trait::async_trait;
 use datafusion::arrow::array::{
     Array, BinaryArray, BooleanArray, Date32Array, Date64Array, LargeBinaryArray, LargeStringArray,
@@ -29,6 +27,8 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::temporal_conversions::{date32_to_datetime, date64_to_datetime};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use futures::{stream, StreamExt};
+use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -41,8 +41,8 @@ use pgwire::api::{ClientInfo, PgWireHandlerFactory, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use pgwire::tokio::process_socket;
+use restate_core::{TaskCenter, TaskKind};
 use restate_storage_query_datafusion::context::QueryContext;
-use tracing::warn;
 
 pub(crate) struct HandlerFactory {
     processor: Arc<DfSessionService>,
@@ -96,13 +96,15 @@ pub fn spawn_connection(
     incoming_socket: TcpStream,
     addr: SocketAddr,
 ) {
-    tokio::spawn(async move {
-        let result = process_socket(incoming_socket, None, factory).await;
-
-        if let Err(err) = result {
-            warn!("Failed processing socket for connection '{addr}': {err}");
-        }
-    });
+    // fails only if we are shutting down
+    let _ = TaskCenter::spawn_child(
+        TaskKind::RpcConnection,
+        "postgres-query-connection",
+        async move {
+            let result = process_socket(incoming_socket, None, factory).await;
+            result.context(format!("Failed processing socket for connection '{addr}'"))
+        },
+    );
 }
 
 pub struct DfSessionService {
