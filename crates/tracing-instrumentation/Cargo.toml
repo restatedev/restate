@@ -29,9 +29,9 @@ metrics-tracing-context = { version = "0.16.0" }
 nu-ansi-term = "0.46.0"
 once_cell = { workspace = true }
 opentelemetry = { workspace = true }
-opentelemetry-contrib = { version = "0.16.0", features = ["jaeger_json_exporter", "rt-tokio"] }
-opentelemetry-otlp = { version = "0.17.0" }
-opentelemetry-semantic-conventions = "0.16.0"
+opentelemetry-contrib = { workspace = true, features = ["jaeger_json_exporter", "rt-tokio"] }
+opentelemetry-otlp = { workspace = true, features = ["tls", "tls-roots"] }
+opentelemetry-semantic-conventions = {  workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
