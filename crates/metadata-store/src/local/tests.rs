@@ -27,9 +27,9 @@ use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
-use crate::local::grpc::client::LocalMetadataStoreClient;
+use crate::grpc::client::GrpcMetadataStoreClient;
 use crate::local::service::LocalMetadataStoreService;
-use crate::{MetadataStoreClient, Precondition, WriteError};
+use crate::{MetadataStoreClient, MetadataStoreService, Precondition, WriteError};
 
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
 struct Value {
@@ -243,7 +243,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     let bind_address = BindAddress::Uds(uds_path.clone());
     let metadata_store_client_opts = MetadataStoreClientOptionsBuilder::default()
         .metadata_store_client(restate_types::config::MetadataStoreClient::Embedded {
-            address: AdvertisedAddress::Uds(uds_path),
+            addresses: vec![AdvertisedAddress::Uds(uds_path)],
         })
         .build()
         .expect("valid metadata store client options");
@@ -276,7 +276,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Creates a test environment with the [`RocksDBMetadataStore`] and a [`MetadataStoreClient`]
+/// Creates a test environment with the [`RocksDBMetadataStore`] and a [`GrpcMetadataStoreClient`]
 /// connected to it.
 async fn create_test_environment(
     opts: &MetadataStoreOptions,
@@ -290,7 +290,7 @@ async fn create_test_environment(
     config.metadata_store.bind_address = bind_address;
     config.common.metadata_store_client.metadata_store_client =
         config::MetadataStoreClient::Embedded {
-            address: advertised_address.clone(),
+            addresses: vec![advertised_address.clone()],
         };
 
     restate_types::config::set_current_config(config.clone());
@@ -333,7 +333,7 @@ async fn start_metadata_store(
     )?;
 
     assert2::let_assert!(
-        config::MetadataStoreClient::Embedded { address } =
+        config::MetadataStoreClient::Embedded { addresses } =
             metadata_store_client_options.metadata_store_client.clone()
     );
 
@@ -341,9 +341,9 @@ async fn start_metadata_store(
         .wait_for_value(MetadataServerStatus::Ready)
         .await;
 
-    let rocksdb_client = LocalMetadataStoreClient::new(address, &metadata_store_client_options);
+    let grpc_client = GrpcMetadataStoreClient::new(addresses, &metadata_store_client_options);
     let client = MetadataStoreClient::new(
-        rocksdb_client,
+        grpc_client,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),
     );
 

@@ -1,0 +1,112 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+use crate::grpc::handler::MetadataStoreHandler;
+use crate::grpc::server::GrpcServer;
+use crate::grpc::service_builder::GrpcServiceBuilder;
+use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
+use crate::network::{
+    ConnectionManager, MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, NetworkMessage,
+    Networking,
+};
+use crate::raft::store::RaftMetadataStore;
+use crate::{grpc_svc, network, Error, MetadataStoreService};
+use anyhow::Context;
+use assert2::let_assert;
+use bytes::{Buf, BufMut};
+use futures::TryFutureExt;
+use protobuf::Message as ProtobufMessage;
+use restate_core::{TaskCenter, TaskKind};
+use restate_types::config::{MetadataStoreKind, MetadataStoreOptions, RocksDbOptions};
+use restate_types::health::HealthStatus;
+use restate_types::live::BoxedLiveLoad;
+use restate_types::protobuf::common::MetadataServerStatus;
+use tokio::sync::mpsc;
+
+pub struct RaftMetadataStoreService {
+    health_status: HealthStatus<MetadataServerStatus>,
+    options: BoxedLiveLoad<MetadataStoreOptions>,
+    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+}
+
+impl RaftMetadataStoreService {
+    pub fn new(
+        health_status: HealthStatus<MetadataServerStatus>,
+        options: BoxedLiveLoad<MetadataStoreOptions>,
+        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    ) -> Self {
+        Self {
+            options,
+            rocksdb_options,
+            health_status,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl MetadataStoreService for RaftMetadataStoreService {
+    async fn run(mut self) -> Result<(), Error> {
+        let store_options = self.options.live_load();
+        let_assert!(MetadataStoreKind::Raft(raft_options) = &store_options.kind);
+
+        let (router_tx, router_rx) = mpsc::channel(128);
+        let connection_manager = ConnectionManager::new(raft_options.id.get(), router_tx);
+        let store = RaftMetadataStore::create(
+            raft_options,
+            self.rocksdb_options,
+            Networking::new(connection_manager.clone()),
+            router_rx,
+        )
+        .await
+        .map_err(Error::generic)?;
+
+        let mut builder = GrpcServiceBuilder::default();
+
+        builder.register_file_descriptor_set_for_reflection(grpc_svc::FILE_DESCRIPTOR_SET);
+        builder.add_service(MetadataStoreSvcServer::new(MetadataStoreHandler::new(
+            store.request_sender(),
+        )));
+
+        builder.register_file_descriptor_set_for_reflection(network::FILE_DESCRIPTOR_SET);
+        builder.add_service(MetadataStoreNetworkSvcServer::new(
+            MetadataStoreNetworkHandler::new(connection_manager),
+        ));
+
+        let grpc_server =
+            GrpcServer::new(store_options.bind_address.clone(), builder.build().await?);
+
+        TaskCenter::spawn_child(
+            TaskKind::RpcServer,
+            "metadata-store-grpc",
+            grpc_server.run(self.health_status).map_err(Into::into),
+        )?;
+
+        store.run().await.map_err(Error::generic)?;
+
+        Ok(())
+    }
+}
+
+impl NetworkMessage for raft::prelude::Message {
+    fn to(&self) -> u64 {
+        self.to
+    }
+
+    fn serialize<B: BufMut>(&self, buffer: &mut B) {
+        let mut writer = buffer.writer();
+        self.write_to_writer(&mut writer)
+            .expect("should be able to write message");
+    }
+
+    fn deserialize<B: Buf>(buffer: &mut B) -> anyhow::Result<Self> {
+        ProtobufMessage::parse_from_reader(&mut buffer.reader())
+            .context("failed deserializing message")
+    }
+}
