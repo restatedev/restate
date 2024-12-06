@@ -178,7 +178,7 @@ async fn terminate_scheduled_invocation(
 #[case(ExperimentalFeature::InvocationStatusKilled.into(), TerminationFlavor::KillAndRestart)]
 #[case(EnumSet::empty(), TerminationFlavor::KillAndRestart)]
 #[case(EnumSet::empty(), TerminationFlavor::CancelAndRestart)]
-#[tokio::test]
+#[restate_core::test]
 async fn terminate_and_restart_scheduled_invocation_has_no_effect(
     #[case] experimental_features: EnumSet<ExperimentalFeature>,
     #[case] termination_flavor: TerminationFlavor,
@@ -229,7 +229,7 @@ async fn terminate_and_restart_scheduled_invocation_has_no_effect(
 #[case(ExperimentalFeature::InvocationStatusKilled.into(), TerminationFlavor::KillAndRestart)]
 #[case(EnumSet::empty(), TerminationFlavor::KillAndRestart)]
 #[case(EnumSet::empty(), TerminationFlavor::CancelAndRestart)]
-#[tokio::test]
+#[restate_core::test]
 async fn terminate_and_restart_inboxed_invocation_has_no_effect(
     #[case] experimental_features: EnumSet<ExperimentalFeature>,
     #[case] termination_flavor: TerminationFlavor,
@@ -287,7 +287,7 @@ async fn terminate_and_restart_inboxed_invocation_has_no_effect(
     Ok(())
 }
 
-#[tokio::test]
+#[restate_core::test]
 async fn kill_and_restart_when_invoked() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create_with_experimental_features(
         ExperimentalFeature::InvocationStatusKilled.into(),
@@ -375,7 +375,7 @@ async fn kill_and_restart_when_invoked() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[restate_core::test]
 async fn kill_and_restart_when_suspended() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create_with_experimental_features(
         ExperimentalFeature::InvocationStatusKilled.into(),
