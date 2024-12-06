@@ -25,7 +25,7 @@ define_table!(sys_deployment(
     endpoint: DataType::LargeUtf8,
 
     /// Timestamp indicating the deployment registration time.
-    created_at: DataType::Date64,
+    created_at: TimestampMillisecond,
 
     /// Minimum supported protocol version.
     min_service_protocol_version: DataType::UInt32,
