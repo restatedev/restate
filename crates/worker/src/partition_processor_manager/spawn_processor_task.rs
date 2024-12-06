@@ -11,7 +11,7 @@
 use std::ops::RangeInclusive;
 
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind};
@@ -149,14 +149,38 @@ impl SpawnPartitionProcessorTask {
                                 "Found snapshot to bootstrap partition, restoring it",
                             );
 
-                            partition_store_manager
+                            let snapshot_path = snapshot.base_dir.clone();
+                            match partition_store_manager
                                 .open_partition_store_from_snapshot(
                                     partition_id,
                                     key_range.clone(),
                                     snapshot,
                                     &options.storage.rocksdb,
                                 )
-                                .await?
+                                .await {
+                                Ok(partition_store) => {
+                                    let res = tokio::fs::remove_dir_all(&snapshot_path).await;
+                                    if let Err(e) = res {
+                                        // This is not critical; since we move the SST files into RocksDB on import, at
+                                        // worst the snapshot metadata file will be retained.
+                                        warn!(
+                                            partition_id = %partition_id,
+                                            ?snapshot_path,
+                                            "Failed to remove local snapshot directory, continuing with startup: {:?}",
+                                            e
+                                        );
+                                    }
+                                    partition_store
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        partition_id = %partition_id,
+                                        ?snapshot_path,
+                                        "Failed to import snapshot, local copy retained"
+                                    );
+                                    return Err(anyhow::anyhow!(e));
+                                }
+                            }
                         } else {
                             info!(
                                     partition_id = %partition_id,

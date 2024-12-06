@@ -337,8 +337,8 @@ impl SnapshotRepository {
         )
     }
 
-    /// Discover and download the latest snapshot available. Dropping the returned
-    /// `LocalPartitionSnapshot` will delete the local snapshot data files.
+    /// Discover and download the latest snapshot available. It is the caller's responsibility
+    /// to delete the snapshot directory when it is no longer needed.
     #[instrument(
         level = "debug",
         skip_all,
@@ -397,10 +397,12 @@ impl SnapshotRepository {
         }
 
         if snapshot_metadata.cluster_name != self.cluster_name {
-            panic!("Snapshot does not match the cluster name of latest snapshot at destination in snapshot id {}! Expected: cluster name=\"{}\", found: \"{}\"",
+            // todo(pavel): revisit whether we shouldn't just panic at this point - this is a bad sign!
+            warn!("Snapshot does not match the cluster name of latest snapshot at destination in snapshot id {}! Expected: cluster name=\"{}\", found: \"{}\"",
                    snapshot_metadata.snapshot_id,
                    self.cluster_name,
                    snapshot_metadata.cluster_name);
+            return Ok(None); // perhaps this needs to be a configuration error
         }
 
         // The snapshot ingest directory should be on the same filesystem as the partition store
@@ -747,12 +749,14 @@ mod tests {
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
 
-        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
-        data.write_all(b"snapshot-data").await?;
+        let data = b"snapshot-data";
+        let mut data_file = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data_file.write_all(data).await?;
 
         let snapshot = mock_snapshot_metadata(
             "/data.sst".to_owned(),
             source_dir.to_string_lossy().to_string(),
+            data.len(),
         );
 
         let snapshots_destination: TempDir = TempDir::new()?;
@@ -827,12 +831,14 @@ mod tests {
             .await;
         assert!(matches!(latest, Err(object_store::Error::NotFound { .. })));
 
-        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
-        data.write_all(b"snapshot-data").await?;
+        let data = b"snapshot-data";
+        let mut data_file = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data_file.write_all(data).await?;
 
         let mut snapshot1 = mock_snapshot_metadata(
             "/data.sst".to_owned(),
             source_dir.to_string_lossy().to_string(),
+            data.len(),
         );
         snapshot1.min_applied_lsn = Lsn::new(
             SystemTime::now()
@@ -888,12 +894,14 @@ mod tests {
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
 
-        let mut data = tokio::fs::File::create(source_dir.join("data.sst")).await?;
-        data.write_all(b"snapshot-data").await?;
+        let data = b"snapshot-data";
+        let mut data_file = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data_file.write_all(data).await?;
 
         let mut snapshot2 = mock_snapshot_metadata(
             "/data.sst".to_owned(),
             source_dir.to_string_lossy().to_string(),
+            data.len(),
         );
         snapshot2.min_applied_lsn = snapshot1.min_applied_lsn.next();
 
@@ -914,13 +922,26 @@ mod tests {
             latest
         );
 
+        let latest = repository.get_latest(PartitionId::MIN).await?.unwrap();
+        assert_eq!(latest.min_applied_lsn, snapshot2.min_applied_lsn);
+        let local_path = latest.base_dir.as_path().to_string_lossy().to_string();
+        drop(latest);
+
+        let local_dir_exists = tokio::fs::try_exists(&local_path).await?;
+        assert!(local_dir_exists);
+        tokio::fs::remove_dir_all(&local_path).await?;
+
         Ok(())
     }
 
-    fn mock_snapshot_metadata(file_name: String, directory: String) -> PartitionSnapshotMetadata {
+    fn mock_snapshot_metadata(
+        file_name: String,
+        directory: String,
+        size: usize,
+    ) -> PartitionSnapshotMetadata {
         PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
-            cluster_name: "test-cluster".to_string(),
+            cluster_name: "cluster".to_string(),
             node_name: "node".to_string(),
             partition_id: PartitionId::MIN,
             created_at: humantime::Timestamp::from(SystemTime::now()),
@@ -933,7 +954,7 @@ mod tests {
                 column_family_name: "data-0".to_owned(),
                 name: file_name,
                 directory,
-                size: 0,
+                size,
                 level: 0,
                 start_key: Some(vec![0]),
                 end_key: Some(vec![0xff, 0xff]),
