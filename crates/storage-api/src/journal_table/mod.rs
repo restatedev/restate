@@ -14,7 +14,7 @@ use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, Parti
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{CompletionResult, EntryType};
 use std::future::Future;
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 
 /// Different types of journal entries persisted by the runtime
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,5 +78,13 @@ pub trait JournalTable: ReadOnlyJournalTable {
         &mut self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
+    ) -> impl Future<Output = ()> + Send {
+        self.delete_journal_range(invocation_id, 0..journal_length)
+    }
+
+    fn delete_journal_range(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_range: Range<EntryIndex>,
     ) -> impl Future<Output = ()> + Send;
 }
