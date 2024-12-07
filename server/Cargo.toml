@@ -80,7 +80,7 @@ test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }
+tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms", "profiling"] }
 
 [build-dependencies]
 vergen = { version = "8.0.0", default-features = false, features = [
