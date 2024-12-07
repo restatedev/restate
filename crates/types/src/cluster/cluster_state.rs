@@ -139,6 +139,7 @@ pub struct PartitionProcessorStatus {
     pub last_record_applied_at: Option<MillisSinceEpoch>,
     pub num_skipped_records: u64,
     pub replay_status: ReplayStatus,
+    // todo(pavel): remove last_persisted_log_lsn?
     pub last_persisted_log_lsn: Option<Lsn>,
     pub last_archived_log_lsn: Option<Lsn>,
     // Set if replay_status is CatchingUp
