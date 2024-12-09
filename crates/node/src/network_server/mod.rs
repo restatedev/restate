@@ -10,6 +10,7 @@
 
 mod grpc_svc_handler;
 mod metrics;
+mod pprof;
 mod prometheus_helpers;
 mod service;
 mod state;
