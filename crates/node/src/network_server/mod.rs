@@ -11,6 +11,7 @@
 mod handler;
 mod metrics;
 mod multiplex;
+mod pprof;
 mod prometheus_helpers;
 mod service;
 mod state;

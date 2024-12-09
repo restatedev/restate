@@ -28,6 +28,7 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::CommonOptions;
 
+use super::pprof;
 use crate::network_server::handler;
 use crate::network_server::handler::cluster_ctrl::ClusterCtrlSvcHandler;
 use crate::network_server::handler::node::NodeSvcHandler;
@@ -40,7 +41,6 @@ pub struct NetworkServer {
     worker_deps: Option<WorkerDependencies>,
     admin_deps: Option<AdminDependencies>,
 }
-
 impl NetworkServer {
     pub fn new(
         connection_manager: ConnectionManager,
@@ -74,6 +74,9 @@ impl NetworkServer {
         // -- HTTP service (for prometheus et al.)
         let router = axum::Router::new()
             .route("/metrics", get(handler::render_metrics))
+            .route("/debug/pprof/heap", get(pprof::heap))
+            .route("/debug/pprof/heap/activate", get(pprof::activate_heap))
+            .route("/debug/pprof/heap/deactivate", get(pprof::deactivate_heap))
             .with_state(shared_state)
             .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
             .fallback(handler_404);
