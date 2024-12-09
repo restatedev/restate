@@ -21,6 +21,7 @@ use crate::network_server::metrics::{install_global_prometheus_recorder, render_
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 
 use super::grpc_svc_handler::NodeSvcHandler;
+use super::pprof;
 
 pub struct NetworkServer {}
 
@@ -44,6 +45,9 @@ impl NetworkServer {
         // -- HTTP service (for prometheus et al.)
         let axum_router = axum::Router::new()
             .route("/metrics", get(render_metrics))
+            .route("/debug/pprof/heap", get(pprof::heap))
+            .route("/debug/pprof/heap/activate", get(pprof::activate_heap))
+            .route("/debug/pprof/heap/deactivate", get(pprof::deactivate_heap))
             .with_state(shared_state);
 
         let node_health = health.node_status();
