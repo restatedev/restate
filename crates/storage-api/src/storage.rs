@@ -91,7 +91,8 @@ pub mod v1 {
         use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
         use crate::storage::v1::journal_entry::{completion_result, CompletionResult, Entry, Kind};
         use crate::storage::v1::outbox_message::{
-            OutboxCancel, OutboxKill, OutboxServiceInvocation, OutboxServiceInvocationResponse,
+            outbox_termination, OutboxCancel, OutboxKill, OutboxServiceInvocation,
+            OutboxServiceInvocationResponse, OutboxTermination,
         };
         use crate::storage::v1::service_invocation_response_sink::{
             Ingress, PartitionProcessor, ResponseSink,
@@ -350,6 +351,7 @@ pub mod v1 {
                     journal_length,
                     deployment_id,
                     service_protocol_version,
+                    restart_when_completed,
                     waiting_for_completed_entries,
                     result,
                 } = value;
@@ -444,6 +446,7 @@ pub mod v1 {
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
+                                restart_when_completed,
                             },
                         ))
                     }
@@ -466,6 +469,7 @@ pub mod v1 {
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
+                                restart_when_completed,
                             },
                             waiting_for_completed_entries: waiting_for_completed_entries
                                 .into_iter()
@@ -491,6 +495,7 @@ pub mod v1 {
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
+                                restart_when_completed,
                             },
                         ))
                     }
@@ -569,6 +574,7 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
+                        restart_when_completed: false,
                         waiting_for_completed_entries: vec![],
                         result: None,
                     },
@@ -622,6 +628,7 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
+                        restart_when_completed: false,
                         waiting_for_completed_entries: vec![],
                         result: None,
                     },
@@ -635,6 +642,7 @@ pub mod v1 {
                             source,
                             completion_retention_duration,
                             idempotency_key,
+                            restart_when_completed,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -684,6 +692,7 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
+                            restart_when_completed,
                             waiting_for_completed_entries: vec![],
                             result: None,
                         }
@@ -699,6 +708,7 @@ pub mod v1 {
                                 source,
                                 completion_retention_duration,
                                 idempotency_key,
+                                restart_when_completed,
                             },
                         waiting_for_completed_entries,
                     } => {
@@ -749,6 +759,7 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
+                            restart_when_completed,
                             waiting_for_completed_entries: waiting_for_completed_entries
                                 .into_iter()
                                 .collect(),
@@ -765,6 +776,7 @@ pub mod v1 {
                             source,
                             completion_retention_duration,
                             idempotency_key,
+                            restart_when_completed,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -814,6 +826,7 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
+                            restart_when_completed,
                             waiting_for_completed_entries: vec![],
                             result: None,
                         }
@@ -858,6 +871,7 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
+                        restart_when_completed: false,
                         waiting_for_completed_entries: vec![],
                         result: Some(response_result.into()),
                     },
@@ -1095,6 +1109,7 @@ pub mod v1 {
                     source,
                     completion_retention_duration: completion_retention_time,
                     idempotency_key,
+                    restart_when_completed: false,
                 })
             }
         }
@@ -1206,6 +1221,7 @@ pub mod v1 {
                         source: caller,
                         completion_retention_duration: completion_retention_time,
                         idempotency_key,
+                        restart_when_completed: false,
                     },
                     waiting_for_completed_entries,
                 ))
@@ -2698,6 +2714,41 @@ pub mod v1 {
                             ),
                         )
                     }
+                    outbox_message::OutboxMessage::Termination(outbox_termination) => {
+                        crate::outbox_table::OutboxMessage::InvocationTermination(
+                            InvocationTermination {
+                                invocation_id: restate_types::identifiers::InvocationId::try_from(
+                                    outbox_termination
+                                        .invocation_id
+                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                )?,
+                                flavor: match outbox_termination::TerminationFlavor::try_from(
+                                    outbox_termination.flavor,
+                                )
+                                .map_err(|e| ConversionError::invalid_data(e))?
+                                {
+                                    outbox_termination::TerminationFlavor::Unknown => {
+                                        return Err(ConversionError::UnexpectedEnumVariant(
+                                            "termination flavor",
+                                            outbox_termination.flavor,
+                                        ))
+                                    }
+                                    outbox_termination::TerminationFlavor::Kill => {
+                                        TerminationFlavor::Kill
+                                    }
+                                    outbox_termination::TerminationFlavor::KillAndRestart => {
+                                        TerminationFlavor::KillAndRestart
+                                    }
+                                    outbox_termination::TerminationFlavor::Cancel => {
+                                        TerminationFlavor::Cancel
+                                    }
+                                    outbox_termination::TerminationFlavor::CancelAndRestart => {
+                                        TerminationFlavor::CancelAndRestart
+                                    }
+                                },
+                            },
+                        )
+                    }
                     outbox_message::OutboxMessage::AttachInvocationRequest(
                         outbox_message::AttachInvocationRequest {
                             block_on_inflight,
@@ -2780,6 +2831,24 @@ pub mod v1 {
                                 invocation_id: Some(InvocationId::from(
                                     invocation_termination.invocation_id,
                                 )),
+                            })
+                        }
+                        TerminationFlavor::KillAndRestart => {
+                            outbox_message::OutboxMessage::Termination(OutboxTermination {
+                                invocation_id: Some(InvocationId::from(
+                                    invocation_termination.invocation_id,
+                                )),
+                                flavor: outbox_termination::TerminationFlavor::KillAndRestart
+                                    .into(),
+                            })
+                        }
+                        TerminationFlavor::CancelAndRestart => {
+                            outbox_message::OutboxMessage::Termination(OutboxTermination {
+                                invocation_id: Some(InvocationId::from(
+                                    invocation_termination.invocation_id,
+                                )),
+                                flavor: outbox_termination::TerminationFlavor::CancelAndRestart
+                                    .into(),
                             })
                         }
                     },
