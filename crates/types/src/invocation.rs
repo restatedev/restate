@@ -273,6 +273,42 @@ impl fmt::Display for InvocationTarget {
     }
 }
 
+/// Concurrency guarantee of the invocation request.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum ConcurrencyGuarantee {
+    /// Enqueue the invocation when the target is busy
+    EnqueueWhenBusy {
+        queue_target: ByteString,
+        queue_key: ByteString,
+    },
+    /// No queueing, just execute the request
+    MaxParallelism,
+    /// Use the default from the target semantics
+    #[default]
+    UseTargetDefault
+}
+
+/// Behavior when sending an invocation request and the request already exists.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum BehaviorOnExistingInvocationId {
+    /// Attach to the existing invocation
+    Attach,
+    /// Reply with "conflict" error response
+    ReplyConflict,
+    /// Just drop the request
+    Drop,
+    /// Use the default from the target/idempotency key semantics
+    #[default]
+    UseTargetDefault
+}
+
+/// Invocation request flow is as follows:
+///
+/// 1. Invocation is proposed in the PP log.
+/// 2. PP will first check if another invocation with the same id exists. If true, it applies the [`BehaviorOnExistingInvocationId`]
+/// 3. If the invocation id doesn't exist, wait for the `execution_time` if present, otherwise continue immediately.
+/// 4. Apply the given [`ConcurrencyGuarantee`].
+/// 5. Finally execute it sending the request to the service endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationRequestHeader {
     pub id: InvocationId,
@@ -280,12 +316,18 @@ pub struct InvocationRequestHeader {
     pub headers: Vec<Header>,
     pub span_context: ServiceInvocationSpanContext,
 
-    /// Key to use for idempotent request. If none, this request is not idempotent, or it's a workflow call. See [`InvocationRequestHeader::is_idempotent`].
-    pub idempotency_key: Option<ByteString>,
-
+    /// Behavior to apply on an existing invocation id.
+    #[serde(default)]
+    pub behavior_on_existing_idempotency_key: BehaviorOnExistingInvocationId,
     /// Time when the request should be executed. If none, it's executed immediately.
     pub execution_time: Option<MillisSinceEpoch>,
+    /// Concurrency behavior to apply.
+    #[serde(default)]
+    pub concurrency_guarantee: ConcurrencyGuarantee,
 
+    /// Key to use for idempotent request. If none, this request is not idempotent, or it's a workflow call. See [`InvocationRequestHeader::is_idempotent`].
+    /// This value is propagated only for observability purposes, as the invocation id is already deterministic given the invocation id.
+    pub idempotency_key: Option<ByteString>,
     /// Retention duration of the completed status. If none, the completed status is not retained.
     pub completion_retention_duration: Option<Duration>,
 }
