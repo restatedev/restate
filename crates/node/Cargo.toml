@@ -72,6 +72,9 @@ tower = { workspace = true }
 tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+jemalloc_pprof = "0.6.0"
+
 [dev-dependencies]
 restate-test-util = { workspace = true }
 
