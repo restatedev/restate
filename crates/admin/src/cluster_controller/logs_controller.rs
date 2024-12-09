@@ -347,7 +347,7 @@ fn build_new_replicated_loglet_configuration(
     // todo: make the default nodeset size configurable
     let replication = previous_configuration
         .map(|config| config.replication.clone())
-        .unwrap_or_else(|| ReplicationProperty::new(NonZeroU8::new(2).expect("to be valid")));
+        .unwrap_or_else(|| ReplicationProperty::new(NonZeroU8::new(1).expect("to be valid")));
 
     // todo: make nodeset selection strategy configurable
     let strategy = NodeSetSelectionStrategy::StrictFaultTolerantGreedy;
