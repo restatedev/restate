@@ -285,7 +285,24 @@ enum ConcurrencyGuarantee {
     MaxParallelism,
     /// Use the default from the target semantics
     #[default]
-    UseTargetDefault
+    UseTargetDefault,
+}
+
+impl ConcurrencyGuarantee {
+    fn infer_target_default(invocation_target: &InvocationTarget) -> ConcurrencyGuarantee {
+        match invocation_target {
+            InvocationTarget::VirtualObject { handler_ty: VirtualObjectHandlerType::Exclusive, name, key, .. } => {
+                ConcurrencyGuarantee::EnqueueWhenBusy {
+                    queue_target: name.clone(),
+                    queue_key: key.clone(),
+                }
+            }
+            InvocationTarget::Service { .. } |
+            InvocationTarget::VirtualObject { handler_ty: VirtualObjectHandlerType::Shared, .. } |
+            /* For workflow, there is no enqueueing as we have the behavior on existing invocation id that guarantees correctness */
+            InvocationTarget::Workflow { .. }  => ConcurrencyGuarantee::MaxParallelism
+        }
+    }
 }
 
 /// Behavior when sending an invocation request and the request already exists.
@@ -299,7 +316,22 @@ enum BehaviorOnExistingInvocationId {
     Drop,
     /// Use the default from the target/idempotency key semantics
     #[default]
-    UseTargetDefault
+    UseTargetDefault,
+}
+
+impl BehaviorOnExistingInvocationId {
+    fn infer_target_default(
+        invocation_target_type: InvocationTargetType,
+        has_idempotency_key: bool,
+    ) -> BehaviorOnExistingInvocationId {
+        match (invocation_target_type, has_idempotency_key) {
+            (InvocationTargetType::Workflow(WorkflowHandlerType::Workflow), _) => {
+                BehaviorOnExistingInvocationId::ReplyConflict
+            }
+            (_, true) => BehaviorOnExistingInvocationId::Attach,
+            _ => BehaviorOnExistingInvocationId::Drop,
+        }
+    }
 }
 
 /// Invocation request flow is as follows:
