@@ -43,6 +43,12 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+// On linux, run jemalloc with profiling enabled, but inactive (so there is no performance impact)
+// If needed, profiling can be activated with :5122/debug/pprof/heap/activate, or by overriding this value with $MALLOC_CONF
+#[cfg(target_os = "linux")]
+#[export_name = "malloc_conf"]
+pub static MALLOC_CONF: &[u8] = b"prof:true,prof_active:false,lg_prof_sample:19\0";
+
 #[derive(Debug, clap::Parser)]
 #[command(author, version, about)]
 struct RestateArguments {
