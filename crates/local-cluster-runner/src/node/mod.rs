@@ -56,12 +56,8 @@ pub struct Node {
     #[builder(mutators(
             #[mutator(requires = [base_dir])]
             pub fn with_node_socket(self) {
-                let ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("to get timestamp")
-                    .as_secs();
                 let node_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join("node.sock");
-                let tokio_console_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join(format!("tokio_console-{ts}.sock"));
+                let tokio_console_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join("tokio_console.sock");
                 self.base_config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
                 self.base_config.common.tokio_console_bind_address = Some(BindAddress::Uds(tokio_console_socket));
                 self.base_config.common.advertised_address = AdvertisedAddress::Uds(node_socket);
