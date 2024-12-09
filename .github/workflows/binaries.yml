@@ -111,7 +111,7 @@ jobs:
             -e ACTIONS_CACHE_URL \
             -e ACTIONS_RUNTIME_TOKEN \
             -e SCCACHE_GHA_ENABLED \
-            ghcr.io/restatedev/dev-tools:latest \
+            ghcr.io/restatedev/dev-tools:1.5.1 \
             cargo build --release --bins --target ${{ matrix.build.target }}
 
       - name: Sign binaries
