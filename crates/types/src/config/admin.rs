@@ -44,6 +44,7 @@ pub struct AdminOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub heartbeat_interval: humantime::Duration,
 
+    // todo(pavel): should we leave this to be exclusively for local loglets, and introduce a new log_trim_check_interval config?
     /// # Log trim interval
     ///
     /// Controls the interval at which cluster controller tries to trim the logs. Log trimming

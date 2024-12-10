@@ -183,6 +183,10 @@ impl Node {
         for node in 1..=size {
             let mut base_config = base_config.clone();
             base_config.common.force_node_id = Some(PlainNodeId::new(node));
+            base_config.ingress.bind_address = SocketAddr::new(
+                "127.0.0.1".parse().unwrap(),
+                8080 - 1 + u16::try_from(node).unwrap(),
+            );
 
             // Create a separate ingress role when running a worker
             let roles = if roles.contains(Role::Worker) {

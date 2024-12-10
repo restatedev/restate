@@ -536,7 +536,7 @@ mod tests {
     }
 
     struct NodeStateHandler {
-        persisted_lsn: Arc<AtomicU64>,
+        // persisted_lsn: Arc<AtomicU64>,
         archived_lsn: Arc<AtomicU64>,
         // set of node ids for which the handler won't send a response to the caller, this allows to simulate
         // dead nodes
@@ -552,7 +552,7 @@ mod tests {
             }
 
             let partition_processor_status = PartitionProcessorStatus {
-                last_persisted_log_lsn: Some(Lsn::from(self.persisted_lsn.load(Ordering::Relaxed))),
+                last_persisted_log_lsn: None, // deprecated
                 last_archived_log_lsn: Some(Lsn::from(self.archived_lsn.load(Ordering::Relaxed))),
                 ..PartitionProcessorStatus::new()
             };
@@ -581,11 +581,11 @@ mod tests {
             ..Default::default()
         };
 
-        let persisted_lsn = Arc::new(AtomicU64::new(0));
+        let _persisted_lsn = Arc::new(AtomicU64::new(0));
         let archived_lsn = Arc::new(AtomicU64::new(0));
 
         let get_node_state_handler = Arc::new(NodeStateHandler {
-            persisted_lsn: Arc::clone(&persisted_lsn),
+            // persisted_lsn: Arc::clone(&persisted_lsn),
             archived_lsn: Arc::clone(&archived_lsn),
             block_list: BTreeSet::new(),
         });
@@ -622,25 +622,13 @@ mod tests {
         }
 
         tokio::time::sleep(interval_duration * 10).await;
-
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        // report persisted lsn back to cluster controller
-        persisted_lsn.store(6, Ordering::Relaxed);
-
-        tokio::time::sleep(interval_duration * 10).await;
-        // we delete 1-6.
-        assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
-
-        // increase by 4 more, this should not overcome the threshold
-        persisted_lsn.store(10, Ordering::Relaxed);
-
+        archived_lsn.store(6, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 10).await;
         assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
 
-        // now we have reached the min threshold wrt to the last trim point
-        persisted_lsn.store(11, Ordering::Relaxed);
-
+        archived_lsn.store(11, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 10).await;
         assert_eq!(Lsn::from(11), bifrost.get_trim_point(LOG_ID).await?);
 
@@ -648,10 +636,11 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn auto_log_trim_zero_threshold() -> anyhow::Result<()> {
+    async fn do_not_trim_if_no_nodes_report_archived_lsn() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
+
         let mut admin_options = AdminOptions::default();
-        admin_options.log_trim_threshold = 0;
+        // admin_options.log_trim_threshold = 0;
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
         let config = Configuration {
@@ -659,85 +648,11 @@ mod tests {
             ..Default::default()
         };
 
-        let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let archived_lsn = Arc::new(AtomicU64::new(0));
-
-        let get_node_state_handler = Arc::new(NodeStateHandler {
-            persisted_lsn: Arc::clone(&persisted_lsn),
-            archived_lsn: Arc::clone(&archived_lsn),
-            block_list: BTreeSet::new(),
-        });
-        let (node_env, bifrost) = create_test_env(config, |builder| {
-            builder
-                .add_message_handler(get_node_state_handler.clone())
-                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
-        })
-        .await?;
-
-        // simulate a connection from node 2 so we can have a connection between the two
-        // nodes
-        let node_2 = MockPeerConnection::connect(
-            GenerationalNodeId::new(2, 2),
-            node_env.metadata.nodes_config_version(),
-            node_env
-                .metadata
-                .nodes_config_ref()
-                .cluster_name()
-                .to_owned(),
-            node_env.networking.connection_manager(),
-            10,
-        )
-        .await?;
-        // let node2 receive messages and use the same message handler as node1
-        let (_node_2, _node2_reactor) =
-            node_2.process_with_message_handler(get_node_state_handler)?;
-
-        let mut appender = bifrost.create_appender(LOG_ID)?;
-        for i in 1..=20 {
-            let lsn = appender.append(format!("record{i}")).await?;
-            assert_eq!(Lsn::from(i), lsn);
-        }
-        tokio::time::sleep(interval_duration * 10).await;
-        assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
-
-        // report persisted lsn back to cluster controller
-        persisted_lsn.store(3, Ordering::Relaxed);
-
-        tokio::time::sleep(interval_duration * 10).await;
-        // everything before the persisted_lsn.
-        assert_eq!(bifrost.get_trim_point(LOG_ID).await?, Lsn::from(3));
-        // we should be able to after the last persisted lsn
-        let v = bifrost.read(LOG_ID, Lsn::from(4)).await?.unwrap();
-        assert_that!(v.sequence_number(), eq(Lsn::new(4)));
-        assert!(v.is_data_record());
-        assert_that!(v.decode_unchecked::<String>(), eq("record4".to_owned()));
-
-        persisted_lsn.store(20, Ordering::Relaxed);
-
-        tokio::time::sleep(interval_duration * 10).await;
-        assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
-
-        Ok(())
-    }
-
-    #[test(restate_core::test(start_paused = true))]
-    async fn do_not_trim_if_not_all_nodes_report_persisted_lsn() -> anyhow::Result<()> {
-        const LOG_ID: LogId = LogId::new(0);
-
-        let mut admin_options = AdminOptions::default();
-        admin_options.log_trim_threshold = 0;
-        let interval_duration = Duration::from_secs(10);
-        admin_options.log_trim_interval = Some(interval_duration.into());
-        let config = Configuration {
-            admin: admin_options,
-            ..Default::default()
-        };
-
-        let persisted_lsn = Arc::new(AtomicU64::new(0));
+        let _persisted_lsn = Arc::new(AtomicU64::new(0));
         let archived_lsn = Arc::new(AtomicU64::new(0));
 
         let (_node_env, bifrost) = create_test_env(config, |builder| {
-            let black_list = builder
+            let block_list = builder
                 .nodes_config
                 .iter()
                 .next()
@@ -746,9 +661,8 @@ mod tests {
                 .collect();
 
             let get_node_state_handler = NodeStateHandler {
-                persisted_lsn: Arc::clone(&persisted_lsn),
                 archived_lsn: Arc::clone(&archived_lsn),
-                block_list: black_list,
+                block_list,
             };
 
             builder.add_message_handler(get_node_state_handler)
@@ -760,15 +674,23 @@ mod tests {
             let lsn = appender.append(format!("record{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);
         }
-
-        // report persisted lsn back to cluster controller for a subset of the nodes
-        persisted_lsn.store(5, Ordering::Relaxed);
-
+        // archived_lsn.store(5, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 10).await;
-        // no trimming should have happened because one node did not report the persisted lsn
+
+        // no trimming should have happened because no nodes report archived_lsn
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
         Ok(())
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn do_not_trim_if_dead_nodes_present() -> anyhow::Result<()> {
+        todo!()
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn do_not_trim_if_slow_nodes_present() -> anyhow::Result<()> {
+        todo!()
     }
 
     async fn create_test_env<F>(
