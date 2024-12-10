@@ -248,8 +248,9 @@ fn main() {
                     _ = config_update_watcher.changed() => {
                         let config = Configuration::pinned();
                         tracing_guard.reload_log_filter(&config.common);
-                    }
-                    _ = signal::sigusr_dump_config() => {},
+                    },
+                    _ = signal::sigusr1_dump_config() => {},
+                    _ = signal::sighusr2_compact() => {},
                     _ = task_center_watch.cancelled() => {
                         shutdown = true;
                         // Shutdown was requested by task center and it has completed.

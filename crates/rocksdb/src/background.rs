@@ -28,6 +28,7 @@ pub enum StorageTaskKind {
     ExportColumnFamily,
     FlushWal,
     FlushMemtables,
+    Compaction,
     Shutdown,
     OpenDb,
 }
