@@ -25,9 +25,8 @@ arc-swap = { workspace = true }
 console-subscriber = { version = "0.4.1", features = ["parking_lot"], optional = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
-metrics-tracing-context = { version = "0.16.0" }
-nu-ansi-term = "0.46.0"
-once_cell = { workspace = true }
+metrics-tracing-context = { workspace = true }
+nu-ansi-term = "0.50.1"
 opentelemetry = { workspace = true }
 opentelemetry-contrib = { workspace = true, features = ["jaeger_json_exporter", "rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["tls", "tls-roots"] }

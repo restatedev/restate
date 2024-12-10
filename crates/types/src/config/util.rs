@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
+
 use tokio::sync::watch;
 
-pub(crate) static CONFIG_UPDATE: Lazy<watch::Sender<()>> = Lazy::new(|| watch::Sender::new(()));
+pub(crate) static CONFIG_UPDATE: LazyLock<watch::Sender<()>> =
+    LazyLock::new(|| watch::Sender::new(()));
 
 #[derive(Clone)]
 pub struct ConfigWatch {

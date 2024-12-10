@@ -30,7 +30,6 @@ codederror = { workspace = true, optional = true }
 http = { workspace = true, optional = true}
 http-body-util = { workspace = true, optional = true }
 itertools = { workspace = true }
-once_cell = { workspace = true }
 paste = { workspace = true, optional = true }
 prost = { workspace = true }
 regress = { workspace = true, optional = true }
