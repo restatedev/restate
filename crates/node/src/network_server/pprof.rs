@@ -14,7 +14,7 @@ mod pprof {
                 } else {
                     Err((
                         axum::http::StatusCode::PRECONDITION_FAILED,
-                        "Heap profiling not activated: first call /debug/pprof/heap/activate\n"
+                        "Heap profiling not activated: first curl -XPUT :5122/debug/pprof/heap/activate\n"
                             .into(),
                     ))
                 }
