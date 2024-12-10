@@ -107,7 +107,7 @@ fn build_services_tracing(common_opts: &CommonOptions) -> Result<(), Error> {
     let exporter = UserServiceModifierSpanExporter::new(exporter);
 
     let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_config(opentelemetry_sdk::trace::Config::default().with_resource(resource))
+        .with_resource(resource)
         .with_span_processor(
             BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
         )
@@ -163,8 +163,8 @@ where
         ),
     ]);
 
-    let mut tracer_provider_builder = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_config(opentelemetry_sdk::trace::Config::default().with_resource(resource));
+    let mut tracer_provider_builder =
+        opentelemetry_sdk::trace::TracerProvider::builder().with_resource(resource);
 
     if let Some(endpoint) = endpoint {
         let header_map =
