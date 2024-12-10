@@ -37,6 +37,7 @@ cling = { workspace = true }
 crossterm = { version = "0.27.0" }
 ctrlc = { version = "3.4" }
 derive_more = { workspace = true }
+diff = "0.1.13"
 futures-util = { workspace = true }
 hyper-util = { workspace = true }
 itertools = { workspace = true }
@@ -50,6 +51,7 @@ strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+toml = { workspace = true }
 tonic = { workspace = true, features = ["transport", "prost"] }
 tonic-health = { workspace = true }
 tower = { workspace = true }

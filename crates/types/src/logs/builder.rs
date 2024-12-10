@@ -12,7 +12,8 @@ use std::num::NonZeroU32;
 use std::ops::Deref;
 
 use super::metadata::{
-    Chain, LogletConfig, LogletParams, Logs, LookupIndex, MaybeSegment, ProviderKind, SegmentIndex,
+    Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, LookupIndex, MaybeSegment,
+    ProviderKind, SegmentIndex,
 };
 use super::{LogId, Lsn};
 use crate::replicated_loglet::ReplicatedLogletParams;
@@ -77,6 +78,7 @@ impl LogsBuilder {
             version: self.inner.version.next(),
             logs: self.inner.logs,
             lookup_index: self.inner.lookup_index,
+            config: self.inner.config,
         }
     }
 
@@ -86,12 +88,25 @@ impl LogsBuilder {
         self.inner.version = Version::from(u32::from(version) - 1);
     }
 
+    /// Sets default logs configuration.
+    pub fn set_configuration(&mut self, config: LogsConfiguration) {
+        if self.inner.config != config {
+            self.inner.config = config;
+            self.modified = true;
+        }
+    }
+
+    pub fn configuration(&self) -> &LogsConfiguration {
+        self.inner.configuration()
+    }
+
     pub fn build_if_modified(self) -> Option<Logs> {
         if self.modified {
             Some(Logs {
                 version: self.inner.version.next(),
                 logs: self.inner.logs,
                 lookup_index: self.inner.lookup_index,
+                config: self.inner.config,
             })
         } else {
             None

@@ -32,6 +32,8 @@ use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 #[builder(default)]
 pub struct BifrostOptions {
     /// # The default kind of loglet to be used
+    ///
+    /// Default: Local
     pub default_provider: ProviderKind,
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     /// Configuration of local loglet provider

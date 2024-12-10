@@ -11,11 +11,12 @@
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+use restate_types::protobuf::cluster::ClusterConfiguration;
 use tonic::{async_trait, Request, Response, Status};
 use tracing::info;
 
 use restate_bifrost::{Bifrost, BifrostAdmin, Error as BiforstError};
-use restate_core::MetadataWriter;
+use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
@@ -34,6 +35,10 @@ use crate::cluster_controller::protobuf::{
     TrimLogRequest,
 };
 
+use super::protobuf::{
+    GetClusterConfigurationRequest, GetClusterConfigurationResponse,
+    SetClusterConfigurationRequest, SetClusterConfigurationResponse,
+};
 use super::ClusterControllerHandle;
 
 pub(crate) struct ClusterCtrlSvcHandler {
@@ -283,6 +288,63 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         };
 
         Ok(Response::new(response))
+    }
+
+    async fn get_cluster_configuration(
+        &self,
+        _request: tonic::Request<GetClusterConfigurationRequest>,
+    ) -> Result<Response<GetClusterConfigurationResponse>, Status> {
+        let logs = Metadata::with_current(|m| m.logs_ref());
+        let partition_table = Metadata::with_current(|m| m.partition_table_ref());
+
+        let response = GetClusterConfigurationResponse {
+            cluster_configuration: Some(ClusterConfiguration {
+                num_partitions: u32::from(partition_table.num_partitions()),
+                replication_strategy: Some(partition_table.replication_strategy().into()),
+                default_provider: Some(logs.configuration().default_provider.clone().into()),
+            }),
+        };
+
+        Ok(Response::new(response))
+    }
+
+    async fn set_cluster_configuration(
+        &self,
+        request: Request<SetClusterConfigurationRequest>,
+    ) -> Result<Response<SetClusterConfigurationResponse>, Status> {
+        let request = request.into_inner();
+        let request = request
+            .cluster_configuration
+            .ok_or_else(|| Status::invalid_argument("cluster_configuration is a required field"))?;
+
+        self.controller_handle
+            .update_cluster_configuration(
+                u16::try_from(request.num_partitions)
+                    .map_err(|_| Status::invalid_argument("num_partitions is too big"))?,
+                request
+                    .replication_strategy
+                    .ok_or_else(|| {
+                        Status::invalid_argument("replication_strategy is a required field")
+                    })?
+                    .try_into()
+                    .map_err(|err| {
+                        Status::invalid_argument(format!("invalid replication_strategy: {err}"))
+                    })?,
+                request
+                    .default_provider
+                    .ok_or_else(|| {
+                        Status::invalid_argument("default_provider is a required field")
+                    })?
+                    .try_into()
+                    .map_err(|err| {
+                        Status::invalid_argument(format!("invalid default_provider: {err}"))
+                    })?,
+            )
+            .await
+            .map_err(|_| Status::aborted("Node is shutting down"))?
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(SetClusterConfigurationResponse {}))
     }
 }
 

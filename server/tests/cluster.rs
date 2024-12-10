@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU16;
 use std::time::Duration;
 
 use enumset::enum_set;
@@ -119,7 +118,7 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
 async fn replicated_loglet() -> googletest::Result<()> {
     let mut base_config = Configuration::default();
     base_config.bifrost.default_provider = ProviderKind::Replicated;
-    base_config.common.bootstrap_num_partitions = NonZeroU16::new(1).expect("1 to be non-zero");
+    base_config.common.bootstrap_num_partitions = 1;
 
     let nodes = Node::new_test_nodes_with_metadata(
         base_config.clone(),
