@@ -8,6 +8,8 @@
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0.
 
+ARG UPLOAD_DEBUGINFO=false
+
 FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS planner
 COPY . .
 RUN just chef-prepare
@@ -44,14 +46,23 @@ RUN --mount=type=cache,target=/var/cache/sccache \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server
 
+FROM builder AS upload-false
+
+FROM builder AS upload-true
+RUN $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --only-keep-debug target/restate-server target/restate-server.debug
+RUN $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy  --strip-debug target/restate-server
+RUN --mount=type=secret,id=parca parca-debuginfo upload --store-address=grpc.polarsignals.com:443 --bearer-token-file=/run/secrets/parca target/restate-server.debug
+
+FROM upload-$UPLOAD_DEBUGINFO AS upload
+
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:bookworm-slim AS runtime
-COPY --from=builder /restate/target/restate-server /usr/local/bin
+# useful for health checks
+RUN apt-get update && apt-get install --no-install-recommends -y curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /restate/NOTICE /NOTICE
 COPY --from=builder /restate/LICENSE /LICENSE
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
-# useful for health checks
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+COPY --from=upload /restate/target/restate-server /usr/local/bin
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/restate-server"]

@@ -18,6 +18,11 @@ on:
         required: false
         default: false
         type: boolean
+      parca:
+        description: 'split out debug symbols and upload to polar signals'
+        required: false
+        default: false
+        type: boolean
       features:
         description: 'features to enable in the build'
         required: false
@@ -46,6 +51,11 @@ on:
         required: false
         default: false
         type: boolean
+      parca:
+        description: 'upload debug symbols to polar signals'
+        required: false
+        default: false
+        type: boolean
       pushToDockerHub:
         description: 'push image to DockerHub'
         required: false
@@ -61,7 +71,7 @@ env:
 jobs:
   build-and-push-image:
     runs-on: warp-ubuntu-latest-x64-16x
-    timeout-minutes: ${{ inputs.debug && 140 || 70 }}
+    timeout-minutes: ${{ (inputs.debug || inputs.parca) && 140 || 70 }}
 
     steps:
       - name: Checkout repository
@@ -155,8 +165,11 @@ jobs:
           platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
           network: host
           build-args: |
-            CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
+            CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug || inputs.parca }}
+            UPLOAD_DEBUGINFO=${{ inputs.parca }}
             RESTATE_FEATURES=${{ inputs.features || '' }}
+          secrets: |
+            parca=${{ secrets.PARCA_TOKEN }}
           cache-from: type=gha,url=http://127.0.0.1:49160/
           cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max
     
