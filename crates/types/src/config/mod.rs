@@ -44,10 +44,9 @@ pub use rocksdb::*;
 pub use worker::*;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arc_swap::ArcSwap;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -62,13 +61,13 @@ enum TempOrPath {
     Path(PathBuf),
 }
 
-static CONFIGURATION: Lazy<Arc<ArcSwap<Configuration>>> = Lazy::new(Arc::default);
+static CONFIGURATION: LazyLock<Arc<ArcSwap<Configuration>>> = LazyLock::new(Arc::default);
 #[cfg(not(any(test, feature = "test-util")))]
 static NODE_BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 #[cfg(any(test, feature = "test-util"))]
-static NODE_BASE_DIR: Lazy<std::sync::RwLock<TempOrPath>> =
-    Lazy::new(|| std::sync::RwLock::new(TempOrPath::Temp(tempfile::TempDir::new().unwrap())));
+static NODE_BASE_DIR: LazyLock<parking_lot::RwLock<TempOrPath>> =
+    LazyLock::new(|| parking_lot::RwLock::new(TempOrPath::Temp(tempfile::TempDir::new().unwrap())));
 
 #[cfg(not(any(test, feature = "test-util")))]
 pub fn node_dir() -> PathBuf {
@@ -85,7 +84,7 @@ fn data_dir(dir: &str) -> PathBuf {
 
 #[cfg(any(test, feature = "test-util"))]
 pub fn node_dir() -> PathBuf {
-    let guard = NODE_BASE_DIR.read().unwrap();
+    let guard = NODE_BASE_DIR.read();
     match &*guard {
         TempOrPath::Temp(temp) => temp.path().to_path_buf(),
         TempOrPath::Path(path) => path.clone(),
@@ -103,13 +102,13 @@ pub fn node_filepath(filename: &str) -> PathBuf {
 
 #[cfg(any(test, feature = "test-util"))]
 pub fn set_base_temp_dir(path: PathBuf) {
-    let mut guard = NODE_BASE_DIR.write().unwrap();
+    let mut guard = NODE_BASE_DIR.write();
     *guard = TempOrPath::Path(path);
 }
 
 #[cfg(any(test, feature = "test-util"))]
 pub fn reset_base_temp_dir() -> PathBuf {
-    let mut guard = NODE_BASE_DIR.write().unwrap();
+    let mut guard = NODE_BASE_DIR.write();
     let new = tempfile::TempDir::new().unwrap();
     let path = PathBuf::from(new.path());
     *guard = TempOrPath::Temp(new);
@@ -120,7 +119,7 @@ pub fn reset_base_temp_dir() -> PathBuf {
 /// Reset the base temp dir and leaves the temporary directory in place after
 /// the test is done (no automatic deletion)
 pub fn reset_base_temp_dir_and_retain() -> PathBuf {
-    let mut guard = NODE_BASE_DIR.write().unwrap();
+    let mut guard = NODE_BASE_DIR.write();
     let path = tempfile::TempDir::new().unwrap().into_path();
     *guard = TempOrPath::Path(path.clone());
     path
