@@ -276,10 +276,12 @@ impl fmt::Display for InvocationTarget {
 /// Concurrency guarantee of the invocation request.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum ConcurrencyGuarantee {
-    /// Enqueue the invocation when the target is busy
+    /// Enqueue the invocation in the inbox when the target is busy
     EnqueueWhenBusy {
-        queue_target: ByteString,
-        queue_key: ByteString,
+        /// fka ServiceId.name
+        inbox_target: ByteString,
+        /// fka ServiceId.key
+        inbox_key: ByteString,
     },
     /// No queueing, just execute the request
     MaxParallelism,
@@ -293,8 +295,8 @@ impl ConcurrencyGuarantee {
         match invocation_target {
             InvocationTarget::VirtualObject { handler_ty: VirtualObjectHandlerType::Exclusive, name, key, .. } => {
                 ConcurrencyGuarantee::EnqueueWhenBusy {
-                    queue_target: name.clone(),
-                    queue_key: key.clone(),
+                    inbox_target: name.clone(),
+                    inbox_key: key.clone(),
                 }
             }
             InvocationTarget::Service { .. } |
@@ -337,7 +339,7 @@ impl BehaviorOnExistingInvocationId {
 /// Invocation request flow is as follows:
 ///
 /// 1. Invocation is proposed in the PP log.
-/// 2. PP will first check if another invocation with the same id exists. If true, it applies the [`BehaviorOnExistingInvocationId`]
+/// 2. PP will first check if another invocation with the same id exists. If it exists, it applies the [`BehaviorOnExistingInvocationId`], otherwise moves to point 3.
 /// 3. If the invocation id doesn't exist, wait for the `execution_time` if present, otherwise continue immediately.
 /// 4. Apply the given [`ConcurrencyGuarantee`].
 /// 5. Finally execute it sending the request to the service endpoint.
