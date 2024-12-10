@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use axum::routing::get;
+use axum::routing::{get, on, MethodFilter};
 use tonic::codec::CompressionEncoding;
 
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
@@ -21,6 +21,7 @@ use crate::network_server::metrics::{install_global_prometheus_recorder, render_
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 
 use super::grpc_svc_handler::NodeSvcHandler;
+use super::pprof;
 
 pub struct NetworkServer {}
 
@@ -41,9 +42,20 @@ impl NetworkServer {
 
         let shared_state = state_builder.build().expect("should be infallible");
 
+        let post_or_put = MethodFilter::POST.or(MethodFilter::PUT);
+
         // -- HTTP service (for prometheus et al.)
         let axum_router = axum::Router::new()
             .route("/metrics", get(render_metrics))
+            .route("/debug/pprof/heap", get(pprof::heap))
+            .route(
+                "/debug/pprof/heap/activate",
+                on(post_or_put, pprof::activate_heap),
+            )
+            .route(
+                "/debug/pprof/heap/deactivate",
+                on(post_or_put, pprof::deactivate_heap),
+            )
             .with_state(shared_state);
 
         let node_health = health.node_status();
