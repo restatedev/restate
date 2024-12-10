@@ -22,7 +22,6 @@ enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 humantime = { workspace = true }
-once_cell = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }
 restate-core = { workspace = true }

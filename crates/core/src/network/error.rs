@@ -90,8 +90,8 @@ pub enum ProtocolError {
     #[error("grpc error: {0}")]
     GrpcError(#[from] tonic::Status),
     #[error(
-        "peer has unsupported protocol version {0}, minimum supported is '{}'",
-        MIN_SUPPORTED_PROTOCOL_VERSION as i32
+        "peer has unsupported protocol version {0}, minimum supported is '{p}'",
+        p = MIN_SUPPORTED_PROTOCOL_VERSION as i32
     )]
     UnsupportedVersion(i32),
 }

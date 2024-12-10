@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{assert_stream_eq, mock_state_mutation};
+use std::sync::LazyLock;
 
-use crate::PartitionStore;
-use once_cell::sync::Lazy;
 use restate_storage_api::inbox_table::{
     InboxEntry, InboxTable, ReadOnlyInboxTable, SequenceNumberInboxEntry,
 };
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, ServiceId};
 
-static INBOX_ENTRIES: Lazy<Vec<SequenceNumberInboxEntry>> = Lazy::new(|| {
+use super::{assert_stream_eq, mock_state_mutation};
+use crate::PartitionStore;
+
+static INBOX_ENTRIES: LazyLock<Vec<SequenceNumberInboxEntry>> = LazyLock::new(|| {
     vec![
         SequenceNumberInboxEntry::new(
             7,

@@ -40,7 +40,6 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
-once_cell = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
