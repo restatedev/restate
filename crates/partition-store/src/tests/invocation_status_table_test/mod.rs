@@ -12,14 +12,14 @@
 #![allow(clippy::borrow_interior_mutable_const)]
 #![allow(clippy::declare_interior_mutable_const)]
 
-use super::storage_test_environment;
+use std::collections::HashSet;
+use std::sync::LazyLock;
+use std::time::Duration;
 
-use crate::invocation_status_table::{InvocationStatusKey, InvocationStatusKeyV1};
-use crate::partition_store::StorageAccess;
 use bytestring::ByteString;
 use futures_util::TryStreamExt;
 use googletest::prelude::*;
-use once_cell::sync::Lazy;
+
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, InvocationStatusV1,
     InvokedOrKilledInvocationStatusLite, JournalMetadata, ReadOnlyInvocationStatusTable,
@@ -31,8 +31,10 @@ use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
 };
 use restate_types::time::MillisSinceEpoch;
-use std::collections::HashSet;
-use std::time::Duration;
+
+use super::storage_test_environment;
+use crate::invocation_status_table::{InvocationStatusKey, InvocationStatusKeyV1};
+use crate::partition_store::StorageAccess;
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -40,8 +42,8 @@ const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
     handler: ByteString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
 };
-static INVOCATION_ID_1: Lazy<InvocationId> =
-    Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_1));
+static INVOCATION_ID_1: LazyLock<InvocationId> =
+    LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_1));
 
 const INVOCATION_TARGET_2: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -49,8 +51,8 @@ const INVOCATION_TARGET_2: InvocationTarget = InvocationTarget::VirtualObject {
     handler: ByteString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
 };
-static INVOCATION_ID_2: Lazy<InvocationId> =
-    Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_2));
+static INVOCATION_ID_2: LazyLock<InvocationId> =
+    LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_2));
 
 const INVOCATION_TARGET_3: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -58,8 +60,8 @@ const INVOCATION_TARGET_3: InvocationTarget = InvocationTarget::VirtualObject {
     handler: ByteString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
 };
-static INVOCATION_ID_3: Lazy<InvocationId> =
-    Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_3));
+static INVOCATION_ID_3: LazyLock<InvocationId> =
+    LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_3));
 
 const INVOCATION_TARGET_4: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -67,8 +69,8 @@ const INVOCATION_TARGET_4: InvocationTarget = InvocationTarget::VirtualObject {
     handler: ByteString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
 };
-static INVOCATION_ID_4: Lazy<InvocationId> =
-    Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_4));
+static INVOCATION_ID_4: LazyLock<InvocationId> =
+    LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_4));
 
 const INVOCATION_TARGET_5: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -76,11 +78,11 @@ const INVOCATION_TARGET_5: InvocationTarget = InvocationTarget::VirtualObject {
     handler: ByteString::from_static("myhandler"),
     handler_ty: VirtualObjectHandlerType::Exclusive,
 };
-static INVOCATION_ID_5: Lazy<InvocationId> =
-    Lazy::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_5));
+static INVOCATION_ID_5: LazyLock<InvocationId> =
+    LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_5));
 
-static RPC_REQUEST_ID: Lazy<PartitionProcessorRpcRequestId> =
-    Lazy::new(PartitionProcessorRpcRequestId::new);
+static RPC_REQUEST_ID: LazyLock<PartitionProcessorRpcRequestId> =
+    LazyLock::new(PartitionProcessorRpcRequestId::new);
 
 fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Invoked(InFlightInvocationMetadata {

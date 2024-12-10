@@ -141,7 +141,6 @@ metrics-exporter-prometheus = { version = "0.15", default-features = false, feat
 ] }
 moka = "0.12.5"
 object_store = { version = "0.11.1", features = ["aws"] }
-once_cell = "1.18"
 opentelemetry = { version = "0.27" }
 opentelemetry-contrib = { version = "0.19" }
 opentelemetry-otlp = { version = "0.27" }

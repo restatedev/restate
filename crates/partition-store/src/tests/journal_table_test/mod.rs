@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::storage_test_environment;
+use std::pin::pin;
+use std::sync::LazyLock;
+use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
-use once_cell::sync::Lazy;
+
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
@@ -21,8 +23,8 @@ use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{
     CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
-use std::pin::pin;
-use std::time::Duration;
+
+use super::storage_test_environment;
 
 // false positive because of Bytes
 #[allow(clippy::declare_interior_mutable_const)]
@@ -33,7 +35,7 @@ static MOCK_SLEEP_JOURNAL_ENTRY: JournalEntry = const {
     ))
 };
 
-static MOCK_INVOKE_JOURNAL_ENTRY: Lazy<JournalEntry> = Lazy::new(|| {
+static MOCK_INVOKE_JOURNAL_ENTRY: LazyLock<JournalEntry> = LazyLock::new(|| {
     JournalEntry::Entry(EnrichedRawEntry::new(
         EnrichedEntryHeader::Call {
             is_completed: true,

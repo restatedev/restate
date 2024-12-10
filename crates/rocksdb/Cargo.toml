@@ -26,7 +26,6 @@ derive_more = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 metrics = {workspace = true }
-once_cell = { workspace = true }
 parking_lot = { workspace = true }
 rocksdb = { workspace = true }
 smartstring = { workspace = true }
