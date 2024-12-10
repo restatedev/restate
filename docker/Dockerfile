@@ -57,12 +57,12 @@ FROM upload-$UPLOAD_DEBUGINFO AS upload
 
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install --no-install-recommends -y curl && rm -rf /var/lib/apt/lists/*
-COPY --from=upload /restate/target/restate-server /usr/local/bin
-COPY --from=upload /restate/NOTICE /NOTICE
-COPY --from=upload /restate/LICENSE /LICENSE
-# copy OS roots
-COPY --from=upload /etc/ssl /etc/ssl
 # useful for health checks
+RUN apt-get update && apt-get install --no-install-recommends -y curl && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /restate/NOTICE /NOTICE
+COPY --from=builder /restate/LICENSE /LICENSE
+# copy OS roots
+COPY --from=builder /etc/ssl /etc/ssl
+COPY --from=upload /restate/target/restate-server /usr/local/bin
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/restate-server"]
