@@ -45,6 +45,7 @@ jobs:
     secrets: inherit
     with:
       pushToDockerHub: true
+      parca: true
 
   release-helm:
     name: Release helm chart
