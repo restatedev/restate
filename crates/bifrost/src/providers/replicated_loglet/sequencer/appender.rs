@@ -103,7 +103,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
     }
 
     #[tracing::instrument(
-        level="error",
+        level="debug",
         skip(self),
         fields(
             loglet_id=%self.sequencer_shared_state.loglet_id(),
