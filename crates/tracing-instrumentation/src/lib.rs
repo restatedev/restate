@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// mod multi_service_tracer;
 mod exporter;
 mod pretty;
 
@@ -27,15 +26,14 @@ use pretty::Pretty;
 use tonic::codegen::http::HeaderMap;
 use tonic::metadata::MetadataMap;
 use tonic::transport::ClientTlsConfig;
-use tracing::{info, warn, Level};
+use tracing::{warn, Level};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::filter::{Filtered, ParseError};
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::reload::Handle;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Layer, Registry};
+use tracing_subscriber::{EnvFilter, Layer};
 
 use restate_types::config::{CommonOptions, LogFormat};
 #[cfg(feature = "console-subscriber")]
@@ -56,8 +54,8 @@ pub enum Error {
     #[error("could not initialize tracing: {0}")]
     Tracing(#[from] TraceError),
     #[error(
-        "cannot parse log configuration {} environment variable: {0}",
-        EnvFilter::DEFAULT_ENV
+        "cannot parse log configuration {e} environment variable: {0}",
+        e = EnvFilter::DEFAULT_ENV
     )]
     LogDirectiveParseError(#[from] ParseError),
 }
@@ -118,7 +116,7 @@ fn build_services_tracing(common_opts: &CommonOptions) -> Result<(), Error> {
     Ok(())
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, dead_code)]
 fn build_runtime_tracing_layer<S>(
     common_opts: &CommonOptions,
     service_name: String,
@@ -216,37 +214,6 @@ where
     ))
 }
 
-#[allow(clippy::type_complexity)]
-fn build_logging_layer<S>(
-    common_opts: &CommonOptions,
-) -> Result<Box<dyn Layer<S> + Send + Sync>, Error>
-where
-    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
-{
-    let k = match common_opts.log_format {
-        LogFormat::Pretty => tracing_subscriber::fmt::layer()
-            .event_format::<Pretty<SystemTime>>(Pretty::default())
-            .fmt_fields(PrettyFields)
-            .with_writer(
-                // Write WARN and ERR to stderr, everything else to stdout
-                std::io::stderr
-                    .with_max_level(Level::WARN)
-                    .or_else(std::io::stdout),
-            )
-            .with_ansi(!common_opts.log_disable_ansi_codes)
-            .boxed(),
-        LogFormat::Compact => tracing_subscriber::fmt::layer()
-            .compact()
-            .with_ansi(!common_opts.log_disable_ansi_codes)
-            .boxed(),
-        LogFormat::Json => tracing_subscriber::fmt::layer()
-            .json()
-            .with_ansi(!common_opts.log_disable_ansi_codes)
-            .boxed(),
-    };
-    Ok(k)
-}
-
 /// Instruments the process with logging and tracing. The method returns [`TracingGuard`] which
 /// unregisters the tracing when being shut down or dropped.
 ///
@@ -255,14 +222,10 @@ where
 /// panic if it is executed outside of a Tokio runtime.
 pub fn init_tracing_and_logging(
     common_opts: &CommonOptions,
-    service_name: impl Display,
+    _service_name: impl Display,
 ) -> Result<TracingGuard, Error> {
     let layers = tracing_subscriber::registry();
-
-    let filter = EnvFilter::try_new(&common_opts.log_filter)?;
-    let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(filter);
     // Logging layer
-    let layers = layers.with(build_logging_layer(common_opts)?.with_filter(filter));
     // Enables auto extraction of selected span labels in emitted metrics.
     // allowed labels are defined in restate_node_ctrl::metrics::ALLOWED_LABELS.
     //
@@ -293,26 +256,53 @@ pub fn init_tracing_and_logging(
         )
     };
 
+    // User-Service Tracing Layer
     build_services_tracing(common_opts)?;
 
-    // Tracing layer
-    let layers = layers.with(build_runtime_tracing_layer(
-        common_opts,
-        service_name.to_string(),
-    )?);
+    // Runtime Distributed Tracing layer
+    // **
+    // TEMPORARILY DISABLED DUE TO SIGNIFICANT LOCK CONTENTION
+    // **
+    // let layers = layers.with(build_runtime_tracing_layer(
+    //     common_opts,
+    //     service_name.to_string(),
+    // )?);
+
+    // Logging Layer
+    let (stdout_writer, _stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
+    let (stderr_writer, _stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
+    let log_filter = EnvFilter::try_new(&common_opts.log_filter)?;
+    // Write WARN and ERR to stderr, everything else to stdout
+    let log_writer = stderr_writer
+        .with_max_level(Level::WARN)
+        .or_else(stdout_writer);
+    let log_layer = tracing_subscriber::fmt::layer()
+        .with_writer(log_writer)
+        .with_ansi(!common_opts.log_disable_ansi_codes);
+
+    let log_layer = match common_opts.log_format {
+        LogFormat::Pretty => log_layer
+            .event_format::<Pretty<SystemTime>>(Pretty::default())
+            .fmt_fields(PrettyFields)
+            .boxed(),
+        LogFormat::Compact => log_layer.compact().boxed(),
+        LogFormat::Json => log_layer.json().boxed(),
+    };
+    let layers = layers.with(log_layer.with_filter(log_filter));
 
     layers.init();
 
     Ok(TracingGuard {
         is_dropped: false,
-        reload_handle,
+        _stdout_guard,
+        _stderr_guard,
     })
 }
 
-#[derive(Debug)]
 pub struct TracingGuard {
     is_dropped: bool,
-    reload_handle: Handle<EnvFilter, Registry>,
+    _stdout_guard: tracing_appender::non_blocking::WorkerGuard,
+    _stderr_guard: tracing_appender::non_blocking::WorkerGuard,
 }
 
 impl TracingGuard {
@@ -326,18 +316,14 @@ impl TracingGuard {
         self.is_dropped = true;
     }
 
-    pub fn reload_log_filter(&self, common_opts: &CommonOptions) {
-        info!("Setting log filter to '{}'", common_opts.log_filter);
-        let _ = &self.reload_handle.modify(|f| {
-            let new_filter = EnvFilter::try_new(&common_opts.log_filter);
-            match new_filter {
-                Ok(new_filter) => {
-                    *f = new_filter;
-                }
-                // don't use logging here, tracing will panic!
-                Err(e) => eprintln!("Failed to reload log filter: '{e}'"),
-            }
-        });
+    pub fn on_config_update(&self) {
+        // can boost tracing performance by up to ~20% dependending on how many subscribers are
+        // enabled.
+        //
+        // Note: This isn't a realfix for the slow-start of tracing, but it helps if there was an
+        // incidental config update. The intent if for this to be removed when tracing callsite's
+        // builder's lock contention problem is resolved for us.
+        tracing_core::callsite::rebuild_interest_cache();
     }
 
     /// Shuts down the tracing instrumentation by running [`shutdown`] on a blocking Tokio thread.

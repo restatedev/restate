@@ -51,9 +51,8 @@ hyper = { workspace = true, features = ["full"] }
 hyper-util = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
-metrics-tracing-context = { version = "0.16.0" }
-metrics-util = { version = "0.17.0" }
-once_cell = { workspace = true }
+metrics-tracing-context = { workspace = true }
+metrics-util = { workspace = true }
 prost-types = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }

@@ -11,10 +11,10 @@
 use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use enumset::EnumSet;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -27,6 +27,12 @@ use crate::retries::RetryPolicy;
 use crate::PlainNodeId;
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
+
+static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
+    hostname::get()
+        .map(|h| h.into_string().expect("hostname is valid unicode"))
+        .unwrap_or("INVALID_HOSTANAME".to_owned())
+});
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -232,12 +238,6 @@ pub struct CommonOptions {
     /// the metadata store. Without a partition table, the cluster will not start.
     pub auto_provision_partitions: bool,
 }
-
-static HOSTNAME: Lazy<String> = Lazy::new(|| {
-    hostname::get()
-        .map(|h| h.into_string().expect("hostname is valid unicode"))
-        .unwrap_or("INVALID_HOSTANAME".to_owned())
-});
 
 impl CommonOptions {
     pub fn shutdown_grace_period(&self) -> Duration {
