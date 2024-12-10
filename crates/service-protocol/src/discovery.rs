@@ -8,6 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::fmt::Display;
+use std::ops::{Deref, RangeInclusive};
+use std::sync::LazyLock;
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use codederror::CodedError;
@@ -18,7 +24,9 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version};
 use http_body_util::BodyExt;
 use http_body_util::Empty;
 use itertools::Itertools;
-use once_cell::sync::Lazy;
+use strum::IntoEnumIterator;
+use tracing::{debug, warn};
+
 use restate_errors::{META0003, META0012, META0013, META0014, META0015};
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
@@ -34,12 +42,6 @@ use restate_types::service_protocol::{
     ServiceProtocolVersion, MAX_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE,
     MIN_SERVICE_PROTOCOL_VERSION,
 };
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::fmt::Display;
-use std::ops::{Deref, RangeInclusive};
-use strum::IntoEnumIterator;
-use tracing::{debug, warn};
 
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
@@ -48,7 +50,7 @@ const SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v1+json";
 const SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v2+json";
-static SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS: Lazy<HeaderValue> = Lazy::new(|| {
+static SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS: LazyLock<HeaderValue> = LazyLock::new(|| {
     let supported_versions = ServiceDiscoveryProtocolVersion::iter()
         .skip_while(|version| version < &MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION)
         .take_while(|version| version <= &MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION)
@@ -137,8 +139,8 @@ pub enum DiscoveryError {
     #[error("received a bad response from the SDK: {0}")]
     BadResponse(Cow<'static, str>),
     #[error(
-        "received a bad response from the SDK that cannot be decoded: {0}. Discovery response: {}",
-        String::from_utf8_lossy(.1)
+        "received a bad response from the SDK that cannot be decoded: {0}. Discovery response: {e}",
+        e = String::from_utf8_lossy(.1)
     )]
     Decode(#[source] serde_json::Error, Bytes),
 
