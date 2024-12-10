@@ -18,25 +18,24 @@ aws-credential-types = { workspace = true }
 aws-sdk-lambda = {version = "1.36.0", default-features = false, features = ["rt-tokio"]}
 aws-sdk-sts = {version = "1.35.0", default-features = false, features = ["rt-tokio"]}
 base64 = { workspace = true }
+bs58 = { version = "0.5.0" }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-bs58 = { version = "0.5.0" }
 derive_builder = { workspace = true }
 futures = { workspace = true }
 h2 = "0.4.5"
 http = { workspace = true }
-http-serde = { workspace = true }
 http-body-util = { workspace = true }
-hyper = { workspace = true, features = ["http1", "http2", "client"] }
-hyper-util = { workspace = true, features = ["client-legacy"] }
-hyper-rustls = { workspace = true }
+http-serde = { workspace = true }
 humantime = { workspace = true }
+hyper = { workspace = true, features = ["http1", "http2", "client"] }
+hyper-rustls = { workspace = true }
+hyper-util = { workspace = true, features = ["client-legacy"] }
 jsonwebtoken = { version = "9.1.0" }
-once_cell = { workspace = true }
+parking_lot = { workspace = true }
 pem = { version = "3.0.3" }
-tower-service = { version = "0.3" }
-ring = { version = "0.17.8" }
 restate-types = { workspace = true }
+ring = { version = "0.17.8" }
 rustls = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -44,6 +43,7 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 tower = { workspace = true }
+tower-service = { version = "0.3" }
 tracing = { workspace = true }
 
 # dependencies for aws_hyper_client.rs until the aws hyper 1.0 connector supports setting nodelay...
