@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU16;
 use std::pin::pin;
 use std::time::Duration;
 
@@ -35,7 +34,7 @@ async fn main() {
     let mut base_config = Configuration::default();
     base_config.common.log_format = LogFormat::Compact;
     base_config.common.log_filter = "warn,restate=debug".to_string();
-    base_config.common.bootstrap_num_partitions = NonZeroU16::new(4).unwrap();
+    base_config.common.bootstrap_num_partitions = 4;
     base_config.bifrost.default_provider = Replicated;
 
     let nodes = Node::new_test_nodes_with_metadata(

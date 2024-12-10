@@ -8,26 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{BTreeMap, HashSet};
+use std::ops::RangeInclusive;
+
+use serde_with::serde_as;
+use xxhash_rust::xxh3::Xxh3Builder;
+
 use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, PartitionKey};
 use crate::partition_table::PartitionTable;
 use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
-use serde_with::serde_as;
-use std::collections::{BTreeMap, HashSet};
-use std::num::NonZero;
-use std::ops::RangeInclusive;
-use xxhash_rust::xxh3::Xxh3Builder;
-
-/// Replication strategy for partition processors.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[serde(rename_all = "kebab-case")]
-pub enum ReplicationStrategy {
-    /// Schedule partition processor replicas on all available nodes
-    OnAllNodes,
-    /// Schedule this number of partition processor replicas
-    Factor(NonZero<u32>),
-}
 
 /// The scheduling plan represents the target state of the cluster. The cluster controller will
 /// try to drive the observed cluster state to match the target state.
@@ -43,16 +33,13 @@ pub struct SchedulingPlan {
 flexbuffers_storage_encode_decode!(SchedulingPlan);
 
 impl SchedulingPlan {
-    pub fn from(
-        partition_table: &PartitionTable,
-        replication_strategy: ReplicationStrategy,
-    ) -> Self {
+    pub fn from(partition_table: &PartitionTable) -> Self {
         let mut scheduling_plan_builder = SchedulingPlanBuilder::default();
 
         for (partition_id, partition) in partition_table.partitions() {
             scheduling_plan_builder.insert_partition(
                 *partition_id,
-                TargetPartitionState::new(partition.key_range.clone(), replication_strategy),
+                TargetPartitionState::new(partition.key_range.clone()),
             );
         }
 
@@ -108,17 +95,12 @@ pub struct TargetPartitionState {
     pub leader: Option<PlainNodeId>,
     /// Set of nodes that should run a partition processor for this partition
     pub node_set: HashSet<PlainNodeId, Xxh3Builder>,
-    pub replication_strategy: ReplicationStrategy,
 }
 
 impl TargetPartitionState {
-    pub fn new(
-        partition_key_range: RangeInclusive<PartitionKey>,
-        replication_strategy: ReplicationStrategy,
-    ) -> Self {
+    pub fn new(partition_key_range: RangeInclusive<PartitionKey>) -> Self {
         Self {
             partition_key_range,
-            replication_strategy,
             leader: None,
             node_set: HashSet::default(),
         }

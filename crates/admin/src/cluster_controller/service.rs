@@ -15,6 +15,12 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use codederror::CodedError;
+use restate_metadata_store::ReadModifyWriteError;
+use restate_types::logs::metadata::{DefaultProvider, Logs, LogsConfiguration};
+use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
+use restate_types::partition_table::{
+    self, PartitionTable, PartitionTableBuilder, ReplicationStrategy,
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
@@ -37,12 +43,10 @@ use restate_types::health::HealthStatus;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn};
-use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
-use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::AdminStatus;
-use restate_types::{GenerationalNodeId, Version};
+use restate_types::{GenerationalNodeId, Version, Versioned};
 
 use super::cluster_state_refresher::ClusterStateRefresher;
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
@@ -153,6 +157,12 @@ enum ClusterControllerCommand {
         partition_id: PartitionId,
         response_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
     },
+    UpdateClusterConfiguration {
+        num_partitions: u16,
+        replication_strategy: ReplicationStrategy,
+        default_provider: DefaultProvider,
+        response_tx: oneshot::Sender<anyhow::Result<()>>,
+    },
 }
 
 pub struct ClusterControllerHandle {
@@ -199,6 +209,27 @@ impl ClusterControllerHandle {
             .tx
             .send(ClusterControllerCommand::CreateSnapshot {
                 partition_id,
+                response_tx: tx,
+            })
+            .await;
+
+        rx.await.map_err(|_| ShutdownError)
+    }
+
+    pub async fn update_cluster_configuration(
+        &self,
+        num_partitions: u16,
+        replication_strategy: ReplicationStrategy,
+        default_provider: DefaultProvider,
+    ) -> Result<anyhow::Result<()>, ShutdownError> {
+        let (tx, rx) = oneshot::channel();
+
+        let _ = self
+            .tx
+            .send(ClusterControllerCommand::UpdateClusterConfiguration {
+                num_partitions,
+                replication_strategy,
+                default_provider,
                 response_tx: tx,
             })
             .await;
@@ -272,6 +303,7 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
+    /// creates partition table iff it does not exist
     async fn init_partition_table(&mut self) -> anyhow::Result<()> {
         let configuration = self.configuration.live_load();
 
@@ -280,14 +312,10 @@ impl<T: TransportConnect> Service<T> {
             || {
                 self.metadata_store_client
                     .get_or_insert(PARTITION_TABLE_KEY.clone(), || {
-                        let partition_table = if configuration.common.auto_provision_partitions {
-                            PartitionTable::with_equally_sized_partitions(
-                                Version::MIN,
-                                configuration.common.bootstrap_num_partitions(),
-                            )
-                        } else {
-                            PartitionTable::with_equally_sized_partitions(Version::MIN, 0)
-                        };
+                        let partition_table = PartitionTable::with_equally_sized_partitions(
+                            Version::MIN,
+                            configuration.common.bootstrap_num_partitions,
+                        );
 
                         debug!("Initializing the partition table with '{partition_table:?}'");
 
@@ -357,6 +385,117 @@ impl<T: TransportConnect> Service<T> {
         };
     }
 
+    async fn update_cluster_configuration(
+        &self,
+        num_partitions: u16,
+        replication_strategy: ReplicationStrategy,
+        default_provider: DefaultProvider,
+    ) -> anyhow::Result<()> {
+        let logs = self
+            .metadata_store_client
+            .read_modify_write(BIFROST_CONFIG_KEY.clone(), |current: Option<Logs>| {
+                let logs = match current {
+                    Some(logs) => logs,
+                    None => {
+                        let mut builder = Logs::empty().into_builder();
+                        builder.set_configuration(LogsConfiguration {
+                            default_provider: default_provider.clone(),
+                        });
+                        return Ok(builder.build());
+                    }
+                };
+
+                // we can only change the default provider
+                if logs.version() != Version::INVALID
+                    && logs.configuration().default_provider.as_provider_kind()
+                        != default_provider.as_provider_kind()
+                {
+                    {
+                        return Err(
+                            ClusterConfigurationUpdateError::ChangingDefaultProviderNotSupported,
+                        );
+                    }
+                }
+
+                let mut builder = logs.into_builder();
+
+                builder.set_configuration(LogsConfiguration {
+                    default_provider: default_provider.clone(),
+                });
+
+                let Some(logs) = builder.build_if_modified() else {
+                    return Err(ClusterConfigurationUpdateError::Unchanged);
+                };
+
+                Ok(logs)
+            })
+            .await;
+
+        match logs {
+            Ok(logs) => {
+                self.metadata_writer.update(Arc::new(logs)).await?;
+            }
+            Err(ReadModifyWriteError::FailedOperation(
+                ClusterConfigurationUpdateError::Unchanged,
+            )) => {
+                // nothing to do
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        let partition_table = self
+            .metadata_store_client
+            .read_modify_write(
+                PARTITION_TABLE_KEY.clone(),
+                |current: Option<PartitionTable>| {
+                    let partition_table = match current {
+                        Some(partition_table) => partition_table,
+                        None => {
+                            // while not possible because we always initialize a partition table
+                            // we still can just create and return a new one
+                            let mut builder = PartitionTableBuilder::default();
+                            builder.with_equally_sized_partitions(num_partitions)?;
+                            builder.set_replication_strategy(replication_strategy);
+
+                            return Ok(builder.build());
+                        }
+                    };
+
+                    let mut builder: PartitionTableBuilder = partition_table.into();
+                    if builder.num_partitions() != 0 && builder.num_partitions() != num_partitions {
+                        return Err(ClusterConfigurationUpdateError::RepartitionIsNotSupported);
+                    } else if builder.num_partitions() != num_partitions {
+                        builder.with_equally_sized_partitions(num_partitions)?;
+                    }
+
+                    if builder.replication_strategy() != replication_strategy {
+                        builder.set_replication_strategy(replication_strategy);
+                    }
+
+                    builder
+                        .build_if_modified()
+                        .ok_or(ClusterConfigurationUpdateError::Unchanged)
+                },
+            )
+            .await;
+
+        match partition_table {
+            Ok(partition_table) => {
+                self.metadata_writer
+                    .update(Arc::new(partition_table))
+                    .await?;
+            }
+            Err(ReadModifyWriteError::FailedOperation(
+                ClusterConfigurationUpdateError::Unchanged,
+            )) => {
+                // nothing to do
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        Ok(())
+    }
+
     async fn on_cluster_cmd(
         &self,
         command: ClusterControllerCommand,
@@ -385,6 +524,21 @@ impl<T: TransportConnect> Service<T> {
                 info!(?partition_id, "Create snapshot command received");
                 self.create_partition_snapshot(partition_id, response_tx)
                     .await;
+            }
+            ClusterControllerCommand::UpdateClusterConfiguration {
+                num_partitions,
+                replication_strategy,
+                default_provider,
+                response_tx,
+            } => {
+                let result = self
+                    .update_cluster_configuration(
+                        num_partitions,
+                        replication_strategy,
+                        default_provider,
+                    )
+                    .await;
+                let _ = response_tx.send(result);
             }
         }
     }
@@ -418,6 +572,18 @@ async fn sync_cluster_controller_metadata() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(thiserror::Error, Debug)]
+enum ClusterConfigurationUpdateError {
+    #[error("Unchanged")]
+    Unchanged,
+    #[error("Repartitioning is not supported")]
+    RepartitionIsNotSupported,
+    #[error("Changing default provider kind is not supported")]
+    ChangingDefaultProviderNotSupported,
+    #[error(transparent)]
+    BuildError(#[from] partition_table::BuilderError),
 }
 
 #[derive(Clone)]

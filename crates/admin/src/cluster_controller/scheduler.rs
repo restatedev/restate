@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use itertools::Itertools;
 use rand::seq::IteratorRandom;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -21,7 +22,7 @@ use restate_core::metadata_store::{
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{Metadata, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::cluster_controller::{
-    ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
+    SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
 };
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
@@ -31,8 +32,8 @@ use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::PartitionTable;
+use restate_types::nodes_config::{NodesConfiguration, Role};
+use restate_types::partition_table::{PartitionTable, ReplicationStrategy};
 use restate_types::{NodeId, PlainNodeId, Versioned};
 
 use crate::cluster_controller::logs_controller;
@@ -125,6 +126,7 @@ impl<T: TransportConnect> Scheduler<T> {
     pub async fn on_observed_cluster_state(
         &mut self,
         observed_cluster_state: &ObservedClusterState,
+        replication_strategy: ReplicationStrategy,
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
@@ -136,8 +138,13 @@ impl<T: TransportConnect> Scheduler<T> {
             .filter(|node_id| nodes_config.has_worker_role(node_id))
             .collect();
 
-        self.update_scheduling_plan(&alive_workers, nodes_config, placement_hints)
-            .await?;
+        self.update_scheduling_plan(
+            &alive_workers,
+            replication_strategy,
+            nodes_config,
+            placement_hints,
+        )
+        .await?;
         self.instruct_nodes(observed_cluster_state)?;
 
         Ok(())
@@ -165,10 +172,7 @@ impl<T: TransportConnect> Scheduler<T> {
                     if let Some(partition) = partition_table.get_partition(&partition_id) {
                         builder.insert_partition(
                             partition_id,
-                            TargetPartitionState::new(
-                                partition.key_range.clone(),
-                                ReplicationStrategy::OnAllNodes,
-                            ),
+                            TargetPartitionState::new(partition.key_range.clone()),
                         )
                     }
                 }
@@ -197,6 +201,7 @@ impl<T: TransportConnect> Scheduler<T> {
     async fn update_scheduling_plan(
         &mut self,
         alive_workers: &HashSet<PlainNodeId>,
+        replication_strategy: ReplicationStrategy,
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
@@ -217,7 +222,13 @@ impl<T: TransportConnect> Scheduler<T> {
 
         let mut builder = self.scheduling_plan.clone().into_builder();
 
-        self.ensure_replication(&mut builder, alive_workers, nodes_config, &placement_hints);
+        self.ensure_replication(
+            &mut builder,
+            alive_workers,
+            replication_strategy,
+            nodes_config,
+            &placement_hints,
+        );
         self.ensure_leadership(&mut builder, placement_hints);
 
         if let Some(scheduling_plan) = builder.build_if_modified() {
@@ -274,6 +285,7 @@ impl<T: TransportConnect> Scheduler<T> {
         &self,
         scheduling_plan_builder: &mut SchedulingPlanBuilder,
         alive_workers: &HashSet<PlainNodeId>,
+        replication_strategy: ReplicationStrategy,
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
     ) {
@@ -285,7 +297,32 @@ impl<T: TransportConnect> Scheduler<T> {
             scheduling_plan_builder.modify_partition(partition_id, |target_state| {
                 let mut modified = false;
 
-                match target_state.replication_strategy {
+                match replication_strategy {
+                    ReplicationStrategy::OnOneNodeNoFollowers => {
+                        // we always take the first worker node
+                        // regardless its alive or not
+                        // this is because local/in-memory loglets
+                        // can't be migrated and has to colocate on the
+                        // same node
+                        let first_worker = nodes_config
+                            .iter()
+                            .filter_map(|(node_id, node)| {
+                                if node.roles.contains(Role::Worker) {
+                                    Some(node_id)
+                                } else {
+                                    None
+                                }
+                            })
+                            .sorted()
+                            .next()
+                            .into_iter()
+                            .collect();
+
+                        if target_state.node_set != first_worker {
+                            target_state.node_set = first_worker;
+                            modified = true;
+                        }
+                    }
                     ReplicationStrategy::OnAllNodes => {
                         if target_state.node_set != *alive_workers {
                             target_state.node_set.clone_from(alive_workers);
@@ -585,7 +622,7 @@ mod tests {
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
-    use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
+    use restate_types::cluster_controller::SchedulingPlan;
     use restate_types::config::Configuration;
     use restate_types::identifiers::PartitionId;
     use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
@@ -593,7 +630,7 @@ mod tests {
     use restate_types::net::partition_processor_manager::{ControlProcessors, ProcessorCommand};
     use restate_types::net::{AdvertisedAddress, TargetName};
     use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
-    use restate_types::partition_table::PartitionTable;
+    use restate_types::partition_table::{PartitionTable, ReplicationStrategy};
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -630,9 +667,11 @@ mod tests {
         .await?;
         let observed_cluster_state = ObservedClusterState::default();
 
+        let replication_strategy = ReplicationStrategy::OnAllNodes;
         scheduler
             .on_observed_cluster_state(
                 &observed_cluster_state,
+                replication_strategy,
                 &Metadata::with_current(|m| m.nodes_config_ref()),
                 NoPlacementHints,
             )
@@ -660,6 +699,12 @@ mod tests {
     #[test(restate_core::test(start_paused = true))]
     async fn schedule_partitions_with_all_nodes_replication() -> googletest::Result<()> {
         schedule_partitions(ReplicationStrategy::OnAllNodes).await?;
+        Ok(())
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn schedule_partitions_with_on_one_node() -> googletest::Result<()> {
+        schedule_partitions(ReplicationStrategy::OnOneNodeNoFollowers).await?;
         Ok(())
     }
 
@@ -717,7 +762,7 @@ mod tests {
 
         let partition_table =
             PartitionTable::with_equally_sized_partitions(Version::MIN, num_partitions);
-        let initial_scheduling_plan = SchedulingPlan::from(&partition_table, replication_strategy);
+        let initial_scheduling_plan = SchedulingPlan::from(&partition_table);
         let metadata_store_client = builder.metadata_store_client.clone();
 
         let networking = builder.networking.clone();
@@ -743,6 +788,7 @@ mod tests {
             scheduler
                 .on_observed_cluster_state(
                     &observed_cluster_state,
+                    replication_strategy,
                     &Metadata::with_current(|m| m.nodes_config_ref()),
                     NoPlacementHints,
                 )
@@ -773,22 +819,36 @@ mod tests {
                 .collect();
 
             for (_, target_state) in target_scheduling_plan.iter() {
-                // assert that every partition has a leader which is part of the alive nodes set
-                assert!(target_state
-                    .leader
-                    .is_some_and(|leader| alive_nodes.contains(&leader)));
-
                 // assert that the replication strategy was respected
                 match replication_strategy {
-                    ReplicationStrategy::OnAllNodes => {
-                        assert_eq!(target_state.node_set, alive_nodes)
+                    ReplicationStrategy::OnOneNodeNoFollowers => {
+                        let leader = Some(PlainNodeId::new(1));
+                        assert_eq!(target_state.leader, leader);
+                        let nodeset = leader.into_iter().collect();
+                        assert_eq!(target_state.node_set, nodeset);
                     }
-                    ReplicationStrategy::Factor(replication_factor) => assert_eq!(
-                        target_state.node_set.len(),
-                        alive_nodes.len().min(
-                            usize::try_from(replication_factor.get()).expect("u32 fits into usize")
-                        )
-                    ),
+                    ReplicationStrategy::OnAllNodes => {
+                        // assert that every partition has a leader which is part of the alive nodes set
+                        assert!(target_state
+                            .leader
+                            .is_some_and(|leader| alive_nodes.contains(&leader)));
+
+                        assert_eq!(target_state.node_set, alive_nodes);
+                    }
+                    ReplicationStrategy::Factor(replication_factor) => {
+                        // assert that every partition has a leader which is part of the alive nodes set
+                        assert!(target_state
+                            .leader
+                            .is_some_and(|leader| alive_nodes.contains(&leader)));
+
+                        assert_eq!(
+                            target_state.node_set.len(),
+                            alive_nodes.len().min(
+                                usize::try_from(replication_factor.get())
+                                    .expect("u32 fits into usize")
+                            )
+                        );
+                    }
                 }
             }
         }

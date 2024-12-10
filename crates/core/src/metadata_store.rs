@@ -386,6 +386,15 @@ impl MetadataStoreClientError for WriteError {
     }
 }
 
+impl MetadataStoreClientError for ReadError {
+    fn is_network_error(&self) -> bool {
+        match self {
+            ReadError::Network(_) => true,
+            ReadError::Codec(_) | ReadError::Internal(_) | ReadError::Store(_) => false,
+        }
+    }
+}
+
 static_assertions::assert_impl_all!(MetadataStoreClient: Send, Sync, Clone);
 
 pub async fn retry_on_network_error<Fn, Fut, T, E, P>(retry_policy: P, action: Fn) -> Result<T, E>

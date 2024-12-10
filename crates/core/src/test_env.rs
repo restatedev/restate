@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use futures::Stream;
 
-use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
+use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::config::NetworkingOptions;
 use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
 use restate_types::metadata_store::keys::{
@@ -91,8 +91,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
         let router_builder = MessageRouterBuilder::default();
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 10);
-        let scheduling_plan =
-            SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes);
+        let scheduling_plan = SchedulingPlan::from(&partition_table);
         TaskCenter::try_set_global_metadata(metadata.clone());
 
         // Use memory-loglet as a default if in test-mode
