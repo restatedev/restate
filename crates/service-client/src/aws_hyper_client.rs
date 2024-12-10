@@ -14,6 +14,12 @@
 //! this file.
 //! License Apache-2.0
 
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+use std::time::Duration;
+
 use aws_smithy_async::future::timeout::TimedOutError;
 use aws_smithy_async::rt::sleep::{default_async_sleep, SharedAsyncSleep};
 use aws_smithy_runtime_api::box_error::BoxError;
@@ -38,13 +44,8 @@ use hyper::rt::{Read, Write};
 use hyper_util::client::legacy as client;
 use hyper_util::client::legacy::connect::Connect;
 use hyper_util::rt::TokioExecutor;
+use parking_lot::RwLock;
 use rustls::crypto::CryptoProvider;
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt;
-use std::sync::RwLock;
-use std::time::Duration;
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 #[non_exhaustive]
@@ -62,6 +63,8 @@ impl CryptoMode {
 
 #[allow(unused_imports)]
 mod cached_connectors {
+    use std::sync::LazyLock;
+
     use client::connect::HttpConnector;
     use hyper_util::client::legacy as client;
     use hyper_util::client::legacy::connect::dns::GaiResolver;
@@ -69,9 +72,9 @@ mod cached_connectors {
     use crate::aws_hyper_client::build_connector::make_tls;
     use crate::aws_hyper_client::{CryptoMode, Inner};
 
-    pub(crate) static HTTPS_NATIVE_ROOTS_RING: once_cell::sync::Lazy<
+    pub(crate) static HTTPS_NATIVE_ROOTS_RING: LazyLock<
         hyper_rustls::HttpsConnector<HttpConnector>,
-    > = once_cell::sync::Lazy::new(|| make_tls(GaiResolver::new(), CryptoMode::Ring.provider()));
+    > = LazyLock::new(|| make_tls(GaiResolver::new(), CryptoMode::Ring.provider()));
 
     pub(super) fn cached_https(mode: Inner) -> hyper_rustls::HttpsConnector<HttpConnector> {
         match mode {
@@ -437,9 +440,9 @@ where
         components: &RuntimeComponents,
     ) -> SharedHttpConnector {
         let key = CacheKey::from(settings);
-        let mut connector = self.connector_cache.read().unwrap().get(&key).cloned();
+        let mut connector = self.connector_cache.read().get(&key).cloned();
         if connector.is_none() {
-            let mut cache = self.connector_cache.write().unwrap();
+            let mut cache = self.connector_cache.write();
             // Short-circuit if another thread already wrote a connector to the cache for this key
             if !cache.contains_key(&key) {
                 let mut builder = HyperConnector::builder()
