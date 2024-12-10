@@ -12,8 +12,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use rocksdb::perf::MemoryUsageBuilder;
-use rocksdb::ExportImportFilesMetaData;
 use rocksdb::{ColumnFamilyDescriptor, ImportColumnFamilyOptions};
+use rocksdb::{CompactOptions, ExportImportFilesMetaData};
 use tracing::trace;
 
 use crate::BoxedCfMatcher;
@@ -31,8 +31,10 @@ pub trait RocksAccess {
     fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily>>;
     // todo: remove when we no longer need access to the raw db
     fn as_raw_db(&self) -> &rocksdb::DB;
+    fn flush_all(&self) -> Result<(), RocksError>;
     fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError>;
     fn flush_wal(&self, sync: bool) -> Result<(), RocksError>;
+    fn compact_all(&self);
     fn cancel_all_background_work(&self, wait: bool);
     fn set_options_cf(&self, cf: &CfName, opts: &[(&str, &str)]) -> Result<(), RocksError>;
     fn get_property_int_cf(&self, cf: &CfName, property: &str) -> Result<Option<u64>, RocksError>;
@@ -190,6 +192,29 @@ impl RocksAccess for rocksdb::DB {
 
     fn flush_wal(&self, sync: bool) -> Result<(), RocksError> {
         Ok(self.flush_wal(sync)?)
+    }
+
+    fn flush_all(&self) -> Result<(), RocksError> {
+        self.flush_wal(true)?;
+
+        let mut flushopts = rocksdb::FlushOptions::default();
+        flushopts.set_wait(true);
+        let cfs = self
+            .cfs()
+            .iter()
+            .filter_map(|name| self.cf_handle(name))
+            .collect::<Vec<_>>();
+        // a side effect of the awkward rust-rocksdb interface!
+        let cf_refs = cfs.iter().collect::<Vec<_>>();
+        Ok(self.flush_cfs_opt(&cf_refs, &flushopts)?)
+    }
+
+    fn compact_all(&self) {
+        let opts = CompactOptions::default();
+        self.cfs()
+            .iter()
+            .filter_map(|name| self.cf_handle(name))
+            .for_each(|cf| self.compact_range_cf_opt::<&str, &str>(&cf, None, None, &opts));
     }
 
     fn cancel_all_background_work(&self, wait: bool) {

@@ -10,6 +10,7 @@
 
 use std::io::Write;
 
+use restate_rocksdb::RocksDbManager;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{info, warn};
 
@@ -25,8 +26,8 @@ pub(super) async fn shutdown() -> &'static str {
     signal
 }
 
-/// Dump the configuration to the log (level=info) on SIGUSR1
-pub(super) async fn sigusr_dump_config() {
+/// Dump the configuration to stderr on SIGUSR1
+pub(super) async fn sigusr1_dump_config() {
     let mut stream =
         signal(SignalKind::user_defined1()).expect("failed to register handler for SIGUSR1");
 
@@ -40,6 +41,34 @@ pub(super) async fn sigusr_dump_config() {
                 let mut stderr = std::io::stderr().lock();
                 let _ = writeln!(&mut stderr, "{config}");
             }
+        }
+    }
+}
+
+/// Trigger rocksdb flush+compaction on SIGUSR2
+pub(super) async fn sighusr2_compact() {
+    let mut stream =
+        signal(SignalKind::user_defined2()).expect("failed to register handler for SIGUSR2");
+
+    loop {
+        stream.recv().await;
+        warn!("Received SIGUSR2, flushing and compacting all databases");
+        let manager = RocksDbManager::get();
+        for db in manager.get_all_dbs() {
+            let _ = match db.flush_all().await {
+                Ok(_) => writeln!(std::io::stderr(), "Database '{}' flushed", db.name),
+                Err(e) => writeln!(
+                    std::io::stderr(),
+                    "Database '{}' flush failed: {e}",
+                    db.name
+                ),
+            };
+            db.compact_all().await;
+            let _ = writeln!(
+                std::io::stderr(),
+                "Database '{}' compaction requested",
+                db.name
+            );
         }
     }
 }
