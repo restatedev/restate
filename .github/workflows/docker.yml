@@ -50,7 +50,7 @@ env:
 
 jobs:
   build-and-push-image:
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-16x
     timeout-minutes: ${{ inputs.debug && 140 || 70 }}
 
     steps:
