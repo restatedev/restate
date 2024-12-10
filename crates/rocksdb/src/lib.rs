@@ -329,6 +329,36 @@ impl RocksDb {
         self.manager.async_spawn(task).await?
     }
 
+    #[tracing::instrument(skip_all, fields(db = %self.name))]
+    pub async fn flush_all(&self) -> Result<(), RocksError> {
+        let db = self.db.clone();
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::FlushMemtables)
+            .op(move || {
+                let _x = RocksDbPerfGuard::new("manual-flush");
+                db.flush_all()
+            })
+            .build()
+            .unwrap();
+
+        self.manager.async_spawn_unchecked(task).await?
+    }
+
+    #[tracing::instrument(skip_all, fields(db = %self.name))]
+    pub async fn compact_all(&self) {
+        let db = self.db.clone();
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::Compaction)
+            .op(move || {
+                let _x = RocksDbPerfGuard::new("manual-compaction");
+                db.compact_all();
+            })
+            .build()
+            .unwrap();
+
+        let _ = self.manager.async_spawn_unchecked(task).await;
+    }
+
     pub fn get_histogram_data(&self, histogram: Histogram) -> HistogramData {
         self.db_options.get_histogram_data(histogram)
     }
