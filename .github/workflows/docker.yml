@@ -18,6 +18,16 @@ on:
         required: false
         default: false
         type: boolean
+      parca:
+        description: 'split out debug symbols and upload to polar signals'
+        required: false
+        default: false
+        type: boolean
+      features:
+        description: 'features to enable in the build'
+        required: false
+        default: ''
+        type: string
       pushToDockerHub:
         description: 'push image to DockerHub'
         required: false
@@ -26,8 +36,23 @@ on:
 
   workflow_dispatch:
     inputs:
+      uploadImageAsTarball:
+        description: 'uploads the Docker image additionally as a tarball'
+        required: false
+        default: false
+        type: boolean
+      platforms:
+        description: 'platforms for docker build step'
+        required: false
+        default: ''
+        type: string
       debug:
         description: 'include debug symbols in built image'
+        required: false
+        default: false
+        type: boolean
+      parca:
+        description: 'upload debug symbols to polar signals'
         required: false
         default: false
         type: boolean
@@ -45,34 +70,50 @@ env:
 
 jobs:
   build-and-push-image:
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.debug && 140 || 70 }}
+    runs-on: warp-ubuntu-latest-x64-16x
+    timeout-minutes: ${{ (inputs.debug || inputs.parca) && 140 || 70 }}
 
     steps:
-      - name: Clean up Github actions runner
-        uses: jlumbroso/free-disk-space@v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: false
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Setup caching
+      # this is needed to be able to load and push a multiplatform image in one step
+      - name: Set up Docker containerd snapshotter
+        uses: crazy-max/ghaction-setup-docker@v3
+        with:
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
       - name: Set up QEMU dependency
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # https://docs.warpbuild.com/cache/docker-layer-caching#step-1-set-up-docker-buildx-action
+          driver-opts: |
+            network=host
+      
+      - name: Cache sccache
+        id: cache
+        uses: WarpBuilds/cache@v1
+        with:
+          path: sccache-cache
+          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.4
-
+      - name: Inject sccache-cache into Docker
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          cache-map: |
+            {
+              "sccache-cache": "/var/cache/sccache"
+            }
+          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+          
       - name: Log into GitHub container registry
         uses: docker/login-action@v3
         with:
@@ -107,30 +148,31 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build${{inputs.uploadImageAsTarball != true && ' and push ' || ' '}}Docker image
+      - name: Build${{(inputs.uploadImageAsTarball != true || github.ref == 'refs/heads/main') && ' and push ' || ' '}}Docker image
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: "docker/Dockerfile"
-          push: ${{ inputs.uploadImageAsTarball != true }}
+          # push if we aren't uploading as a tarball, or if this is main'
           tags: ${{ steps.meta.outputs.tags }}
-          load: ${{ inputs.uploadImageAsTarball == true }}
+          # push if we aren't uploading as a tarball, or if this is main
+          outputs: |
+            ${{ (inputs.uploadImageAsTarball != true || github.ref == 'refs/heads/main') && 'type=registry' || '' }}
+            ${{ inputs.uploadImageAsTarball == true && 'type=oci,dest=restate.tar' || '' }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: ${{ inputs.platforms || 'linux/arm64,linux/amd64' }}
+          # on main, always push both platforms, otherwise use platform input
+          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
+          network: host
           build-args: |
-            CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
-            ACTIONS_CACHE_URL
-            ACTIONS_RUNTIME_TOKEN
-            SCCACHE_GHA_ENABLED=true
-          cache-from: type=gha,scope=${{ github.workflow }}
-          cache-to: type=gha,mode=max,scope=${{ github.workflow }}
-
-      - name: Save docker image as tar
-        if: ${{ inputs.uploadImageAsTarball }}
-        run: |
-          docker save -o restate.tar ${{ steps.build.outputs.imageid }}
-
+            CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug || inputs.parca }}
+            UPLOAD_DEBUGINFO=${{ inputs.parca }}
+            RESTATE_FEATURES=${{ inputs.features || '' }}
+          secrets: |
+            parca=${{ secrets.PARCA_TOKEN }}
+          cache-from: type=gha,url=http://127.0.0.1:49160/
+          cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max
+    
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball }}
         uses: actions/upload-artifact@v4
@@ -139,25 +181,3 @@ jobs:
           path: restate.tar
           retention-days: 1
           if-no-files-found: error
-
-      # Even if uploadImageAsTarball, push main images
-      # This won't actually build again, it'll just use cache
-      - name: Push Docker image
-        if: ${{ inputs.uploadImageAsTarball && github.ref == 'refs/heads/main' }}
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: "docker/Dockerfile"
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          load: false
-          labels: ${{ steps.meta.outputs.labels }}
-          # ignore inputs.platforms as we always need to push both arm64 and amd64 docker images
-          platforms: 'linux/arm64,linux/amd64'
-          build-args: |
-            CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug }}
-            ACTIONS_CACHE_URL
-            ACTIONS_RUNTIME_TOKEN
-            SCCACHE_GHA_ENABLED=true
-          cache-from: type=gha,scope=${{ github.workflow }}
-          cache-to: type=gha,mode=max,scope=${{ github.workflow }}
