@@ -434,6 +434,10 @@ impl Iterator for EqualSizedPartitionPartitioner {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum ReplicationStrategy {
+    /// Special replication strategy that is enforced
+    /// over local and memory loglet types to make sure
+    /// all of them run on a single node
+    OnOneNodeNoFollowers,
     /// Schedule partition processor replicas on all available nodes
     #[default]
     OnAllNodes,
@@ -462,12 +466,9 @@ impl TryFrom<ProtoReplicationStrategy> for ReplicationStrategy {
 impl Display for ReplicationStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::OnAllNodes => {
-                write!(f, "on-all-nodes")
-            }
-            Self::Factor(factor) => {
-                write!(f, "factor({})", factor)
-            }
+            Self::OnOneNodeNoFollowers => write!(f, "on-one-node-no-followers"),
+            Self::OnAllNodes => write!(f, "on-all-nodes"),
+            Self::Factor(factor) => write!(f, "factor({})", factor),
         }
     }
 }
@@ -509,6 +510,7 @@ impl From<ReplicationStrategy> for ProtoReplicationStrategy {
                     },
                 )),
             },
+            ReplicationStrategy::OnOneNodeNoFollowers => Self { strategy: None },
         }
     }
 }
