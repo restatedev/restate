@@ -8,12 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::pin::pin;
+
 use axum::routing::{get, on, MethodFilter};
+use tokio::time::MissedTickBehavior;
 use tonic::codec::CompressionEncoding;
+use tracing::{debug, trace};
 
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
 use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportConnect};
-use restate_core::TaskCenter;
+use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_types::config::CommonOptions;
 use restate_types::health::Health;
 
@@ -37,7 +41,35 @@ impl NetworkServer {
         state_builder.task_center(TaskCenter::current());
 
         if !options.disable_prometheus {
-            state_builder.prometheus_handle(Some(install_global_prometheus_recorder(&options)));
+            let prometheus_handle = install_global_prometheus_recorder(&options);
+
+            TaskCenter::spawn_child(TaskKind::SystemService, "prometheus-metrics-upkeep", {
+                let prometheus_handle = prometheus_handle.clone();
+                async move {
+                    debug!("Prometheus metrics upkeep loop started");
+
+                    let mut update_interval =
+                        tokio::time::interval(std::time::Duration::from_secs(5));
+                    update_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                    let mut cancel = pin!(cancellation_watcher());
+
+                    loop {
+                        tokio::select! {
+                            _ = &mut cancel => {
+                                debug!("Prometheus metrics upkeep loop stopped");
+                                break;
+                            }
+                            _ = update_interval.tick() => {
+                                trace!("Performing Prometheus metrics upkeep...");
+                                prometheus_handle.run_upkeep();
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+            })?;
+
+            state_builder.prometheus_handle(Some(prometheus_handle));
         }
 
         let shared_state = state_builder.build().expect("should be infallible");
