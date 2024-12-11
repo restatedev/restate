@@ -54,8 +54,8 @@ pub enum Error {
     #[error("could not initialize tracing: {0}")]
     Tracing(#[from] TraceError),
     #[error(
-        "cannot parse log configuration {} environment variable: {0}",
-        EnvFilter::DEFAULT_ENV
+        "cannot parse log configuration {e} environment variable: {0}",
+        e = EnvFilter::DEFAULT_ENV
     )]
     LogDirectiveParseError(#[from] ParseError),
 }
