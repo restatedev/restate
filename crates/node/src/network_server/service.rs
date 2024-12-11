@@ -12,10 +12,13 @@ use axum::routing::get;
 use http::Request;
 use hyper::body::Incoming;
 use hyper_util::service::TowerToHyperService;
+use std::pin::pin;
+use tokio::time::MissedTickBehavior;
 use tonic::body::boxed;
 use tonic::codec::CompressionEncoding;
 use tower::ServiceExt;
 use tower_http::trace::TraceLayer;
+use tracing::{debug, trace};
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_admin::cluster_controller::ClusterControllerHandle;
@@ -23,7 +26,7 @@ use restate_bifrost::Bifrost;
 use restate_core::network::net_util::run_hyper_server;
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
 use restate_core::network::ConnectionManager;
-use restate_core::task_center;
+use restate_core::{cancellation_watcher, task_center, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::CommonOptions;
@@ -61,7 +64,40 @@ impl NetworkServer {
         state_builder.task_center(tc.clone());
 
         if !options.disable_prometheus {
-            state_builder.prometheus_handle(Some(install_global_prometheus_recorder(&options)));
+            let prometheus_handle = install_global_prometheus_recorder(&options);
+
+            tc.spawn_child(
+                TaskKind::SystemService,
+                "prometheus-metrics-upkeep",
+                None,
+                {
+                    let prometheus_handle = prometheus_handle.clone();
+                    async move {
+                        debug!("Prometheus metrics upkeep loop started");
+
+                        let mut update_interval =
+                            tokio::time::interval(std::time::Duration::from_secs(5));
+                        update_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                        let mut cancel = pin!(cancellation_watcher());
+
+                        loop {
+                            tokio::select! {
+                                _ = &mut cancel => {
+                                    debug!("Prometheus metrics upkeep loop stopped");
+                                    break;
+                                }
+                                _ = update_interval.tick() => {
+                                    trace!("Performing Prometheus metrics upkeep...");
+                                    prometheus_handle.run_upkeep();
+                                }
+                            }
+                        }
+                        Ok(())
+                    }
+                },
+            )?;
+
+            state_builder.prometheus_handle(Some(prometheus_handle));
         }
 
         let shared_state = state_builder.build().expect("should be infallible");
