@@ -123,6 +123,7 @@ fn db_options(options: &LogServerOptions) -> rocksdb::Options {
     // likely to depend on the last durably committed record for a quorum of nodes in the write
     // set.
     opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::TolerateCorruptedTailRecords);
+    opts.set_wal_compression_type(DBCompressionType::Zstd);
 
     opts
 }
@@ -143,8 +144,8 @@ fn cf_data_options(
         opts.set_num_levels(7);
 
         opts.set_compression_per_level(&[
-            DBCompressionType::None,
-            DBCompressionType::None,
+            DBCompressionType::Lz4,
+            DBCompressionType::Lz4,
             DBCompressionType::Lz4,
             DBCompressionType::Lz4,
             DBCompressionType::Lz4,
@@ -193,8 +194,8 @@ fn cf_metadata_options(
         //
         opts.set_num_levels(3);
         opts.set_compression_per_level(&[
-            DBCompressionType::None,
-            DBCompressionType::None,
+            DBCompressionType::Lz4,
+            DBCompressionType::Lz4,
             DBCompressionType::Lz4,
         ]);
         opts.set_memtable_whole_key_filtering(true);
