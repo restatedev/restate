@@ -28,7 +28,7 @@ securityContext:
 
 
 logging:
-  env_filter: info,restate=debug
+  env_filter: info
 
 env:
   - name: RESTATE_LOG_FORMAT
