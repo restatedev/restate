@@ -252,8 +252,7 @@ fn main() {
                         }
                     },
                     _ = config_update_watcher.changed() => {
-                        let config = Configuration::pinned();
-                        tracing_guard.reload_log_filter(&config.common);
+                        tracing_guard.on_config_update();
                     },
                     _ = signal::sigusr1_dump_config() => {},
                     _ = signal::sighusr2_compact() => {},
