@@ -11,7 +11,6 @@
 #![allow(clippy::async_yields_async)]
 
 //! Utilities for benchmarking the Restate runtime
-use std::num::NonZeroU16;
 use std::time::Duration;
 
 use futures_util::{future, TryFutureExt};
@@ -127,7 +126,7 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
 pub fn restate_configuration() -> Configuration {
     let common_options = CommonOptionsBuilder::default()
         .base_dir(tempfile::tempdir().expect("tempdir failed").into_path())
-        .bootstrap_num_partitions(NonZeroU16::new(10).unwrap())
+        .bootstrap_num_partitions(10)
         .build()
         .expect("building common options should work");
 

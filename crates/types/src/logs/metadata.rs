@@ -9,19 +9,26 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{hash_map, BTreeMap, HashMap, HashSet};
+use std::num::NonZeroU8;
 use std::str::FromStr;
 
+use anyhow::Context;
 use bytestring::ByteString;
 use enum_map::Enum;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{serde_as, DisplayFromStr};
 use smallvec::SmallVec;
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use super::builder::LogsBuilder;
+use crate::config::Configuration;
 use crate::logs::{LogId, Lsn, SequenceNumber};
-use crate::replicated_loglet::{ReplicatedLogletId, ReplicatedLogletParams};
+use crate::protobuf::cluster::{
+    node_set_selection_strategy, NodeSetSelectionStrategy as ProtoNodeSetSelectionStrategy,
+    NodeSetSelectionStrategyStrictFaultTolerantGreedy,
+};
+use crate::replicated_loglet::{ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty};
 use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 // Starts with 0 being the oldest loglet in the chain.
@@ -111,12 +118,150 @@ impl LookupIndex {
     }
 }
 
+/// Node set selection strategy for picking cluster members to host replicated logs. Note that this
+/// concerns loglet replication configuration across storage servers during log bootstrap or cluster
+/// reconfiguration, for example when expanding capacity.
+///
+/// It is expected that the Bifrost data plane will deal with short-term server unavailability.
+/// Therefore, we can afford to aim high with our nodeset selections and optimise for maximum
+/// possible fault tolerance. It is the data plane's responsibility to achieve availability within
+/// this nodeset during periods of individual node downtime.
+///
+/// Finally, nodeset selection is orthogonal to log sequencer placement.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Copy, Default, serde::Serialize, serde::Deserialize, strum::Display,
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeSetSelectionStrategy {
+    /// Selects an optimal nodeset size based on the replication factor. The nodeset size is at
+    /// least `2f+1`, where `f` is the number of tolerable failures.
+    ///  
+    /// It's calculated by working backwards from a replication factor of `f+1`. If there are
+    /// more nodes available in the cluster, the strategy will use them.
+    ///
+    /// This strategy will never suggest a nodeset smaller than `2f+1`, thus ensuring that there is
+    /// always plenty of fault tolerance built into the loglet. This is a safe default choice.
+    ///
+    /// Example: For a replication factor of (2) `F=f+1=2`, `f` will equal to 1, and hence
+    /// the node set size will be `2f+1 => 3`.
+    ///
+    /// For an `F=3` (and hence `f=2`), then `2f+1` => 5 nodes
+    #[default]
+    StrictFaultTolerantGreedy,
+}
+
+impl From<NodeSetSelectionStrategy> for ProtoNodeSetSelectionStrategy {
+    fn from(value: NodeSetSelectionStrategy) -> Self {
+        match value {
+            NodeSetSelectionStrategy::StrictFaultTolerantGreedy => Self {
+                strategy: Some(
+                    node_set_selection_strategy::Strategy::StrictFaultTolerantGreedy(
+                        NodeSetSelectionStrategyStrictFaultTolerantGreedy {},
+                    ),
+                ),
+            },
+        }
+    }
+}
+
+impl TryFrom<ProtoNodeSetSelectionStrategy> for NodeSetSelectionStrategy {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ProtoNodeSetSelectionStrategy) -> Result<Self, Self::Error> {
+        use crate::protobuf::cluster::node_set_selection_strategy;
+
+        match value.strategy.context("Strategy is required")? {
+            node_set_selection_strategy::Strategy::StrictFaultTolerantGreedy(_) => {
+                Ok(Self::StrictFaultTolerantGreedy)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub enum DefaultProvider {
+    InMemory,
+    #[default]
+    Local,
+    Replicated(ReplicatedLogletConfig),
+}
+
+impl DefaultProvider {
+    pub fn as_provider_kind(&self) -> ProviderKind {
+        match self {
+            Self::InMemory => ProviderKind::InMemory,
+            Self::Local => ProviderKind::Local,
+            Self::Replicated(_) => ProviderKind::Replicated,
+        }
+    }
+}
+
+impl From<DefaultProvider> for crate::protobuf::cluster::DefaultProvider {
+    fn from(value: DefaultProvider) -> Self {
+        use crate::protobuf::cluster::{self, default_provider};
+
+        let provider = match value {
+            DefaultProvider::Local => default_provider::Provider::Local(cluster::LocalProvider {}),
+            DefaultProvider::InMemory => {
+                default_provider::Provider::InMemory(cluster::InMemoryProvider {})
+            }
+            DefaultProvider::Replicated(config) => {
+                default_provider::Provider::Replicated(cluster::ReplicatedProvider {
+                    replication_property: config.replication_property.to_string(),
+                    nodeset_selection_strategy: Some(config.nodeset_selection_strategy.into()),
+                })
+            }
+        };
+
+        Self {
+            provider: Some(provider),
+        }
+    }
+}
+
+impl TryFrom<crate::protobuf::cluster::DefaultProvider> for DefaultProvider {
+    type Error = anyhow::Error;
+    fn try_from(value: crate::protobuf::cluster::DefaultProvider) -> Result<Self, Self::Error> {
+        use crate::protobuf::cluster::default_provider;
+
+        match value.provider.context("Provider is required")? {
+            default_provider::Provider::Local(_) => Ok(Self::Local),
+            default_provider::Provider::InMemory(_) => Ok(Self::InMemory),
+            default_provider::Provider::Replicated(config) => {
+                Ok(Self::Replicated(ReplicatedLogletConfig {
+                    replication_property: config.replication_property.parse()?,
+                    nodeset_selection_strategy: config
+                        .nodeset_selection_strategy
+                        .context("NodeSet selection strategy is required")?
+                        .try_into()?,
+                }))
+            }
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ReplicatedLogletConfig {
+    pub nodeset_selection_strategy: NodeSetSelectionStrategy,
+    #[serde_as(as = "DisplayFromStr")]
+    pub replication_property: ReplicationProperty,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct LogsConfiguration {
+    pub default_provider: DefaultProvider,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "LogsSerde", into = "LogsSerde")]
 pub struct Logs {
     pub(super) version: Version,
     pub(super) logs: HashMap<LogId, Chain, Xxh3Builder>,
     pub(super) lookup_index: LookupIndex,
+    pub(super) config: LogsConfiguration,
 }
 
 impl Default for Logs {
@@ -125,6 +270,7 @@ impl Default for Logs {
             version: Version::INVALID,
             logs: Default::default(),
             lookup_index: Default::default(),
+            config: LogsConfiguration::default(),
         }
     }
 }
@@ -134,6 +280,7 @@ impl From<Logs> for LogsSerde {
         Self {
             version: value.version,
             logs: value.logs.into_iter().collect(),
+            config: Some(value.config),
         }
     }
 }
@@ -145,20 +292,37 @@ impl TryFrom<LogsSerde> for Logs {
         let mut logs = HashMap::with_capacity_and_hasher(value.logs.len(), Xxh3Builder::new());
         let mut lookup_index = LookupIndex::default();
 
+        let mut config = value.config;
         for (log_id, chain) in value.logs {
             for loglet_config in chain.chain.values() {
                 if let ProviderKind::Replicated = loglet_config.kind {
                     let params =
                         ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())?;
                     lookup_index.add_replicated_loglet(log_id, loglet_config.index, params);
+
+                    if config.is_none() {
+                        // no config in LogsSerde but we are using replicated loglets already
+                        // this means we are migrating from an older setup that had replication-property
+                        // hardcoded to {node:2}
+                        config = Some(LogsConfiguration {
+                            default_provider: DefaultProvider::Replicated(ReplicatedLogletConfig {
+                                nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
+                                replication_property: ReplicationProperty::new(
+                                    NonZeroU8::new(2).expect("2 is not 0"),
+                                ),
+                            }),
+                        })
+                    }
                 }
             }
             logs.insert(log_id, chain);
         }
+
         Ok(Self {
             version: value.version,
             logs,
             lookup_index,
+            config: config.unwrap_or_default(),
         })
     }
 }
@@ -172,6 +336,7 @@ struct LogsSerde {
     version: Version,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     logs: Vec<(LogId, Chain)>,
+    config: Option<LogsConfiguration>,
 }
 
 /// the chain is a list of segments in (from Lsn) order.
@@ -306,6 +471,28 @@ impl LogletConfig {
 }
 
 impl Logs {
+    pub fn from_configuration(config: &Configuration) -> Self {
+        Self::with_logs_configuration(LogsConfiguration {
+            default_provider: match config.bifrost.default_provider {
+                ProviderKind::InMemory => DefaultProvider::InMemory,
+                ProviderKind::Local => DefaultProvider::Local,
+                ProviderKind::Replicated => DefaultProvider::Replicated(ReplicatedLogletConfig {
+                    nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
+                    replication_property: ReplicationProperty::new(
+                        NonZeroU8::new(1).expect("1 is not zero"),
+                    ),
+                }),
+            },
+        })
+    }
+
+    pub fn with_logs_configuration(logs_configuration: LogsConfiguration) -> Self {
+        Logs {
+            config: logs_configuration,
+            ..Default::default()
+        }
+    }
+
     /// empty metadata with an invalid version
     pub fn empty() -> Self {
         Default::default()
@@ -325,6 +512,10 @@ impl Logs {
 
     pub fn into_builder(self) -> LogsBuilder {
         self.into()
+    }
+
+    pub fn configuration(&self) -> &LogsConfiguration {
+        &self.config
     }
 
     pub fn get_replicated_loglet(

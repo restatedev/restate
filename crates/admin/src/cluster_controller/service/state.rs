@@ -28,8 +28,6 @@ use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, Version};
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
@@ -138,14 +136,11 @@ pub enum LeaderEvent {
 }
 
 pub struct Leader<T> {
-    metadata: Metadata,
     bifrost: Bifrost,
     metadata_store_client: MetadataStoreClient,
     metadata_writer: MetadataWriter,
     logs_watcher: watch::Receiver<Version>,
     partition_table_watcher: watch::Receiver<Version>,
-    partition_table: Live<PartitionTable>,
-    nodes_config: Live<NodesConfiguration>,
     find_logs_tail_interval: Interval,
     log_trim_interval: Option<Interval>,
     logs_controller: LogsController,
@@ -162,8 +157,6 @@ where
     async fn from_service(service: &Service<T>) -> anyhow::Result<Leader<T>> {
         let configuration = service.configuration.pinned();
 
-        let metadata = Metadata::current();
-
         let scheduler = Scheduler::init(
             &configuration,
             service.metadata_store_client.clone(),
@@ -173,7 +166,6 @@ where
 
         let logs_controller = LogsController::init(
             &configuration,
-            metadata.clone(),
             service.bifrost.clone(),
             service.metadata_store_client.clone(),
             service.metadata_writer.clone(),
@@ -187,16 +179,14 @@ where
             time::interval(configuration.admin.log_tail_update_interval.into());
         find_logs_tail_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+        let metadata = Metadata::current();
         let mut leader = Self {
-            metadata: metadata.clone(),
             bifrost: service.bifrost.clone(),
             metadata_store_client: service.metadata_store_client.clone(),
             metadata_writer: service.metadata_writer.clone(),
             logs_watcher: metadata.watch(MetadataKind::Logs),
-            nodes_config: metadata.updateable_nodes_config(),
             partition_table_watcher: metadata.watch(MetadataKind::PartitionTable),
             cluster_state_watcher: service.cluster_state_refresher.cluster_state_watcher(),
-            partition_table: metadata.updateable_partition_table(),
             logs: metadata.updateable_logs_metadata(),
             find_logs_tail_interval,
             log_trim_interval,
@@ -215,16 +205,18 @@ where
         &mut self,
         observed_cluster_state: &ObservedClusterState,
     ) -> anyhow::Result<()> {
-        let nodes_config = &self.nodes_config.live_load();
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
         self.logs_controller.on_observed_cluster_state_update(
-            nodes_config,
+            &nodes_config,
             observed_cluster_state,
             SchedulingPlanNodeSetSelectorHints::from(&self.scheduler),
         )?;
+
         self.scheduler
             .on_observed_cluster_state(
                 observed_cluster_state,
-                nodes_config,
+                Metadata::with_current(|m| m.partition_table_ref()).replication_strategy(),
+                &nodes_config,
                 LogsBasedPartitionProcessorPlacementHints::from(&self.logs_controller),
             )
             .await?;
@@ -278,22 +270,28 @@ where
 
     async fn on_logs_update(&mut self) -> anyhow::Result<()> {
         self.logs_controller
-            .on_logs_update(self.metadata.logs_ref())?;
-        // tell the scheduler about potentially newly provisioned logs
+            .on_logs_update(Metadata::with_current(|m| m.logs_ref()))?;
+
         self.scheduler
-            .on_logs_update(self.logs.live_load(), self.partition_table.live_load())
+            .on_logs_update(
+                self.logs.live_load(),
+                &Metadata::with_current(|m| m.partition_table_ref()),
+            )
             .await?;
 
         Ok(())
     }
 
     async fn on_partition_table_update(&mut self) -> anyhow::Result<()> {
-        let partition_table = self.partition_table.live_load();
-        let logs = self.logs.live_load();
+        let partition_table = Metadata::with_current(|m| m.partition_table_ref());
 
         self.logs_controller
-            .on_partition_table_update(partition_table);
-        self.scheduler.on_logs_update(logs, partition_table).await?;
+            .on_partition_table_update(&partition_table);
+
+        // tell the scheduler about potentially newly provisioned logs
+        self.scheduler
+            .on_logs_update(self.logs.live_load(), &partition_table)
+            .await?;
 
         Ok(())
     }

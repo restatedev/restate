@@ -9,10 +9,26 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
+use std::fmt::Display;
+use std::num::{NonZero, NonZeroU32};
 use std::ops::RangeInclusive;
+use std::str::FromStr;
+use std::sync::LazyLock;
+
+use anyhow::Context;
+use regex::Regex;
 
 use crate::identifiers::{PartitionId, PartitionKey};
+use crate::protobuf::cluster::{
+    replication_strategy, PartitionProcessorReplicationReplicationStrategyFactor,
+    PartitionProcessorReplicationReplicationStrategyOnAllNodes,
+    ReplicationStrategy as ProtoReplicationStrategy,
+};
 use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
+
+static REPLICATION_STRATEGY_FACTOR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?i)factor\(\s*(?<factor>\d+)\s*\)$").expect("is valid pattern")
+});
 
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot find partition for partition key '{0}'")]
@@ -47,6 +63,8 @@ pub struct PartitionTable {
     // verify that the start partition key is smaller or equal than the given key, because holes
     // are not visible from this index structure.
     partition_key_index: BTreeMap<PartitionKey, PartitionId>,
+
+    replication_strategy: ReplicationStrategy,
 }
 
 impl Default for PartitionTable {
@@ -55,6 +73,7 @@ impl Default for PartitionTable {
             version: Version::INVALID,
             partitions: BTreeMap::default(),
             partition_key_index: BTreeMap::default(),
+            replication_strategy: ReplicationStrategy::default(),
         }
     }
 }
@@ -108,6 +127,10 @@ impl PartitionTable {
 
     pub fn contains_partition(&self, partition_id: &PartitionId) -> bool {
         self.partitions.contains_key(partition_id)
+    }
+
+    pub fn replication_strategy(&self) -> ReplicationStrategy {
+        self.replication_strategy
     }
 }
 
@@ -172,6 +195,7 @@ pub enum BuilderError {
 #[derive(Debug, Default)]
 pub struct PartitionTableBuilder {
     inner: PartitionTable,
+    modified: bool,
 }
 
 impl PartitionTableBuilder {
@@ -180,7 +204,38 @@ impl PartitionTableBuilder {
             version,
             ..Default::default()
         };
-        Self { inner }
+        Self {
+            inner,
+            modified: false,
+        }
+    }
+
+    pub fn with_equally_sized_partitions(
+        &mut self,
+        number_partitions: u16,
+    ) -> Result<(), BuilderError> {
+        let partitioner = EqualSizedPartitionPartitioner::new(number_partitions);
+
+        for (partition_id, partition_key_range) in partitioner {
+            self.add_partition(partition_id, Partition::new(partition_key_range))?
+        }
+
+        Ok(())
+    }
+
+    pub fn num_partitions(&self) -> u16 {
+        self.inner.num_partitions()
+    }
+
+    pub fn set_replication_strategy(&mut self, replication_strategy: ReplicationStrategy) {
+        if self.inner.replication_strategy != replication_strategy {
+            self.inner.replication_strategy = replication_strategy;
+            self.modified = true;
+        }
+    }
+
+    pub fn replication_strategy(&self) -> ReplicationStrategy {
+        self.inner.replication_strategy
     }
 
     /// Adds a new partition to the partition table. The newly added partition must exist and must
@@ -218,6 +273,7 @@ impl PartitionTableBuilder {
 
         self.inner.partitions.insert(partition_id, partition);
         self.inner.partition_key_index.insert(end, partition_id);
+        self.modified = true;
 
         Ok(())
     }
@@ -236,6 +292,13 @@ impl PartitionTableBuilder {
         self.inner
     }
 
+    pub fn build_if_modified(self) -> Option<PartitionTable> {
+        if self.modified {
+            return Some(self.build());
+        }
+
+        None
+    }
     /// Builds the new [`PartitionTable`] with the same version.
     fn build_with_same_version(self) -> PartitionTable {
         self.inner
@@ -244,7 +307,10 @@ impl PartitionTableBuilder {
 
 impl From<PartitionTable> for PartitionTableBuilder {
     fn from(value: PartitionTable) -> Self {
-        Self { inner: value }
+        Self {
+            inner: value,
+            modified: false,
+        }
     }
 }
 
@@ -261,6 +327,8 @@ struct PartitionTableShadow {
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "Option<serde_with::Seq<(_, _)>>")]
     partitions: Option<BTreeMap<PartitionId, Partition>>,
+    // replication strategy
+    replication_strategy: Option<ReplicationStrategy>,
 }
 
 impl From<PartitionTable> for PartitionTableShadow {
@@ -270,6 +338,7 @@ impl From<PartitionTable> for PartitionTableShadow {
             version: value.version,
             num_partitions,
             partitions: Some(value.partitions),
+            replication_strategy: Some(value.replication_strategy),
         }
     }
 }
@@ -278,23 +347,22 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
     type Error = anyhow::Error;
 
     fn try_from(value: PartitionTableShadow) -> Result<Self, Self::Error> {
-        match value.partitions {
-            // the partitions field is set if the data has been written with >= v1.1
-            Some(partitions) => {
-                let mut builder = PartitionTableBuilder::new(value.version);
+        let mut builder = PartitionTableBuilder::new(value.version);
+        // replication strategy is unset of data has been written with version <= v1.1.3
+        builder.set_replication_strategy(value.replication_strategy.unwrap_or_default());
 
+        match value.partitions {
+            Some(partitions) => {
                 for (partition_id, partition) in partitions {
                     builder.add_partition(partition_id, partition)?;
                 }
-
-                Ok(builder.build_with_same_version())
             }
-            // the partitions field is unset if the data has been written with v1
-            None => Ok(PartitionTable::with_equally_sized_partitions(
-                value.version,
-                value.num_partitions,
-            )),
+            None => {
+                builder.with_equally_sized_partitions(value.num_partitions)?;
+            }
         }
+
+        Ok(builder.build_with_same_version())
     }
 }
 
@@ -361,11 +429,98 @@ impl Iterator for EqualSizedPartitionPartitioner {
     }
 }
 
+/// Replication strategy for partition processors.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum ReplicationStrategy {
+    /// Schedule partition processor replicas on all available nodes
+    #[default]
+    OnAllNodes,
+    /// Schedule this number of partition processor replicas
+    Factor(NonZero<u32>),
+}
+
+impl TryFrom<ProtoReplicationStrategy> for ReplicationStrategy {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ProtoReplicationStrategy) -> Result<Self, Self::Error> {
+        let strategy = value.strategy.context("Replication strategy is required")?;
+
+        let value = match strategy {
+            replication_strategy::Strategy::OnAllNodes(_) => Self::OnAllNodes,
+            replication_strategy::Strategy::Factor(factor) => Self::Factor(
+                NonZeroU32::new(factor.factor)
+                    .context("Replication strategy factor must be non zero")?,
+            ),
+        };
+
+        Ok(value)
+    }
+}
+
+impl Display for ReplicationStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OnAllNodes => {
+                write!(f, "on-all-nodes")
+            }
+            Self::Factor(factor) => {
+                write!(f, "factor({})", factor)
+            }
+        }
+    }
+}
+
+impl FromStr for ReplicationStrategy {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "on-all-nodes" => Ok(Self::OnAllNodes),
+            "factor" => anyhow::bail!("Missing replication factor value. Should be 'factor(<f>)'."),
+            s => {
+                let Some(m) = REPLICATION_STRATEGY_FACTOR_PATTERN.captures(s) else {
+                    anyhow::bail!("Unknown replication strategy '{}'", s);
+                };
+
+                let factor: NonZeroU32 = m["factor"]
+                    .parse()
+                    .context("Invalid replication strategy factor")?;
+
+                Ok(Self::Factor(factor))
+            }
+        }
+    }
+}
+
+impl From<ReplicationStrategy> for ProtoReplicationStrategy {
+    fn from(value: ReplicationStrategy) -> Self {
+        match value {
+            ReplicationStrategy::OnAllNodes => Self {
+                strategy: Some(replication_strategy::Strategy::OnAllNodes(
+                    PartitionProcessorReplicationReplicationStrategyOnAllNodes {},
+                )),
+            },
+            ReplicationStrategy::Factor(factor) => Self {
+                strategy: Some(replication_strategy::Strategy::Factor(
+                    PartitionProcessorReplicationReplicationStrategyFactor {
+                        factor: factor.get(),
+                    },
+                )),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
+
     use bytes::BytesMut;
     use test_log::test;
 
+    use super::ReplicationStrategy;
     use crate::identifiers::{PartitionId, PartitionKey};
     use crate::partition_table::{
         EqualSizedPartitionPartitioner, FindPartition, Partition, PartitionTable,
@@ -374,6 +529,20 @@ mod tests {
     use crate::storage::StorageCodec;
     use crate::{flexbuffers_storage_encode_decode, Version};
 
+    #[test]
+    fn test_replication_strategy_parse() {
+        let strategy: ReplicationStrategy = "on-all-nodes".parse().unwrap();
+        assert_eq!(ReplicationStrategy::OnAllNodes, strategy);
+
+        let strategy: ReplicationStrategy = "factor(10)".parse().unwrap();
+        assert_eq!(
+            ReplicationStrategy::Factor(NonZeroU32::new(10).expect("is non zero")),
+            strategy
+        );
+
+        let strategy: anyhow::Result<ReplicationStrategy> = "factor(0)".parse();
+        assert!(strategy.is_err());
+    }
     #[test]
     fn partitioner_produces_consecutive_ranges() {
         let partitioner = EqualSizedPartitionPartitioner::new(10);

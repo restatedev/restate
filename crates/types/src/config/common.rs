@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
@@ -56,6 +56,10 @@ pub struct CommonOptions {
 
     /// If true, then a new cluster is bootstrapped. This node *must* have an admin
     /// role and a new nodes configuration will be created that includes this node.
+    ///
+    /// bootstrap is allowed by default, unless it's set explicitly in config files
+    ///
+    /// Default: true
     pub allow_bootstrap: bool,
 
     /// The working directory which this Restate node should use for relative paths. The default is
@@ -84,8 +88,11 @@ pub struct CommonOptions {
     /// NOTE: This config entry only impacts the initial number of partitions, the
     /// value of this entry is ignored for bootstrapped nodes/clusters.
     ///
+    /// NOTE: Setting this number to 0 will not create any partitions and the system
+    /// will wait until manually provisioned by the command line
+    ///
     /// Cannot be higher than `65535` (You should almost never need as many partitions anyway)
-    pub bootstrap_num_partitions: NonZeroU16,
+    pub bootstrap_num_partitions: u16,
 
     /// # Shutdown grace timeout
     ///
@@ -225,12 +232,6 @@ pub struct CommonOptions {
     ///
     /// The retry policy for node network error
     pub network_error_retry_policy: RetryPolicy,
-
-    /// # Automatically provision number of configured partitions
-    ///
-    /// If this option is set to `false`, then one needs to manually write a partition table to
-    /// the metadata store. Without a partition table, the cluster will not start.
-    pub auto_provision_partitions: bool,
 }
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| {
@@ -262,10 +263,6 @@ impl CommonOptions {
     #[cfg(feature = "unsafe-mutable-config")]
     pub fn set_cluster_name(&mut self, cluster_name: impl Into<String>) {
         self.cluster_name = cluster_name.into()
-    }
-
-    pub fn bootstrap_num_partitions(&self) -> u16 {
-        self.bootstrap_num_partitions.into()
     }
 
     #[cfg(feature = "unsafe-mutable-config")]
@@ -338,14 +335,9 @@ impl CommonOptions {
 impl Default for CommonOptions {
     fn default() -> Self {
         Self {
-            // todo (asoli): Remove `- Role::LogServer` when:
-            //   a. The safe rollback version supports log-server (at least supports parsing the
-            //   config with the log-server role)
-            //   b. When log-server becomes enabled by default.
-            //
             // todo remove `- Role::Ingress` when the safe rollback version supports ingress
             //   see "roles_compat_test" test below.
-            roles: EnumSet::all() - Role::LogServer - Role::HttpIngress,
+            roles: EnumSet::all() - Role::HttpIngress,
             node_name: None,
             force_node_id: None,
             cluster_name: "localcluster".to_owned(),
@@ -357,7 +349,7 @@ impl Default for CommonOptions {
             metadata_store_client: MetadataStoreClientOptions::default(),
             bind_address: None,
             advertised_address: AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap(),
-            bootstrap_num_partitions: NonZeroU16::new(24).unwrap(),
+            bootstrap_num_partitions: 24,
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
             service_client: Default::default(),
@@ -385,7 +377,6 @@ impl Default for CommonOptions {
                 Some(15),
                 Some(Duration::from_secs(5)),
             ),
-            auto_provision_partitions: true,
         }
     }
 }
@@ -646,9 +637,6 @@ mod tests {
     #[test]
     fn roles_compat_test() {
         let opts = CommonOptions::default();
-        // make sure we don't add log-server by default until previous version can parse nodes
-        // configuration with this role.
-        assert!(!opts.roles.contains(Role::LogServer));
         // make sure we don't add ingress by default until previous version can parse nodes
         // configuration with this role.
         assert!(!opts.roles.contains(Role::HttpIngress));

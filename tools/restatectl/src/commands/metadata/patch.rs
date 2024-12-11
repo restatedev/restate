@@ -12,6 +12,7 @@ use bytestring::ByteString;
 use clap::Parser;
 use cling::{Collect, Run};
 use json_patch::Patch;
+use serde_json::Value;
 use tracing::debug;
 
 use restate_core::metadata_store::{MetadataStoreClient, Precondition};
@@ -108,38 +109,46 @@ async fn patch_value_inner(
     patch: &Patch,
     metadata_store_client: &MetadataStoreClient,
 ) -> anyhow::Result<GenericMetadataValue> {
-    let value: GenericMetadataValue = metadata_store_client
+    let value: Option<GenericMetadataValue> = metadata_store_client
         .get(ByteString::from(opts.key.as_str()))
-        .await?
-        .ok_or(anyhow::anyhow!("Key not found: '{}'", opts.key))?;
+        .await?;
+
+    let current_version = value
+        .as_ref()
+        .map(|v| v.version)
+        .unwrap_or(Version::INVALID);
 
     if let Some(expected_version) = opts.version {
-        if value.version != Version::from(expected_version) {
+        if current_version != Version::from(expected_version) {
             anyhow::bail!(
                 "Version mismatch: expected v{}, got {:#} from store",
                 expected_version,
-                value.version
+                current_version,
             );
         }
     }
 
-    let mut document = value.to_json_value();
+    let mut document = value.map(|v| v.to_json_value()).unwrap_or(Value::Null);
     let value = match json_patch::patch(&mut document, patch) {
         Ok(_) => {
             let new_value = GenericMetadataValue {
-                version: value.version.next(),
+                version: current_version.next(),
                 data: serde_json::from_value(document.clone()).map_err(|e| anyhow::anyhow!(e))?,
             };
             if !opts.dry_run {
                 debug!(
                     "Updating metadata key '{}' with expected {:?} version to {:?}",
-                    opts.key, value.version, new_value.version
+                    opts.key, current_version, new_value.version
                 );
                 metadata_store_client
                     .put(
                         ByteString::from(opts.key.as_str()),
                         &new_value,
-                        Precondition::MatchesVersion(value.version),
+                        if current_version == Version::INVALID {
+                            Precondition::DoesNotExist
+                        } else {
+                            Precondition::MatchesVersion(current_version)
+                        },
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!("Store update failed: {}", e))?

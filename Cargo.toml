@@ -158,6 +158,7 @@ prost-dto = { version = "0.0.2" }
 prost-types = { version = "0.13.1" }
 rand = "0.8.5"
 rayon = { version = "1.10" }
+regex = { version = "1.11" }
 regress = { version = "0.10" }
 reqwest = { version = "0.12.5", default-features = false, features = [
     "json",
@@ -183,6 +184,7 @@ tempfile = "3.6.0"
 test-log = { version = "0.2.11", default-features = false, features = [
     "trace",
 ] }
+toml = { version = "0.8.12" }
 tikv-jemallocator = "0.6"
 thiserror = "1.0"
 tokio = { version = "1.41.1", default-features = false, features = [

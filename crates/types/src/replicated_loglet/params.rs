@@ -206,6 +206,15 @@ impl NodeSet {
         )
     }
 
+    pub fn new_intersect(&self, intersect_node_ids: &NodeSet) -> NodeSet {
+        NodeSet::from(
+            self.iter()
+                .copied()
+                .filter(|node_id| intersect_node_ids.contains(node_id))
+                .collect::<HashSet<_>>(),
+        )
+    }
+
     /// Shuffles the nodes but puts our node-id at the end if it exists. In other words,
     /// `pop()` will return our node if it's in the nodeset.
     pub fn shuffle_for_reads(
