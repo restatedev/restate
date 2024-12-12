@@ -186,10 +186,13 @@ impl AdminClient {
             .request(method, path)
             .timeout(self.request_timeout);
 
-        match self.bearer_token.as_deref() {
+        let request_builder = match self.bearer_token.as_deref() {
             Some(token) => request_builder.bearer_auth(token),
             None => request_builder,
-        }
+        };
+
+        let (api_version_header, api_version) = self.admin_api_version.into();
+        request_builder.header(api_version_header, api_version)
     }
 
     /// Prepare a request builder that encodes the body as JSON.
