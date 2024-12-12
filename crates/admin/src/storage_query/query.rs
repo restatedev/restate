@@ -29,10 +29,12 @@ use http_body::Frame;
 use http_body_util::StreamBody;
 use okapi_operation::*;
 use parking_lot::Mutex;
+use restate_admin_rest_model::version::AdminApiVersion;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
 
+use super::convert::{ConvertRecordBatchStream, NoopConverter, V1_CONVERTER};
 use super::error::StorageQueryError;
 use crate::state::QueryServiceState;
 
@@ -61,6 +63,19 @@ pub async fn query(
     #[request_body(required = true)] Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, StorageQueryError> {
     let record_batch_stream = state.query_context.execute(&payload.query).await?;
+
+    let version = AdminApiVersion::from_headers(&headers);
+
+    let record_batch_stream: SendableRecordBatchStream = match version {
+        AdminApiVersion::V1 => Box::pin(ConvertRecordBatchStream::new(
+            V1_CONVERTER,
+            record_batch_stream,
+        )),
+        AdminApiVersion::Unknown | AdminApiVersion::V2 => Box::pin(ConvertRecordBatchStream::new(
+            NoopConverter,
+            record_batch_stream,
+        )),
+    };
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
