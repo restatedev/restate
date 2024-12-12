@@ -34,7 +34,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
 
-use super::convert::{ConvertRecordBatchStream, NoopConverter, V1_CONVERTER};
+use super::convert::{ConvertRecordBatchStream, V1_CONVERTER};
 use super::error::StorageQueryError;
 use crate::state::QueryServiceState;
 
@@ -71,10 +71,8 @@ pub async fn query(
             V1_CONVERTER,
             record_batch_stream,
         )),
-        AdminApiVersion::Unknown | AdminApiVersion::V2 => Box::pin(ConvertRecordBatchStream::new(
-            NoopConverter,
-            record_batch_stream,
-        )),
+        // treat 'unknown' as latest, users can specify 1 if they want to maintain old behaviour
+        AdminApiVersion::Unknown | AdminApiVersion::V2 => record_batch_stream,
     };
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
