@@ -73,10 +73,10 @@ impl BifrostService {
     pub fn handle(&self) -> Bifrost {
         self.bifrost.clone()
     }
-    /// Runs initialization phase, then returns a handle to join on shutdown.
-    /// In this phase the system should wait until this is completed before
-    /// continuing. For instance, a worker mark itself as `STARTING_UP` and not
-    /// accept any requests until this is completed.
+
+    /// Runs initialization phase. In this phase the system should wait until this is completed
+    /// before continuing. For instance, a worker mark itself as `STARTING_UP` and not accept any
+    /// requests until this is completed.
     ///
     /// This requires to run within a task_center context.
     pub async fn start(self) -> anyhow::Result<()> {

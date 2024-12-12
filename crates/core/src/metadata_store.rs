@@ -17,8 +17,10 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use restate_types::errors::GenericError;
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::retries::RetryPolicy;
-use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
+use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, StorageEncodeError};
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 use std::future::Future;
 use std::sync::Arc;
@@ -49,6 +51,29 @@ pub enum WriteError {
     Codec(GenericError),
     #[error("store error: {0}")]
     Store(GenericError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProvisionError {
+    #[error("network error: {0}")]
+    Network(GenericError),
+    #[error("internal error: {0}")]
+    Internal(String),
+    #[error("codec error: {0}")]
+    Codec(GenericError),
+    #[error("store error: {0}")]
+    Store(GenericError),
+}
+
+impl MetadataStoreClientError for ProvisionError {
+    fn is_network_error(&self) -> bool {
+        match self {
+            ProvisionError::Network(_) => true,
+            ProvisionError::Internal(_) | ProvisionError::Codec(_) | ProvisionError::Store(_) => {
+                false
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -100,6 +125,93 @@ pub trait MetadataStore {
     /// Deletes the key-value pair for the given key following the provided precondition. If the
     /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
     async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError>;
+
+    /// Tries to provision the metadata store with the provided [`NodesConfiguration`]. Returns
+    /// `true` if the metadata store was newly provisioned. Returns `false` if the metadata store
+    /// is already provisioned.
+    ///
+    /// # Important
+    /// The implementation should be able to handle repeated calls as provisioning is an idempotent
+    /// operation.
+    async fn provision(
+        &self,
+        nodes_configuration: &NodesConfiguration,
+    ) -> Result<bool, ProvisionError>;
+}
+
+/// A provisioned metadata store does not need to be explicitly provisioned. Therefore, a provision
+/// call is translated into a put command.
+#[async_trait]
+pub trait ProvisionedMetadataStore {
+    /// Gets the value and its current version for the given key. If key-value pair is not present,
+    /// then return [`None`].
+    async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError>;
+
+    /// Gets the current version for the given key. If key-value pair is not present, then return
+    /// [`None`].
+    async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError>;
+
+    /// Puts the versioned value under the given key following the provided precondition. If the
+    /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
+    async fn put(
+        &self,
+        key: ByteString,
+        value: VersionedValue,
+        precondition: Precondition,
+    ) -> Result<(), WriteError>;
+
+    /// Deletes the key-value pair for the given key following the provided precondition. If the
+    /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
+    async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError>;
+}
+
+#[async_trait]
+impl<T: ProvisionedMetadataStore + Sync> MetadataStore for T {
+    async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
+        self.get(key).await
+    }
+
+    async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
+        self.get_version(key).await
+    }
+
+    async fn put(
+        &self,
+        key: ByteString,
+        value: VersionedValue,
+        precondition: Precondition,
+    ) -> Result<(), WriteError> {
+        self.put(key, value, precondition).await
+    }
+
+    async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
+        self.delete(key, precondition).await
+    }
+
+    async fn provision(
+        &self,
+        nodes_configuration: &NodesConfiguration,
+    ) -> Result<bool, ProvisionError> {
+        let versioned_value = serialize_value(nodes_configuration)
+            .map_err(|err| ProvisionError::Codec(err.into()))?;
+        match self
+            .put(
+                NODES_CONFIG_KEY.clone(),
+                versioned_value,
+                Precondition::DoesNotExist,
+            )
+            .await
+        {
+            Ok(()) => Ok(true),
+            Err(err) => match err {
+                WriteError::FailedPrecondition(_) => Ok(false),
+                WriteError::Network(err) => Err(ProvisionError::Network(err)),
+                WriteError::Internal(err) => Err(ProvisionError::Internal(err)),
+                WriteError::Codec(err) => Err(ProvisionError::Codec(err)),
+                WriteError::Store(err) => Err(ProvisionError::Store(err)),
+            },
+        }
+    }
 }
 
 /// Metadata store client which allows storing [`Versioned`] values into a [`MetadataStore`].
@@ -169,18 +281,10 @@ impl MetadataStoreClient {
     where
         T: Versioned + StorageEncode,
     {
-        let version = value.version();
+        let versioned_value =
+            serialize_value(value).map_err(|err| WriteError::Codec(err.into()))?;
 
-        let mut buf = BytesMut::default();
-        StorageCodec::encode(value, &mut buf).map_err(|err| WriteError::Codec(err.into()))?;
-
-        self.inner
-            .put(
-                key,
-                VersionedValue::new(version, buf.freeze()),
-                precondition,
-            )
-            .await
+        self.inner.put(key, versioned_value, precondition).await
     }
 
     /// Deletes the key-value pair for the given key following the provided precondition. If the
@@ -284,6 +388,23 @@ impl MetadataStoreClient {
             }
         }
     }
+
+    pub async fn provision(
+        &self,
+        nodes_configuration: &NodesConfiguration,
+    ) -> Result<bool, ProvisionError> {
+        self.inner.provision(nodes_configuration).await
+    }
+}
+
+pub fn serialize_value<T: Versioned + StorageEncode>(
+    value: &T,
+) -> Result<VersionedValue, StorageEncodeError> {
+    let version = value.version();
+    let mut buf = BytesMut::default();
+    StorageCodec::encode(value, &mut buf)?;
+    let versioned_value = VersionedValue::new(version, buf.freeze());
+    Ok(versioned_value)
 }
 
 #[derive(Debug, thiserror::Error)]

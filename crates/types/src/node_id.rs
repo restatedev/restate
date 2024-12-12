@@ -85,6 +85,9 @@ impl FromStr for GenerationalNodeId {
 }
 
 impl GenerationalNodeId {
+    // Start with 1 as id to leave 0 as a special value in the future
+    pub const INITIAL_NODE_ID: GenerationalNodeId = GenerationalNodeId::new(1, 1);
+
     pub fn decode<B: Buf>(mut data: B) -> Self {
         // generational node id is stored as two u32s next to each other, each in big-endian.
         let plain_id = data.get_u32();

@@ -8,31 +8,44 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Context;
 use bytes::BytesMut;
+use bytestring::ByteString;
 use enumset::EnumSet;
 use futures::stream::BoxStream;
-use tokio_stream::StreamExt;
-use tonic::{Request, Response, Status, Streaming};
-
+use restate_core::metadata_store::{
+    retry_on_network_error, MetadataStoreClient, Precondition, WriteError,
+};
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvc;
 use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
 use restate_core::network::protobuf::node_ctl_svc::{
-    GetMetadataRequest, GetMetadataResponse, IdentResponse,
+    GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
+    ProvisionClusterResponse, ProvisionClusterResponseKind,
 };
 use restate_core::network::ConnectionManager;
 use restate_core::network::{ProtocolError, TransportConnect};
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
+use restate_types::config::{CommonOptions, Configuration};
 use restate_types::health::Health;
-use restate_types::nodes_config::Role;
+use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
+use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
+use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
+use restate_types::partition_table::{PartitionTable, PartitionTableBuilder, ReplicationStrategy};
+use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::node::Message;
-use restate_types::storage::StorageCodec;
+use restate_types::storage::{StorageCodec, StorageEncode};
+use restate_types::{GenerationalNodeId, Version, Versioned};
+use std::num::NonZeroU16;
+use tokio_stream::StreamExt;
+use tonic::{Request, Response, Status, Streaming};
 
 pub struct NodeCtlSvcHandler {
     task_center: task_center::Handle,
     cluster_name: String,
     roles: EnumSet<Role>,
     health: Health,
+    metadata_store_client: MetadataStoreClient,
 }
 
 impl NodeCtlSvcHandler {
@@ -41,13 +54,152 @@ impl NodeCtlSvcHandler {
         cluster_name: String,
         roles: EnumSet<Role>,
         health: Health,
+        metadata_store_client: MetadataStoreClient,
     ) -> Self {
         Self {
             task_center,
             cluster_name,
             roles,
             health,
+            metadata_store_client,
         }
+    }
+
+    async fn provision_metadata(
+        &self,
+        common_opts: &CommonOptions,
+        cluster_configuration: &ClusterConfiguration,
+    ) -> anyhow::Result<bool> {
+        let (initial_nodes_configuration, initial_partition_table, initial_logs) =
+            Self::generate_initial_metadata(common_opts, cluster_configuration);
+
+        let result = retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
+            self.metadata_store_client
+                .provision(&initial_nodes_configuration)
+        })
+        .await?;
+
+        retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
+            self.write_initial_value_dont_fail_if_it_exists(
+                PARTITION_TABLE_KEY.clone(),
+                &initial_partition_table,
+            )
+        })
+        .await
+        .context("failed provisioning the initial partition table")?;
+
+        retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
+            self.write_initial_value_dont_fail_if_it_exists(
+                BIFROST_CONFIG_KEY.clone(),
+                &initial_logs,
+            )
+        })
+        .await
+        .context("failed provisioning the initial logs configuration")?;
+
+        Ok(result)
+    }
+
+    pub fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfiguration {
+        let mut initial_nodes_configuration =
+            NodesConfiguration::new(Version::MIN, common_opts.cluster_name().to_owned());
+        let node_config = NodeConfig::new(
+            common_opts.node_name().to_owned(),
+            common_opts
+                .force_node_id
+                .map(|force_node_id| force_node_id.with_generation(1))
+                .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID),
+            common_opts.advertised_address.clone(),
+            common_opts.roles,
+            LogServerConfig::default(),
+        );
+        initial_nodes_configuration.upsert_node(node_config);
+        initial_nodes_configuration
+    }
+
+    fn generate_initial_metadata(
+        common_opts: &CommonOptions,
+        cluster_configuration: &ClusterConfiguration,
+    ) -> (NodesConfiguration, PartitionTable, Logs) {
+        let mut initial_partition_table_builder = PartitionTableBuilder::default();
+        initial_partition_table_builder
+            .with_equally_sized_partitions(cluster_configuration.num_partitions.get())
+            .expect("Empty partition table should not have conflicts");
+        initial_partition_table_builder
+            .set_replication_strategy(cluster_configuration.placement_strategy);
+        let initial_partition_table = initial_partition_table_builder.build();
+
+        let mut logs_builder = Logs::default().into_builder();
+        logs_builder.set_configuration(LogsConfiguration::from(
+            cluster_configuration.log_provider.clone(),
+        ));
+        let initial_logs = logs_builder.build();
+
+        let initial_nodes_configuration = Self::create_initial_nodes_configuration(common_opts);
+
+        (
+            initial_nodes_configuration,
+            initial_partition_table,
+            initial_logs,
+        )
+    }
+
+    async fn write_initial_value_dont_fail_if_it_exists<T: Versioned + StorageEncode>(
+        &self,
+        key: ByteString,
+        initial_value: &T,
+    ) -> Result<(), WriteError> {
+        match self
+            .metadata_store_client
+            .put(key, initial_value, Precondition::DoesNotExist)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(WriteError::FailedPrecondition(_)) => {
+                // we might have failed on a previous attempt after writing this value; so let's continue
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn resolve_cluster_configuration(
+        config: &Configuration,
+        request: ProvisionClusterRequest,
+    ) -> anyhow::Result<ClusterConfiguration> {
+        let num_partitions = request
+            .num_partitions
+            .map(|num_partitions| {
+                u16::try_from(num_partitions)
+                    .context("Restate only supports running up to 65535 partitions.")
+                    .and_then(|num_partitions| {
+                        NonZeroU16::try_from(num_partitions)
+                            .context("The number of partitions needs to be > 0")
+                    })
+            })
+            .transpose()?
+            .unwrap_or(config.common.bootstrap_num_partitions);
+        let placement_strategy = request
+            .placement_strategy
+            .map(ReplicationStrategy::try_from)
+            .transpose()?
+            .unwrap_or_default();
+        let log_provider = request
+            .log_provider
+            .map(ProviderConfiguration::try_from)
+            .unwrap_or_else(|| Ok(ProviderConfiguration::from_configuration(config)))?;
+
+        Ok(ClusterConfiguration {
+            num_partitions,
+            placement_strategy,
+            log_provider,
+        })
+    }
+
+    fn convert_cluster_configuration(
+        _cluster_configuration: ClusterConfiguration,
+    ) -> ProtoClusterConfiguration {
+        todo!()
     }
 }
 
@@ -117,6 +269,45 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             encoded: encoded.freeze(),
         }))
     }
+
+    async fn provision_cluster(
+        &self,
+        request: Request<ProvisionClusterRequest>,
+    ) -> Result<Response<ProvisionClusterResponse>, Status> {
+        let request = request.into_inner();
+        let config = Configuration::pinned();
+
+        let dry_run = request.dry_run;
+        let cluster_configuration = Self::resolve_cluster_configuration(&config, request)
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+        if dry_run {
+            return Ok(Response::new(ProvisionClusterResponse {
+                kind: ProvisionClusterResponseKind::DryRun.into(),
+                cluster_configuration: Some(Self::convert_cluster_configuration(
+                    cluster_configuration,
+                )),
+                ..Default::default()
+            }));
+        }
+
+        self.provision_metadata(&config.common, &cluster_configuration)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(ProvisionClusterResponse {
+            kind: ProvisionClusterResponseKind::Success.into(),
+            cluster_configuration: Some(Self::convert_cluster_configuration(cluster_configuration)),
+            ..Default::default()
+        }))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ClusterConfiguration {
+    num_partitions: NonZeroU16,
+    placement_strategy: ReplicationStrategy,
+    log_provider: ProviderConfiguration,
 }
 
 pub struct CoreNodeSvcHandler<T> {

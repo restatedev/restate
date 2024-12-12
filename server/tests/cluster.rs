@@ -66,7 +66,7 @@ async fn node_id_mismatch() -> googletest::Result<()> {
     cluster.push_node(mismatch_node).await?;
 
     assert!(cluster.nodes[2]
-        .lines("Node ID mismatch".parse()?)
+        .lines("node id mismatch".parse()?)
         .next()
         .await
         .is_some());
@@ -113,7 +113,7 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
         .await?;
 
     assert!(mismatch_node
-        .lines("Cluster name mismatch".parse()?)
+        .lines("trying to join wrong cluster".parse()?)
         .next()
         .await
         .is_some());

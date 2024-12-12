@@ -10,6 +10,7 @@
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
+import "restate/cluster.proto";
 import "restate/common.proto";
 
 package restate.node_ctl_svc;
@@ -19,6 +20,30 @@ service NodeCtlSvc {
   rpc GetIdent(google.protobuf.Empty) returns (IdentResponse);
 
   rpc GetMetadata(GetMetadataRequest) returns (GetMetadataResponse);
+
+  // Provision the Restate cluster on this node.
+  rpc ProvisionCluster(ProvisionClusterRequest) returns (ProvisionClusterResponse);
+}
+
+message ProvisionClusterRequest {
+  bool dry_run = 1;
+  optional uint32 num_partitions = 2;
+  optional restate.cluster.ReplicationStrategy placement_strategy = 3;
+  optional restate.cluster.DefaultProvider log_provider = 4;
+}
+
+enum ProvisionClusterResponseKind {
+  ProvisionClusterResponseType_UNKNOWN = 0;
+  ERROR = 1;
+  SUCCESS = 2;
+  DRY_RUN = 3;
+}
+
+message ProvisionClusterResponse {
+  ProvisionClusterResponseKind kind = 1;
+  // If there is an error, this field will be set. All other fields will be empty.
+  optional string error = 2;
+  optional restate.cluster.ClusterConfiguration cluster_configuration = 3;
 }
 
 message IdentResponse {

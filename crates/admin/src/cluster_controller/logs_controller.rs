@@ -24,6 +24,11 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, trace, trace_span, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
+use crate::cluster_controller::logs_controller::nodeset_selection::{
+    NodeSelectionError, NodeSetSelector,
+};
+use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use crate::cluster_controller::scheduler;
 use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_core::metadata_store::{Precondition, ReadWriteError, WriteError};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
@@ -42,12 +47,6 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::{logs, GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
-
-use crate::cluster_controller::logs_controller::nodeset_selection::{
-    NodeSelectionError, NodeSetSelector,
-};
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler;
 
 type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
 
@@ -642,13 +641,19 @@ struct LogsControllerInner {
 }
 
 impl LogsControllerInner {
-    fn new(current_logs: Arc<Logs>, retry_policy: RetryPolicy) -> Self {
-        Self {
+    fn new(
+        current_logs: Arc<Logs>,
+        retry_policy: RetryPolicy,
+    ) -> Result<Self, LogsControllerError> {
+        let mut logs_state = HashMap::with_hasher(Xxh3Builder::default());
+        Self::update_logs_state(&mut logs_state, current_logs.as_ref())?;
+
+        Ok(Self {
             current_logs,
-            logs_state: HashMap::with_hasher(Xxh3Builder::default()),
+            logs_state,
             logs_write_in_progress: None,
             retry_policy,
-        }
+        })
     }
 
     fn on_observed_cluster_state_update(
@@ -787,8 +792,7 @@ impl LogsControllerInner {
                 }
             }
             Event::NewLogs => {
-                self.on_logs_update(Metadata::with_current(|m| m.logs_ref()))?;
-                effects.push(Effect::FindLogsTail);
+                self.on_logs_update(Metadata::with_current(|m| m.logs_ref()), effects)?;
             }
             Event::SealSucceeded {
                 log_id,
@@ -827,7 +831,7 @@ impl LogsControllerInner {
         }
     }
 
-    fn on_logs_update(&mut self, logs: Pinned<Logs>) -> Result<()> {
+    fn on_logs_update(&mut self, logs: Pinned<Logs>, effects: &mut Vec<Effect>) -> Result<()> {
         // rebuild the internal state if we receive a newer logs or one with a version we were
         // supposed to write (race condition)
         if logs.version() > self.current_logs.version()
@@ -840,33 +844,48 @@ impl LogsControllerInner {
             self.logs_state
                 .retain(|_, state| matches!(state, LogState::Provisioning { .. }));
 
-            for (log_id, chain) in self.current_logs.iter() {
-                let tail = chain.tail();
+            Self::update_logs_state(&mut self.logs_state, self.current_logs.as_ref())?;
 
-                if let Some(seal_lsn) = tail.tail_lsn {
-                    // sealed tail segment
-                    self.logs_state.insert(
-                        *log_id,
-                        LogState::Sealed {
-                            configuration: tail.config.try_into().map_err(|err| {
-                                LogsControllerError::LogletParamsToConfiguration(err)
-                            })?,
-                            segment_index: tail.index(),
-                            seal_lsn,
-                        },
-                    );
-                } else {
-                    // open tail segment
-                    self.logs_state.insert(
-                        *log_id,
-                        LogState::Available {
-                            configuration: Some(tail.config.try_into().map_err(|err| {
-                                LogsControllerError::LogletParamsToConfiguration(err)
-                            })?),
-                            segment_index: tail.index(),
-                        },
-                    );
-                }
+            // check whether we have a pending seal operation for any of the logs
+            effects.push(Effect::FindLogsTail);
+        }
+
+        Ok(())
+    }
+
+    fn update_logs_state(
+        logs_state: &mut HashMap<LogId, LogState, Xxh3Builder>,
+        logs: &Logs,
+    ) -> Result<(), LogsControllerError> {
+        for (log_id, chain) in logs.iter() {
+            let tail = chain.tail();
+
+            if let Some(seal_lsn) = tail.tail_lsn {
+                // sealed tail segment
+                logs_state.insert(
+                    *log_id,
+                    LogState::Sealed {
+                        configuration: tail
+                            .config
+                            .try_into()
+                            .map_err(LogsControllerError::LogletParamsToConfiguration)?,
+                        segment_index: tail.index(),
+                        seal_lsn,
+                    },
+                );
+            } else {
+                // open tail segment
+                logs_state.insert(
+                    *log_id,
+                    LogState::Available {
+                        configuration: Some(
+                            tail.config
+                                .try_into()
+                                .map_err(LogsControllerError::LogletParamsToConfiguration)?,
+                        ),
+                        segment_index: tail.index(),
+                    },
+                );
             }
         }
 
@@ -927,7 +946,10 @@ pub struct LogsController {
 }
 
 impl LogsController {
-    pub async fn init(bifrost: Bifrost, metadata_writer: MetadataWriter) -> Result<Self> {
+    pub fn new(
+        bifrost: Bifrost,
+        metadata_writer: MetadataWriter,
+    ) -> Result<Self, LogsControllerError> {
         //todo(azmy): make configurable
         let retry_policy = RetryPolicy::exponential(
             Duration::from_millis(10),
@@ -941,7 +963,7 @@ impl LogsController {
             inner: LogsControllerInner::new(
                 Metadata::with_current(|m| m.logs_snapshot()),
                 retry_policy,
-            ),
+            )?,
             bifrost,
             metadata_writer,
             async_operations: JoinSet::default(),
@@ -1034,7 +1056,11 @@ impl LogsController {
     }
 
     pub fn on_logs_update(&mut self, logs: Pinned<Logs>) -> Result<()> {
-        self.inner.on_logs_update(logs)
+        self.inner
+            .on_logs_update(logs, self.effects.as_mut().expect("to be present"))?;
+        self.apply_effects();
+
+        Ok(())
     }
 
     fn apply_effects(&mut self) {

@@ -6565,6 +6565,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "bytestring",
  "codederror",
  "datafusion",
  "derive_builder",

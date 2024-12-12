@@ -211,6 +211,20 @@ impl ProviderConfiguration {
             Self::Replicated(_) => ProviderKind::Replicated,
         }
     }
+
+    pub fn from_configuration(configuration: &Configuration) -> Self {
+        match configuration.bifrost.default_provider {
+            #[cfg(any(test, feature = "memory-loglet"))]
+            ProviderKind::InMemory => ProviderConfiguration::InMemory,
+            ProviderKind::Local => ProviderConfiguration::Local,
+            ProviderKind::Replicated => ProviderConfiguration::Replicated(ReplicatedLogletConfig {
+                nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
+                replication_property: ReplicationProperty::new(
+                    NonZeroU8::new(1).expect("1 is not zero"),
+                ),
+            }),
+        }
+    }
 }
 
 impl From<ProviderConfiguration> for crate::protobuf::cluster::DefaultProvider {
@@ -270,7 +284,9 @@ pub struct ReplicatedLogletConfig {
     pub replication_property: ReplicationProperty,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, Default, derive_more::From, serde::Serialize, serde::Deserialize,
+)]
 pub struct LogsConfiguration {
     pub default_provider: ProviderConfiguration,
 }
@@ -495,19 +511,7 @@ impl LogletConfig {
 impl Logs {
     pub fn from_configuration(config: &Configuration) -> Self {
         Self::with_logs_configuration(LogsConfiguration {
-            default_provider: match config.bifrost.default_provider {
-                #[cfg(any(test, feature = "memory-loglet"))]
-                ProviderKind::InMemory => ProviderConfiguration::InMemory,
-                ProviderKind::Local => ProviderConfiguration::Local,
-                ProviderKind::Replicated => {
-                    ProviderConfiguration::Replicated(ReplicatedLogletConfig {
-                        nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
-                        replication_property: ReplicationProperty::new(
-                            NonZeroU8::new(1).expect("1 is not zero"),
-                        ),
-                    })
-                }
-            },
+            default_provider: ProviderConfiguration::from_configuration(config),
         })
     }
 

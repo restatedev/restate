@@ -30,7 +30,7 @@ use tracing::{debug, trace};
 pub type RequestSender = mpsc::Sender<MetadataStoreRequest>;
 pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
 
-type Result<T> = std::result::Result<T, Error>;
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 const DB_NAME: &str = "local-metadata-store";
 const KV_PAIRS: &str = "kv_pairs";
@@ -163,7 +163,7 @@ impl LocalMetadataStore {
                 request = self.request_rx.recv() => {
                     let request = request.expect("receiver should not be closed since we own one clone.");
                     self.handle_request(request).await;
-                }
+                },
                 _ = cancellation_watcher() => {
                     break;
                 },

@@ -37,7 +37,6 @@ use restate_types::partition_table::{
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use restate_bifrost::{Bifrost, SealedSegment};
-use restate_core::metadata_store::retry_on_network_error;
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
@@ -292,8 +291,6 @@ impl<T: TransportConnect> Service<T> {
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
-        self.init_partition_table().await?;
-
         let mut config_watcher = Configuration::watcher();
         let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
 
@@ -343,36 +340,6 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
-    /// creates partition table iff it does not exist
-    async fn init_partition_table(&mut self) -> anyhow::Result<()> {
-        let configuration = self.configuration.live_load();
-
-        let partition_table = retry_on_network_error(
-            configuration.common.network_error_retry_policy.clone(),
-            || {
-                self.metadata_writer.metadata_store_client().get_or_insert(
-                    PARTITION_TABLE_KEY.clone(),
-                    || {
-                        let partition_table = PartitionTable::with_equally_sized_partitions(
-                            Version::MIN,
-                            configuration.common.bootstrap_num_partitions.get(),
-                        );
-
-                        debug!("Initializing the partition table with '{partition_table:?}'");
-
-                        partition_table
-                    },
-                )
-            },
-        )
-        .await?;
-
-        self.metadata_writer
-            .update(Arc::new(partition_table))
-            .await?;
-
-        Ok(())
-    }
     /// Triggers a snapshot creation for the given partition by issuing an RPC
     /// to the node hosting the active leader.
     async fn create_partition_snapshot(
