@@ -14,7 +14,7 @@ use tonic::transport::Channel;
 use tonic::{Code, Status};
 
 use restate_core::metadata_store::{
-    MetadataStore, Precondition, ReadError, VersionedValue, WriteError,
+    Precondition, ProvisionedMetadataStore, ReadError, VersionedValue, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
 use restate_core::network::net_util::CommonClientConnectionOptions;
@@ -45,7 +45,7 @@ impl LocalMetadataStoreClient {
 }
 
 #[async_trait]
-impl MetadataStore for LocalMetadataStoreClient {
+impl ProvisionedMetadataStore for LocalMetadataStoreClient {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         let response = self
             .svc_client

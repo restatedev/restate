@@ -17,7 +17,9 @@ use tracing::warn;
 
 use crate::cancellation_watcher;
 use crate::metadata_store::providers::objstore::optimistic_store::OptimisticLockingMetadataStoreBuilder;
-use crate::metadata_store::{MetadataStore, Precondition, ReadError, VersionedValue, WriteError};
+use crate::metadata_store::{
+    Precondition, ProvisionedMetadataStore, ReadError, VersionedValue, WriteError,
+};
 
 #[derive(Debug)]
 pub(crate) enum Commands {
@@ -111,7 +113,7 @@ impl Client {
 }
 
 #[async_trait::async_trait]
-impl MetadataStore for Client {
+impl ProvisionedMetadataStore for Client {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
 
