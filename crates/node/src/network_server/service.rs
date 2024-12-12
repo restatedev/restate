@@ -15,14 +15,15 @@ use tokio::time::MissedTickBehavior;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, trace};
 
+use crate::network_server::metrics::{install_global_prometheus_recorder, render_metrics};
+use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
+use restate_core::network::tonic_service_filter::TonicServiceFilter;
 use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportConnect};
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_types::config::CommonOptions;
 use restate_types::health::Health;
-
-use crate::network_server::metrics::{install_global_prometheus_recorder, render_metrics};
-use crate::network_server::state::NodeCtrlHandlerStateBuilder;
+use restate_types::protobuf::common::NodeStatus;
 
 use super::grpc_svc_handler::NodeSvcHandler;
 use super::pprof;
@@ -93,17 +94,26 @@ impl NetworkServer {
         let node_health = health.node_status();
 
         server_builder.register_grpc_service(
-            NodeSvcServer::new(NodeSvcHandler::new(
-                TaskCenter::current(),
-                options.cluster_name().to_owned(),
-                options.roles,
-                health,
-                connection_manager,
-            ))
-            .max_decoding_message_size(32 * 1024 * 1024)
-            .max_encoding_message_size(32 * 1024 * 1024)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Gzip),
+            TonicServiceFilter::new(
+                NodeSvcServer::new(NodeSvcHandler::new(
+                    TaskCenter::current(),
+                    options.cluster_name().to_owned(),
+                    options.roles,
+                    health,
+                    connection_manager,
+                ))
+                .max_decoding_message_size(32 * 1024 * 1024)
+                .max_encoding_message_size(32 * 1024 * 1024)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+                move |req| {
+                    if *node_health.get() == NodeStatus::Alive {
+                        Ok(req)
+                    } else {
+                        Err(tonic::Status::unavailable("Node is not alive."))
+                    }
+                },
+            ),
             restate_types::protobuf::FILE_DESCRIPTOR_SET,
         );
 

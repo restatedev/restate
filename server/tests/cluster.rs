@@ -18,6 +18,7 @@ use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
+use restate_types::config::MetadataStoreClient;
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
 use test_log::test;
@@ -48,16 +49,19 @@ async fn node_id_mismatch() -> googletest::Result<()> {
         .graceful_shutdown(Duration::from_secs(2))
         .await?;
 
-    let mismatch_node = Node::builder()
+    let mut mismatch_node = Node::builder()
         .binary_source(BinarySource::CargoTest)
         .base_config(base_config)
         .with_node_name("node-1")
         .with_node_socket()
-        .with_socket_metadata()
         .with_random_ports()
         .with_node_id(PlainNodeId::new(1234))
         .with_roles(enum_set!(Role::Admin | Role::Worker))
         .build();
+
+    *mismatch_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
+        address: cluster.nodes[0].node_address().clone(),
+    };
 
     cluster.push_node(mismatch_node).await?;
 
@@ -93,12 +97,16 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
 
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 
-    let mismatch_node = Node::new_test_node(
+    let mut mismatch_node = Node::new_test_node(
         "mismatch",
         base_config,
         BinarySource::CargoTest,
         enum_set!(Role::Admin | Role::Worker),
     );
+
+    *mismatch_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
+        address: cluster.nodes[0].node_address().clone(),
+    };
 
     let mut mismatch_node = mismatch_node
         .start_clustered(cluster.base_dir(), "cluster-2")

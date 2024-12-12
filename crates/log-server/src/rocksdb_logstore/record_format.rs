@@ -23,7 +23,7 @@ pub(super) enum RecordFormat {
 
 #[derive(Debug, thiserror::Error)]
 #[error("Record decode error: {0}")]
-pub(crate) enum RecordDecodeError {
+pub enum RecordDecodeError {
     UnsupportedFormatVersion(u8),
     UnsupportedKeyStyle(u8),
 }

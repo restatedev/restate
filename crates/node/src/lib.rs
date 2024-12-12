@@ -23,7 +23,7 @@ use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
 use restate_core::partitions::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
-use restate_core::TaskKind;
+use restate_core::{cancellation_watcher, TaskKind};
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
     TaskCenter,
@@ -41,7 +41,8 @@ use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
 use restate_types::protobuf::common::{
-    AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
+    AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
+    WorkerStatus,
 };
 use restate_types::Version;
 
@@ -100,6 +101,10 @@ pub enum BuildError {
     #[error("failed to initialize metadata store client: {0}")]
     #[code(unknown)]
     MetadataStoreClient(GenericError),
+
+    #[error("building metadata store failed: {0}")]
+    #[code(unknown)]
+    MetadataStore(#[from] restate_metadata_store::local::BuildError),
 }
 
 pub struct Node {
@@ -129,16 +134,19 @@ impl Node {
 
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
-        // todo(asoli) move local metadata store to use NetworkServer
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
-            Some(LocalMetadataStoreService::from_options(
-                health.metadata_server_status(),
-                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
-                updateable_config
-                    .clone()
-                    .map(|config| &config.metadata_store.rocksdb)
-                    .boxed(),
-            ))
+            Some(
+                LocalMetadataStoreService::create(
+                    health.metadata_server_status(),
+                    &config.metadata_store,
+                    updateable_config
+                        .clone()
+                        .map(|config| &config.metadata_store.rocksdb)
+                        .boxed(),
+                    &mut server_builder,
+                )
+                .await?,
+            )
         } else {
             None
         };
@@ -199,6 +207,7 @@ impl Node {
                     metadata_store_client.clone(),
                     record_cache,
                     &mut router_builder,
+                    &mut server_builder,
                 )
                 .await?,
             )
@@ -306,8 +315,25 @@ impl Node {
         })
     }
 
-    pub async fn start(mut self) -> Result<(), anyhow::Error> {
+    pub async fn start(self) -> Result<(), anyhow::Error> {
         let config = self.updateable_config.pinned();
+
+        // spawn the node rpc server first to enable connecting to the metadata store
+        TaskCenter::spawn(TaskKind::RpcServer, "node-rpc-server", {
+            let health = self.health.clone();
+            let common_options = config.common.clone();
+            let connection_manager = self.networking.connection_manager().clone();
+            async move {
+                NetworkServer::run(
+                    health,
+                    connection_manager,
+                    self.server_builder,
+                    common_options,
+                )
+                .await?;
+                Ok(())
+            }
+        })?;
 
         if let Some(metadata_store) = self.metadata_store_role {
             TaskCenter::spawn(
@@ -415,9 +441,7 @@ impl Node {
 
         #[cfg(feature = "replicated-loglet")]
         if let Some(log_server) = self.log_server {
-            log_server
-                .start(metadata_writer, &mut self.server_builder)
-                .await?;
+            log_server.start(metadata_writer).await?;
         }
 
         if let Some(admin_role) = self.admin_role {
@@ -432,30 +456,17 @@ impl Node {
             TaskCenter::spawn_child(TaskKind::Ingress, "ingress-http", ingress_role.run())?;
         }
 
-        TaskCenter::spawn(TaskKind::RpcServer, "node-rpc-server", {
-            let health = self.health.clone();
-            let common_options = config.common.clone();
-            let connection_manager = self.networking.connection_manager().clone();
-            async move {
-                NetworkServer::run(
-                    health,
-                    connection_manager,
-                    self.server_builder,
-                    common_options,
-                )
-                .await?;
-                Ok(())
-            }
-        })?;
-
         self.base_role.start()?;
+
+        let node_status = self.health.node_status();
+        node_status.update(NodeStatus::Alive);
 
         let my_roles = my_node_config.roles;
         // Report that the node is running when all roles are ready
         let _ = TaskCenter::spawn(TaskKind::Disposable, "status-report", async move {
             self.health
-                .node_status()
-                .wait_for_value(NodeStatus::Alive)
+                .node_rpc_status()
+                .wait_for_value(NodeRpcStatus::Ready)
                 .await;
             trace!("Node-to-node networking is ready");
             for role in my_roles {
@@ -499,6 +510,12 @@ impl Node {
                 }
             }
             info!("Restate server is ready");
+            Ok(())
+        });
+
+        let _ = TaskCenter::spawn_child(TaskKind::Background, "node-status", async move {
+            cancellation_watcher().await;
+            node_status.update(NodeStatus::ShuttingDown);
             Ok(())
         });
 

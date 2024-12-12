@@ -93,6 +93,13 @@ enum NodeStatus {
   SHUTTING_DOWN = 3;
 }
 
+enum NodeRpcStatus {
+  NodeRpcStatus_UNKNOWN = 0;
+  NodeRpcStatus_READY = 1;
+  NodeRpcStatus_STARTING_UP = 2;
+  NodeRpcStatus_STOPPING = 3;
+}
+
 enum WorkerStatus {
   WorkerStatus_UNKNOWN = 0;
   WorkerStatus_READY = 1;
