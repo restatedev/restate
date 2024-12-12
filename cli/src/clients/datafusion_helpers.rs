@@ -756,7 +756,7 @@ impl arrow_convert::field::ArrowField for RestateDateTime {
     #[inline]
     fn data_type() -> arrow::datatypes::DataType {
         arrow::datatypes::DataType::Timestamp(
-            arrow::datatypes::TimeUnit::Microsecond,
+            arrow::datatypes::TimeUnit::Millisecond,
             Some(TIMEZONE_UTC.clone()),
         )
     }
