@@ -15,8 +15,6 @@ use tokio::time::MissedTickBehavior;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, trace};
 
-use crate::network_server::metrics::{install_global_prometheus_recorder, render_metrics};
-use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvcServer;
 use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
@@ -28,6 +26,9 @@ use restate_types::protobuf::common::NodeStatus;
 
 use super::grpc_svc_handler::{CoreNodeSvcHandler, NodeCtlSvcHandler};
 use super::pprof;
+use crate::network_server::metrics::{install_global_prometheus_recorder, render_metrics};
+use crate::network_server::state::NodeCtrlHandlerStateBuilder;
+use crate::ProvisionClusterHandle;
 
 pub struct NetworkServer {}
 
@@ -37,6 +38,7 @@ impl NetworkServer {
         connection_manager: ConnectionManager<T>,
         mut server_builder: NetworkServerBuilder,
         options: CommonOptions,
+        node_handle: ProvisionClusterHandle,
     ) -> Result<(), anyhow::Error> {
         // Configure Metric Exporter
         let mut state_builder = NodeCtrlHandlerStateBuilder::default();
@@ -103,6 +105,7 @@ impl NetworkServer {
                 options.cluster_name().to_owned(),
                 options.roles,
                 health,
+                node_handle,
             ))
             .accept_compressed(CompressionEncoding::Gzip)
             .send_compressed(CompressionEncoding::Gzip),

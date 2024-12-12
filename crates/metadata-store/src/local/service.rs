@@ -20,7 +20,7 @@ use restate_types::protobuf::common::MetadataServerStatus;
 use crate::grpc_svc;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
 use crate::local::grpc::handler::LocalMetadataStoreHandler;
-use crate::local::store::LocalMetadataStore;
+use crate::local::store::{LocalMetadataStore, ProvisionHandle};
 
 pub struct LocalMetadataStoreService {
     health_status: HealthStatus<MetadataServerStatus>,
@@ -61,6 +61,10 @@ impl LocalMetadataStoreService {
             health_status,
             store,
         })
+    }
+
+    pub fn provision_handle(&self) -> ProvisionHandle {
+        self.store.provision_handle()
     }
 
     pub async fn run(self) -> Result<(), Error> {

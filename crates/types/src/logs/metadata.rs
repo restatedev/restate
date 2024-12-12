@@ -269,7 +269,9 @@ pub struct ReplicatedLogletConfig {
     pub replication_property: ReplicationProperty,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, Default, derive_more::From, serde::Serialize, serde::Deserialize,
+)]
 pub struct LogsConfiguration {
     pub default_provider: DefaultProvider,
 }

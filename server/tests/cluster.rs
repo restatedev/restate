@@ -113,7 +113,7 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
         .await?;
 
     assert!(mismatch_node
-        .lines("Cluster name mismatch".parse()?)
+        .lines("trying to join wrong cluster".parse()?)
         .next()
         .await
         .is_some());

@@ -14,10 +14,14 @@ use futures::stream::BoxStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::init::{ProvisionClusterRequest, ProvisionClusterResponse};
+use crate::ProvisionClusterHandle;
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvc;
 use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
 use restate_core::network::protobuf::node_ctl_svc::{
     GetMetadataRequest, GetMetadataResponse, IdentResponse,
+    ProvisionClusterRequest as ProtoProvisionClusterRequest,
+    ProvisionClusterResponse as ProtoProvisionClusterResponse,
 };
 use restate_core::network::ConnectionManager;
 use restate_core::network::{ProtocolError, TransportConnect};
@@ -33,6 +37,7 @@ pub struct NodeCtlSvcHandler {
     cluster_name: String,
     roles: EnumSet<Role>,
     health: Health,
+    node_handle: ProvisionClusterHandle,
 }
 
 impl NodeCtlSvcHandler {
@@ -41,13 +46,23 @@ impl NodeCtlSvcHandler {
         cluster_name: String,
         roles: EnumSet<Role>,
         health: Health,
+        node_handle: ProvisionClusterHandle,
     ) -> Self {
         Self {
             task_center,
             cluster_name,
             roles,
             health,
+            node_handle,
         }
+    }
+
+    fn from_proto(_request: ProtoProvisionClusterRequest) -> ProvisionClusterRequest {
+        unimplemented!("replace with dto_prost")
+    }
+
+    fn into_proto(_response: ProvisionClusterResponse) -> ProtoProvisionClusterResponse {
+        unimplemented!("replace with dto_prost")
     }
 }
 
@@ -113,6 +128,24 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         Ok(Response::new(GetMetadataResponse {
             encoded: encoded.freeze(),
         }))
+    }
+
+    async fn provision_cluster(
+        &self,
+        request: Request<ProtoProvisionClusterRequest>,
+    ) -> Result<Response<ProtoProvisionClusterResponse>, Status> {
+        let request = request.into_inner();
+
+        let response = self
+            .node_handle
+            // todo replace with prost_dto?
+            .provision_cluster(Self::from_proto(request))
+            .await
+            .map_err(|_| Status::unavailable("System is shutting down"))?
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        // todo replace with prost_dto?
+        Ok(Response::new(Self::into_proto(response)))
     }
 }
 
