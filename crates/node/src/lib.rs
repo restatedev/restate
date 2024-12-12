@@ -9,46 +9,47 @@
 // by the Apache License, Version 2.0.
 
 mod cluster_marker;
+mod init;
 mod network_server;
 mod roles;
 
-use std::sync::Arc;
+use anyhow::Context;
+use tonic::{Code, IntoRequest};
+use tracing::{debug, error, info, trace, warn};
 
-use tracing::{debug, error, info, trace};
-
+use crate::cluster_marker::ClusterValidationError;
+use crate::init::NodeInit;
+use crate::network_server::NetworkServer;
+use crate::roles::{AdminRole, BaseRole, IngressRole, WorkerRole};
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
-use restate_core::metadata_store::{retry_on_network_error, ReadWriteError};
+use restate_core::metadata_store::ReadWriteError;
+use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
+use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_core::network::protobuf::node_ctl_svc::{
+    ProvisionClusterRequest, ProvisionClusterResponseKind,
+};
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
 use restate_core::partitions::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
-use restate_core::{cancellation_watcher, TaskKind};
-use restate_core::{
-    spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
-    TaskCenter,
-};
+use restate_core::{cancellation_watcher, Metadata, TaskKind};
+use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter};
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::health::Health;
 use restate_types::live::Live;
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
+use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
     WorkerStatus,
 };
-use restate_types::Version;
-
-use crate::cluster_marker::ClusterValidationError;
-use crate::network_server::NetworkServer;
-use crate::roles::{AdminRole, BaseRole, IngressRole, WorkerRole};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -331,86 +332,101 @@ impl Node {
             let health = self.health.clone();
             let common_options = config.common.clone();
             let connection_manager = self.networking.connection_manager().clone();
+            let metadata_store_client = self.metadata_store_client.clone();
             async move {
                 NetworkServer::run(
                     health,
                     connection_manager,
                     self.server_builder,
                     common_options,
+                    metadata_store_client,
                 )
                 .await?;
                 Ok(())
             }
         })?;
 
+        // wait until the node rpc server is up and running before continuing
+        self.health
+            .node_rpc_status()
+            .wait_for_value(NodeRpcStatus::Ready)
+            .await;
+
         if let Some(metadata_store) = self.metadata_store_role {
-            TaskCenter::spawn(
-                TaskKind::MetadataStore,
-                "local-metadata-store",
-                async move {
-                    metadata_store.run().await?;
-                    Ok(())
-                },
-            )?;
+            TaskCenter::spawn(TaskKind::MetadataStore, "metadata-store", async move {
+                metadata_store.run().await?;
+                Ok(())
+            })?;
         }
+
+        if config.common.allow_bootstrap {
+            TaskCenter::spawn(TaskKind::SystemBoot, "auto-provision-cluster", {
+                let channel = create_tonic_channel_from_advertised_address(
+                    config.common.advertised_address.clone(),
+                    &config.networking,
+                );
+                let client = NodeCtlSvcClient::new(channel);
+                let retry_policy = config.common.network_error_retry_policy.clone();
+                async move {
+                    let response = retry_policy
+                        .retry_if(
+                            || {
+                                let mut client = client.clone();
+                                async move {
+                                    client
+                                        .provision_cluster(
+                                            ProvisionClusterRequest {
+                                                dry_run: false,
+                                                ..Default::default()
+                                            }
+                                            .into_request(),
+                                        )
+                                        .await
+                                }
+                            },
+                            |status| status.code() == Code::Unavailable,
+                        )
+                        .await;
+
+                    match response {
+                        Ok(response) => {
+                            if response.into_inner().kind() == ProvisionClusterResponseKind::DryRun
+                            {
+                                debug!("The cluster is already provisioned.");
+                            }
+                        }
+                        Err(err) => {
+                            warn!("Failed to auto provision the cluster. In order to continue you have to provision the cluster manually: {err}");
+                        }
+                    }
+
+                    Ok(())
+                }
+            })?;
+        }
+
+        let initialization_timeout = config.common.initialization_timeout.into();
+
+        tokio::time::timeout(
+            initialization_timeout,
+            NodeInit::new(
+                &self.metadata_store_client,
+                &metadata_writer,
+            )
+            .init(),
+        )
+        .await
+            .context("Giving up trying to initialize the node. Make sure that it can reach the metadata store and don't forget to provision the cluster on a fresh start.")?
+            .context("Failed initializing the node.")?;
+
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let my_node_id = Metadata::with_current(|m| m.my_node_id());
+        let my_node_config = nodes_config
+            .find_node_by_id(my_node_id)
+            .expect("should be present");
 
         // Start partition routing information refresher
         spawn_partition_routing_refresher(self.partition_routing_refresher)?;
-
-        let nodes_config =
-            Self::upsert_node_config(&self.metadata_store_client, &config.common).await?;
-        metadata_writer.update(Arc::new(nodes_config)).await?;
-
-        if config.common.allow_bootstrap {
-            // todo write bootstrap state
-        }
-
-        // fetch the latest schema information
-        metadata
-            .sync(MetadataKind::Schema, TargetVersion::Latest)
-            .await?;
-
-        let nodes_config = metadata.nodes_config_ref();
-
-        // Find my node in nodes configuration.
-        let my_node_config = nodes_config
-            .find_node_by_name(config.common.node_name())
-            .expect("node config should have been upserted");
-
-        let my_node_id = my_node_config.current_generation;
-
-        // Safety checks, same node (if set)?
-        if config
-            .common
-            .force_node_id
-            .is_some_and(|n| n != my_node_id.as_plain())
-        {
-            return Err(Error::SafetyCheck(
-                format!(
-                    "Node ID mismatch: configured node ID is {}, but the nodes configuration contains {}",
-                    config.common.force_node_id.unwrap(),
-                    my_node_id.as_plain()
-                )))?;
-        }
-
-        // Same cluster?
-        if config.common.cluster_name() != nodes_config.cluster_name() {
-            return Err(Error::SafetyCheck(
-                format!(
-                    "Cluster name mismatch: configured cluster name is '{}', but the nodes configuration contains '{}'",
-                    config.common.cluster_name(),
-                    nodes_config.cluster_name()
-                )))?;
-        }
-
-        // My Node ID is set
-        metadata_writer.set_my_node_id(my_node_id);
-        restate_tracing_instrumentation::set_global_node_id(my_node_id);
-
-        info!(
-            roles = %my_node_config.roles,
-            address = %my_node_config.address,
-            "My Node ID is {}", my_node_config.current_generation);
 
         // todo this is a temporary solution to announce the updated NodesConfiguration to the
         //  configured admin nodes. It should be removed once we have a gossip-based node status
@@ -520,92 +536,6 @@ impl Node {
         });
 
         Ok(())
-    }
-
-    async fn upsert_node_config(
-        metadata_store_client: &MetadataStoreClient,
-        common_opts: &CommonOptions,
-    ) -> Result<NodesConfiguration, Error> {
-        retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
-            let mut previous_node_generation = None;
-            metadata_store_client.read_modify_write(NODES_CONFIG_KEY.clone(), move |nodes_config| {
-                let mut nodes_config = if common_opts.allow_bootstrap {
-                    debug!("allow-bootstrap is set to `true`, allowed to create initial NodesConfiguration!");
-                    nodes_config.unwrap_or_else(|| {
-                        NodesConfiguration::new(
-                            Version::INVALID,
-                            common_opts.cluster_name().to_owned(),
-                        )
-                    })
-                } else {
-                    nodes_config.ok_or(Error::MissingNodesConfiguration)?
-                };
-
-                // check whether we have registered before
-                let node_config = nodes_config
-                    .find_node_by_name(common_opts.node_name())
-                    .cloned();
-
-                let my_node_config = if let Some(mut node_config) = node_config {
-                    assert_eq!(
-                        common_opts.node_name(),
-                        node_config.name,
-                        "node name must match"
-                    );
-
-                    if let Some(previous_node_generation) = previous_node_generation {
-                        if node_config
-                            .current_generation
-                            .is_newer_than(previous_node_generation)
-                        {
-                            // detected a concurrent registration of the same node
-                            return Err(Error::ConcurrentNodeRegistration(
-                                common_opts.node_name().to_owned(),
-                            ));
-                        }
-                    } else {
-                        // remember the previous node generation to detect concurrent modifications
-                        previous_node_generation = Some(node_config.current_generation);
-                    }
-
-                    // update node_config
-                    node_config.roles = common_opts.roles;
-                    node_config.address = common_opts.advertised_address.clone();
-                    node_config.current_generation.bump_generation();
-
-                    node_config
-                } else {
-                    let plain_node_id = common_opts.force_node_id.unwrap_or_else(|| {
-                        nodes_config
-                            .max_plain_node_id()
-                            .map(|n| n.next())
-                            .unwrap_or_default()
-                    });
-
-                    assert!(
-                        nodes_config.find_node_by_id(plain_node_id).is_err(),
-                        "duplicate plain node id '{plain_node_id}'"
-                    );
-
-                    let my_node_id = plain_node_id.with_generation(1);
-
-                    NodeConfig::new(
-                        common_opts.node_name().to_owned(),
-                        my_node_id,
-                        common_opts.advertised_address.clone(),
-                        common_opts.roles,
-                        LogServerConfig::default(),
-                    )
-                };
-
-                nodes_config.upsert_node(my_node_config);
-                nodes_config.increment_version();
-
-                Ok(nodes_config)
-            })
-        })
-            .await
-            .map_err(|err| err.transpose())
     }
 
     pub fn bifrost(&self) -> restate_bifrost::Bifrost {
