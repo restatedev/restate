@@ -147,7 +147,6 @@ impl Write for LockWriter {
 struct JsonWriter {
     json_writer: datafusion::arrow::json::Writer<LockWriter, JsonArray>,
     lock_writer: LockWriter,
-    started: bool,
     finished: bool,
 }
 
@@ -159,13 +158,11 @@ impl RecordBatchWriter for JsonWriter {
         Ok(Self {
             json_writer: datafusion::arrow::json::Writer::new(lock_writer.clone()),
             lock_writer,
-            started: false,
             finished: false,
         })
     }
 
     fn write(&mut self, batch: &RecordBatch) -> Result<Bytes, DataFusionError> {
-        self.started = true;
         self.json_writer.write(batch)?;
         Ok(Bytes::from(self.lock_writer.take()))
     }
@@ -173,14 +170,9 @@ impl RecordBatchWriter for JsonWriter {
     fn finish(&mut self) -> Result<Bytes, DataFusionError> {
         if !self.finished {
             self.finished = true;
+
             self.json_writer.finish()?;
-            if self.started {
-                // if we've started, json writer has set the tailing ]
-                self.lock_writer.write_all(b"}")?;
-            } else {
-                // if we haven't started, json writer has written nothing, so we must write the []
-                self.lock_writer.write_all(b"[]}")?;
-            }
+            self.lock_writer.write_all(b"}")?;
         }
         Ok(Bytes::from(self.lock_writer.take()))
     }
