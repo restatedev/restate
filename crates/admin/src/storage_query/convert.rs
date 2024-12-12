@@ -16,10 +16,14 @@ use std::{
 use datafusion::{
     arrow::{
         array::{
-            Array, ArrayRef, AsArray, BinaryArray, GenericByteArray, RecordBatch, StringArray,
+            Array, ArrayRef, AsArray, BinaryArray, GenericByteArray, PrimitiveArray, RecordBatch,
+            StringArray,
         },
         buffer::{OffsetBuffer, ScalarBuffer},
-        datatypes::{ByteArrayType, DataType, Field, FieldRef, Schema, SchemaRef},
+        datatypes::{
+            ByteArrayType, DataType, Date64Type, Field, FieldRef, Schema, SchemaRef, TimeUnit,
+            TimestampMillisecondType,
+        },
         error::ArrowError,
     },
     error::DataFusionError,
@@ -27,8 +31,13 @@ use datafusion::{
 };
 use futures::{Stream, StreamExt};
 
-pub(super) const V1_CONVERTER: JoinConverter<LargeConverter, FullCountConverter> =
-    JoinConverter::new(LargeConverter, FullCountConverter);
+pub(super) const V1_CONVERTER: JoinConverter<
+    JoinConverter<LargeConverter, FullCountConverter>,
+    TimestampConverter,
+> = JoinConverter::new(
+    JoinConverter::new(LargeConverter, FullCountConverter),
+    TimestampConverter,
+);
 
 pub(super) struct ConvertRecordBatchStream<C> {
     converter: C,
@@ -106,36 +115,6 @@ pub(super) trait Converter: Unpin {
     ) -> Result<Vec<ArrayRef>, ArrowError>;
 
     fn convert_fields(&self, fields: Vec<FieldRef>) -> Vec<FieldRef>;
-}
-
-pub(super) struct NoopConverter;
-
-impl Converter for NoopConverter {
-    #[inline]
-    fn convert_schema(&self, schema: SchemaRef) -> SchemaRef {
-        schema
-    }
-
-    #[inline]
-    fn convert_record_batch(
-        &self,
-        _: &SchemaRef,
-        record_batch: RecordBatch,
-    ) -> Result<RecordBatch, ArrowError> {
-        Ok(record_batch)
-    }
-
-    fn convert_columns(
-        &self,
-        _: &SchemaRef,
-        _: Vec<ArrayRef>,
-    ) -> Result<Vec<ArrayRef>, ArrowError> {
-        unreachable!()
-    }
-
-    fn convert_fields(&self, _: Vec<FieldRef>) -> Vec<FieldRef> {
-        unreachable!()
-    }
 }
 
 pub(super) struct JoinConverter<Before, After> {
@@ -255,6 +234,47 @@ impl Converter for FullCountConverter {
                 } else {
                     field
                 }
+            })
+            .collect()
+    }
+}
+
+// Prior to 1.2, we used Date64 fields where we should have used Timestamp fields
+// This is relevant for various fields used in the CLI
+pub(super) struct TimestampConverter;
+
+impl Converter for TimestampConverter {
+    fn convert_columns(
+        &self,
+        converted_schema: &SchemaRef,
+        mut columns: Vec<ArrayRef>,
+    ) -> Result<Vec<ArrayRef>, ArrowError> {
+        for (i, field) in converted_schema.fields().iter().enumerate() {
+            if let (DataType::Date64, DataType::Timestamp(TimeUnit::Millisecond, _)) =
+                (field.data_type(), columns[i].data_type())
+            {
+                let col = columns[i].as_primitive::<TimestampMillisecondType>();
+                // this doesn't copy; the same backing array can be used because they both use i64 epoch-based times
+                let col =
+                    PrimitiveArray::<Date64Type>::new(col.values().clone(), col.nulls().cloned());
+                columns[i] = ArrayRef::from(Box::new(col) as Box<dyn Array>);
+            }
+        }
+        Ok(columns)
+    }
+
+    fn convert_fields(&self, fields: Vec<FieldRef>) -> Vec<FieldRef> {
+        fields
+            .into_iter()
+            .map(|field| match (field.name().as_str(), field.data_type()) {
+                (
+                    // inv ls
+                    "last_start_at" | "next_retry_at" | "modified_at" | "created_at" |
+                    // inv describe
+                    "sleep_wakeup_at",
+                    DataType::Timestamp(TimeUnit::Millisecond, _),
+                ) => FieldRef::new(Field::clone(&field).with_data_type(DataType::Date64)),
+                _ => field,
             })
             .collect()
     }
