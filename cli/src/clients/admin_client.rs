@@ -27,8 +27,8 @@ use crate::clients::AdminClientInterface;
 use super::errors::ApiError;
 
 /// Min/max supported admin API versions
-pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
-pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
+pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
+pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
