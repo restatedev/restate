@@ -318,6 +318,14 @@ impl Node {
     pub async fn start(self) -> Result<(), anyhow::Error> {
         let config = self.updateable_config.pinned();
 
+        let metadata_writer = self.metadata_manager.writer();
+        let metadata = self.metadata_manager.metadata().clone();
+        let is_set = TaskCenter::try_set_global_metadata(metadata.clone());
+        debug_assert!(is_set, "Global metadata was already set");
+
+        // Start metadata manager
+        spawn_metadata_manager(self.metadata_manager)?;
+
         // spawn the node rpc server first to enable connecting to the metadata store
         TaskCenter::spawn(TaskKind::RpcServer, "node-rpc-server", {
             let health = self.health.clone();
@@ -345,14 +353,6 @@ impl Node {
                 },
             )?;
         }
-
-        let metadata_writer = self.metadata_manager.writer();
-        let metadata = self.metadata_manager.metadata().clone();
-        let is_set = TaskCenter::try_set_global_metadata(metadata.clone());
-        debug_assert!(is_set, "Global metadata was already set");
-
-        // Start metadata manager
-        spawn_metadata_manager(self.metadata_manager)?;
 
         // Start partition routing information refresher
         spawn_partition_routing_refresher(self.partition_routing_refresher)?;

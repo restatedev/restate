@@ -86,6 +86,7 @@ enum TargetName {
 
 enum NodeStatus {
   NodeStatus_UNKNOWN = 0;
+  // The node has joined the cluster and is fully operational.
   ALIVE = 1;
   // The node is not fully running yet.
   STARTING_UP = 2;

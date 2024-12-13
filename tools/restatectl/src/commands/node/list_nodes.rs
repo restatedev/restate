@@ -24,8 +24,8 @@ use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::{duration_to_human_rough, Tense};
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::network::protobuf::node_svc::IdentResponse;
+use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_core::network::protobuf::node_ctl_svc::IdentResponse;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
 use restate_types::PlainNodeId;
@@ -155,10 +155,10 @@ async fn fetch_extra_info(
         let address = node_config.address.clone();
         let get_ident = async move {
             let node_channel = grpc_connect(address).await?;
-            let mut node_svc_client =
-                NodeSvcClient::new(node_channel).accept_compressed(CompressionEncoding::Gzip);
+            let mut node_ctl_svc_client =
+                NodeCtlSvcClient::new(node_channel).accept_compressed(CompressionEncoding::Gzip);
 
-            Ok(node_svc_client
+            Ok(node_ctl_svc_client
                 .get_ident(())
                 .await
                 .map_err(|e| {

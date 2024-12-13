@@ -16,13 +16,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_build::configure()
         .bytes(["."])
-        .file_descriptor_set_path(out_dir.join("node_svc_descriptor.bin"))
+        .file_descriptor_set_path(out_dir.join("node_ctl_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
         .extern_path(".restate.node", "::restate_types::protobuf::node")
         .extern_path(".restate.common", "::restate_types::protobuf::common")
         .compile_protos(
-            &["./protobuf/node_svc.proto"],
+            &["./protobuf/node_ctl_svc.proto"],
+            &["protobuf", "../types/protobuf"],
+        )?;
+
+    tonic_build::configure()
+        .bytes(["."])
+        .file_descriptor_set_path(out_dir.join("core_node_svc_descriptor.bin"))
+        // allow older protobuf compiler to be used
+        .protoc_arg("--experimental_allow_proto3_optional")
+        .extern_path(".restate.node", "::restate_types::protobuf::node")
+        .compile_protos(
+            &["./protobuf/core_node_svc.proto"],
             &["protobuf", "../types/protobuf"],
         )?;
 

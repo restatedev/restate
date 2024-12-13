@@ -19,8 +19,8 @@ use restate_bifrost::providers::replicated_loglet::replication::NodeSetChecker;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::network::protobuf::node_svc::GetMetadataRequest;
+use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_core::network::protobuf::node_ctl_svc::GetMetadataRequest;
 use restate_core::MetadataKind;
 use restate_log_server::protobuf::log_server_svc_client::LogServerSvcClient;
 use restate_log_server::protobuf::GetDigestRequest;
@@ -61,7 +61,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
                 connection.cluster_controller
             )
         })?;
-    let mut client = NodeSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let mut client = NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
     let req = GetMetadataRequest {
         kind: MetadataKind::Logs.into(),
         sync: opts.sync_metadata,

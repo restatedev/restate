@@ -17,7 +17,8 @@ use tracing::{debug, trace};
 
 use crate::network_server::metrics::{install_global_prometheus_recorder, render_metrics};
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
-use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
+use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvcServer;
+use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
 use restate_core::network::tonic_service_filter::TonicServiceFilter;
 use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportConnect};
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
@@ -25,7 +26,7 @@ use restate_types::config::CommonOptions;
 use restate_types::health::Health;
 use restate_types::protobuf::common::NodeStatus;
 
-use super::grpc_svc_handler::NodeSvcHandler;
+use super::grpc_svc_handler::{CoreNodeSvcHandler, NodeCtlSvcHandler};
 use super::pprof;
 
 pub struct NetworkServer {}
@@ -94,18 +95,24 @@ impl NetworkServer {
         let node_health = health.node_status();
 
         server_builder.register_grpc_service(
+            NodeCtlSvcServer::new(NodeCtlSvcHandler::new(
+                TaskCenter::current(),
+                options.cluster_name().to_owned(),
+                options.roles,
+                health,
+            ))
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip),
+            restate_core::network::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
+        );
+
+        server_builder.register_grpc_service(
             TonicServiceFilter::new(
-                NodeSvcServer::new(NodeSvcHandler::new(
-                    TaskCenter::current(),
-                    options.cluster_name().to_owned(),
-                    options.roles,
-                    health,
-                    connection_manager,
-                ))
-                .max_decoding_message_size(32 * 1024 * 1024)
-                .max_encoding_message_size(32 * 1024 * 1024)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
+                CoreNodeSvcServer::new(CoreNodeSvcHandler::new(connection_manager))
+                    .max_decoding_message_size(32 * 1024 * 1024)
+                    .max_encoding_message_size(32 * 1024 * 1024)
+                    .accept_compressed(CompressionEncoding::Gzip)
+                    .send_compressed(CompressionEncoding::Gzip),
                 move |req| {
                     if *node_health.get() == NodeStatus::Alive {
                         Ok(req)
@@ -114,7 +121,7 @@ impl NetworkServer {
                     }
                 },
             ),
-            restate_types::protobuf::FILE_DESCRIPTOR_SET,
+            restate_core::network::protobuf::core_node_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder
