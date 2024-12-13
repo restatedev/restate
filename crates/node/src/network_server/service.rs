@@ -92,7 +92,10 @@ impl NetworkServer {
             )
             .with_state(shared_state);
 
+        server_builder.register_axum_routes(axum_router);
+
         let node_health = health.node_status();
+        let node_rpc_health = health.node_rpc_status();
 
         server_builder.register_grpc_service(
             NodeCtlSvcServer::new(NodeCtlSvcHandler::new(
@@ -125,7 +128,7 @@ impl NetworkServer {
         );
 
         server_builder
-            .run(node_health, axum_router, &options.bind_address.unwrap())
+            .run(node_rpc_health, &options.bind_address.unwrap())
             .await?;
 
         Ok(())

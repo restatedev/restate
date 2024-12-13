@@ -30,6 +30,7 @@ use super::net_util::run_hyper_server;
 pub struct NetworkServerBuilder {
     grpc_descriptors: Vec<&'static [u8]>,
     grpc_routes: Option<Routes>,
+    axum_router: Option<axum::routing::Router>,
 }
 
 impl NetworkServerBuilder {
@@ -56,10 +57,13 @@ impl NetworkServerBuilder {
         self
     }
 
+    pub fn register_axum_routes(&mut self, routes: impl Into<axum::routing::Router>) {
+        self.axum_router = Some(self.axum_router.take().unwrap_or_default().merge(routes));
+    }
+
     pub async fn run(
         self,
         node_rpc_health: HealthStatus<NodeRpcStatus>,
-        axum_router: Option<axum::routing::Router>,
         bind_address: &BindAddress,
     ) -> Result<(), anyhow::Error> {
         node_rpc_health.update(NodeRpcStatus::StartingUp);
@@ -68,7 +72,8 @@ impl NetworkServerBuilder {
             .include_headers(true)
             .level(tracing::Level::ERROR);
 
-        let axum_router = axum_router
+        let axum_router = self
+            .axum_router
             .unwrap_or_default()
             .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
             .fallback(handler_404);

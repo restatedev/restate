@@ -48,7 +48,7 @@ pub async fn start_metadata_store(
         let rpc_server_health_status = rpc_server_health_status.clone();
         async move {
             server_builder
-                .run(rpc_server_health_status, None, &bind_address)
+                .run(rpc_server_health_status, &bind_address)
                 .await
         }
     })?;
