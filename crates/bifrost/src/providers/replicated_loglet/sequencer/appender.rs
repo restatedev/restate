@@ -16,6 +16,7 @@ use std::{
 
 use futures::{stream::FuturesUnordered, StreamExt};
 use tokio::{sync::OwnedSemaphorePermit, time::timeout};
+use tracing::{instrument, trace};
 
 use restate_core::{
     cancellation_token,
@@ -30,19 +31,18 @@ use restate_types::{
     live::Live,
     logs::{LogletOffset, Record, SequenceNumber, TailState},
     net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
-    replicated_loglet::NodeSet,
+    replicated_loglet::{NodeSet, Spread},
     time::MillisSinceEpoch,
+    PlainNodeId,
 };
-use tracing::{instrument, trace};
 
 use super::{RecordsExt, SequencerSharedState};
 use crate::{
     loglet::{AppendError, LogletCommitResolver},
     providers::replicated_loglet::{
-        log_server_manager::{RemoteLogServer, RemoteLogServerManager},
+        log_server_manager::RemoteLogServer,
         metric_definitions::{
             BIFROST_SEQ_RECORDS_COMMITTED_BYTES, BIFROST_SEQ_RECORDS_COMMITTED_TOTAL,
-            BIFROST_SEQ_STORE_DURATION,
         },
         replication::NodeSetChecker,
     },
@@ -64,7 +64,6 @@ enum SequencerAppenderState {
 /// Appender makes sure a batch of records will run to completion
 pub(crate) struct SequencerAppender<T> {
     sequencer_shared_state: Arc<SequencerSharedState>,
-    log_server_manager: RemoteLogServerManager,
     store_router: RpcRouter<Store>,
     networking: Networking<T>,
     first_offset: LogletOffset,
@@ -81,7 +80,6 @@ impl<T: TransportConnect> SequencerAppender<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sequencer_shared_state: Arc<SequencerSharedState>,
-        log_server_manager: RemoteLogServerManager,
         store_router: RpcRouter<Store>,
         networking: Networking<T>,
         first_offset: LogletOffset,
@@ -91,7 +89,6 @@ impl<T: TransportConnect> SequencerAppender<T> {
     ) -> Self {
         Self {
             sequencer_shared_state,
-            log_server_manager,
             store_router,
             networking,
             first_offset,
@@ -113,7 +110,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
             otel.name="replicated_loglet::sequencer::appender: run"
         )
     )]
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    pub async fn run(mut self) {
         let mut wave = 0;
         // initial wave has 0 replicated and 0 gray listed node
         let mut state = SequencerAppenderState::Wave {
@@ -128,7 +125,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
             .live_load()
             .bifrost
             .replicated_loglet
-            .sequencer_backoff_strategy
+            .sequencer_retry_policy
             .clone();
 
         let mut retry = retry_policy.iter();
@@ -200,7 +197,6 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 unreachable!()
             }
         }
-        Ok(())
     }
 
     async fn wave(&mut self, mut graylist: NodeSet, wave: usize) -> SequencerAppenderState {
@@ -212,59 +208,79 @@ impl<T: TransportConnect> SequencerAppender<T> {
         ) {
             Ok(spread) => spread,
             Err(_) => {
+                graylist.clear();
                 return SequencerAppenderState::Backoff;
             }
         };
 
         tracing::trace!(%graylist, %spread, %wave, "Sending store wave");
 
-        let mut checker = NodeSetChecker::new(
-            self.sequencer_shared_state.selector.nodeset(),
-            &self.networking.metadata().nodes_config_ref(),
-            self.sequencer_shared_state.selector.replication_property(),
-        );
+        // let mut gray = false;
+        // for id in &spread {
+        //     // todo:
+        //     // if a node is consistently down? we should have:
+        //     //   1) cool-off period between connection attempts
+        //     //   2) remember generation number to reset the cool-off period
+        //     //   3) Attempt to connect concurrently
+        //     //
+        //     // at this stage, if we fail to get connection to this server it must be
+        //     // a first time use. We can safely assume this has to be graylisted
+        //     let server = match self
+        //         .sequencer_shared_state
+        //         .log_server_manager
+        //         .get(*id, &self.networking)
+        //         .await
+        //     {
+        //         Ok(server) => server,
+        //         Err(err) => {
+        //             tracing::debug!(
+        //                 peer=%id,
+        //                 error=%err,
+        //                 %wave,
+        //                 %graylist,
+        //                 %spread,
+        //                 "Failed to connect to node. Graylisting this node in the next wave"
+        //             );
+        //             gray = true;
+        //             graylist.insert(*id);
+        //             continue;
+        //         }
+        //     };
+        //
+        //     checker.set_attribute(*id, true);
+        //     servers.push(server);
+        // }
 
-        let mut gray = false;
-        let mut servers = Vec::with_capacity(spread.len());
-        for id in &spread {
-            // at this stage, if we fail to get connection to this server it must be
-            // a first time use. We can safely assume this has to be graylisted
-            let server = match self.log_server_manager.get(*id, &self.networking).await {
-                Ok(server) => server,
-                Err(err) => {
-                    tracing::debug!(
-                        peer=%id,
-                        error=%err,
-                        %wave,
-                        %graylist,
-                        %spread,
-                        "Failed to connect to node. Graylisting this node in the next wave"
-                    );
-                    gray = true;
-                    graylist.insert(*id);
-                    continue;
-                }
-            };
-
-            checker.set_attribute(*id, true);
-            servers.push(server);
-        }
-
-        if gray && !checker.check_write_quorum(|attr| *attr) {
-            // the remaining nodes in the spread cannot achieve a write quorum
-            // hence we try again with the updated new graylist
-            return SequencerAppenderState::Wave { graylist };
-        }
+        // todo: we generated a spread but we couldn't connect to enough nodes. That's an
+        // optimization that wouldn't make sense if:
+        // 1) we maintain a global logserver-health map
+        // 2) we connect async.
+        //
+        // - sequencer creates the appender
+        // - appender checks if can attempt a wave:
+        //   - generate a spread while taking into account the log-server health
+        //   - if we can't create a spread. can we generate a spread by ignoring log-server health?
+        //   (no graylist)
+        //   - if we can, we generate a spread and attempt to send the wave
+        //   - send the wave (concurrent)
+        //   - continously collecting responses
+        //   - on errors of connection we report back to health - consider dedicated connection
+        //   (connection role)
+        //   - a wave timeout and a single store timeout???
+        // if gray && !checker.check_write_quorum(|attr| *attr) {
+        // TODO: WE SHOULD ACCOUNT FOR THOSE SERVERS THAT HAS ALREADY RESPONDED IN PREVIOUS
+        // ITERATIONS YA NEGM..... AS IN, set_attribute() THEM to TRUE. because we can still
+        // achieve quorum.
+        // the remaining nodes in the spread cannot achieve a write quorum
+        // hence we try again with the updated new graylist??
+        // return SequencerAppenderState::Wave { graylist };
+        // }
 
         // otherwise, we try to send the wave.
-        self.send_wave(servers, wave).await
+        self.send_wave(spread, wave).await
     }
 
-    async fn send_wave(
-        &mut self,
-        spread_servers: Vec<RemoteLogServer>,
-        wave: usize,
-    ) -> SequencerAppenderState {
+    async fn send_wave(&mut self, spread: Spread, wave: usize) -> SequencerAppenderState {
         let last_offset = self.records.last_offset(self.first_offset).unwrap();
 
         let mut checker = NodeSetChecker::<NodeAttributes>::new(
@@ -285,72 +301,69 @@ impl<T: TransportConnect> SequencerAppender<T> {
         let mut pending_servers = NodeSet::empty();
         let mut store_tasks = FuturesUnordered::new();
 
-        let spread: Vec<_> = spread_servers.iter().map(|s| s.node_id()).collect();
-        for server in spread_servers {
-            pending_servers.insert(server.node_id());
+        for node_id in &spread {
+            pending_servers.insert(*node_id);
 
-            let task = LogServerStoreTask {
-                sequencer_shared_state: &self.sequencer_shared_state,
-                server_manager: &self.log_server_manager,
-                server,
-                networking: &self.networking,
-                first_offset: self.first_offset,
-                records: &self.records,
-                rpc_router: &self.store_router,
-                timeout_at,
-            };
-
-            store_tasks.push(task.run());
+            store_tasks.push(
+                LogServerStoreTask {
+                    node_id: *node_id,
+                    sequencer_shared_state: &self.sequencer_shared_state,
+                    networking: &self.networking,
+                    first_offset: self.first_offset,
+                    records: &self.records,
+                    rpc_router: &self.store_router,
+                    timeout_at,
+                }
+                .run(),
+            );
         }
 
         loop {
             let store_result = match timeout(store_timeout, store_tasks.next()).await {
                 Ok(Some(result)) => result,
                 Ok(None) => break, // no more tasks
-                Err(elapsed) => {
+                Err(_) => {
                     // if we have already acknowledged this append, it's okay to retire.
                     if self.commit_resolver.is_none() {
-                        tracing::debug!(%pending_servers, %wave, ?spread, ?elapsed, responses=?checker, "Some servers didn't store this batch, but append was committed, giving up");
+                        tracing::debug!(%pending_servers, %wave, %spread, responses=?checker, "Some servers didn't store this batch, but append was committed, giving up");
                         return SequencerAppenderState::Done;
                     }
 
-                    if self
-                        .sequencer_shared_state
-                        .global_committed_tail()
-                        .is_sealed()
-                    {
-                        tracing::debug!(%pending_servers, %wave, ?spread, ?elapsed, responses=?checker, "Some servers didn't store this batch, but this loglet was sealed, giving up");
+                    if self.sequencer_shared_state.known_global_tail.is_sealed() {
+                        tracing::debug!(%pending_servers, %wave, %spread, responses=?checker, "Some servers didn't store this batch, but this loglet was sealed, giving up");
                         return SequencerAppenderState::Sealed;
                     }
                     // timed out!
                     // none of the pending tasks has finished in time! we will assume all pending server
                     // are graylisted and try again
-                    tracing::debug!(%pending_servers, %wave, ?spread, ?elapsed, responses=?checker, "Timeout waiting on store response");
+                    tracing::debug!(%pending_servers, %wave, %spread, responses=?checker, "Timeout waiting on store response");
                     return SequencerAppenderState::Wave {
                         graylist: pending_servers,
                     };
                 }
             };
 
-            let LogServerStoreTaskResult { server, status } = store_result;
+            let LogServerStoreTaskResult {
+                node_id: peer,
+                status,
+            } = store_result;
 
-            let node_id = server.node_id();
             let response = match status {
                 StoreTaskStatus::Error(NetworkError::Shutdown(_)) => {
                     return SequencerAppenderState::Cancelled;
                 }
                 StoreTaskStatus::Error(err) => {
                     // couldn't send store command to remote server
-                    tracing::debug!(node_id=%server.node_id(), error=%err, "Failed to send batch to node");
+                    tracing::debug!(%peer, error=%err, "Failed to send batch to node");
                     continue;
                 }
                 StoreTaskStatus::Sealed(_) => {
-                    tracing::debug!(node_id=%server.node_id(), "Store task cancelled, the node is sealed");
-                    checker.set_attribute(node_id, NodeAttributes::sealed());
+                    tracing::debug!(%peer, "Store task cancelled, the node is sealed");
+                    checker.set_attribute(peer, NodeAttributes::sealed());
                     continue;
                 }
                 StoreTaskStatus::Stored(stored) => {
-                    tracing::trace!(node_id=%server.node_id(), "Store task completed");
+                    tracing::trace!(%peer, "Store task completed");
                     stored
                 }
             };
@@ -360,11 +373,11 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 Status::Ok => {
                     // only if status is okay that we remove this node
                     // from the gray list, and move to replicated list
-                    checker.set_attribute(node_id, NodeAttributes::committed());
-                    pending_servers.remove(&node_id);
+                    checker.set_attribute(peer, NodeAttributes::committed());
+                    pending_servers.remove(&peer);
                 }
                 Status::Sealed | Status::Sealing => {
-                    checker.set_attribute(node_id, NodeAttributes::sealed());
+                    checker.set_attribute(peer, NodeAttributes::sealed());
                 }
                 Status::Disabled
                 | Status::Dropped
@@ -372,20 +385,15 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 | Status::Malformed
                 | Status::OutOfBounds => {
                     // just leave this log server in graylist (pending)
-                    tracing::trace!(node_id=%server.node_id(), status=?response.status, "Store task returned an error status");
+                    tracing::debug!(%peer, status=?response.status, "Store task returned an error status");
                 }
             }
 
             if self.commit_resolver.is_some() && checker.check_write_quorum(|attr| attr.committed) {
                 // resolve the commit if not resolved yet
                 if let Some(resolver) = self.commit_resolver.take() {
-                    self.sequencer_shared_state.record_cache.extend(
-                        *self.sequencer_shared_state.loglet_id(),
-                        self.first_offset,
-                        &self.records,
-                    );
                     self.sequencer_shared_state
-                        .global_committed_tail()
+                        .known_global_tail
                         .notify_offset_update(last_offset.next());
                     resolver.offset(last_offset);
                 }
@@ -446,19 +454,16 @@ impl From<Result<StoreTaskStatus, NetworkError>> for StoreTaskStatus {
 }
 
 struct LogServerStoreTaskResult {
-    pub server: RemoteLogServer,
+    pub node_id: PlainNodeId,
     pub status: StoreTaskStatus,
 }
 
-/// The LogServerStoreTask takes care of running a [`Store`] to end.
-///
-/// The task will retry to connect to the remote server is connection
+/// The task will retry to connect to the remote server if connection
 /// was lost.
 struct LogServerStoreTask<'a, T> {
+    node_id: PlainNodeId,
     sequencer_shared_state: &'a Arc<SequencerSharedState>,
-    server_manager: &'a RemoteLogServerManager,
     networking: &'a Networking<T>,
-    server: RemoteLogServer,
     first_offset: LogletOffset,
     records: &'a Arc<[Record]>,
     rpc_router: &'a RpcRouter<Store>,
@@ -469,10 +474,11 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
     #[instrument(
         skip_all,
         fields(
-            otel.name = "log_server: store",
+            otel.name = "sequencer: store_task",
+            loglet_id = %self.sequencer_shared_state.loglet_id(),
             first_offset=%self.first_offset,
-            log_server_id=%self.server.node_id(),
-            loglet_id=%self.server.loglet_id(),
+            last_offset = %self.records.last_offset(self.first_offset).unwrap(),
+            peer=%self.node_id,
         )
     )]
     async fn run(mut self) -> LogServerStoreTaskResult {
@@ -480,41 +486,37 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
         match &result {
             Ok(status) => {
                 tracing::trace!(
-                    loglet_id = %self.sequencer_shared_state.loglet_id(),
-                    node_id = %self.server.node_id(),
                     result = ?status,
-                    first_offset = %self.first_offset,
-                    last_offset = %self.records.last_offset(self.first_offset).unwrap(),
                     "Got store result from log server"
                 );
             }
             Err(err) => {
                 tracing::trace!(
-                    loglet_id = %self.sequencer_shared_state.loglet_id(),
-                    node_id = %self.server.node_id(),
                     error = %err,
-                    first_offset = %self.first_offset,
-                    last_offset = %self.records.last_offset(self.first_offset).unwrap(),
                     "Failed to send store to log server"
                 )
             }
         }
 
         LogServerStoreTaskResult {
-            server: self.server,
+            node_id: self.node_id,
             status: result.into(),
         }
     }
 
     async fn send(&mut self) -> Result<StoreTaskStatus, NetworkError> {
-        let server_local_tail = self
-            .server
+        let mut server = self
+            .sequencer_shared_state
+            .log_server_manager
+            .get(self.node_id, self.networking)
+            .await?;
+        let server_local_tail = server
             .local_tail()
             .wait_for_offset_or_seal(self.first_offset);
 
         let global_tail = self
             .sequencer_shared_state
-            .committed_tail
+            .known_global_tail
             .wait_for_offset_or_seal(self.first_offset);
 
         let tail_state = tokio::select! {
@@ -542,20 +544,20 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
             }
         }
 
-        let incoming = match self.try_send().await {
+        let incoming = match self.try_send(&mut server).await {
             Ok(incoming) => incoming,
             Err(err) => {
                 return Err(err);
             }
         };
 
-        self.server
+        server
             .local_tail()
             .notify_offset_update(incoming.body().local_tail);
 
         match incoming.body().status {
             Status::Sealing | Status::Sealed => {
-                self.server.local_tail().notify_seal();
+                server.local_tail().notify_seal();
                 return Ok(StoreTaskStatus::Sealed(incoming.body().header.local_tail));
             }
             _ => {
@@ -566,26 +568,32 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
         Ok(StoreTaskStatus::Stored(incoming.into_body()))
     }
 
-    async fn try_send(&mut self) -> Result<Incoming<Stored>, NetworkError> {
+    async fn try_send(
+        &mut self,
+        server: &mut RemoteLogServer,
+    ) -> Result<Incoming<Stored>, NetworkError> {
         let store = Store {
             header: LogServerRequestHeader::new(
-                self.server.loglet_id(),
-                self.sequencer_shared_state.committed_tail.latest_offset(),
+                *self.sequencer_shared_state.loglet_id(),
+                self.sequencer_shared_state
+                    .known_global_tail
+                    .latest_offset(),
             ),
             first_offset: self.first_offset,
             flags: StoreFlags::empty(),
             known_archived: LogletOffset::INVALID,
             payloads: Arc::clone(self.records),
-            sequencer: self.sequencer_shared_state.my_node_id,
+            sequencer: *self.sequencer_shared_state.sequencer(),
             timeout_at: Some(self.timeout_at),
         };
 
-        let mut msg = Outgoing::new(self.server.node_id(), store);
+        let mut msg = Outgoing::new(self.node_id, store);
 
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let with_connection = msg.assign_connection(self.server.connection().clone());
+
+            let with_connection = msg.assign_connection(server.connection().clone());
             let store_start_time = Instant::now();
 
             let result = match self.rpc_router.call_on_connection(with_connection).await {
@@ -599,21 +607,14 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
                         | NetworkError::ConnectError(_)
                         | NetworkError::Timeout(_) => {
                             trace!(
-                                loglet_id = %self.server.loglet_id(),
-                                node_id = %self.server.node_id(),
-                                first_offset = %self.first_offset,
-                                last_offset = %self.records.last_offset(self.first_offset).unwrap(),
                                 %attempt,
                                 "Failed to send store to log server, trying to create a new connection"
                             );
-                            self.server_manager
-                                .renew(&mut self.server, self.networking)
+                            self.sequencer_shared_state
+                                .log_server_manager
+                                .renew(server, self.networking)
                                 .await?;
                             trace!(
-                                loglet_id = %self.server.loglet_id(),
-                                node_id = %self.server.node_id(),
-                                first_offset = %self.first_offset,
-                                last_offset = %self.records.last_offset(self.first_offset).unwrap(),
                                 %attempt,
                                 "Reconnected to log-server, retrying the store"
                             );
@@ -625,8 +626,7 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
                 }
             };
 
-            metrics::histogram!(BIFROST_SEQ_STORE_DURATION, "node_id" => self.server.node_id().to_string())
-                .record(store_start_time.elapsed());
+            server.store_latency().record(store_start_time.elapsed());
 
             return result;
         }
