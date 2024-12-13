@@ -61,7 +61,3 @@ test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
-
-[[bench]]
-name = "append_throughput"
-harness = false
