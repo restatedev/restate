@@ -155,7 +155,7 @@ impl NodeSet {
         self.0.contains(node)
     }
 
-    /// returns true if this node didn't already exist in the nodeset
+    /// Returns true if this node didn't already exist in the nodeset
     pub fn insert(&mut self, node: PlainNodeId) -> bool {
         self.0.insert(node)
     }
@@ -177,6 +177,11 @@ impl NodeSet {
                 .iter()
                 .map(|node_id| nodes_config.get_log_server_storage_state(node_id))
                 .all(|storage_state| storage_state.is_provisioning())
+    }
+
+    /// Clears the nodeset, removes all nodes.
+    pub fn clear(&mut self) {
+        self.0.clear();
     }
 
     pub fn remove(&mut self, node: &PlainNodeId) -> bool {

@@ -14,7 +14,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{Networking, Outgoing, TransportConnect};
+use restate_core::network::{Networking, TransportConnect};
 use restate_core::TaskCenterFutureExt;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
@@ -112,47 +112,44 @@ impl<T: TransportConnect> FindTailTask<T> {
         // If the sequencer is dead, let's not wait for too long on its response. But if
         // it's alive (or a newer generation is running on this node) then this check fails and
         // we won't spend time here.
-        if let Ok(connection) = self
-            .networking
-            .node_connection(self.my_params.sequencer)
+
+        let get_seq_state = GetSequencerState {
+            header: CommonRequestHeader {
+                log_id: self.log_id,
+                segment_index: self.segment_index,
+                loglet_id: self.my_params.loglet_id,
+            },
+        };
+
+        // todo: use cluster-state information when this becomes node-level available to avoid
+        // the sequencer node if it's known to be dead.
+        if let Ok(seq_state) = self
+            .sequencers_rpc
+            .get_seq_state
+            .call_timeout(
+                &self.networking,
+                self.my_params.sequencer,
+                get_seq_state,
+                // todo: configure timeout?
+                Duration::from_millis(500),
+            )
             .await
         {
-            // todo: use cluster-state information when this becomes node-level available to avoid
-            // the sequencer node if it's known to be dead.
-            let get_seq_state = Outgoing::new(
-                self.my_params.sequencer,
-                GetSequencerState {
-                    header: CommonRequestHeader {
-                        log_id: self.log_id,
-                        segment_index: self.segment_index,
-                        loglet_id: self.my_params.loglet_id,
-                    },
-                },
-            )
-            .assign_connection(connection);
-            // todo: configure timeout?
-            if let Ok(seq_state) = self
-                .sequencers_rpc
-                .get_seq_state
-                .call_outgoing_timeout(get_seq_state, Duration::from_millis(500))
-                .await
-            {
-                let seq_state = seq_state.into_body();
-                if seq_state.header.status.is_ok() {
-                    let global_tail = seq_state
-                        .header
-                        .known_global_tail
-                        .expect("global tail must be known by sequencer");
-                    return if seq_state
-                        .header
-                        .sealed
-                        .expect("sequencer must set sealed if status=ok")
-                    {
-                        FindTailResult::Sealed { global_tail }
-                    } else {
-                        FindTailResult::Open { global_tail }
-                    };
-                }
+            let seq_state = seq_state.into_body();
+            if seq_state.header.status.is_ok() {
+                let global_tail = seq_state
+                    .header
+                    .known_global_tail
+                    .expect("global tail must be known by sequencer");
+                return if seq_state
+                    .header
+                    .sealed
+                    .expect("sequencer must set sealed if status=ok")
+                {
+                    FindTailResult::Sealed { global_tail }
+                } else {
+                    FindTailResult::Open { global_tail }
+                };
             }
         }
         // After this point we don't try the sequencer.
