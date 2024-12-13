@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// todo(asoli): remove when fleshed out
-#![allow(dead_code)]
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,10 +46,10 @@ macro_rules! return_error_status {
             },
         };
 
-        let _ = TaskCenter::spawn_child(TaskKind::Disposable, "append-return-error", async move {
-            $reciprocal.prepare(msg).send().await?;
-            Ok(())
-        });
+        let _ =
+            TaskCenter::spawn_unmanaged(TaskKind::Disposable, "append-return-error", async move {
+                let _ = $reciprocal.prepare(msg).send().await;
+            });
 
         return;
     }};
@@ -66,10 +63,10 @@ macro_rules! return_error_status {
             },
         };
 
-        let _ = TaskCenter::spawn_child(TaskKind::Disposable, "append-return-error", async move {
-            $reciprocal.prepare(msg).send().await?;
-            Ok(())
-        });
+        let _ =
+            TaskCenter::spawn_unmanaged(TaskKind::Disposable, "append-return-error", async move {
+                let _ = $reciprocal.prepare(msg).send().await;
+            });
 
         return;
     }};
@@ -220,7 +217,7 @@ impl RequestPump {
             global_tail: global_tail.clone(),
         };
 
-        let _ = TaskCenter::spawn_child(TaskKind::Disposable, "wait-appended", task.run());
+        let _ = TaskCenter::spawn_unmanaged(TaskKind::Disposable, "wait-appended", task.run());
     }
 
     async fn get_loglet<T: TransportConnect>(
@@ -342,7 +339,7 @@ struct WaitForCommitTask {
 }
 
 impl WaitForCommitTask {
-    async fn run(self) -> anyhow::Result<()> {
+    async fn run(self) {
         let appended = match self.loglet_commit.await {
             Ok(offset) => Appended {
                 header: CommonResponseHeader {
@@ -381,8 +378,7 @@ impl WaitForCommitTask {
             },
         };
 
-        self.reciprocal.prepare(appended).send().await?;
-
-        Ok(())
+        // ignore connection drop errors, no point of logging an error here.
+        let _ = self.reciprocal.prepare(appended).send().await;
     }
 }
