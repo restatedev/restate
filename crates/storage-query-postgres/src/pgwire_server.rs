@@ -98,7 +98,7 @@ pub fn spawn_connection(
 ) {
     // fails only if we are shutting down
     let _ = TaskCenter::spawn_child(
-        TaskKind::RpcConnection,
+        TaskKind::SocketHandler,
         "postgres-query-connection",
         async move {
             let result = process_socket(incoming_socket, None, factory).await;

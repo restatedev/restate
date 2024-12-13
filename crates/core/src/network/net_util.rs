@@ -16,19 +16,19 @@ use std::time::Duration;
 
 use http::Uri;
 use hyper::body::{Body, Incoming};
-use hyper::rt::{Read, Write};
 use hyper_util::rt::TokioIo;
+use hyper_util::server::graceful::GracefulShutdown;
 use tokio::io;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio_util::net::Listener;
 use tonic::transport::{Channel, Endpoint};
-use tracing::{debug, info, instrument, Span};
+use tracing::{debug, info, instrument, trace, Instrument, Span};
 
-use restate_types::config::{MetadataStoreClientOptions, NetworkingOptions};
+use restate_types::config::{Configuration, MetadataStoreClientOptions, NetworkingOptions};
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 
-use crate::{cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskKind};
+use crate::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 
 pub fn create_tonic_channel_from_advertised_address<T: CommonClientConnectionOptions>(
     address: AdvertisedAddress,
@@ -39,6 +39,9 @@ pub fn create_tonic_channel_from_advertised_address<T: CommonClientConnectionOpt
             // dummy endpoint required to specify an uds connector, it is not used anywhere
             Endpoint::try_from("http://127.0.0.1")
                 .expect("/ should be a valid Uri")
+                .http2_keep_alive_interval(options.keep_alive_interval())
+                .keep_alive_timeout(options.keep_alive_timeout())
+                .http2_adaptive_window(options.http2_adaptive_window())
                 .connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
                     let uds_path = uds_path.clone();
                     async move {
@@ -51,6 +54,8 @@ pub fn create_tonic_channel_from_advertised_address<T: CommonClientConnectionOpt
             .http2_keep_alive_interval(options.keep_alive_interval())
             .keep_alive_timeout(options.keep_alive_timeout())
             .http2_adaptive_window(options.http2_adaptive_window())
+            // this true by default, but this is to guard against any change in defaults
+            .tcp_nodelay(true)
             .connect_lazy(),
     }
 }
@@ -77,7 +82,7 @@ pub enum Error {
     Shutdown(#[from] ShutdownError),
 }
 
-#[instrument(level = "info", skip_all, fields(server_name = %server_name, uds.path = tracing::field::Empty, net.host.addr = tracing::field::Empty, net.host.port = tracing::field::Empty))]
+#[instrument(level = "error", name = "server", skip_all, fields(server_name = %server_name, uds.path = tracing::field::Empty, net.host.addr = tracing::field::Empty, net.host.port = tracing::field::Empty))]
 pub async fn run_hyper_server<S, B>(
     bind_address: &BindAddress,
     service: S,
@@ -137,7 +142,7 @@ where
     }
     on_stop();
 
-    debug!("Stopped server");
+    info!("Stopped listening");
 
     Ok(())
 }
@@ -161,85 +166,71 @@ where
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
+    let mut configuration = Configuration::updateable();
     let mut shutdown = std::pin::pin!(cancellation_watcher());
+    let graceful_shutdown = GracefulShutdown::new();
     loop {
         tokio::select! {
             biased;
             _ = &mut shutdown => {
+                debug!("Shutdown requested, will stop listening to new connection");
+                drop(listener);
                 break;
             }
             incoming_connection = listener.accept() => {
                 let (stream, remote_addr) = incoming_connection?;
                 let io = TokioIo::new(stream);
-                debug!(?remote_addr, "Accepting incoming connection");
 
-                TaskCenter::spawn_child(TaskKind::RpcConnection, server_name, handle_connection(
-                    server_name,
-                    io,
-                    service.clone(),
-                    remote_addr,
-                ))?;
+                let network_options = &configuration.live_load().networking;
+                let mut builder = hyper_util::server::conn::auto::Builder::new(TaskCenterExecutor);
+                builder
+                    .http2()
+                    .timer(hyper_util::rt::TokioTimer::default())
+                    .adaptive_window(network_options.http2_adaptive_window)
+                    .keep_alive_interval(Some(network_options.http2_keep_alive_interval.into()))
+                    .keep_alive_timeout(network_options.http2_keep_alive_timeout.into());
+
+                let connection = graceful_shutdown.watch(builder
+                    .serve_connection(io, service.clone()).into_owned())
+                    .instrument(Span::current());
+
+                // TaskCenter will wait for the parent task, we don't need individual connection
+                // handlers to be managed tasks. We just need to make sure that we actually try and
+                // shutdown connections, that's why H2Stream tasks are managed.
+                TaskCenter::spawn_unmanaged(TaskKind::SocketHandler, server_name, async move {
+                    trace!("Connection accepted from {remote_addr:?}");
+                    if let Err(e) = connection.await {
+                        if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
+                            if hyper_error.is_incomplete_message() {
+                                debug!("Connection closed before request completed");
+                            }
+                        } else {
+                            debug!("Connection terminated due to error: {e}");
+                        }
+                    } else {
+                        trace!("Connection completed cleanly");
+                    }
+                })?;
             }
+        }
+    }
+
+    debug!("Draining current connections");
+    tokio::select! {
+        _ = graceful_shutdown.shutdown() => {
+            debug!("All connections completed gracefully");
+
+        },
+        _ = tokio::time::sleep(Duration::from_secs(5)) => {
+            debug!("Some connections are taking longer to drain, dropping them");
         }
     }
 
     Ok(())
 }
 
-async fn handle_connection<S, B, I, A>(
-    server_name: &'static str,
-    io: I,
-    service: S,
-    remote_addr: A,
-) -> anyhow::Result<()>
-where
-    S: hyper::service::Service<http::Request<Incoming>, Response = hyper::Response<B>>
-        + Send
-        + Clone
-        + 'static,
-    S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    S::Future: Send,
-    B: Body + Send + 'static,
-    B::Data: Send,
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    I: Read + Write + Unpin + 'static,
-    A: Send + Debug,
-{
-    // todo (asoli): Use TaskCenter's Handle Api when it's introduced to replace the nesting of
-    // run_in_scope_sync and TaskCenter::spawn_child.
-    let executor = TaskCenterExecutor::new(TaskCenter::current(), server_name);
-    let builder = hyper_util::server::conn::auto::Builder::new(executor);
-    let connection = builder.serve_connection(io, service);
-
-    tokio::select! {
-        res = connection => {
-            if let Err(e) = res {
-                if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
-                    if hyper_error.is_incomplete_message() {
-                        debug!(?remote_addr, "Connection closed before request completed");
-                    }
-                } else {
-                    anyhow::bail!(Error::HandlingConnection(e));
-                }
-            }
-        },
-        _ = cancellation_watcher() => {}
-    }
-
-    Ok(())
-}
-
-#[derive(Clone)]
-struct TaskCenterExecutor {
-    task_center: task_center::Handle,
-    name: &'static str,
-}
-
-impl TaskCenterExecutor {
-    fn new(task_center: task_center::Handle, name: &'static str) -> Self {
-        Self { task_center, name }
-    }
-}
+#[derive(Clone, Default)]
+struct TaskCenterExecutor;
 
 impl<F> hyper::rt::Executor<F> for TaskCenterExecutor
 where
@@ -247,13 +238,10 @@ where
     F::Output: Send + 'static,
 {
     fn execute(&self, fut: F) {
-        // ignore shutdown error
-        self.task_center.run_sync(|| {
-            let _ = TaskCenter::spawn_child(TaskKind::RpcConnection, self.name, async move {
-                // ignore the future output
-                let _ = fut.await;
-                Ok(())
-            });
+        let _ = TaskCenter::spawn_child(TaskKind::H2Stream, "h2stream", async move {
+            // ignore the future output
+            let _ = fut.await;
+            Ok(())
         });
     }
 }

@@ -49,7 +49,7 @@ impl TaskId {
 ///   * `OnCancel` - What to do when the task is cancelled:
 ///     - `ignore                 - Ignores the tokio task. The task will be dropped on tokio
 ///                                 runtime drop.
-///     - `abort`                 - Aborts the tokio task (default)
+///     - `abort`                 - Aborts the tokio task
 ///     - `wait`  (default)       - Wait for graceful shutdown. The task must respond
 ///                                  to cancellation_watcher() or check periodically for
 ///                                  is_cancellation_requested()
@@ -80,8 +80,9 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort"))]
     MetadataBackgroundSync,
     RpcServer,
-    #[strum(props(OnCancel = "abort", OnError = "log"))]
-    RpcConnection,
+    SocketHandler,
+    #[strum(props(OnCancel = "wait", OnError = "log"))]
+    H2Stream,
     /// A task that handles a single RPC request. The task is executed on the default runtime to
     /// decouple it from the lifetime of the originating runtime. Use this task kind if you want to
     /// make sure that the rpc response is sent even if the originating runtime is dropped.
