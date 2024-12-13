@@ -10,40 +10,46 @@
 
 use std::{collections::BTreeMap, ops::Deref, sync::Arc};
 
+use crossbeam_utils::CachePadded;
+use metrics::Histogram;
 use tokio::sync::Mutex;
 
 use restate_core::network::{NetworkError, Networking, TransportConnect, WeakConnection};
 use restate_types::{
     logs::{LogletOffset, SequenceNumber, TailState},
-    replicated_loglet::{NodeSet, ReplicatedLogletId},
+    replicated_loglet::NodeSet,
     PlainNodeId,
 };
 
+use super::metric_definitions::BIFROST_SEQ_STORE_DURATION;
 use crate::loglet::util::TailOffsetWatch;
 
-type LogServerLock = Mutex<Option<RemoteLogServer>>;
+type LogServerLock = CachePadded<Mutex<Option<RemoteLogServer>>>;
 
 /// LogServer instance
 #[derive(Clone)]
 pub struct RemoteLogServer {
-    loglet_id: ReplicatedLogletId,
-    node_id: PlainNodeId,
     tail: TailOffsetWatch,
-    //todo(azmy): maybe use ArcSwap here to update
     connection: WeakConnection,
+    store_latency: Histogram,
 }
 
 impl RemoteLogServer {
-    pub fn node_id(&self) -> PlainNodeId {
-        self.node_id
-    }
-
-    pub fn loglet_id(&self) -> ReplicatedLogletId {
-        self.loglet_id
+    fn new(connection: WeakConnection) -> Self {
+        let node_id = connection.peer().as_plain();
+        Self {
+            tail: TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST)),
+            connection,
+            store_latency: metrics::histogram!(BIFROST_SEQ_STORE_DURATION, "node_id" => node_id.to_string()),
+        }
     }
 
     pub fn local_tail(&self) -> &TailOffsetWatch {
         &self.tail
+    }
+
+    pub fn store_latency(&self) -> &Histogram {
+        &self.store_latency
     }
 
     pub fn connection(&self) -> &WeakConnection {
@@ -59,19 +65,18 @@ impl RemoteLogServer {
 #[derive(Clone)]
 pub struct RemoteLogServerManager {
     servers: Arc<BTreeMap<PlainNodeId, LogServerLock>>,
-    loglet_id: ReplicatedLogletId,
 }
 
 impl RemoteLogServerManager {
     /// creates the node set and start the appenders
-    pub fn new(loglet_id: ReplicatedLogletId, nodeset: &NodeSet) -> Self {
+    pub fn new(nodeset: &NodeSet) -> Self {
         let servers = nodeset
             .iter()
             .map(|node_id| (*node_id, LogServerLock::default()))
             .collect();
         let servers = Arc::new(servers);
 
-        Self { servers, loglet_id }
+        Self { servers }
     }
 
     /// Gets a log-server instance. On first time it will initialize a new connection
@@ -94,12 +99,7 @@ impl RemoteLogServerManager {
         }
 
         let connection = networking.node_connection(id).await?;
-        let server = RemoteLogServer {
-            loglet_id: self.loglet_id,
-            node_id: id,
-            tail: TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST)),
-            connection,
-        };
+        let server = RemoteLogServer::new(connection);
 
         *guard = Some(server.clone());
 
@@ -128,7 +128,7 @@ impl RemoteLogServerManager {
         // this key must already be in the map
         let current = self
             .servers
-            .get(&server.node_id)
+            .get(&server.connection.peer().as_plain())
             .expect("node is in nodeset");
 
         let mut guard = current.lock().await;
@@ -142,7 +142,9 @@ impl RemoteLogServerManager {
             return Ok(());
         }
 
-        let connection = networking.node_connection(server.node_id).await?;
+        let connection = networking
+            .node_connection(server.connection.peer().as_plain())
+            .await?;
         inner.connection = connection.clone();
         server.connection = connection.clone();
 
