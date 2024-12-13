@@ -124,7 +124,6 @@ pub enum TaskKind {
     LogletProvider,
     #[strum(props(OnCancel = "abort"))]
     Watchdog,
-    #[strum(props(OnCancel = "wait", runtime = "default"))]
     SequencerAppender,
     // -- Replicated loglet tasks
     /// Receives messages from remote sequencers on nodes with local sequencer. This is also used
