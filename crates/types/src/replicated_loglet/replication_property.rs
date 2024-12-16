@@ -11,8 +11,22 @@
 use std::collections::{btree_map, BTreeMap};
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroU8;
+use std::str::FromStr;
+use std::sync::LazyLock;
 
+use anyhow::Context;
 use enum_map::Enum;
+use regex::Regex;
+
+static REPLICATION_PROPERTY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?i)\{\s*(?<scopes>(?:node|zone|region)\s*:\s*\d+(?:\s*,\s*(?:node|zone|region)\s*:\s*\d+)*)\s*}$",
+    ).expect("is valid pattern")
+});
+
+static REPLICATION_PROPERTY_EXTRACTOR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?<scope>node|zone|region)\s*:\s*(?<factor>\d+)").expect("is valid regext")
+});
 
 /// Defines the scope of location for replication. This enum is ordered where the greatest
 /// scope is at the bottom of the enum. i.e. Region > Zone > Node.
@@ -28,10 +42,12 @@ use enum_map::Enum;
     PartialOrd,
     strum::EnumIter,
     strum::Display,
+    strum::EnumString,
     serde::Serialize,
     serde::Deserialize,
 )]
 #[serde(rename_all = "kebab-case")]
+#[strum(ascii_case_insensitive)]
 pub enum LocationScope {
     Node,
     Zone,
@@ -58,7 +74,7 @@ impl LocationScope {
 pub struct ReplicationPropertyError(String);
 
 /// The replication policy for appends
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq)]
 pub struct ReplicationProperty(BTreeMap<LocationScope, u8>);
 
 impl ReplicationProperty {
@@ -153,6 +169,48 @@ impl Display for ReplicationProperty {
     }
 }
 
+impl FromStr for ReplicationProperty {
+    type Err = anyhow::Error;
+
+    /// Parse a replication property from a str representation.
+    /// Valid syntax is:
+    /// - `<replication-factor>`
+    /// - `{$(<scope>: <replication-factor>,)+}`
+    ///
+    /// Allowed scopes are `node`, `zone`, and `region`. `replication-factor` value
+    /// must be greater than 0.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // is it just a simple number?
+        if let Ok(replication_factor) = s.parse::<NonZeroU8>() {
+            return Ok(ReplicationProperty::new(replication_factor));
+        };
+
+        let scopes = REPLICATION_PROPERTY_PATTERN
+            .captures(s)
+            .context("Invalid replication property syntax")?;
+
+        let mut replication_property = None;
+        for group in REPLICATION_PROPERTY_EXTRACTOR.captures_iter(&scopes["scopes"]) {
+            let scope: LocationScope = group["scope"].parse().expect("is valid scope");
+            let factor: NonZeroU8 = group["factor"]
+                .parse()
+                .with_context(|| format!("Replication factor for scope {scope} cannot be zero"))?;
+
+            match replication_property {
+                None => {
+                    replication_property = Some(ReplicationProperty::with_scope(scope, factor));
+                }
+                Some(ref mut property) => {
+                    property.set_scope(scope, factor)?;
+                }
+            }
+        }
+
+        replication_property
+            .ok_or_else(|| anyhow::anyhow!("No replication property scopes defined"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +257,24 @@ mod tests {
             r.at_scope_or_greater(LocationScope::Zone),
             some(eq((&LocationScope::Zone, &2)))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_replication_property_parse() -> Result<()> {
+        let r: ReplicationProperty = "2".parse().unwrap();
+        assert_that!(r.num_copies(), eq(2));
+
+        let r = r"{}".parse::<ReplicationProperty>();
+        assert_that!(r, err(anything()));
+
+        let r = r"{node: 5,  ZONE: 2}".parse::<ReplicationProperty>();
+        let mut expected = ReplicationProperty::new(NonZeroU8::new(5).unwrap());
+        expected
+            .set_scope(LocationScope::Zone, NonZeroU8::new(2).unwrap())
+            .unwrap();
+        assert_that!(r, ok(eq(expected)));
+
         Ok(())
     }
 }

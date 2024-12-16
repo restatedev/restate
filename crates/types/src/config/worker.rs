@@ -295,7 +295,7 @@ impl StorageOptions {
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
         if self.num_partitions_to_share_memory_budget.is_none() {
-            self.num_partitions_to_share_memory_budget = Some(common.bootstrap_num_partitions);
+            self.num_partitions_to_share_memory_budget = Some(common.bootstrap_num_partitions)
         }
 
         // todo: move to a shared struct and deduplicate
