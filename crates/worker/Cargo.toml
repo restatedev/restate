@@ -35,6 +35,7 @@ restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true, features = ["proto"] }
 restate-service-client = { workspace = true }
+restate-service-protocol-v4 = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["codec", "awakeable-id", "message"] }
 restate-storage-api = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }

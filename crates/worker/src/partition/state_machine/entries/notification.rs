@@ -1,0 +1,41 @@
+use crate::partition::state_machine::lifecycle::ResumeInvocationCommand;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use restate_storage_api::invocation_status_table::InvocationStatus;
+use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
+use restate_types::identifiers::InvocationId;
+use restate_types::journal_v2::raw::RawNotification;
+
+pub(super) struct HandleJournalNotificationCommand<'e> {
+    pub(super) invocation_id: InvocationId,
+    pub(super) invocation_status: &'e mut InvocationStatus,
+    pub(super) entry: &'e mut RawNotification,
+}
+
+impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+    for HandleJournalNotificationCommand<'e>
+where
+    S: ReadOnlyJournalTable,
+{
+    async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
+        // If we're suspended, let's figure out if we need to resume
+        if let InvocationStatus::Suspended {
+            waiting_for_notifications,
+            ..
+        } = self.invocation_status
+        {
+            if waiting_for_notifications.remove(&self.entry.id()) {
+                ResumeInvocationCommand {
+                    invocation_id: self.invocation_id,
+                    invocation_status: self.invocation_status,
+                }
+                .apply(ctx)
+                .await?;
+            }
+        } else if let InvocationStatus::Invoked(_) = self.invocation_status {
+            // Just forward the notification if we're invoked
+            ctx.forward_notification(self.invocation_id, self.entry.clone());
+        }
+
+        Ok(())
+    }
+}

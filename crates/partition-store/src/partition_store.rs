@@ -144,7 +144,7 @@ impl TableKind {
             Self::Deduplication => &[KeyKind::Deduplication],
             Self::PartitionStateMachine => &[KeyKind::Fsm],
             Self::Timers => &[KeyKind::Timers],
-            Self::Journal => &[KeyKind::Journal],
+            Self::Journal => &[KeyKind::Journal, KeyKind::InvocationStatus],
             Self::Promise => &[KeyKind::Promise],
         }
     }

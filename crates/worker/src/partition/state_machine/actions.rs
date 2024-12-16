@@ -14,6 +14,7 @@ use restate_storage_api::timer_table::TimerKey;
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
+use restate_types::journal_v2::raw::RawNotification;
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
 use restate_types::time::MillisSinceEpoch;
@@ -46,6 +47,10 @@ pub enum Action {
     ForwardCompletion {
         invocation_id: InvocationId,
         completion: Completion,
+    },
+    ForwardNotification {
+        invocation_id: InvocationId,
+        notification: RawNotification,
     },
     AbortInvocation {
         invocation_id: InvocationId,

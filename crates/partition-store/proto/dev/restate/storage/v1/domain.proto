@@ -155,7 +155,8 @@ message InvocationStatusV2 {
   optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
 
   // Suspended
-  repeated uint32 waiting_for_completed_entries = 17;
+  repeated uint32 waiting_for_completion_ids = 17;
+  repeated string waiting_for_signal_ids = 23;
 
   // Completed
   ResponseResult result = 18;
@@ -330,6 +331,7 @@ message InboxEntry {
   }
 }
 
+// Deprecated
 message InvocationResolutionResult {
   message Success {
     InvocationId invocation_id = 1;
@@ -343,13 +345,14 @@ message InvocationResolutionResult {
     Success success = 2;
   }
 }
-
+// Deprecated
 message BackgroundCallResolutionResult {
   InvocationId invocation_id = 1;
   InvocationTarget invocation_target = 2;
   SpanContext span_context = 3;
   Duration completion_retention_time = 4;
 }
+// Deprecated
 message EnrichedEntryHeader {
 
   message Input {
@@ -456,6 +459,7 @@ message EnrichedEntryHeader {
   }
 }
 
+// Deprecated
 message JournalEntry {
 
   message Entry {
@@ -487,9 +491,56 @@ message JournalEntry {
     Entry entry = 1;
     CompletionResult completion_result = 2;
   }
+
 }
 
+// -------- Entry V2 --------
+message Entry {
+  message EventEntry {
+    string ty = 1;
+    map<string, string> metadata = 2;
+  }
 
+  message CallOrSendCommandJournalEntryMetadata {
+    InvocationId invocation_id = 1;
+    InvocationTarget invocation_target = 2;
+    SpanContext span_context = 3;
+  }
+
+  enum EntryType {
+    UNKNOWN = 0;
+    NOTIFICATION = 1;
+    EVENT = 2;
+    INPUT_COMMAND = 3;
+    OUTPUT_COMMAND = 4;
+    RUN_COMMAND = 5;
+    CALL_COMMAND = 6;
+    ONE_WAY_CALL_COMMAND = 7;
+    SLEEP_COMMAND = 8;
+  }
+
+  EntryType ty = 3;
+  // For Event ty, this contains the EventEntry,
+  // otherwise the content depends on the RawEntry Encoder/Decoder.
+  bytes content = 4;
+
+  // Additional metadata for all entries
+  uint64 append_time = 5;
+
+  // Additional metadata for RUN_COMMAND and CALL_COMMAND
+  CallOrSendCommandJournalEntryMetadata call_command_journal_entry_additional_metadata = 6;
+
+  // Additional metadata for NOTIFICATION
+  oneof notification_id {
+    uint32 completion = 7;
+    string signal = 8;
+  }
+}
+
+message NotificationsIndex {
+  map<uint32, uint32> completions_index = 1;
+  map<string, uint32> signals_index = 2;
+}
 
 message ResponseResult {
   message ResponseSuccess {

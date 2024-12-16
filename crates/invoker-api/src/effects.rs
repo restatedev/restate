@@ -13,6 +13,7 @@ use restate_types::errors::InvocationError;
 use restate_types::identifiers::EntryIndex;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal_v2;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,14 +26,21 @@ pub struct Effect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EffectKind {
-    /// This is sent before any new entry is created by the invoker. This won't be sent if the deployment_id is already set.
+    /// This is sent before any new entry is created by the invoker.
+    /// This won't be sent if the deployment_id is already set.
     PinnedDeployment(PinnedDeployment),
     JournalEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
     },
+    JournalEntryV2 {
+        entry: journal_v2::raw::RawEntry,
+    },
     Suspended {
         waiting_for_completed_entries: HashSet<EntryIndex>,
+    },
+    SuspendedV2 {
+        waiting_for_notifications: HashSet<journal_v2::NotificationId>,
     },
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,

@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 mod actions;
+mod entries;
+mod lifecycle;
 mod utils;
 
 use crate::metric_definitions::PARTITION_APPLY_COMMAND;
@@ -34,6 +36,7 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_table::ReadOnlyJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
+use restate_storage_api::journal_table_v2;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::promise_table::{Promise, PromiseState, PromiseTable};
 use restate_storage_api::service_status_table::{
@@ -72,8 +75,11 @@ use restate_types::journal::Completion;
 use restate_types::journal::CompletionResult;
 use restate_types::journal::EntryType;
 use restate_types::journal::*;
+use restate_types::journal_v2;
+use restate_types::journal_v2::raw::RawNotification;
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
+use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::time::MillisSinceEpoch;
@@ -132,8 +138,13 @@ pub enum Error {
     Codec(#[from] RawEntryCodecError),
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
+    #[error("expecting entry type {0:?}, but wasn't. This indicates data corruption.")]
+    BadEntryVariant(journal_v2::EntryType),
+    #[error("failed to deserialize entry: {0}")]
+    EntryDecoding(#[from] journal_v2::raw::RawEntryError),
 }
 
+#[macro_export]
 macro_rules! debug_if_leader {
     ($i_am_leader:expr, $($args:tt)*) => {{
         use ::tracing::Level;
@@ -145,6 +156,7 @@ macro_rules! debug_if_leader {
     }};
 }
 
+#[macro_export]
 macro_rules! span_if_leader {
     ($level:expr, $i_am_leader:expr, $sampled:expr, $span_relation:expr, $($args:tt)*) => {{
         if $i_am_leader && $sampled {
@@ -156,6 +168,7 @@ macro_rules! span_if_leader {
 }
 
 // creates and inter an info span if both i_am_leader and sampled are true
+#[macro_export]
 macro_rules! info_span_if_leader {
     ($i_am_leader:expr, $sampled:expr, $span_relation:expr, $($args:tt)*) => {{
         use ::tracing::Level;
@@ -207,6 +220,96 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
         }
         Ok(status)
     }
+
+    async fn register_timer(
+        &mut self,
+        timer_value: TimerKeyValue,
+        span_context: ServiceInvocationSpanContext,
+    ) -> Result<(), Error>
+    where
+        S: TimerTable,
+    {
+        match timer_value.value() {
+            Timer::CompleteJournalEntry(_, entry_index) => {
+                info_span_if_leader!(
+                    self.is_leader,
+                    span_context.is_sampled(),
+                    span_context.as_parent(),
+                    "sleep",
+                    restate.journal.index = entry_index,
+                    restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                    restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                    // without converting to i64 this field will encode as a string
+                    // however, overflowing i64 seems unlikely
+                    restate.internal.end_time = i64::try_from(timer_value.wake_up_time().as_u64()).expect("wake up time should fit into i64"),
+                );
+
+                debug_if_leader!(
+                    self.is_leader,
+                    restate.journal.index = entry_index,
+                    restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                    restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                    "Register Sleep timer"
+                )
+            }
+            Timer::Invoke(service_invocation) => {
+                // no span necessary; there will already be a background_invoke span
+                debug_if_leader!(
+                    self.is_leader,
+                    rpc.service = %service_invocation.invocation_target.service_name(),
+                    rpc.method = %service_invocation.invocation_target.handler_name(),
+                    restate.invocation.target = %service_invocation.invocation_target,
+                    restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                    restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                    "Register background invoke timer"
+                )
+            }
+            Timer::NeoInvoke(invocation_id) => {
+                // no span necessary; there will already be a background_invoke span
+                debug_if_leader!(
+                    self.is_leader,
+                    restate.invocation.id = %invocation_id,
+                    restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                    restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                    "Register background invoke timer"
+                )
+            }
+            Timer::CleanInvocationStatus(_) => {
+                debug_if_leader!(
+                    self.is_leader,
+                    restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                    restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                    "Register cleanup invocation status timer"
+                )
+            }
+        };
+
+        self.storage
+            .put_timer(timer_value.key(), timer_value.value())
+            .await;
+
+        self.action_collector
+            .push(Action::RegisterTimer { timer_value });
+
+        Ok(())
+    }
+
+    fn forward_notification(&mut self, invocation_id: InvocationId, notification: RawNotification) {
+        debug_if_leader!(
+            self.is_leader,
+            restate.notification.id = notification.id(),
+            "Forward notification to deployment",
+        );
+
+        self.action_collector.push(Action::ForwardNotification {
+            invocation_id,
+            notification,
+        });
+    }
+}
+
+trait CommandHandler<CTX> {
+    async fn apply(self, ctx: CTX) -> Result<(), Error>;
 }
 
 impl<Codec: RawEntryCodec> StateMachine<Codec> {
@@ -249,7 +352,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + TimerTable
             + VirtualObjectStatusTable
             + InboxTable
-            + StateTable,
+            + StateTable
+            + journal_table_v2::JournalTable,
     >(
         &mut self,
         mut ctx: StateMachineApplyContext<'_, State>,
@@ -956,7 +1060,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
             InvocationStatus::Suspended {
                 metadata,
-                waiting_for_completed_entries,
+                waiting_for_notifications: waiting_for_completed_entries,
             } => {
                 if self
                     .cancel_journal_leaves(
@@ -1527,7 +1631,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + FsmTable
             + TimerTable
             + InboxTable
-            + VirtualObjectStatusTable,
+            + VirtualObjectStatusTable
+            + journal_table_v2::JournalTable,
     >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
@@ -1552,7 +1657,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + FsmTable
             + TimerTable
             + InboxTable
-            + VirtualObjectStatusTable,
+            + VirtualObjectStatusTable
+            + journal_table_v2::JournalTable,
     >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
@@ -1579,17 +1685,15 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             return Ok(());
         }
 
-        let invocation_metadata = invocation_status
-            .into_invocation_metadata()
-            .expect("Must be present if status is killed or invoked");
-
         match kind {
             InvokerEffectKind::PinnedDeployment(pinned_deployment) => {
                 Self::do_store_pinned_deployment(
                     ctx,
                     invocation_id,
                     pinned_deployment,
-                    invocation_metadata,
+                    invocation_status
+                        .into_invocation_metadata()
+                        .expect("Must be present if status is killed or invoked"),
                 )
                 .await;
             }
@@ -1599,25 +1703,41 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     invocation_id,
                     entry_index,
                     entry,
-                    invocation_metadata,
+                    invocation_status
+                        .into_invocation_metadata()
+                        .expect("Must be present if status is killed or invoked"),
                 )
+                .await?;
+            }
+            InvokerEffectKind::JournalEntryV2 { entry } => {
+                entries::AppendJournalEntryCommand {
+                    entry,
+                    invocation_id,
+                    invocation_status,
+                }
+                .apply(ctx)
                 .await?;
             }
             InvokerEffectKind::Suspended {
                 waiting_for_completed_entries,
             } => {
+                let invocation_metadata = invocation_status
+                    .into_invocation_metadata()
+                    .expect("Must be present if status is killed or invoked");
                 debug_assert!(
                     !waiting_for_completed_entries.is_empty(),
                     "Expecting at least one entry on which the invocation {invocation_id} is waiting."
                 );
                 let mut any_completed = false;
                 for entry_index in &waiting_for_completed_entries {
-                    if ctx
-                        .storage
-                        .get_journal_entry(&invocation_id, *entry_index)
-                        .await?
-                        .map(|entry| entry.is_resumable())
-                        .unwrap_or_default()
+                    if ReadOnlyJournalTable::get_journal_entry(
+                        ctx.storage,
+                        &invocation_id,
+                        *entry_index,
+                    )
+                    .await?
+                    .map(|entry| entry.is_resumable())
+                    .unwrap_or_default()
                     {
                         trace!(
                             rpc.service = %invocation_metadata.invocation_target.service_name(),
@@ -1639,11 +1759,18 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     .await;
                 }
             }
+            InvokerEffectKind::SuspendedV2 {
+                waiting_for_notifications,
+            } => {
+                todo!()
+            }
             InvokerEffectKind::End => {
                 self.end_invocation(
                     ctx,
                     invocation_id,
-                    invocation_metadata,
+                    invocation_status
+                        .into_invocation_metadata()
+                        .expect("Must be present if status is killed or invoked"),
                     if is_status_killed {
                         // It doesn't matter that the invocation successfully completed, we return failed anyway in this case.
                         Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR))
@@ -1657,7 +1784,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 self.end_invocation(
                     ctx,
                     invocation_id,
-                    invocation_metadata,
+                    invocation_status
+                        .into_invocation_metadata()
+                        .expect("Must be present if status is killed or invoked"),
                     Some(ResponseResult::Failure(e)),
                 )
                 .await?;
@@ -2722,19 +2851,27 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     ) -> Result<(), Error> {
         let status = ctx.get_invocation_status(&invocation_id).await?;
 
+        if status
+            .get_invocation_metadata()
+            .and_then(|im| im.pinned_deployment.as_ref())
+            .is_none_or(|pinned_deployment| {
+                pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
+            })
+        {}
+
         match status {
             InvocationStatus::Invoked(_) => {
                 Self::handle_completion_for_invoked(ctx, invocation_id, completion).await?;
             }
             InvocationStatus::Suspended {
                 metadata,
-                waiting_for_completed_entries,
+                waiting_for_notifications,
             } => {
                 if Self::handle_completion_for_suspended(
                     ctx,
                     invocation_id,
                     completion,
-                    &waiting_for_completed_entries,
+                    &waiting_for_notifications.into_iter(),
                 )
                 .await?
                 {
@@ -3093,7 +3230,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 &invocation_id,
                 &InvocationStatus::Suspended {
                     metadata,
-                    waiting_for_completed_entries,
+                    waiting_for_notifications: waiting_for_completed_entries,
                 },
             )
             .await;

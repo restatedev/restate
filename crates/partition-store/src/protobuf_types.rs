@@ -112,13 +112,14 @@ pub mod v1 {
     ));
 
     pub mod pb_conversion {
-        use std::collections::HashSet;
+        use std::collections::{HashMap, HashSet};
         use std::str::FromStr;
 
         use anyhow::anyhow;
         use bytes::{Buf, Bytes};
         use bytestring::ByteString;
         use opentelemetry::trace::TraceState;
+        use prost::Message;
         use restate_types::deployment::PinnedDeployment;
 
         use crate::protobuf_types::v1::dedup_sequence_number::Variant;
@@ -128,6 +129,7 @@ pub mod v1 {
             GetInvocationOutput, GetPromise, GetState, GetStateKeys, Input, Invoke, Output,
             PeekPromise, SetState, SideEffect, Sleep,
         };
+        use crate::storage::v1::entry::{EntryType, EventEntry};
         use crate::protobuf_types::v1::invocation_status::{
             Completed, Free, Inboxed, Invoked, Suspended,
         };
@@ -135,7 +137,7 @@ pub mod v1 {
             Empty, Failure, Success,
         };
         use crate::protobuf_types::v1::journal_entry::{
-            completion_result, CompletionResult, Entry, Kind,
+            completion_result, CompletionResult, Kind,
         };
         use crate::protobuf_types::v1::outbox_message::{
             OutboxCancel, OutboxKill, OutboxServiceInvocation, OutboxServiceInvocationResponse,
@@ -144,17 +146,17 @@ pub mod v1 {
             Ingress, PartitionProcessor, ResponseSink,
         };
         use crate::protobuf_types::v1::{
-            enriched_entry_header, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status, invocation_status_v2, invocation_target, outbox_message, promise,
-            response_result, source, span_relation, submit_notification_sink, timer,
-            virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
-            EnrichedEntryHeader, EntryResult, EpochSequenceNumber, Header, IdempotencyId,
-            IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
-            InvocationStatus, InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalEntry,
-            JournalEntryId, JournalMeta, KvPair, OutboxMessage, Promise, ResponseResult,
-            SequenceNumber, ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source,
-            SpanContext, SpanRelation, StateMutation, SubmitNotificationSink, Timer,
-            VirtualObjectStatus,
+            enriched_entry_header, entry, entry_result, inbox_entry, invocation_resolution_result,
+            invocation_status, invocation_status_v2, invocation_target, journal_entry,
+            outbox_message, promise, response_result, source, span_relation,
+            submit_notification_sink, timer, virtual_object_status, BackgroundCallResolutionResult,
+            DedupSequenceNumber, Duration, EnrichedEntryHeader, Entry, EntryResult,
+            EpochSequenceNumber, Header, IdempotencyId, IdempotencyMetadata, InboxEntry,
+            InvocationId, InvocationResolutionResult, InvocationStatus, InvocationStatusV2,
+            InvocationTarget, InvocationV2Lite, JournalEntry, JournalEntryId, JournalMeta, KvPair,
+            NotificationsIndex, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
+            ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext, SpanRelation,
+            StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
         };
         use crate::protobuf_types::ConversionError;
         use restate_storage_api::StorageError;
@@ -164,12 +166,14 @@ pub mod v1 {
         };
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
+        use restate_types::journal::raw::RawEntry;
+        use restate_types::journal_v2::{EntryMetadata, NotificationId};
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::storage::{
             StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
         };
         use restate_types::time::MillisSinceEpoch;
-        use restate_types::GenerationalNodeId;
+        use restate_types::{journal_v2, GenerationalNodeId};
 
         impl TryFrom<VirtualObjectStatus>
             for restate_storage_api::service_status_table::VirtualObjectStatus
@@ -362,7 +366,8 @@ pub mod v1 {
                     journal_length,
                     deployment_id,
                     service_protocol_version,
-                    waiting_for_completed_entries,
+                    waiting_for_completion_ids,
+                    waiting_for_signal_ids,
                     result,
                 } = value;
 
@@ -480,8 +485,14 @@ pub mod v1 {
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                             },
-                            waiting_for_completed_entries: waiting_for_completed_entries
+                            waiting_for_notifications: waiting_for_completion_ids
                                 .into_iter()
+                                .map(NotificationId::for_index)
+                                .chain(
+                                    waiting_for_signal_ids
+                                        .into_iter()
+                                        .map(|s| NotificationId::for_name(s.into())),
+                                )
                                 .collect(),
                         },
                     ),
@@ -582,7 +593,8 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
-                        waiting_for_completed_entries: vec![],
+                        waiting_for_completion_ids: vec![],
+                        waiting_for_signal_ids: vec![],
                         result: None,
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Inboxed(
@@ -635,7 +647,8 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
-                        waiting_for_completed_entries: vec![],
+                        waiting_for_completion_ids: vec![],
+                        waiting_for_signal_ids: vec![],
                         result: None,
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
@@ -697,7 +710,8 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
-                            waiting_for_completed_entries: vec![],
+                            waiting_for_completion_ids: vec![],
+                            waiting_for_signal_ids: vec![],
                             result: None,
                         }
                     }
@@ -713,7 +727,7 @@ pub mod v1 {
                                 completion_retention_duration,
                                 idempotency_key,
                             },
-                        waiting_for_completed_entries,
+                        waiting_for_notifications,
                     } => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
                             None => (None, None),
@@ -722,6 +736,19 @@ pub mod v1 {
                                 Some(pinned_deployment.service_protocol_version.as_repr()),
                             ),
                         };
+
+                        let mut waiting_for_completion_ids: Vec<u32> = Default::default();
+                        let mut waiting_for_signal_ids: Vec<String> = Default::default();
+                        for id in waiting_for_notifications {
+                            match id {
+                                journal_v2::NotificationId::Signal(c) => {
+                                    waiting_for_completion_ids.push(c);
+                                }
+                                journal_v2::NotificationId::NamedSignal(s) => {
+                                    waiting_for_signal_ids.push(s.to_string());
+                                }
+                            };
+                        }
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Suspended.into(),
@@ -762,9 +789,8 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
-                            waiting_for_completed_entries: waiting_for_completed_entries
-                                .into_iter()
-                                .collect(),
+                            waiting_for_completion_ids,
+                            waiting_for_signal_ids,
                             result: None,
                         }
                     }
@@ -827,7 +853,8 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
-                            waiting_for_completed_entries: vec![],
+                            waiting_for_completion_ids: vec![],
+                            waiting_for_signal_ids: vec![],
                             result: None,
                         }
                     }
@@ -871,7 +898,8 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
-                        waiting_for_completed_entries: vec![],
+                        waiting_for_completion_ids: vec![],
+                        waiting_for_signal_ids: vec![],
                         result: Some(response_result.into()),
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Free => {
@@ -959,7 +987,10 @@ pub mod v1 {
                         let (metadata, waiting_for_completed_entries) = suspended.try_into()?;
                         restate_storage_api::invocation_status_table::InvocationStatus::Suspended {
                             metadata,
-                            waiting_for_completed_entries,
+                            waiting_for_notifications: waiting_for_completed_entries
+                                .into_iter()
+                                .map(NotificationId::for_index)
+                                .collect(),
                         }
                     }
                     invocation_status::Status::Completed(completed) => {
@@ -996,10 +1027,18 @@ pub mod v1 {
                     ) => invocation_status::Status::Invoked(Invoked::from(invoked_status)),
                     restate_storage_api::invocation_status_table::InvocationStatus::Suspended {
                         metadata,
-                        waiting_for_completed_entries,
+                        waiting_for_notifications,
                     } => invocation_status::Status::Suspended(Suspended::from((
                         metadata,
-                        waiting_for_completed_entries,
+                        waiting_for_notifications
+                            .into_iter()
+                            .map(|notification_id| match notification_id {
+                                NotificationId::Signal(c) => c,
+                                NotificationId::NamedSignal(s) => {
+                                    panic!("Unsupported waiting signals with old invocation status")
+                                }
+                            })
+                            .collect(),
                     ))),
                     restate_storage_api::invocation_status_table::InvocationStatus::Completed(
                         completed,
@@ -2210,10 +2249,8 @@ pub mod v1 {
 
         impl From<restate_types::journal::enriched::EnrichedRawEntry> for JournalEntry {
             fn from(value: restate_types::journal::enriched::EnrichedRawEntry) -> Self {
-                let entry = Entry::from(value);
-
                 JournalEntry {
-                    kind: Some(Kind::Entry(entry)),
+                    kind: Some(Kind::Entry(value.into())),
                 }
             }
         }
@@ -2228,11 +2265,11 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<Entry> for restate_types::journal::enriched::EnrichedRawEntry {
+        impl TryFrom<journal_entry::Entry> for restate_types::journal::enriched::EnrichedRawEntry {
             type Error = ConversionError;
 
-            fn try_from(value: Entry) -> Result<Self, ConversionError> {
-                let Entry { header, raw_entry } = value;
+            fn try_from(value: journal_entry::Entry) -> Result<Self, ConversionError> {
+                let journal_entry::Entry { header, raw_entry } = value;
 
                 let header = restate_types::journal::enriched::EnrichedEntryHeader::try_from(
                     header.ok_or(ConversionError::missing_field("header"))?,
@@ -2244,10 +2281,10 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_types::journal::enriched::EnrichedRawEntry> for Entry {
+        impl From<restate_types::journal::enriched::EnrichedRawEntry> for journal_entry::Entry {
             fn from(value: restate_types::journal::enriched::EnrichedRawEntry) -> Self {
                 let (header, entry) = value.into_inner();
-                Entry {
+                journal_entry::Entry {
                     header: Some(EnrichedEntryHeader::from(header)),
                     raw_entry: entry,
                 }
@@ -2678,6 +2715,288 @@ pub mod v1 {
                 }
             }
         }
+
+        impl TryFrom<entry::CallOrSendCommandJournalEntryMetadata> for journal_v2::raw::CallOrSendMetadata {
+            type Error = ConversionError;
+
+            fn try_from(
+                value: entry::CallOrSendCommandJournalEntryMetadata,
+            ) -> Result<Self, Self::Error> {
+                let invocation_id = restate_types::identifiers::InvocationId::try_from(
+                    value
+                        .invocation_id
+                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                )?;
+
+                let invocation_target = restate_types::invocation::InvocationTarget::try_from(
+                    value
+                        .invocation_target
+                        .ok_or(ConversionError::missing_field("invocation_target"))?,
+                )?;
+                let span_context =
+                    restate_types::invocation::ServiceInvocationSpanContext::try_from(
+                        value
+                            .span_context
+                            .ok_or(ConversionError::missing_field("span_context"))?,
+                    )?;
+
+                Ok(journal_v2::raw::CallOrSendMetadata {
+                    invocation_id,
+                    span_context,
+                    invocation_target,
+                })
+            }
+        }
+
+        impl From<journal_v2::raw::CallOrSendMetadata> for entry::CallOrSendCommandJournalEntryMetadata {
+            fn from(value: journal_v2::raw::CallOrSendMetadata) -> Self {
+                entry::CallOrSendCommandJournalEntryMetadata {
+                    invocation_id: Some(InvocationId::from(value.invocation_id)),
+                    invocation_target: Some(value.invocation_target.into()),
+                    span_context: Some(SpanContext::from(value.span_context)),
+                }
+            }
+        }
+
+        impl TryFrom<EntryType> for journal_v2::EntryType {
+            type Error = ConversionError;
+
+            fn try_from(value: EntryType) -> Result<Self, Self::Error> {
+                Ok(match value {
+                    EntryType::Unknown => {
+                        return Err(ConversionError::unexpected_enum_variant(
+                            "ty",
+                            EntryType::Unknown,
+                        ))
+                    }
+                    EntryType::Notification => journal_v2::EntryType::Notification,
+                    EntryType::Event => journal_v2::EntryType::Event,
+                    EntryType::InputCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::Input)
+                    }
+                    EntryType::OutputCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::Output)
+                    }
+                    EntryType::RunCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::Run)
+                    }
+                    EntryType::CallCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::Call)
+                    }
+                    EntryType::OneWayCallCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::OneWayCall)
+                    }
+                    EntryType::SleepCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::Sleep)
+                    }
+                })
+            }
+        }
+
+        impl From<journal_v2::EntryType> for EntryType {
+            fn from(value: journal_v2::EntryType) -> Self {
+                match value {
+                    journal_v2::EntryType::Command(journal_v2::CommandType::Input) => {
+                        EntryType::InputCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::Run) => {
+                        EntryType::RunCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::Call) => {
+                        EntryType::CallCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::OneWayCall) => {
+                        EntryType::OneWayCallCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::Sleep) => {
+                        EntryType::SleepCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::Output) => {
+                        EntryType::OutputCommand
+                    }
+                    journal_v2::EntryType::Notification => EntryType::Notification,
+                    journal_v2::EntryType::Event => EntryType::Event,
+                }
+            }
+        }
+
+        impl TryFrom<Entry> for crate::journal_table_v2::StoredEntry {
+            type Error = ConversionError;
+
+            fn try_from(value: Entry) -> Result<Self, Self::Error> {
+                let header = journal_v2::raw::RawEntryHeader {
+                    append_time: value.append_time.into(),
+                };
+
+                Ok(crate::journal_table_v2::StoredEntry(
+                    match EntryType::try_from(value.ty)
+                        .map_err(|e| ConversionError::unexpected_enum_variant("ty", e.0))?
+                        .try_into()?
+                    {
+                        journal_v2::EntryType::Event => {
+                            let event_entry = EventEntry::decode(value.content)
+                                .map_err(|e| ConversionError::InvalidData(e.into()))?;
+                            journal_v2::raw::RawEntry::new(
+                                header,
+                                journal_v2::Event {
+                                    ty: event_entry
+                                        .ty
+                                        .parse::<journal_v2::EventType>()
+                                        .map_err(|e| ConversionError::InvalidData(e.into()))?,
+                                    metadata: event_entry
+                                        .metadata
+                                        .into_iter()
+                                        .map(|(k, v)| (k, v.into()))
+                                        .collect(),
+                                },
+                            )
+                        }
+                        journal_v2::EntryType::Notification => {
+                            let notification_id = match value
+                                .notification_id
+                                .ok_or(ConversionError::missing_field("notification_id"))?
+                            {
+                                entry::NotificationId::Completion(c) => {
+                                    journal_v2::NotificationId::Signal(c)
+                                }
+                                entry::NotificationId::Signal(s) => {
+                                    journal_v2::NotificationId::NamedSignal(s.into())
+                                }
+                            };
+
+                            journal_v2::raw::RawEntry::new(
+                                header,
+                                journal_v2::raw::RawNotification::new(
+                                    notification_id,
+                                    value.content,
+                                ),
+                            )
+                        }
+                        journal_v2::EntryType::Command(ct @ journal_v2::CommandType::Call)
+                        | journal_v2::EntryType::Command(
+                            ct @ journal_v2::CommandType::OneWayCall,
+                        ) => journal_v2::raw::RawEntry::new(
+                            header,
+                            journal_v2::raw::RawCommand::new(ct, value.content)
+                                .with_command_specific_metadata(
+                                    journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                                        journal_v2::raw::CallOrSendMetadata::try_from(
+                                            value
+                                                .call_command_journal_entry_additional_metadata
+                                                .ok_or(ConversionError::missing_field(
+                                                    "call_command_journal_entry_additional_metadata",
+                                                ))?,
+                                        )?,
+                                    ),
+                                ),
+                        ),
+                        journal_v2::EntryType::Command(ct) => journal_v2::raw::RawEntry::new(
+                            header,
+                            journal_v2::raw::RawCommand::new(ct, value.content),
+                        ),
+                    },
+                ))
+            }
+        }
+
+        impl From<crate::journal_table_v2::StoredEntry> for Entry {
+            fn from(
+                crate::journal_table_v2::StoredEntry(raw_entry): crate::journal_table_v2::StoredEntry,
+            ) -> Self {
+                let ty = EntryType::from(raw_entry.ty());
+                let append_time = raw_entry.header().append_time.into();
+
+                let mut call_command_journal_entry_additional_metadata: Option<
+                    entry::CallOrSendCommandJournalEntryMetadata,
+                > = None;
+                let mut notification_id: Option<entry::NotificationId> = None;
+                let content = match raw_entry.inner {
+                    journal_v2::raw::RawEntryInner::Command(cmd) => {
+                        match cmd.command_specific_metadata() {
+                            journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                                call_or_send_metadata,
+                            ) => {
+                                call_command_journal_entry_additional_metadata =
+                                    Some(call_or_send_metadata.clone().into())
+                            }
+                            journal_v2::raw::RawCommandSpecificMetadata::None => {}
+                        };
+
+                        cmd.serialized_content()
+                    }
+                    journal_v2::raw::RawEntryInner::Notification(notification) => {
+                        notification_id = Some(match notification.id() {
+                            journal_v2::NotificationId::Signal(c) => {
+                                entry::NotificationId::Completion(c)
+                            }
+                            journal_v2::NotificationId::NamedSignal(s) => {
+                                entry::NotificationId::Signal(s.into())
+                            }
+                        });
+
+                        notification.serialized_content()
+                    }
+                    journal_v2::raw::RawEntryInner::Event(event) => EventEntry {
+                        ty: event.ty.to_string(),
+                        metadata: event
+                            .metadata
+                            .into_iter()
+                            .map(|(k, v)| (k, v.to_string()))
+                            .collect(),
+                    }
+                        .encode_to_vec()
+                        .into(),
+                };
+
+                Entry {
+                    ty: ty.into(),
+                    content,
+                    append_time,
+                    call_command_journal_entry_additional_metadata,
+                    notification_id,
+                }
+            }
+        }
+
+        impl TryFrom<NotificationsIndex> for crate::journal_table_v2::NotificationsIndex {
+            type Error = ConversionError;
+
+            fn try_from(value: NotificationsIndex) -> Result<Self, Self::Error> {
+                Ok(Self(
+                    value
+                        .completions_index
+                        .into_iter()
+                        .map(|(k, v)| (journal_v2::NotificationId::for_index(k), v))
+                        .chain(
+                            value
+                                .signals_index
+                                .into_iter()
+                                .map(|(k, v)| (journal_v2::NotificationId::for_name(k.into()), v)),
+                        )
+                        .collect(),
+                ))
+            }
+        }
+
+        impl From<crate::journal_table_v2::NotificationsIndex> for NotificationsIndex {
+            fn from(value: crate::journal_table_v2::NotificationsIndex) -> Self {
+                let mut completions_index: HashMap<u32, u32> = Default::default();
+                let mut signals_index: HashMap<String, u32> = Default::default();
+                for (id, index) in value.0 {
+                    match id {
+                        journal_v2::NotificationId::Signal(c) => completions_index.insert(c, index),
+                        journal_v2::NotificationId::NamedSignal(s) => {
+                            signals_index.insert(s.to_string(), index)
+                        }
+                    };
+                }
+                Self {
+                    completions_index,
+                    signals_index,
+                }
+            }
+        }
+
 
         impl TryFrom<OutboxMessage> for restate_storage_api::outbox_table::OutboxMessage {
             type Error = ConversionError;

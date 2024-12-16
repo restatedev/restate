@@ -2634,6 +2634,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "enum_delegate"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8ea75f31022cba043afe037940d73684327e915f88f62478e778c3de914cd0a"
+dependencies = [
+ "enum_delegate_lib",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "enum_delegate_lib"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e1f6c3800b304a6be0012039e2a45a322a093539c45ab818d9e6895a39c90fe"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rand",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "enumset"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6897,6 +6921,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-service-protocol-v4"
+version = "1.1.5"
+dependencies = [
+ "restate-types",
+]
+
+[[package]]
 name = "restate-storage-api"
 version = "1.1.6"
 dependencies = [
@@ -7069,6 +7100,7 @@ dependencies = [
  "downcast-rs",
  "dyn-clone",
  "enum-map",
+ "enum_delegate",
  "enumset",
  "figment",
  "flexbuffers",
@@ -7218,6 +7250,7 @@ dependencies = [
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
+ "restate-service-protocol-v4",
  "restate-storage-api",
  "restate-storage-query-datafusion",
  "restate-storage-query-postgres",
