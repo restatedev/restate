@@ -117,14 +117,17 @@ pub(super) trait Converter: Unpin {
     fn convert_fields(&self, fields: Vec<FieldRef>) -> Vec<FieldRef>;
 }
 
-pub(super) struct JoinConverter<Before, After> {
-    before: Before,
-    after: After,
+pub(super) struct JoinConverter<First, Second> {
+    first: First,
+    second: Second,
 }
 
 impl<Before, After> JoinConverter<Before, After> {
     const fn new(before: Before, after: After) -> Self {
-        Self { before, after }
+        Self {
+            first: before,
+            second: after,
+        }
     }
 }
 
@@ -134,19 +137,20 @@ impl<Before: Converter, After: Converter> Converter for JoinConverter<Before, Af
         converted_schema: &SchemaRef,
         columns: Vec<ArrayRef>,
     ) -> Result<Vec<ArrayRef>, ArrowError> {
-        self.after.convert_columns(
+        self.second.convert_columns(
             converted_schema,
-            self.before.convert_columns(converted_schema, columns)?,
+            self.first.convert_columns(converted_schema, columns)?,
         )
     }
 
     fn convert_fields(&self, fields: Vec<FieldRef>) -> Vec<FieldRef> {
-        self.after
-            .convert_fields(self.before.convert_fields(fields))
+        self.second
+            .convert_fields(self.first.convert_fields(fields))
     }
 }
 
-// Prior to 1.2, we always converted LargeUtf8 to Utf8 and LargeBinary to Binary.
+// Prior to 1.2, we always converted LargeUtf8 to Utf8 and LargeBinary to Binary because
+// Arrow JS didn't used to support the Large datatypes.
 pub(super) struct LargeConverter;
 
 impl Converter for LargeConverter {
@@ -178,7 +182,6 @@ impl Converter for LargeConverter {
             .into_iter()
             .map(|field| {
                 let data_type = match field.data_type() {
-                    // Represent binary as base64
                     DataType::LargeBinary => DataType::Binary,
                     DataType::LargeUtf8 => DataType::Utf8,
                     other => other.clone(),
