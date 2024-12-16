@@ -10,11 +10,13 @@
 
 use futures::future::{Either, Ready};
 use http::Request;
+use restate_types::health::HealthStatus;
 use std::convert::Infallible;
 use std::task::{Context, Poll};
 use tonic::body::BoxBody;
 use tonic::codegen::Service;
 use tonic::server::NamedService;
+use tonic::Status;
 
 /// A tonic service wrapper that filters requests based on a predicate. This can be used to
 /// dynamically disable a service based on some condition.
@@ -72,5 +74,34 @@ where
 {
     fn check(&mut self, request: Request<BoxBody>) -> Result<Request<BoxBody>, tonic::Status> {
         self(request)
+    }
+}
+
+/// [`Predicate`] implementation which waits for the given status before allowing requests.
+#[derive(Clone, Debug)]
+pub struct WaitForReady<T> {
+    status: HealthStatus<T>,
+    ready_status: T,
+}
+
+impl<T> WaitForReady<T> {
+    pub fn new(status: HealthStatus<T>, ready_status: T) -> Self {
+        WaitForReady {
+            status,
+            ready_status,
+        }
+    }
+}
+
+impl<T> Predicate for WaitForReady<T>
+where
+    T: PartialEq,
+{
+    fn check(&mut self, request: Request<BoxBody>) -> Result<Request<BoxBody>, Status> {
+        if *self.status.get() == self.ready_status {
+            Ok(request)
+        } else {
+            Err(Status::unavailable("svc is not ready yet"))
+        }
     }
 }

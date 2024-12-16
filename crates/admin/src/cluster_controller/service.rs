@@ -38,7 +38,7 @@ use tracing::{debug, info};
 use restate_bifrost::{Bifrost, BifrostAdmin, SealedSegment};
 use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
 use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::tonic_service_filter::TonicServiceFilter;
+use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
     MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking, TransportConnect,
 };
@@ -127,16 +127,7 @@ where
                 ))
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip),
-                {
-                    let health_status = health_status.clone();
-                    move |req| {
-                        if *health_status.get() == AdminStatus::Ready {
-                            Ok(req)
-                        } else {
-                            Err(tonic::Status::unavailable("Admin component is not ready."))
-                        }
-                    }
-                },
+                WaitForReady::new(health_status.clone(), AdminStatus::Ready),
             ),
             crate::cluster_controller::protobuf::FILE_DESCRIPTOR_SET,
         );

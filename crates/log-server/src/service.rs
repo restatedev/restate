@@ -14,7 +14,7 @@ use anyhow::Context;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, instrument};
 
-use restate_core::network::tonic_service_filter::TonicServiceFilter;
+use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
@@ -93,16 +93,7 @@ impl LogServerService {
                 ))
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip),
-                {
-                    let health_status = health_status.clone();
-                    move |req| {
-                        if *health_status.get() == LogServerStatus::Ready {
-                            Ok(req)
-                        } else {
-                            Err(tonic::Status::unavailable("LogServer is not ready."))
-                        }
-                    }
-                },
+                WaitForReady::new(health_status.clone(), LogServerStatus::Ready),
             ),
             crate::protobuf::FILE_DESCRIPTOR_SET,
         );

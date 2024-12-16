@@ -19,7 +19,7 @@ use crate::network_server::metrics::{install_global_prometheus_recorder, render_
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvcServer;
 use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
-use restate_core::network::tonic_service_filter::TonicServiceFilter;
+use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportConnect};
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_types::config::CommonOptions;
@@ -116,13 +116,7 @@ impl NetworkServer {
                     .max_encoding_message_size(32 * 1024 * 1024)
                     .accept_compressed(CompressionEncoding::Gzip)
                     .send_compressed(CompressionEncoding::Gzip),
-                move |req| {
-                    if *node_health.get() == NodeStatus::Alive {
-                        Ok(req)
-                    } else {
-                        Err(tonic::Status::unavailable("Node is not alive."))
-                    }
-                },
+                WaitForReady::new(node_health, NodeStatus::Alive),
             ),
             restate_core::network::protobuf::core_node_svc::FILE_DESCRIPTOR_SET,
         );
