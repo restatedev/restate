@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod message_handler;
-mod persisted_lsn_watchdog;
+// mod persisted_lsn_watchdog;
 mod processor_state;
 mod spawn_processor_task;
 
@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use metrics::gauge;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, instrument, warn};
@@ -74,7 +74,7 @@ use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
 use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
-use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
+// use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
@@ -94,7 +94,7 @@ pub struct PartitionProcessorManager {
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
-    persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
+    // persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
     archived_lsns: HashMap<PartitionId, Lsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
     pending_control_processors: Option<ControlProcessors>,
@@ -193,7 +193,7 @@ impl PartitionProcessorManager {
             bifrost,
             rx,
             tx,
-            persisted_lsns_rx: None,
+            // persisted_lsns_rx: None,
             archived_lsns: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
             pending_control_processors: None,
@@ -219,17 +219,17 @@ impl PartitionProcessorManager {
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
 
-        let (persisted_lsns_tx, persisted_lsns_rx) = watch::channel(BTreeMap::default());
-        self.persisted_lsns_rx = Some(persisted_lsns_rx);
+        // let (persisted_lsns_tx, persisted_lsns_rx) = watch::channel(BTreeMap::default());
+        // self.persisted_lsns_rx = Some(persisted_lsns_rx);
 
-        let watchdog = PersistedLogLsnWatchdog::new(
-            self.updateable_config
-                .clone()
-                .map(|config| &config.worker.storage),
-            self.partition_store_manager.clone(),
-            persisted_lsns_tx,
-        );
-        TaskCenter::spawn_child(TaskKind::Watchdog, "persisted-lsn-watchdog", watchdog.run())?;
+        // let watchdog = PersistedLogLsnWatchdog::new(
+        //     self.updateable_config
+        //         .clone()
+        //         .map(|config| &config.worker.storage),
+        //     self.partition_store_manager.clone(),
+        //     persisted_lsns_tx,
+        // );
+        // TaskCenter::spawn_child(TaskKind::Watchdog, "persisted-lsn-watchdog", watchdog.run())?;
         let metadata = Metadata::current();
 
         let mut logs_version_watcher = metadata.watch(MetadataKind::Logs);
@@ -519,7 +519,7 @@ impl PartitionProcessorManager {
     }
 
     fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
-        let persisted_lsns = self.persisted_lsns_rx.as_ref().map(|w| w.borrow());
+        // let persisted_lsns = self.persisted_lsns_rx.as_ref().map(|w| w.borrow());
 
         // For all running partitions, collect state, enrich it, and send it back.
         self.processor_states
@@ -566,11 +566,9 @@ impl PartitionProcessorManager {
                         .set(last_record_applied_at.elapsed());
                     }
 
-                    // it is a bit unfortunate that we share PartitionProcessorStatus between the
-                    // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
-                    status.last_persisted_log_lsn = persisted_lsns
-                        .as_ref()
-                        .and_then(|lsns| lsns.get(partition_id).cloned());
+                    // status.last_persisted_log_lsn = persisted_lsns
+                    //     .as_ref()
+                    //     .and_then(|lsns| lsns.get(partition_id).cloned());
 
                     status.last_archived_log_lsn = self.archived_lsns.get(partition_id).cloned();
 
