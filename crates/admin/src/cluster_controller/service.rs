@@ -11,24 +11,31 @@
 mod state;
 
 use std::num::NonZeroU16;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use codederror::CodedError;
 use restate_metadata_store::ReadModifyWriteError;
-use restate_types::logs::metadata::{DefaultProvider, Logs, LogsConfiguration};
-use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
+use restate_types::cluster_controller::SchedulingPlan;
+use restate_types::logs::metadata::{
+    DefaultProvider, LogletParams, Logs, LogsConfiguration, ProviderKind, SegmentIndex,
+};
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
+};
 use restate_types::partition_table::{
     self, PartitionTable, PartitionTableBuilder, ReplicationStrategy,
 };
+use restate_types::replicated_loglet::{ReplicatedLogletId, ReplicatedLogletParams};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, info};
 
-use restate_bifrost::{Bifrost, BifrostAdmin};
+use restate_bifrost::{Bifrost, BifrostAdmin, SealedSegment};
 use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{
@@ -52,7 +59,9 @@ use restate_types::{GenerationalNodeId, Version, Versioned};
 use super::cluster_state_refresher::ClusterStateRefresher;
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
 use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
+use crate::cluster_controller::logs_controller::{self, NodeSetSelectorHints};
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use crate::cluster_controller::scheduler::SchedulingPlanNodeSetSelectorHints;
 use state::ClusterControllerState;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -147,6 +156,14 @@ where
 }
 
 #[derive(Debug)]
+pub struct ChainExtension {
+    /// Segment index to seal. Last if None
+    pub segment_index_to_seal: Option<SegmentIndex>,
+    pub provider_kind: ProviderKind,
+    pub params: LogletParams,
+}
+
+#[derive(Debug)]
 enum ClusterControllerCommand {
     GetClusterState(oneshot::Sender<Arc<ClusterState>>),
     TrimLog {
@@ -164,6 +181,12 @@ enum ClusterControllerCommand {
         default_provider: DefaultProvider,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
     },
+    SealAndExtendChain {
+        log_id: LogId,
+        min_version: Version,
+        extension: Option<ChainExtension>,
+        response_tx: oneshot::Sender<anyhow::Result<SealedSegment>>,
+    },
 }
 
 pub struct ClusterControllerHandle {
@@ -172,13 +195,13 @@ pub struct ClusterControllerHandle {
 
 impl ClusterControllerHandle {
     pub async fn get_cluster_state(&self) -> Result<Arc<ClusterState>, ShutdownError> {
-        let (tx, rx) = oneshot::channel();
+        let (response_tx, response_rx) = oneshot::channel();
         // ignore the error, we own both tx and rx at this point.
         let _ = self
             .tx
-            .send(ClusterControllerCommand::GetClusterState(tx))
+            .send(ClusterControllerCommand::GetClusterState(response_tx))
             .await;
-        rx.await.map_err(|_| ShutdownError)
+        response_rx.await.map_err(|_| ShutdownError)
     }
 
     pub async fn trim_log(
@@ -186,35 +209,35 @@ impl ClusterControllerHandle {
         log_id: LogId,
         trim_point: Lsn,
     ) -> Result<Result<(), anyhow::Error>, ShutdownError> {
-        let (tx, rx) = oneshot::channel();
+        let (response_tx, response_rx) = oneshot::channel();
 
         let _ = self
             .tx
             .send(ClusterControllerCommand::TrimLog {
                 log_id,
                 trim_point,
-                response_tx: tx,
+                response_tx,
             })
             .await;
 
-        rx.await.map_err(|_| ShutdownError)
+        response_rx.await.map_err(|_| ShutdownError)
     }
 
     pub async fn create_partition_snapshot(
         &self,
         partition_id: PartitionId,
     ) -> Result<Result<SnapshotId, anyhow::Error>, ShutdownError> {
-        let (tx, rx) = oneshot::channel();
+        let (response_tx, response_rx) = oneshot::channel();
 
         let _ = self
             .tx
             .send(ClusterControllerCommand::CreateSnapshot {
                 partition_id,
-                response_tx: tx,
+                response_tx,
             })
             .await;
 
-        rx.await.map_err(|_| ShutdownError)
+        response_rx.await.map_err(|_| ShutdownError)
     }
 
     pub async fn update_cluster_configuration(
@@ -223,7 +246,7 @@ impl ClusterControllerHandle {
         replication_strategy: ReplicationStrategy,
         default_provider: DefaultProvider,
     ) -> Result<anyhow::Result<()>, ShutdownError> {
-        let (tx, rx) = oneshot::channel();
+        let (response_tx, response_rx) = oneshot::channel();
 
         let _ = self
             .tx
@@ -231,11 +254,32 @@ impl ClusterControllerHandle {
                 num_partitions,
                 replication_strategy,
                 default_provider,
-                response_tx: tx,
+                response_tx,
             })
             .await;
 
-        rx.await.map_err(|_| ShutdownError)
+        response_rx.await.map_err(|_| ShutdownError)
+    }
+
+    pub async fn seal_and_extend_chain(
+        &self,
+        log_id: LogId,
+        min_version: Version,
+        extension: Option<ChainExtension>,
+    ) -> Result<anyhow::Result<SealedSegment>, ShutdownError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        let _ = self
+            .tx
+            .send(ClusterControllerCommand::SealAndExtendChain {
+                log_id,
+                min_version,
+                extension,
+                response_tx,
+            })
+            .await;
+
+        response_rx.await.map_err(|_| ShutdownError)
     }
 }
 
@@ -497,6 +541,30 @@ impl<T: TransportConnect> Service<T> {
         Ok(())
     }
 
+    fn seal_and_extend_chain(
+        &self,
+        log_id: LogId,
+        min_version: Version,
+        extension: Option<ChainExtension>,
+        response_tx: oneshot::Sender<anyhow::Result<SealedSegment>>,
+    ) {
+        let task = SealAndExtendTask {
+            log_id,
+            extension,
+            min_version,
+            bifrost: self.bifrost.clone(),
+            metadata_store_client: self.metadata_store_client.clone(),
+            metadata_writer: self.metadata_writer.clone(),
+            observed_cluster_state: self.observed_cluster_state.clone(),
+        };
+
+        _ = TaskCenter::spawn(TaskKind::Disposable, "seal-and-extend", async move {
+            let result = task.run().await;
+            _ = response_tx.send(result);
+            Ok(())
+        });
+    }
+
     async fn on_cluster_cmd(
         &self,
         command: ClusterControllerCommand,
@@ -541,6 +609,12 @@ impl<T: TransportConnect> Service<T> {
                     .await;
                 let _ = response_tx.send(result);
             }
+            ClusterControllerCommand::SealAndExtendChain {
+                log_id,
+                min_version,
+                extension,
+                response_tx,
+            } => self.seal_and_extend_chain(log_id, min_version, extension, response_tx),
         }
     }
 }
@@ -631,6 +705,118 @@ where
     }
 }
 
+struct SealAndExtendTask {
+    log_id: LogId,
+    min_version: Version,
+    extension: Option<ChainExtension>,
+    bifrost: Bifrost,
+    metadata_writer: MetadataWriter,
+    metadata_store_client: MetadataStoreClient,
+    observed_cluster_state: ObservedClusterState,
+}
+
+impl SealAndExtendTask {
+    async fn run(mut self) -> anyhow::Result<SealedSegment> {
+        let last_segment_index = self
+            .extension
+            .as_ref()
+            .and_then(|ext| ext.segment_index_to_seal);
+
+        let bifrost_admin = BifrostAdmin::new(
+            &self.bifrost,
+            &self.metadata_writer,
+            &self.metadata_store_client,
+        );
+
+        let (provider, params) = match self.extension.take() {
+            Some(extension) => (extension.provider_kind, extension.params),
+            None => self.next_segment().await?,
+        };
+
+        let sealed_segment = bifrost_admin
+            .seal_and_extend_chain(
+                self.log_id,
+                last_segment_index,
+                self.min_version,
+                provider,
+                params,
+            )
+            .await?;
+
+        Ok(sealed_segment)
+    }
+
+    async fn next_segment(&self) -> anyhow::Result<(ProviderKind, LogletParams)> {
+        let logs = Metadata::with_current(|m| m.logs_ref());
+
+        let segment = logs
+            .chain(&self.log_id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown log id"))?
+            .tail();
+
+        let (loglet_id, previous_params) = match segment.config.kind {
+            #[cfg(any(test, feature = "memory-loglet"))]
+            ProviderKind::InMemory => {
+                let loglet_id = ReplicatedLogletId::from_str(&segment.config.params)
+                    .context("Invalid loglet id")?;
+                (loglet_id, None)
+            }
+            ProviderKind::Local => {
+                let loglet_id = ReplicatedLogletId::from_str(&segment.config.params)
+                    .context("Invalid loglet id")?;
+                (loglet_id, None)
+            }
+            #[cfg(feature = "replicated-loglet")]
+            ProviderKind::Replicated => {
+                let replicated_loglet_params =
+                    ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
+                        .context("Invalid replicated loglet params")?;
+
+                (
+                    replicated_loglet_params.loglet_id,
+                    Some(replicated_loglet_params),
+                )
+            }
+        };
+
+        let (provider, params) = match &logs.configuration().default_provider {
+            #[cfg(any(test, feature = "memory-loglet"))]
+            DefaultProvider::InMemory => (
+                ProviderKind::InMemory,
+                u64::from(loglet_id.next()).to_string().into(),
+            ),
+            DefaultProvider::Local => (
+                ProviderKind::Local,
+                u64::from(loglet_id.next()).to_string().into(),
+            ),
+            #[cfg(feature = "replicated-loglet")]
+            DefaultProvider::Replicated(config) => {
+                let schedule_plan = self
+                    .metadata_store_client
+                    .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+                    .await?;
+
+                let loglet_params = logs_controller::build_new_replicated_loglet_configuration(
+                    config,
+                    loglet_id.next(),
+                    &Metadata::with_current(|m| m.nodes_config_ref()),
+                    &self.observed_cluster_state,
+                    previous_params.as_ref(),
+                    SchedulingPlanNodeSetSelectorHints::from(schedule_plan.as_ref())
+                        .preferred_sequencer(&self.log_id),
+                )
+                .ok_or_else(|| anyhow::anyhow!("Insufficient writeable nodes in the nodeset"))?;
+
+                (
+                    ProviderKind::Replicated,
+                    LogletParams::from(loglet_params.serialize()?),
+                )
+            }
+        };
+
+        Ok((provider, params))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::Service;

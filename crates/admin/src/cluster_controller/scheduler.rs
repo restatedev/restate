@@ -550,14 +550,20 @@ impl<T: TransportConnect> Scheduler<T> {
 /// Placement hints for the [`logs_controller::LogsController`] based on the current
 /// [`SchedulingPlan`].
 pub struct SchedulingPlanNodeSetSelectorHints<'a> {
-    scheduling_plan: &'a SchedulingPlan,
+    scheduling_plan: Option<&'a SchedulingPlan>,
 }
 
 impl<'a, T> From<&'a Scheduler<T>> for SchedulingPlanNodeSetSelectorHints<'a> {
     fn from(value: &'a Scheduler<T>) -> Self {
         Self {
-            scheduling_plan: &value.scheduling_plan,
+            scheduling_plan: Some(&value.scheduling_plan),
         }
+    }
+}
+
+impl<'a> From<Option<&'a SchedulingPlan>> for SchedulingPlanNodeSetSelectorHints<'a> {
+    fn from(scheduling_plan: Option<&'a SchedulingPlan>) -> Self {
+        Self { scheduling_plan }
     }
 }
 
@@ -566,7 +572,7 @@ impl<'a> logs_controller::NodeSetSelectorHints for SchedulingPlanNodeSetSelector
         let partition_id = PartitionId::from(*log_id);
 
         self.scheduling_plan
-            .get(&partition_id)
+            .and_then(|p| p.get(&partition_id))
             .and_then(|target_state| target_state.leader.map(Into::into))
     }
 }

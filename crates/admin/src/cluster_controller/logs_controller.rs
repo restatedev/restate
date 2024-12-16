@@ -348,7 +348,7 @@ fn try_provisioning(
 /// Build a new segment configuration for a replicated loglet based on the observed cluster state
 /// and the previous configuration.
 #[cfg(feature = "replicated-loglet")]
-fn build_new_replicated_loglet_configuration(
+pub fn build_new_replicated_loglet_configuration(
     replicated_loglet_config: &ReplicatedLogletConfig,
     loglet_id: ReplicatedLogletId,
     nodes_config: &NodesConfiguration,

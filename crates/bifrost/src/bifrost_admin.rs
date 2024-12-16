@@ -11,7 +11,7 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use tracing::{info, instrument};
+use tracing::{debug, info, instrument};
 
 use restate_core::{Metadata, MetadataKind, MetadataWriter};
 use restate_metadata_store::MetadataStoreClient;
@@ -47,6 +47,7 @@ impl<'a> Deref for BifrostAdmin<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct SealedSegment {
     pub segment_index: SegmentIndex,
     pub provider: ProviderKind,
@@ -102,8 +103,14 @@ impl<'a> BifrostAdmin<'a> {
             .or_else(|| metadata.logs_ref().chain(&log_id).map(|c| c.tail_index()))
             .ok_or(Error::UnknownLogId(log_id))?;
 
-        let sealed_segment = self.seal(log_id, segment_index).await?;
-        assert!(sealed_segment.tail.is_sealed());
+        let sealed_segment = loop {
+            let sealed_segment = self.seal(log_id, segment_index).await?;
+            if sealed_segment.tail.is_sealed() {
+                break sealed_segment;
+            }
+            debug!(%log_id, %segment_index, "Segment is not sealed yet");
+            tokio::time::sleep(Configuration::pinned().bifrost.seal_retry_interval.into()).await;
+        };
 
         self.add_segment_with_params(
             log_id,
