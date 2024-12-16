@@ -31,10 +31,14 @@ use restate_core::{
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
 use restate_metadata_store::local::LocalMetadataStoreService;
-use restate_metadata_store::MetadataStoreClient;
-use restate_types::config::{CommonOptions, Configuration};
+use restate_metadata_store::omnipaxos::OmnipaxosMetadataStoreService;
+use restate_metadata_store::raft::service::RaftMetadataStoreService;
+use restate_metadata_store::{
+    BoxedMetadataStoreService, MetadataStoreClient, MetadataStoreService,
+};
+use restate_types::config::{CommonOptions, Configuration, MetadataStoreKind};
 use restate_types::errors::GenericError;
-use restate_types::health::Health;
+use restate_types::health::{Health, HealthStatus};
 use restate_types::live::Live;
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
@@ -110,7 +114,7 @@ pub struct Node {
     partition_routing_refresher: PartitionRoutingRefresher,
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
-    metadata_store_role: Option<LocalMetadataStoreService>,
+    metadata_store_role: Option<BoxedMetadataStoreService>,
     base_role: BaseRole,
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole>,
@@ -131,13 +135,9 @@ impl Node {
 
         // todo(asoli) move local metadata store to use NetworkServer
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
-            Some(LocalMetadataStoreService::from_options(
+            Some(Self::create_metadata_store(
+                &updateable_config,
                 health.metadata_server_status(),
-                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
-                updateable_config
-                    .clone()
-                    .map(|config| &config.metadata_store.rocksdb)
-                    .boxed(),
             ))
         } else {
             None
@@ -304,6 +304,41 @@ impl Node {
             server_builder,
             networking,
         })
+    }
+
+    fn create_metadata_store(
+        updateable_config: &Live<Configuration>,
+        health_status: HealthStatus<MetadataServerStatus>,
+    ) -> BoxedMetadataStoreService {
+        match updateable_config.pinned().metadata_store.kind {
+            MetadataStoreKind::Local => LocalMetadataStoreService::from_options(
+                health_status,
+                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
+                updateable_config
+                    .clone()
+                    .map(|config| &config.metadata_store.rocksdb)
+                    .boxed(),
+            )
+            .boxed(),
+            MetadataStoreKind::Raft(_) => RaftMetadataStoreService::new(
+                health_status,
+                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
+                updateable_config
+                    .clone()
+                    .map(|config| &config.metadata_store.rocksdb)
+                    .boxed(),
+            )
+            .boxed(),
+            MetadataStoreKind::Omnipaxos(_) => OmnipaxosMetadataStoreService::new(
+                health_status,
+                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
+                updateable_config
+                    .clone()
+                    .map(|config| &config.metadata_store.rocksdb)
+                    .boxed(),
+            )
+            .boxed(),
+        }
     }
 
     pub async fn start(mut self) -> Result<(), anyhow::Error> {

@@ -67,7 +67,7 @@ pub struct Node {
             pub fn with_socket_metadata(self) {
                 let metadata_socket: PathBuf = "metadata.sock".into();
                 self.base_config.metadata_store.bind_address = BindAddress::Uds(metadata_socket.clone());
-                self.base_config.common.metadata_store_client.metadata_store_client = MetadataStoreClient::Embedded { address: AdvertisedAddress::Uds(metadata_socket) }
+                self.base_config.common.metadata_store_client.metadata_store_client = MetadataStoreClient::Embedded { addresses: vec![AdvertisedAddress::Uds(metadata_socket)] }
             }
 
             pub fn with_random_ports(self) {
@@ -215,15 +215,17 @@ impl Node {
         let base_dir = base_dir.into();
 
         // ensure file paths are relative to the base dir
-        if let MetadataStoreClient::Embedded {
-            address: AdvertisedAddress::Uds(file),
-        } = &mut self
+        if let MetadataStoreClient::Embedded { addresses } = &mut self
             .base_config
             .common
             .metadata_store_client
             .metadata_store_client
         {
-            *file = base_dir.join(&*file)
+            for advertised_address in addresses {
+                if let AdvertisedAddress::Uds(file) = advertised_address {
+                    *file = base_dir.join(&*file)
+                }
+            }
         }
         if let BindAddress::Uds(file) = &mut self.base_config.metadata_store.bind_address {
             *file = base_dir.join(&*file)
