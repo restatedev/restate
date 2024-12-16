@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info, trace, warn, Instrument, Span};
+use tracing::{debug, info, instrument, trace, warn, Instrument, Span};
 
 use restate_types::config::NetworkingOptions;
 use restate_types::net::codec::MessageBodyExt;
@@ -355,6 +355,7 @@ impl<T: TransportConnect> ConnectionManager<T> {
         self.start_connection_reactor(connection, incoming)
     }
 
+    #[instrument(skip_all)]
     fn connect_loopback(&self) -> Result<Arc<OwnedConnection>, NetworkError> {
         let (tx, rx) = mpsc::channel(self.networking_options.outbound_queue_length.into());
         let connection = OwnedConnection::new(

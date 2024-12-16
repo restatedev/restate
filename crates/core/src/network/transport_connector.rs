@@ -186,7 +186,7 @@ pub mod test_util {
             });
 
             // start acceptor
-            TaskCenter::spawn(TaskKind::RpcConnection, "test-connection-acceptor", {
+            TaskCenter::spawn(TaskKind::Disposable, "test-connection-acceptor", {
                 let connector = connector.clone();
                 async move {
                     while let Some(connection) = new_connections.recv().await {
