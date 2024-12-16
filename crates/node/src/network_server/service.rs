@@ -100,6 +100,8 @@ impl NetworkServer {
                 health,
                 connection_manager,
             ))
+            .max_decoding_message_size(32 * 1024 * 1024)
+            .max_encoding_message_size(32 * 1024 * 1024)
             .accept_compressed(CompressionEncoding::Gzip)
             .send_compressed(CompressionEncoding::Gzip),
             restate_types::protobuf::FILE_DESCRIPTOR_SET,

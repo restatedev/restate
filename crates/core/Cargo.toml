@@ -37,7 +37,7 @@ http-body = { workspace = true }
 http-body-util = { workspace = true }
 humantime = { workspace = true }
 hyper = { workspace = true }
-hyper-util = { workspace = true }
+hyper-util = { workspace = true, features = ["server-graceful", "server"] }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
