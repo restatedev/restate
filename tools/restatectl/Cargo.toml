@@ -13,6 +13,7 @@ replicated-loglet = [
     "restate-bifrost/replicated-loglet",
 ]
 memory-loglet = ["restate-types/memory-loglet", "restate-bifrost/memory-loglet", "restate-admin/memory-loglet"]
+no-trace-logging = ["tracing/max_level_debug", "tracing/release_max_level_debug"]
 
 [dependencies]
 restate-admin = { workspace = true, features = ["clients"] }
