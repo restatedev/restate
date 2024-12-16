@@ -16,7 +16,9 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{ListLogsRequest, SealAndExtendChainRequest};
+use restate_admin::cluster_controller::protobuf::{
+    ChainExtension, ListLogsRequest, SealAndExtendChainRequest,
+};
 use restate_cli_util::{c_eprintln, c_println};
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::LogId;
@@ -36,16 +38,16 @@ pub struct ReconfigureOpts {
     /// LogId/Partition to seal and extend
     #[clap(long, short)]
     log_id: u32,
+    /// If a loglet provider is specified, the new loglet will be configured using the provided parameters.
+    /// Otherwise, it will be automatically reconfigured based on the cluster configuration.
+    #[clap(long, short)]
+    provider: Option<ProviderKind>,
     /// Option segment index to seal. The tail segment is chosen automatically if not provided.
     #[clap(long, short)]
     segment_index: Option<u32>,
     /// The [minimum] expected metadata version
     #[clap(long, short, default_value = "1")]
     min_version: NonZeroU32,
-    /// Provider kind.
-    #[clap(long, short, default_value = "replicated")]
-    provider: ProviderKind,
-
     /// Replication factor requirement for a new replicated segment; by default reuse
     /// the sealed segment's value iff its provider kind was also "replicated"
     #[clap(long)]
@@ -78,12 +80,23 @@ async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> any
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    let params = match opts.provider {
-        ProviderKind::Local => rand::random::<u64>().to_string(),
-        #[cfg(any(test, feature = "memory-loglet"))]
-        ProviderKind::InMemory => rand::random::<u64>().to_string(),
-        #[cfg(feature = "replicated-loglet")]
-        ProviderKind::Replicated => replicated_loglet_params(&mut client, opts).await?,
+    let extension = match opts.provider {
+        Some(provider) => {
+            let params = match provider {
+                ProviderKind::Local => rand::random::<u64>().to_string(),
+                #[cfg(any(test, feature = "memory-loglet"))]
+                ProviderKind::InMemory => rand::random::<u64>().to_string(),
+                #[cfg(feature = "replicated-loglet")]
+                ProviderKind::Replicated => replicated_loglet_params(&mut client, opts).await?,
+            };
+
+            Some(ChainExtension {
+                provider: provider.to_string(),
+                segment_index: opts.segment_index,
+                params,
+            })
+        }
+        None => None,
     };
 
     let response = client
@@ -92,18 +105,18 @@ async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> any
             min_version: Some(Version {
                 value: opts.min_version.get(),
             }),
-            provider: opts.provider.to_string(),
-            segment_index: opts.segment_index,
-            params,
+            extension,
         })
         .await?
         .into_inner();
 
-    c_println!("✅ Log reconfiguration");
-    c_println!(" └ Segment Index: {}", response.new_segment_index);
     let Some(sealed_segment) = response.sealed_segment else {
+        c_println!("✅ Log scheduled for reconfiguration");
         return Ok(());
     };
+
+    c_println!("✅ Log reconfiguration");
+    c_println!(" └ Segment Index: {}", response.new_segment_index);
 
     c_println!();
     c_println!("Sealed segment");
@@ -132,13 +145,13 @@ async fn replicated_loglet_params(
     client: &mut ClusterCtrlSvcClient<Channel>,
     opts: &ReconfigureOpts,
 ) -> anyhow::Result<String> {
-    let mut logs_resposne = client
+    let mut logs_response = client
         .list_logs(ListLogsRequest {})
         .await
         .context("Failed to get logs metadata")?
         .into_inner();
 
-    let logs = StorageCodec::decode::<Logs, _>(&mut logs_resposne.logs)?;
+    let logs = StorageCodec::decode::<Logs, _>(&mut logs_response.logs)?;
     let log_id = LogId::from(opts.log_id);
     let chain = logs
         .chain(&log_id)

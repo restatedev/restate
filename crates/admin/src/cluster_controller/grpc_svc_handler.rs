@@ -20,7 +20,7 @@ use restate_bifrost::{Bifrost, BifrostAdmin, Error as BiforstError};
 use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::identifiers::PartitionId;
-use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
+use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY};
 use restate_types::nodes_config::NodesConfiguration;
@@ -40,6 +40,7 @@ use super::protobuf::{
     GetClusterConfigurationRequest, GetClusterConfigurationResponse,
     SetClusterConfigurationRequest, SetClusterConfigurationResponse,
 };
+use super::service::ChainExtension;
 use super::ClusterControllerHandle;
 
 pub(crate) struct ClusterCtrlSvcHandler {
@@ -214,30 +215,33 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         &self,
         request: Request<SealAndExtendChainRequest>,
     ) -> Result<Response<SealAndExtendChainResponse>, Status> {
-        let admin = BifrostAdmin::new(
-            &self.bifrost,
-            &self.metadata_writer,
-            &self.metadata_store_client,
-        );
-
         let request = request.into_inner();
-        let kind: ProviderKind = request
-            .provider
-            .parse()
-            .map_err(|_| Status::invalid_argument("Provider type is not supported"))?;
 
-        let sealed_segment = admin
+        let extension = match request.extension {
+            Some(ext) => Some(ChainExtension {
+                segment_index_to_seal: ext.segment_index.map(SegmentIndex::from),
+
+                provider_kind: ext
+                    .provider
+                    .parse()
+                    .map_err(|_| Status::invalid_argument("Provider type is not supported"))?,
+                params: ext.params.into(),
+            }),
+            None => None,
+        };
+
+        let sealed_segment = self
+            .controller_handle
             .seal_and_extend_chain(
                 request.log_id.into(),
-                request.segment_index.map(SegmentIndex::from),
                 request
                     .min_version
                     .map(Version::from)
                     .unwrap_or_else(|| Version::MIN),
-                kind,
-                request.params.into(),
+                extension,
             )
             .await
+            .map_err(|_| Status::aborted("Node is shutting down"))?
             .map_err(|err| Status::internal(err.to_string()))?;
 
         Ok(Response::new(SealAndExtendChainResponse {
