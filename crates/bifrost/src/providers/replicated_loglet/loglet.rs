@@ -30,7 +30,6 @@ use crate::providers::replicated_loglet::tasks::{
 };
 
 use super::error::ReplicatedLogletError;
-use super::log_server_manager::RemoteLogServerManager;
 use super::metric_definitions::{BIFROST_RECORDS_ENQUEUED_BYTES, BIFROST_RECORDS_ENQUEUED_TOTAL};
 use super::read_path::{ReadStreamTask, ReplicatedLogletReadStream};
 use super::remote_sequencer::RemoteSequencer;
@@ -72,9 +71,6 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         record_cache: RecordCache,
     ) -> Self {
         let known_global_tail = TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST));
-        let log_server_manager =
-            RemoteLogServerManager::new(my_params.loglet_id, &my_params.nodeset);
-
         let sequencer = if networking.my_node_id() == my_params.sequencer {
             debug!(
                 loglet_id = %my_params.loglet_id,
@@ -90,7 +86,6 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
                     selector_strategy,
                     networking.clone(),
                     logservers_rpc.store.clone(),
-                    log_server_manager.clone(),
                     record_cache.clone(),
                     known_global_tail.clone(),
                 ),
