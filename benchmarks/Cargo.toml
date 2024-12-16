@@ -17,6 +17,7 @@ restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-server = { workspace = true }
 restate-types = { workspace = true, features = ["clap"] }
+no-trace-logging-release = ["tracing/max_level_debug", "tracing/release_max_level_debug"]
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }

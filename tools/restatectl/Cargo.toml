@@ -25,6 +25,7 @@ restate-rocksdb = { workspace = true }
 restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
+no-trace-logging = ["tracing/max_level_debug", "tracing/release_max_level_debug"]
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
