@@ -401,27 +401,6 @@ impl RemoteSequencerConnection {
     }
 }
 
-struct MaybeTerminalAppendError {
-    pub original: AppendError,
-    pub terminal: bool,
-}
-
-impl MaybeTerminalAppendError {
-    fn terminal(error: AppendError) -> Self {
-        Self {
-            original: error,
-            terminal: true,
-        }
-    }
-
-    fn non_terminal(error: AppendError) -> Self {
-        Self {
-            original: error,
-            terminal: false,
-        }
-    }
-}
-
 pub(crate) struct RemoteInflightAppend {
     rpc_token: RpcToken<Appended>,
     commit_resolver: LogletCommitResolver,
@@ -493,7 +472,7 @@ mod test {
 
     use restate_core::{
         network::{Incoming, MessageHandler, MockConnector},
-        TestCoreEnv, TestCoreEnvBuilder,
+        TestCoreEnvBuilder,
     };
     use restate_types::{
         logs::{LogId, LogletOffset, Record, SequenceNumber, TailState},
@@ -552,15 +531,10 @@ mod test {
         }
     }
 
-    struct TestEnv {
-        pub core_env: TestCoreEnv<MockConnector>,
-        pub remote_sequencer: RemoteSequencer<MockConnector>,
-    }
-
     async fn setup<F, O>(sequencer: SequencerMockHandler, test: F)
     where
         O: Future<Output = ()>,
-        F: FnOnce(TestEnv) -> O,
+        F: FnOnce(RemoteSequencer<MockConnector>) -> O,
     {
         let (connector, _receiver) = MockConnector::new(100);
         let connector = Arc::new(connector);
@@ -587,30 +561,24 @@ mod test {
             sequencer_rpc,
         );
 
-        let core_env = builder.build().await;
-        let env = TestEnv {
-            core_env,
-            remote_sequencer,
-        };
-        test(env).await;
+        let _env = builder.build().await;
+        test(remote_sequencer).await;
     }
 
     #[restate_core::test]
     async fn test_remote_stream_ok() {
         let handler = SequencerMockHandler::default();
 
-        setup(handler, |test_env| async move {
+        setup(handler, |remote_sequencer| async move {
             let records: Vec<Record> =
                 vec!["record 1".into(), "record 2".into(), "record 3".into()];
 
-            let commit_1 = test_env
-                .remote_sequencer
+            let commit_1 = remote_sequencer
                 .append(records.clone().into())
                 .await
                 .unwrap();
 
-            let commit_2 = test_env
-                .remote_sequencer
+            let commit_2 = remote_sequencer
                 .append(records.clone().into())
                 .await
                 .unwrap();
@@ -627,18 +595,16 @@ mod test {
     async fn test_remote_stream_sealed() {
         let handler = SequencerMockHandler::with_reply_status(SequencerStatus::Sealed);
 
-        setup(handler, |test_env| async move {
+        setup(handler, |remote_sequencer| async move {
             let records: Vec<Record> =
                 vec!["record 1".into(), "record 2".into(), "record 3".into()];
 
-            let commit_1 = test_env
-                .remote_sequencer
+            let commit_1 = remote_sequencer
                 .append(records.clone().into())
                 .await
                 .unwrap();
 
-            let commit_2 = test_env
-                .remote_sequencer
+            let commit_2 = remote_sequencer
                 .append(records.clone().into())
                 .await
                 .unwrap();

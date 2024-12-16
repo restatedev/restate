@@ -357,7 +357,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     tracing::debug!(%peer, error=%err, "Failed to send batch to node");
                     continue;
                 }
-                StoreTaskStatus::Sealed(_) => {
+                StoreTaskStatus::Sealed => {
                     tracing::debug!(%peer, "Store task cancelled, the node is sealed");
                     checker.set_attribute(peer, NodeAttributes::sealed());
                     continue;
@@ -439,7 +439,7 @@ impl NodeAttributes {
 
 #[derive(Debug)]
 enum StoreTaskStatus {
-    Sealed(LogletOffset),
+    Sealed,
     Stored(Stored),
     Error(NetworkError),
 }
@@ -529,7 +529,7 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
         };
 
         match tail_state {
-            TailState::Sealed(offset) => return Ok(StoreTaskStatus::Sealed(offset)),
+            TailState::Sealed(_) => return Ok(StoreTaskStatus::Sealed),
             TailState::Open(offset) => {
                 match offset.cmp(&self.first_offset) {
                     Ordering::Equal | Ordering::Greater => {
@@ -558,7 +558,7 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
         match incoming.body().status {
             Status::Sealing | Status::Sealed => {
                 server.local_tail().notify_seal();
-                return Ok(StoreTaskStatus::Sealed(incoming.body().header.local_tail));
+                return Ok(StoreTaskStatus::Sealed);
             }
             _ => {
                 // all other status types are handled by the caller
