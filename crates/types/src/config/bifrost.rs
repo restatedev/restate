@@ -221,11 +221,11 @@ pub struct ReplicatedLogletOptions {
     /// Note that this will be increased to fit the biggest batch of records being enqueued.
     pub maximum_inflight_records: NonZeroUsize,
 
-    /// Sequencer backoff strategy
+    /// Sequencer retry policy
     ///
     /// Backoff introduced when sequencer fail to find a suitable spread
     /// of log servers
-    pub sequencer_backoff_strategy: RetryPolicy,
+    pub sequencer_retry_policy: RetryPolicy,
 
     /// Log Server RPC timeout
     ///
@@ -268,7 +268,7 @@ impl Default for ReplicatedLogletOptions {
         Self {
             maximum_inflight_records: NonZeroUsize::new(1000).unwrap(),
 
-            sequencer_backoff_strategy: RetryPolicy::exponential(
+            sequencer_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,
                 None,

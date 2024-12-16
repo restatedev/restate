@@ -6072,6 +6072,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "criterion",
+ "crossbeam-utils",
  "dashmap",
  "derive_more",
  "enum-map",

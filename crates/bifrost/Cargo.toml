@@ -23,6 +23,7 @@ restate-test-util = { workspace = true, optional = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+crossbeam-utils = { version = "0.8" }
 dashmap = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }

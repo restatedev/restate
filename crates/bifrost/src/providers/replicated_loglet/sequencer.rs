@@ -15,6 +15,7 @@ use std::sync::{
     Arc,
 };
 
+use crossbeam_utils::CachePadded;
 use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, instrument, trace};
@@ -50,17 +51,15 @@ pub enum SequencerError {
 
 /// Sequencer shared state
 pub struct SequencerSharedState {
-    next_write_offset: AtomicU32,
-    my_node_id: GenerationalNodeId,
+    known_global_tail: TailOffsetWatch,
     my_params: ReplicatedLogletParams,
-    committed_tail: TailOffsetWatch,
     selector: SpreadSelector,
-    record_cache: RecordCache,
+    log_server_manager: RemoteLogServerManager,
 }
 
 impl SequencerSharedState {
-    pub fn my_node_id(&self) -> &GenerationalNodeId {
-        &self.my_node_id
+    pub fn sequencer(&self) -> &GenerationalNodeId {
+        &self.my_params.sequencer
     }
 
     pub fn replication(&self) -> &ReplicationProperty {
@@ -78,10 +77,6 @@ impl SequencerSharedState {
     pub fn loglet_id(&self) -> &ReplicatedLogletId {
         &self.my_params.loglet_id
     }
-
-    pub fn global_committed_tail(&self) -> &TailOffsetWatch {
-        &self.committed_tail
-    }
 }
 
 /// This represents the leader sequencer for a loglet. The leader sequencer is the sole writer
@@ -89,7 +84,10 @@ impl SequencerSharedState {
 /// to the generation of this node-id.
 pub struct Sequencer<T> {
     sequencer_shared_state: Arc<SequencerSharedState>,
-    log_server_manager: RemoteLogServerManager,
+    // this is very frequently updated, let's avoid invalidating the whole cache line every time we
+    // update this.
+    // the other bits of data in this struct.
+    next_write_offset: CachePadded<AtomicU32>,
     networking: Networking<T>,
     rpc_router: RpcRouter<Store>,
     /// The value we read from configuration, we keep it around because we can't get the original
@@ -98,7 +96,8 @@ pub struct Sequencer<T> {
     /// Semaphore for the number of records in-flight.
     /// This is an Arc<> to allow sending owned permits
     record_permits: Arc<Semaphore>,
-    in_flight: TaskTracker,
+    in_flight_appends: TaskTracker,
+    record_cache: RecordCache,
 }
 
 impl<T: TransportConnect> Sequencer<T> {
@@ -108,15 +107,13 @@ impl<T: TransportConnect> Sequencer<T> {
         selector_strategy: SelectorStrategy,
         networking: Networking<T>,
         rpc_router: RpcRouter<Store>,
-        log_server_manager: RemoteLogServerManager,
         record_cache: RecordCache,
-        global_tail: TailOffsetWatch,
+        known_global_tail: TailOffsetWatch,
     ) -> Self {
-        let my_node_id = networking.my_node_id();
-        let initial_tail = global_tail.latest_offset();
+        let initial_tail = known_global_tail.latest_offset();
         // Leader sequencers start on an empty loglet offset range
         debug_assert_eq!(LogletOffset::OLDEST, initial_tail);
-        let next_write_offset = AtomicU32::new(*initial_tail);
+        let next_write_offset = CachePadded::new(AtomicU32::new(*initial_tail));
 
         let selector = SpreadSelector::new(
             my_params.nodeset.clone(),
@@ -131,24 +128,27 @@ impl<T: TransportConnect> Sequencer<T> {
             .into();
 
         let record_permits = Arc::new(Semaphore::new(max_in_flight_records_in_config));
+
+        // todo: connections should be split from tail management, this way connections can be
+        // shared across all sequencers on this node.
+        let log_server_manager = RemoteLogServerManager::new(&my_params.nodeset);
         // shared state with appenders
         let sequencer_shared_state = Arc::new(SequencerSharedState {
-            my_node_id,
+            known_global_tail,
+            log_server_manager,
             my_params,
             selector,
-            next_write_offset,
-            record_cache,
-            committed_tail: global_tail,
         });
 
         Self {
             sequencer_shared_state,
-            log_server_manager,
+            next_write_offset,
             rpc_router,
             networking,
             record_permits,
+            record_cache,
             max_inflight_records_in_config: AtomicUsize::new(max_in_flight_records_in_config),
-            in_flight: TaskTracker::default(),
+            in_flight_appends: TaskTracker::default(),
         }
     }
 
@@ -174,15 +174,11 @@ impl<T: TransportConnect> Sequencer<T> {
         // stop issuing new permits
         self.record_permits.close();
         // required to allow in_flight.wait() to finish.
-        self.in_flight.close();
+        self.in_flight_appends.close();
+
         // we are assuming here that seal has been already executed on majority of nodes. This is
         // important since in_flight.close() doesn't prevent new tasks from being spawned.
-
-        if self
-            .sequencer_shared_state
-            .global_committed_tail()
-            .is_sealed()
-        {
+        if self.sequencer_shared_state.known_global_tail.is_sealed() {
             return Ok(());
         }
 
@@ -190,9 +186,9 @@ impl<T: TransportConnect> Sequencer<T> {
         debug!(
             loglet_id = %self.sequencer_shared_state.my_params.loglet_id,
             "Draining sequencer, waiting for {} inflight appends to complete",
-            self.in_flight.len(),
+            self.in_flight_appends.len(),
         );
-        self.in_flight.wait().await;
+        self.in_flight_appends.wait().await;
 
         trace!(
             loglet_id = %self.sequencer_shared_state.my_params.loglet_id,
@@ -202,7 +198,7 @@ impl<T: TransportConnect> Sequencer<T> {
         Ok(())
     }
 
-    pub fn ensure_enough_permits(&self, required: usize) {
+    fn ensure_enough_permits(&self, required: usize) {
         let mut available = self.max_inflight_records_in_config.load(Ordering::Relaxed);
         while available < required {
             let delta = required - available;
@@ -233,32 +229,41 @@ impl<T: TransportConnect> Sequencer<T> {
         &self,
         payloads: Arc<[Record]>,
     ) -> Result<LogletCommit, OperationError> {
-        if self
-            .sequencer_shared_state
-            .global_committed_tail()
-            .is_sealed()
-        {
-            return Ok(LogletCommit::sealed());
-        }
-
+        // Note: caller will checks if the loglet is sealed or not, however, it doesn't mean that
+        // this batch is guaranteed to succeed, but we don't want to waste cycles on unnecessary
+        // check from the underlying watch sender.
         self.ensure_enough_permits(payloads.len());
 
         let len = u32::try_from(payloads.len()).expect("batch sizes fit in u32");
+        // We drop the semaphore when the sequencer considers the loglet as sealed
         let Ok(permit) = self.record_permits.clone().acquire_many_owned(len).await else {
             return Ok(LogletCommit::sealed());
         };
 
+        // Note: We don't need to sync order across threads here since the ordering requirement
+        // requires that the user calls enqueue_batch sequentially to guarantee that original batch ordering
+        // is maintained.
         let offset = LogletOffset::new(
-            self.sequencer_shared_state
-                .next_write_offset
-                .fetch_add(len, std::sync::atomic::Ordering::AcqRel),
+            self.next_write_offset
+                .fetch_add(len, std::sync::atomic::Ordering::Relaxed),
         );
+
+        // Add to cache before we commit those records, we also do this to try and cache the
+        // records before we transform/serialize their payloads.
+        //
+        // The records being in cache does not mean they are committed, all readers must respect
+        // the result of find_tail() or the global_known_tail.
+        self.record_cache
+            .extend(*self.sequencer_shared_state.loglet_id(), offset, &payloads);
 
         let (loglet_commit, commit_resolver) = LogletCommit::deferred();
 
+        // todo: serialize records here into bytes to use the caller's runtime/thread to do the cpu
+        // work instead of overloading the network's thread. Why not in bifrost's appender? because
+        // we don't need serialization in all loglet providers. In-memory loglet won't require this
+        // setup and it would be a waste of cpu-cycles to serialize.
         let appender = SequencerAppender::new(
             Arc::clone(&self.sequencer_shared_state),
-            self.log_server_manager.clone(),
             self.rpc_router.clone(),
             self.networking.clone(),
             offset,
@@ -267,9 +272,13 @@ impl<T: TransportConnect> Sequencer<T> {
             commit_resolver,
         );
 
-        let fut = self.in_flight.track_future(appender.run());
-
-        TaskCenter::spawn(TaskKind::SequencerAppender, "sequencer-appender", fut)?;
+        let fut = self.in_flight_appends.track_future(appender.run());
+        // Why not managed tasks, because managed tasks are not designed to manage a potentially
+        // very large number of tasks, they also require a lock acquistion on start and that might
+        // be a contention point.
+        //
+        // Therefore, those tasks should not crash. We need to make sure that they have solid handling of errors.
+        TaskCenter::spawn_unmanaged(TaskKind::SequencerAppender, "sequencer-appender", fut)?;
 
         Ok(loglet_commit)
     }

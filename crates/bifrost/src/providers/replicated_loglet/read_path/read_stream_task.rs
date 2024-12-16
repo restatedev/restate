@@ -363,6 +363,7 @@ impl ReadStreamTask {
                         %to_offset,
                         "Could not request record batch, exhausted all servers in the nodeset. Retrying.."
                     );
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                     continue 'main;
                 };
 
