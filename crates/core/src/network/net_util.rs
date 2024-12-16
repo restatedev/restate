@@ -192,7 +192,7 @@ where
 
                 let connection = graceful_shutdown.watch(builder
                     .serve_connection(io, service.clone()).into_owned())
-                    .instrument(Span::current());
+                    .in_current_span();
 
                 // TaskCenter will wait for the parent task, we don't need individual connection
                 // handlers to be managed tasks. We just need to make sure that we actually try and
