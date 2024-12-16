@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use restate_types::identifiers::PartitionId;
 use tokio_util::sync::CancellationToken;
-use tracing::instrument;
+use tracing::{instrument, Instrument, Span};
 
 use crate::{Metadata, ShutdownError};
 
@@ -116,7 +116,8 @@ impl Handle {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        self.inner.spawn_child(kind, name, future)
+        self.inner
+            .spawn_child(kind, name, future.instrument(Span::current()))
     }
 
     pub fn spawn_unmanaged<F, T>(
@@ -129,7 +130,8 @@ impl Handle {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        self.inner.spawn_unmanaged(kind, name, future)
+        self.inner
+            .spawn_unmanaged(kind, name, future.instrument(Span::current()))
     }
 
     /// Must be called within a Localset-scoped task, not from a normal spawned task.
@@ -143,7 +145,8 @@ impl Handle {
     where
         F: Future<Output = anyhow::Result<()>> + 'static,
     {
-        self.inner.spawn_local(kind, name, future)
+        self.inner
+            .spawn_local(kind, name, future.instrument(Span::current()))
     }
 
     pub fn metadata(&self) -> Option<Metadata> {
