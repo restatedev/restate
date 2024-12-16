@@ -146,7 +146,7 @@ impl<Before: Converter, After: Converter> Converter for JoinConverter<Before, Af
     }
 }
 
-// Prior to 1.2, we always converted LargeUtf8 to Utf8
+// Prior to 1.2, we always converted LargeUtf8 to Utf8 and LargeBinary to Binary.
 pub(super) struct LargeConverter;
 
 impl Converter for LargeConverter {
