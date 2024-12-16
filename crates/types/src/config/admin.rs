@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::partition_table::ReplicationStrategy;
+
 use super::QueryEngineOptions;
-use crate::cluster_controller::ReplicationStrategy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::net::SocketAddr;

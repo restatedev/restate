@@ -38,7 +38,7 @@ pub enum Logs {
     Dump(dump_log::DumpLogOpts),
     /// Trim a log to a particular Log Sequence Number (LSN)
     Trim(trim_log::TrimLogOpts),
-    /// Reconfigure a log by sealing the tail segment
+    /// Reconfigure a log manually by sealing the tail segment
     /// and extending the chain with a new one
     Reconfigure(reconfigure::ReconfigureOpts),
     /// Find and show tail state of a log

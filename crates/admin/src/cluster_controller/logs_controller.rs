@@ -12,16 +12,15 @@ mod nodeset_selection;
 
 use futures::never::Never;
 use rand::prelude::IteratorRandom;
-use rand::{thread_rng, RngCore};
+use rand::thread_rng;
 use std::collections::HashMap;
 use std::iter;
-use std::num::NonZeroU8;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tracing::{debug, trace, trace_span, Instrument};
+use tracing::{debug, error, trace, trace_span, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
@@ -35,20 +34,19 @@ use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;
 use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{
-    Chain, LogletConfig, LogletParams, Logs, ProviderKind, SegmentIndex,
+    Chain, DefaultProvider, LogletConfig, LogletParams, Logs, LogsConfiguration,
+    NodeSetSelectionStrategy, ProviderKind, ReplicatedLogletConfig, SegmentIndex,
 };
 use restate_types::logs::{LogId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
-use restate_types::replicated_loglet::{
-    ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
-};
+use restate_types::replicated_loglet::{ReplicatedLogletId, ReplicatedLogletParams};
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::{logs, GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
 
 use crate::cluster_controller::logs_controller::nodeset_selection::{
-    NodeSelectionError, NodeSetSelectionStrategy, NodeSetSelector,
+    NodeSelectionError, NodeSetSelector,
 };
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler;
@@ -56,6 +54,9 @@ use crate::cluster_controller::scheduler;
 type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
 
 const FALLBACK_MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// A single unified id type enables easier migration between loglet types.
+type LogletId = ReplicatedLogletId;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LogsControllerError {
@@ -103,10 +104,7 @@ impl<T: NodeSetSelectorHints> NodeSetSelectorHints for &T {
 enum LogState {
     /// Log is not yet part of the [`Logs`] configuration. Controller should look for resources to
     /// create the initial segment configuration.
-    Provisioning {
-        log_id: LogId,
-        provider_kind: ProviderKind,
-    },
+    Provisioning { log_id: LogId },
     /// Log has an open tail segment and can be written to. Log is periodically monitored to check
     /// whether it needs to be reconfigured.
     Available {
@@ -179,6 +177,7 @@ impl LogState {
     fn try_transition_to_sealing(
         &mut self,
         nodes_config: &NodesConfiguration,
+        logs_configuration: &LogsConfiguration,
         observed_cluster_state: &ObservedClusterState,
     ) -> bool {
         match self {
@@ -190,7 +189,11 @@ impl LogState {
                 if configuration
                     .as_ref()
                     .expect("configuration must be present")
-                    .requires_reconfiguration(nodes_config, observed_cluster_state)
+                    .requires_reconfiguration(
+                        nodes_config,
+                        logs_configuration,
+                        observed_cluster_state,
+                    )
                 {
                     *self = LogState::Sealing {
                         configuration: configuration.take(),
@@ -210,23 +213,28 @@ impl LogState {
 
     fn try_provisioning(
         &mut self,
+        logs_configuration: &LogsConfiguration,
         observed_cluster_state: &ObservedClusterState,
         log_builder: &mut LogsBuilder,
         node_set_selector_hints: impl NodeSetSelectorHints,
     ) -> Result<()> {
         match self {
-            LogState::Provisioning {
-                provider_kind,
-                log_id,
-            } => {
+            LogState::Provisioning { log_id } => {
+                if log_builder.chain(*log_id).is_some() {
+                    // already configured
+                    return Ok(());
+                }
+
                 if let Some(loglet_configuration) = try_provisioning(
                     *log_id,
-                    *provider_kind,
+                    logs_configuration,
                     observed_cluster_state,
                     node_set_selector_hints,
                 ) {
-                    let chain =
-                        Chain::new(*provider_kind, loglet_configuration.to_loglet_params()?);
+                    let chain = Chain::new(
+                        loglet_configuration.as_provider(),
+                        loglet_configuration.to_loglet_params()?,
+                    );
                     log_builder
                         .add_log(*log_id, chain)
                         .expect("a provisioning log should not have a logs entry");
@@ -250,6 +258,7 @@ impl LogState {
 
     fn try_reconfiguring<F, G>(
         &mut self,
+        logs_configuration: &LogsConfiguration,
         observed_cluster_state: &ObservedClusterState,
         mut append_segment: F,
         preferred_sequencer_hint: G,
@@ -269,9 +278,11 @@ impl LogState {
                 configuration,
                 ..
             } => {
-                if let Some(loglet_configuration) = configuration
-                    .try_reconfiguring(observed_cluster_state, preferred_sequencer_hint())
-                {
+                if let Some(loglet_configuration) = configuration.try_reconfiguring(
+                    logs_configuration,
+                    observed_cluster_state,
+                    preferred_sequencer_hint(),
+                ) {
                     let segment_index = append_segment(
                         *seal_lsn,
                         loglet_configuration.as_provider(),
@@ -307,22 +318,23 @@ impl LogState {
 /// If this is possible, then this function returns some [`LogletConfiguration`].
 fn try_provisioning(
     log_id: LogId,
-    provider_kind: ProviderKind,
+    logs_configuration: &LogsConfiguration,
     observed_cluster_state: &ObservedClusterState,
     node_set_selector_hints: impl NodeSetSelectorHints,
 ) -> Option<LogletConfiguration> {
-    match provider_kind {
-        ProviderKind::Local => {
-            let log_id = thread_rng().next_u64();
-            Some(LogletConfiguration::Local(log_id))
+    match logs_configuration.default_provider {
+        DefaultProvider::Local => {
+            let log_id = LogletId::new(log_id, SegmentIndex::OLDEST);
+            Some(LogletConfiguration::Local(log_id.into()))
         }
         #[cfg(any(test, feature = "memory-loglet"))]
-        ProviderKind::InMemory => {
-            let log_id = thread_rng().next_u64();
-            Some(LogletConfiguration::Memory(log_id))
+        DefaultProvider::InMemory => {
+            let log_id = LogletId::new(log_id, SegmentIndex::OLDEST);
+            Some(LogletConfiguration::Memory(log_id.into()))
         }
         #[cfg(feature = "replicated-loglet")]
-        ProviderKind::Replicated => build_new_replicated_loglet_configuration(
+        DefaultProvider::Replicated(ref config) => build_new_replicated_loglet_configuration(
+            config,
             ReplicatedLogletId::new(log_id, SegmentIndex::OLDEST),
             &Metadata::with_current(|m| m.nodes_config_ref()),
             observed_cluster_state,
@@ -337,22 +349,19 @@ fn try_provisioning(
 /// and the previous configuration.
 #[cfg(feature = "replicated-loglet")]
 fn build_new_replicated_loglet_configuration(
+    replicated_loglet_config: &ReplicatedLogletConfig,
     loglet_id: ReplicatedLogletId,
     nodes_config: &NodesConfiguration,
     observed_cluster_state: &ObservedClusterState,
-    previous_configuration: Option<&ReplicatedLogletParams>,
+    previous_params: Option<&ReplicatedLogletParams>,
     preferred_sequencer: Option<NodeId>,
 ) -> Option<ReplicatedLogletParams> {
     let mut rng = thread_rng();
-    // todo: make the default nodeset size configurable
-    let replication = previous_configuration
-        .map(|config| config.replication.clone())
-        .unwrap_or_else(|| ReplicationProperty::new(NonZeroU8::new(2).expect("to be valid")));
 
-    // todo: make nodeset selection strategy configurable
-    let strategy = NodeSetSelectionStrategy::StrictFaultTolerantGreedy;
+    let replication = replicated_loglet_config.replication_property.clone();
+    let strategy = replicated_loglet_config.nodeset_selection_strategy;
 
-    let preferred_nodes = previous_configuration
+    let preferred_nodes = previous_params
         .map(|p| p.nodeset.clone())
         .unwrap_or_default();
 
@@ -380,29 +389,13 @@ fn build_new_replicated_loglet_configuration(
             replication,
             nodeset,
         }),
-
         Err(NodeSelectionError::InsufficientWriteableNodes) => {
             debug!(
                 ?loglet_id,
                 "Insufficient writeable nodes to select new nodeset for replicated loglet"
             );
 
-            previous_configuration.map(|p| {
-                if p.sequencer != sequencer {
-                    debug!(
-                        ?loglet_id,
-                        ?sequencer,
-                        "Updating loglet sequencer only, retaining original nodeset configuration"
-                    );
-                }
-
-                ReplicatedLogletParams {
-                    loglet_id,
-                    sequencer,
-                    replication,
-                    nodeset: previous_configuration.expect("to exist").nodeset.clone(),
-                }
-            })
+            None
         }
     }
 }
@@ -418,6 +411,16 @@ enum LogletConfiguration {
 }
 
 impl LogletConfiguration {
+    fn loglet_id(&self) -> LogletId {
+        match self {
+            Self::Local(id) => LogletId::from(*id),
+            #[cfg(any(test, feature = "memory-loglet"))]
+            Self::Memory(id) => LogletId::from(*id),
+            #[cfg(feature = "replicated-loglet")]
+            Self::Replicated(params) => params.loglet_id,
+        }
+    }
+
     fn as_provider(&self) -> ProviderKind {
         match self {
             #[cfg(feature = "replicated-loglet")]
@@ -431,42 +434,49 @@ impl LogletConfiguration {
     fn requires_reconfiguration(
         &self,
         nodes_config: &NodesConfiguration,
+        logs_configuration: &LogsConfiguration,
         observed_cluster_state: &ObservedClusterState,
     ) -> bool {
-        match self {
+        match (self, &logs_configuration.default_provider) {
+            #[cfg(any(test, feature = "memory-loglet"))]
+            (Self::Memory(_), DefaultProvider::InMemory) => false,
+            (Self::Local(_), DefaultProvider::Local) => false,
             #[cfg(feature = "replicated-loglet")]
-            LogletConfiguration::Replicated(configuration) => {
+            (Self::Replicated(params), DefaultProvider::Replicated(config)) => {
                 let sequencer_change_required = !observed_cluster_state
-                    .is_node_alive(configuration.sequencer)
+                    .is_node_alive(params.sequencer)
                     && !observed_cluster_state.alive_nodes.is_empty();
 
                 if sequencer_change_required {
                     debug!(
-                        loglet_id = ?configuration.loglet_id,
+                        loglet_id = ?params.loglet_id,
                         "Replicated loglet requires a sequencer change, existing sequencer {} is presumed dead",
-                        configuration.sequencer
+                        params.sequencer
                     );
                 }
 
                 let nodeset_improvement_possible =
                     NodeSetSelector::new(nodes_config, observed_cluster_state).can_improve(
-                        &configuration.nodeset,
+                        &params.nodeset,
                         NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
-                        &configuration.replication,
+                        &config.replication_property,
                     );
 
                 if nodeset_improvement_possible {
                     debug!(
-                        loglet_id = ?configuration.loglet_id,
+                        loglet_id = ?params.loglet_id,
                         "Replicated loglet nodeset can be improved, will attempt reconfiguration"
                     );
                 }
 
                 sequencer_change_required || nodeset_improvement_possible
             }
-            LogletConfiguration::Local(_) => false,
-            #[cfg(any(test, feature = "memory-loglet"))]
-            LogletConfiguration::Memory(_) => false,
+            _ => {
+                debug!(
+                    "Changing provider type is not supporter at the moment. Ignoring reconfigure"
+                );
+                false
+            }
         }
     }
 
@@ -486,29 +496,32 @@ impl LogletConfiguration {
 
     fn try_reconfiguring(
         &self,
+        logs_configuration: &LogsConfiguration,
         observed_cluster_state: &ObservedClusterState,
         preferred_sequencer: Option<NodeId>,
     ) -> Option<LogletConfiguration> {
-        match self {
+        let loglet_id = self.loglet_id();
+
+        match logs_configuration.default_provider {
+            #[cfg(any(test, feature = "memory-loglet"))]
+            DefaultProvider::InMemory => Some(LogletConfiguration::Memory(loglet_id.next().into())),
+            DefaultProvider::Local => Some(LogletConfiguration::Local(loglet_id.next().into())),
             #[cfg(feature = "replicated-loglet")]
-            LogletConfiguration::Replicated(configuration) => {
+            DefaultProvider::Replicated(ref config) => {
+                let previous_params = match self {
+                    Self::Replicated(previous_params) => Some(previous_params),
+                    _ => None,
+                };
+
                 build_new_replicated_loglet_configuration(
-                    configuration.loglet_id.next(),
+                    config,
+                    loglet_id.next(),
                     &Metadata::with_current(|m| m.nodes_config_ref()),
                     observed_cluster_state,
-                    Some(configuration),
+                    previous_params,
                     preferred_sequencer,
                 )
                 .map(LogletConfiguration::Replicated)
-            }
-            LogletConfiguration::Local(_) => {
-                let loglet_id = thread_rng().next_u64();
-                Some(LogletConfiguration::Local(loglet_id))
-            }
-            #[cfg(any(test, feature = "memory-loglet"))]
-            LogletConfiguration::Memory(_) => {
-                let loglet_id = thread_rng().next_u64();
-                Some(LogletConfiguration::Memory(loglet_id))
             }
         }
     }
@@ -619,9 +632,6 @@ enum Event {
 /// complexity of handling multiple in-flight logs writes, the controller waits until the
 /// in-flight write completes or a newer log is detected.
 struct LogsControllerInner {
-    // todo make configurable
-    default_provider: ProviderKind,
-
     logs_state: HashMap<LogId, LogState, Xxh3Builder>,
     logs_write_in_progress: Option<Version>,
 
@@ -632,63 +642,54 @@ struct LogsControllerInner {
 }
 
 impl LogsControllerInner {
-    fn new(
-        logs: Pinned<Logs>,
-        partition_table: &PartitionTable,
-        default_provider: ProviderKind,
-        retry_policy: RetryPolicy,
-    ) -> Result<Self> {
-        let mut this = Self {
-            default_provider,
-            current_logs: Arc::new(Logs::default()),
+    fn new(configuration: LogsConfiguration, retry_policy: RetryPolicy) -> Self {
+        Self {
+            current_logs: Arc::new(Logs::with_logs_configuration(configuration)),
             logs_state: HashMap::with_hasher(Xxh3Builder::default()),
             logs_write_in_progress: None,
             retry_policy,
-        };
-
-        this.on_logs_update(logs)?;
-        this.on_partition_table_update(partition_table);
-        Ok(this)
+        }
     }
 
     fn on_observed_cluster_state_update(
         &mut self,
-
         nodes_config: &NodesConfiguration,
         observed_cluster_state: &ObservedClusterState,
         effects: &mut Vec<Effect>,
         node_set_selector_hints: impl NodeSetSelectorHints,
     ) -> Result<()> {
         // we don't do concurrent updates to avoid complexity
-        if self.logs_write_in_progress.is_none() {
-            self.seal_logs(nodes_config, observed_cluster_state, effects);
+        if self.logs_write_in_progress.is_some() {
+            return Ok(());
+        }
 
-            let mut builder = self.current_logs.deref().clone().into_builder();
-            self.provision_logs(
-                observed_cluster_state,
-                &mut builder,
-                &node_set_selector_hints,
-            )?;
-            self.reconfigure_logs(
-                observed_cluster_state,
-                &mut builder,
-                node_set_selector_hints,
-            )?;
+        self.seal_logs(nodes_config, observed_cluster_state, effects);
 
-            if let Some(logs) = builder.build_if_modified() {
-                debug!("Proposing new logs configuration: {logs:?}");
-                self.logs_write_in_progress = Some(logs.version());
-                let logs = Arc::new(logs);
-                effects.push(Effect::WriteLogs {
-                    logs: Arc::clone(&logs),
-                    previous_version: self.current_logs.version(),
-                    debounce: None,
-                });
-                // we already update the current logs but will wait until we learn whether the update
-                // was successful or not. If not, then we'll reset our internal state wrt the new
-                // logs version.
-                self.current_logs = logs;
-            }
+        let mut builder = self.current_logs.deref().clone().into_builder();
+        self.provision_logs(
+            observed_cluster_state,
+            &mut builder,
+            &node_set_selector_hints,
+        )?;
+        self.reconfigure_logs(
+            observed_cluster_state,
+            &mut builder,
+            node_set_selector_hints,
+        )?;
+
+        if let Some(logs) = builder.build_if_modified() {
+            debug!("Proposing new logs configuration: {logs:?}");
+            self.logs_write_in_progress = Some(logs.version());
+            let logs = Arc::new(logs);
+            effects.push(Effect::WriteLogs {
+                logs: Arc::clone(&logs),
+                previous_version: self.current_logs.version(),
+                debounce: None,
+            });
+            // we already update the current logs but will wait until we learn whether the update
+            // was successful or not. If not, then we'll reset our internal state wrt the new
+            // logs version.
+            self.current_logs = logs;
         }
 
         Ok(())
@@ -701,7 +702,11 @@ impl LogsControllerInner {
         effects: &mut Vec<Effect>,
     ) {
         for (log_id, log_state) in &mut self.logs_state {
-            if log_state.try_transition_to_sealing(nodes_config, observed_cluster_state) {
+            if log_state.try_transition_to_sealing(
+                nodes_config,
+                self.current_logs.configuration(),
+                observed_cluster_state,
+            ) {
                 effects.push(Effect::Seal {
                     log_id: *log_id,
                     segment_index: log_state
@@ -721,6 +726,7 @@ impl LogsControllerInner {
     ) -> Result<()> {
         for log_state in self.logs_state.values_mut() {
             log_state.try_provisioning(
+                self.current_logs.configuration(),
                 observed_cluster_state,
                 logs_builder,
                 &node_set_selector_hints,
@@ -738,6 +744,7 @@ impl LogsControllerInner {
     ) -> Result<()> {
         for (log_id, log_state) in &mut self.logs_state {
             log_state.try_reconfiguring(
+                self.current_logs.configuration(),
                 observed_cluster_state,
                 |seal_lsn, provider_kind, loglet_params| {
                     let mut chain_builder = logs_builder
@@ -757,7 +764,6 @@ impl LogsControllerInner {
         &mut self,
         event: Event,
         effects: &mut Vec<Effect>,
-        metadata: &Metadata,
         metadata_writer: &mut MetadataWriter,
     ) -> Result<()> {
         match event {
@@ -781,7 +787,7 @@ impl LogsControllerInner {
                 }
             }
             Event::NewLogs => {
-                self.on_logs_update(metadata.logs_ref())?;
+                self.on_logs_update(Metadata::with_current(|m| m.logs_ref()))?;
                 effects.push(Effect::FindLogsTail);
             }
             Event::SealSucceeded {
@@ -891,11 +897,7 @@ impl LogsControllerInner {
                 .entry((*partition_id).into())
                 .or_insert_with(|| {
                     let log_id = (*partition_id).into();
-                    debug!(%log_id, "Try provisioning log with provider '{}'", self.default_provider);
-                    LogState::Provisioning {
-                        log_id,
-                        provider_kind: self.default_provider,
-                    }
+                    LogState::Provisioning { log_id }
                 });
         }
     }
@@ -920,7 +922,6 @@ pub struct LogsController {
     inner: LogsControllerInner,
     bifrost: Bifrost,
     metadata_store_client: MetadataStoreClient,
-    metadata: Metadata,
     metadata_writer: MetadataWriter,
     async_operations: JoinSet<Event>,
     find_logs_tail_semaphore: Arc<Semaphore>,
@@ -929,7 +930,6 @@ pub struct LogsController {
 impl LogsController {
     pub async fn init(
         configuration: &Configuration,
-        metadata: Metadata,
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
         metadata_writer: MetadataWriter,
@@ -937,9 +937,15 @@ impl LogsController {
         // obtain the latest logs or init it with an empty logs variant
         let logs = retry_on_network_error(
             configuration.common.network_error_retry_policy.clone(),
-            || metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), Logs::default),
+            || {
+                metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
+                    Logs::from_configuration(configuration)
+                })
+            },
         )
         .await?;
+
+        let logs_configuration = logs.configuration().clone();
         metadata_writer.update(Arc::new(logs)).await?;
 
         //todo(azmy): make configurable
@@ -952,13 +958,7 @@ impl LogsController {
 
         let mut this = Self {
             effects: Some(Vec::new()),
-            inner: LogsControllerInner::new(
-                metadata.logs_ref(),
-                metadata.partition_table_ref().as_ref(),
-                configuration.bifrost.default_provider,
-                retry_policy,
-            )?,
-            metadata,
+            inner: LogsControllerInner::new(logs_configuration, retry_policy),
             bifrost,
             metadata_store_client,
             metadata_writer,
@@ -1219,7 +1219,6 @@ impl LogsController {
                 self.inner.on_event(
                     event,
                     self.effects.as_mut().expect("to be present"),
-                    &self.metadata,
                     &mut self.metadata_writer,
                 )?;
                 self.apply_effects();
@@ -1282,6 +1281,9 @@ pub mod tests {
     use std::num::NonZeroU8;
 
     use enumset::{enum_set, EnumSet};
+    use restate_types::logs::metadata::{
+        DefaultProvider, LogsConfiguration, NodeSetSelectionStrategy, ReplicatedLogletConfig,
+    };
     use restate_types::nodes_config::{
         LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
@@ -1452,6 +1454,17 @@ pub mod tests {
         }
     }
 
+    fn logs_configuration(replication_factor: u8) -> LogsConfiguration {
+        LogsConfiguration {
+            default_provider: DefaultProvider::Replicated(ReplicatedLogletConfig {
+                replication_property: ReplicationProperty::new(
+                    NonZeroU8::new(replication_factor).expect("must be non zero"),
+                ),
+                nodeset_selection_strategy: NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
+            }),
+        }
+    }
+
     pub fn node(id: u32, roles: EnumSet<Role>, storage_state: StorageState) -> NodeConfig {
         NodeConfig::new(
             format!("node-{id}"),
@@ -1485,23 +1498,36 @@ pub mod tests {
             nodeset: NodeSet::from([0, 1, 2]),
         };
 
+        let logs_config = logs_configuration(2);
+
         let sequencer_replacement = LogletConfiguration::Replicated(ReplicatedLogletParams {
             sequencer: GenerationalNodeId::new(1, 1),
             ..seq_n0.clone()
         });
 
-        assert!(sequencer_replacement
-            .requires_reconfiguration(&nodes.nodes_config, &nodes.observed_state));
+        assert!(sequencer_replacement.requires_reconfiguration(
+            &nodes.nodes_config,
+            &logs_config,
+            &nodes.observed_state
+        ));
 
         let params = LogletConfiguration::Replicated(seq_n0.clone());
         assert!(
-            !params.requires_reconfiguration(&nodes.nodes_config, &nodes.observed_state),
+            !params.requires_reconfiguration(
+                &nodes.nodes_config,
+                &logs_config,
+                &nodes.observed_state
+            ),
             "we should not reconfigure when we can't improve the nodeset"
         );
 
         nodes.add_dedicated_log_server_node(3);
         assert!(
-            params.requires_reconfiguration(&nodes.nodes_config, &nodes.observed_state),
+            params.requires_reconfiguration(
+                &nodes.nodes_config,
+                &logs_config,
+                &nodes.observed_state
+            ),
             "we should be able to go to [N0, N2, N3] from the previous configuration"
         );
 
@@ -1509,9 +1535,20 @@ pub mod tests {
         // in the future, we'll make the logs controller smarter about this type of thing
         nodes.add_dedicated_log_server_node(4);
         nodes.kill_node(2);
-        assert!(params.requires_reconfiguration(&nodes.nodes_config, &nodes.observed_state));
+        assert!(params.requires_reconfiguration(
+            &nodes.nodes_config,
+            &logs_config,
+            &nodes.observed_state
+        ));
+
+        let DefaultProvider::Replicated(ref replicated_loglet_config) =
+            logs_config.default_provider
+        else {
+            unreachable!()
+        };
 
         let config = build_new_replicated_loglet_configuration(
+            replicated_loglet_config,
             seq_n0.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
@@ -1536,7 +1573,16 @@ pub mod tests {
             .dead_nodes([6]) // N6 starts out offline
             .build();
 
+        let logs_config = logs_configuration(2);
+
+        let DefaultProvider::Replicated(ref replicated_loglet_config) =
+            logs_config.default_provider
+        else {
+            unreachable!()
+        };
+
         let initial = build_new_replicated_loglet_configuration(
+            replicated_loglet_config,
             ReplicatedLogletId::from(1),
             &nodes.nodes_config,
             &nodes.observed_state,
@@ -1549,14 +1595,15 @@ pub mod tests {
         assert_eq!(initial.sequencer, GenerationalNodeId::new(5, 1));
         assert_eq!(
             initial.replication,
-            ReplicationProperty::new(NonZeroU8::new(2).unwrap())
-        ); // hard-coded default
+            replicated_loglet_config.replication_property
+        );
 
         // with one log server down (out of 3) and the previous sequencer, we expect no
         // change to the nodeset but a new sequencer to be chosen
         nodes.kill_nodes([2, 5]);
 
         let config = build_new_replicated_loglet_configuration(
+            replicated_loglet_config,
             initial.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
@@ -1580,6 +1627,7 @@ pub mod tests {
         nodes.revive_node((2, 2)); // N2 comes back
 
         let mut config = build_new_replicated_loglet_configuration(
+            replicated_loglet_config,
             config.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
@@ -1596,27 +1644,29 @@ pub mod tests {
 
         // the loglet should be reconfigured to use a new live node as its sequencer, keeping its nodeset
         let new_sequencer_config = build_new_replicated_loglet_configuration(
+            replicated_loglet_config,
             config.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
             Some(&config),
             Some(NodeId::Generational(config.sequencer)),
-        )
-        .expect("controller reconfigures the sequencer");
+        );
+
         assert_eq!(
-            config.nodeset, new_sequencer_config.nodeset,
-            "loglet nodeset remains unchanged"
+            None, new_sequencer_config,
+            "not enough alive node to satisfy minimum number of nodes"
         );
 
         // N1 comes back and N6 is added, which was not previously in the loglet's nodeset
         nodes.revive_nodes([(1, 2), (6, 2)]);
 
         let config = build_new_replicated_loglet_configuration(
-            new_sequencer_config.loglet_id,
+            replicated_loglet_config,
+            config.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
-            Some(&new_sequencer_config),
-            Some(new_sequencer_config.sequencer.into()),
+            Some(&config),
+            Some(config.sequencer.into()),
         )
         .unwrap();
 
@@ -1626,11 +1676,12 @@ pub mod tests {
         nodes.revive_node((2, 3)); // N2 comes back _again_
 
         let config = build_new_replicated_loglet_configuration(
-            new_sequencer_config.loglet_id,
+            replicated_loglet_config,
+            config.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
-            Some(&new_sequencer_config),
-            Some(new_sequencer_config.sequencer.into()),
+            Some(&config),
+            Some(config.sequencer.into()),
         )
         .unwrap();
 
