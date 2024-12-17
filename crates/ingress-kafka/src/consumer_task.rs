@@ -17,10 +17,11 @@ use bytes::Bytes;
 use metrics::counter;
 use opentelemetry::trace::TraceContextExt;
 use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
-use rdkafka::consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::topic_partition_list::TopicPartitionListElem;
+use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::{ClientConfig, ClientContext, Message};
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, Instrument};
@@ -248,18 +249,16 @@ impl ConsumerTask {
         consumer.subscribe(&topics)?;
 
         // we have to poll the main consumer for callbacks to be processed, but we expect to only see messages on the partitioned queues
-        loop {
-            tokio::select! {
-                res = consumer.recv() => {
-                    break match res {
-                        // We shouldn't see any messages on the main consumer loop
-                        Ok(msg) => Err(Error::UnexpectedMainQueueMessage(msg.topic().into(), msg.partition())),
-                        Err(e) => Err(e.into()),
-                    };
+        tokio::select! {
+            res = consumer.recv() => {
+                match res {
+                    // We shouldn't see any messages on the main consumer loop
+                    Ok(msg) => Err(Error::UnexpectedMainQueueMessage(msg.topic().into(), msg.partition())),
+                    Err(e) => Err(e.into()),
                 }
-                _ = &mut rx => {
-                    break Ok(());
-                }
+            }
+            _ = &mut rx => {
+                 Ok(())
             }
         }
     }
@@ -291,9 +290,9 @@ impl Drop for ConsumerDrop {
             .drain()
             .for_each(|(partition, task_id)| {
                 debug!("Stopping partitioned consumer for partition {partition} due to the consumer stopping");
-                task_center
-                    .cancel_task(task_id)
-                    .map(|handle| handle.abort());
+                if let Some(handle) = task_center.cancel_task(task_id) {
+                    handle.abort()
+                }
             });
     }
 }
@@ -335,7 +334,7 @@ impl ClientContext for RebalanceContext {}
 // that they are not polled again after the assign. Then there will be a further rebalance callback after the revoke
 // and we will set up new split partition streams before the assign.
 impl ConsumerContext for RebalanceContext {
-    fn pre_rebalance<'a>(&self, rebalance: &Rebalance<'a>) {
+    fn pre_rebalance(&self, rebalance: &Rebalance<'_>) {
         let mut topic_partition_tasks = self.topic_partition_tasks.lock().unwrap();
         let consumer = self
             .consumer
@@ -354,9 +353,9 @@ impl ConsumerContext for RebalanceContext {
 
                     if let Some(task_id) = topic_partition_tasks.remove(&partition) {
                         warn!("Kafka informed us of an assigned partition {partition} which we already consider assigned, cancelling the existing partitioned consumer");
-                        self.task_center
-                            .cancel_task(task_id)
-                            .map(|handle| handle.abort());
+                        if let Some(handle) = self.task_center.cancel_task(task_id) {
+                            handle.abort()
+                        }
                     }
 
                     match consumer.split_partition_queue(&partition.0, partition.1) {
@@ -397,10 +396,17 @@ impl ConsumerContext for RebalanceContext {
                         debug!("Stopping partitioned consumer for partition {partition} due to rebalance");
                         // The partitioned queue will not be polled again.
                         // It might be mid-poll right now, but if so its result will not be sent anywhere.
-                        self.task_center.cancel_task(task_id).map(|handle| handle.abort());
+                        if let Some(handle) = self.task_center.cancel_task(task_id) { handle.abort() }
                     }
                     None => warn!("Kafka informed us of a revoked partition {partition} which we had no consumer task for"),
                 }
+                }
+
+                match consumer.commit_consumer_state(CommitMode::Sync) {
+                    Ok(_) | Err(KafkaError::ConsumerCommit(RDKafkaErrorCode::NoOffset)) => {
+                        // Success
+                    }
+                    Err(error) => warn!("Failed to commit the current consumer state: {error}"),
                 }
             }
             Rebalance::Error(_) => {}
