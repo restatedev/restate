@@ -12,6 +12,7 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine;
 use bytes::Bytes;
@@ -53,6 +54,8 @@ pub enum Error {
     IngressDispatcherClosed,
     #[error("topic {0} partition {1} queue split didn't succeed")]
     TopicPartitionSplit(String, i32),
+    #[error("failed to fetch metadata for topic {0}")]
+    TopicFetchMetadata(String),
 }
 
 type MessageConsumer = StreamConsumer<DefaultConsumerContext>;
@@ -247,59 +250,33 @@ impl ConsumerTask {
 
         let mut topic_partition_tasks: HashMap<(String, i32), TaskId> = Default::default();
 
+        // Iterate through each of the specified topics
+        for topic in topics.iter() {
+            // Fetch metadata about the topic from Kafka
+            if let Ok(topic_metadata) = consumer.fetch_metadata(Some(topic), Duration::from_secs(5))
+            {
+                if let Some(topic_metadata) = topic_metadata.topics().get(0) {
+                    for partition in topic_metadata.partitions().iter() {
+                        launch_consumer_task_if_vacant(
+                            topic,
+                            partition.id(),
+                            &mut topic_partition_tasks,
+                            &consumer,
+                            &self,
+                            consumer_group_id.clone(),
+                        );
+                    }
+                } else {
+                    return Err(Error::TopicFetchMetadata(topic.to_string()));
+                }
+            } else {
+                return Err(Error::TopicFetchMetadata(topic.to_string()));
+            }
+        }
+
         let result = loop {
             tokio::select! {
-                res = consumer.recv() => {
-                    let msg = match res {
-                       Ok(msg) => msg,
-                        Err(e) => break Err(e.into())
-                    };
-                    let topic = msg.topic().to_owned();
-                    let partition = msg.partition();
-                    let offset = msg.offset();
-
-                    // If we didn't split the queue, let's do it and start the topic partition consumer
-                     if let Entry::Vacant(e) = topic_partition_tasks.entry((topic.clone(), partition)) {
-                        let topic_partition_consumer = match consumer
-                            .split_partition_queue(&topic, partition) {
-                            Some(q) => q,
-                            None => break Err(Error::TopicPartitionSplit(topic.clone(), partition))
-                        };
-
-                        debug!(
-                            restate.subscription.id = %self.sender.subscription.id(),
-                            messaging.consumer.group.name = consumer_group_id,
-                            "Starting topic '{topic}' partition '{partition}' consumption loop from offset '{offset}'"
-                        );
-
-                        let task = topic_partition_queue_consumption_loop(
-                            self.sender.clone(),
-                            topic.clone(), partition,
-                            topic_partition_consumer,
-                            Arc::clone(&consumer),
-                            consumer_group_id.clone()
-                        );
-
-                        if let Ok(task_id) = TaskCenter::spawn_child(TaskKind::Ingress, "partition-queue", task) {
-                            e.insert(task_id);
-                        } else {
-                            break Ok(());
-                        }
-                    }
-
-                    // We got this message, let's send it through
-                    if let Err(e) = self.sender.send(&consumer_group_id, msg).await {
-                        break Err(e)
-                    }
-
-                    // This method tells rdkafka that we have processed this message,
-                    // so its offset can be safely committed.
-                    // rdkafka periodically commits these offsets asynchronously, with a period configurable
-                    // with auto.commit.interval.ms
-                    if let Err(e) = consumer.store_offset(&topic, partition, offset) {
-                        break Err(e.into())
-                    }
-                }
+                _ = consumer.recv() => {}
                 _ = &mut rx => {
                     break Ok(());
                 }
@@ -310,6 +287,40 @@ impl ConsumerTask {
         }
         result
     }
+}
+
+fn launch_consumer_task_if_vacant(
+    topic: &str,
+    partition: i32,
+    topic_partition_tasks: &mut HashMap<(String, i32), TaskId>,
+    consumer: &Arc<StreamConsumer>,
+    consumer_task: &ConsumerTask,
+    consumer_group_id: String,
+) -> Option<TaskId> {
+    return if let Entry::Vacant(e) = topic_partition_tasks.entry((topic.to_string(), partition)) {
+        let topic_partition_consumer = match consumer.split_partition_queue(&topic, partition) {
+            Some(q) => q,
+            None => panic!("WTF"),
+        };
+
+        let task = topic_partition_queue_consumption_loop(
+            consumer_task.sender.clone(),
+            topic.to_string(),
+            partition,
+            topic_partition_consumer,
+            Arc::clone(consumer),
+            consumer_group_id.clone(),
+        );
+
+        if let Ok(task_id) = TaskCenter::spawn_child(TaskKind::Ingress, "partition-queue", task) {
+            e.insert(task_id);
+            Some(task_id)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 }
 
 async fn topic_partition_queue_consumption_loop(
