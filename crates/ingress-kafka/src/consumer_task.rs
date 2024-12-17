@@ -255,7 +255,7 @@ impl ConsumerTask {
             // Fetch metadata about the topic from Kafka
             if let Ok(topic_metadata) = consumer.fetch_metadata(Some(topic), Duration::from_secs(5))
             {
-                if let Some(topic_metadata) = topic_metadata.topics().get(0) {
+                if let Some(topic_metadata) = topic_metadata.topics().first() {
                     for partition in topic_metadata.partitions().iter() {
                         match launch_consumer_task_if_vacant(
                             topic,
@@ -301,7 +301,7 @@ fn launch_consumer_task_if_vacant(
     consumer_group_id: String,
 ) -> Result<Option<TaskId>, Error> {
     return if let Entry::Vacant(e) = topic_partition_tasks.entry((topic.to_string(), partition)) {
-        let topic_partition_consumer = match consumer.split_partition_queue(&topic, partition) {
+        let topic_partition_consumer = match consumer.split_partition_queue(topic, partition) {
             Some(q) => q,
             None => return Err(Error::TopicPartitionSplit(topic.to_string(), partition)),
         };
