@@ -241,7 +241,6 @@ mod task_orchestrator {
         ) {
             match result {
                 Ok((id, Ok(_))) => {
-                    warn!("Consumer unexpectedly closed");
                     self.start_retry_timer(id);
                 }
                 Ok((id, Err(e))) => {
@@ -259,6 +258,7 @@ mod task_orchestrator {
             let subscription_id = if let Some(subscription_id) =
                 self.running_tasks_to_subscriptions.remove(&task_id)
             {
+                warn!("Consumer unexpectedly closed");
                 subscription_id
             } else {
                 // No need to do anything, as it's a correct closure
