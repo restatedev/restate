@@ -23,8 +23,7 @@ use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::log::trace;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
