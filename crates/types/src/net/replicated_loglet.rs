@@ -97,7 +97,6 @@ impl CommonResponseHeader {
 // ** APPEND
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Append {
-    #[serde(flatten)]
     pub header: CommonRequestHeader,
     pub payloads: Arc<[Record]>,
 }
@@ -113,7 +112,6 @@ impl Append {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Appended {
-    #[serde(flatten)]
     pub header: CommonResponseHeader,
     // INVALID if Status indicates that the append failed
     pub last_offset: LogletOffset,
@@ -157,7 +155,6 @@ impl Appended {
 // ** GET_TAIL_INFO
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetSequencerState {
-    #[serde(flatten)]
     pub header: CommonRequestHeader,
 }
 
