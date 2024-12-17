@@ -257,14 +257,17 @@ impl ConsumerTask {
             {
                 if let Some(topic_metadata) = topic_metadata.topics().get(0) {
                     for partition in topic_metadata.partitions().iter() {
-                        launch_consumer_task_if_vacant(
+                        match launch_consumer_task_if_vacant(
                             topic,
                             partition.id(),
                             &mut topic_partition_tasks,
                             &consumer,
                             &self,
                             consumer_group_id.clone(),
-                        );
+                        ) {
+                            Ok(_) => {}
+                            Err(e) => return Err(e),
+                        }
                     }
                 } else {
                     return Err(Error::TopicFetchMetadata(topic.to_string()));
@@ -296,11 +299,11 @@ fn launch_consumer_task_if_vacant(
     consumer: &Arc<StreamConsumer>,
     consumer_task: &ConsumerTask,
     consumer_group_id: String,
-) -> Option<TaskId> {
+) -> Result<Option<TaskId>, Error> {
     return if let Entry::Vacant(e) = topic_partition_tasks.entry((topic.to_string(), partition)) {
         let topic_partition_consumer = match consumer.split_partition_queue(&topic, partition) {
             Some(q) => q,
-            None => panic!("WTF"),
+            None => return Err(Error::TopicPartitionSplit(topic.to_string(), partition)),
         };
 
         let task = topic_partition_queue_consumption_loop(
@@ -314,12 +317,12 @@ fn launch_consumer_task_if_vacant(
 
         if let Ok(task_id) = TaskCenter::spawn_child(TaskKind::Ingress, "partition-queue", task) {
             e.insert(task_id);
-            Some(task_id)
+            Ok(Some(task_id))
         } else {
-            None
+            Ok(None)
         }
     } else {
-        None
+        Ok(None)
     };
 }
 
