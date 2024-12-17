@@ -15,11 +15,9 @@ pub(crate) mod metric_definitions;
 mod network;
 mod provider;
 mod read_path;
-#[allow(dead_code)]
 mod remote_sequencer;
 pub mod replication;
 mod rpc_routers;
-#[allow(dead_code)]
 pub mod sequencer;
 mod tasks;
 #[cfg(any(test, feature = "test-util"))]
