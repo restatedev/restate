@@ -158,7 +158,7 @@ impl<T> Clone for InputRecord<T> {
 // This is a zero-cost transformation. The type is erased at runtime, but the underlying
 // layout is identical.
 impl<T: StorageEncode> InputRecord<T> {
-    pub(crate) fn into_record(self) -> Record {
+    pub fn into_record(self) -> Record {
         Record::from_parts(self.created_at, self.keys, PolyBytes::Typed(self.body))
     }
 }
