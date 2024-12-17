@@ -21,7 +21,7 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::node::Message;
 use restate_types::GenerationalNodeId;
 
-use super::protobuf::node_svc::node_svc_client::NodeSvcClient;
+use super::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use super::{NetworkError, ProtocolError};
 use crate::network::net_util::create_tonic_channel_from_advertised_address;
 
@@ -79,7 +79,7 @@ impl TransportConnect for GrpcConnector {
         };
 
         // Establish the connection
-        let mut client = NodeSvcClient::new(channel);
+        let mut client = CoreNodeSvcClient::new(channel);
         let incoming = client.create_connection(output_stream).await?.into_inner();
         Ok(incoming.map(|x| x.map_err(ProtocolError::from)))
     }

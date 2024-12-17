@@ -63,13 +63,6 @@ pub struct Node {
                 self.base_config.common.advertised_address = AdvertisedAddress::Uds(node_socket);
             }
 
-            #[mutator(requires = [base_dir])]
-            pub fn with_socket_metadata(self) {
-                let metadata_socket: PathBuf = "metadata.sock".into();
-                self.base_config.metadata_store.bind_address = BindAddress::Uds(metadata_socket.clone());
-                self.base_config.common.metadata_store_client.metadata_store_client = MetadataStoreClient::Embedded { address: AdvertisedAddress::Uds(metadata_socket) }
-            }
-
             pub fn with_random_ports(self) {
                 self.base_config.admin.bind_address =
                     random_socket_address().expect("to find a random port for the admin server");
@@ -127,6 +120,18 @@ impl Node {
         self.base_config.node_name()
     }
 
+    pub fn advertised_address(&self) -> &AdvertisedAddress {
+        &self.base_config.common.advertised_address
+    }
+
+    pub fn metadata_store_client_mut(&mut self) -> &mut MetadataStoreClient {
+        &mut self
+            .base_config
+            .common
+            .metadata_store_client
+            .metadata_store_client
+    }
+
     pub fn config(&self) -> &Configuration {
         &self.base_config
     }
@@ -144,15 +149,15 @@ impl Node {
         binary_source: BinarySource,
         roles: EnumSet<Role>,
     ) -> Self {
-        Self::builder()
+        let builder = Self::builder()
             .binary_source(binary_source)
             .base_config(base_config)
             .with_node_name(node_name)
             .with_node_socket()
-            .with_socket_metadata()
             .with_random_ports()
-            .with_roles(roles)
-            .build()
+            .with_roles(roles);
+
+        builder.build()
     }
 
     // Creates a group of Nodes with a single metadata node "metadata-node" running the
@@ -167,20 +172,28 @@ impl Node {
     ) -> Vec<Self> {
         let mut nodes = Vec::with_capacity((size + 1) as usize);
 
-        {
-            let mut base_config = base_config.clone();
-            base_config.common.force_node_id = Some(PlainNodeId::new(0));
-            nodes.push(Self::new_test_node(
+        let metadata_node_address = {
+            let mut node_config = base_config.clone();
+            node_config.common.force_node_id = Some(PlainNodeId::new(0));
+            let mut metadata_node = Self::new_test_node(
                 "metadata-node",
-                base_config,
+                node_config,
                 binary_source.clone(),
                 enum_set!(Role::Admin | Role::MetadataStore),
-            ));
-        }
+            );
+            let metadata_node_address = metadata_node.advertised_address().clone();
+            *metadata_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
+                address: metadata_node_address.clone(),
+            };
 
-        for node in 1..=size {
+            nodes.push(metadata_node);
+
+            metadata_node_address
+        };
+
+        for node_id in 1..=size {
             let mut base_config = base_config.clone();
-            base_config.common.force_node_id = Some(PlainNodeId::new(node));
+            base_config.common.force_node_id = Some(PlainNodeId::new(node_id));
 
             // Create a separate ingress role when running a worker
             let roles = if roles.contains(Role::Worker) {
@@ -192,12 +205,16 @@ impl Node {
                 roles
             };
 
-            nodes.push(Self::new_test_node(
-                format!("node-{node}"),
+            let mut node = Self::new_test_node(
+                format!("node-{node_id}"),
                 base_config,
                 binary_source.clone(),
                 roles,
-            ));
+            );
+            *node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
+                address: metadata_node_address.clone(),
+            };
+            nodes.push(node);
         }
 
         nodes
@@ -225,10 +242,6 @@ impl Node {
         {
             *file = base_dir.join(&*file)
         }
-        if let BindAddress::Uds(file) = &mut self.base_config.metadata_store.bind_address {
-            *file = base_dir.join(&*file)
-        }
-
         if self.base_config.common.bind_address.is_none() {
             // Derive bind_address from advertised_address
             self.base_config.common.bind_address = Some(
@@ -242,6 +255,7 @@ impl Node {
         if let Some(BindAddress::Uds(file)) = &mut self.base_config.common.bind_address {
             *file = base_dir.join(&*file);
         }
+
         if let AdvertisedAddress::Uds(file) = &mut self.base_config.common.advertised_address {
             *file = base_dir.join(&*file)
         }
@@ -658,14 +672,6 @@ impl StartedNode {
     pub fn admin_address(&self) -> Option<&SocketAddr> {
         if self.config().has_role(Role::Admin) {
             Some(&self.config().admin.bind_address)
-        } else {
-            None
-        }
-    }
-
-    pub fn metadata_address(&self) -> Option<&BindAddress> {
-        if self.config().has_role(Role::MetadataStore) {
-            Some(&self.config().metadata_store.bind_address)
         } else {
             None
         }

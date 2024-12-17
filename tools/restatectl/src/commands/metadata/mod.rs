@@ -40,7 +40,7 @@ pub struct MetadataCommonOpts {
     #[arg(
         short,
         long = "address",
-        default_value = "http://127.0.0.1:5123",
+        default_value = "http://127.0.0.1:5122",
         env = "RESTATE_METADATA_ADDRESS"
     )]
     address: String,

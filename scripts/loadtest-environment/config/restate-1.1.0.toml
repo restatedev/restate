@@ -21,7 +21,7 @@ metadata-update-interval = "3s"
 
 [metadata-store-client]
 type = "embedded"
-address = "http://127.0.0.1:5123/"
+address = "http://127.0.0.1:5122/"
 
 [metadata-store-client-backoff-policy]
 type = "exponential"
@@ -120,7 +120,6 @@ max-attempts = 50
 max-interval = "1s"
 
 [metadata-store]
-bind-address = "0.0.0.0:5123"
 request-queue-length = 32
 rocksdb-memory-budget = "28.5 MB"
 rocksdb-memory-ratio = 0.009999999776482582

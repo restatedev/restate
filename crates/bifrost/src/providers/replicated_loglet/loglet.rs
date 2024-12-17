@@ -370,6 +370,8 @@ mod tests {
         set_current_config(config.clone());
         let config = Live::from_value(config);
 
+        RocksDbManager::init(config.clone().map(|c| &c.common));
+
         let mut node_env =
             TestCoreEnvBuilder::with_incoming_only_connector().add_mock_nodes_config();
         let mut server_builder = NetworkServerBuilder::default();
@@ -384,15 +386,14 @@ mod tests {
             node_env.metadata_store_client.clone(),
             record_cache.clone(),
             &mut node_env.router_builder,
+            &mut server_builder,
         )
         .await?;
 
         let node_env = node_env.build().await;
 
-        RocksDbManager::init(config.clone().map(|c| &c.common));
-
         log_server
-            .start(node_env.metadata_writer.clone(), &mut server_builder)
+            .start(node_env.metadata_writer.clone())
             .await
             .into_test_result()?;
 

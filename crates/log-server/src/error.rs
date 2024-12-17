@@ -10,12 +10,22 @@
 
 use codederror::CodedError;
 use restate_core::ShutdownError;
+use restate_types::errors::GenericError;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum LogServerBuildError {
     #[error("unknown")]
     #[code(unknown)]
     Unknown,
+    #[error("failed building log server: {0}")]
+    #[code(unknown)]
+    Other(GenericError),
+}
+
+impl LogServerBuildError {
+    pub fn other(err: impl Into<GenericError>) -> Self {
+        LogServerBuildError::Other(err.into())
+    }
 }
 
 #[derive(thiserror::Error, Debug)]

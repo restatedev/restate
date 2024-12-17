@@ -116,6 +116,11 @@ impl Metadata {
         *self.inner.my_node_id.get().expect("my_node_id is set")
     }
 
+    /// Returns None if my node id has not been set yet.
+    pub fn my_node_id_opt(&self) -> Option<GenerationalNodeId> {
+        self.inner.my_node_id.get().cloned()
+    }
+
     /// Returns Version::INVALID if nodes configuration has not been loaded yet.
     pub fn nodes_config_version(&self) -> Version {
         self.inner.nodes_config.load().version()

@@ -14,6 +14,7 @@ use anyhow::Context;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, instrument};
 
+use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
@@ -33,15 +34,15 @@ use crate::metadata::{LogStoreMarker, LogletStateMap};
 use crate::metric_definitions::describe_metrics;
 use crate::network::RequestPump;
 use crate::protobuf::log_server_svc_server::LogServerSvcServer;
-use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
+use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};
 
 pub struct LogServerService {
     health_status: HealthStatus<LogServerStatus>,
-    updateable_config: Live<Configuration>,
     metadata: Metadata,
     request_processor: RequestPump,
     metadata_store_client: MetadataStoreClient,
-    record_cache: RecordCache,
+    state_map: LogletStateMap,
+    log_store: RocksDbLogStore,
 }
 
 impl LogServerService {
@@ -52,52 +53,74 @@ impl LogServerService {
         metadata_store_client: MetadataStoreClient,
         record_cache: RecordCache,
         router_builder: &mut MessageRouterBuilder,
+        server_builder: &mut NetworkServerBuilder,
     ) -> Result<Self, LogServerBuildError> {
         describe_metrics();
         health_status.update(LogServerStatus::StartingUp);
 
-        let request_processor = RequestPump::new(updateable_config.clone(), router_builder);
-
-        Ok(Self {
-            health_status,
-            updateable_config,
-            metadata,
-            request_processor,
-            metadata_store_client,
-            record_cache,
-        })
-    }
-
-    pub async fn start(
-        self,
-        mut metadata_writer: MetadataWriter,
-        server_builder: &mut NetworkServerBuilder,
-    ) -> anyhow::Result<()> {
-        let LogServerService {
-            health_status,
-            updateable_config,
-            metadata,
-            request_processor: request_pump,
-            mut metadata_store_client,
-            record_cache,
-        } = self;
-        // What do we need to start the log-server?
+        // What do we need to create the log-server?
         //
         // 1. A log-store
         let log_store_builder = RocksDbLogStoreBuilder::create(
             updateable_config.clone().map(|c| &c.log_server).boxed(),
-            updateable_config.map(|c| &c.log_server.rocksdb).boxed(),
+            updateable_config
+                .clone()
+                .map(|c| &c.log_server.rocksdb)
+                .boxed(),
             record_cache.clone(),
         )
-        .await?;
+        .await
+        .map_err(LogServerBuildError::other)?;
 
         // 2. Fire up the log store.
-        let mut log_store = log_store_builder
+        let log_store = log_store_builder
             .start(health_status.clone())
             .await
-            .context("Couldn't start log-server's log store")?;
+            .map_err(LogServerBuildError::other)?;
 
-        // 3. Run log-store checks and self-provision if needed.
+        // Might fetch all known loglets from disk
+        let state_map = LogletStateMap::load_all(&log_store)
+            .await
+            .map_err(LogServerBuildError::other)?;
+
+        // 3. Register the log-server grpc service
+        server_builder.register_grpc_service(
+            TonicServiceFilter::new(
+                LogServerSvcServer::new(LogServerSvcHandler::new(
+                    log_store.clone(),
+                    state_map.clone(),
+                    record_cache,
+                ))
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+                WaitForReady::new(health_status.clone(), LogServerStatus::Ready),
+            ),
+            crate::protobuf::FILE_DESCRIPTOR_SET,
+        );
+
+        let request_processor = RequestPump::new(updateable_config, router_builder);
+
+        Ok(Self {
+            health_status,
+            metadata,
+            request_processor,
+            metadata_store_client,
+            state_map,
+            log_store,
+        })
+    }
+
+    pub async fn start(self, mut metadata_writer: MetadataWriter) -> anyhow::Result<()> {
+        let LogServerService {
+            health_status,
+            metadata,
+            request_processor: request_pump,
+            mut metadata_store_client,
+            state_map,
+            mut log_store,
+        } = self;
+
+        // Run log-store checks and self-provision if needed.
         let storage_state = Self::provision_node(
             &metadata,
             &mut log_store,
@@ -105,23 +128,6 @@ impl LogServerService {
             &mut metadata_writer,
         )
         .await?;
-
-        // Might fetch all known loglets from disk
-        let state_map = LogletStateMap::load_all(&log_store)
-            .await
-            .context("cannot load loglet state map from logstore")?;
-
-        // 4. Start the log-server grpc service
-        server_builder.register_grpc_service(
-            LogServerSvcServer::new(LogServerSvcHandler::new(
-                log_store.clone(),
-                state_map.clone(),
-                record_cache,
-            ))
-            .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Gzip),
-            crate::protobuf::FILE_DESCRIPTOR_SET,
-        );
 
         let _ = TaskCenter::spawn_child(
             TaskKind::SystemService,

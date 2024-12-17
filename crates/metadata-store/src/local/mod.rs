@@ -21,7 +21,7 @@ use restate_types::{
 };
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
-pub use service::{Error, LocalMetadataStoreService};
+pub use service::{BuildError, Error, LocalMetadataStoreService};
 
 /// Creates a [`MetadataStoreClient`].
 pub async fn create_client(

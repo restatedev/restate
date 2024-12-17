@@ -38,6 +38,7 @@ use tracing::{debug, info};
 use restate_bifrost::{Bifrost, BifrostAdmin, SealedSegment};
 use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
 use restate_core::network::rpc_router::RpcRouter;
+use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
     MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking, TransportConnect,
 };
@@ -115,16 +116,19 @@ where
 
         // Registering ClusterCtrlSvc grpc service to network server
         server_builder.register_grpc_service(
-            ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(
-                ClusterControllerHandle {
-                    tx: command_tx.clone(),
-                },
-                metadata_store_client.clone(),
-                bifrost.clone(),
-                metadata_writer.clone(),
-            ))
-            .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Gzip),
+            TonicServiceFilter::new(
+                ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(
+                    ClusterControllerHandle {
+                        tx: command_tx.clone(),
+                    },
+                    metadata_store_client.clone(),
+                    bifrost.clone(),
+                    metadata_writer.clone(),
+                ))
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+                WaitForReady::new(health_status.clone(), AdminStatus::Ready),
+            ),
             crate::cluster_controller::protobuf::FILE_DESCRIPTOR_SET,
         );
 

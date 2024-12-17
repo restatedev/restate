@@ -20,7 +20,7 @@ use restate_rocksdb::RocksError;
 use super::record_format::RecordDecodeError;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum RocksDbLogStoreError {
+pub enum RocksDbLogStoreError {
     #[error("cannot accept offset {0}")]
     InvalidOffset(LogletOffset),
     #[error(transparent)]

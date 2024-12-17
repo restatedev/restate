@@ -12,8 +12,8 @@ use anyhow::Context;
 use cling::prelude::*;
 
 use restate_cli_util::{c_indentln, c_println};
-use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::network::protobuf::node_svc::GetMetadataRequest;
+use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_core::network::protobuf::node_ctl_svc::GetMetadataRequest;
 use restate_core::MetadataKind;
 use restate_types::logs::metadata::Logs;
 use restate_types::replicated_loglet::ReplicatedLogletId;
@@ -43,7 +43,7 @@ async fn get_info(connection: &ConnectionInfo, opts: &InfoOpts) -> anyhow::Resul
                 connection.cluster_controller
             )
         })?;
-    let mut client = NodeSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let mut client = NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
     let req = GetMetadataRequest {
         kind: MetadataKind::Logs.into(),

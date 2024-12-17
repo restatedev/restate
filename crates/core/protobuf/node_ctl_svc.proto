@@ -13,15 +13,11 @@ import "google/protobuf/empty.proto";
 import "restate/common.proto";
 import "restate/node.proto";
 
-package restate.node_svc;
+package restate.node_ctl_svc;
 
-service NodeSvc {
+service NodeCtlSvc {
   // Get identity information from this node.
   rpc GetIdent(google.protobuf.Empty) returns (IdentResponse);
-
-  // Create a bidirectional node-to-node stream
-  rpc CreateConnection(stream restate.node.Message)
-      returns (stream restate.node.Message);
 
   rpc GetMetadata(GetMetadataRequest) returns (GetMetadataResponse);
 }

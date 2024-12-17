@@ -86,11 +86,19 @@ enum TargetName {
 
 enum NodeStatus {
   NodeStatus_UNKNOWN = 0;
+  // The node has joined the cluster and is fully operational.
   ALIVE = 1;
   // The node is not fully running yet.
   STARTING_UP = 2;
   // The node is performing a graceful shutdown.
   SHUTTING_DOWN = 3;
+}
+
+enum NodeRpcStatus {
+  NodeRpcStatus_UNKNOWN = 0;
+  NodeRpcStatus_READY = 1;
+  NodeRpcStatus_STARTING_UP = 2;
+  NodeRpcStatus_STOPPING = 3;
 }
 
 enum WorkerStatus {

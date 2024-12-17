@@ -233,7 +233,6 @@ fn main() {
                         shutdown = true;
                         let signal_reason = format!("received signal {signal_name}");
 
-
                         let shutdown_with_timeout = tokio::time::timeout(
                             Configuration::pinned().common.shutdown_grace_period(),
                             async {
