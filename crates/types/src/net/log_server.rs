@@ -226,7 +226,6 @@ bitflags! {
 /// Store one or more records on a log-server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Store {
-    #[serde(flatten)]
     pub header: LogServerRequestHeader,
     // The receiver should skip handling this message if it hasn't started to act on it
     // before timeout expires.
@@ -267,7 +266,6 @@ impl Store {
 /// Response to a `Store` request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stored {
-    #[serde(flatten)]
     pub header: LogServerResponseHeader,
 }
 
@@ -307,13 +305,11 @@ impl Stored {
 // ** RELEASE
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Release {
-    #[serde(flatten)]
     pub header: LogServerRequestHeader,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Released {
-    #[serde(flatten)]
     pub header: LogServerResponseHeader,
 }
 
@@ -340,7 +336,6 @@ impl Released {
 /// Seals the loglet so no further stores can be accepted
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Seal {
-    #[serde(flatten)]
     pub header: LogServerRequestHeader,
     /// This is the sequencer identifier for this log. This should be set even for repair store messages.
     pub sequencer: GenerationalNodeId,
@@ -349,7 +344,6 @@ pub struct Seal {
 /// Response to a `Seal` request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sealed {
-    #[serde(flatten)]
     pub header: LogServerResponseHeader,
 }
 
@@ -389,14 +383,12 @@ impl Sealed {
 // ** GET_LOGLET_INFO
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetLogletInfo {
-    #[serde(flatten)]
     pub header: LogServerRequestHeader,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, IntoProto)]
 #[proto(target = "crate::protobuf::log_server_common::LogletInfo")]
 pub struct LogletInfo {
-    #[serde(flatten)]
     #[proto(required)]
     pub header: LogServerResponseHeader,
     pub trim_point: LogletOffset,
@@ -471,7 +463,6 @@ pub enum MaybeRecord {
 /// local tail that was used during the read process and `next_offset` will be set accordingly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetRecords {
-    #[serde(flatten)]
     pub header: LogServerRequestHeader,
     /// if set, the server will stop reading when the next record will tip of the total number of
     /// bytes allocated. The returned `next_offset` can be used by the reader to move the cursor
@@ -492,7 +483,6 @@ pub struct GetRecords {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Records {
-    #[serde(flatten)]
     pub header: LogServerResponseHeader,
     /// Indicates the next offset to read from after this response. This is useful when
     /// the response is partial due to hitting budgeting limits (memory, buffer, etc.)
@@ -549,7 +539,6 @@ impl Records {
 // ** TRIM
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trim {
-    #[serde(flatten)]
     pub header: LogServerRequestHeader,
     /// The trim_point is inclusive (will be trimmed)
     pub trim_point: LogletOffset,
@@ -558,7 +547,6 @@ pub struct Trim {
 /// Response to a `Trim` request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trimmed {
-    #[serde(flatten)]
     pub header: LogServerResponseHeader,
 }
 
@@ -612,7 +600,6 @@ pub enum TailUpdateQuery {
 /// or global-tail value OR if the node is sealed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WaitForTail {
-    #[serde(flatten)]
     pub header: LogServerRequestHeader,
     /// If the caller is not interested in observing a specific tail value (i.e. only interested in
     /// the seal signal), this should be set to `TailUpdateQuery::GlobalTail(LogletOffset::MAX)`.
@@ -622,7 +609,6 @@ pub struct WaitForTail {
 /// Response to a `WaitForTail` request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TailUpdated {
-    #[serde(flatten)]
     pub header: LogServerResponseHeader,
 }
 
@@ -664,7 +650,6 @@ impl TailUpdated {
 /// Request a digest of the loglet between two offsets from this node
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetDigest {
-    #[serde(flatten)]
     pub header: LogServerRequestHeader,
     // inclusive
     pub from_offset: LogletOffset,
@@ -716,7 +701,6 @@ impl DigestEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, IntoProto, FromProto)]
 #[proto(target = "crate::protobuf::log_server_common::Digest")]
 pub struct Digest {
-    #[serde(flatten)]
     #[proto(required)]
     pub header: LogServerResponseHeader,
     // If the node's local trim-point (or archival-point) overlaps with the digest range, an entry will be
