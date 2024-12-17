@@ -64,8 +64,9 @@ impl SnapshotPartitionTask {
 
         let metadata = self.metadata(&snapshot, SystemTime::now());
 
-        self.snapshot_repository
-            .put(&metadata, snapshot.base_dir)
+        let metadata = self
+            .snapshot_repository
+            .put(metadata, snapshot.base_dir)
             .await
             .map_err(|e| SnapshotError::RepositoryIo(self.partition_id, e))?;
 
@@ -87,7 +88,7 @@ impl SnapshotPartitionTask {
             key_range: snapshot.key_range.clone(),
             min_applied_lsn: snapshot.min_applied_lsn,
             db_comparator_name: snapshot.db_comparator_name.clone(),
-            files: snapshot.files.clone(),
+            files: snapshot.files.iter().map(|f| f.into()).collect(),
         }
     }
 }

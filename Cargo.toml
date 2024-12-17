@@ -95,6 +95,7 @@ chrono-humanize = { version = "0.2.3" }
 clap = { version = "4", default-features = false }
 clap-verbosity-flag = { version = "2.0.1" }
 cling = { version = "0.1", default-features = false, features = ["derive"] }
+crc32fast = "1.4.2"
 criterion = "0.5"
 crossterm = { version = "0.27.0" }
 dashmap = { version = "6" }

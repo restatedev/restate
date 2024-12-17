@@ -59,8 +59,26 @@ pub struct PartitionSnapshotMetadata {
     pub db_comparator_name: String,
 
     /// The RocksDB SST files comprising the snapshot.
-    #[serde_as(as = "Vec<SnapshotSstFile>")]
-    pub files: Vec<LiveFile>,
+    pub files: Vec<ExtendedFileMetadata>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExtendedFileMetadata {
+    #[serde(flatten)]
+    #[serde(with = "SnapshotSstFile")]
+    pub live_file: LiveFile,
+
+    /// CRC32 checksum of the file contents.
+    pub crc32: u32,
+}
+
+impl From<&LiveFile> for ExtendedFileMetadata {
+    fn from(live_file: &LiveFile) -> Self {
+        Self {
+            live_file: live_file.clone(),
+            crc32: 0,
+        }
+    }
 }
 
 /// A locally-stored partition snapshot.

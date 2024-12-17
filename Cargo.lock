@@ -7120,6 +7120,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "codederror",
+ "crc32fast",
  "derive_builder",
  "derive_more",
  "enumset",
