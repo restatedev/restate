@@ -7,7 +7,8 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-use crate::{protobuf_storage_encode_decode, Result};
+
+use crate::Result;
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationResponse, InvocationTermination, ServiceInvocation,
@@ -30,8 +31,6 @@ pub enum OutboxMessage {
     /// Attach invocation
     AttachInvocation(AttachInvocationRequest),
 }
-
-protobuf_storage_encode_decode!(OutboxMessage);
 
 impl WithPartitionKey for OutboxMessage {
     fn partition_key(&self) -> PartitionKey {
