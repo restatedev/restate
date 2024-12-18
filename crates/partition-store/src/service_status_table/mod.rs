@@ -10,6 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::TableScan::FullScanPartitionKeyRange;
 use crate::{PartitionStore, TableKind};
 use crate::{PartitionStoreTransaction, StorageAccess};
@@ -20,10 +21,9 @@ use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::Result;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{PartitionKey, ServiceId};
-use restate_types::storage::StorageCodec;
 use std::ops::RangeInclusive;
 
 define_table_key!(
@@ -35,6 +35,10 @@ define_table_key!(
         service_key: ByteString
     )
 );
+
+impl PartitionStoreProtobufValue for VirtualObjectStatus {
+    type ProtobufType = crate::protobuf_types::v1::VirtualObjectStatus;
+}
 
 fn write_status_key(service_id: &ServiceId) -> ServiceStatusKey {
     ServiceStatusKey::default()
@@ -81,8 +85,7 @@ fn all_virtual_object_status<S: StorageAccess>(
     let iter = storage.iterator_from(FullScanPartitionKeyRange::<ServiceStatusKey>(range));
     stream::iter(OwnedIterator::new(iter).map(|(mut key, mut value)| {
         let state_key = ServiceStatusKey::deserialize_from(&mut key)?;
-        let state_value = StorageCodec::decode::<VirtualObjectStatus, _>(&mut value)
-            .map_err(|err| StorageError::Conversion(err.into()))?;
+        let state_value = VirtualObjectStatus::decode(&mut value)?;
 
         let (partition_key, service_name, service_key) = state_key.into_inner_ok_or()?;
 

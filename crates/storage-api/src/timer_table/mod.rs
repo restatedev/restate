@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{protobuf_storage_encode_decode, Result};
+use crate::Result;
 use futures_util::Stream;
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::invocation::ServiceInvocation;
@@ -248,8 +248,6 @@ impl WithPartitionKey for Timer {
         }
     }
 }
-
-protobuf_storage_encode_decode!(Timer);
 
 pub trait TimerTable {
     fn put_timer(&mut self, timer_key: &TimerKey, timer: &Timer)

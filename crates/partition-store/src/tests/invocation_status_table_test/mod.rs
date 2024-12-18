@@ -21,7 +21,7 @@ use futures_util::TryStreamExt;
 use googletest::prelude::*;
 
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, InvocationStatusV1,
+    InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
     InvokedOrKilledInvocationStatusLite, JournalMetadata, ReadOnlyInvocationStatusTable,
     StatusTimestamps,
 };
@@ -33,7 +33,9 @@ use restate_types::invocation::{
 use restate_types::time::MillisSinceEpoch;
 
 use super::storage_test_environment;
-use crate::invocation_status_table::{InvocationStatusKey, InvocationStatusKeyV1};
+use crate::invocation_status_table::{
+    InvocationStatusKey, InvocationStatusKeyV1, InvocationStatusV1,
+};
 use crate::partition_store::StorageAccess;
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
