@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{protobuf_storage_encode_decode, Result};
+use crate::Result;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::Stream;
@@ -349,8 +349,6 @@ impl InvocationStatus {
     }
 }
 
-protobuf_storage_encode_decode!(InvocationStatus, crate::storage::v1::InvocationStatusV2);
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InvocationStatusDiscriminants {
     Scheduled,
@@ -360,21 +358,6 @@ pub enum InvocationStatusDiscriminants {
     Killed,
     Completed,
 }
-
-/// Lite status of an invocation.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct InvocationLite {
-    pub status: InvocationStatusDiscriminants,
-    pub invocation_target: InvocationTarget,
-}
-
-protobuf_storage_encode_decode!(InvocationLite, crate::storage::v1::InvocationV2Lite);
-
-/// Wrapper used by the table implementation only for the migration, don't use it!
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct InvocationStatusV1(pub InvocationStatus);
-
-protobuf_storage_encode_decode!(InvocationStatusV1, crate::storage::v1::InvocationStatus);
 
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]

@@ -10,6 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::scan::TableScan;
 use crate::{PartitionStore, TableKind, TableScanIterationDecision};
 use crate::{PartitionStoreTransaction, StorageAccess};
@@ -22,9 +23,8 @@ use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::promise_table::{
     OwnedPromiseRow, Promise, PromiseTable, ReadOnlyPromiseTable,
 };
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::Result;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use restate_types::storage::StorageCodec;
 use std::ops::RangeInclusive;
 
 define_table_key!(
@@ -37,6 +37,10 @@ define_table_key!(
         key: ByteString
     )
 );
+
+impl PartitionStoreProtobufValue for Promise {
+    type ProtobufType = crate::protobuf_types::v1::Promise;
+}
 
 fn create_key(service_id: &ServiceId, key: &ByteString) -> PromiseKey {
     PromiseKey::default()
@@ -62,8 +66,7 @@ fn all_promise<S: StorageAccess>(
     let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<PromiseKey>(range));
     stream::iter(OwnedIterator::new(iter).map(|(mut k, mut v)| {
         let key = PromiseKey::deserialize_from(&mut k)?;
-        let metadata = StorageCodec::decode::<Promise, _>(&mut v)
-            .map_err(|err| StorageError::Generic(err.into()))?;
+        let metadata = Promise::decode(&mut v)?;
 
         let (partition_key, service_name, service_key, promise_key) = key.into_inner_ok_or()?;
 
