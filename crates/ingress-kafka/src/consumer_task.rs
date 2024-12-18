@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::fmt::{self, Display};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
 use base64::Engine;
 use bytes::Bytes;
@@ -23,7 +23,7 @@ use rdkafka::message::BorrowedMessage;
 use rdkafka::topic_partition_list::TopicPartitionListElem;
 use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::{ClientConfig, ClientContext, Message};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, info_span, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -233,29 +233,43 @@ impl ConsumerTask {
             self.topics, self.client_config
         );
 
+        let (failures_tx, failures_rx) = mpsc::unbounded_channel();
+
         let rebalance_context = RebalanceContext {
             task_center: self.task_center.clone(),
             consumer: OnceLock::new(),
-            topic_partition_tasks: Mutex::new(HashMap::new()),
+            topic_partition_tasks: parking_lot::Mutex::new(HashMap::new()),
+            failures_tx,
             sender: self.sender.clone(),
             consumer_group_id,
         };
         let consumer: Arc<MessageConsumer> =
             Arc::new(self.client_config.create_with_context(rebalance_context)?);
+        // this OnceLock<Weak> dance is needed because the rebalance callbacks don't get a handle on the consumer,
+        // which is strange because practically everything you'd want to do with them involves the consumer.
         _ = consumer.context().consumer.set(Arc::downgrade(&consumer));
+
+        // ensure partitioned tasks are cancelled when this function exits/stops being polled
         let consumer = ConsumerDrop(consumer);
 
         let topics: Vec<&str> = self.topics.iter().map(|x| &**x).collect();
         consumer.subscribe(&topics)?;
 
-        // we have to poll the main consumer for callbacks to be processed, but we expect to only see messages on the partitioned queues
+        let mut failures_rx = std::pin::pin!(failures_rx);
+
         tokio::select! {
+            // we have to poll the main consumer for callbacks to be processed, but we expect to only see messages on the partitioned queues
             res = consumer.recv() => {
                 match res {
-                    // We shouldn't see any messages on the main consumer loop
+                    // We shouldn't see any messages on the main consumer loop, because we split the queues into partitioned queues before they
+                    // are ever assigned. Messages here should be treated as a bug in our assumptions.
                     Ok(msg) => Err(Error::UnexpectedMainQueueMessage(msg.topic().into(), msg.partition())),
                     Err(e) => Err(e.into()),
                 }
+            }
+            // watch for errors in the partitioned consumers - they should only ever abort, not return errors
+            Some(err) = failures_rx.recv() => {
+                Err(err)
             }
             _ = &mut rx => {
                  Ok(())
@@ -264,15 +278,8 @@ impl ConsumerTask {
     }
 }
 
+#[derive(derive_more::Deref)]
 struct ConsumerDrop(Arc<MessageConsumer>);
-
-impl std::ops::Deref for ConsumerDrop {
-    type Target = Arc<MessageConsumer>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 impl Drop for ConsumerDrop {
     fn drop(&mut self) {
@@ -281,19 +288,8 @@ impl Drop for ConsumerDrop {
             self.context().consumer_group_id
         );
 
-        let task_center = &self.context().task_center;
-        self
-            .context()
-            .topic_partition_tasks
-            .lock()
-            .unwrap()
-            .drain()
-            .for_each(|(partition, task_id)| {
-                debug!("Stopping partitioned consumer for partition {partition} due to the consumer stopping");
-                if let Some(handle) = task_center.cancel_task(task_id) {
-                    handle.abort()
-                }
-            });
+        // we have to clear this because the partitioned tasks themselves hold a reference to MessageConsumer
+        self.context().topic_partition_tasks.lock().clear();
     }
 }
 
@@ -315,7 +311,8 @@ impl Display for TopicPartition {
 struct RebalanceContext {
     task_center: TaskCenter,
     consumer: OnceLock<Weak<MessageConsumer>>,
-    topic_partition_tasks: Mutex<HashMap<TopicPartition, TaskId>>,
+    topic_partition_tasks: parking_lot::Mutex<HashMap<TopicPartition, AbortOnDrop>>,
+    failures_tx: mpsc::UnboundedSender<Error>,
     sender: MessageSender,
     consumer_group_id: String,
 }
@@ -335,14 +332,14 @@ impl ClientContext for RebalanceContext {}
 // and we will set up new split partition streams before the assign.
 impl ConsumerContext for RebalanceContext {
     fn pre_rebalance(&self, rebalance: &Rebalance<'_>) {
-        let mut topic_partition_tasks = self.topic_partition_tasks.lock().unwrap();
+        let mut topic_partition_tasks = self.topic_partition_tasks.lock();
         let consumer = self
             .consumer
             .get()
             .expect("consumer must have been set in context at rebalance time");
 
-        // if the consumer has been dropped, we don't need to maintain tasks any more
         let Some(consumer) = consumer.upgrade() else {
+            // if the consumer has been dropped, we don't need to maintain tasks any more
             return;
         };
 
@@ -352,10 +349,10 @@ impl ConsumerContext for RebalanceContext {
                     let partition: TopicPartition = partition.into();
 
                     if let Some(task_id) = topic_partition_tasks.remove(&partition) {
+                        // This probably implies a problem in our assumptions, because librdkafka shouldn't be assigning us a partition again without having revoked it.
+                        // However its fair to assume that the existing partitioned consumer is now invalid.
                         warn!("Kafka informed us of an assigned partition {partition} which we already consider assigned, cancelling the existing partitioned consumer");
-                        if let Some(handle) = self.task_center.cancel_task(task_id) {
-                            handle.abort()
-                        }
+                        drop(task_id);
                     }
 
                     match consumer.split_partition_queue(&partition.0, partition.1) {
@@ -366,15 +363,22 @@ impl ConsumerContext for RebalanceContext {
                                 queue,
                                 Arc::clone(&consumer),
                                 self.consumer_group_id.clone(),
+                                self.failures_tx.clone(),
                             );
 
                             if let Ok(task_id) = self.task_center.spawn_child(
-                                TaskKind::Ingress,
-                                "partition-queue",
+                                TaskKind::Ingress, // this task kind exits on error, but we cannot ever return an error, so it doesnt matter.
+                                "kafka-partition-ingest",
                                 None,
-                                task,
+                                async {
+                                    task.await;
+                                    Ok(())
+                                },
                             ) {
-                                topic_partition_tasks.insert(partition, task_id);
+                                topic_partition_tasks.insert(
+                                    partition,
+                                    AbortOnDrop(self.task_center.clone(), task_id),
+                                );
                             } else {
                                 // shutting down
                                 return;
@@ -396,13 +400,13 @@ impl ConsumerContext for RebalanceContext {
                         debug!("Stopping partitioned consumer for partition {partition} due to rebalance");
                         // The partitioned queue will not be polled again.
                         // It might be mid-poll right now, but if so its result will not be sent anywhere.
-                        if let Some(handle) = self.task_center.cancel_task(task_id) { handle.abort() }
+                        drop(task_id);
                     }
                     None => warn!("Kafka informed us of a revoked partition {partition} which we had no consumer task for"),
                 }
                 }
 
-                match consumer.commit_consumer_state(CommitMode::Sync) {
+                match consumer.commit_consumer_state(CommitMode::Async) {
                     Ok(_) | Err(KafkaError::ConsumerCommit(RDKafkaErrorCode::NoOffset)) => {
                         // Success
                     }
@@ -414,24 +418,41 @@ impl ConsumerContext for RebalanceContext {
     }
 }
 
+struct AbortOnDrop(TaskCenter, TaskId);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.cancel_task(self.1) {
+            handle.abort();
+        }
+    }
+}
+
 async fn topic_partition_queue_consumption_loop(
     sender: MessageSender,
     partition: TopicPartition,
     topic_partition_consumer: StreamPartitionQueue<impl ConsumerContext>,
     consumer: Arc<MessageConsumer>,
     consumer_group_id: String,
-) -> Result<(), anyhow::Error> {
+    failed: mpsc::UnboundedSender<Error>,
+) {
     debug!("Starting partitioned consumer for partition {partition}");
 
-    // this future will be aborted when the partition is no longer needed
-    loop {
-        tokio::select! {
-            res = topic_partition_consumer.recv() => {
-                let msg = res?;
-                let offset = msg.offset();
-                sender.send(&consumer_group_id, msg).await?;
-                consumer.store_offset(&partition.0, partition.1, offset)?;
-            }
+    // this future will be aborted when the partition is no longer needed, so any exit is a failure
+    let err = loop {
+        let res = topic_partition_consumer.recv().await;
+        let msg = match res {
+            Ok(msg) => msg,
+            Err(err) => break err.into(),
+        };
+        let offset = msg.offset();
+        if let Err(err) = sender.send(&consumer_group_id, msg).await {
+            break err;
         }
-    }
+        if let Err(err) = consumer.store_offset(&partition.0, partition.1, offset) {
+            break err.into();
+        }
+    };
+
+    _ = failed.send(err);
 }
