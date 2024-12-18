@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{protobuf_storage_encode_decode, Result};
+use super::Result;
 
 use bytestring::ByteString;
 use futures_util::Stream;
@@ -36,8 +36,6 @@ impl Default for PromiseState {
 pub struct Promise {
     pub state: PromiseState,
 }
-
-protobuf_storage_encode_decode!(Promise);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OwnedPromiseRow {

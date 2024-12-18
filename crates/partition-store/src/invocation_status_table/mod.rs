@@ -10,6 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::TableScan::FullScanPartitionKeyRange;
 use crate::{PartitionStore, TableKind, TableScanIterationDecision};
 use crate::{PartitionStoreTransaction, StorageAccess};
@@ -17,12 +18,12 @@ use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
-    InvocationStatusV1, InvokedOrKilledInvocationStatusLite, ReadOnlyInvocationStatusTable,
+    InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
+    InvokedOrKilledInvocationStatusLite, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
-use restate_types::storage::StorageCodec;
+use restate_types::invocation::InvocationTarget;
 use std::ops::RangeInclusive;
 use tracing::trace;
 
@@ -35,6 +36,14 @@ define_table_key!(
         invocation_uuid: InvocationUuid
     )
 );
+
+// TODO remove this once we remove the old InvocationStatus
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct InvocationStatusV1(pub(crate) InvocationStatus);
+
+impl PartitionStoreProtobufValue for InvocationStatusV1 {
+    type ProtobufType = crate::protobuf_types::v1::InvocationStatus;
+}
 
 // TODO remove this once we remove the old InvocationStatus
 fn create_invocation_status_key_v1(invocation_id: &InvocationId) -> InvocationStatusKeyV1 {
@@ -56,6 +65,21 @@ fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatu
     InvocationStatusKey::default()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid())
+}
+
+impl PartitionStoreProtobufValue for InvocationStatus {
+    type ProtobufType = crate::protobuf_types::v1::InvocationStatusV2;
+}
+
+/// Lite status of an invocation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct InvocationLite {
+    pub status: InvocationStatusDiscriminants,
+    pub invocation_target: InvocationTarget,
+}
+
+impl PartitionStoreProtobufValue for InvocationLite {
+    type ProtobufType = crate::protobuf_types::v1::InvocationV2Lite;
 }
 
 // TODO remove this once we remove the old InvocationStatus
@@ -207,8 +231,7 @@ fn all_invocation_status<S: StorageAccess>(
         ))
         .map(|(mut key, mut value)| {
             let state_key = InvocationStatusKeyV1::deserialize_from(&mut key)?;
-            let state_value = StorageCodec::decode::<InvocationStatusV1, _>(&mut value)
-                .map_err(|err| StorageError::Conversion(err.into()))?;
+            let state_value = InvocationStatusV1::decode(&mut value)?;
 
             let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
             Ok((
@@ -222,8 +245,7 @@ fn all_invocation_status<S: StorageAccess>(
             >(range.clone())))
             .map(|(mut key, mut value)| {
                 let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
-                let state_value = StorageCodec::decode::<InvocationStatus, _>(&mut value)
-                    .map_err(|err| StorageError::Conversion(err.into()))?;
+                let state_value = InvocationStatus::decode(&mut value)?;
 
                 let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
                 Ok((
@@ -241,8 +263,7 @@ fn read_invoked_v1_full_invocation_id(
     v: &mut &[u8],
 ) -> Result<Option<InvokedOrKilledInvocationStatusLite>> {
     let invocation_id = invocation_id_from_v1_key_bytes(&mut k)?;
-    let invocation_status = StorageCodec::decode::<InvocationStatusV1, _>(v)
-        .map_err(|err| StorageError::Generic(err.into()))?;
+    let invocation_status = InvocationStatusV1::decode(v)?;
     if let InvocationStatus::Invoked(invocation_meta) = invocation_status.0 {
         Ok(Some(InvokedOrKilledInvocationStatusLite {
             invocation_id,
@@ -259,8 +280,7 @@ fn read_invoked_or_killed_status_lite(
     v: &mut &[u8],
 ) -> Result<Option<InvokedOrKilledInvocationStatusLite>> {
     let invocation_id = invocation_id_from_key_bytes(&mut k)?;
-    let invocation_status = StorageCodec::decode::<InvocationLite, _>(v)
-        .map_err(|err| StorageError::Generic(err.into()))?;
+    let invocation_status = InvocationLite::decode(v)?;
     if let InvocationStatusDiscriminants::Invoked = invocation_status.status {
         Ok(Some(InvokedOrKilledInvocationStatusLite {
             invocation_id,

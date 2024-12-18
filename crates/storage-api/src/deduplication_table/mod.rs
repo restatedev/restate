@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{protobuf_storage_encode_decode, Result};
+use crate::Result;
 use bytestring::ByteString;
 use futures_util::Stream;
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
@@ -70,8 +70,6 @@ pub enum DedupSequenceNumber {
     /// an older leader epoch.
     Esn(EpochSequenceNumber),
 }
-
-protobuf_storage_encode_decode!(DedupSequenceNumber);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EpochSequenceNumber {

@@ -11,6 +11,7 @@
 use crate::keys::TableKey;
 use crate::keys::{define_table_key, KeyKind};
 use crate::owned_iter::OwnedIterator;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::scan::TableScan::FullScanPartitionKeyRange;
 use crate::TableKind::Journal;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
@@ -19,11 +20,10 @@ use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::Result;
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
-use restate_types::storage::StorageCodec;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
@@ -42,6 +42,10 @@ fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> 
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid())
         .journal_index(journal_index)
+}
+
+impl PartitionStoreProtobufValue for JournalEntry {
+    type ProtobufType = crate::protobuf_types::v1::JournalEntry;
 }
 
 fn put_journal_entry<S: StorageAccess>(
@@ -84,9 +88,7 @@ fn get_journal<S: StorageAccess>(
                     .journal_index
                     .expect("The journal index must be part of the journal key.")
             });
-            let entry = StorageCodec::decode::<JournalEntry, _>(&mut v)
-                .map_err(|error| StorageError::Generic(error.into()));
-
+            let entry = JournalEntry::decode(&mut v);
             let result = key.and_then(|key| entry.map(|entry| (key, entry)));
 
             n += 1;
@@ -106,8 +108,7 @@ fn all_journals<S: StorageAccess>(
     let iter = storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range));
     stream::iter(OwnedIterator::new(iter).map(|(mut key, mut value)| {
         let journal_key = JournalKey::deserialize_from(&mut key)?;
-        let journal_entry = StorageCodec::decode::<JournalEntry, _>(&mut value)
-            .map_err(|err| StorageError::Conversion(err.into()))?;
+        let journal_entry = JournalEntry::decode(&mut value)?;
 
         let (partition_key, invocation_uuid, entry_index) = journal_key.into_inner_ok_or()?;
 

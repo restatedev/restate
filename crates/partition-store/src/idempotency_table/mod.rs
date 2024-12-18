@@ -10,6 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::scan::TableScan;
 use crate::{PartitionStore, TableKind};
 use crate::{PartitionStoreTransaction, StorageAccess};
@@ -22,7 +23,6 @@ use restate_storage_api::idempotency_table::{
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{IdempotencyId, PartitionKey, WithPartitionKey};
-use restate_types::storage::StorageCodec;
 use std::ops::RangeInclusive;
 
 define_table_key!(
@@ -36,6 +36,10 @@ define_table_key!(
         idempotency_key: ByteString
     )
 );
+
+impl PartitionStoreProtobufValue for IdempotencyMetadata {
+    type ProtobufType = crate::protobuf_types::v1::IdempotencyMetadata;
+}
 
 fn create_key(idempotency_id: &IdempotencyId) -> IdempotencyKey {
     IdempotencyKey::default()
@@ -69,8 +73,7 @@ fn all_idempotency_metadata<S: StorageAccess>(
     ));
     stream::iter(OwnedIterator::new(iter).map(|(mut k, mut v)| {
         let key = IdempotencyKey::deserialize_from(&mut k)?;
-        let idempotency_metadata = StorageCodec::decode::<IdempotencyMetadata, _>(&mut v)
-            .map_err(|err| StorageError::Generic(err.into()))?;
+        let idempotency_metadata = IdempotencyMetadata::decode(&mut v)?;
 
         Ok((
             IdempotencyId::new(
