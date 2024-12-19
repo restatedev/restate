@@ -31,6 +31,10 @@ pub enum DeletionMode {
     Kill,
     #[serde(alias = "purge")]
     Purge,
+    #[serde(alias = "kill-and-restart")]
+    KillAndRestart,
+    #[serde(alias = "cancel-and-restart")]
+    CancelAndRestart,
 }
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DeleteInvocationParams {
@@ -90,6 +94,12 @@ pub async fn delete_invocation<V>(
             Command::TerminateInvocation(InvocationTermination::kill(invocation_id))
         }
         DeletionMode::Purge => Command::PurgeInvocation(PurgeInvocationRequest { invocation_id }),
+        DeletionMode::CancelAndRestart => {
+            Command::TerminateInvocation(InvocationTermination::cancel_and_restart(invocation_id))
+        }
+        DeletionMode::KillAndRestart => {
+            Command::TerminateInvocation(InvocationTermination::kill_and_restart(invocation_id))
+        }
     };
 
     let partition_key = invocation_id.partition_key();
