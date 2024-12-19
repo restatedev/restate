@@ -913,10 +913,21 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 )
                 .await?
             }
-            InvocationStatus::Killed(_) => {
+            InvocationStatus::Killed(mut in_flight_invocation_metadata) => {
                 trace!("Received kill command for an already killed invocation with id '{invocation_id}'.");
                 // Nothing to do here really, let's send again the abort signal to the invoker just in case
                 Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, true);
+
+                if in_flight_invocation_metadata.restart_when_completed {
+                    // Reset restart when completed flag
+                    in_flight_invocation_metadata.restart_when_completed = false;
+                    ctx.storage
+                        .put_invocation_status(
+                            &invocation_id,
+                            &InvocationStatus::Killed(in_flight_invocation_metadata),
+                        )
+                        .await;
+                }
             }
             InvocationStatus::Completed(_) => {
                 debug!("Received kill command for completed invocation '{invocation_id}'. To cleanup the invocation after it's been completed, use the purge invocation command.");
