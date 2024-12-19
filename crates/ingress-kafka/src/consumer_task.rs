@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, info_span, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use restate_core::{TaskCenter, TaskId, TaskKind};
+use restate_core::{TaskCenter, TaskHandle, TaskKind};
 use restate_ingress_dispatcher::{
     DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
 };
@@ -366,19 +366,13 @@ impl ConsumerContext for RebalanceContext {
                                 self.failures_tx.clone(),
                             );
 
-                            if let Ok(task_id) = self.task_center.spawn_child(
-                                TaskKind::Ingress, // this task kind exits on error, but we cannot ever return an error, so it doesnt matter.
+                            if let Ok(task_handle) = self.task_center.spawn_unmanaged(
+                                TaskKind::Ingress,
                                 "kafka-partition-ingest",
                                 None,
-                                async {
-                                    task.await;
-                                    Ok(())
-                                },
+                                task,
                             ) {
-                                topic_partition_tasks.insert(
-                                    partition,
-                                    AbortOnDrop(self.task_center.clone(), task_id),
-                                );
+                                topic_partition_tasks.insert(partition, AbortOnDrop(task_handle));
                             } else {
                                 // shutting down
                                 return;
@@ -418,13 +412,11 @@ impl ConsumerContext for RebalanceContext {
     }
 }
 
-struct AbortOnDrop(TaskCenter, TaskId);
+struct AbortOnDrop(TaskHandle<()>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
-        if let Some(handle) = self.0.cancel_task(self.1) {
-            handle.abort();
-        }
+        self.0.abort();
     }
 }
 
