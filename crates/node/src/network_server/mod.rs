@@ -15,4 +15,5 @@ mod prometheus_helpers;
 mod service;
 mod state;
 
+pub(crate) use metrics::install_global_prometheus_recorder;
 pub use service::{AdminDependencies, NetworkServer, WorkerDependencies};

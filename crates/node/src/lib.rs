@@ -280,6 +280,14 @@ impl Node {
 
         let config = self.updateable_config.pinned();
 
+        let prometheus_handle = if config.common.disable_prometheus {
+            None
+        } else {
+            Some(network_server::install_global_prometheus_recorder(
+                &config.common,
+            ))
+        };
+
         if let Some(metadata_store) = self.metadata_store_role {
             tc.spawn(
                 TaskKind::MetadataStore,
@@ -431,7 +439,7 @@ impl Node {
             TaskKind::RpcServer,
             "node-rpc-server",
             None,
-            self.server.run(config.common.clone()),
+            self.server.run(config.common.clone(), prometheus_handle),
         )?;
 
         Ok(())
