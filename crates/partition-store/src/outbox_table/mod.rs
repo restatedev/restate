@@ -13,11 +13,11 @@ use std::ops::RangeInclusive;
 
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::Result;
 use restate_types::identifiers::PartitionId;
-use restate_types::storage::StorageCodec;
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::TableKind::Outbox;
 use crate::{
     PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
@@ -28,6 +28,10 @@ define_table_key!(
     KeyKind::Outbox,
     OutboxKey(partition_id: PaddedPartitionId, message_index: u64)
 );
+
+impl PartitionStoreProtobufValue for OutboxMessage {
+    type ProtobufType = crate::protobuf_types::v1::OutboxMessage;
+}
 
 fn add_message<S: StorageAccess>(
     storage: &mut S,
@@ -186,8 +190,7 @@ fn decode_key_value(k: &[u8], v: &[u8]) -> crate::Result<(u64, OutboxMessage)> {
 
 fn decode_value(mut v: &[u8]) -> crate::Result<OutboxMessage> {
     // decode value
-    let outbox_message = StorageCodec::decode::<OutboxMessage, _>(&mut v)
-        .map_err(|error| StorageError::Conversion(error.into()))?;
+    let outbox_message = OutboxMessage::decode(&mut v)?;
 
     Ok(outbox_message)
 }

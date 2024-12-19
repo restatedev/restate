@@ -35,7 +35,6 @@ pub mod outbox_table;
 pub mod promise_table;
 pub mod service_status_table;
 pub mod state_table;
-mod storage;
 pub mod timer_table;
 
 pub trait Storage {
