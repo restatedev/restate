@@ -454,7 +454,7 @@ mod tests {
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
     use restate_types::Versioned;
 
-    use crate::{BifrostAdmin, BifrostService};
+    use crate::{BifrostAdmin, BifrostService, ErrorRecoveryStrategy};
 
     #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
@@ -476,7 +476,7 @@ mod tests {
         svc.start().await.expect("loglet must start");
 
         let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, read_from, Lsn::MAX)?;
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
 
         let tail = bifrost.find_tail(LOG_ID).await?;
         // no records have been written
@@ -558,7 +558,7 @@ mod tests {
         );
         svc.start().await.expect("loglet must start");
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
 
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
@@ -651,7 +651,7 @@ mod tests {
 
         // create the reader and put it on the side.
         let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
         // We should be at tail, any attempt to read will yield `pending`.
         assert_that!(
             futures::poll!(std::pin::pin!(reader.next())),
@@ -810,7 +810,7 @@ mod tests {
         );
         svc.start().await.expect("loglet must start");
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
 
         let tail = bifrost.find_tail(LOG_ID).await?;
         // no records have been written
@@ -922,7 +922,7 @@ mod tests {
             .enable_in_memory_loglet();
         let bifrost = svc.handle();
         svc.start().await.expect("loglet must start");
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
 
         let metadata = Metadata::current();
         // prepare a chain that starts from Lsn 10 (we expect trim from OLDEST -> 9)
