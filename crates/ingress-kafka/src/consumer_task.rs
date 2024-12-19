@@ -353,7 +353,7 @@ impl ConsumerContext for RebalanceContext {
         };
 
         match rebalance {
-            Rebalance::Assign(partitions) => {
+            Rebalance::Assign(partitions) if partitions.count() > 0 => {
                 for partition in partitions.elements() {
                     let partition: TopicPartition = partition.into();
 
@@ -393,7 +393,7 @@ impl ConsumerContext for RebalanceContext {
                     }
                 }
             }
-            Rebalance::Revoke(partitions) => {
+            Rebalance::Revoke(partitions) if partitions.count() > 0 => {
                 for partition in partitions.elements() {
                     let partition = partition.into();
                     match topic_partition_tasks.remove(&partition)
@@ -415,6 +415,9 @@ impl ConsumerContext for RebalanceContext {
                     Err(error) => warn!("Failed to commit the current consumer state: {error}"),
                 }
             }
+            // called with empty partitions; important to not call .elements() as this panics apparently.
+            // unclear why we are called with no partitions
+            Rebalance::Assign(_) | Rebalance::Revoke(_) => {}
             Rebalance::Error(_) => {}
         }
     }
