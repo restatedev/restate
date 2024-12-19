@@ -34,7 +34,6 @@ use restate_types::config::CommonOptions;
 use crate::network_server::handler;
 use crate::network_server::handler::cluster_ctrl::ClusterCtrlSvcHandler;
 use crate::network_server::handler::node::NodeSvcHandler;
-use crate::network_server::metrics::install_global_prometheus_recorder;
 use crate::network_server::multiplex::MultiplexService;
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 
@@ -57,15 +56,17 @@ impl NetworkServer {
         }
     }
 
-    pub async fn run(self, options: CommonOptions) -> Result<(), anyhow::Error> {
+    pub async fn run(
+        self,
+        options: CommonOptions,
+        prometheus_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
+    ) -> Result<(), anyhow::Error> {
         let tc = task_center();
         // Configure Metric Exporter
         let mut state_builder = NodeCtrlHandlerStateBuilder::default();
         state_builder.task_center(tc.clone());
 
-        if !options.disable_prometheus {
-            let prometheus_handle = install_global_prometheus_recorder(&options);
-
+        if let Some(prometheus_handle) = prometheus_handle {
             tc.spawn_child(
                 TaskKind::SystemService,
                 "prometheus-metrics-upkeep",
