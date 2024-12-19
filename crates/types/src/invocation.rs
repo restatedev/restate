@@ -275,26 +275,26 @@ impl fmt::Display for InvocationTarget {
 
 /// Concurrency guarantee of the invocation request.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum ConcurrencyGuarantee {
-    /// Enqueue the invocation in the inbox when the target is busy
-    EnqueueWhenBusy {
+enum Concurrency {
+    /// Invocation executes sequential wrt the inbox address (target + key)
+    Sequential {
         /// fka ServiceId.name
         inbox_target: ByteString,
         /// fka ServiceId.key
         inbox_key: ByteString,
     },
     /// No queueing, just execute the request
-    MaxParallelism,
-    /// Use the default from the target semantics
+    Concurrent,
+    /// Use the default from the target semantics, see [`Concurrency::infer_target_default`]
     #[default]
     UseTargetDefault,
 }
 
-impl ConcurrencyGuarantee {
-    fn infer_target_default(invocation_target: &InvocationTarget) -> ConcurrencyGuarantee {
+impl Concurrency {
+    fn infer_target_default(invocation_target: &InvocationTarget) -> Concurrency {
         match invocation_target {
             InvocationTarget::VirtualObject { handler_ty: VirtualObjectHandlerType::Exclusive, name, key, .. } => {
-                ConcurrencyGuarantee::EnqueueWhenBusy {
+                Concurrency::Sequential {
                     inbox_target: name.clone(),
                     inbox_key: key.clone(),
                 }
@@ -302,36 +302,36 @@ impl ConcurrencyGuarantee {
             InvocationTarget::Service { .. } |
             InvocationTarget::VirtualObject { handler_ty: VirtualObjectHandlerType::Shared, .. } |
             /* For workflow, there is no enqueueing as we have the behavior on existing invocation id that guarantees correctness */
-            InvocationTarget::Workflow { .. }  => ConcurrencyGuarantee::MaxParallelism
+            InvocationTarget::Workflow { .. }  => Concurrency::Concurrent
         }
     }
 }
 
-/// Behavior when sending an invocation request and the request already exists.
+/// Behavior when sending an invocation request and the invocation already exists.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum BehaviorOnExistingInvocationId {
+enum IfExists {
     /// Attach to the existing invocation
     Attach,
     /// Reply with "conflict" error response
     ReplyConflict,
     /// Just drop the request
     Drop,
-    /// Use the default from the target/idempotency key semantics
+    /// Use the default from the target/idempotency key semantics, see [`IfExists::infer_target_default`]
     #[default]
     UseTargetDefault,
 }
 
-impl BehaviorOnExistingInvocationId {
+impl IfExists {
     fn infer_target_default(
         invocation_target_type: InvocationTargetType,
         has_idempotency_key: bool,
-    ) -> BehaviorOnExistingInvocationId {
+    ) -> IfExists {
         match (invocation_target_type, has_idempotency_key) {
             (InvocationTargetType::Workflow(WorkflowHandlerType::Workflow), _) => {
-                BehaviorOnExistingInvocationId::ReplyConflict
+                IfExists::ReplyConflict
             }
-            (_, true) => BehaviorOnExistingInvocationId::Attach,
-            _ => BehaviorOnExistingInvocationId::Drop,
+            (_, true) => IfExists::Attach,
+            _ => IfExists::Drop,
         }
     }
 }
@@ -339,9 +339,9 @@ impl BehaviorOnExistingInvocationId {
 /// Invocation request flow is as follows:
 ///
 /// 1. Invocation is proposed in the PP log.
-/// 2. PP will first check if another invocation with the same id exists. If it exists, it applies the [`BehaviorOnExistingInvocationId`], otherwise moves to point 3.
+/// 2. PP will first check if another invocation with the same id exists. If it exists, it applies the [`IfExists`], otherwise moves to point 3.
 /// 3. If the invocation id doesn't exist, wait for the `execution_time` if present, otherwise continue immediately.
-/// 4. Apply the given [`ConcurrencyGuarantee`].
+/// 4. Apply the given [`Concurrency`].
 /// 5. Finally execute it sending the request to the service endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationRequestHeader {
@@ -352,12 +352,12 @@ pub struct InvocationRequestHeader {
 
     /// Behavior to apply on an existing invocation id.
     #[serde(default)]
-    pub behavior_on_existing_idempotency_key: BehaviorOnExistingInvocationId,
+    pub if_exists: IfExists,
     /// Time when the request should be executed. If none, it's executed immediately.
     pub execution_time: Option<MillisSinceEpoch>,
     /// Concurrency behavior to apply.
     #[serde(default)]
-    pub concurrency_guarantee: ConcurrencyGuarantee,
+    pub concurrency: Concurrency,
 
     /// Key to use for idempotent request. If none, this request is not idempotent, or it's a workflow call. See [`InvocationRequestHeader::is_idempotent`].
     /// This value is propagated only for observability purposes, as the invocation id is already deterministic given the invocation id.
