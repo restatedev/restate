@@ -43,7 +43,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
         key_range: key_range.clone(),
         min_applied_lsn: snapshot.min_applied_lsn,
         db_comparator_name: snapshot.db_comparator_name.clone(),
-        files: snapshot.files.clone(),
+        files: snapshot.files.iter().map(|f| f.into()).collect(),
     };
     let metadata_json = serde_json::to_string_pretty(&snapshot_meta).unwrap();
 
@@ -58,7 +58,11 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
         base_dir: snapshots_dir.path().into(),
         min_applied_lsn: snapshot_meta.min_applied_lsn,
         db_comparator_name: snapshot_meta.db_comparator_name.clone(),
-        files: snapshot_meta.files.clone(),
+        files: snapshot_meta
+            .files
+            .iter()
+            .map(|f| f.live_file.clone())
+            .collect(),
         key_range,
     };
 

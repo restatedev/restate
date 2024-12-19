@@ -28,7 +28,7 @@ use tokio::io;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tokio_util::io::StreamReader;
+use tokio_util::io::{InspectReader, StreamReader};
 use tracing::{debug, info, instrument, warn};
 use url::Url;
 
@@ -163,13 +163,13 @@ impl SnapshotRepository {
     )]
     pub(crate) async fn put(
         &self,
-        snapshot: &PartitionSnapshotMetadata,
+        mut snapshot: PartitionSnapshotMetadata,
         local_snapshot_path: PathBuf,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<PartitionSnapshotMetadata> {
         debug!("Publishing partition snapshot to: {}", self.destination);
 
         let put_result = self
-            .put_snapshot_inner(snapshot, local_snapshot_path.as_path())
+            .put_snapshot_inner(&mut snapshot, local_snapshot_path.as_path())
             .await;
 
         // We only log the error here since (a) it's relatively unlikely for rmdir to fail, and (b)
@@ -180,7 +180,7 @@ impl SnapshotRepository {
             .inspect_err(|e| warn!("Failed to delete local snapshot files: {}", e));
 
         match put_result {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(snapshot),
             Err(put_error) => {
                 for filename in put_error.uploaded_files {
                     let path = object_store::path::Path::from(format!(
@@ -203,9 +203,10 @@ impl SnapshotRepository {
     }
 
     // It is the outer put method's responsibility to clean up partial progress.
+    // The provided `snapshot` instance will have its checksum updated on successful upload.
     async fn put_snapshot_inner(
         &self,
-        snapshot: &PartitionSnapshotMetadata,
+        snapshot: &mut PartitionSnapshotMetadata,
         local_snapshot_path: &Path,
     ) -> Result<(), PutSnapshotError> {
         // A unique snapshot path within the partition prefix. We pad the LSN to ensure correct
@@ -224,8 +225,8 @@ impl SnapshotRepository {
 
         let mut progress = SnapshotUploadProgress::with_snapshot_path(full_snapshot_path.clone());
         let mut buf = BytesMut::new();
-        for file in &snapshot.files {
-            let filename = file.name.trim_start_matches("/");
+        for file in &mut snapshot.files {
+            let filename = file.live_file.name.trim_start_matches("/");
             let key = object_store::path::Path::from(format!(
                 "{}/{}",
                 full_snapshot_path.as_str(),
@@ -242,11 +243,12 @@ impl SnapshotRepository {
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
 
             debug!(
-                etag = put_result.e_tag.unwrap_or_default(),
+                etag = put_result.result.e_tag.unwrap_or_default(),
                 ?key,
                 "Put snapshot data file completed",
             );
-            progress.push(file.name.clone());
+            progress.push(file.live_file.name.clone());
+            file.crc32 = put_result.crc32;
         }
 
         let metadata_key = object_store::path::Path::from(format!(
@@ -422,8 +424,9 @@ impl SnapshotRepository {
         let mut downloads = JoinSet::new();
         let mut task_handles = HashMap::with_capacity(snapshot_metadata.files.len());
         for file in &mut snapshot_metadata.files {
-            let filename = file.name.trim_start_matches("/");
-            let expected_size = file.size;
+            let filename = file.live_file.name.trim_start_matches("/");
+            let expected_size = file.live_file.size;
+            let expected_crc32 = file.crc32;
             let key = object_store::path::Path::from(format!(
                 "{prefix}{partition_id}/{path}/{filename}",
                 prefix = self.prefix,
@@ -448,10 +451,18 @@ impl SnapshotRepository {
                     tokio::fs::File::create_new(&file_path).await.map_err(|e| {
                         anyhow!("Failed to create snapshot file {:?}: {}", file_path, e)
                     })?;
-                let size = io::copy(&mut file_data, &mut snapshot_file)
+
+                let mut hasher = crc32fast::Hasher::new();
+                let mut reader = InspectReader::new(&mut file_data, |buf| {
+                    hasher.update(buf);
+                });
+                let size = io::copy(&mut reader, &mut snapshot_file)
                     .await
                     .map_err(|e| anyhow!("Failed to download snapshot file {:?}: {}", key, e))?;
+                let crc32 = hasher.finalize();
+
                 if size != expected_size as u64 {
+                    // todo(pavel): this is a retryable error, we should try again if this happens
                     return Err(anyhow!(
                         "Downloaded snapshot file {:?} has unexpected size: expected {}, got {}",
                         key,
@@ -459,12 +470,22 @@ impl SnapshotRepository {
                         size
                     ));
                 }
-                debug!(%key, ?size, "Downloaded snapshot data file to {:?}", file_path);
+
+                if crc32 != expected_crc32 {
+                    return Err(anyhow!(
+                        "Downloaded SST file {:?} checksum does not match metadata. Expected: {:?}, computed: {:?}",
+                        key,
+                        expected_crc32,
+                        crc32,
+                    ));
+                }
+
+                debug!(%key, ?size, ?crc32, "Downloaded snapshot data file to {:?}", file_path);
                 anyhow::Ok(())
             })?;
             task_handles.insert(handle.id(), filename.to_string());
             // patch the directory path to reflect the actual location on the restoring node
-            file.directory = directory.clone();
+            file.live_file.directory = directory.clone();
         }
 
         loop {
@@ -499,7 +520,11 @@ impl SnapshotRepository {
             base_dir: snapshot_dir.into_path(),
             min_applied_lsn: snapshot_metadata.min_applied_lsn,
             db_comparator_name: snapshot_metadata.db_comparator_name,
-            files: snapshot_metadata.files,
+            files: snapshot_metadata
+                .files
+                .iter()
+                .map(|f| f.live_file.clone())
+                .collect(),
             key_range: snapshot_metadata.key_range.clone(),
         }))
     }
@@ -518,15 +543,15 @@ impl SnapshotRepository {
                 let latest: LatestSnapshot = serde_json::from_slice(
                     &result.bytes().await?,
                 )
-                .inspect_err(|e| {
-                    debug!(
-                        repository_latest_lsn = "unknown",
-                        new_snapshot_lsn = ?snapshot.min_applied_lsn,
-                        "Failed to parse stored latest snapshot pointer, refusing to overwrite: {}",
-                        e
-                    )
-                })
-                .map_err(|e| anyhow!("Failed to parse latest snapshot metadata: {}", e))?;
+                    .inspect_err(|e| {
+                        debug!(
+                            repository_latest_lsn = "unknown",
+                            new_snapshot_lsn = ?snapshot.min_applied_lsn,
+                            "Failed to parse stored latest snapshot pointer, refusing to overwrite: {}",
+                            e
+                        )
+                    })
+                    .map_err(|e| anyhow!("Failed to parse latest snapshot metadata: {}", e))?;
                 if snapshot.cluster_name != latest.cluster_name {
                     // This indicates a serious misconfiguration and we should complain loudly
                     bail!("Snapshot does not match the cluster name of latest snapshot at destination!");
@@ -626,6 +651,11 @@ impl PutSnapshotError {
     }
 }
 
+struct PutResult {
+    crc32: u32,
+    result: object_store::PutResult,
+}
+
 // The object_store `put_multipart` method does not currently support PutMode, so we don't pass this
 // at all; however since we upload snapshots to a unique path on every attempt, we don't expect any
 // conflicts to arise.
@@ -634,19 +664,30 @@ async fn put_snapshot_object(
     key: &object_store::path::Path,
     object_store: &Arc<dyn ObjectStore>,
     buf: &mut BytesMut,
-) -> anyhow::Result<object_store::PutResult> {
+) -> anyhow::Result<PutResult> {
     debug!(path = ?file_path, "Putting snapshot object from local file");
     let mut snapshot = tokio::fs::File::open(file_path).await?;
 
     if snapshot.metadata().await?.len() < MULTIPART_UPLOAD_CHUNK_SIZE_BYTES as u64 {
-        let payload = PutPayload::from(tokio::fs::read(file_path).await?);
-        return object_store.put(key, payload).await.map_err(|e| e.into());
+        let mut hasher = crc32fast::Hasher::new();
+        let buf = tokio::fs::read(file_path).await?;
+        hasher.update(&buf);
+        let payload = PutPayload::from(buf);
+        return object_store
+            .put(key, payload)
+            .await
+            .map_err(|e| e.into())
+            .map(|result| PutResult {
+                crc32: hasher.finalize(),
+                result,
+            });
     }
 
     debug!("Performing multipart upload for {key}");
     let mut upload = object_store.put_multipart(key).await?;
 
     let result: anyhow::Result<_> = async {
+        let mut hasher = crc32fast::Hasher::new();
         loop {
             let mut len = 0;
             buf.reserve(MULTIPART_UPLOAD_CHUNK_SIZE_BYTES);
@@ -660,6 +701,7 @@ async fn put_snapshot_object(
             }
 
             if !buf.is_empty() {
+                hasher.update(buf);
                 upload
                     .put_part(PutPayload::from_bytes(buf.split().freeze()))
                     .await?;
@@ -669,18 +711,46 @@ async fn put_snapshot_object(
                 break;
             }
         }
-        upload.complete().await.map_err(|e| anyhow!(e))
+
+        upload
+            .complete()
+            .await
+            .map_err(|e| anyhow!(e))
+            .map(|r| (hasher.finalize(), r))
     }
     .await;
 
     match result {
-        Ok(r) => Ok(r),
+        Ok((crc32, result)) => {
+            verify_snapshot_metadata(file_path, key, object_store).await?;
+            Ok(PutResult { crc32, result })
+        }
         Err(e) => {
             debug!("Aborting failed multipart upload");
             upload.abort().await?;
             Err(e)
         }
     }
+}
+
+async fn verify_snapshot_metadata(
+    file_path: &Path,
+    key: &object_store::path::Path,
+    object_store: &Arc<dyn ObjectStore>,
+) -> anyhow::Result<()> {
+    let metadata = tokio::fs::metadata(file_path).await?;
+    let file_size = metadata.len();
+
+    let object_metadata = object_store.head(key).await?;
+    if file_size != object_metadata.size as u64 {
+        return Err(anyhow!(
+            "Upload size mismatch: local file size is {}, stored object size is {}",
+            file_size,
+            object_metadata.size
+        ));
+    }
+
+    Ok(())
 }
 
 async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
@@ -734,7 +804,9 @@ mod tests {
     use url::Url;
 
     use super::{LatestSnapshot, SnapshotRepository};
-    use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
+    use restate_partition_store::snapshots::{
+        ExtendedFileMetadata, PartitionSnapshotMetadata, SnapshotFormatVersion,
+    };
     use restate_types::config::SnapshotsOptions;
     use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
     use restate_types::logs::{Lsn, SequenceNumber};
@@ -784,7 +856,7 @@ mod tests {
         let mut latest = tokio::fs::File::create(&latest_path).await?;
         latest.write_all(b"not valid json").await?;
 
-        assert!(repository.put(&snapshot, source_dir).await.is_err());
+        assert!(repository.put(snapshot, source_dir).await.is_err());
 
         Ok(())
     }
@@ -859,7 +931,7 @@ mod tests {
         .await?
         .unwrap();
 
-        repository.put(&snapshot1, source_dir.clone()).await?;
+        let snapshot1 = repository.put(snapshot1, source_dir.clone()).await?;
 
         let snapshot_prefix = SnapshotRepository::get_snapshot_prefix(&snapshot1);
         let data = object_store
@@ -905,7 +977,7 @@ mod tests {
         );
         snapshot2.min_applied_lsn = snapshot1.min_applied_lsn.next();
 
-        repository.put(&snapshot2, source_dir).await?;
+        let snapshot2 = repository.put(snapshot2, source_dir).await?;
 
         let latest = object_store
             .get(&Path::from(format!(
@@ -950,18 +1022,21 @@ mod tests {
             min_applied_lsn: Lsn::new(1),
             db_comparator_name: "leveldb.BytewiseComparator".to_string(),
             // this is totally bogus, but it doesn't matter since we won't be importing it into RocksDB
-            files: vec![rocksdb::LiveFile {
-                column_family_name: "data-0".to_owned(),
-                name: file_name,
-                directory,
-                size,
-                level: 0,
-                start_key: Some(vec![0]),
-                end_key: Some(vec![0xff, 0xff]),
-                num_entries: 0,
-                num_deletions: 0,
-                smallest_seqno: 0,
-                largest_seqno: 0,
+            files: vec![ExtendedFileMetadata {
+                live_file: rocksdb::LiveFile {
+                    column_family_name: "data-0".to_owned(),
+                    name: file_name,
+                    directory,
+                    size,
+                    level: 0,
+                    start_key: Some(vec![0]),
+                    end_key: Some(vec![0xff, 0xff]),
+                    num_entries: 0,
+                    num_deletions: 0,
+                    smallest_seqno: 0,
+                    largest_seqno: 0,
+                },
+                crc32: 42,
             }],
         }
     }
