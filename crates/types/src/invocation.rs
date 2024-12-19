@@ -274,8 +274,8 @@ impl fmt::Display for InvocationTarget {
 }
 
 /// Concurrency guarantee of the invocation request.
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum Concurrency {
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Concurrency {
     /// Invocation executes sequential wrt the inbox address (target + key)
     Sequential {
         /// fka ServiceId.name
@@ -285,13 +285,18 @@ enum Concurrency {
     },
     /// No queueing, just execute the request
     Concurrent,
-    /// Use the default from the target semantics, see [`Concurrency::infer_target_default`]
-    #[default]
-    UseTargetDefault,
 }
 
 impl Concurrency {
-    fn infer_target_default(invocation_target: &InvocationTarget) -> Concurrency {
+    pub fn inbox_key(&self) -> Option<&ByteString> {
+        if let Concurrency::Sequential { inbox_key, .. } = self {
+            Some(inbox_key)
+        } else {
+            None
+        }
+    }
+
+    pub fn infer_target_default(invocation_target: &InvocationTarget) -> Concurrency {
         match invocation_target {
             InvocationTarget::VirtualObject { handler_ty: VirtualObjectHandlerType::Exclusive, name, key, .. } => {
                 Concurrency::Sequential {
@@ -308,21 +313,18 @@ impl Concurrency {
 }
 
 /// Behavior when sending an invocation request and the invocation already exists.
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum IfExists {
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum IfExists {
     /// Attach to the existing invocation
     Attach,
     /// Reply with "conflict" error response
     ReplyConflict,
     /// Just drop the request
     Drop,
-    /// Use the default from the target/idempotency key semantics, see [`IfExists::infer_target_default`]
-    #[default]
-    UseTargetDefault,
 }
 
 impl IfExists {
-    fn infer_target_default(
+    pub fn infer_target_default(
         invocation_target_type: InvocationTargetType,
         has_idempotency_key: bool,
     ) -> IfExists {
@@ -350,14 +352,12 @@ pub struct InvocationRequestHeader {
     pub headers: Vec<Header>,
     pub span_context: ServiceInvocationSpanContext,
 
-    /// Behavior to apply on an existing invocation id.
-    #[serde(default)]
-    pub if_exists: IfExists,
+    /// Behavior to apply on an existing invocation id. If not present, [`IfPresent::infer_target_default`] should be used.
+    pub if_exists: Option<IfExists>,
     /// Time when the request should be executed. If none, it's executed immediately.
     pub execution_time: Option<MillisSinceEpoch>,
-    /// Concurrency behavior to apply.
-    #[serde(default)]
-    pub concurrency: Concurrency,
+    /// Concurrency behavior to apply. If not present, [`Concurrency::infer_target_default`] should be used.
+    pub concurrency: Option<Concurrency>,
 
     /// Key to use for idempotent request. If none, this request is not idempotent, or it's a workflow call. See [`InvocationRequestHeader::is_idempotent`].
     /// This value is propagated only for observability purposes, as the invocation id is already deterministic given the invocation id.
@@ -376,6 +376,8 @@ impl InvocationRequestHeader {
             idempotency_key: None,
             execution_time: None,
             completion_retention_duration: None,
+            if_exists: None,
+            concurrency: None,
         }
     }
 
@@ -428,10 +430,13 @@ pub struct ServiceInvocation {
     pub source: Source,
     pub span_context: ServiceInvocationSpanContext,
     pub headers: Vec<Header>,
-    /// Time when the request should be executed
-    pub execution_time: Option<MillisSinceEpoch>,
-    pub completion_retention_duration: Option<Duration>,
     pub idempotency_key: Option<ByteString>,
+
+    pub if_exists: Option<IfExists>,
+    pub execution_time: Option<MillisSinceEpoch>,
+    pub concurrency: Option<Concurrency>,
+
+    pub completion_retention_duration: Option<Duration>,
 
     // Where to send the response, if any
     pub response_sink: Option<ServiceInvocationResponseSink>,
@@ -458,10 +463,12 @@ impl ServiceInvocation {
             span_context: request.header.span_context,
             headers: request.header.headers,
             execution_time: request.header.execution_time,
+            concurrency: request.header.concurrency,
             completion_retention_duration: request.header.completion_retention_duration,
             idempotency_key: request.header.idempotency_key,
             response_sink: None,
             submit_notification_sink: None,
+            if_exists: request.header.if_exists,
         }
     }
 
@@ -479,9 +486,11 @@ impl ServiceInvocation {
             span_context: ServiceInvocationSpanContext::empty(),
             headers: vec![],
             execution_time: None,
+            concurrency: None,
             completion_retention_duration: None,
             idempotency_key: None,
             submit_notification_sink: None,
+            if_exists: None,
         }
     }
 
@@ -960,6 +969,7 @@ impl InvocationQuery {
                     handler_ty: WorkflowHandlerType::Workflow,
                 },
                 None,
+                None,
             ),
             InvocationQuery::IdempotencyId(IdempotencyId {
                 service_name,
@@ -980,7 +990,7 @@ impl InvocationQuery {
                         VirtualObjectHandlerType::Exclusive,
                     ),
                 };
-                InvocationId::generate(&target, Some(idempotency_key.deref()))
+                InvocationId::generate(&target, None, Some(idempotency_key.deref()))
             }
         }
     }
@@ -1071,9 +1081,11 @@ mod mocks {
                 span_context: Default::default(),
                 headers: vec![],
                 execution_time: None,
+                concurrency: None,
                 completion_retention_duration: None,
                 idempotency_key: None,
                 submit_notification_sink: None,
+                if_exists: None,
             }
         }
     }
