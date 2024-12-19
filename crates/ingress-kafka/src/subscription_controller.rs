@@ -254,30 +254,39 @@ mod task_orchestrator {
             &mut self,
             result: Result<(task::Id, Result<(), consumer_task::Error>), JoinError>,
         ) {
-            match result {
-                Ok((id, Ok(_))) => {
-                    warn!("Consumer unexpectedly closed");
-                    self.start_retry_timer(id);
-                }
-                Ok((id, Err(e))) => {
-                    warn!("Consumer unexpectedly closed with reason: {e}");
-                    self.start_retry_timer(id);
-                }
-                Err(e) => {
-                    warn!("Consumer unexpectedly panicked with reason: {e}");
-                    self.start_retry_timer(e.id());
-                }
+            let task_id = match result {
+                Ok((id, _)) => id,
+                Err(ref err) => err.id(),
             };
-        }
 
-        fn start_retry_timer(&mut self, task_id: task::Id) {
             let subscription_id = if let Some(subscription_id) =
                 self.running_tasks_to_subscriptions.remove(&task_id)
             {
                 subscription_id
             } else {
-                // No need to do anything, as it's a correct closure
+                match result {
+                    Ok((_, Ok(_))) => {} // the normal case; a removed subscription should exit cleanly
+                    Ok((_, Err(e))) => {
+                        warn!("Consumer task for removed subscription unexpectedly returned error: {e}");
+                    }
+                    Err(e) => {
+                        warn!("Consumer task for removed subscription unexpectedly panicked: {e}");
+                    }
+                }
+                // no need to retry a subscription we don't care about any more
                 return;
+            };
+
+            match result {
+                Ok((_, Ok(_))) => {
+                    warn!("Consumer task for subscription {subscription_id} unexpectedly closed");
+                }
+                Ok((_, Err(e))) => {
+                    warn!("Consumer task for subscription {subscription_id} unexpectedly returned error: {e}");
+                }
+                Err(e) => {
+                    warn!("Consumer task for subscription {subscription_id} unexpectedly panicked: {e}");
+                }
             };
 
             let task_state = self
@@ -289,7 +298,7 @@ mod task_orchestrator {
                 self.timer_queue
                     .sleep_until(SystemTime::now() + next_timer, subscription_id);
             } else {
-                warn!("Not going to retry because retry limit exhausted.");
+                warn!("Not going to retry consumer task for subscription {subscription_id} because retry limit exhausted.");
                 self.subscription_id_to_task_state.remove(&subscription_id);
             }
         }
