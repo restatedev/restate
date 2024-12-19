@@ -27,6 +27,40 @@ use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
 use crate::{Error, InputRecord, LogReadStream, Result};
 
+/// The strategy to use when bifrost fails to append or when it observes
+/// a sealed loglet while it's tailing a log.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ErrorRecoveryStrategy {
+    /// Eagerly extend the chain by creating a new loglet and appending to it.
+    ExtendChainPreferred,
+    /// Extend the chain only running out of patience, others might be better suited to reconfigure
+    /// the chain, but when desperate, we are allowed to seal and extend.
+    ExtendChainAllowed,
+    /// Do not extend the chain, wait indefinitely instead until the error disappears.
+    Wait,
+}
+
+impl ErrorRecoveryStrategy {
+    /// Conditional on a temporary feature gate `auto-extend` until transition is complete
+    pub fn extend_preferred() -> Self {
+        if cfg!(feature = "auto-extend") {
+            Self::ExtendChainPreferred
+        } else {
+            Self::Wait
+        }
+    }
+}
+
+impl Default for ErrorRecoveryStrategy {
+    fn default() -> Self {
+        if cfg!(feature = "auto-extend") {
+            Self::ExtendChainAllowed
+        } else {
+            Self::Wait
+        }
+    }
+}
+
 /// Bifrost is Restate's durable interconnect system
 ///
 /// Bifrost is a mutable-friendly handle to access the system. You don't need
@@ -97,10 +131,13 @@ impl Bifrost {
     pub async fn append<T: StorageEncode>(
         &self,
         log_id: LogId,
+        error_recovery_strategy: ErrorRecoveryStrategy,
         body: impl Into<InputRecord<T>>,
     ) -> Result<Lsn> {
         self.inner.fail_if_shutting_down()?;
-        self.inner.append(log_id, body).await
+        self.inner
+            .append(log_id, error_recovery_strategy, body)
+            .await
     }
 
     /// Appends a batch of records to a log. The log id must exist, otherwise the
@@ -116,10 +153,13 @@ impl Bifrost {
     pub async fn append_batch<T: StorageEncode>(
         &self,
         log_id: LogId,
+        error_recovery_strategy: ErrorRecoveryStrategy,
         batch: Vec<impl Into<InputRecord<T>>>,
     ) -> Result<Lsn> {
         self.inner.fail_if_shutting_down()?;
-        self.inner.append_batch(log_id, batch).await
+        self.inner
+            .append_batch(log_id, error_recovery_strategy, batch)
+            .await
     }
 
     /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
@@ -171,15 +211,24 @@ impl Bifrost {
     /// The best way to write to Bifrost is to hold on to an [`Appender`] and reuse it across
     /// calls, this allows internal caching of recently accessed loglets and recycling write
     /// buffers.
-    pub fn create_appender(&self, log_id: LogId) -> Result<Appender> {
+    pub fn create_appender(
+        &self,
+        log_id: LogId,
+        error_recovery_strategy: ErrorRecoveryStrategy,
+    ) -> Result<Appender> {
         self.inner.fail_if_shutting_down()?;
         self.inner.check_log_id(log_id)?;
-        Ok(Appender::new(log_id, self.inner.clone()))
+        Ok(Appender::new(
+            log_id,
+            error_recovery_strategy,
+            self.inner.clone(),
+        ))
     }
 
     pub fn create_background_appender<T>(
         &self,
         log_id: LogId,
+        error_recovery_strategy: ErrorRecoveryStrategy,
         queue_capacity: usize,
         max_batch_size: usize,
     ) -> Result<BackgroundAppender<T>>
@@ -187,7 +236,7 @@ impl Bifrost {
         T: StorageEncode,
     {
         Ok(BackgroundAppender::new(
-            self.create_appender(log_id)?,
+            self.create_appender(log_id, error_recovery_strategy)?,
             queue_capacity,
             max_batch_size,
         ))
@@ -279,17 +328,21 @@ impl BifrostInner {
     pub async fn append<T: StorageEncode>(
         self: &Arc<Self>,
         log_id: LogId,
+        error_recovery_strategy: ErrorRecoveryStrategy,
         record: impl Into<InputRecord<T>>,
     ) -> Result<Lsn> {
-        Appender::new(log_id, Arc::clone(self)).append(record).await
+        Appender::new(log_id, error_recovery_strategy, Arc::clone(self))
+            .append(record)
+            .await
     }
 
     pub async fn append_batch<T: StorageEncode>(
         self: &Arc<Self>,
         log_id: LogId,
+        error_recovery_strategy: ErrorRecoveryStrategy,
         batch: Vec<impl Into<InputRecord<T>>>,
     ) -> Result<Lsn> {
-        Appender::new(log_id, Arc::clone(self))
+        Appender::new(log_id, error_recovery_strategy, Arc::clone(self))
             .append_batch(batch)
             .await
     }
@@ -523,8 +576,8 @@ mod tests {
 
         let clean_bifrost_clone = bifrost.clone();
 
-        let mut appender_0 = bifrost.create_appender(LogId::new(0))?;
-        let mut appender_3 = bifrost.create_appender(LogId::new(3))?;
+        let mut appender_0 = bifrost.create_appender(LogId::new(0), ErrorRecoveryStrategy::Wait)?;
+        let mut appender_3 = bifrost.create_appender(LogId::new(3), ErrorRecoveryStrategy::Wait)?;
         let mut max_lsn = Lsn::INVALID;
         for i in 1..=5 {
             // Append a record to memory
@@ -536,13 +589,14 @@ mod tests {
 
         // Append to a log that doesn't exist.
         let invalid_log = LogId::from(num_partitions + 1);
-        let resp = bifrost.create_appender(invalid_log);
+        let resp = bifrost.create_appender(invalid_log, ErrorRecoveryStrategy::Wait);
 
         assert_that!(resp, pat!(Err(pat!(Error::UnknownLogId(eq(invalid_log))))));
 
         // use a cloned bifrost.
         let cloned_bifrost = bifrost.clone();
-        let mut second_appender_0 = cloned_bifrost.create_appender(LogId::new(0))?;
+        let mut second_appender_0 =
+            cloned_bifrost.create_appender(LogId::new(0), ErrorRecoveryStrategy::Wait)?;
         for _ in 1..=5 {
             // Append a record to memory
             let lsn = second_appender_0.append("").await?;
@@ -553,7 +607,7 @@ mod tests {
 
         // Ensure original clone writes to the same underlying loglet.
         let lsn = clean_bifrost_clone
-            .create_appender(LogId::new(0))?
+            .create_appender(LogId::new(0), ErrorRecoveryStrategy::Wait)?
             .append("")
             .await?;
         assert_eq!(max_lsn + Lsn::from(1), lsn);
@@ -591,7 +645,10 @@ mod tests {
         let bifrost = Bifrost::init_with_factory(factory).await;
 
         let start = tokio::time::Instant::now();
-        let lsn = bifrost.create_appender(LogId::new(0))?.append("").await?;
+        let lsn = bifrost
+            .create_appender(LogId::new(0), ErrorRecoveryStrategy::Wait)?
+            .append("")
+            .await?;
         assert_eq!(Lsn::from(1), lsn);
         // The append was properly delayed
         assert_eq!(delay, start.elapsed());
@@ -618,7 +675,7 @@ mod tests {
 
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
         // append 10 records
         for _ in 1..=10 {
             appender.append("").await?;
@@ -687,7 +744,7 @@ mod tests {
             &node_env.metadata_store_client,
         );
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
         // Lsns [1..5]
         for i in 1..=5 {
             // Append a record to memory
@@ -771,7 +828,7 @@ mod tests {
         );
 
         // appends should go to the new segment
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
         // Lsns [5..7]
         for i in 5..=7 {
             // Append a record to memory
@@ -882,7 +939,7 @@ mod tests {
             let append_counter = append_counter.clone();
             let stop_signal = stop_signal.clone();
             let bifrost = bifrost.clone();
-            let mut appender = bifrost.create_appender(LOG_ID)?;
+            let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
             async move {
                 let mut i = 0;
                 while !stop_signal.load(Ordering::Relaxed) {
