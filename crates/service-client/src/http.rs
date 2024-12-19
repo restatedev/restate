@@ -28,9 +28,9 @@ use restate_types::config::HttpOptions;
 use rustls::ClientConfig;
 use std::error::Error;
 use std::fmt::Debug;
-use std::future;
 use std::future::Future;
 use std::sync::LazyLock;
+use std::{fmt, future};
 
 type ProxiedHttpsConnector = ProxyConnector<HttpsConnector<HttpConnector>>;
 type ProxiedHttpConnector = ProxyConnector<HttpConnector>;
@@ -182,34 +182,22 @@ impl HttpClient {
         Either::Left(async move {
             match fut.await {
                 Ok(res) => Ok(res),
-                Err(err) if is_possible_h11_only_error(&err) => {
-                    Err(HttpError::PossibleHTTP11Only(err))
-                }
-                Err(err) => Err(HttpError::Hyper(err)),
+                Err(err) => Err(err.into()),
             }
         })
     }
 }
 
-fn is_possible_h11_only_error(err: &hyper_util::client::legacy::Error) -> bool {
-    // this is the error we see from the h2 lib when the server sends back an http1.1 response
-    // to an http2 request. http2 is designed to start requests with what looks like an invalid
-    // HTTP1.1 method, so typically 1.1 servers respond with a 40x, and the h2 client sees
-    // this as an invalid frame.
-    err.source()
-        .and_then(|err| err.downcast_ref::<h2::Error>())
-        .and_then(|err| err.reason())
-        == Some(h2::Reason::FRAME_SIZE_ERROR)
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
     #[error(transparent)]
-    Hyper(#[from] hyper_util::client::legacy::Error),
-    #[error(transparent)]
     Http(#[from] http::Error),
-    #[error("server possibly only supports HTTP1.1, consider discovery with --use-http1.1: {0}")]
+    #[error("server possibly only supports HTTP1.1, consider discovery with --use-http1.1.\nReason: {}", FormatHyperError(.0))]
     PossibleHTTP11Only(#[source] hyper_util::client::legacy::Error),
+    #[error("unable to reach the remote endpoint.\nReason: {}", FormatHyperError(.0))]
+    Connect(#[source] hyper_util::client::legacy::Error),
+    #[error("{}", FormatHyperError(.0))]
+    Hyper(#[source] hyper_util::client::legacy::Error),
 }
 
 impl HttpError {
@@ -220,6 +208,42 @@ impl HttpError {
             HttpError::Hyper(err) => err.is_retryable(),
             HttpError::Http(err) => err.is_retryable(),
             HttpError::PossibleHTTP11Only(_) => false,
+            HttpError::Connect(_) => true,
+        }
+    }
+
+    fn is_possible_h11_only_error(err: &hyper_util::client::legacy::Error) -> bool {
+        // this is the error we see from the h2 lib when the server sends back an http1.1 response
+        // to an http2 request. http2 is designed to start requests with what looks like an invalid
+        // HTTP1.1 method, so typically 1.1 servers respond with a 40x, and the h2 client sees
+        // this as an invalid frame.
+        err.source()
+            .and_then(|err| err.downcast_ref::<h2::Error>())
+            .and_then(|err| err.reason())
+            == Some(h2::Reason::FRAME_SIZE_ERROR)
+    }
+}
+
+impl From<hyper_util::client::legacy::Error> for HttpError {
+    fn from(err: hyper_util::client::legacy::Error) -> Self {
+        if Self::is_possible_h11_only_error(&err) {
+            Self::PossibleHTTP11Only(err)
+        } else if err.is_connect() {
+            Self::Connect(err)
+        } else {
+            Self::Hyper(err)
+        }
+    }
+}
+
+struct FormatHyperError<'a>(&'a hyper_util::client::legacy::Error);
+
+impl<'a> fmt::Display for FormatHyperError<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(source) = self.0.source() {
+            write!(f, "{}, {}", self.0, source)
+        } else {
+            write!(f, "{}", self.0)
         }
     }
 }
