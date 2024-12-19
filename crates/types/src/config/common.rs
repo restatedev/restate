@@ -235,6 +235,13 @@ pub struct CommonOptions {
     ///
     /// The retry policy for node network error
     pub network_error_retry_policy: RetryPolicy,
+
+    /// # Cluster status heartbeats
+    ///
+    /// Controls the interval at which cluster controller polls nodes of the cluster.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub heartbeat_interval: humantime::Duration,
 }
 
 impl CommonOptions {
@@ -374,6 +381,7 @@ impl Default for CommonOptions {
                 Some(15),
                 Some(Duration::from_secs(5)),
             ),
+            heartbeat_interval: Duration::from_millis(1500).into(),
         }
     }
 }

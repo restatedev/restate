@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use futures::future::OptionFuture;
 use itertools::Itertools;
@@ -21,14 +22,13 @@ use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::TransportConnect;
 use restate_core::{my_node_id, Metadata, MetadataWriter};
-use restate_types::cluster::cluster_state::{AliveNode, NodeState};
+use restate_types::cluster::cluster_state::{AliveNode, ClusterState, NodeState};
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::{GenerationalNodeId, Version};
 
-use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
 use crate::cluster_controller::logs_controller::{
     LogsBasedPartitionProcessorPlacementHints, LogsController,
 };
@@ -143,7 +143,7 @@ pub struct Leader<T> {
     log_trim_interval: Option<Interval>,
     logs_controller: LogsController,
     scheduler: Scheduler<T>,
-    cluster_state_watcher: ClusterStateWatcher,
+    cluster_state_watch: watch::Receiver<Arc<ClusterState>>,
     log_trim_threshold: Lsn,
 }
 
@@ -183,7 +183,7 @@ where
             metadata_writer: service.metadata_writer.clone(),
             logs_watcher: metadata.watch(MetadataKind::Logs),
             partition_table_watcher: metadata.watch(MetadataKind::PartitionTable),
-            cluster_state_watcher: service.cluster_state_refresher.cluster_state_watcher(),
+            cluster_state_watch: service.cluster_state_watch.clone(),
             find_logs_tail_interval,
             log_trim_interval,
             log_trim_threshold,
@@ -302,7 +302,7 @@ where
             &self.metadata_store_client,
         );
 
-        let cluster_state = self.cluster_state_watcher.current();
+        let cluster_state = Arc::clone(&self.cluster_state_watch.borrow());
 
         let mut persisted_lsns_per_partition: BTreeMap<
             PartitionId,

@@ -29,9 +29,9 @@ use restate_types::partition_table::{
     self, PartitionTable, PartitionTableBuilder, ReplicationStrategy,
 };
 use restate_types::replicated_loglet::{ReplicatedLogletId, ReplicatedLogletParams};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
-use tokio::time::{Instant, Interval, MissedTickBehavior};
+use tokio::time::MissedTickBehavior;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, info};
 
@@ -47,7 +47,7 @@ use restate_core::{
     TaskKind,
 };
 use restate_types::cluster::cluster_state::ClusterState;
-use restate_types::config::{AdminOptions, Configuration};
+use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::live::Live;
@@ -57,7 +57,6 @@ use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, Version, Versioned};
 
-use super::cluster_state_refresher::ClusterStateRefresher;
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
 use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use crate::cluster_controller::logs_controller::{self, NodeSetSelectorHints};
@@ -75,7 +74,7 @@ pub enum Error {
 pub struct Service<T> {
     networking: Networking<T>,
     bifrost: Bifrost,
-    cluster_state_refresher: ClusterStateRefresher<T>,
+    cluster_state_watch: watch::Receiver<Arc<ClusterState>>,
     configuration: Live<Configuration>,
     metadata_writer: MetadataWriter,
     metadata_store_client: MetadataStoreClient,
@@ -84,7 +83,6 @@ pub struct Service<T> {
     command_tx: mpsc::Sender<ClusterControllerCommand>,
     command_rx: mpsc::Receiver<ClusterControllerCommand>,
     health_status: HealthStatus<AdminStatus>,
-    heartbeat_interval: Interval,
     observed_cluster_state: ObservedClusterState,
 }
 
@@ -94,7 +92,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        mut configuration: Live<Configuration>,
+        configuration: Live<Configuration>,
         health_status: HealthStatus<AdminStatus>,
         bifrost: Bifrost,
         networking: Networking<T>,
@@ -102,17 +100,12 @@ where
         server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
         metadata_store_client: MetadataStoreClient,
+        cluster_state_watch: watch::Receiver<Arc<ClusterState>>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(2);
 
-        let cluster_state_refresher =
-            ClusterStateRefresher::new(networking.clone(), router_builder);
-
         let processor_manager_client =
             PartitionProcessorManagerClient::new(networking.clone(), router_builder);
-
-        let options = configuration.live_load();
-        let heartbeat_interval = Self::create_heartbeat_interval(&options.admin);
 
         // Registering ClusterCtrlSvc grpc service to network server
         server_builder.register_grpc_service(
@@ -137,25 +130,14 @@ where
             health_status,
             networking,
             bifrost,
-            cluster_state_refresher,
+            cluster_state_watch,
             metadata_writer,
             metadata_store_client,
             processor_manager_client,
             command_tx,
             command_rx,
-            heartbeat_interval,
             observed_cluster_state: ObservedClusterState::default(),
         }
-    }
-
-    fn create_heartbeat_interval(options: &AdminOptions) -> Interval {
-        let mut heartbeat_interval = time::interval_at(
-            Instant::now() + options.heartbeat_interval.into(),
-            options.heartbeat_interval.into(),
-        );
-        heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        heartbeat_interval
     }
 }
 
@@ -298,7 +280,6 @@ impl<T: TransportConnect> Service<T> {
         self.init_partition_table().await?;
 
         let mut config_watcher = Configuration::watcher();
-        let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
 
         TaskCenter::spawn_child(
             TaskKind::SystemService,
@@ -320,11 +301,8 @@ impl<T: TransportConnect> Service<T> {
 
         loop {
             tokio::select! {
-                _ = self.heartbeat_interval.tick() => {
-                    // Ignore error if system is shutting down
-                    let _ = self.cluster_state_refresher.schedule_refresh();
-                },
-                Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
+                Ok(_) = self.cluster_state_watch.changed() => {
+                    let cluster_state = Arc::clone(&self.cluster_state_watch.borrow());
                     self.observed_cluster_state.update(&cluster_state);
                     state.update(&self).await?;
 
@@ -337,7 +315,6 @@ impl<T: TransportConnect> Service<T> {
                 _ = config_watcher.changed() => {
                     debug!("Updating the cluster controller settings.");
                     let configuration = self.configuration.live_load();
-                    self.heartbeat_interval = Self::create_heartbeat_interval(&configuration.admin);
                     state.reconfigure(configuration);
                 }
                 result = state.run() => {
@@ -387,7 +364,7 @@ impl<T: TransportConnect> Service<T> {
         partition_id: PartitionId,
         response_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
     ) {
-        let cluster_state = self.cluster_state_refresher.get_cluster_state();
+        let cluster_state = Arc::clone(&self.cluster_state_watch.borrow());
 
         // For now, we just pick the leader node since we know that every partition is likely to
         // have one. We'll want to update the algorithm to be smart about scheduling snapshot tasks
@@ -576,7 +553,7 @@ impl<T: TransportConnect> Service<T> {
     ) {
         match command {
             ClusterControllerCommand::GetClusterState(tx) => {
-                let _ = tx.send(self.cluster_state_refresher.get_cluster_state());
+                let _ = tx.send(Arc::clone(&self.cluster_state_watch.borrow()));
             }
             ClusterControllerCommand::TrimLog {
                 log_id,
@@ -825,8 +802,6 @@ impl SealAndExtendTask {
 mod tests {
     use super::Service;
 
-    use std::collections::BTreeSet;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -836,22 +811,20 @@ mod tests {
 
     use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::{Bifrost, BifrostService};
-    use restate_core::network::{
-        FailingConnector, Incoming, MessageHandler, MockPeerConnection, NetworkServerBuilder,
-    };
+    use restate_core::network::{FailingConnector, NetworkServerBuilder};
     use restate_core::test_env::NoOpMessageHandler;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
-    use restate_types::cluster::cluster_state::PartitionProcessorStatus;
+    use restate_types::cluster::cluster_state::ClusterState;
     use restate_types::config::{AdminOptions, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
-    use restate_types::net::node::{GetNodeState, NodeStateResponse};
     use restate_types::net::partition_processor_manager::ControlProcessors;
     use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
     use restate_types::{GenerationalNodeId, Version};
+    use tokio::sync::watch;
 
     #[test(restate_core::test)]
     async fn manual_log_trim() -> anyhow::Result<()> {
@@ -860,6 +833,7 @@ mod tests {
         let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
 
+        let (_, cluster_state_watch) = watch::channel(Arc::new(ClusterState::empty()));
         let svc = Service::new(
             Live::from_value(Configuration::default()),
             HealthStatus::default(),
@@ -869,6 +843,7 @@ mod tests {
             &mut NetworkServerBuilder::default(),
             builder.metadata_writer.clone(),
             builder.metadata_store_client.clone(),
+            cluster_state_watch,
         );
         let svc_handle = svc.handle();
 
@@ -892,39 +867,6 @@ mod tests {
         Ok(())
     }
 
-    struct NodeStateHandler {
-        persisted_lsn: Arc<AtomicU64>,
-        archived_lsn: Arc<AtomicU64>,
-        // set of node ids for which the handler won't send a response to the caller, this allows to simulate
-        // dead nodes
-        block_list: BTreeSet<GenerationalNodeId>,
-    }
-
-    impl MessageHandler for NodeStateHandler {
-        type MessageType = GetNodeState;
-
-        async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-            if self.block_list.contains(&msg.peer()) {
-                return;
-            }
-
-            let partition_processor_status = PartitionProcessorStatus {
-                last_persisted_log_lsn: Some(Lsn::from(self.persisted_lsn.load(Ordering::Relaxed))),
-                last_archived_log_lsn: Some(Lsn::from(self.archived_lsn.load(Ordering::Relaxed))),
-                ..PartitionProcessorStatus::new()
-            };
-
-            let state = [(PartitionId::MIN, partition_processor_status)].into();
-            let response = msg.to_rpc_response(NodeStateResponse {
-                partition_processor_state: Some(state),
-            });
-
-            // We are not really sending something back to target, we just need to provide a known
-            // node_id. The response will be sent to a handler running on the very same node.
-            response.send().await.expect("send should succeed");
-        }
-    }
-
     #[test(restate_core::test(start_paused = true))]
     async fn auto_log_trim() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
@@ -938,39 +880,10 @@ mod tests {
             ..Default::default()
         };
 
-        let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let archived_lsn = Arc::new(AtomicU64::new(0));
-
-        let get_node_state_handler = Arc::new(NodeStateHandler {
-            persisted_lsn: Arc::clone(&persisted_lsn),
-            archived_lsn: Arc::clone(&archived_lsn),
-            block_list: BTreeSet::new(),
-        });
-
         let (node_env, bifrost) = create_test_env(config, |builder| {
-            builder
-                .add_message_handler(get_node_state_handler.clone())
-                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
+            builder.add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
-
-        // simulate a connection from node 2 so we can have a connection between the two
-        // nodes
-        let node_2 = MockPeerConnection::connect(
-            GenerationalNodeId::new(2, 2),
-            node_env.metadata.nodes_config_version(),
-            node_env
-                .metadata
-                .nodes_config_ref()
-                .cluster_name()
-                .to_owned(),
-            node_env.networking.connection_manager(),
-            10,
-        )
-        .await?;
-        // let node2 receive messages and use the same message handler as node1
-        let (_node_2, _node2_reactor) =
-            node_2.process_with_message_handler(get_node_state_handler)?;
 
         let mut appender = bifrost.create_appender(LOG_ID)?;
         for i in 1..=20 {
@@ -981,24 +894,50 @@ mod tests {
         tokio::time::sleep(interval_duration * 10).await;
 
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+        let generation_node_id = GenerationalNodeId::new(1, 1);
 
         // report persisted lsn back to cluster controller
-        persisted_lsn.store(6, Ordering::Relaxed);
+        let cluster_state = ClusterState::builder()
+            .with_alive_node(generation_node_id)
+            .with_partition(generation_node_id, PartitionId::MIN, |p| {
+                p.last_persisted_log_lsn = Some(Lsn::from(6));
+            })
+            .build();
 
-        tokio::time::sleep(interval_duration * 10).await;
+        _ = node_env
+            .cluster_state_watch
+            .send(Arc::new(cluster_state.clone()));
+
+        tokio::time::sleep(interval_duration * 2).await;
         // we delete 1-6.
         assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
 
         // increase by 4 more, this should not overcome the threshold
-        persisted_lsn.store(10, Ordering::Relaxed);
+        let cluster_state = cluster_state
+            .into_builder()
+            .with_partition(generation_node_id, PartitionId::MIN, |p| {
+                p.last_persisted_log_lsn = Some(Lsn::from(10));
+            })
+            .build();
 
-        tokio::time::sleep(interval_duration * 10).await;
+        _ = node_env
+            .cluster_state_watch
+            .send(Arc::new(cluster_state.clone()));
+
+        tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
 
         // now we have reached the min threshold wrt to the last trim point
-        persisted_lsn.store(11, Ordering::Relaxed);
+        let cluster_state = cluster_state
+            .into_builder()
+            .with_partition(generation_node_id, PartitionId::MIN, |p| {
+                p.last_persisted_log_lsn = Some(Lsn::from(11));
+            })
+            .build();
 
-        tokio::time::sleep(interval_duration * 10).await;
+        _ = node_env.cluster_state_watch.send(Arc::new(cluster_state));
+
+        tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(11), bifrost.get_trim_point(LOG_ID).await?);
 
         Ok(())
@@ -1016,38 +955,10 @@ mod tests {
             ..Default::default()
         };
 
-        let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let archived_lsn = Arc::new(AtomicU64::new(0));
-
-        let get_node_state_handler = Arc::new(NodeStateHandler {
-            persisted_lsn: Arc::clone(&persisted_lsn),
-            archived_lsn: Arc::clone(&archived_lsn),
-            block_list: BTreeSet::new(),
-        });
         let (node_env, bifrost) = create_test_env(config, |builder| {
-            builder
-                .add_message_handler(get_node_state_handler.clone())
-                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
+            builder.add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
-
-        // simulate a connection from node 2 so we can have a connection between the two
-        // nodes
-        let node_2 = MockPeerConnection::connect(
-            GenerationalNodeId::new(2, 2),
-            node_env.metadata.nodes_config_version(),
-            node_env
-                .metadata
-                .nodes_config_ref()
-                .cluster_name()
-                .to_owned(),
-            node_env.networking.connection_manager(),
-            10,
-        )
-        .await?;
-        // let node2 receive messages and use the same message handler as node1
-        let (_node_2, _node2_reactor) =
-            node_2.process_with_message_handler(get_node_state_handler)?;
 
         let mut appender = bifrost.create_appender(LOG_ID)?;
         for i in 1..=20 {
@@ -1057,10 +968,19 @@ mod tests {
         tokio::time::sleep(interval_duration * 10).await;
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        // report persisted lsn back to cluster controller
-        persisted_lsn.store(3, Ordering::Relaxed);
+        let generation_node_id = GenerationalNodeId::new(1, 1);
+        let cluster_state = ClusterState::builder()
+            .with_alive_node(generation_node_id)
+            .with_partition(generation_node_id, PartitionId::MIN, |p| {
+                p.last_persisted_log_lsn = Some(Lsn::from(3));
+            })
+            .build();
 
-        tokio::time::sleep(interval_duration * 10).await;
+        _ = node_env
+            .cluster_state_watch
+            .send(Arc::new(cluster_state.clone()));
+
+        tokio::time::sleep(interval_duration * 2).await;
         // everything before the persisted_lsn.
         assert_eq!(bifrost.get_trim_point(LOG_ID).await?, Lsn::from(3));
         // we should be able to after the last persisted lsn
@@ -1069,9 +989,16 @@ mod tests {
         assert!(v.is_data_record());
         assert_that!(v.decode_unchecked::<String>(), eq("record4".to_owned()));
 
-        persisted_lsn.store(20, Ordering::Relaxed);
+        let cluster_state = cluster_state
+            .into_builder()
+            .with_partition(generation_node_id, PartitionId::MIN, |p| {
+                p.last_persisted_log_lsn = Some(Lsn::from(20));
+            })
+            .build();
 
-        tokio::time::sleep(interval_duration * 10).await;
+        _ = node_env.cluster_state_watch.send(Arc::new(cluster_state));
+
+        tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
 
         Ok(())
@@ -1090,27 +1017,10 @@ mod tests {
             ..Default::default()
         };
 
-        let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let archived_lsn = Arc::new(AtomicU64::new(0));
+        let (node_env, bifrost) = create_test_env(config, |builder| builder).await?;
 
-        let (_node_env, bifrost) = create_test_env(config, |builder| {
-            let black_list = builder
-                .nodes_config
-                .iter()
-                .next()
-                .map(|(_, node_config)| node_config.current_generation)
-                .into_iter()
-                .collect();
-
-            let get_node_state_handler = NodeStateHandler {
-                persisted_lsn: Arc::clone(&persisted_lsn),
-                archived_lsn: Arc::clone(&archived_lsn),
-                block_list: black_list,
-            };
-
-            builder.add_message_handler(get_node_state_handler)
-        })
-        .await?;
+        let generation_node_id_1 = GenerationalNodeId::new(1, 1);
+        let generation_node_id_2 = GenerationalNodeId::new(2, 1);
 
         let mut appender = bifrost.create_appender(LOG_ID)?;
         for i in 1..=5 {
@@ -1119,9 +1029,20 @@ mod tests {
         }
 
         // report persisted lsn back to cluster controller for a subset of the nodes
-        persisted_lsn.store(5, Ordering::Relaxed);
+        let cluster_state = ClusterState::builder()
+            .with_alive_node(generation_node_id_1)
+            .with_alive_node(generation_node_id_2)
+            .with_partition(generation_node_id_1, PartitionId::MIN, |p| {
+                p.last_persisted_log_lsn = Some(Lsn::from(5));
+            })
+            .with_partition(generation_node_id_2, PartitionId::MIN, |_| {})
+            .build();
 
-        tokio::time::sleep(interval_duration * 10).await;
+        _ = node_env
+            .cluster_state_watch
+            .send(Arc::new(cluster_state.clone()));
+
+        tokio::time::sleep(interval_duration * 2).await;
         // no trimming should have happened because one node did not report the persisted lsn
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
@@ -1150,6 +1071,7 @@ mod tests {
             &mut server_builder,
             builder.metadata_writer.clone(),
             builder.metadata_store_client.clone(),
+            builder.cluster_state_watch.subscribe(),
         );
 
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());

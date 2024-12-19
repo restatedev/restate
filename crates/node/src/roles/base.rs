@@ -8,36 +8,86 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use futures::StreamExt;
+use tokio::sync::watch;
 
 use restate_core::{
     cancellation_watcher,
-    network::{Incoming, MessageRouterBuilder, MessageStream, NetworkError},
+    network::{
+        Incoming, MessageRouterBuilder, MessageStream, NetworkError, Networking, TransportConnect,
+    },
     worker_api::ProcessorsManagerHandle,
-    ShutdownError, TaskCenter, TaskKind,
+    Metadata, ShutdownError, TaskCenter, TaskKind,
 };
-use restate_types::net::node::{GetNodeState, NodeStateResponse};
+use restate_types::{
+    cluster::cluster_state::ClusterState,
+    net::node::{GetNodeState, NodeStateResponse},
+};
 
-pub struct BaseRole {
+use crate::cluster_state_refresher::ClusterStateRefresher;
+
+pub struct BaseRole<T> {
     processor_manager_handle: Option<ProcessorsManagerHandle>,
     incoming_node_state: MessageStream<GetNodeState>,
+    cluster_state_refresher: Option<ClusterStateRefresher<T>>,
 }
 
-impl BaseRole {
+impl<T> BaseRole<T>
+where
+    T: TransportConnect,
+{
     pub fn create(
+        metadata: Metadata,
+        networking: Networking<T>,
         router_builder: &mut MessageRouterBuilder,
-        processor_manager_handle: Option<ProcessorsManagerHandle>,
     ) -> Self {
         let incoming_node_state = router_builder.subscribe_to_stream(2);
-
+        let cluster_state_refresher =
+            ClusterStateRefresher::new(metadata, networking, router_builder);
         Self {
-            processor_manager_handle,
+            processor_manager_handle: None,
             incoming_node_state,
+            cluster_state_refresher: Some(cluster_state_refresher),
         }
     }
 
-    pub fn start(self) -> anyhow::Result<()> {
+    #[allow(dead_code)]
+    pub fn cluster_state_watch(&self) -> watch::Receiver<Arc<ClusterState>> {
+        self.cluster_state_refresher
+            .as_ref()
+            .expect("is set")
+            .cluster_state_watch()
+    }
+
+    pub fn with_processor_manager_handle(&mut self, handle: ProcessorsManagerHandle) -> &mut Self {
+        self.cluster_state_refresher
+            .as_mut()
+            .expect("is set")
+            .with_processor_manager_handle(handle.clone());
+
+        self.processor_manager_handle = Some(handle);
+        self
+    }
+
+    pub fn start(mut self) -> anyhow::Result<()> {
+        let cluster_state_refresher = self.cluster_state_refresher.take().expect("is set");
+
+        TaskCenter::spawn_child(TaskKind::SystemService, "cluster-state-refresher", async {
+            let cancelled = cancellation_watcher();
+            tokio::select! {
+                result = cluster_state_refresher.run() => {
+                    result
+                }
+                _ = cancelled => {
+                    Ok(())
+                }
+            }
+        })
+        .context("Failed to start cluster state refresher")?;
+
         TaskCenter::spawn_child(TaskKind::RoleRunner, "base-role-service", async {
             let cancelled = cancellation_watcher();
 
@@ -45,7 +95,7 @@ impl BaseRole {
                 result = self.run() => {
                     result
                 }
-                _ = cancelled =>{
+                _ = cancelled => {
                     Ok(())
                 }
             }

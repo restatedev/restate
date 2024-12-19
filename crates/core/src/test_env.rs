@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use futures::Stream;
 
+use restate_types::cluster::cluster_state::ClusterState;
 use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::config::NetworkingOptions;
 use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
@@ -27,6 +28,7 @@ use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguratio
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::node::Message;
 use restate_types::{GenerationalNodeId, Version};
+use tokio::sync::watch;
 
 use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
@@ -49,6 +51,7 @@ pub struct TestCoreEnvBuilder<T> {
     pub partition_table: PartitionTable,
     pub scheduling_plan: SchedulingPlan,
     pub metadata_store_client: MetadataStoreClient,
+    pub cluster_state_watch: watch::Sender<Arc<ClusterState>>,
 }
 
 impl TestCoreEnvBuilder<FailingConnector> {
@@ -112,6 +115,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
             scheduling_plan,
             metadata_store_client,
             provider_kind,
+            cluster_state_watch: watch::Sender::new(Arc::new(ClusterState::empty())),
         }
     }
 
@@ -222,6 +226,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
             metadata_writer: self.metadata_writer,
             networking: self.networking,
             metadata_store_client: self.metadata_store_client,
+            cluster_state_watch: self.cluster_state_watch,
         }
     }
 }
@@ -233,6 +238,7 @@ pub struct TestCoreEnv<T> {
     pub networking: Networking<T>,
     pub metadata_manager_task: TaskId,
     pub metadata_store_client: MetadataStoreClient,
+    pub cluster_state_watch: watch::Sender<Arc<ClusterState>>,
 }
 
 impl TestCoreEnv<FailingConnector> {
