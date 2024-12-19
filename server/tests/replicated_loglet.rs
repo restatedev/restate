@@ -21,7 +21,7 @@ mod tests {
 
     use futures_util::StreamExt;
     use googletest::prelude::*;
-    use restate_bifrost::loglet::AppendError;
+    use restate_bifrost::{loglet::AppendError, ErrorRecoveryStrategy};
     use restate_core::{cancellation_token, Metadata, TaskCenterFutureExt};
     use test_log::test;
 
@@ -235,6 +235,7 @@ mod tests {
                                 let offset = bifrost
                                     .append(
                                         log_id,
+                                        ErrorRecoveryStrategy::Wait,
                                         format!("appender-{appender_id}-record{i}"),
                                     )
                                     .await?;

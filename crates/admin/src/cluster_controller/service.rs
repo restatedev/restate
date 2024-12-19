@@ -835,7 +835,7 @@ mod tests {
     use test_log::test;
 
     use restate_bifrost::providers::memory_loglet;
-    use restate_bifrost::{Bifrost, BifrostService};
+    use restate_bifrost::{Bifrost, BifrostService, ErrorRecoveryStrategy};
     use restate_core::network::{
         FailingConnector, Incoming, MessageHandler, MockPeerConnection, NetworkServerBuilder,
     };
@@ -875,7 +875,7 @@ mod tests {
         let _ = builder.build().await;
         bifrost_svc.start().await?;
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
 
         TaskCenter::spawn(TaskKind::SystemService, "cluster-controller", svc.run())?;
 
@@ -972,7 +972,7 @@ mod tests {
         let (_node_2, _node2_reactor) =
             node_2.process_with_message_handler(get_node_state_handler)?;
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
             let lsn = appender.append("").await?;
             assert_eq!(Lsn::from(i), lsn);
@@ -1049,7 +1049,7 @@ mod tests {
         let (_node_2, _node2_reactor) =
             node_2.process_with_message_handler(get_node_state_handler)?;
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
             let lsn = appender.append(format!("record{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);
@@ -1112,7 +1112,7 @@ mod tests {
         })
         .await?;
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=5 {
             let lsn = appender.append(format!("record{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);
