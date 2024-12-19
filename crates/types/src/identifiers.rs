@@ -27,6 +27,7 @@ use crate::errors::IdDecodeError;
 use crate::id_util::IdDecoder;
 use crate::id_util::IdEncoder;
 use crate::id_util::IdResourceType;
+use crate::invocation;
 use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
 use crate::time::MillisSinceEpoch;
 
@@ -130,13 +131,19 @@ pub type EntryIndex = u32;
 /// which identifies a consecutive range of partition keys.
 pub type PartitionKey = u64;
 
-/// Returns the partition key computed from either the service_key, or idempotency_key, if possible
+/// Returns the partition key. The precedence is as follows:
+///
+/// 1. If there is a service key, that's what we use to compute the key
+/// 2. Otherwise, we use the concurrency key
+/// 3. Otherwise, we use the idempotency key
 fn deterministic_partition_key(
     service_key: Option<&str>,
+    concurrency_key: Option<&str>,
     idempotency_key: Option<&str>,
 ) -> Option<PartitionKey> {
     service_key
         .map(partitioner::HashPartitioner::compute_partition_key)
+        .or_else(|| concurrency_key.map(partitioner::HashPartitioner::compute_partition_key))
         .or_else(|| idempotency_key.map(partitioner::HashPartitioner::compute_partition_key))
 }
 
@@ -422,12 +429,19 @@ pub trait WithInvocationId {
 pub type EncodedInvocationId = [u8; InvocationId::SIZE_IN_BYTES];
 
 impl InvocationId {
-    pub fn generate(invocation_target: &InvocationTarget, idempotency_key: Option<&str>) -> Self {
+    pub fn generate(
+        invocation_target: &InvocationTarget,
+        invocation_concurrency: Option<&invocation::Concurrency>,
+        idempotency_key: Option<&str>,
+    ) -> Self {
         // --- Partition key generation
         let partition_key =
                 // Either try to generate the deterministic partition key, if possible
                 deterministic_partition_key(
-                    invocation_target.key().map(|bs| bs.as_ref()),
+                    invocation_target.key()
+                        .map(|bs| bs.as_ref()),
+                    invocation_concurrency
+                        .and_then(|c| c.inbox_key().map(|bs| bs.as_ref())),
                     idempotency_key,
                 )
                 // If no deterministic partition key can be generated, just pick a random number
@@ -585,6 +599,8 @@ impl IdempotencyId {
         // * For services with key, the partition key is the hash(service key), this due to the virtual object locking requirement.
         let partition_key = deterministic_partition_key(
             service_key.as_ref().map(|bs| bs.as_ref()),
+            // This data structure won't need anymore the partition key anymore, by the time we enable the new custom concurrency feature.
+            None,
             Some(&idempotency_key),
         )
         .expect("A deterministic partition key can always be generated for idempotency id");
@@ -975,7 +991,7 @@ mod mocks {
 
     impl InvocationId {
         pub fn mock_generate(invocation_target: &InvocationTarget) -> Self {
-            InvocationId::generate(invocation_target, None)
+            InvocationId::generate(invocation_target, None, None)
         }
 
         pub fn mock_random() -> Self {
@@ -1132,9 +1148,26 @@ mod tests {
         let idempotent_key = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
         assert_eq!(
-            InvocationId::generate(&invocation_target, Some(&idempotent_key)),
-            InvocationId::generate(&invocation_target, Some(&idempotent_key))
+            InvocationId::generate(&invocation_target, None, Some(&idempotent_key)),
+            InvocationId::generate(&invocation_target, None, Some(&idempotent_key))
         );
+    }
+
+    #[test]
+    fn deterministic_partition_key_for_service_request() {
+        let invocation_target = InvocationTarget::mock_service();
+        let concurrency = invocation::Concurrency::Sequential {
+            inbox_target: invocation_target.service_name().clone(),
+            inbox_key: Alphanumeric
+                .sample_string(&mut rand::thread_rng(), 16)
+                .into(),
+        };
+
+        let id1 = InvocationId::generate(&invocation_target, Some(&concurrency), None);
+        let id2 = InvocationId::generate(&invocation_target, Some(&concurrency), None);
+
+        assert_eq!(id1.partition_key(), id2.partition_key());
+        assert_ne!(id1.invocation_uuid(), id2.invocation_uuid());
     }
 
     #[test]
