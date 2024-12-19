@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use prost_dto::IntoProto;
@@ -18,6 +19,9 @@ use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::Lsn;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, PlainNodeId, Version};
+
+#[cfg(any(test, feature = "test-util"))]
+pub use builder::ClusterStateBuilder;
 
 /// A container for health information about every node and partition in the
 /// cluster.
@@ -58,7 +62,6 @@ impl ClusterState {
         })
     }
 
-    #[cfg(any(test, feature = "test-util"))]
     pub fn empty() -> Self {
         ClusterState {
             last_refreshed: None,
@@ -67,6 +70,18 @@ impl ClusterState {
             logs_metadata_version: Version::INVALID,
             nodes: BTreeMap::default(),
         }
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn builder() -> ClusterStateBuilder {
+        ClusterStateBuilder {
+            inner: Self::empty(),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn into_builder(self) -> ClusterStateBuilder {
+        ClusterStateBuilder { inner: self }
     }
 }
 
@@ -110,7 +125,7 @@ pub struct SuspectNode {
 }
 
 #[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProto, derive_more::Display,
+    Debug, Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq, IntoProto, derive_more::Display,
 )]
 #[proto(target = "crate::protobuf::cluster::RunMode")]
 pub enum RunMode {
@@ -118,7 +133,7 @@ pub enum RunMode {
     Follower,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoProto)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize, Deserialize, IntoProto)]
 #[proto(target = "crate::protobuf::cluster::ReplayStatus")]
 pub enum ReplayStatus {
     Starting,
@@ -126,7 +141,7 @@ pub enum ReplayStatus {
     CatchingUp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProto)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoProto)]
 #[proto(target = "crate::protobuf::cluster::PartitionProcessorStatus")]
 pub struct PartitionProcessorStatus {
     #[proto(required)]
@@ -164,6 +179,32 @@ impl Default for PartitionProcessorStatus {
     }
 }
 
+impl Hash for PartitionProcessorStatus {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.planned_mode.hash(state);
+        self.effective_mode.hash(state);
+        self.last_observed_leader_epoch.hash(state);
+        self.last_observed_leader_node.hash(state);
+        self.last_applied_log_lsn.hash(state);
+        self.num_skipped_records.hash(state);
+        self.replay_status.hash(state);
+        self.last_persisted_log_lsn.hash(state);
+        self.last_archived_log_lsn.hash(state);
+        self.target_tail_lsn.hash(state);
+        // NOTE:
+        // we intentionally ignoring fields like
+        // - updated_at
+        // - last_record_applied_at
+        //
+        // because we are only interested
+        // in attributes that describe the structure
+        // of the cluster state and partition processors
+        //
+        // todo(azmy): review this list because some fields
+        // should be propagated when they change
+    }
+}
+
 impl PartitionProcessorStatus {
     pub fn is_effective_leader(&self) -> bool {
         self.effective_mode == RunMode::Leader
@@ -171,5 +212,89 @@ impl PartitionProcessorStatus {
 
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+mod builder {
+    use std::collections::BTreeMap;
+
+    use crate::{
+        identifiers::PartitionId, time::MillisSinceEpoch, GenerationalNodeId, PlainNodeId, Version,
+    };
+
+    use super::{AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus};
+
+    pub struct ClusterStateBuilder {
+        pub(super) inner: ClusterState,
+    }
+
+    impl ClusterStateBuilder {
+        pub fn with_logs_metadata_version(mut self, version: Version) -> Self {
+            self.inner.logs_metadata_version = version;
+            self
+        }
+
+        pub fn with_partition_table_version(mut self, version: Version) -> Self {
+            self.inner.partition_table_version = version;
+            self
+        }
+
+        pub fn with_nodes_config_version(mut self, version: Version) -> Self {
+            self.inner.nodes_config_version = version;
+            self
+        }
+
+        pub fn with_alive_node(mut self, generational_node_id: GenerationalNodeId) -> Self {
+            self.inner.nodes.insert(
+                generational_node_id.as_plain(),
+                NodeState::Alive(AliveNode {
+                    generational_node_id,
+                    last_heartbeat_at: MillisSinceEpoch::now(),
+                    partitions: BTreeMap::default(),
+                }),
+            );
+
+            self
+        }
+
+        pub fn with_dead_node(mut self, plain_node_id: PlainNodeId) -> Self {
+            self.inner.nodes.insert(
+                plain_node_id,
+                NodeState::Dead(DeadNode {
+                    last_seen_alive: None,
+                }),
+            );
+
+            self
+        }
+
+        pub fn with_partition<M>(
+            mut self,
+            generational_node_id: GenerationalNodeId,
+            partition_id: PartitionId,
+            modifier: M,
+        ) -> Self
+        where
+            M: FnOnce(&mut PartitionProcessorStatus),
+        {
+            let node = self
+                .inner
+                .nodes
+                .get_mut(&generational_node_id.as_plain())
+                .expect("node exists");
+            let NodeState::Alive(node) = node else {
+                panic!("not must be alive");
+            };
+
+            let partition = node.partitions.entry(partition_id).or_default();
+
+            modifier(partition);
+            self
+        }
+
+        pub fn build(self) -> ClusterState {
+            self.inner
+        }
     }
 }

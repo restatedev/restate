@@ -38,13 +38,6 @@ pub struct AdminOptions {
     concurrent_api_requests_limit: Option<NonZeroUsize>,
     pub query_engine: QueryEngineOptions,
 
-    /// # Controller heartbeats
-    ///
-    /// Controls the interval at which cluster controller polls nodes of the cluster.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub heartbeat_interval: humantime::Duration,
-
     /// # Log trim interval
     ///
     /// Controls the interval at which cluster controller tries to trim the logs. Log trimming
@@ -107,7 +100,6 @@ impl Default for AdminOptions {
             // max is limited by Tower's LoadShedLayer.
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
-            heartbeat_interval: Duration::from_millis(1500).into(),
             // try to trim the log every hour
             log_trim_interval: Some(Duration::from_secs(60 * 60).into()),
             log_trim_threshold: 1000,
