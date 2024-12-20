@@ -1,0 +1,50 @@
+// Copyright (c) 2024 - 2025 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+syntax = "proto3";
+
+import "restate/common.proto";
+import "restate/cluster.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+package restate.deprecated_cluster;
+
+message ClusterState {
+  google.protobuf.Duration last_refreshed = 1;
+  restate.common.Version nodes_config_version = 2;
+  restate.common.Version partition_table_version = 3;
+  map<uint32, NodeState> nodes = 4;
+  restate.common.Version logs_metadata_version = 5;
+}
+
+message NodeState {
+  oneof state {
+    AliveNode alive = 1;
+    DeadNode dead = 2;
+    SuspectNode suspect = 3;
+  }
+}
+
+message SuspectNode {
+  restate.common.NodeId generational_node_id = 1;
+  google.protobuf.Timestamp last_attempt = 2;
+}
+
+message AliveNode {
+  restate.common.NodeId generational_node_id = 1;
+  google.protobuf.Timestamp last_heartbeat_at = 2;
+  // partition id is u16 but protobuf doesn't support u16. This must be a value
+  // that's safe to convert to u16
+  map<uint32, restate.cluster.PartitionProcessorStatus> partitions = 3;
+}
+
+message DeadNode { google.protobuf.Timestamp last_seen_alive = 1; }

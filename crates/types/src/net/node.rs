@@ -17,18 +17,18 @@ use super::TargetName;
 use crate::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
 
 super::define_rpc! {
-    @request=GetNodeState,
-    @response=NodeStateResponse,
-    @request_target=TargetName::NodeGetNodeStateRequest,
-    @response_target=TargetName::NodeGetNodeStateResponse,
+    @request=GetPartitionsProcessorsState,
+    @response=PartitionsProcessorsStateResponse,
+    @request_target=TargetName::NodeGetPartitionsProcessorsStateRequest,
+    @response_target=TargetName::NodeGetPartitionsProcessorsStateResponse,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-pub struct GetNodeState {}
+pub struct GetPartitionsProcessorsState {}
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodeStateResponse {
+pub struct PartitionsProcessorsStateResponse {
     /// State of paritions processor per parition. Is set to None if this node is not a `Worker` node
     #[serde_as(as = "Option<serde_with::Seq<(_, _)>>")]
     pub partition_processor_state: Option<BTreeMap<PartitionId, PartitionProcessorStatus>>,

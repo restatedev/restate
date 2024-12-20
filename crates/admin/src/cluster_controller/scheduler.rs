@@ -600,13 +600,14 @@ mod tests {
     };
     use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
     use restate_core::{Metadata, TestCoreEnv, TestCoreEnvBuilder};
-    use restate_types::cluster::cluster_state::{
-        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
-    };
+    use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
     use restate_types::cluster_controller::{
         SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
     };
     use restate_types::config::Configuration;
+    use restate_types::deprecated_cluster::cluster_state::{
+        AliveNode, ClusterState, DeadNode, NodeState,
+    };
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
     use restate_types::net::codec::WireDecode;

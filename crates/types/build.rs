@@ -93,7 +93,8 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
         .enum_attribute("Message.body", "#[derive(::derive_more::IsVariant)]")
         .btree_map([
             ".restate.cluster.ClusterState",
-            ".restate.cluster.AliveNode",
+            ".restate.deprecated_cluster.ClusterState",
+            ".restate.deprecated_cluster.AliveNode",
         ])
         .file_descriptor_set_path(out_dir.join("common_descriptor.bin"))
         // allow older protobuf compiler to be used
@@ -102,6 +103,7 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
             &[
                 "./protobuf/restate/common.proto",
                 "./protobuf/restate/cluster.proto",
+                "./protobuf/restate/deprecated_cluster.proto",
                 "./protobuf/restate/log_server_common.proto",
                 "./protobuf/restate/node.proto",
             ],
