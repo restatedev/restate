@@ -6582,6 +6582,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-tracing-context",
  "metrics-util",
+ "prost-dto",
  "prost-types",
  "restate-admin",
  "restate-bifrost",

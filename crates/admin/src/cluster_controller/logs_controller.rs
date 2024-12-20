@@ -24,9 +24,7 @@ use tracing::{debug, error, trace, trace_span, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
-use restate_core::metadata_store::{
-    MetadataStoreClient, Precondition, ReadWriteError, WriteError,
-};
+use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadWriteError, WriteError};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -942,7 +940,10 @@ impl LogsController {
 
         let mut this = Self {
             effects: Some(Vec::new()),
-            inner: LogsControllerInner::new(Metadata::with_current(|m| m.logs_snapshot()), retry_policy),
+            inner: LogsControllerInner::new(
+                Metadata::with_current(|m| m.logs_snapshot()),
+                retry_policy,
+            ),
             bifrost,
             metadata_store_client,
             metadata_writer,

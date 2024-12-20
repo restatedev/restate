@@ -9,10 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use crate::ProvisionCluster;
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use bytestring::ByteString;
 use futures::future::OptionFuture;
 use futures::TryFutureExt;
+use prost_dto::IntoProto;
 use restate_core::metadata_store::{
     retry_on_network_error, MetadataStoreClient, MetadataStoreClientError, Precondition,
     ReadWriteError, WriteError,
@@ -82,11 +83,19 @@ impl From<restate_metadata_store::local::ProvisionError> for ProvisionMetadataEr
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, IntoProto)]
+#[proto(target = "restate_types::protobuf::cluster::ClusterConfiguration")]
 pub struct ClusterConfiguration {
-    num_partitions: NonZeroU16,
-    placement_strategy: ReplicationStrategy,
-    log_provider: DefaultProvider,
+    #[into_proto(map = "num_partitions_to_u32")]
+    pub num_partitions: NonZeroU16,
+    #[proto(required)]
+    pub replication_strategy: ReplicationStrategy,
+    #[proto(required)]
+    pub default_provider: DefaultProvider,
+}
+
+fn num_partitions_to_u32(num_partitions: NonZeroU16) -> u32 {
+    u32::from(num_partitions.get())
 }
 
 #[derive(Clone, Debug, Default)]
@@ -95,6 +104,44 @@ pub struct ProvisionClusterRequest {
     num_partitions: Option<NonZeroU16>,
     placement_strategy: Option<ReplicationStrategy>,
     log_provider: Option<DefaultProvider>,
+}
+
+impl TryFrom<restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest>
+    for ProvisionClusterRequest
+{
+    type Error = anyhow::Error;
+
+    fn try_from(
+        value: restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest,
+    ) -> Result<Self, Self::Error> {
+        let placement_strategy = value
+            .placement_strategy
+            .map(ReplicationStrategy::try_from)
+            .transpose()?;
+        let log_provider = value
+            .log_provider
+            .map(DefaultProvider::try_from)
+            .transpose()?;
+
+        let num_partitions = value
+            .num_partitions
+            .map(|num_partitions| {
+                u16::try_from(num_partitions)
+                    .map_err(Into::into)
+                    .and_then(|num_partitions| {
+                        NonZeroU16::new(num_partitions)
+                            .ok_or(anyhow!("num_partitions must not be 0"))
+                    })
+            })
+            .transpose()?;
+
+        Ok(ProvisionClusterRequest {
+            dry_run: value.dry_run,
+            num_partitions,
+            placement_strategy,
+            log_provider,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -238,6 +285,8 @@ impl<'a> NodeInit<'a> {
 
         self.sync_metadata().await;
 
+        info!("Node initialization complete");
+
         Ok(())
     }
 
@@ -306,6 +355,8 @@ impl<'a> NodeInit<'a> {
         request: ProvisionClusterRequest,
         common_opts: &CommonOptions,
     ) -> anyhow::Result<HandleProvisionClusterResponse> {
+        trace!("Handle provision request: {request:?}");
+
         if common_opts
             .metadata_store_client
             .metadata_store_client
@@ -384,8 +435,8 @@ impl<'a> NodeInit<'a> {
 
         ClusterConfiguration {
             num_partitions,
-            placement_strategy,
-            log_provider,
+            replication_strategy: placement_strategy,
+            default_provider: log_provider,
         }
     }
 
@@ -398,12 +449,12 @@ impl<'a> NodeInit<'a> {
             .with_equally_sized_partitions(cluster_configuration.num_partitions.get())
             .expect("Empty partition table should not have conflicts");
         initial_partition_table_builder
-            .set_replication_strategy(cluster_configuration.placement_strategy);
+            .set_replication_strategy(cluster_configuration.replication_strategy);
         let initial_partition_table = initial_partition_table_builder.build();
 
         let mut logs_builder = Logs::default().into_builder();
         logs_builder.set_configuration(LogsConfiguration::from(
-            cluster_configuration.log_provider.clone(),
+            cluster_configuration.default_provider.clone(),
         ));
         let initial_logs = logs_builder.build();
 
