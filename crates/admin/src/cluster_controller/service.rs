@@ -17,6 +17,12 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use codederror::CodedError;
+use tokio::sync::{mpsc, oneshot};
+use tokio::time;
+use tokio::time::{Instant, Interval, MissedTickBehavior};
+use tonic::codec::CompressionEncoding;
+use tracing::{debug, info};
+
 use restate_metadata_store::ReadModifyWriteError;
 use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::logs::metadata::{
@@ -28,12 +34,7 @@ use restate_types::metadata_store::keys::{
 use restate_types::partition_table::{
     self, PartitionTable, PartitionTableBuilder, ReplicationStrategy,
 };
-use restate_types::replicated_loglet::{ReplicatedLogletId, ReplicatedLogletParams};
-use tokio::sync::{mpsc, oneshot};
-use tokio::time;
-use tokio::time::{Instant, Interval, MissedTickBehavior};
-use tonic::codec::CompressionEncoding;
-use tracing::{debug, info};
+use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use restate_bifrost::{Bifrost, BifrostAdmin, SealedSegment};
 use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
@@ -51,19 +52,19 @@ use restate_types::config::{AdminOptions, Configuration};
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::live::Live;
-use restate_types::logs::{LogId, Lsn};
+use restate_types::logs::{LogId, LogletId, Lsn};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, Version, Versioned};
 
+use self::state::ClusterControllerState;
 use super::cluster_state_refresher::ClusterStateRefresher;
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
 use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use crate::cluster_controller::logs_controller::{self, NodeSetSelectorHints};
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler::SchedulingPlanNodeSetSelectorHints;
-use state::ClusterControllerState;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -761,13 +762,13 @@ impl SealAndExtendTask {
         let (loglet_id, previous_params) = match segment.config.kind {
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderKind::InMemory => {
-                let loglet_id = ReplicatedLogletId::from_str(&segment.config.params)
-                    .context("Invalid loglet id")?;
+                let loglet_id =
+                    LogletId::from_str(&segment.config.params).context("Invalid loglet id")?;
                 (loglet_id, None)
             }
             ProviderKind::Local => {
-                let loglet_id = ReplicatedLogletId::from_str(&segment.config.params)
-                    .context("Invalid loglet id")?;
+                let loglet_id =
+                    LogletId::from_str(&segment.config.params).context("Invalid loglet id")?;
                 (loglet_id, None)
             }
             #[cfg(feature = "replicated-loglet")]
@@ -835,7 +836,7 @@ mod tests {
     use test_log::test;
 
     use restate_bifrost::providers::memory_loglet;
-    use restate_bifrost::{Bifrost, BifrostService};
+    use restate_bifrost::{Bifrost, BifrostService, ErrorRecoveryStrategy};
     use restate_core::network::{
         FailingConnector, Incoming, MessageHandler, MockPeerConnection, NetworkServerBuilder,
     };
@@ -875,7 +876,7 @@ mod tests {
         let _ = builder.build().await;
         bifrost_svc.start().await?;
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
 
         TaskCenter::spawn(TaskKind::SystemService, "cluster-controller", svc.run())?;
 
@@ -972,7 +973,7 @@ mod tests {
         let (_node_2, _node2_reactor) =
             node_2.process_with_message_handler(get_node_state_handler)?;
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
             let lsn = appender.append("").await?;
             assert_eq!(Lsn::from(i), lsn);
@@ -1049,7 +1050,7 @@ mod tests {
         let (_node_2, _node2_reactor) =
             node_2.process_with_message_handler(get_node_state_handler)?;
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
             let lsn = appender.append(format!("record{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);
@@ -1112,7 +1113,7 @@ mod tests {
         })
         .await?;
 
-        let mut appender = bifrost.create_appender(LOG_ID)?;
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=5 {
             let lsn = appender.append(format!("record{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);

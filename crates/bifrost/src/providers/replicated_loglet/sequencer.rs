@@ -26,9 +26,9 @@ use restate_core::{
 };
 use restate_types::{
     config::Configuration,
-    logs::{LogletOffset, Record, RecordCache, SequenceNumber},
+    logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber},
     net::log_server::Store,
-    replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty},
+    replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty},
     GenerationalNodeId,
 };
 
@@ -74,7 +74,7 @@ impl SequencerSharedState {
         &self.my_params
     }
 
-    pub fn loglet_id(&self) -> &ReplicatedLogletId {
+    pub fn loglet_id(&self) -> &LogletId {
         &self.my_params.loglet_id
     }
 }

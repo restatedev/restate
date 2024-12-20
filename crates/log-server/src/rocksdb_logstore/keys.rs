@@ -12,8 +12,7 @@ use std::mem::size_of;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use restate_types::logs::LogletOffset;
-use restate_types::replicated_loglet::ReplicatedLogletId;
+use restate_types::logs::{LogletId, LogletOffset};
 
 // log-store marker
 pub(super) const MARKER_KEY: &[u8] = b"storage-marker";
@@ -40,11 +39,11 @@ pub(super) enum KeyPrefixKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct KeyPrefix {
     kind: KeyPrefixKind,
-    loglet_id: ReplicatedLogletId,
+    loglet_id: LogletId,
 }
 
 impl KeyPrefix {
-    pub fn new(kind: KeyPrefixKind, loglet_id: ReplicatedLogletId) -> Self {
+    pub fn new(kind: KeyPrefixKind, loglet_id: LogletId) -> Self {
         Self { kind, loglet_id }
     }
 
@@ -73,12 +72,12 @@ impl KeyPrefix {
 
     fn decode<B: Buf>(buf: &mut B) -> KeyPrefix {
         let kind = KeyPrefixKind::try_from(buf.get_u8()).expect("recognized key kind");
-        let loglet_id = ReplicatedLogletId::from(buf.get_u64());
+        let loglet_id = LogletId::from(buf.get_u64());
         Self { kind, loglet_id }
     }
 
     pub(super) const fn size() -> usize {
-        size_of::<KeyPrefixKind>() + size_of::<ReplicatedLogletId>()
+        size_of::<KeyPrefixKind>() + size_of::<LogletId>()
     }
 }
 
@@ -89,14 +88,14 @@ pub(super) struct DataRecordKey {
 }
 
 impl DataRecordKey {
-    pub fn new(loglet_id: ReplicatedLogletId, offset: LogletOffset) -> Self {
+    pub fn new(loglet_id: LogletId, offset: LogletOffset) -> Self {
         Self {
             prefix: KeyPrefix::new(KeyPrefixKind::DataRecord, loglet_id),
             offset,
         }
     }
 
-    pub fn loglet_id(&self) -> ReplicatedLogletId {
+    pub fn loglet_id(&self) -> LogletId {
         self.prefix.loglet_id
     }
 
@@ -104,7 +103,7 @@ impl DataRecordKey {
         self.offset
     }
 
-    pub fn exclusive_upper_bound(loglet_id: ReplicatedLogletId) -> BytesMut {
+    pub fn exclusive_upper_bound(loglet_id: LogletId) -> BytesMut {
         let mut buf = BytesMut::with_capacity(Self::size());
         KeyPrefix::new(KeyPrefixKind::DataRecord, loglet_id).encode_exclusive_upper_bound(&mut buf);
         buf.put_u64(0);
@@ -151,7 +150,7 @@ pub(super) struct MetadataKey {
 }
 
 impl MetadataKey {
-    pub fn new(kind: KeyPrefixKind, loglet_id: ReplicatedLogletId) -> Self {
+    pub fn new(kind: KeyPrefixKind, loglet_id: LogletId) -> Self {
         // Just a sanity check
         debug_assert_ne!(kind, KeyPrefixKind::DataRecord);
         Self {
@@ -160,7 +159,7 @@ impl MetadataKey {
     }
 
     #[allow(unused)]
-    pub fn loglet_id(&self) -> ReplicatedLogletId {
+    pub fn loglet_id(&self) -> LogletId {
         self.prefix.loglet_id
     }
 

@@ -26,11 +26,10 @@ use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRp
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext,
 };
-use restate_types::logs::{LogId, Record};
+use restate_types::logs::{LogId, LogletId, Record};
 use restate_types::net::codec::{serialize_message, MessageBodyExt, WireDecode};
 use restate_types::net::replicated_loglet::{Append, CommonRequestHeader};
 use restate_types::protobuf::node::Message;
-use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 use restate_wal_protocol::{Command, Destination, Envelope};
@@ -124,7 +123,7 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
         header: CommonRequestHeader {
             log_id: LogId::from(12u16),
             segment_index: 2.into(),
-            loglet_id: ReplicatedLogletId::new(12u16.into(), 4.into()),
+            loglet_id: LogletId::new(12u16.into(), 4.into()),
         },
         payloads,
     };

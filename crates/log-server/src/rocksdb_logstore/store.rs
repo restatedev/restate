@@ -20,13 +20,12 @@ use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::config::LogServerOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::{LogletOffset, SequenceNumber};
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
     Digest, DigestEntry, Gap, GetDigest, GetRecords, LogServerResponseHeader, MaybeRecord,
     RecordStatus, Records, Seal, Store, Trim,
 };
 use restate_types::protobuf::common::LogServerStatus;
-use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::GenerationalNodeId;
 
 use super::keys::{KeyPrefixKind, MetadataKey, MARKER_KEY};
@@ -100,10 +99,7 @@ impl LogStore for RocksDbLogStore {
         Ok(())
     }
 
-    async fn load_loglet_state(
-        &self,
-        loglet_id: ReplicatedLogletId,
-    ) -> Result<LogletState, OperationError> {
+    async fn load_loglet_state(&self, loglet_id: LogletId) -> Result<LogletState, OperationError> {
         let start = Instant::now();
         let metadata_cf = self.metadata_cf();
         let data_cf = self.data_cf();
@@ -501,11 +497,10 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
-    use restate_types::logs::{LogletOffset, Record, RecordCache, SequenceNumber};
+    use restate_types::logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber};
     use restate_types::net::log_server::{
         DigestEntry, GetDigest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
     };
-    use restate_types::replicated_loglet::ReplicatedLogletId;
     use restate_types::{GenerationalNodeId, PlainNodeId};
 
     use super::RocksDbLogStore;
@@ -554,8 +549,8 @@ mod tests {
     async fn test_load_loglet_state() -> Result<()> {
         let log_store = setup().await?;
         // fresh/unknown loglet
-        let loglet_id_1 = ReplicatedLogletId::new_unchecked(88);
-        let loglet_id_2 = ReplicatedLogletId::new_unchecked(89);
+        let loglet_id_1 = LogletId::new_unchecked(88);
+        let loglet_id_2 = LogletId::new_unchecked(89);
         let sequencer_1 = GenerationalNodeId::new(5, 213);
         let sequencer_2 = GenerationalNodeId::new(2, 212);
 
@@ -645,8 +640,8 @@ mod tests {
     #[test(restate_core::test(start_paused = true))]
     async fn test_digest() -> Result<()> {
         let log_store = setup().await?;
-        let loglet_id_1 = ReplicatedLogletId::new_unchecked(88);
-        let loglet_id_2 = ReplicatedLogletId::new_unchecked(89);
+        let loglet_id_1 = LogletId::new_unchecked(88);
+        let loglet_id_2 = LogletId::new_unchecked(89);
         let sequencer_1 = GenerationalNodeId::new(5, 213);
         let sequencer_2 = GenerationalNodeId::new(2, 212);
 

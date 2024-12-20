@@ -25,10 +25,10 @@ use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::logs::LogletId;
 use restate_types::net::log_server::*;
 use restate_types::nodes_config::StorageState;
 use restate_types::protobuf::common::LogServerStatus;
-use restate_types::replicated_loglet::ReplicatedLogletId;
 
 use crate::loglet_worker::{LogletWorker, LogletWorkerHandle};
 use crate::logstore::LogStore;
@@ -36,7 +36,7 @@ use crate::metadata::LogletStateMap;
 
 const DEFAULT_WRITERS_CAPACITY: usize = 128;
 
-type LogletWorkerMap = HashMap<ReplicatedLogletId, LogletWorkerHandle, Xxh3Builder>;
+type LogletWorkerMap = HashMap<LogletId, LogletWorkerHandle, Xxh3Builder>;
 
 pub struct RequestPump {
     _configuration: Live<Configuration>,
@@ -312,7 +312,7 @@ impl RequestPump {
     }
 
     async fn find_or_create_worker<'a, S: LogStore>(
-        loglet_id: ReplicatedLogletId,
+        loglet_id: LogletId,
         log_store: &S,
         state_map: &LogletStateMap,
         loglet_workers: &'a mut LogletWorkerMap,

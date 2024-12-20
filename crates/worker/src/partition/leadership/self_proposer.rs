@@ -10,7 +10,7 @@
 
 use crate::partition::leadership::Error;
 use futures::never::Never;
-use restate_bifrost::{Bifrost, CommitToken};
+use restate_bifrost::{Bifrost, CommitToken, ErrorRecoveryStrategy};
 use restate_core::my_node_id;
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey};
@@ -44,6 +44,7 @@ impl SelfProposer {
         let bifrost_appender = bifrost
             .create_background_appender(
                 LogId::from(partition_id),
+                ErrorRecoveryStrategy::extend_preferred(),
                 BIFROST_QUEUE_SIZE,
                 MAX_BIFROST_APPEND_BATCH,
             )?
