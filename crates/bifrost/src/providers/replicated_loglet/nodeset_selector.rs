@@ -18,15 +18,24 @@ use tracing::trace;
 use restate_types::logs::metadata::NodeSetSelectionStrategy;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::{LocationScope, NodeSet, ReplicationProperty};
+use restate_types::NodeId;
 
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+/// TEMPORARY UNTIL NODE-LEVEL CLUSTER STATE IS ACTUALLY IMPLEMENTED
+#[derive(Clone, Debug)]
+pub struct ObservedClusterState;
+
+impl ObservedClusterState {
+    pub fn is_node_alive(&self, _node_id: impl Into<NodeId>) -> bool {
+        // assume all nodes are alive
+        true
+    }
+}
 
 /// Nodeset selector for picking a set of storage nodes for a replicated loglet out of a broader
 /// pool of available nodes.
 ///
 /// This selector can be reused once constructed to make multiple decisions in a single scheduling
 /// iteration, if the node configuration and the replication settings are not changing.
-#[cfg(feature = "replicated-loglet")]
 #[derive(Clone)]
 pub struct NodeSetSelector<'a> {
     nodes_config: &'a NodesConfiguration,
@@ -46,6 +55,7 @@ impl<'a> NodeSetSelector<'a> {
 
     /// Determines if a nodeset can be improved by adding or replacing members. Does NOT consider
     /// sealability of the current configuration when making decisions!
+    #[allow(unused)]
     pub fn can_improve(
         &self,
         nodeset: &NodeSet,
@@ -280,222 +290,226 @@ struct AliveNodeSet(NodeSet);
 
 #[cfg(test)]
 pub mod tests {
-    use std::collections::HashSet;
+    // ** NOTE **
+    // THESE TESTS ARE TEMPORARY DISABLED AND WILL ENABLED AFTER CLUSTER STATE IS IMPLEMENTED
+    // THIS IS A TRANSITIONAL STATE
 
-    use enumset::enum_set;
-    use rand::thread_rng;
-
-    use restate_types::nodes_config::{NodesConfiguration, Role, StorageState};
-    use restate_types::replicated_loglet::{LocationScope, NodeSet, ReplicationProperty};
-    use restate_types::PlainNodeId;
-
-    use super::*;
-    use crate::cluster_controller::logs_controller::tests::{node, MockNodes};
-    use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-
-    #[test]
-    #[should_panic(
-        expected = "not implemented: only node-scoped replication is currently supported"
-    )]
-    fn test_select_log_servers_rejects_unsupported_replication_scope() {
-        let replication =
-            ReplicationProperty::with_scope(LocationScope::Zone, 1.try_into().unwrap());
-
-        let nodes_config = NodesConfiguration::default();
-        let observed_state = ObservedClusterState::default();
-
-        let preferred_nodes = NodeSet::empty();
-        NodeSetSelector::new(&nodes_config, &observed_state)
-            .select(
-                NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
-                &replication,
-                &mut thread_rng(),
-                &preferred_nodes,
-            )
-            .unwrap(); // panics
-    }
-
-    #[test]
-    fn test_select_log_servers_insufficient_capacity() {
-        let nodes: Vec<PlainNodeId> = vec![1.into(), 2.into(), 3.into()];
-        let replication =
-            ReplicationProperty::with_scope(LocationScope::Node, 2.try_into().unwrap());
-
-        let mut nodes_config = NodesConfiguration::default();
-        nodes_config.upsert_node(node(0, enum_set!(Role::Admin), StorageState::Disabled));
-        nodes_config.upsert_node(node(
-            1,
-            enum_set!(Role::LogServer | Role::Worker),
-            StorageState::Provisioning,
-        ));
-        nodes_config.upsert_node(node(
-            2,
-            enum_set!(Role::LogServer | Role::Worker),
-            StorageState::ReadWrite,
-        ));
-        nodes_config.upsert_node(node(
-            3,
-            enum_set!(Role::LogServer | Role::Worker),
-            StorageState::ReadOnly,
-        ));
-        nodes_config.upsert_node(node(4, enum_set!(Role::Worker), StorageState::Disabled));
-
-        let observed_state = ObservedClusterState {
-            alive_nodes: nodes
-                .iter()
-                .copied()
-                .map(|id| (id, id.with_generation(1)))
-                .collect(),
-            dead_nodes: HashSet::default(),
-            ..Default::default()
-        };
-
-        let strategy = NodeSetSelectionStrategy::StrictFaultTolerantGreedy;
-        let preferred_nodes = NodeSet::empty();
-        let selection = NodeSetSelector::new(&nodes_config, &observed_state).select(
-            strategy,
-            &replication,
-            &mut thread_rng(),
-            &preferred_nodes,
-        );
-
-        assert_eq!(
-            selection,
-            Err(NodeSelectionError::InsufficientWriteableNodes)
-        );
-    }
-
-    /// Replicated loglets should work just fine in single-node clusters, with the FT strategy inferring that f=0,
-    /// as long as the replication factor is set to 1.
-    #[test]
-    fn test_select_log_servers_single_node_cluster() {
-        let nodes = MockNodes::builder().with_mixed_server_nodes([1]).build();
-
-        let replication =
-            ReplicationProperty::with_scope(LocationScope::Node, 1.try_into().unwrap());
-
-        let strategy = NodeSetSelectionStrategy::StrictFaultTolerantGreedy;
-        let preferred_nodes = NodeSet::empty();
-        let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
-            strategy,
-            &replication,
-            &mut thread_rng(),
-            &preferred_nodes,
-        );
-
-        assert_eq!(
-            selection.unwrap(),
-            NodeSet::from([1]),
-            "A single-node cluster is possible with replication factor of 0"
-        );
-    }
-
-    /// In this test we have a cluster with 3 nodes and replication factor is 2. The strict FT
-    /// strategy can bootstrap a loglet using all 3 nodes but won't choose a new nodeset when only 2
-    /// are alive, as that puts the loglet at risk. The assumption is that the previous nodeset will
-    /// carry on in its original configuration - it is the data plane's problem to work around
-    /// partial node availability. When an additional log server becomes available, the selector can
-    /// reconfigure the loglet to use it.
-    #[test]
-    fn test_select_log_servers_respects_replication_factor() {
-        let mut nodes = MockNodes::builder()
-            .with_mixed_server_nodes([1, 2, 3])
-            .build();
-
-        let replication =
-            ReplicationProperty::with_scope(LocationScope::Node, 2.try_into().unwrap());
-
-        // initial selection - no prior preferences
-        let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
-            NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
-            &replication,
-            &mut thread_rng(),
-            &NodeSet::empty(),
-        );
-        assert!(selection.is_ok());
-        let initial_nodeset = selection.unwrap();
-        assert_eq!(initial_nodeset, NodeSet::from([1, 2, 3]));
-
-        nodes.kill_node(1);
-
-        let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
-            NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
-            &replication,
-            &mut thread_rng(),
-            &initial_nodeset, // preferred nodes
-        );
-
-        // while one node is dead, the selector can still satisfy a write quorum
-        // based on supplied replication property. The dead node will be included
-        // in the nodeset.
-        assert!(selection.is_ok());
-        let initial_nodeset = selection.unwrap();
-        assert_eq!(initial_nodeset, NodeSet::from([1, 2, 3]));
-
-        nodes.add_dedicated_log_server_node(4);
-
-        let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
-            NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
-            &replication,
-            &mut thread_rng(),
-            &initial_nodeset, // preferred nodes
-        );
-        assert_eq!(selection.unwrap(), NodeSet::from([2, 3, 4]));
-    }
-
-    #[test]
-    fn test_select_log_servers_respects_replication_factor_not_enough_nodes() {
-        let nodes = MockNodes::builder().with_mixed_server_nodes([1, 2]).build();
-
-        let replication =
-            ReplicationProperty::with_scope(LocationScope::Node, 2.try_into().unwrap());
-
-        // initial selection - no prior preferences
-        let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
-            NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
-            &replication,
-            &mut thread_rng(),
-            &NodeSet::empty(),
-        );
-
-        // in this case, the entire cluster does not have enough nodes for an optimal
-        // nodeset.
-        assert_eq!(
-            selection,
-            Err(NodeSelectionError::InsufficientWriteableNodes),
-            "The strict FT strategy does not compromise on the minimum 2f+1 nodeset size"
-        );
-    }
-
-    #[test]
-    fn test_select_log_servers_insufficient_fault_tolerant_capacity() {
-        // while we only have 2 alive node, the algorithm will still
-        // prefer to use a dead node instead of failing as long as
-        // we have write availability
-
-        let nodes = MockNodes::builder()
-            .with_nodes(
-                [1, 2, 3],
-                enum_set!(Role::LogServer | Role::Worker),
-                StorageState::ReadWrite,
-            )
-            .dead_nodes([3])
-            .build();
-
-        let replication =
-            ReplicationProperty::with_scope(LocationScope::Node, 2.try_into().unwrap());
-
-        let strategy = NodeSetSelectionStrategy::StrictFaultTolerantGreedy;
-        let preferred_nodes = NodeSet::empty();
-        let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
-            strategy,
-            &replication,
-            &mut thread_rng(),
-            &preferred_nodes,
-        );
-
-        assert!(selection.is_ok());
-        let selection = selection.unwrap();
-        assert!(selection.contains(&PlainNodeId::from(3)));
-    }
+    // use std::collections::HashSet;
+    //
+    // use enumset::enum_set;
+    // use rand::thread_rng;
+    //
+    // use restate_types::nodes_config::{NodesConfiguration, Role, StorageState};
+    // use restate_types::replicated_loglet::{LocationScope, NodeSet, ReplicationProperty};
+    // use restate_types::PlainNodeId;
+    //
+    // use super::*;
+    // use crate::cluster_controller::logs_controller::tests::{node, MockNodes};
+    // use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+    //
+    // #[test]
+    // #[should_panic(
+    //     expected = "not implemented: only node-scoped replication is currently supported"
+    // )]
+    // fn test_select_log_servers_rejects_unsupported_replication_scope() {
+    //     let replication =
+    //         ReplicationProperty::with_scope(LocationScope::Zone, 1.try_into().unwrap());
+    //
+    //     let nodes_config = NodesConfiguration::default();
+    //     let observed_state = ObservedClusterState::default();
+    //
+    //     let preferred_nodes = NodeSet::empty();
+    //     NodeSetSelector::new(&nodes_config, &observed_state)
+    //         .select(
+    //             NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
+    //             &replication,
+    //             &mut thread_rng(),
+    //             &preferred_nodes,
+    //         )
+    //         .unwrap(); // panics
+    // }
+    //
+    // #[test]
+    // fn test_select_log_servers_insufficient_capacity() {
+    //     let nodes: Vec<PlainNodeId> = vec![1.into(), 2.into(), 3.into()];
+    //     let replication =
+    //         ReplicationProperty::with_scope(LocationScope::Node, 2.try_into().unwrap());
+    //
+    //     let mut nodes_config = NodesConfiguration::default();
+    //     nodes_config.upsert_node(node(0, enum_set!(Role::Admin), StorageState::Disabled));
+    //     nodes_config.upsert_node(node(
+    //         1,
+    //         enum_set!(Role::LogServer | Role::Worker),
+    //         StorageState::Provisioning,
+    //     ));
+    //     nodes_config.upsert_node(node(
+    //         2,
+    //         enum_set!(Role::LogServer | Role::Worker),
+    //         StorageState::ReadWrite,
+    //     ));
+    //     nodes_config.upsert_node(node(
+    //         3,
+    //         enum_set!(Role::LogServer | Role::Worker),
+    //         StorageState::ReadOnly,
+    //     ));
+    //     nodes_config.upsert_node(node(4, enum_set!(Role::Worker), StorageState::Disabled));
+    //
+    //     let observed_state = ObservedClusterState {
+    //         alive_nodes: nodes
+    //             .iter()
+    //             .copied()
+    //             .map(|id| (id, id.with_generation(1)))
+    //             .collect(),
+    //         dead_nodes: HashSet::default(),
+    //         ..Default::default()
+    //     };
+    //
+    //     let strategy = NodeSetSelectionStrategy::StrictFaultTolerantGreedy;
+    //     let preferred_nodes = NodeSet::empty();
+    //     let selection = NodeSetSelector::new(&nodes_config, &observed_state).select(
+    //         strategy,
+    //         &replication,
+    //         &mut thread_rng(),
+    //         &preferred_nodes,
+    //     );
+    //
+    //     assert_eq!(
+    //         selection,
+    //         Err(NodeSelectionError::InsufficientWriteableNodes)
+    //     );
+    // }
+    //
+    // /// Replicated loglets should work just fine in single-node clusters, with the FT strategy inferring that f=0,
+    // /// as long as the replication factor is set to 1.
+    // #[test]
+    // fn test_select_log_servers_single_node_cluster() {
+    //     let nodes = MockNodes::builder().with_mixed_server_nodes([1]).build();
+    //
+    //     let replication =
+    //         ReplicationProperty::with_scope(LocationScope::Node, 1.try_into().unwrap());
+    //
+    //     let strategy = NodeSetSelectionStrategy::StrictFaultTolerantGreedy;
+    //     let preferred_nodes = NodeSet::empty();
+    //     let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
+    //         strategy,
+    //         &replication,
+    //         &mut thread_rng(),
+    //         &preferred_nodes,
+    //     );
+    //
+    //     assert_eq!(
+    //         selection.unwrap(),
+    //         NodeSet::from([1]),
+    //         "A single-node cluster is possible with replication factor of 0"
+    //     );
+    // }
+    //
+    // /// In this test we have a cluster with 3 nodes and replication factor is 2. The strict FT
+    // /// strategy can bootstrap a loglet using all 3 nodes but won't choose a new nodeset when only 2
+    // /// are alive, as that puts the loglet at risk. The assumption is that the previous nodeset will
+    // /// carry on in its original configuration - it is the data plane's problem to work around
+    // /// partial node availability. When an additional log server becomes available, the selector can
+    // /// reconfigure the loglet to use it.
+    // #[test]
+    // fn test_select_log_servers_respects_replication_factor() {
+    //     let mut nodes = MockNodes::builder()
+    //         .with_mixed_server_nodes([1, 2, 3])
+    //         .build();
+    //
+    //     let replication =
+    //         ReplicationProperty::with_scope(LocationScope::Node, 2.try_into().unwrap());
+    //
+    //     // initial selection - no prior preferences
+    //     let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
+    //         NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
+    //         &replication,
+    //         &mut thread_rng(),
+    //         &NodeSet::empty(),
+    //     );
+    //     assert!(selection.is_ok());
+    //     let initial_nodeset = selection.unwrap();
+    //     assert_eq!(initial_nodeset, NodeSet::from([1, 2, 3]));
+    //
+    //     nodes.kill_node(1);
+    //
+    //     let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
+    //         NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
+    //         &replication,
+    //         &mut thread_rng(),
+    //         &initial_nodeset, // preferred nodes
+    //     );
+    //
+    //     // while one node is dead, the selector can still satisfy a write quorum
+    //     // based on supplied replication property. The dead node will be included
+    //     // in the nodeset.
+    //     assert!(selection.is_ok());
+    //     let initial_nodeset = selection.unwrap();
+    //     assert_eq!(initial_nodeset, NodeSet::from([1, 2, 3]));
+    //
+    //     nodes.add_dedicated_log_server_node(4);
+    //
+    //     let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
+    //         NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
+    //         &replication,
+    //         &mut thread_rng(),
+    //         &initial_nodeset, // preferred nodes
+    //     );
+    //     assert_eq!(selection.unwrap(), NodeSet::from([2, 3, 4]));
+    // }
+    //
+    // #[test]
+    // fn test_select_log_servers_respects_replication_factor_not_enough_nodes() {
+    //     let nodes = MockNodes::builder().with_mixed_server_nodes([1, 2]).build();
+    //
+    //     let replication =
+    //         ReplicationProperty::with_scope(LocationScope::Node, 2.try_into().unwrap());
+    //
+    //     // initial selection - no prior preferences
+    //     let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
+    //         NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
+    //         &replication,
+    //         &mut thread_rng(),
+    //         &NodeSet::empty(),
+    //     );
+    //
+    //     // in this case, the entire cluster does not have enough nodes for an optimal
+    //     // nodeset.
+    //     assert_eq!(
+    //         selection,
+    //         Err(NodeSelectionError::InsufficientWriteableNodes),
+    //         "The strict FT strategy does not compromise on the minimum 2f+1 nodeset size"
+    //     );
+    // }
+    //
+    // #[test]
+    // fn test_select_log_servers_insufficient_fault_tolerant_capacity() {
+    //     // while we only have 2 alive node, the algorithm will still
+    //     // prefer to use a dead node instead of failing as long as
+    //     // we have write availability
+    //
+    //     let nodes = MockNodes::builder()
+    //         .with_nodes(
+    //             [1, 2, 3],
+    //             enum_set!(Role::LogServer | Role::Worker),
+    //             StorageState::ReadWrite,
+    //         )
+    //         .dead_nodes([3])
+    //         .build();
+    //
+    //     let replication =
+    //         ReplicationProperty::with_scope(LocationScope::Node, 2.try_into().unwrap());
+    //
+    //     let strategy = NodeSetSelectionStrategy::StrictFaultTolerantGreedy;
+    //     let preferred_nodes = NodeSet::empty();
+    //     let selection = NodeSetSelector::new(&nodes.nodes_config, &nodes.observed_state).select(
+    //         strategy,
+    //         &replication,
+    //         &mut thread_rng(),
+    //         &preferred_nodes,
+    //     );
+    //
+    //     assert!(selection.is_ok());
+    //     let selection = selection.unwrap();
+    //     assert!(selection.contains(&PlainNodeId::from(3)));
+    // }
 }

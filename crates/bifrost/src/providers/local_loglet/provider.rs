@@ -17,8 +17,10 @@ use tracing::debug;
 
 use restate_types::config::{LocalLogletOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::LogId;
+use restate_types::logs::metadata::{
+    Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
+};
+use restate_types::logs::{LogId, LogletId};
 
 use super::log_store::RocksDbLogStore;
 use super::log_store_writer::RocksDbLogWriterHandle;
@@ -103,6 +105,20 @@ impl LogletProvider for LocalLogletProvider {
         };
 
         Ok(loglet as Arc<dyn Loglet>)
+    }
+
+    fn propose_new_loglet_params(
+        &self,
+        log_id: LogId,
+        chain: Option<&Chain>,
+        _defaults: &ProviderConfiguration,
+    ) -> Result<LogletParams, OperationError> {
+        let new_segment_index = chain
+            .map(|c| c.tail_index())
+            .unwrap_or(SegmentIndex::OLDEST);
+        Ok(LogletParams::from(
+            LogletId::new(log_id, new_segment_index).to_string(),
+        ))
     }
 
     async fn shutdown(&self) -> Result<(), OperationError> {

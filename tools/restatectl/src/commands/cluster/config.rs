@@ -16,7 +16,7 @@ use std::fmt::{self, Display, Write};
 use cling::prelude::*;
 
 use restate_types::{
-    logs::metadata::DefaultProvider, partition_table::ReplicationStrategy,
+    logs::metadata::ProviderConfiguration, partition_table::ReplicationStrategy,
     protobuf::cluster::ClusterConfiguration,
 };
 
@@ -43,7 +43,7 @@ fn cluster_config_string(config: ClusterConfiguration) -> anyhow::Result<String>
 
     write_leaf(&mut w, 1, false, "Bifrost replication strategy", strategy)?;
 
-    let provider: DefaultProvider = config.default_provider.unwrap_or_default().try_into()?;
+    let provider: ProviderConfiguration = config.default_provider.unwrap_or_default().try_into()?;
     write_default_provider(&mut w, 1, provider)?;
 
     Ok(w)
@@ -52,19 +52,19 @@ fn cluster_config_string(config: ClusterConfiguration) -> anyhow::Result<String>
 fn write_default_provider<W: fmt::Write>(
     w: &mut W,
     depth: usize,
-    provider: DefaultProvider,
+    provider: ProviderConfiguration,
 ) -> Result<(), fmt::Error> {
     let title = "Bifrost Provider";
     match provider {
         #[cfg(any(test, feature = "memory-loglet"))]
-        DefaultProvider::InMemory => {
+        ProviderConfiguration::InMemory => {
             write_leaf(w, depth, true, title, "in-memory")?;
         }
-        DefaultProvider::Local => {
+        ProviderConfiguration::Local => {
             write_leaf(w, depth, true, title, "local")?;
         }
         #[cfg(feature = "replicated-loglet")]
-        DefaultProvider::Replicated(config) => {
+        ProviderConfiguration::Replicated(config) => {
             write_leaf(w, depth, true, title, "replicated")?;
             let depth = depth + 1;
             write_leaf(

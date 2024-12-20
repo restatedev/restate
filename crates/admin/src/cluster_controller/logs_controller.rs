@@ -10,32 +10,30 @@
 
 mod nodeset_selection;
 
-use futures::never::Never;
-use rand::prelude::IteratorRandom;
-use rand::thread_rng;
 use std::collections::HashMap;
 use std::iter;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::never::Never;
+use rand::prelude::IteratorRandom;
+use rand::thread_rng;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, trace_span, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
-use restate_core::metadata_store::{
-    retry_on_network_error, MetadataStoreClient, Precondition, ReadWriteError, WriteError,
-};
+use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadWriteError, WriteError};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
-use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;
 use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{
-    Chain, DefaultProvider, LogletConfig, LogletParams, Logs, LogsConfiguration,
-    NodeSetSelectionStrategy, ProviderKind, ReplicatedLogletConfig, SegmentIndex,
+    Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, NodeSetSelectionStrategy,
+    ProviderConfiguration, ProviderKind, ReplicatedLogletConfig, SegmentIndex,
 };
 use restate_types::logs::{LogId, LogletId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
@@ -67,6 +65,8 @@ pub enum LogsControllerError {
     LogletParamsToConfiguration(GenericError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
+    #[error(transparent)]
+    Other(GenericError),
 }
 
 /// Node set selector hints for the [`LogsController`].
@@ -320,17 +320,17 @@ fn try_provisioning(
     node_set_selector_hints: impl NodeSetSelectorHints,
 ) -> Option<LogletConfiguration> {
     match logs_configuration.default_provider {
-        DefaultProvider::Local => {
+        ProviderConfiguration::Local => {
             let log_id = LogletId::new(log_id, SegmentIndex::OLDEST);
             Some(LogletConfiguration::Local(log_id.into()))
         }
         #[cfg(any(test, feature = "memory-loglet"))]
-        DefaultProvider::InMemory => {
+        ProviderConfiguration::InMemory => {
             let log_id = LogletId::new(log_id, SegmentIndex::OLDEST);
             Some(LogletConfiguration::Memory(log_id.into()))
         }
         #[cfg(feature = "replicated-loglet")]
-        DefaultProvider::Replicated(ref config) => build_new_replicated_loglet_configuration(
+        ProviderConfiguration::Replicated(ref config) => build_new_replicated_loglet_configuration(
             config,
             LogletId::new(log_id, SegmentIndex::OLDEST),
             &Metadata::with_current(|m| m.nodes_config_ref()),
@@ -436,10 +436,10 @@ impl LogletConfiguration {
     ) -> bool {
         match (self, &logs_configuration.default_provider) {
             #[cfg(any(test, feature = "memory-loglet"))]
-            (Self::Memory(_), DefaultProvider::InMemory) => false,
-            (Self::Local(_), DefaultProvider::Local) => false,
+            (Self::Memory(_), ProviderConfiguration::InMemory) => false,
+            (Self::Local(_), ProviderConfiguration::Local) => false,
             #[cfg(feature = "replicated-loglet")]
-            (Self::Replicated(params), DefaultProvider::Replicated(config)) => {
+            (Self::Replicated(params), ProviderConfiguration::Replicated(config)) => {
                 let sequencer_change_required = !observed_cluster_state
                     .is_node_alive(params.sequencer)
                     && !observed_cluster_state.alive_nodes.is_empty();
@@ -501,10 +501,14 @@ impl LogletConfiguration {
 
         match logs_configuration.default_provider {
             #[cfg(any(test, feature = "memory-loglet"))]
-            DefaultProvider::InMemory => Some(LogletConfiguration::Memory(loglet_id.next().into())),
-            DefaultProvider::Local => Some(LogletConfiguration::Local(loglet_id.next().into())),
+            ProviderConfiguration::InMemory => {
+                Some(LogletConfiguration::Memory(loglet_id.next().into()))
+            }
+            ProviderConfiguration::Local => {
+                Some(LogletConfiguration::Local(loglet_id.next().into()))
+            }
             #[cfg(feature = "replicated-loglet")]
-            DefaultProvider::Replicated(ref config) => {
+            ProviderConfiguration::Replicated(ref config) => {
                 let previous_params = match self {
                     Self::Replicated(previous_params) => Some(previous_params),
                     _ => None,
@@ -926,24 +930,15 @@ pub struct LogsController {
 
 impl LogsController {
     pub async fn init(
-        configuration: &Configuration,
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
         metadata_writer: MetadataWriter,
     ) -> Result<Self> {
-        // obtain the latest logs or init it with an empty logs variant
-        let logs = retry_on_network_error(
-            configuration.common.network_error_retry_policy.clone(),
-            || {
-                metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                    Logs::from_configuration(configuration)
-                })
-            },
-        )
-        .await?;
-
-        let logs_configuration = logs.configuration().clone();
-        metadata_writer.update(Arc::new(logs)).await?;
+        //  fetches latest logs or init it with an empty logs variant
+        BifrostAdmin::new(&bifrost, &metadata_writer, &metadata_store_client)
+            .init_metadata()
+            .await
+            .map_err(|e| LogsControllerError::Other(e.into()))?;
 
         //todo(azmy): make configurable
         let retry_policy = RetryPolicy::exponential(
@@ -955,7 +950,10 @@ impl LogsController {
 
         let mut this = Self {
             effects: Some(Vec::new()),
-            inner: LogsControllerInner::new(logs_configuration, retry_policy),
+            inner: LogsControllerInner::new(
+                Metadata::with_current(|m| m.logs_ref().configuration().clone()),
+                retry_policy,
+            ),
             bifrost,
             metadata_store_client,
             metadata_writer,
@@ -1279,7 +1277,7 @@ pub mod tests {
 
     use enumset::{enum_set, EnumSet};
     use restate_types::logs::metadata::{
-        DefaultProvider, LogsConfiguration, NodeSetSelectionStrategy, ReplicatedLogletConfig,
+        LogsConfiguration, NodeSetSelectionStrategy, ProviderConfiguration, ReplicatedLogletConfig,
     };
     use restate_types::logs::LogletId;
     use restate_types::nodes_config::{
@@ -1452,7 +1450,7 @@ pub mod tests {
 
     fn logs_configuration(replication_factor: u8) -> LogsConfiguration {
         LogsConfiguration {
-            default_provider: DefaultProvider::Replicated(ReplicatedLogletConfig {
+            default_provider: ProviderConfiguration::Replicated(ReplicatedLogletConfig {
                 replication_property: ReplicationProperty::new(
                     NonZeroU8::new(replication_factor).expect("must be non zero"),
                 ),
@@ -1537,7 +1535,7 @@ pub mod tests {
             &nodes.observed_state
         ));
 
-        let DefaultProvider::Replicated(ref replicated_loglet_config) =
+        let ProviderConfiguration::Replicated(ref replicated_loglet_config) =
             logs_config.default_provider
         else {
             unreachable!()
@@ -1571,7 +1569,7 @@ pub mod tests {
 
         let logs_config = logs_configuration(2);
 
-        let DefaultProvider::Replicated(ref replicated_loglet_config) =
+        let ProviderConfiguration::Replicated(ref replicated_loglet_config) =
             logs_config.default_provider
         else {
             unreachable!()

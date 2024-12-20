@@ -162,7 +162,6 @@ where
         .await?;
 
         let logs_controller = LogsController::init(
-            &configuration,
             service.bifrost.clone(),
             service.metadata_store_client.clone(),
             service.metadata_writer.clone(),

@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use restate_core::{ShutdownError, SyncError};
 use restate_types::errors::MaybeRetryableError;
+use restate_types::logs::builder::BuilderError;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn};
 
@@ -53,6 +54,8 @@ pub enum EnqueueError<T> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdminError {
+    #[error("log {0} already exists")]
+    LogAlreadyExists(LogId),
     #[error("segment conflicts with existing segment with base_lsn={0}")]
     SegmentConflict(Lsn),
     #[error("segment index found in metadata does not match expected {expected}!={found}")]
@@ -60,6 +63,8 @@ pub enum AdminError {
         expected: SegmentIndex,
         found: SegmentIndex,
     },
+    #[error("loglet params could not be deserialized: {0}")]
+    ParamsSerde(#[from] serde_json::Error),
 }
 
 impl From<OperationError> for Error {
@@ -67,6 +72,16 @@ impl From<OperationError> for Error {
         match value {
             OperationError::Shutdown(e) => Error::Shutdown(e),
             OperationError::Other(e) => Error::LogletError(e),
+        }
+    }
+}
+
+impl From<BuilderError> for AdminError {
+    fn from(value: BuilderError) -> Self {
+        match value {
+            BuilderError::LogAlreadyExists(log_id) => AdminError::LogAlreadyExists(log_id),
+            BuilderError::ParamsSerde(error) => AdminError::ParamsSerde(error),
+            BuilderError::SegmentConflict(lsn) => AdminError::SegmentConflict(lsn),
         }
     }
 }
