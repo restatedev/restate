@@ -27,6 +27,7 @@ use restate_types::schema::Schema;
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::snapshots::SnapshotRepository;
+use crate::partition::ProcessorStopReason;
 use crate::partition_processor_manager::processor_state::StartedProcessor;
 use crate::PartitionProcessorBuilder;
 
@@ -68,7 +69,12 @@ impl SpawnPartitionProcessorTask {
             partition_id=%self.partition_id,
         )
     )]
-    pub fn run(self) -> anyhow::Result<(StartedProcessor, RuntimeTaskHandle<anyhow::Result<()>>)> {
+    pub fn run(
+        self,
+    ) -> anyhow::Result<(
+        StartedProcessor,
+        RuntimeTaskHandle<anyhow::Result<ProcessorStopReason>>,
+    )> {
         let Self {
             task_name,
             partition_id,
