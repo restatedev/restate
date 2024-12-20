@@ -35,7 +35,6 @@ use restate_local_cluster_runner::{
 use restate_types::config::{LogFormat, MetadataStoreClient};
 use restate_types::net::AdvertisedAddress;
 use restate_types::protobuf::cluster::node_state::State;
-use restate_types::protobuf::cluster::{NodeState, RunMode};
 use restate_types::{config::Configuration, nodes_config::Role};
 
 mod common;
@@ -123,25 +122,22 @@ async fn any_partition_active(
             .cluster_state
             .unwrap();
 
-        if cluster_state
-            .nodes
-            .values()
-            .find(|n| {
-                n.state.as_ref().is_some_and(|s| match s {
-                    State::Alive(s) => s
-                        .partitions
-                        .values()
-                        .find(|p| p.effective_mode.cmp(&1).is_eq())
-                        .is_some(),
-                    _ => false,
-                })
+        if cluster_state.nodes.values().any(|n| {
+            n.state.as_ref().is_some_and(|s| match s {
+                State::Alive(s) => s
+                    .partitions
+                    .values()
+                    .any(|p| p.effective_mode.cmp(&1).is_eq()),
+                _ => false,
             })
-            .is_some()
-        {
+        }) {
             break; // partition is ready; we can request snapshot
         }
         if tokio::time::Instant::now() > deadline {
-            fail!("Partition processor did not become ready within the timeout");
+            fail!(
+                "Partition processor did not become ready within {:?}",
+                timeout
+            )?;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
