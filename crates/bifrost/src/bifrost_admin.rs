@@ -11,13 +11,13 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
+use restate_core::metadata_store::retry_on_network_error;
 use tracing::{debug, info, instrument};
 
 use restate_core::{Metadata, MetadataKind, MetadataWriter};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::Configuration;
-use restate_types::logs::builder::BuilderError;
-use restate_types::logs::metadata::{LogletParams, Logs, ProviderKind, SegmentIndex};
+use restate_types::logs::metadata::{Chain, LogletParams, Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::Version;
@@ -74,6 +74,61 @@ impl<'a> BifrostAdmin<'a> {
     pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<()> {
         self.bifrost.inner.fail_if_shutting_down()?;
         self.bifrost.inner.trim(log_id, trim_point).await
+    }
+
+    /// Seals a loglet under a set of conditions.
+    ///
+    /// The loglet will be sealed if and only if the following is true:
+    ///   - if segment_index is set, the tail loglet must match segment_index.
+    ///   If the intention is to create the log, then `segment_index` must be set to `None`.
+    ///
+    /// This will continue to retry sealing for seal retryable errors automatically.
+    #[instrument(level = "debug", skip(self), err)]
+    pub async fn seal_and_auto_extend_chain(
+        &self,
+        log_id: LogId,
+        segment_index: Option<SegmentIndex>,
+    ) -> Result<()> {
+        self.bifrost.inner.fail_if_shutting_down()?;
+        let logs = Metadata::with_current(|m| m.logs_snapshot());
+        let provider_config = &logs.configuration().default_provider;
+        let provider = self.bifrost.inner.provider_for(provider_config.kind())?;
+        // if this is a new log, we don't need to seal and we can immediately write to metadata
+        // store, otherwise, we need to seal first.
+        if logs.chain(&log_id).is_none() && segment_index.is_none() {
+            let proposed_params =
+                provider.propose_new_loglet_params(log_id, None, provider_config)?;
+            self.add_log(log_id, provider_config.kind(), proposed_params)
+                .await?;
+            return Ok(());
+        }
+
+        let segment_index = segment_index
+            .or_else(|| logs.chain(&log_id).map(|c| c.tail_index()))
+            .ok_or(Error::UnknownLogId(log_id))?;
+
+        let sealed_segment = loop {
+            let sealed_segment = self.seal(log_id, segment_index).await?;
+            if sealed_segment.tail.is_sealed() {
+                break sealed_segment;
+            }
+            debug!(%log_id, %segment_index, "Segment is not sealed yet");
+            tokio::time::sleep(Configuration::pinned().bifrost.seal_retry_interval.into()).await;
+        };
+
+        let proposed_params =
+            provider.propose_new_loglet_params(log_id, logs.chain(&log_id), provider_config)?;
+
+        self.add_segment_with_params(
+            log_id,
+            segment_index,
+            sealed_segment.tail.offset(),
+            provider_config.kind(),
+            proposed_params,
+        )
+        .await?;
+
+        Ok(())
     }
 
     /// Seals a loglet under a set of conditions.
@@ -187,34 +242,93 @@ impl<'a> BifrostAdmin<'a> {
         params: LogletParams,
     ) -> Result<()> {
         self.bifrost.inner.fail_if_shutting_down()?;
-        let logs = self
-            .metadata_store_client
-            .read_modify_write(BIFROST_CONFIG_KEY.clone(), move |logs: Option<Logs>| {
-                let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
+        let retry_policy = Configuration::pinned()
+            .common
+            .network_error_retry_policy
+            .clone();
+        let logs = retry_on_network_error(retry_policy, || {
+            self.metadata_store_client.read_modify_write(
+                BIFROST_CONFIG_KEY.clone(),
+                |logs: Option<Logs>| {
+                    let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
 
-                let mut builder = logs.into_builder();
-                let mut chain_builder = builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
+                    let mut builder = logs.into_builder();
+                    let mut chain_builder =
+                        builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
 
-                if chain_builder.tail().index() != last_segment_index {
-                    // tail is not what we expected.
-                    return Err(Error::from(AdminError::SegmentMismatch {
-                        expected: last_segment_index,
-                        found: chain_builder.tail().index(),
-                    }));
-                }
+                    if chain_builder.tail().index() != last_segment_index {
+                        // tail is not what we expected.
+                        return Err(Error::from(AdminError::SegmentMismatch {
+                            expected: last_segment_index,
+                            found: chain_builder.tail().index(),
+                        }));
+                    }
 
-                match chain_builder.append_segment(base_lsn, provider, params.clone()) {
-                    Err(e) => match e {
-                        BuilderError::SegmentConflict(lsn) => {
-                            Err(Error::from(AdminError::SegmentConflict(lsn)))
-                        }
-                        _ => unreachable!("the log must exist at this point"),
-                    },
-                    Ok(_) => Ok(builder.build()),
-                }
-            })
-            .await
-            .map_err(|e| e.transpose())?;
+                    let _ = chain_builder
+                        .append_segment(base_lsn, provider, params.clone())
+                        .map_err(AdminError::from)?;
+                    Ok(builder.build())
+                },
+            )
+        })
+        .await
+        .map_err(|e| e.transpose())?;
+
+        self.metadata_writer.update(Arc::new(logs)).await?;
+        Ok(())
+    }
+
+    /// Adds a new log if it doesn't exist.
+    #[instrument(level = "debug", skip(self), err)]
+    async fn add_log(
+        &self,
+        log_id: LogId,
+        provider: ProviderKind,
+        params: LogletParams,
+    ) -> Result<()> {
+        self.bifrost.inner.fail_if_shutting_down()?;
+        let retry_policy = Configuration::pinned()
+            .common
+            .network_error_retry_policy
+            .clone();
+        let logs = retry_on_network_error(retry_policy, || {
+            self.metadata_store_client.read_modify_write::<_, _, Error>(
+                BIFROST_CONFIG_KEY.clone(),
+                |logs: Option<Logs>| {
+                    // We assume that we'll always see a value set in metadata for BIFROST_CONFIG_KEY,
+                    // provisioning the empty logs metadata is not our responsibility.
+                    let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
+
+                    let mut builder = logs.into_builder();
+                    builder
+                        .add_log(log_id, Chain::new(provider, params.clone()))
+                        .map_err(AdminError::from)?;
+                    Ok(builder.build())
+                },
+            )
+        })
+        .await
+        .map_err(|e| e.transpose())?;
+
+        self.metadata_writer.update(Arc::new(logs)).await?;
+        Ok(())
+    }
+
+    /// Creates empty metadata if none exists for bifrost and publishes it to metadata
+    /// manager.
+    pub async fn init_metadata(&self) -> Result<(), Error> {
+        let retry_policy = Configuration::pinned()
+            .common
+            .network_error_retry_policy
+            .clone();
+
+        let logs = retry_on_network_error(retry_policy, || {
+            self.metadata_store_client
+                .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
+                    Logs::from_configuration(&Configuration::pinned())
+                })
+        })
+        .await?;
 
         self.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())

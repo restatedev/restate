@@ -25,10 +25,10 @@ use restate_core::MetadataKind;
 use restate_log_server::protobuf::log_server_svc_client::LogServerSvcClient;
 use restate_log_server::protobuf::GetDigestRequest;
 use restate_types::logs::metadata::Logs;
-use restate_types::logs::{LogletOffset, SequenceNumber, TailState};
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::log_server::RecordStatus;
 use restate_types::nodes_config::{NodesConfiguration, Role};
-use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletId};
+use restate_types::replicated_loglet::EffectiveNodeSet;
 use restate_types::storage::StorageCodec;
 use restate_types::Versioned;
 
@@ -40,7 +40,7 @@ use crate::util::grpc_connect;
 #[cling(run = "get_digest")]
 pub struct DigestOpts {
     /// The replicated loglet id
-    loglet_id: ReplicatedLogletId,
+    loglet_id: LogletId,
     /// Sync metadata from metadata store first
     #[arg(long)]
     sync_metadata: bool,

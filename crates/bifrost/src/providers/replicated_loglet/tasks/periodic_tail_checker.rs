@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use tracing::{debug, trace};
 
 use restate_core::network::TransportConnect;
-use restate_types::replicated_loglet::ReplicatedLogletId;
+use restate_types::logs::LogletId;
 
 use crate::loglet::{Loglet, OperationError};
 use crate::providers::replicated_loglet::loglet::ReplicatedLoglet;
@@ -24,7 +24,7 @@ pub struct PeriodicTailChecker {}
 
 impl PeriodicTailChecker {
     pub async fn run<T: TransportConnect>(
-        loglet_id: ReplicatedLogletId,
+        loglet_id: LogletId,
         loglet: Weak<ReplicatedLoglet<T>>,
         duration: Duration,
     ) -> anyhow::Result<()> {

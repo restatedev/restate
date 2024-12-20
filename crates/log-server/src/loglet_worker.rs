@@ -16,9 +16,8 @@ use tracing::{debug, trace, trace_span, warn, Instrument};
 
 use restate_core::network::Incoming;
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle, TaskKind};
-use restate_types::logs::{LogletOffset, SequenceNumber};
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::*;
-use restate_types::replicated_loglet::ReplicatedLogletId;
 use restate_types::GenerationalNodeId;
 
 use crate::logstore::{AsyncToken, LogStore};
@@ -93,14 +92,14 @@ impl LogletWorkerHandle {
 }
 
 pub struct LogletWorker<S> {
-    loglet_id: ReplicatedLogletId,
+    loglet_id: LogletId,
     log_store: S,
     loglet_state: LogletState,
 }
 
 impl<S: LogStore> LogletWorker<S> {
     pub fn start(
-        loglet_id: ReplicatedLogletId,
+        loglet_id: LogletId,
         log_store: S,
         loglet_state: LogletState,
     ) -> Result<LogletWorkerHandle, ShutdownError> {
@@ -613,7 +612,6 @@ mod tests {
     use restate_types::logs::{KeyFilter, Keys, Record, RecordCache};
     use restate_types::net::codec::MessageBodyExt;
     use restate_types::net::CURRENT_PROTOCOL_VERSION;
-    use restate_types::replicated_loglet::ReplicatedLogletId;
 
     use crate::metadata::LogletStateMap;
     use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};
@@ -642,7 +640,7 @@ mod tests {
     async fn test_simple_store_flow() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
+        const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
@@ -718,7 +716,7 @@ mod tests {
     async fn test_store_and_seal() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
+        const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
@@ -878,7 +876,7 @@ mod tests {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const PEER: GenerationalNodeId = GenerationalNodeId::new(2, 2);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
+        const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
@@ -1041,7 +1039,7 @@ mod tests {
     async fn test_simple_get_records_flow() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
+        const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
@@ -1258,7 +1256,7 @@ mod tests {
     async fn test_trim_basics() -> Result<()> {
         let log_store = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-        const LOGLET: ReplicatedLogletId = ReplicatedLogletId::new_unchecked(1);
+        const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
         let (net_tx, mut net_rx) = mpsc::channel(10);
         let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);

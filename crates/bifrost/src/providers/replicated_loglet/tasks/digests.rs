@@ -17,12 +17,12 @@ use tracing::{debug, trace, warn};
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenterFutureExt};
-use restate_types::logs::{LogletOffset, SequenceNumber};
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
     Digest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
 };
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicatedLogletParams};
+use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use crate::loglet::util::TailOffsetWatch;
@@ -40,7 +40,7 @@ struct ReplicationFailed;
 /// Tracks digest responses and record repairs to achieve a consistent and durable
 /// state of the loglet tail.
 pub struct Digests {
-    loglet_id: ReplicatedLogletId,
+    loglet_id: LogletId,
     // inclusive. The first record we need to repair.
     start_offset: LogletOffset,
     // exclusive (this should be the durable global_tail after finishing)
