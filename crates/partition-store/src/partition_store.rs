@@ -37,11 +37,12 @@ use restate_storage_api::{Storage, StorageError, Transaction};
 
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
+use crate::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::LocalPartitionSnapshot;
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
+use restate_types::storage::StorageCodec;
 
 pub type DB = rocksdb::DB;
 
@@ -766,13 +767,21 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn put_kv<K: TableKey, V: StorageEncode>(&mut self, key: K, value: &V) {
+    fn put_kv<K: TableKey, V: PartitionStoreProtobufValue + Clone + 'static>(
+        &mut self,
+        key: K,
+        value: &V,
+    ) {
         let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
         key.serialize_to(key_buffer);
         let key_buffer = key_buffer.split();
 
         let value_buffer = self.cleared_value_buffer_mut(0);
-        StorageCodec::encode(value, value_buffer).unwrap();
+        StorageCodec::encode(
+            &ProtobufStorageWrapper::<V::ProtobufType>(value.clone().into()),
+            value_buffer,
+        )
+        .unwrap();
         let value_buffer = value_buffer.split();
 
         self.put_cf(K::TABLE, key_buffer, value_buffer);
@@ -791,7 +800,9 @@ pub(crate) trait StorageAccess {
     fn get_value<K, V>(&mut self, key: K) -> Result<Option<V>>
     where
         K: TableKey,
-        V: StorageDecode,
+        V: PartitionStoreProtobufValue,
+        <<V as PartitionStoreProtobufValue>::ProtobufType as TryInto<V>>::Error:
+            Into<anyhow::Error>,
     {
         let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
         key.serialize_to(&mut buf);
@@ -802,10 +813,7 @@ pub(crate) trait StorageAccess {
                 let slice = value.as_ref().map(|v| v.as_ref());
 
                 if let Some(mut slice) = slice {
-                    Ok(Some(
-                        StorageCodec::decode::<V, _>(&mut slice)
-                            .map_err(|err| StorageError::Generic(err.into()))?,
-                    ))
+                    Ok(Some(V::decode(&mut slice)?))
                 } else {
                     Ok(None)
                 }

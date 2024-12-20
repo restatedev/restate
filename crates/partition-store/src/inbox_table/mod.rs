@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::TableKind::Inbox;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
@@ -19,10 +20,9 @@ use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::inbox_table::{
     InboxEntry, InboxTable, ReadOnlyInboxTable, SequenceNumberInboxEntry,
 };
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::Result;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
-use restate_types::storage::StorageCodec;
 use std::future::Future;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
@@ -37,6 +37,10 @@ define_table_key!(
         sequence_number: u64
     )
 );
+
+impl PartitionStoreProtobufValue for InboxEntry {
+    type ProtobufType = crate::protobuf_types::v1::InboxEntry;
+}
 
 fn peek_inbox<S: StorageAccess>(
     storage: &mut S,
@@ -197,8 +201,7 @@ fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxE
     let key = InboxKey::deserialize_from(&mut Cursor::new(k))?;
     let sequence_number = *key.sequence_number_ok_or()?;
 
-    let inbox_entry = StorageCodec::decode::<InboxEntry, _>(&mut v)
-        .map_err(|error| StorageError::Generic(error.into()))?;
+    let inbox_entry = InboxEntry::decode(&mut v)?;
 
     Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))
 }
