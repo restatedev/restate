@@ -6451,6 +6451,7 @@ dependencies = [
 name = "restate-local-cluster-runner"
 version = "1.1.6"
 dependencies = [
+ "anyhow",
  "arc-swap",
  "clap",
  "clap-verbosity-flag",
@@ -6462,6 +6463,7 @@ dependencies = [
  "rand",
  "regex",
  "reqwest",
+ "restate-core",
  "restate-metadata-store",
  "restate-types",
  "rev_lines",

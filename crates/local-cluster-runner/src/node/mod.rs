@@ -8,6 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::random_socket_address;
+use arc_swap::ArcSwapOption;
+use enumset::{enum_set, EnumSet};
+use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
+use itertools::Itertools;
+use regex::{Regex, RegexSet};
+use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_core::protobuf::node_ctl_svc::{
+    ProvisionClusterRequest as ProtoProvisionClusterRequest, ProvisionClusterResponseKind,
+};
+use restate_types::logs::metadata::DefaultProvider;
+use restate_types::partition_table::ReplicationStrategy;
+use restate_types::retries::RetryPolicy;
+use restate_types::{
+    config::{Configuration, MetadataStoreClient},
+    errors::GenericError,
+    metadata_store::keys::NODES_CONFIG_KEY,
+    net::{AdvertisedAddress, BindAddress},
+    nodes_config::{NodesConfiguration, Role},
+    PlainNodeId,
+};
+use rev_lines::RevLines;
+use serde::{Deserialize, Serialize};
+use std::num::NonZeroU16;
 use std::{
     ffi::OsString,
     fmt::Display,
@@ -22,14 +47,6 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
-
-use arc_swap::ArcSwapOption;
-use enumset::{enum_set, EnumSet};
-use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
-use itertools::Itertools;
-use regex::{Regex, RegexSet};
-use rev_lines::RevLines;
-use serde::{Deserialize, Serialize};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -39,17 +56,6 @@ use tokio::{
 use tokio::{process::Command, sync::mpsc::Sender};
 use tracing::{error, info, warn};
 use typed_builder::TypedBuilder;
-
-use restate_types::{
-    config::{Configuration, MetadataStoreClient},
-    errors::GenericError,
-    metadata_store::keys::NODES_CONFIG_KEY,
-    net::{AdvertisedAddress, BindAddress},
-    nodes_config::{NodesConfiguration, Role},
-    PlainNodeId,
-};
-
-use crate::random_socket_address;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
 pub struct Node {
@@ -746,6 +752,53 @@ impl StartedNode {
         };
 
         !nodes_config.get_log_server_storage_state(&node_id).empty()
+    }
+
+    /// Provisions the cluster on this node with the given configuration. Returns true if the
+    /// cluster was newly provisioned.
+    pub async fn provision_cluster(
+        &self,
+        num_partitions: Option<NonZeroU16>,
+        placement_strategy: Option<ReplicationStrategy>,
+        log_provider: Option<DefaultProvider>,
+    ) -> anyhow::Result<bool> {
+        let channel = create_tonic_channel_from_advertised_address(
+            self.node_address().clone(),
+            &Configuration::default().networking,
+        );
+
+        let request = ProtoProvisionClusterRequest {
+            dry_run: false,
+            num_partitions: num_partitions.map(|num| u32::from(num.get())),
+            placement_strategy: placement_strategy.map(Into::into),
+            log_provider: log_provider.map(|log_provider| log_provider.into()),
+        };
+
+        let retry_policy = RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.0,
+            Some(10),
+            Some(Duration::from_secs(1)),
+        );
+        let client = NodeCtlSvcClient::new(channel);
+
+        let response = retry_policy
+            .retry(|| {
+                let mut client = client.clone();
+                let request = request.clone();
+                async move { client.provision_cluster(request).await }
+            })
+            .await?
+            .into_inner();
+
+        Ok(match response.kind() {
+            ProvisionClusterResponseKind::ProvisionClusterResponseTypeUnknown => {
+                panic!("unknown cluster response type")
+            }
+            ProvisionClusterResponseKind::DryRun => unreachable!("request non dry run"),
+            ProvisionClusterResponseKind::NewlyProvisioned => true,
+            ProvisionClusterResponseKind::AlreadyProvisioned => false,
+        })
     }
 }
 
