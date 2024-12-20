@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
+use restate_types::logs::metadata::{
+    Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
+};
 use restate_types::logs::LogId;
 
 use super::{Loglet, OperationError};
@@ -36,6 +38,16 @@ pub trait LogletProvider: Send + Sync {
         segment_index: SegmentIndex,
         params: &LogletParams,
     ) -> Result<Arc<dyn Loglet>>;
+
+    /// Create a loglet client for a given segment and configuration.
+    ///
+    /// if `chain` is None, this means we no chain exists already for this log.
+    fn propose_new_loglet_params(
+        &self,
+        log_id: LogId,
+        chain: Option<&Chain>,
+        defaults: &ProviderConfiguration,
+    ) -> Result<LogletParams, OperationError>;
 
     /// A hook that's called after provider is started.
     async fn post_start(&self) {}
