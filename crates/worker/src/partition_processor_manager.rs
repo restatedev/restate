@@ -73,6 +73,7 @@ use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
+use crate::partition::ProcessorStopReason;
 use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
 use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
 use crate::partition_processor_manager::processor_state::{
@@ -103,6 +104,7 @@ pub struct PartitionProcessorManager {
 
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
+    snapshot_import_tasks: FuturesUnordered<TaskHandle<ImportSnapshotResultInternal>>,
     snapshot_repository: Option<SnapshotRepository>,
 }
 
@@ -112,6 +114,7 @@ struct PendingSnapshotTask {
 }
 
 type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
+type ImportSnapshotResultInternal = Result<(), SnapshotError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -425,7 +428,20 @@ impl PartitionProcessorManager {
                         ProcessorState::Started { processor, .. } => {
                             self.invokers_status_reader
                                 .remove(processor.as_ref().expect("must be some").key_range());
-                            warn!(%partition_id, "Partition processor exited unexpectedly: {result:?}");
+
+                            match result {
+                                Ok(ProcessorStopReason::LogTrimGap { to_lsn }) => {
+                                    if self.snapshot_repository.is_some() {
+                                        info!(%partition_id, "Partition processor stopped due to a log trim gap, will look for snapshot with LSN >= {to_lsn}");
+                                        // todo(pavel): spawn snapshot import task for the partition
+                                    } else {
+                                        warn!(%partition_id, "Partition processor stopped due to a log trim gap, and no snapshot repository is configured: {result:?}");
+                                    }
+                                }
+                                _ => {
+                                    warn!(%partition_id, "Partition processor exited unexpectedly: {result:?}")
+                                }
+                            }
                         }
                         ProcessorState::Stopping {
                             processor,
@@ -487,7 +503,7 @@ impl PartitionProcessorManager {
     fn await_runtime_task_result(
         &mut self,
         partition_id: PartitionId,
-        runtime_task_handle: RuntimeTaskHandle<anyhow::Result<()>>,
+        runtime_task_handle: RuntimeTaskHandle<anyhow::Result<ProcessorStopReason>>,
     ) {
         self.asynchronous_operations.spawn(
             async move {
@@ -921,8 +937,13 @@ struct AsynchronousEvent {
 
 #[derive(strum::IntoStaticStr)]
 enum EventKind {
-    Started(anyhow::Result<(StartedProcessor, RuntimeTaskHandle<anyhow::Result<()>>)>),
-    Stopped(anyhow::Result<()>),
+    Started(
+        anyhow::Result<(
+            StartedProcessor,
+            RuntimeTaskHandle<anyhow::Result<ProcessorStopReason>>,
+        )>,
+    ),
+    Stopped(anyhow::Result<ProcessorStopReason>),
     NewLeaderEpoch {
         leader_epoch_token: LeaderEpochToken,
         result: anyhow::Result<LeaderEpoch>,

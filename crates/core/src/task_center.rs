@@ -520,15 +520,16 @@ impl TaskCenterInner {
 
     /// Starts the `root_future` on a new runtime. The runtime is stopped once the root future
     /// completes.
-    pub fn start_runtime<F>(
+    pub fn start_runtime<F, R>(
         self: &Arc<Self>,
         root_task_kind: TaskKind,
         runtime_name: &'static str,
         partition_id: Option<PartitionId>,
         root_future: impl FnOnce() -> F + Send + 'static,
-    ) -> Result<RuntimeTaskHandle<anyhow::Result<()>>, RuntimeError>
+    ) -> Result<RuntimeTaskHandle<R>, RuntimeError>
     where
-        F: Future<Output = anyhow::Result<()>> + 'static,
+        F: Future<Output = R> + 'static,
+        R: Send + 'static,
     {
         if self.shutdown_requested.load(Ordering::Relaxed) {
             return Err(ShutdownError.into());
