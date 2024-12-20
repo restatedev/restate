@@ -11,9 +11,8 @@
 use async_trait::async_trait;
 use tonic::{Request, Response, Status};
 
-use restate_types::logs::{LogletOffset, RecordCache, SequenceNumber};
+use restate_types::logs::{LogletId, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetDigest, LogServerResponseHeader, LogletInfo};
-use restate_types::replicated_loglet::ReplicatedLogletId;
 
 use crate::logstore::LogStore;
 use crate::metadata::LogletStateMap;
@@ -51,7 +50,7 @@ where
         request: Request<GetDigestRequest>,
     ) -> Result<Response<GetDigestResponse>, Status> {
         let request = request.into_inner();
-        let loglet_id = ReplicatedLogletId::from(request.loglet_id);
+        let loglet_id = LogletId::from(request.loglet_id);
         let state = self
             .state_map
             .get_or_load(loglet_id, &self.log_store)
@@ -82,7 +81,7 @@ where
         request: Request<GetLogletInfoRequest>,
     ) -> Result<Response<GetLogletInfoResponse>, Status> {
         let request = request.into_inner();
-        let loglet_id = ReplicatedLogletId::from(request.loglet_id);
+        let loglet_id = LogletId::from(request.loglet_id);
         let state = self
             .state_map
             .get_or_load(loglet_id, &self.log_store)

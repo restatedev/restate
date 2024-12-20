@@ -14,10 +14,8 @@ use cling::prelude::*;
 
 use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{Chain, LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::LogId;
-use restate_types::replicated_loglet::{
-    NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
-};
+use restate_types::logs::{LogId, LogletId};
+use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -49,7 +47,7 @@ async fn generate_log_metadata(opts: &GenerateLogMetadataOpts) -> anyhow::Result
         let log_id = LogId::from(log_id);
         let segment_index = SegmentIndex::OLDEST;
         let loglet_params = ReplicatedLogletParams {
-            loglet_id: ReplicatedLogletId::new(log_id, segment_index),
+            loglet_id: LogletId::new(log_id, segment_index),
             sequencer: opts.sequencer,
             replication: ReplicationProperty::new(opts.replication_factor),
             nodeset: NodeSet::from_iter(opts.nodeset.clone()),

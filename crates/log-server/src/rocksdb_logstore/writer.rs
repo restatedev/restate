@@ -33,8 +33,7 @@ use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::config::LogServerOptions;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::{LogletOffset, Record, RecordCache, SequenceNumber};
-use restate_types::replicated_loglet::ReplicatedLogletId;
+use restate_types::logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber};
 
 use super::keys::{DataRecordKey, KeyPrefixKind, MetadataKey};
 use super::record_format::DataRecordEncoder;
@@ -51,7 +50,7 @@ const RECORD_SIZE_GUESS: usize = 4_096; // Estimate 4KiB per record
 const INITIAL_SERDE_BUFFER_SIZE: usize = 16_384; // Initial capacity 16KiB
 
 pub struct LogStoreWriteCommand {
-    loglet_id: ReplicatedLogletId,
+    loglet_id: LogletId,
     data_update: Option<DataUpdate>,
     metadata_update: Option<MetadataUpdate>,
     ack: Option<Ack>,
@@ -220,7 +219,7 @@ impl LogStoreWriter {
     fn update_metadata(
         metadata_cf: &Arc<BoundColumnFamily>,
         write_batch: &mut WriteBatch,
-        loglet_id: ReplicatedLogletId,
+        loglet_id: LogletId,
         update: MetadataUpdate,
         buffer: &mut BytesMut,
     ) {
@@ -248,7 +247,7 @@ impl LogStoreWriter {
     fn trim_log_records(
         data_cf: &Arc<BoundColumnFamily>,
         write_batch: &mut WriteBatch,
-        loglet_id: ReplicatedLogletId,
+        loglet_id: LogletId,
         trim_point: LogletOffset,
         buffer: &mut BytesMut,
     ) {

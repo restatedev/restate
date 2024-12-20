@@ -37,11 +37,11 @@ use restate_types::logs::metadata::{
     Chain, DefaultProvider, LogletConfig, LogletParams, Logs, LogsConfiguration,
     NodeSetSelectionStrategy, ProviderKind, ReplicatedLogletConfig, SegmentIndex,
 };
-use restate_types::logs::{LogId, Lsn, TailState};
+use restate_types::logs::{LogId, LogletId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
-use restate_types::replicated_loglet::{ReplicatedLogletId, ReplicatedLogletParams};
+use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::{logs, GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
 
@@ -54,9 +54,6 @@ use crate::cluster_controller::scheduler;
 type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
 
 const FALLBACK_MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
-
-/// A single unified id type enables easier migration between loglet types.
-type LogletId = ReplicatedLogletId;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LogsControllerError {
@@ -335,7 +332,7 @@ fn try_provisioning(
         #[cfg(feature = "replicated-loglet")]
         DefaultProvider::Replicated(ref config) => build_new_replicated_loglet_configuration(
             config,
-            ReplicatedLogletId::new(log_id, SegmentIndex::OLDEST),
+            LogletId::new(log_id, SegmentIndex::OLDEST),
             &Metadata::with_current(|m| m.nodes_config_ref()),
             observed_cluster_state,
             None,
@@ -350,7 +347,7 @@ fn try_provisioning(
 #[cfg(feature = "replicated-loglet")]
 pub fn build_new_replicated_loglet_configuration(
     replicated_loglet_config: &ReplicatedLogletConfig,
-    loglet_id: ReplicatedLogletId,
+    loglet_id: LogletId,
     nodes_config: &NodesConfiguration,
     observed_cluster_state: &ObservedClusterState,
     previous_params: Option<&ReplicatedLogletParams>,
@@ -1284,12 +1281,11 @@ pub mod tests {
     use restate_types::logs::metadata::{
         DefaultProvider, LogsConfiguration, NodeSetSelectionStrategy, ReplicatedLogletConfig,
     };
+    use restate_types::logs::LogletId;
     use restate_types::nodes_config::{
         LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
-    use restate_types::replicated_loglet::{
-        NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
-    };
+    use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
     use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
     use crate::cluster_controller::logs_controller::{
@@ -1492,7 +1488,7 @@ pub mod tests {
             .build();
 
         let seq_n0 = ReplicatedLogletParams {
-            loglet_id: ReplicatedLogletId::from(1),
+            loglet_id: LogletId::from(1),
             sequencer: GenerationalNodeId::new(0, 1),
             replication: ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             nodeset: NodeSet::from([0, 1, 2]),
@@ -1583,7 +1579,7 @@ pub mod tests {
 
         let initial = build_new_replicated_loglet_configuration(
             replicated_loglet_config,
-            ReplicatedLogletId::from(1),
+            LogletId::from(1),
             &nodes.nodes_config,
             &nodes.observed_state,
             None,

@@ -14,11 +14,10 @@ use moka::{
 };
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use super::{LogletOffset, Record, SequenceNumber};
-use crate::replicated_loglet::ReplicatedLogletId;
+use super::{LogletId, LogletOffset, Record, SequenceNumber};
 
 /// Unique record key across different loglets.
-type RecordKey = (ReplicatedLogletId, LogletOffset);
+type RecordKey = (LogletId, LogletOffset);
 
 /// A a simple LRU-based record cache.
 ///
@@ -54,7 +53,7 @@ impl RecordCache {
     }
 
     /// Writes a record to cache externally
-    pub fn add(&self, loglet_id: ReplicatedLogletId, offset: LogletOffset, record: Record) {
+    pub fn add(&self, loglet_id: LogletId, offset: LogletOffset, record: Record) {
         let Some(ref inner) = self.inner else {
             return;
         };
@@ -65,7 +64,7 @@ impl RecordCache {
     /// Extend cache with records
     pub fn extend<I: AsRef<[Record]>>(
         &self,
-        loglet_id: ReplicatedLogletId,
+        loglet_id: LogletId,
         mut first_offset: LogletOffset,
         records: I,
     ) {
@@ -80,7 +79,7 @@ impl RecordCache {
     }
 
     /// Get a for given loglet id and offset.
-    pub fn get(&self, loglet_id: ReplicatedLogletId, offset: LogletOffset) -> Option<Record> {
+    pub fn get(&self, loglet_id: LogletId, offset: LogletOffset) -> Option<Record> {
         let inner = self.inner.as_ref()?;
 
         inner.get(&(loglet_id, offset))

@@ -15,11 +15,9 @@ use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_core::{TaskCenter, TaskKind};
 use restate_types::config::Configuration;
-use restate_types::logs::{LogletOffset, SequenceNumber};
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
-use restate_types::replicated_loglet::{
-    EffectiveNodeSet, NodeSet, ReplicatedLogletId, ReplicatedLogletParams,
-};
+use restate_types::replicated_loglet::{EffectiveNodeSet, NodeSet, ReplicatedLogletParams};
 use restate_types::retries::RetryPolicy;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
@@ -132,7 +130,7 @@ impl SealTask {
 
 struct SealSingleNode<T> {
     node_id: PlainNodeId,
-    loglet_id: ReplicatedLogletId,
+    loglet_id: LogletId,
     sequencer: GenerationalNodeId,
     seal_router: RpcRouter<Seal>,
     networking: Networking<T>,
