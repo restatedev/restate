@@ -58,7 +58,6 @@ impl ClusterState {
         })
     }
 
-    #[cfg(any(test, feature = "test-util"))]
     pub fn empty() -> Self {
         ClusterState {
             last_refreshed: None,
