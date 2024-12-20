@@ -21,7 +21,7 @@ use restate_types::logs::{LogId, Lsn, Record};
 use restate_types::retries::RetryIter;
 use restate_types::storage::StorageEncode;
 
-use crate::bifrost::BifrostInner;
+use crate::bifrost::{BifrostInner, ErrorRecoveryStrategy};
 use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::{Error, InputRecord, Result};
@@ -31,17 +31,25 @@ pub struct Appender {
     log_id: LogId,
     #[debug(skip)]
     pub(super) config: Live<Configuration>,
+    // todo: asoli remove
+    #[allow(unused)]
+    error_recovery_strategy: ErrorRecoveryStrategy,
     loglet_cache: Option<LogletWrapper>,
     #[debug(skip)]
     bifrost_inner: Arc<BifrostInner>,
 }
 
 impl Appender {
-    pub(crate) fn new(log_id: LogId, bifrost_inner: Arc<BifrostInner>) -> Self {
+    pub(crate) fn new(
+        log_id: LogId,
+        error_recovery_strategy: ErrorRecoveryStrategy,
+        bifrost_inner: Arc<BifrostInner>,
+    ) -> Self {
         let config = Configuration::updateable();
         Self {
             log_id,
             config,
+            error_recovery_strategy,
             loglet_cache: Default::default(),
             bifrost_inner,
         }

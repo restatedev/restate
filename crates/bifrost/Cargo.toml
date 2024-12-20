@@ -12,6 +12,8 @@ default = []
 replicated-loglet = []
 memory-loglet = ["restate-types/memory-loglet"]
 test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util"]
+# enables bifrost to auto seal and extend. This is a transitional feature that will be removed soon.
+auto-extend = []
 
 [dependencies]
 restate-core = { workspace = true }
