@@ -158,7 +158,7 @@ impl Worker {
             bifrost,
             SnapshotRepository::create_if_configured(
                 snapshots_options,
-                config.common.base_dir().join("pp-snapshots"),
+                config.worker.storage.snapshots_staging_dir(),
                 config.common.cluster_name().to_owned(),
             )
             .await

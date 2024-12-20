@@ -63,9 +63,10 @@ toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
 regex = "1.10.4"
+url = { version = "2.5.4", features = [] }
 
 [dev-dependencies]
-restate-admin = { workspace = true, features = ["memory-loglet"] }
+restate-admin = { workspace = true, features = ["memory-loglet", "clients"] }
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-local-cluster-runner = { workspace = true }
@@ -76,9 +77,13 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 googletest = { workspace = true }
+hyper-util = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
+tonic = { workspace = true, features = ["transport", "prost"] }
+tower = { workspace = true }
 tracing-subscriber = { workspace = true }
+url = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms", "profiling"] }

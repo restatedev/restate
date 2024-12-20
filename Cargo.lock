@@ -6732,6 +6732,7 @@ dependencies = [
  "futures-util",
  "googletest",
  "humantime",
+ "hyper-util",
  "pin-project",
  "regex",
  "restate-admin",
@@ -6758,9 +6759,12 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "tonic",
+ "tower 0.4.13",
  "tracing",
  "tracing-panic",
  "tracing-subscriber",
+ "url",
  "vergen",
 ]
 

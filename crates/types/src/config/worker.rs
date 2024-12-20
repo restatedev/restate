@@ -335,6 +335,10 @@ impl StorageOptions {
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("db")
     }
+
+    pub fn snapshots_staging_dir(&self) -> PathBuf {
+        super::data_dir("pp-snapshots")
+    }
 }
 
 impl Default for StorageOptions {
