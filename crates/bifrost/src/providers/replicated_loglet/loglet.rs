@@ -346,8 +346,8 @@ mod tests {
     use restate_types::config::{set_current_config, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::live::Live;
-    use restate_types::logs::Keys;
-    use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletId, ReplicationProperty};
+    use restate_types::logs::{Keys, LogletId};
+    use restate_types::replicated_loglet::{NodeSet, ReplicationProperty};
     use restate_types::{GenerationalNodeId, PlainNodeId};
 
     use crate::loglet::{AppendError, Loglet};
@@ -421,7 +421,7 @@ mod tests {
     // ** Single-node replicated-loglet smoke tests **
     #[test(restate_core::test(start_paused = true))]
     async fn test_append_local_sequencer_single_node() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new_unchecked(122);
+        let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -464,7 +464,7 @@ mod tests {
     // ** Single-node replicated-loglet seal **
     #[test(restate_core::test(start_paused = true))]
     async fn test_seal_local_sequencer_single_node() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new_unchecked(122);
+        let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -513,7 +513,7 @@ mod tests {
     #[test(restate_core::test(start_paused = true))]
     async fn single_node_gapless_loglet_smoke_test() -> Result<()> {
         let record_cache = RecordCache::new(1_000_000);
-        let loglet_id = ReplicatedLogletId::new_unchecked(122);
+        let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -528,7 +528,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn single_node_single_loglet_readstream() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new_unchecked(122);
+        let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -544,7 +544,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn single_node_single_loglet_readstream_with_trims() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new_unchecked(122);
+        let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -567,7 +567,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn single_node_append_after_seal() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new_unchecked(122);
+        let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -583,7 +583,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn single_node_append_after_seal_concurrent() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new_unchecked(122);
+        let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),
@@ -600,7 +600,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn single_node_seal_empty() -> Result<()> {
-        let loglet_id = ReplicatedLogletId::new_unchecked(122);
+        let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
             loglet_id,
             sequencer: GenerationalNodeId::new(1, 1),

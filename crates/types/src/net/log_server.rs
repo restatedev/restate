@@ -17,8 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use super::codec::{WireDecode, WireEncode};
 use super::{RpcRequest, TargetName};
-use crate::logs::{KeyFilter, LogletOffset, Record, SequenceNumber, TailState};
-use crate::replicated_loglet::ReplicatedLogletId;
+use crate::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
 use crate::time::MillisSinceEpoch;
 use crate::GenerationalNodeId;
 
@@ -166,14 +165,14 @@ define_logserver_rpc! {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogServerRequestHeader {
-    pub loglet_id: ReplicatedLogletId,
+    pub loglet_id: LogletId,
     /// If the sender has now knowledge of this value, it can safely be set to
     /// `LogletOffset::INVALID`
     pub known_global_tail: LogletOffset,
 }
 
 impl LogServerRequestHeader {
-    pub fn new(loglet_id: ReplicatedLogletId, known_global_tail: LogletOffset) -> Self {
+    pub fn new(loglet_id: LogletId, known_global_tail: LogletOffset) -> Self {
         Self {
             loglet_id,
             known_global_tail,

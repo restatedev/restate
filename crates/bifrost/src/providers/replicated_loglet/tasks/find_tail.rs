@@ -18,12 +18,10 @@ use restate_core::network::{Networking, TransportConnect};
 use restate_core::TaskCenterFutureExt;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{LogId, LogletOffset, RecordCache, SequenceNumber};
+use restate_types::logs::{LogId, LogletId, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail};
 use restate_types::net::replicated_loglet::{CommonRequestHeader, GetSequencerState};
-use restate_types::replicated_loglet::{
-    EffectiveNodeSet, ReplicatedLogletId, ReplicatedLogletParams,
-};
+use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
 use restate_types::PlainNodeId;
 
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
@@ -485,7 +483,7 @@ impl<T: TransportConnect> FindTailTask<T> {
 
 pub(super) struct FindTailOnNode<'a> {
     pub(super) node_id: PlainNodeId,
-    pub(super) loglet_id: ReplicatedLogletId,
+    pub(super) loglet_id: LogletId,
     pub(super) get_loglet_info_rpc: &'a RpcRouter<GetLogletInfo>,
     pub(super) known_global_tail: &'a TailOffsetWatch,
 }
@@ -603,7 +601,7 @@ impl<'a> FindTailOnNode<'a> {
 
 struct WaitForTailOnNode {
     node_id: PlainNodeId,
-    loglet_id: ReplicatedLogletId,
+    loglet_id: LogletId,
     wait_for_tail_rpc: RpcRouter<WaitForTail>,
     known_global_tail: TailOffsetWatch,
 }

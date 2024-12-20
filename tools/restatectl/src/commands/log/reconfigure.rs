@@ -21,11 +21,9 @@ use restate_admin::cluster_controller::protobuf::{
 };
 use restate_cli_util::{c_eprintln, c_println};
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
-use restate_types::logs::LogId;
+use restate_types::logs::{LogId, LogletId};
 use restate_types::protobuf::common::Version;
-use restate_types::replicated_loglet::{
-    NodeSet, ReplicatedLogletId, ReplicatedLogletParams, ReplicationProperty,
-};
+use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
 use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
@@ -162,7 +160,7 @@ async fn replicated_loglet_params(
         .map(SegmentIndex::from)
         .unwrap_or(chain.tail_index());
 
-    let loglet_id = ReplicatedLogletId::new(log_id, tail_index.next());
+    let loglet_id = LogletId::new(log_id, tail_index.next());
 
     let tail_segment = chain.tail();
 

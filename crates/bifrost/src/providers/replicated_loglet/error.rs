@@ -13,8 +13,7 @@ use std::sync::Arc;
 use restate_core::ShutdownError;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::LogId;
-use restate_types::replicated_loglet::ReplicatedLogletId;
+use restate_types::logs::{LogId, LogletId};
 
 use crate::loglet::OperationError;
 
@@ -25,7 +24,7 @@ pub(crate) enum ReplicatedLogletError {
     #[error("cannot find the tail of the loglet: {0}")]
     FindTailFailed(String),
     #[error("could not seal loglet_id={0}, insufficient nodes available for seal")]
-    SealFailed(ReplicatedLogletId),
+    SealFailed(LogletId),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }

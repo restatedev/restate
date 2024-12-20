@@ -17,11 +17,13 @@ use crate::identifiers::PartitionId;
 use crate::storage::StorageEncode;
 
 pub mod builder;
+mod loglet;
 pub mod metadata;
 mod record;
 mod record_cache;
 mod tail;
 
+pub use loglet::*;
 pub use record::Record;
 pub use record_cache::RecordCache;
 pub use tail::*;

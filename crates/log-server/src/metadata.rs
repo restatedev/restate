@@ -19,8 +19,7 @@ use xxhash_rust::xxh3::Xxh3Builder;
 use restate_bifrost::loglet::util::TailOffsetWatch;
 use restate_bifrost::loglet::OperationError;
 use restate_core::ShutdownError;
-use restate_types::logs::{LogletOffset, SequenceNumber, TailState};
-use restate_types::replicated_loglet::ReplicatedLogletId;
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use crate::logstore::LogStore;
@@ -65,7 +64,7 @@ impl LogStoreMarker {
 /// Caches loglet state in memory
 #[derive(Default, Clone)]
 pub struct LogletStateMap {
-    inner: Arc<AsyncMutex<HashMap<ReplicatedLogletId, LogletState, Xxh3Builder>>>,
+    inner: Arc<AsyncMutex<HashMap<LogletId, LogletState, Xxh3Builder>>>,
 }
 
 impl LogletStateMap {
@@ -76,7 +75,7 @@ impl LogletStateMap {
 
     pub async fn get_or_load<S: LogStore>(
         &self,
-        loglet_id: ReplicatedLogletId,
+        loglet_id: LogletId,
         log_store: &S,
     ) -> Result<LogletState, OperationError> {
         let mut guard = self.inner.lock().await;
