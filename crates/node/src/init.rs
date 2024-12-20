@@ -115,6 +115,8 @@ impl<'a> NodeInit<'a> {
 
         self.sync_metadata().await;
 
+        info!("Node initialization complete");
+
         Ok(())
     }
 

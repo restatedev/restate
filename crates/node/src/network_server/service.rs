@@ -17,9 +17,9 @@ use tracing::{debug, trace};
 
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvcServer;
-use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportConnect};
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_types::config::CommonOptions;
 use restate_types::health::Health;
@@ -109,7 +109,7 @@ impl NetworkServer {
             ))
             .accept_compressed(CompressionEncoding::Gzip)
             .send_compressed(CompressionEncoding::Gzip),
-            restate_core::network::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
+            restate_core::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder.register_grpc_service(
