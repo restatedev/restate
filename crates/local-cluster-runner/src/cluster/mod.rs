@@ -102,12 +102,6 @@ impl Cluster {
                 .start_clustered(base_dir.as_path(), &cluster_name)
                 .await
                 .map_err(|err| ClusterStartError::NodeStartError(i, err))?;
-            if node.admin_address().is_some() {
-                // admin nodes are needed for later nodes to bootstrap. we should wait until they are serving
-                HealthCheck::Admin
-                    .wait_healthy(&node, Duration::from_secs(30))
-                    .await?;
-            }
             started_nodes.push(node)
         }
 
