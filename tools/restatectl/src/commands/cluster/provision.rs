@@ -50,10 +50,6 @@ pub struct ProvisionOpts {
     /// Replication property
     #[clap(long, required_if_eq("bifrost_provider", "replicated"))]
     replication_property: Option<ReplicationProperty>,
-
-    /// Node set selection strategy
-    #[clap(long)]
-    nodeset_selection_strategy: Option<NodeSetSelectionStrategy>,
 }
 
 async fn cluster_provision(
@@ -74,7 +70,6 @@ async fn cluster_provision(
         extract_default_provider(
             bifrost_provider,
             provision_opts.replication_property.clone(),
-            provision_opts.nodeset_selection_strategy,
         )
     });
 
@@ -168,7 +163,6 @@ async fn cluster_provision(
 pub fn extract_default_provider(
     bifrost_provider: ProviderKind,
     replication_property: Option<ReplicationProperty>,
-    nodeset_selection_strategy: Option<NodeSetSelectionStrategy>,
 ) -> ProviderConfiguration {
     match bifrost_provider {
         ProviderKind::InMemory => ProviderConfiguration::InMemory,
@@ -176,7 +170,7 @@ pub fn extract_default_provider(
         ProviderKind::Replicated => {
             let config = ReplicatedLogletConfig {
                 replication_property: replication_property.clone().expect("is required"),
-                nodeset_selection_strategy: nodeset_selection_strategy.unwrap_or_default(),
+                nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
             };
             ProviderConfiguration::Replicated(config)
         }

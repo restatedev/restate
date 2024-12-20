@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU16;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
@@ -319,11 +318,6 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
         self.controller_handle
             .update_cluster_configuration(
-                NonZeroU16::new(
-                    u16::try_from(request.num_partitions)
-                        .map_err(|_| Status::invalid_argument("num_partitions is too big"))?,
-                )
-                .ok_or(Status::invalid_argument("num_partitions cannot be zero"))?,
                 request
                     .replication_strategy
                     .ok_or_else(|| {

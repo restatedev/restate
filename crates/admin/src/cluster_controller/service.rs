@@ -10,7 +10,6 @@
 
 mod state;
 
-use std::num::NonZeroU16;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -176,7 +175,6 @@ enum ClusterControllerCommand {
         response_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
     },
     UpdateClusterConfiguration {
-        num_partitions: NonZeroU16,
         replication_strategy: ReplicationStrategy,
         default_provider: ProviderConfiguration,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
@@ -242,7 +240,6 @@ impl ClusterControllerHandle {
 
     pub async fn update_cluster_configuration(
         &self,
-        num_partitions: NonZeroU16,
         replication_strategy: ReplicationStrategy,
         default_provider: ProviderConfiguration,
     ) -> Result<anyhow::Result<()>, ShutdownError> {
@@ -251,7 +248,6 @@ impl ClusterControllerHandle {
         let _ = self
             .tx
             .send(ClusterControllerCommand::UpdateClusterConfiguration {
-                num_partitions,
                 replication_strategy,
                 default_provider,
                 response_tx,
@@ -396,7 +392,6 @@ impl<T: TransportConnect> Service<T> {
 
     async fn update_cluster_configuration(
         &self,
-        num_partitions: u16,
         replication_strategy: ReplicationStrategy,
         default_provider: ProviderConfiguration,
     ) -> anyhow::Result<()> {
@@ -404,16 +399,7 @@ impl<T: TransportConnect> Service<T> {
             .metadata_writer
             .metadata_store_client()
             .read_modify_write(BIFROST_CONFIG_KEY.clone(), |current: Option<Logs>| {
-                let logs = match current {
-                    Some(logs) => logs,
-                    None => {
-                        let mut builder = Logs::empty().into_builder();
-                        builder.set_configuration(LogsConfiguration {
-                            default_provider: default_provider.clone(),
-                        });
-                        return Ok(builder.build());
-                    }
-                };
+                let logs = current.expect("logs should be initialized by BifrostService");
 
                 // we can only change the default provider
                 if logs.version() != Version::INVALID
@@ -458,25 +444,10 @@ impl<T: TransportConnect> Service<T> {
             .read_modify_write(
                 PARTITION_TABLE_KEY.clone(),
                 |current: Option<PartitionTable>| {
-                    let partition_table = match current {
-                        Some(partition_table) => partition_table,
-                        None => {
-                            // while not possible because we always initialize a partition table
-                            // we still can just create and return a new one
-                            let mut builder = PartitionTableBuilder::default();
-                            builder.with_equally_sized_partitions(num_partitions)?;
-                            builder.set_replication_strategy(replication_strategy);
-
-                            return Ok(builder.build());
-                        }
-                    };
+                    let partition_table =
+                        current.ok_or(ClusterConfigurationUpdateError::MissingPartitionTable)?;
 
                     let mut builder: PartitionTableBuilder = partition_table.into();
-                    if builder.num_partitions() != 0 && builder.num_partitions() != num_partitions {
-                        return Err(ClusterConfigurationUpdateError::RepartitionNotSupported);
-                    } else if builder.num_partitions() != num_partitions {
-                        builder.with_equally_sized_partitions(num_partitions)?;
-                    }
 
                     if builder.replication_strategy() != replication_strategy {
                         builder.set_replication_strategy(replication_strategy);
@@ -555,17 +526,12 @@ impl<T: TransportConnect> Service<T> {
                     .await;
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
-                num_partitions,
                 replication_strategy,
                 default_provider,
                 response_tx,
             } => {
                 let result = self
-                    .update_cluster_configuration(
-                        num_partitions.get(),
-                        replication_strategy,
-                        default_provider,
-                    )
+                    .update_cluster_configuration(replication_strategy, default_provider)
                     .await;
                 let _ = response_tx.send(result);
             }
@@ -613,12 +579,12 @@ async fn sync_cluster_controller_metadata() -> anyhow::Result<()> {
 enum ClusterConfigurationUpdateError {
     #[error("Unchanged")]
     Unchanged,
-    #[error("Repartitioning is not supported")]
-    RepartitionNotSupported,
     #[error("Changing default provider kind is not supported")]
     ChangingDefaultProviderNotSupported,
     #[error(transparent)]
     BuildError(#[from] partition_table::BuilderError),
+    #[error("missing partition table; cluster seems to be not provisioned")]
+    MissingPartitionTable,
 }
 
 #[derive(Clone)]
