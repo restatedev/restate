@@ -8,31 +8,35 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::init::{ProvisionClusterRequest, ProvisionClusterResponse};
+use crate::ProvisionClusterHandle;
 use bytes::BytesMut;
 use enumset::EnumSet;
 use futures::stream::BoxStream;
-use tokio_stream::StreamExt;
-use tonic::{Request, Response, Status, Streaming};
-
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvc;
-use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
-use restate_core::network::protobuf::node_ctl_svc::{
-    GetMetadataRequest, GetMetadataResponse, IdentResponse,
-};
 use restate_core::network::ConnectionManager;
 use restate_core::network::{ProtocolError, TransportConnect};
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
+use restate_core::protobuf::node_ctl_svc::{
+    GetMetadataRequest, GetMetadataResponse, IdentResponse,
+    ProvisionClusterRequest as ProtoProvisionClusterRequest,
+    ProvisionClusterResponse as ProtoProvisionClusterResponse,
+};
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
 use restate_types::health::Health;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::node::Message;
 use restate_types::storage::StorageCodec;
+use tokio_stream::StreamExt;
+use tonic::{Request, Response, Status, Streaming};
 
 pub struct NodeCtlSvcHandler {
     task_center: task_center::Handle,
     cluster_name: String,
     roles: EnumSet<Role>,
     health: Health,
+    node_handle: ProvisionClusterHandle,
 }
 
 impl NodeCtlSvcHandler {
@@ -41,12 +45,14 @@ impl NodeCtlSvcHandler {
         cluster_name: String,
         roles: EnumSet<Role>,
         health: Health,
+        node_handle: ProvisionClusterHandle,
     ) -> Self {
         Self {
             task_center,
             cluster_name,
             roles,
             health,
+            node_handle,
         }
     }
 }
@@ -113,6 +119,37 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         Ok(Response::new(GetMetadataResponse {
             encoded: encoded.freeze(),
         }))
+    }
+
+    async fn provision_cluster(
+        &self,
+        request: Request<ProtoProvisionClusterRequest>,
+    ) -> Result<Response<ProtoProvisionClusterResponse>, Status> {
+        let request = request.into_inner();
+
+        let response = self
+            .node_handle
+            .provision_cluster(
+                ProvisionClusterRequest::try_from(request)
+                    .map_err(|err| Status::invalid_argument(err.to_string()))?,
+            )
+            .await
+            .map_err(|_| Status::unavailable("System is shutting down"))?
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let response = match response {
+            ProvisionClusterResponse::DryRun(cluster_configuration) => {
+                ProtoProvisionClusterResponse::dry_run(cluster_configuration.into())
+            }
+            ProvisionClusterResponse::NewlyProvisioned(cluster_configuration) => {
+                ProtoProvisionClusterResponse::newly_provisioned(cluster_configuration.into())
+            }
+            ProvisionClusterResponse::AlreadyProvisioned => {
+                ProtoProvisionClusterResponse::already_provisioned()
+            }
+        };
+
+        Ok(Response::new(response))
     }
 }
 

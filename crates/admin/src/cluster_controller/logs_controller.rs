@@ -24,11 +24,8 @@ use tracing::{debug, error, trace, trace_span, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
-use restate_core::metadata_store::{
-    retry_on_network_error, MetadataStoreClient, Precondition, ReadWriteError, WriteError,
-};
+use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadWriteError, WriteError};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
-use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;
@@ -642,9 +639,9 @@ struct LogsControllerInner {
 }
 
 impl LogsControllerInner {
-    fn new(configuration: LogsConfiguration, retry_policy: RetryPolicy) -> Self {
+    fn new(current_logs: Arc<Logs>, retry_policy: RetryPolicy) -> Self {
         Self {
-            current_logs: Arc::new(Logs::with_logs_configuration(configuration)),
+            current_logs,
             logs_state: HashMap::with_hasher(Xxh3Builder::default()),
             logs_write_in_progress: None,
             retry_policy,
@@ -928,26 +925,11 @@ pub struct LogsController {
 }
 
 impl LogsController {
-    pub async fn init(
-        configuration: &Configuration,
+    pub fn new(
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
         metadata_writer: MetadataWriter,
-    ) -> Result<Self> {
-        // obtain the latest logs or init it with an empty logs variant
-        let logs = retry_on_network_error(
-            configuration.common.network_error_retry_policy.clone(),
-            || {
-                metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                    Logs::from_configuration(configuration)
-                })
-            },
-        )
-        .await?;
-
-        let logs_configuration = logs.configuration().clone();
-        metadata_writer.update(Arc::new(logs)).await?;
-
+    ) -> Self {
         //todo(azmy): make configurable
         let retry_policy = RetryPolicy::exponential(
             Duration::from_millis(10),
@@ -958,7 +940,10 @@ impl LogsController {
 
         let mut this = Self {
             effects: Some(Vec::new()),
-            inner: LogsControllerInner::new(logs_configuration, retry_policy),
+            inner: LogsControllerInner::new(
+                Metadata::with_current(|m| m.logs_snapshot()),
+                retry_policy,
+            ),
             bifrost,
             metadata_store_client,
             metadata_writer,
@@ -967,7 +952,7 @@ impl LogsController {
         };
 
         this.find_logs_tail();
-        Ok(this)
+        this
     }
 
     pub fn find_logs_tail(&mut self) {

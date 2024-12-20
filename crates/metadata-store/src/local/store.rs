@@ -10,18 +10,25 @@
 
 use bytes::BytesMut;
 use bytestring::ByteString;
-use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{Precondition, VersionedValue};
+use restate_core::{cancellation_watcher, ShutdownError};
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
 };
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::errors::GenericError;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::logs::metadata::Logs;
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
+};
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partition_table::PartitionTable;
 use restate_types::storage::{
     StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
 };
-use restate_types::Version;
+use restate_types::{Version, Versioned};
 use rocksdb::{BoundColumnFamily, DBCompressionType, WriteBatch, WriteOptions, DB};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -30,7 +37,10 @@ use tracing::{debug, trace};
 pub type RequestSender = mpsc::Sender<MetadataStoreRequest>;
 pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
 
-type Result<T> = std::result::Result<T, Error>;
+pub type ProvisionSender = mpsc::Sender<ProvisionMetadataStoreRequest>;
+pub type ProvisionReceiver = mpsc::Receiver<ProvisionMetadataStoreRequest>;
+
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 const DB_NAME: &str = "local-metadata-store";
 const KV_PAIRS: &str = "kv_pairs";
@@ -95,10 +105,12 @@ pub struct LocalMetadataStore {
     rocksdb: Arc<RocksDb>,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     request_rx: RequestReceiver,
+    provision_rx: ProvisionReceiver,
     buffer: BytesMut,
 
     // for creating other senders
     request_tx: RequestSender,
+    provision_tx: ProvisionSender,
 }
 
 impl LocalMetadataStore {
@@ -107,6 +119,7 @@ impl LocalMetadataStore {
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     ) -> std::result::Result<Self, RocksError> {
         let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
+        let (provision_tx, provision_rx) = mpsc::channel(1);
 
         let db_name = DbName::new(DB_NAME);
         let db_manager = RocksDbManager::get();
@@ -134,6 +147,8 @@ impl LocalMetadataStore {
             buffer: BytesMut::default(),
             request_rx,
             request_tx,
+            provision_tx,
+            provision_rx,
         })
     }
 
@@ -155,6 +170,12 @@ impl LocalMetadataStore {
         self.request_tx.clone()
     }
 
+    pub fn provision_handle(&self) -> ProvisionHandle {
+        ProvisionHandle {
+            tx: self.provision_tx.clone(),
+        }
+    }
+
     pub async fn run(mut self) {
         debug!("Running LocalMetadataStore");
 
@@ -163,7 +184,11 @@ impl LocalMetadataStore {
                 request = self.request_rx.recv() => {
                     let request = request.expect("receiver should not be closed since we own one clone.");
                     self.handle_request(request).await;
-                }
+                },
+                provision_request = self.provision_rx.recv() => {
+                    let provision_request = provision_request.expect("receiver should not be closed since we own one clone.");
+                    self.handle_provision_request(provision_request).await;
+                },
                 _ = cancellation_watcher() => {
                     break;
                 },
@@ -177,6 +202,111 @@ impl LocalMetadataStore {
         self.db
             .cf_handle(KV_PAIRS)
             .expect("KV_PAIRS column family exists")
+    }
+
+    async fn handle_provision_request(&mut self, provision_request: ProvisionMetadataStoreRequest) {
+        trace!("Handle provision request");
+        let (initial_nodes_configuration, initial_partition_table, initial_logs, response_tx) =
+            provision_request.into_inner();
+
+        match self
+            .handle_provision_request_inner(
+                initial_nodes_configuration,
+                initial_partition_table,
+                initial_logs,
+            )
+            .await
+        {
+            Ok(()) => {
+                // if the receiver is gone, then the caller is no longer interested
+                let _ = response_tx.send(Ok(()));
+            }
+            Err(err) => {
+                debug!("Failed processing provision request: {err}");
+                // if the receiver is gone, then the caller is no longer interested
+                let _ = response_tx.send(Err(err));
+            }
+        }
+    }
+
+    async fn handle_provision_request_inner(
+        &mut self,
+        initial_nodes_configuration: NodesConfiguration,
+        initial_partition_table: PartitionTable,
+        initial_logs: Logs,
+    ) -> Result<(), ProvisionError> {
+        // 1. check whether we are already provisioned by checking for the nodes configuration
+        if self
+            .get(&NODES_CONFIG_KEY)
+            .map_err(ProvisionError::internal)?
+            .is_some()
+        {
+            return Err(ProvisionError::AlreadyProvisioned);
+        }
+
+        let serialized_partition_table = self
+            .serialize_versioned_value(&initial_partition_table)
+            .map_err(ProvisionError::internal)?;
+        let serialized_logs = self
+            .serialize_versioned_value(&initial_logs)
+            .map_err(ProvisionError::internal)?;
+        let serialized_nodes_configuration = self
+            .serialize_versioned_value(&initial_nodes_configuration)
+            .map_err(ProvisionError::internal)?;
+
+        // 2. write the initial metadata
+        self.put_initial_metadata(
+            &serialized_partition_table,
+            &serialized_logs,
+            &serialized_nodes_configuration,
+        )
+        .await
+        .map_err(ProvisionError::internal)?;
+
+        Ok(())
+    }
+
+    async fn put_initial_metadata(
+        &mut self,
+        serialized_partition_table: &VersionedValue,
+        serialized_logs: &VersionedValue,
+        serialized_nodes_configuration: &VersionedValue,
+    ) -> Result<()> {
+        // todo replace with multi put once supported
+
+        // It's very important that we put the different metadata values under their correct keys.
+        // Otherwise, client's won't find these values.
+
+        // It can happen that a provision attempt failed before. In this case, we might have
+        // written the partition table or logs before. Therefore, we allow to overwrite them
+        // here because we know that the provisioning was not successful (no nodes configuration).
+        self.put(
+            &PARTITION_TABLE_KEY,
+            serialized_partition_table,
+            Precondition::None,
+        )
+        .await?;
+        self.put(&BIFROST_CONFIG_KEY, serialized_logs, Precondition::None)
+            .await?;
+
+        // Extra safety to not allow the nodes configuration to be overwritten even though we
+        // checked before that it does not exist.
+        self.put(
+            &NODES_CONFIG_KEY,
+            serialized_nodes_configuration,
+            Precondition::DoesNotExist,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    fn serialize_versioned_value<T: Versioned + StorageEncode>(
+        &mut self,
+        value: &T,
+    ) -> Result<VersionedValue> {
+        let serialized_value = StorageCodec::encode_and_split(value, &mut self.buffer)?.freeze();
+        Ok(VersionedValue::new(value.version(), serialized_value))
     }
 
     async fn handle_request(&mut self, request: MetadataStoreRequest) {
@@ -337,6 +467,76 @@ impl LocalMetadataStore {
         if let Err(err) = &result {
             debug!("failed to process request '{}': '{}'", request, err)
         }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProvisionError {
+    #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
+    #[error(transparent)]
+    Internal(GenericError),
+    #[error("already provisioned")]
+    AlreadyProvisioned,
+}
+
+impl ProvisionError {
+    fn internal(err: impl Into<GenericError>) -> Self {
+        ProvisionError::Internal(err.into())
+    }
+}
+
+pub struct ProvisionMetadataStoreRequest {
+    initial_nodes_configuration: NodesConfiguration,
+    initial_partition_table: PartitionTable,
+    initial_logs: Logs,
+    response_tx: oneshot::Sender<Result<(), ProvisionError>>,
+}
+
+impl ProvisionMetadataStoreRequest {
+    fn into_inner(
+        self,
+    ) -> (
+        NodesConfiguration,
+        PartitionTable,
+        Logs,
+        oneshot::Sender<Result<(), ProvisionError>>,
+    ) {
+        (
+            self.initial_nodes_configuration,
+            self.initial_partition_table,
+            self.initial_logs,
+            self.response_tx,
+        )
+    }
+}
+
+pub struct ProvisionHandle {
+    tx: mpsc::Sender<ProvisionMetadataStoreRequest>,
+}
+
+impl ProvisionHandle {
+    pub async fn provision(
+        &self,
+        initial_nodes_configuration: NodesConfiguration,
+        initial_partition_table: PartitionTable,
+        initial_logs: Logs,
+    ) -> Result<(), ProvisionError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.tx
+            .send(ProvisionMetadataStoreRequest {
+                initial_partition_table,
+                initial_logs,
+                initial_nodes_configuration,
+                response_tx,
+            })
+            .await
+            .map_err(|_| ProvisionError::Shutdown(ShutdownError))?;
+
+        response_rx
+            .await
+            .map_err(|_| ProvisionError::Shutdown(ShutdownError))?
     }
 }
 

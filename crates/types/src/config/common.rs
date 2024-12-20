@@ -235,6 +235,13 @@ pub struct CommonOptions {
     ///
     /// The retry policy for node network error
     pub network_error_retry_policy: RetryPolicy,
+
+    /// # Initialization timeout
+    ///
+    /// The timeout until the node gives up joining a cluster and initializing itself.
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub initialization_timeout: humantime::Duration,
 }
 
 impl CommonOptions {
@@ -374,6 +381,7 @@ impl Default for CommonOptions {
                 Some(15),
                 Some(Duration::from_secs(5)),
             ),
+            initialization_timeout: Duration::from_secs(5 * 60).into(),
         }
     }
 }
@@ -523,6 +531,12 @@ pub enum MetadataStoreClient {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         bucket: String,
     },
+}
+
+impl MetadataStoreClient {
+    pub fn is_embedded(&self) -> bool {
+        matches!(self, Self::Embedded { .. })
+    }
 }
 
 impl Default for MetadataStoreClientOptions {
