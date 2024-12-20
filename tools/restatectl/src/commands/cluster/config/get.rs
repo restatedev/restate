@@ -56,7 +56,7 @@ async fn config_get(connection: &ConnectionInfo, _get_opts: &ConfigGetOpts) -> a
     let configuration = response.into_inner();
     let cluster_configuration = configuration.cluster_configuration.expect("is set");
 
-    let output = cluster_config_string(cluster_configuration)?;
+    let output = cluster_config_string(&cluster_configuration)?;
 
     c_println!("{}", output);
 
