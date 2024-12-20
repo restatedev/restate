@@ -24,7 +24,7 @@ mod watchdog;
 
 pub use appender::Appender;
 pub use background_appender::{AppenderHandle, BackgroundAppender, CommitToken, LogSender};
-pub use bifrost::Bifrost;
+pub use bifrost::{Bifrost, ErrorRecoveryStrategy};
 pub use bifrost_admin::{BifrostAdmin, SealedSegment};
 pub use error::{Error, Result};
 pub use read_stream::LogReadStream;

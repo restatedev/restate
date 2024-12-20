@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
-use restate_bifrost::Bifrost;
+use restate_bifrost::{Bifrost, ErrorRecoveryStrategy};
 use restate_core::{Metadata, ShutdownError};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
@@ -231,6 +231,10 @@ pub enum Error {
 ///
 /// Important: This method must only be called in the context of a [`TaskCenter`] task because
 /// it needs access to [`metadata()`].
+///
+/// todo: This method should be removed in favor of using Appender/BackgroundAppender API in
+/// Bifrost. Additionally, the check for partition_table is probably unnecessary in the vast
+/// majority of call-sites.
 pub async fn append_envelope_to_bifrost(
     bifrost: &Bifrost,
     envelope: Arc<Envelope>,
@@ -246,7 +250,9 @@ pub async fn append_envelope_to_bifrost(
     let log_id = LogId::from(*partition_id);
     // todo: Pass the envelope as `Arc` to `append_envelope_to_bifrost` instead. Possibly use
     // triomphe's UniqueArc for a mutable Arc during construction.
-    let lsn = bifrost.append(log_id, envelope).await?;
+    let lsn = bifrost
+        .append(log_id, ErrorRecoveryStrategy::default(), envelope)
+        .await?;
 
     Ok((log_id, lsn))
 }

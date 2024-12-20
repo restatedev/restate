@@ -14,7 +14,7 @@ use bytes::BytesMut;
 use hdrhistogram::Histogram;
 use tracing::info;
 
-use restate_bifrost::Bifrost;
+use restate_bifrost::{Bifrost, ErrorRecoveryStrategy};
 use restate_types::logs::{LogId, WithKeys};
 
 use crate::util::{print_latencies, DummyPayload};
@@ -41,7 +41,8 @@ pub async fn run(
     let blob = BytesMut::zeroed(args.payload_size).freeze();
     let mut append_latencies = Histogram::<u64>::new(3)?;
     let mut counter = 0;
-    let mut appender = bifrost.create_appender(LOG_ID)?;
+    let mut appender =
+        bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::extend_preferred())?;
     let start = Instant::now();
     loop {
         if counter >= args.num_records {
