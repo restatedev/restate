@@ -13,17 +13,17 @@ use bytes::BytesMut;
 use bytestring::ByteString;
 use enumset::EnumSet;
 use futures::stream::BoxStream;
+use prost_dto::IntoProto;
 use restate_core::metadata_store::{
     retry_on_network_error, MetadataStoreClient, Precondition, WriteError,
 };
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvc;
-use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
-use restate_core::network::protobuf::node_ctl_svc::{
+use restate_core::network::{ConnectionManager, ProtocolError, TransportConnect};
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
+use restate_core::protobuf::node_ctl_svc::{
     GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
     ProvisionClusterResponse, ProvisionClusterResponseKind,
 };
-use restate_core::network::ConnectionManager;
-use restate_core::network::{ProtocolError, TransportConnect};
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
 use restate_types::config::{CommonOptions, Configuration};
@@ -65,7 +65,9 @@ impl NodeCtlSvcHandler {
         }
     }
 
-    async fn provision_metadata(
+    /// Provision the cluster metadata. Returns `true` if the cluster was newly provisioned. Returns
+    /// `false` if the cluster is already provisioned.
+    async fn provision_cluster_metadata(
         &self,
         common_opts: &CommonOptions,
         cluster_configuration: &ClusterConfiguration,
@@ -126,12 +128,12 @@ impl NodeCtlSvcHandler {
             .with_equally_sized_partitions(cluster_configuration.num_partitions.get())
             .expect("Empty partition table should not have conflicts");
         initial_partition_table_builder
-            .set_replication_strategy(cluster_configuration.placement_strategy);
+            .set_replication_strategy(cluster_configuration.replication_strategy);
         let initial_partition_table = initial_partition_table_builder.build();
 
         let mut logs_builder = Logs::default().into_builder();
         logs_builder.set_configuration(LogsConfiguration::from(
-            cluster_configuration.log_provider.clone(),
+            cluster_configuration.default_provider.clone(),
         ));
         let initial_logs = logs_builder.build();
 
@@ -179,27 +181,21 @@ impl NodeCtlSvcHandler {
             })
             .transpose()?
             .unwrap_or(config.common.bootstrap_num_partitions);
-        let placement_strategy = request
+        let replication_strategy = request
             .placement_strategy
             .map(ReplicationStrategy::try_from)
             .transpose()?
             .unwrap_or_default();
-        let log_provider = request
+        let default_provider = request
             .log_provider
             .map(ProviderConfiguration::try_from)
             .unwrap_or_else(|| Ok(ProviderConfiguration::from_configuration(config)))?;
 
         Ok(ClusterConfiguration {
             num_partitions,
-            placement_strategy,
-            log_provider,
+            replication_strategy,
+            default_provider,
         })
-    }
-
-    fn convert_cluster_configuration(
-        _cluster_configuration: ClusterConfiguration,
-    ) -> ProtoClusterConfiguration {
-        todo!()
     }
 }
 
@@ -284,30 +280,41 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         if dry_run {
             return Ok(Response::new(ProvisionClusterResponse {
                 kind: ProvisionClusterResponseKind::DryRun.into(),
-                cluster_configuration: Some(Self::convert_cluster_configuration(
-                    cluster_configuration,
-                )),
-                ..Default::default()
+                cluster_configuration: Some(ProtoClusterConfiguration::from(cluster_configuration)),
             }));
         }
 
-        self.provision_metadata(&config.common, &cluster_configuration)
+        let newly_provisioned = self
+            .provision_cluster_metadata(&config.common, &cluster_configuration)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
+        let kind = if newly_provisioned {
+            ProvisionClusterResponseKind::NewlyProvisioned
+        } else {
+            ProvisionClusterResponseKind::AlreadyProvisioned
+        };
+
         Ok(Response::new(ProvisionClusterResponse {
-            kind: ProvisionClusterResponseKind::Success.into(),
-            cluster_configuration: Some(Self::convert_cluster_configuration(cluster_configuration)),
-            ..Default::default()
+            kind: kind.into(),
+            cluster_configuration: Some(ProtoClusterConfiguration::from(cluster_configuration)),
         }))
     }
 }
 
-#[derive(Clone, Debug)]
-struct ClusterConfiguration {
-    num_partitions: NonZeroU16,
-    placement_strategy: ReplicationStrategy,
-    log_provider: ProviderConfiguration,
+#[derive(Clone, Debug, IntoProto)]
+#[proto(target = "restate_types::protobuf::cluster::ClusterConfiguration")]
+pub struct ClusterConfiguration {
+    #[into_proto(map = "num_partitions_to_u32")]
+    pub num_partitions: NonZeroU16,
+    #[proto(required)]
+    pub replication_strategy: ReplicationStrategy,
+    #[proto(required)]
+    pub default_provider: ProviderConfiguration,
+}
+
+fn num_partitions_to_u32(num_partitions: NonZeroU16) -> u32 {
+    u32::from(num_partitions.get())
 }
 
 pub struct CoreNodeSvcHandler<T> {

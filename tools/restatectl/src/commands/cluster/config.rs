@@ -27,7 +27,7 @@ pub enum Config {
     Set(set::ConfigSetOpts),
 }
 
-fn cluster_config_string(config: ClusterConfiguration) -> anyhow::Result<String> {
+pub fn cluster_config_string(config: &ClusterConfiguration) -> anyhow::Result<String> {
     let mut w = String::default();
 
     writeln!(w, "⚙️ Cluster Configuration")?;
@@ -43,8 +43,12 @@ fn cluster_config_string(config: ClusterConfiguration) -> anyhow::Result<String>
 
     write_leaf(&mut w, 1, false, "Bifrost replication strategy", strategy)?;
 
-    let provider: ProviderConfiguration = config.default_provider.unwrap_or_default().try_into()?;
-    write_default_provider(&mut w, 1, provider)?;
+    let provider: ProviderConfiguration = config
+        .default_provider
+        .clone()
+        .unwrap_or_default()
+        .try_into()?;
+    write_default_provider(&mut w, 1, &provider)?;
 
     Ok(w)
 }
@@ -52,7 +56,7 @@ fn cluster_config_string(config: ClusterConfiguration) -> anyhow::Result<String>
 fn write_default_provider<W: fmt::Write>(
     w: &mut W,
     depth: usize,
-    provider: ProviderConfiguration,
+    provider: &ProviderConfiguration,
 ) -> Result<(), fmt::Error> {
     let title = "Bifrost Provider";
     match provider {

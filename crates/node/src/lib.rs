@@ -25,14 +25,12 @@ use codederror::CodedError;
 use restate_bifrost::BifrostService;
 use restate_core::metadata_store::ReadWriteError;
 use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
-use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
-use restate_core::network::protobuf::node_ctl_svc::{
-    ProvisionClusterRequest, ProvisionClusterResponseKind,
-};
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
 use restate_core::partitions::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_core::protobuf::node_ctl_svc::{ProvisionClusterRequest, ProvisionClusterResponseKind};
 use restate_core::{cancellation_watcher, Metadata, TaskKind};
 use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter};
 #[cfg(feature = "replicated-loglet")]
@@ -389,12 +387,20 @@ impl Node {
                         .await;
 
                     match response {
-                        Ok(response) => {
-                            if response.into_inner().kind() == ProvisionClusterResponseKind::DryRun
-                            {
-                                debug!("The cluster is already provisioned.");
+                        Ok(response) => match response.into_inner().kind() {
+                            ProvisionClusterResponseKind::ProvisionClusterResponseTypeUnknown => {
+                                panic!("unknown cluster response type")
                             }
-                        }
+                            ProvisionClusterResponseKind::DryRun => {
+                                unreachable!("call w/o dry run")
+                            }
+                            ProvisionClusterResponseKind::NewlyProvisioned => {
+                                debug!("Successfully auto provisioned the cluster")
+                            }
+                            ProvisionClusterResponseKind::AlreadyProvisioned => {
+                                debug!("The cluster is already provisioned.")
+                            }
+                        },
                         Err(err) => {
                             warn!("Failed to auto provision the cluster. In order to continue you have to provision the cluster manually: {err}");
                         }

@@ -20,15 +20,16 @@ use restate_admin::cluster_controller::protobuf::{
     cluster_ctrl_svc_client::ClusterCtrlSvcClient, GetClusterConfigurationRequest,
 };
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
+use restate_cli_util::{c_println, c_warn};
 use restate_types::logs::metadata::{
-    NodeSetSelectionStrategy, ProviderConfiguration, ProviderKind, ReplicatedLogletConfig,
+    NodeSetSelectionStrategy, ProviderConfiguration, ProviderKind,
 };
 use restate_types::partition_table::ReplicationStrategy;
 use restate_types::replicated_loglet::ReplicationProperty;
 
 use crate::commands::cluster::config::cluster_config_string;
+use crate::commands::cluster::provision::extract_default_provider;
 use crate::{app::ConnectionInfo, util::grpc_connect};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -77,7 +78,7 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
 
     let mut current = response.cluster_configuration.expect("must be set");
 
-    let current_config_string = cluster_config_string(current.clone())?;
+    let current_config_string = cluster_config_string(&current)?;
 
     if let Some(num_partitions) = set_opts.num_partitions {
         current.num_partitions = num_partitions.get();
@@ -88,27 +89,25 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
     }
 
     if let Some(provider) = set_opts.bifrost_provider {
-        let default_provider = match provider {
-            ProviderKind::InMemory => ProviderConfiguration::InMemory,
-            ProviderKind::Local => ProviderConfiguration::Local,
-            ProviderKind::Replicated => {
-                let config = ReplicatedLogletConfig {
-                    replication_property: set_opts
-                        .replication_property
-                        .clone()
-                        .expect("is required"),
-                    nodeset_selection_strategy: set_opts
-                        .nodeset_selection_strategy
-                        .unwrap_or_default(),
-                };
-                ProviderConfiguration::Replicated(config)
+        let default_provider = extract_default_provider(
+            provider,
+            set_opts.replication_property.clone(),
+            set_opts.nodeset_selection_strategy,
+        );
+
+        match default_provider {
+            ProviderConfiguration::InMemory | ProviderConfiguration::Local => {
+                c_warn!("You are about to reconfigure your cluster with a Bifrost provider that only supports a single node cluster.");
             }
-        };
+            ProviderConfiguration::Replicated(_) => {
+                // nothing to do
+            }
+        }
 
         current.default_provider = Some(default_provider.into());
     }
 
-    let updated_config_string = cluster_config_string(current.clone())?;
+    let updated_config_string = cluster_config_string(&current)?;
 
     let mut diff_table = Table::new_styled();
 

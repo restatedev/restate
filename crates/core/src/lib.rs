@@ -14,6 +14,7 @@ pub mod metadata_store;
 mod metric_definitions;
 pub mod network;
 pub mod partitions;
+pub mod protobuf;
 pub mod task_center;
 pub mod worker_api;
 pub use error::*;

@@ -54,6 +54,7 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 metrics-tracing-context = { workspace = true }
 metrics-util = { workspace = true }
+prost-dto = { workspace = true }
 prost-types = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }

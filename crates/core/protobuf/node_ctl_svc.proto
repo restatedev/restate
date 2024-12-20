@@ -34,15 +34,14 @@ message ProvisionClusterRequest {
 
 enum ProvisionClusterResponseKind {
   ProvisionClusterResponseType_UNKNOWN = 0;
-  ERROR = 1;
-  SUCCESS = 2;
-  DRY_RUN = 3;
+  DRY_RUN = 1;
+  NEWLY_PROVISIONED = 2;
+  ALREADY_PROVISIONED = 3;
 }
 
 message ProvisionClusterResponse {
   ProvisionClusterResponseKind kind = 1;
-  // If there is an error, this field will be set. All other fields will be empty.
-  optional string error = 2;
+  // This field will be empty if the cluster is already provisioned
   optional restate.cluster.ClusterConfiguration cluster_configuration = 3;
 }
 
