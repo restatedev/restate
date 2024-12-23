@@ -348,8 +348,7 @@ impl PartitionProcessorManager {
         }
     }
 
-    #[instrument(level = "debug", skip_all, fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner)
-    ))]
+    #[instrument(level = "debug", skip_all, fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner)))]
     fn on_asynchronous_event(&mut self, event: AsynchronousEvent) {
         let AsynchronousEvent {
             partition_id,
@@ -433,20 +432,18 @@ impl PartitionProcessorManager {
                                 Ok(ProcessorStopReason::LogTrimGap { to_lsn }) => {
                                     if self.snapshot_repository.is_some() {
                                         info!(
-                                            %partition_id,
                                             trim_gap_to_lsn = ?to_lsn,
-                                            "Partition processor stopped due to a log trim gap, will stop and attempt to fast-forward",
+                                            "Partition processor stopped due to a log trim gap, will attempt to fast-forward on restart",
                                         );
                                         self.fast_forward_on_startup.insert(partition_id, to_lsn);
                                     } else {
                                         warn!(
-                                            %partition_id,
                                             "Partition processor stopped due to a log trim gap, and no snapshot repository is configured: {result:?}",
                                         );
                                     }
                                 }
                                 _ => {
-                                    warn!(%partition_id, "Partition processor exited unexpectedly: {result:?}")
+                                    warn!("Partition processor exited unexpectedly: {result:?}")
                                 }
                             }
                         }

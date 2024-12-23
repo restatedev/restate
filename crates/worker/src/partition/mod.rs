@@ -268,8 +268,7 @@ where
     Codec: RawEntryCodec + Default + Debug,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
-    #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty
-    ))]
+    #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<ProcessorStopReason> {
         info!("Starting the partition processor.");
 
@@ -281,7 +280,7 @@ where
                             ProcessorStopReason::LogTrimGap { to_lsn } =>
                                 info!(
                                     trim_gap_to_lsn = ?to_lsn,
-                                    "Shutting partition processor down because we encountered a trim gap in the log."
+                                    "Shutting partition processor down because it encountered a trim gap in the log."
                                 ),
                             _ => warn!("Shutting partition processor down because it stopped unexpectedly.")
                         }
@@ -314,7 +313,6 @@ where
         res
     }
 
-    // Runs as long as log records are available, or returns
     async fn run_inner(&mut self) -> anyhow::Result<ProcessorStopReason> {
         let mut partition_store = self.partition_store.clone();
         let last_applied_lsn = partition_store.get_applied_lsn().await?;
