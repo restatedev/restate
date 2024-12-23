@@ -18,6 +18,7 @@ mod version;
 
 pub mod art;
 pub mod cluster;
+pub mod deprecated_cluster;
 pub mod health;
 
 pub mod cluster_controller;

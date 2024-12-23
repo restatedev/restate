@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
+use restate_types::cluster::cluster_state::RunMode;
+use restate_types::deprecated_cluster::cluster_state::{ClusterState, NodeState};
 use restate_types::identifiers::PartitionId;
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
@@ -135,8 +136,9 @@ mod tests {
     };
     use googletest::prelude::{empty, eq};
     use googletest::{assert_that, elements_are, unordered_elements_are};
-    use restate_types::cluster::cluster_state::{
-        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
+    use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
+    use restate_types::deprecated_cluster::cluster_state::{
+        AliveNode, ClusterState, DeadNode, NodeState,
     };
     use restate_types::identifiers::PartitionId;
     use restate_types::time::MillisSinceEpoch;
