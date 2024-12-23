@@ -94,6 +94,7 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         source: Source::Ingress(*RPC_REQUEST_ID),
         completion_retention_duration: Duration::ZERO,
         idempotency_key: None,
+        restart_when_completed: false,
     })
 }
 
@@ -107,6 +108,7 @@ fn killed_status(invocation_target: InvocationTarget) -> InvocationStatus {
         source: Source::Ingress(*RPC_REQUEST_ID),
         completion_retention_duration: Duration::ZERO,
         idempotency_key: None,
+        restart_when_completed: false,
     })
 }
 
@@ -121,6 +123,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             source: Source::Ingress(*RPC_REQUEST_ID),
             completion_retention_duration: Duration::ZERO,
             idempotency_key: None,
+            restart_when_completed: false,
         },
         waiting_for_completed_entries: HashSet::default(),
     }
