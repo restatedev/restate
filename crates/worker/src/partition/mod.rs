@@ -263,6 +263,12 @@ enum Record {
     TrimGap(Lsn),
 }
 
+impl Record {
+    fn is_trim_gap(&self) -> bool {
+        matches!(self, Record::TrimGap(_))
+    }
+}
+
 impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
 where
     Codec: RawEntryCodec + Default + Debug,
@@ -496,7 +502,6 @@ where
                                 }
                             }
                             Record::TrimGap(to_lsn) => {
-                                // todo(pavel): this assumption may be violated if a command batch contains some records and a trim gap!
                                 assert!(trim_gap.is_none(), "Expecting only a single trim gap!");
                                 trim_gap = Some(to_lsn)
                             }
@@ -857,7 +862,7 @@ where
     }
 
     /// Tries to read as many records from the `log_reader` as are immediately available and stops
-    /// reading at `max_batching_size`.
+    /// reading at `max_batching_size`, or at a TrimGap - whichever comes first.
     async fn read_commands<S>(
         log_reader: &mut S,
         max_batching_size: usize,
@@ -885,7 +890,15 @@ where
                     anyhow::bail!("Read stream terminated for partition processor");
                 };
 
-                record_buffer.push(record??);
+                let record = record??;
+                let trim_gap = record.is_trim_gap();
+
+                record_buffer.push(record);
+
+                // Ensure that a trim gap is always the last record in a batch
+                if trim_gap {
+                    break;
+                }
             } else {
                 // no more immediately available records found
                 break;
