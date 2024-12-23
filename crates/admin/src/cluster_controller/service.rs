@@ -26,7 +26,7 @@ use tracing::{debug, info};
 use restate_metadata_store::ReadModifyWriteError;
 use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::logs::metadata::{
-    DefaultProvider, LogletParams, Logs, LogsConfiguration, ProviderKind, SegmentIndex,
+    LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
@@ -183,7 +183,7 @@ enum ClusterControllerCommand {
     UpdateClusterConfiguration {
         num_partitions: NonZeroU16,
         replication_strategy: ReplicationStrategy,
-        default_provider: DefaultProvider,
+        default_provider: ProviderConfiguration,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
     },
     SealAndExtendChain {
@@ -249,7 +249,7 @@ impl ClusterControllerHandle {
         &self,
         num_partitions: NonZeroU16,
         replication_strategy: ReplicationStrategy,
-        default_provider: DefaultProvider,
+        default_provider: ProviderConfiguration,
     ) -> Result<anyhow::Result<()>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -439,7 +439,7 @@ impl<T: TransportConnect> Service<T> {
         &self,
         num_partitions: u16,
         replication_strategy: ReplicationStrategy,
-        default_provider: DefaultProvider,
+        default_provider: ProviderConfiguration,
     ) -> anyhow::Result<()> {
         let logs = self
             .metadata_store_client
@@ -457,8 +457,7 @@ impl<T: TransportConnect> Service<T> {
 
                 // we can only change the default provider
                 if logs.version() != Version::INVALID
-                    && logs.configuration().default_provider.as_provider_kind()
-                        != default_provider.as_provider_kind()
+                    && logs.configuration().default_provider.kind() != default_provider.kind()
                 {
                     {
                         return Err(
@@ -786,16 +785,16 @@ impl SealAndExtendTask {
 
         let (provider, params) = match &logs.configuration().default_provider {
             #[cfg(any(test, feature = "memory-loglet"))]
-            DefaultProvider::InMemory => (
+            ProviderConfiguration::InMemory => (
                 ProviderKind::InMemory,
                 u64::from(loglet_id.next()).to_string().into(),
             ),
-            DefaultProvider::Local => (
+            ProviderConfiguration::Local => (
                 ProviderKind::Local,
                 u64::from(loglet_id.next()).to_string().into(),
             ),
             #[cfg(feature = "replicated-loglet")]
-            DefaultProvider::Replicated(config) => {
+            ProviderConfiguration::Replicated(config) => {
                 let schedule_plan = self
                     .metadata_store_client
                     .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
