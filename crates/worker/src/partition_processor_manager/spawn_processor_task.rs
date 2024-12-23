@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, instrument, warn};
@@ -268,7 +269,13 @@ async fn open_partition_store(
                     "A fast-forward target LSN is set, but no snapshot available for partition!",
                 );
             }
-            // todo(pavel): backoff for a while and return Err
+
+            // We expect the processor startup attempt will fail, avoid spinning too fast.
+            tokio::time::sleep(Duration::from_millis(
+                10_000 + rand::random::<u64>() % 10_000,
+            ))
+            .await;
+
             Ok(partition_store_manager
                 .open_partition_store(
                     partition_id,
