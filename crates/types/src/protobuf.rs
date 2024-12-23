@@ -60,6 +60,10 @@ pub mod cluster {
     }
 }
 
+pub mod deprecated_cluster {
+    include!(concat!(env!("OUT_DIR"), "/restate.deprecated_cluster.rs"));
+}
+
 pub mod node {
     use opentelemetry::global;
     use opentelemetry::propagation::{Extractor, Injector};
