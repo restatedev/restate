@@ -104,8 +104,8 @@ pub struct PartitionProcessorManager {
 
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
-    snapshot_import_tasks: FuturesUnordered<TaskHandle<ImportSnapshotResultInternal>>,
     snapshot_repository: Option<SnapshotRepository>,
+    fast_forward_on_startup: HashMap<PartitionId, Lsn>,
 }
 
 struct PendingSnapshotTask {
@@ -114,7 +114,6 @@ struct PendingSnapshotTask {
 }
 
 type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
-type ImportSnapshotResultInternal = Result<(), SnapshotError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -204,6 +203,7 @@ impl PartitionProcessorManager {
             snapshot_export_tasks: FuturesUnordered::default(),
             pending_snapshots: HashMap::default(),
             snapshot_repository,
+            fast_forward_on_startup: HashMap::default(),
         }
     }
 
@@ -432,10 +432,17 @@ impl PartitionProcessorManager {
                             match result {
                                 Ok(ProcessorStopReason::LogTrimGap { to_lsn }) => {
                                     if self.snapshot_repository.is_some() {
-                                        info!(%partition_id, "Partition processor stopped due to a log trim gap, will look for snapshot with LSN >= {to_lsn}");
-                                        // todo(pavel): spawn snapshot import task for the partition
+                                        info!(
+                                            %partition_id,
+                                            trim_gap_to_lsn = ?to_lsn,
+                                            "Partition processor stopped due to a log trim gap, will stop and attempt to fast-forward",
+                                        );
+                                        self.fast_forward_on_startup.insert(partition_id, to_lsn);
                                     } else {
-                                        warn!(%partition_id, "Partition processor stopped due to a log trim gap, and no snapshot repository is configured: {result:?}");
+                                        warn!(
+                                            %partition_id,
+                                            "Partition processor stopped due to a log trim gap, and no snapshot repository is configured: {result:?}",
+                                        );
                                     }
                                 }
                                 _ => {
@@ -732,10 +739,7 @@ impl PartitionProcessorManager {
         self.spawn_create_snapshot_task(partition_id, snapshot_repository, Some(sender));
     }
 
-    fn on_create_snapshot_task_completed(
-        &mut self,
-        result: Result<PartitionSnapshotMetadata, SnapshotError>,
-    ) {
+    fn on_create_snapshot_task_completed(&mut self, result: SnapshotResultInternal) {
         let (partition_id, response) = match result {
             Ok(metadata) => {
                 self.archived_lsns
@@ -892,6 +896,7 @@ impl PartitionProcessorManager {
             self.bifrost.clone(),
             self.partition_store_manager.clone(),
             self.snapshot_repository.clone(),
+            self.fast_forward_on_startup.remove(&partition_id),
         )
     }
 

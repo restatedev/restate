@@ -22,6 +22,7 @@ use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
+use restate_types::logs::Lsn;
 use restate_types::schema::Schema;
 
 use crate::invoker_integration::EntryEnricher;
@@ -39,6 +40,7 @@ pub struct SpawnPartitionProcessorTask {
     bifrost: Bifrost,
     partition_store_manager: PartitionStoreManager,
     snapshot_repository: Option<SnapshotRepository>,
+    fast_forward_lsn: Option<Lsn>,
 }
 
 impl SpawnPartitionProcessorTask {
@@ -51,6 +53,7 @@ impl SpawnPartitionProcessorTask {
         bifrost: Bifrost,
         partition_store_manager: PartitionStoreManager,
         snapshot_repository: Option<SnapshotRepository>,
+        fast_forward_lsn: Option<Lsn>,
     ) -> Self {
         Self {
             task_name,
@@ -60,6 +63,7 @@ impl SpawnPartitionProcessorTask {
             bifrost,
             partition_store_manager,
             snapshot_repository,
+            fast_forward_lsn,
         }
     }
 
@@ -83,6 +87,7 @@ impl SpawnPartitionProcessorTask {
             bifrost,
             partition_store_manager,
             snapshot_repository,
+            fast_forward_lsn,
         } = self;
 
         let config = configuration.pinned();
@@ -130,7 +135,7 @@ impl SpawnPartitionProcessorTask {
                 let key_range = key_range.clone();
 
                 move || async move {
-                    let partition_store = if !partition_store_manager
+                    let partition_store = if fast_forward_lsn.is_some() || !partition_store_manager
                         .has_partition_store(pp_builder.partition_id)
                         .await
                     {
@@ -150,10 +155,22 @@ impl SpawnPartitionProcessorTask {
 
 
                         if let Some(snapshot) = snapshot {
-                            info!(
-                                partition_id = %partition_id,
-                                "Found snapshot to bootstrap partition, restoring it",
-                            );
+                            match fast_forward_lsn {
+                                Some(trim_gap_to_lsn) => {
+                                    if snapshot.min_applied_lsn >= trim_gap_to_lsn {
+                                        info!("Found snapshot with state beyond the trim gap, resetting local partition store...");
+                                        partition_store_manager.drop_partition(partition_id).await;
+                                    } else {
+                                        warn!("Latest snapshot is before the trim gap!");
+                                    }
+                                },
+                                None => {
+                                    info!(
+                                        partition_id = %partition_id,
+                                        "Found snapshot to bootstrap partition, restoring it",
+                                    );
+                                },
+                            }
 
                             let snapshot_path = snapshot.base_dir.clone();
                             match partition_store_manager
