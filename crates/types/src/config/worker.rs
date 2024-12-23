@@ -179,7 +179,7 @@ pub struct InvokerOptions {
     ///
     /// Defines the threshold after which queues invocations will spill to disk at
     /// the path defined in `tmp-dir`. In other words, this is the number of invocations
-    /// that can be kept in memory before spilling to disk.
+    /// that can be kept in memory before spilling to disk. This is a per-partition limit.
     in_memory_queue_length_limit: NonZeroUsize,
 
     /// # Limit number of concurrent invocations from this node
@@ -223,7 +223,7 @@ impl Default for InvokerOptions {
                 None,
                 Some(Duration::from_secs(10)),
             ),
-            in_memory_queue_length_limit: NonZeroUsize::new(1_056_784).unwrap(),
+            in_memory_queue_length_limit: NonZeroUsize::new(66_049).unwrap(),
             inactivity_timeout: Duration::from_secs(60).into(),
             abort_timeout: Duration::from_secs(60).into(),
             message_size_warning: NonZeroUsize::new(10_000_000).unwrap(), // 10MB
@@ -334,6 +334,10 @@ impl StorageOptions {
 
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("db")
+    }
+
+    pub fn snapshots_staging_dir(&self) -> PathBuf {
+        super::data_dir("pp-snapshots")
     }
 }
 

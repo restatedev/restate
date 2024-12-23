@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{protobuf_storage_encode_decode, Result};
+use crate::Result;
 use futures_util::Stream;
 use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -44,8 +44,6 @@ pub enum JournalEntryType {
     Entry(EntryType),
     Completion,
 }
-
-protobuf_storage_encode_decode!(JournalEntry);
 
 pub trait ReadOnlyJournalTable {
     fn get_journal_entry(

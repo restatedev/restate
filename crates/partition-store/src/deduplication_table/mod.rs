@@ -20,9 +20,9 @@ use restate_storage_api::deduplication_table::{
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
-use restate_types::storage::StorageCodec;
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::TableKind::Deduplication;
 use crate::{
     PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
@@ -34,6 +34,10 @@ define_table_key!(
     KeyKind::Deduplication,
     DeduplicationKey(partition_id: PaddedPartitionId, producer_id: ProducerId)
 );
+
+impl PartitionStoreProtobufValue for DedupSequenceNumber {
+    type ProtobufType = crate::protobuf_types::v1::DedupSequenceNumber;
+}
 
 fn get_dedup_sequence_number<S: StorageAccess>(
     storage: &mut S,
@@ -59,12 +63,10 @@ fn get_all_sequence_numbers<S: StorageAccess>(
                 DeduplicationKey::deserialize_from(&mut Cursor::new(k)).map(|key| key.producer_id);
 
             let res = if let Ok(Some(producer_id)) = key {
-                StorageCodec::decode::<DedupSequenceNumber, _>(&mut v)
-                    .map_err(|err| StorageError::Conversion(err.into()))
-                    .map(|sequence_number| DedupInformation {
-                        producer_id,
-                        sequence_number,
-                    })
+                DedupSequenceNumber::decode(&mut v).map(|sequence_number| DedupInformation {
+                    producer_id,
+                    sequence_number,
+                })
             } else {
                 Err(StorageError::DataIntegrityError)
             };

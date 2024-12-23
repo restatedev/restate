@@ -15,9 +15,9 @@ use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationUuid, PartitionId};
-use restate_types::storage::StorageCodec;
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
 use crate::{PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess};
@@ -32,6 +32,10 @@ define_table_key!(
         kind: TimerKeyKind,
     )
 );
+
+impl PartitionStoreProtobufValue for Timer {
+    type ProtobufType = crate::protobuf_types::v1::Timer;
+}
 
 #[inline]
 fn write_timer_key(partition_id: PartitionId, timer_key: &TimerKey) -> TimersKey {
@@ -59,8 +63,7 @@ fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
 fn decode_seq_timer_key_value(k: &[u8], mut v: &[u8]) -> Result<(TimerKey, Timer)> {
     let timer_key = timer_key_from_key_slice(k)?;
 
-    let timer = StorageCodec::decode::<Timer, _>(&mut v)
-        .map_err(|error| StorageError::Generic(error.into()))?;
+    let timer = Timer::decode(&mut v)?;
 
     Ok((timer_key, timer))
 }

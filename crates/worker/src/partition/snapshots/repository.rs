@@ -405,6 +405,10 @@ impl SnapshotRepository {
             return Ok(None); // perhaps this needs to be a configuration error
         }
 
+        if !self.staging_dir.exists() {
+            std::fs::create_dir_all(&self.staging_dir)?;
+        }
+
         // The snapshot ingest directory should be on the same filesystem as the partition store
         // to minimize IO and disk space usage during import.
         let snapshot_dir = TempDir::with_prefix_in(

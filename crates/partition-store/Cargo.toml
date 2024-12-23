@@ -24,6 +24,7 @@ futures-util = { workspace = true }
 humantime = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }
+prost-types = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-rocksdb = { workspace = true }
@@ -41,6 +42,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
+opentelemetry = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
@@ -55,6 +57,9 @@ num-bigint = "0.4"
 rand = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
 
 [[bench]]
 name = "basic_benchmark"

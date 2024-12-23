@@ -13,7 +13,7 @@ The project contains some Rust libraries binding to native libraries/build tools
 * [Clang](https://clang.llvm.org/)
 * [CMake](https://cmake.org/)
 * [OpenSSL](https://www.openssl.org/)
-* [RocksDB](http://rocksdb.org/)
+* [RocksDB](http://rocksdb.org/) if you plan to dynamically link RocksDB you must use [the following fork](https://github.com/restatedev/rocksdb/tree/restate) until [this PR](https://github.com/facebook/rocksdb/pull/12968) is merged into the upstream
 * [Protobuf compiler](https://grpc.io/docs/protoc-installation/) version >= 3.15
 
 Optionally, you can install [just](https://github.com/casey/just) to make use of our [justfile](https://github.com/restatedev/restate/blob/main/justfile).
