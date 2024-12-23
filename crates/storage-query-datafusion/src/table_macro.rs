@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// Instead of trying to parse the Timestamp(Millisecond, Some(...)) variant in macros, just use a marker struct
+#[allow(dead_code)]
+pub struct TimestampMillisecond;
+
 macro_rules! define_builder {
     (DataType::Utf8) => {
         ::datafusion::arrow::array::StringBuilder
@@ -30,12 +34,65 @@ macro_rules! define_builder {
     (DataType::Int32) => {
         ::datafusion::arrow::array::Int32Builder
     };
-    (DataType::Date64) => {
-        ::datafusion::arrow::array::Date64Builder
+    (TimestampMillisecond) => {
+        TimestampMillisecondUTCBuilder
     };
     (DataType::Boolean) => {
         ::datafusion::arrow::array::BooleanBuilder
     };
+}
+
+// This newtype is necessary to generate values with a UTC timezone, as it will default to having no timezone which can confuse downstream clients
+pub struct TimestampMillisecondUTCBuilder(::datafusion::arrow::array::TimestampMillisecondBuilder);
+
+impl Default for TimestampMillisecondUTCBuilder {
+    fn default() -> Self {
+        Self(
+            ::datafusion::arrow::array::TimestampMillisecondBuilder::default()
+                .with_timezone(TIMEZONE_UTC.clone()),
+        )
+    }
+}
+
+impl TimestampMillisecondUTCBuilder {
+    #[inline]
+    pub fn append_value(
+        &mut self,
+        v: <::datafusion::arrow::datatypes::TimestampMillisecondType as ::datafusion::arrow::array::ArrowPrimitiveType>::Native,
+    ) {
+        self.0.append_value(v);
+    }
+
+    #[inline]
+    pub fn append_null(&mut self) {
+        self.0.append_null();
+    }
+}
+
+impl ::datafusion::arrow::array::ArrayBuilder for TimestampMillisecondUTCBuilder {
+    fn len(&self) -> usize {
+        ::datafusion::arrow::array::ArrayBuilder::len(&self.0)
+    }
+
+    fn finish(&mut self) -> datafusion::arrow::array::ArrayRef {
+        ::datafusion::arrow::array::ArrayBuilder::finish(&mut self.0)
+    }
+
+    fn finish_cloned(&self) -> datafusion::arrow::array::ArrayRef {
+        ::datafusion::arrow::array::ArrayBuilder::finish_cloned(&self.0)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        ::datafusion::arrow::array::ArrayBuilder::as_any(&self.0)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        ::datafusion::arrow::array::ArrayBuilder::as_any_mut(&mut self.0)
+    }
+
+    fn into_box_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        ::datafusion::arrow::array::ArrayBuilder::into_box_any(Box::new(self.0))
+    }
 }
 
 macro_rules! define_primitive_trait {
@@ -57,7 +114,7 @@ macro_rules! define_primitive_trait {
     (DataType::Int32) => {
         i32
     };
-    (DataType::Date64) => {
+    (TimestampMillisecond) => {
         i64
     };
     (DataType::UInt64) => {
@@ -65,6 +122,42 @@ macro_rules! define_primitive_trait {
     };
     (DataType::Boolean) => {
         bool
+    };
+}
+
+pub static TIMEZONE_UTC: std::sync::LazyLock<std::sync::Arc<str>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::from("+00:00"));
+
+macro_rules! define_data_type {
+    (DataType::Utf8) => {
+        DataType::Utf8
+    };
+    (DataType::LargeUtf8) => {
+        DataType::LargeUtf8
+    };
+    (DataType::Binary) => {
+        DataType::Binary
+    };
+    (DataType::LargeBinary) => {
+        DataType::LargeBinary
+    };
+    (DataType::UInt32) => {
+        DataType::UInt32
+    };
+    (DataType::Int32) => {
+        DataType::Int32
+    };
+    (TimestampMillisecond) => {
+        DataType::Timestamp(
+            ::datafusion::arrow::datatypes::TimeUnit::Millisecond,
+            Some(TIMEZONE_UTC.clone()),
+        )
+    };
+    (DataType::UInt64) => {
+        DataType::UInt64
+    };
+    (DataType::Boolean) => {
+        DataType::Boolean
     };
 }
 
@@ -91,8 +184,8 @@ macro_rules! document_type {
     (DataType::Int32) => {
         "Int32"
     };
-    (DataType::Date64) => {
-        "Date64"
+    (TimestampMillisecond) => {
+        "TimestampMillisecond"
     };
     (DataType::Boolean) => {
         "Boolean"
@@ -108,7 +201,7 @@ macro_rules! document_type {
 ///    name: DataType::Utf8,
 ///    age: DataType::UInt32,
 ///    secret: DataType::Binary,
-///    birth_date: DataType::Date64,
+///    birth_date: TimestampMillisecond,
 /// ))
 ///
 /// ```
@@ -126,7 +219,7 @@ macro_rules! document_type {
 ///     name: Option<StringBuilder>,
 ///     age: Option<UInt32Builder>,
 ///     secret: Option<BinaryBuilder>,
-///     birth_date: Option<Date64Builder>,
+///     birth_date: Option<TimestampMillisecondBuilder>,
 /// }
 /// pub struct UserRowBuilder<'a> {
 ///     flags: UserRowBuilderFlags,
@@ -286,7 +379,7 @@ macro_rules! document_type {
 ///                         (Field::new(stringify!( name ), DataType::Utf8, true)),
 ///                         (Field::new(stringify!( age ), DataType::UInt32, true)),
 ///                         (Field::new(stringify!( secret ), DataType::Binary, true)),
-///                         (Field::new(stringify!( birth_date ), DataType::Date64, true))])
+///                         (Field::new(stringify!( birth_date ), DataType::Timestamp(TimeUnit::Millisecond, Some(TIMEZONE_UTC.clone())), true))])
 ///             )))
 ///         )
 ///     }
@@ -439,7 +532,7 @@ macro_rules! define_table {
             pub fn schema() -> ::datafusion::arrow::datatypes::SchemaRef {
                 std::sync::Arc::new(::datafusion::arrow::datatypes::Schema::new(
                     vec![
-                        $(::datafusion::arrow::datatypes::Field::new(stringify!($element), $ty, true),)+
+                        $(::datafusion::arrow::datatypes::Field::new(stringify!($element), define_data_type!($ty), true),)+
                     ])
                 )
             }
@@ -498,6 +591,7 @@ macro_rules! define_table {
 }
 
 pub(crate) use define_builder;
+pub(crate) use define_data_type;
 pub(crate) use define_primitive_trait;
 pub(crate) use define_table;
 #[cfg(feature = "table_docs")]
