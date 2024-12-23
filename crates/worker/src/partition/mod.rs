@@ -279,7 +279,10 @@ where
                     Ok(stopped) => {
                         match stopped {
                             ProcessorStopReason::LogTrimGap { to_lsn } =>
-                                info!(?to_lsn, "Shutting partition processor down because we encountered a trim gap in the log."),
+                                info!(
+                                    trim_gap_to_lsn = ?to_lsn,
+                                    "Shutting partition processor down because we encountered a trim gap in the log."
+                                ),
                             _ => warn!("Shutting partition processor down because it stopped unexpectedly.")
                         }
                     },
@@ -495,6 +498,7 @@ where
                                 }
                             }
                             Record::TrimGap(to_lsn) => {
+                                // todo(pavel): this assumption may be violated if a command batch contains some records and a trim gap!
                                 assert!(trim_gap.is_none(), "Expecting only a single trim gap!");
                                 trim_gap = Some(to_lsn)
                             }
