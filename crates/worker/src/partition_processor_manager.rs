@@ -348,7 +348,11 @@ impl PartitionProcessorManager {
         }
     }
 
-    #[instrument(level = "debug", skip_all, fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner)))]
+    #[instrument(
+        level = "debug",
+        skip_all,
+        fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner))
+    )]
     fn on_asynchronous_event(&mut self, event: AsynchronousEvent) {
         let AsynchronousEvent {
             partition_id,
