@@ -17,7 +17,6 @@ use restate_types::config::AdminOptions;
 use restate_types::live::LiveLoad;
 use tower::ServiceBuilder;
 
-use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util;
 use restate_core::MetadataWriter;
 use restate_service_protocol::discovery::ServiceDiscovery;
@@ -44,7 +43,6 @@ where
 {
     pub fn new(
         metadata_writer: MetadataWriter,
-        metadata_store_client: MetadataStoreClient,
         bifrost: Bifrost,
         subscription_validator: V,
         service_discovery: ServiceDiscovery,
@@ -54,7 +52,6 @@ where
         Self {
             bifrost,
             schema_registry: SchemaRegistry::new(
-                metadata_store_client,
                 metadata_writer,
                 service_discovery,
                 subscription_validator,

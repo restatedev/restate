@@ -11,16 +11,15 @@
 pub mod error;
 mod updater;
 
-use http::Uri;
-
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
+
+use http::Uri;
 use tracing::subscriber::NoSubscriber;
 
-use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{Metadata, MetadataWriter};
 use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
@@ -77,7 +76,6 @@ pub enum ModifyServiceChange {
 /// new deployments.
 #[derive(Clone)]
 pub struct SchemaRegistry<V> {
-    metadata_store_client: MetadataStoreClient,
     metadata_writer: MetadataWriter,
     service_discovery: ServiceDiscovery,
     subscription_validator: V,
@@ -87,7 +85,6 @@ pub struct SchemaRegistry<V> {
 
 impl<V> SchemaRegistry<V> {
     pub fn new(
-        metadata_store_client: MetadataStoreClient,
         metadata_writer: MetadataWriter,
         service_discovery: ServiceDiscovery,
         subscription_validator: V,
@@ -95,7 +92,6 @@ impl<V> SchemaRegistry<V> {
     ) -> Self {
         Self {
             metadata_writer,
-            metadata_store_client,
             service_discovery,
             subscription_validator,
             experimental_feature_kafka_ingress_next,
@@ -155,7 +151,8 @@ impl<V> SchemaRegistry<V> {
         } else {
             let mut new_deployment_id = None;
             let schema_information = self
-                .metadata_store_client
+                .metadata_writer
+                .metadata_store_client()
                 .read_modify_write(
                     SCHEMA_INFORMATION_KEY.clone(),
                     |schema_information: Option<Schema>| {
@@ -195,7 +192,8 @@ impl<V> SchemaRegistry<V> {
         deployment_id: DeploymentId,
     ) -> Result<(), SchemaRegistryError> {
         let schema_registry = self
-            .metadata_store_client
+            .metadata_writer
+            .metadata_store_client()
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
                 |schema_registry: Option<Schema>| {
@@ -229,7 +227,8 @@ impl<V> SchemaRegistry<V> {
         changes: Vec<ModifyServiceChange>,
     ) -> Result<ServiceMetadata, SchemaRegistryError> {
         let schema_information = self
-            .metadata_store_client
+            .metadata_writer
+            .metadata_store_client()
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
                 |schema_information: Option<Schema>| {
@@ -270,7 +269,8 @@ impl<V> SchemaRegistry<V> {
         subscription_id: SubscriptionId,
     ) -> Result<(), SchemaRegistryError> {
         let schema_information = self
-            .metadata_store_client
+            .metadata_writer
+            .metadata_store_client()
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
                 |schema_information: Option<Schema>| {
@@ -370,7 +370,8 @@ where
         let mut subscription_id = None;
 
         let schema_information = self
-            .metadata_store_client
+            .metadata_writer
+            .metadata_store_client()
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
                 |schema_information: Option<Schema>| {

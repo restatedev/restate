@@ -17,10 +17,9 @@ use tokio::time;
 use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
-use restate_bifrost::{Bifrost, BifrostAdmin};
-use restate_core::metadata_store::MetadataStoreClient;
+use restate_bifrost::Bifrost;
 use restate_core::network::TransportConnect;
-use restate_core::{my_node_id, Metadata, MetadataWriter};
+use restate_core::{my_node_id, Metadata};
 use restate_types::cluster::cluster_state::{AliveNode, NodeState};
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::identifiers::PartitionId;
@@ -135,8 +134,6 @@ pub enum LeaderEvent {
 
 pub struct Leader<T> {
     bifrost: Bifrost,
-    metadata_store_client: MetadataStoreClient,
-    metadata_writer: MetadataWriter,
     logs_watcher: watch::Receiver<Version>,
     partition_table_watcher: watch::Receiver<Version>,
     find_logs_tail_interval: Interval,
@@ -156,17 +153,13 @@ where
 
         let scheduler = Scheduler::init(
             &configuration,
-            service.metadata_store_client.clone(),
+            service.metadata_writer.metadata_store_client().clone(),
             service.networking.clone(),
         )
         .await?;
 
-        let logs_controller = LogsController::init(
-            service.bifrost.clone(),
-            service.metadata_store_client.clone(),
-            service.metadata_writer.clone(),
-        )
-        .await?;
+        let logs_controller =
+            LogsController::init(service.bifrost.clone(), service.metadata_writer.clone()).await?;
 
         let (log_trim_interval, log_trim_threshold) =
             create_log_trim_interval(&configuration.admin);
@@ -178,8 +171,6 @@ where
         let metadata = Metadata::current();
         let mut leader = Self {
             bifrost: service.bifrost.clone(),
-            metadata_store_client: service.metadata_store_client.clone(),
-            metadata_writer: service.metadata_writer.clone(),
             logs_watcher: metadata.watch(MetadataKind::Logs),
             partition_table_watcher: metadata.watch(MetadataKind::PartitionTable),
             cluster_state_watcher: service.cluster_state_refresher.cluster_state_watcher(),
@@ -295,12 +286,6 @@ where
     }
 
     async fn trim_logs_inner(&self) -> Result<(), restate_bifrost::Error> {
-        let bifrost_admin = BifrostAdmin::new(
-            &self.bifrost,
-            &self.metadata_writer,
-            &self.metadata_store_client,
-        );
-
         let cluster_state = self.cluster_state_watcher.current();
 
         let mut persisted_lsns_per_partition: BTreeMap<
@@ -341,13 +326,13 @@ where
             if persisted_lsns.len() >= cluster_state.nodes.len() {
                 let min_persisted_lsn = persisted_lsns.into_values().min().unwrap_or(Lsn::INVALID);
                 // trim point is before the oldest record
-                let current_trim_point = bifrost_admin.get_trim_point(log_id).await?;
+                let current_trim_point = self.bifrost.get_trim_point(log_id).await?;
 
                 if min_persisted_lsn >= current_trim_point + self.log_trim_threshold {
                     debug!(
                     "Automatic trim log '{log_id}' for all records before='{min_persisted_lsn}'"
                 );
-                    bifrost_admin.trim(log_id, min_persisted_lsn).await?
+                    self.bifrost.admin().trim(log_id, min_persisted_lsn).await?
                 }
             } else {
                 warn!("Stop automatically trimming log '{log_id}' because not all nodes are running a partition processor applying this log.");

@@ -16,9 +16,8 @@ use restate_types::protobuf::cluster::ClusterConfiguration;
 use tonic::{async_trait, Request, Response, Status};
 use tracing::info;
 
-use restate_bifrost::{Bifrost, BifrostAdmin, Error as BiforstError};
+use restate_bifrost::{Bifrost, Error as BiforstError};
 use restate_core::{Metadata, MetadataWriter};
-use restate_metadata_store::MetadataStoreClient;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -44,7 +43,6 @@ use super::service::ChainExtension;
 use super::ClusterControllerHandle;
 
 pub(crate) struct ClusterCtrlSvcHandler {
-    metadata_store_client: MetadataStoreClient,
     controller_handle: ClusterControllerHandle,
     bifrost: Bifrost,
     metadata_writer: MetadataWriter,
@@ -53,20 +51,19 @@ pub(crate) struct ClusterCtrlSvcHandler {
 impl ClusterCtrlSvcHandler {
     pub fn new(
         controller_handle: ClusterControllerHandle,
-        metadata_store_client: MetadataStoreClient,
         bifrost: Bifrost,
         metadata_writer: MetadataWriter,
     ) -> Self {
         Self {
             controller_handle,
-            metadata_store_client,
             bifrost,
             metadata_writer,
         }
     }
 
     async fn get_logs(&self) -> Result<Logs, Status> {
-        self.metadata_store_client
+        self.metadata_writer
+            .metadata_store_client()
             .get::<Logs>(BIFROST_CONFIG_KEY.clone())
             .await
             .map_err(|error| Status::unknown(format!("Failed to get log metadata: {error:?}")))?
@@ -120,7 +117,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
         let (trim_point, nodes_config) = tokio::join!(
             self.bifrost.get_trim_point(log_id),
-            self.metadata_store_client
+            self.metadata_writer
+                .metadata_store_client()
                 .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone()),
         );
 
@@ -151,7 +149,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         _request: Request<ListNodesRequest>,
     ) -> Result<Response<ListNodesResponse>, Status> {
         let nodes_config = self
-            .metadata_store_client
+            .metadata_writer
+            .metadata_store_client()
             .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
             .await
             .map_err(|error| {
@@ -261,13 +260,9 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         let request = request.into_inner();
         let log_id: LogId = request.log_id.into();
 
-        let admin = BifrostAdmin::new(
-            &self.bifrost,
-            &self.metadata_writer,
-            &self.metadata_store_client,
-        );
-
-        let writable_loglet = admin
+        let writable_loglet = self
+            .bifrost
+            .admin()
             .writeable_loglet(log_id)
             .await
             .map_err(|err| match err {
