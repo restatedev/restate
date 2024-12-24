@@ -55,6 +55,11 @@ pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> any
 
     c_println!("Log Configuration ({})", logs.version());
 
+    c_println!(
+        "Default Provider Config: {:?}",
+        logs.configuration().default_provider
+    );
+
     // sort by log-id for display
     let logs: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
 
