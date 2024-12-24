@@ -79,7 +79,7 @@ impl SpawnPartitionProcessorTask {
         self,
     ) -> anyhow::Result<(
         StartedProcessor,
-        RuntimeTaskHandle<anyhow::Result<ProcessorStopReason>>,
+        RuntimeTaskHandle<Result<(), ProcessorStopReason>>,
     )> {
         let Self {
             task_name,
@@ -151,11 +151,13 @@ impl SpawnPartitionProcessorTask {
                         TaskKind::SystemService,
                         invoker_name,
                         invoker.run(invoker_config),
-                    )?;
+                    )
+                    .map_err(|e| ProcessorStopReason::from(anyhow::anyhow!(e)))?;
 
                     pp_builder
                         .build::<ProtobufRawEntryCodec>(bifrost, partition_store)
-                        .await?
+                        .await
+                        .map_err(ProcessorStopReason::from)?
                         .run()
                         .await
                 }
@@ -199,7 +201,7 @@ async fn open_partition_store(
     }
 
     // We don't have a local partition store initialized - or we have a fast-forward LSN target set.
-    // Attempt to get the latest available snapshot from the snapshots repository:
+    // Attempt to get the latest available snapshot from the snapshot repository:
     let snapshot = match snapshot_repository {
         Some(repository) => {
             debug!("Looking for partition snapshot from which to bootstrap partition store");
