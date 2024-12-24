@@ -273,6 +273,7 @@ async fn open_partition_store(
             }
 
             // We expect the processor startup attempt will fail, avoid spinning too fast.
+            // todo(pavel): replace this with RetryPolicy
             tokio::time::sleep(Duration::from_millis(
                 10_000 + rand::random::<u64>() % 10_000,
             ))
