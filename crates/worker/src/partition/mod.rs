@@ -24,7 +24,7 @@ use tracing::{debug, error, info, instrument, trace, warn, Span};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{HasConnection, Incoming, Outgoing};
-use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
+use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -252,19 +252,44 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
     partition_store: PartitionStore,
 }
 
+#[derive(Debug, derive_more::Display, thiserror::Error)]
+pub enum ProcessorStopReason {
+    TrimGapEncountered { gap_to_lsn: Lsn },
+    Storage(#[from] StorageError),
+    Bifrost(#[from] restate_bifrost::Error),
+    StateMachine(#[from] state_machine::Error),
+    ActionEffect(#[from] leadership::Error),
+    ShutdownError(#[from] ShutdownError),
+    LogReadStreamTerminated,
+    Other(#[from] anyhow::Error),
+}
+
+enum Record {
+    Envelope(Lsn, Arc<Envelope>),
+    TrimGap(Lsn),
+}
+
 impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
 where
     Codec: RawEntryCodec + Default + Debug,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
-    #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    #[instrument(
+        level = "error", skip_all,
+        fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty)
+    )]
+    pub async fn run(mut self) -> Result<(), ProcessorStopReason> {
         info!("Starting the partition processor.");
 
         let res = tokio::select! {
             res = self.run_inner() => {
                 match res.as_ref() {
                     Ok(_) => warn!("Shutting partition processor down because it stopped unexpectedly."),
+                    Err(ProcessorStopReason::TrimGapEncountered { gap_to_lsn }) =>
+                        info!(
+                            trim_gap_to_lsn = ?gap_to_lsn,
+                            "Shutting partition processor down because it encountered a trim gap in the log."
+                        ),
                     Err(err) => warn!("Shutting partition processor down because it failed: {err}"),
                 }
                 res
@@ -293,9 +318,12 @@ where
         res
     }
 
-    async fn run_inner(&mut self) -> anyhow::Result<()> {
+    async fn run_inner(&mut self) -> Result<(), ProcessorStopReason> {
         let mut partition_store = self.partition_store.clone();
-        let last_applied_lsn = partition_store.get_applied_lsn().await?;
+        let last_applied_lsn = partition_store
+            .get_applied_lsn()
+            .await
+            .map_err(ProcessorStopReason::from)?;
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
 
         self.status.last_applied_log_lsn = Some(last_applied_lsn);
@@ -304,7 +332,8 @@ where
         let current_tail = self
             .bifrost
             .find_tail(LogId::from(self.partition_id))
-            .await?;
+            .await
+            .map_err(ProcessorStopReason::from)?;
 
         debug!(
             last_applied_lsn = %last_applied_lsn,
@@ -351,15 +380,24 @@ where
                 key_query.clone(),
                 last_applied_lsn.next(),
                 Lsn::MAX,
-            )?
+            )
+            .map_err(ProcessorStopReason::from)?
             .map_ok(|entry| {
                 trace!(?entry, "Read entry");
                 let lsn = entry.sequence_number();
-                let Some(envelope) = entry.try_decode_arc::<Envelope>() else {
-                    // trim-gap
-                    unimplemented!("Handling trim gap is currently not supported")
-                };
-                anyhow::Ok((lsn, envelope?))
+                if entry.is_data_record() {
+                    entry
+                        .try_decode_arc::<Envelope>()
+                        .map(|envelope| anyhow::Ok(Record::Envelope(lsn, envelope?)))
+                        .expect("data record is present")
+                } else {
+                    // read_commands will translate trim gaps to errors
+                    anyhow::Ok(Record::TrimGap(
+                        entry
+                            .trim_gap_to_sequence_number()
+                            .expect("trim gap has to-LSN"),
+                    ))
+                }
             })
             .try_take_while(|entry| {
                 // a catch-all safety net if all lower layers didn't filter this record out. This
@@ -367,9 +405,10 @@ where
                 //
                 // At some point, we should remove this and trust that stored records have Keys
                 // stored correctly.
-                std::future::ready(Ok(entry
-                    .as_ref()
-                    .is_ok_and(|(_, envelope)| envelope.matches_key_query(&key_query))))
+                std::future::ready(Ok(entry.as_ref().is_ok_and(|r| match r {
+                    Record::Envelope(_, e) => e.matches_key_query(&key_query),
+                    Record::TrimGap(_) => true,
+                })))
             });
 
         // avoid synchronized timers. We pick a randomised timer between 500 and 1023 millis.
@@ -417,64 +456,71 @@ where
                     // clear buffers used when applying the next record
                     action_collector.clear();
 
-                    for (lsn, envelope) in command_buffer.drain(..) {
-                        let command_start = Instant::now();
+                    for record in command_buffer.drain(..) {
+                        match record {
+                            Record::Envelope(lsn, envelope) => {
+                                let command_start = Instant::now();
 
-                        trace!(%lsn, "Processing bifrost record for '{}': {:?}", envelope.command.name(), envelope.header);
+                                trace!(%lsn, "Processing bifrost record for '{}': {:?}", envelope.command.name(), envelope.header);
 
-                        let leadership_change = self.apply_record(
-                            lsn,
-                            envelope,
-                            &mut transaction,
-                            &mut action_collector).await?;
+                                let leadership_change = self.apply_record(
+                                    lsn,
+                                    envelope,
+                                    &mut transaction,
+                                    &mut action_collector).await.map_err(ProcessorStopReason::from)?;
 
-                        apply_command_latency.record(command_start.elapsed());
+                                apply_command_latency.record(command_start.elapsed());
 
-                        if let Some((header, announce_leader)) = leadership_change {
-                            // commit all changes so far, this is important so that the actuators see all changes
-                            // when becoming leader.
-                            transaction.commit().await?;
+                                if let Some((header, announce_leader)) = leadership_change {
+                                    // commit all changes so far, this is important so that the actuators see all changes
+                                    // when becoming leader.
+                                    transaction.commit().await.map_err(ProcessorStopReason::from)?;
 
-                            // We can ignore all actions collected so far because as a new leader we have to instruct the
-                            // actuators afresh.
-                            action_collector.clear();
+                                    // We can ignore all actions collected so far because as a new leader we have to instruct the
+                                    // actuators afresh.
+                                    action_collector.clear();
 
-                            self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
-                            if header.source.is_processor_generational() {
-                                let Source::Processor { generational_node_id, .. } = header.source else {
-                                    unreachable!("processor source must have generational_node_id");
-                                };
-                                // all new AnnounceLeader messages should come from a PartitionProcessor
-                                self.status.last_observed_leader_node = generational_node_id;
-                            } else if announce_leader.node_id.is_some() {
-                                // older AnnounceLeader messages have the announce_leader.node_id set
-                                self.status.last_observed_leader_node = announce_leader.node_id;
+                                    self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
+                                    if header.source.is_processor_generational() {
+                                        let Source::Processor { generational_node_id, .. } = header.source else {
+                                            unreachable!("processor source must have generational_node_id");
+                                        };
+                                        // all new AnnounceLeader messages should come from a PartitionProcessor
+                                        self.status.last_observed_leader_node = generational_node_id;
+                                    } else if announce_leader.node_id.is_some() {
+                                        // older AnnounceLeader messages have the announce_leader.node_id set
+                                        self.status.last_observed_leader_node = announce_leader.node_id;
+                                    }
+
+                                    let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_store).await.map_err(ProcessorStopReason::from)?;
+
+                                    Span::current().record("is_leader", is_leader);
+
+                                    if is_leader {
+                                        self.status.effective_mode = RunMode::Leader;
+                                    }
+
+                                    transaction = partition_store.transaction();
+                                }
                             }
-
-                            let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_store).await?;
-
-                            Span::current().record("is_leader", is_leader);
-
-                            if is_leader {
-                                self.status.effective_mode = RunMode::Leader;
+                            Record::TrimGap(gap_to_lsn) => {
+                                return Err(ProcessorStopReason::TrimGapEncountered { gap_to_lsn })
                             }
-
-                            transaction = partition_store.transaction();
                         }
                     }
 
                     // Commit our changes and notify actuators about actions if we are the leader
-                    transaction.commit().await?;
+                    transaction.commit().await.map_err(ProcessorStopReason::from)?;
                     let actions_start = Instant::now();
-                    self.leadership_state.handle_actions(action_collector.drain(..)).await?;
+                    self.leadership_state.handle_actions(action_collector.drain(..)).await.map_err(ProcessorStopReason::from)?;
                     record_actions_latency.record(actions_start.elapsed());
                 },
                 result = self.leadership_state.run() => {
-                    let action_effects = result?;
+                    let action_effects = result.map_err(ProcessorStopReason::from)?;
                     // We process the action_effects not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be
                     // implemented.
-                    self.leadership_state.handle_action_effects(action_effects).await?;
+                    self.leadership_state.handle_action_effects(action_effects).await.map_err(ProcessorStopReason::from)?;
                 }
             }
             // Allow other tasks on this thread to run, but only if we have exhausted the coop
@@ -813,22 +859,20 @@ where
     }
 
     /// Tries to read as many records from the `log_reader` as are immediately available and stops
-    /// reading at `max_batching_size`.
+    /// reading at `max_batching_size`. Trim gaps will result in an immediate error.
     async fn read_commands<S>(
         log_reader: &mut S,
         max_batching_size: usize,
-        record_buffer: &mut Vec<(Lsn, Arc<Envelope>)>,
-    ) -> anyhow::Result<()>
+        record_buffer: &mut Vec<Record>,
+    ) -> Result<(), ProcessorStopReason>
     where
-        S: Stream<Item = Result<anyhow::Result<(Lsn, Arc<Envelope>)>, restate_bifrost::Error>>
-            + Unpin,
+        S: Stream<Item = Result<anyhow::Result<Record>, restate_bifrost::Error>> + Unpin,
     {
         // beyond this point we must not await; otherwise we are no longer cancellation safe
         let first_record = log_reader.next().await;
 
         let Some(first_record) = first_record else {
-            // read stream terminated!
-            anyhow::bail!("Read stream terminated for partition processor");
+            return Err(ProcessorStopReason::LogReadStreamTerminated);
         };
 
         record_buffer.clear();
@@ -838,11 +882,14 @@ where
             // read more message from the stream but only if they are immediately available
             if let Some(record) = log_reader.next().now_or_never() {
                 let Some(record) = record else {
-                    // read stream terminated!
-                    anyhow::bail!("Read stream terminated for partition processor");
+                    return Err(ProcessorStopReason::LogReadStreamTerminated);
                 };
-
-                record_buffer.push(record??);
+                match record?? {
+                    Record::TrimGap(gap_to_lsn) => {
+                        return Err(ProcessorStopReason::TrimGapEncountered { gap_to_lsn });
+                    }
+                    record => record_buffer.push(record),
+                }
             } else {
                 // no more immediately available records found
                 break;

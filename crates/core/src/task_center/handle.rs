@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Debug;
 use std::future::Future;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -77,15 +78,16 @@ impl Handle {
         self.inner.block_on(future)
     }
 
-    pub fn start_runtime<F>(
+    pub fn start_runtime<F, R>(
         &self,
         root_task_kind: TaskKind,
         runtime_name: &'static str,
         partition_id: Option<PartitionId>,
         root_future: impl FnOnce() -> F + Send + 'static,
-    ) -> Result<RuntimeTaskHandle<anyhow::Result<()>>, RuntimeError>
+    ) -> Result<RuntimeTaskHandle<R>, RuntimeError>
     where
-        F: Future<Output = anyhow::Result<()>> + 'static,
+        F: Future<Output = R> + 'static,
+        R: Send + Debug + 'static,
     {
         self.inner
             .start_runtime(root_task_kind, runtime_name, partition_id, root_future)
