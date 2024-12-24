@@ -86,6 +86,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
 
         let metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
+        let metadata_writer = metadata_manager.writer();
         let mut router_builder = MessageRouterBuilder::default();
         metadata_manager.register_in_message_router(&mut router_builder);
 
@@ -95,7 +96,8 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
             metadata_manager.run(),
         )?;
 
-        let bifrost_svc = BifrostService::new().enable_local_loglet(&Configuration::updateable());
+        let bifrost_svc =
+            BifrostService::new(metadata_writer).enable_local_loglet(&Configuration::updateable());
 
         let bifrost = bifrost_svc.handle();
         // Ensures bifrost has initial metadata synced up before starting the worker.

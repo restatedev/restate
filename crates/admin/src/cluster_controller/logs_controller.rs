@@ -24,8 +24,8 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, trace, trace_span, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
-use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadWriteError, WriteError};
+use restate_bifrost::{Bifrost, Error as BifrostError};
+use restate_core::metadata_store::{Precondition, ReadWriteError, WriteError};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -922,20 +922,16 @@ pub struct LogsController {
     effects: Option<Vec<Effect>>,
     inner: LogsControllerInner,
     bifrost: Bifrost,
-    metadata_store_client: MetadataStoreClient,
     metadata_writer: MetadataWriter,
     async_operations: JoinSet<Event>,
     find_logs_tail_semaphore: Arc<Semaphore>,
 }
 
 impl LogsController {
-    pub async fn init(
-        bifrost: Bifrost,
-        metadata_store_client: MetadataStoreClient,
-        metadata_writer: MetadataWriter,
-    ) -> Result<Self> {
+    pub async fn init(bifrost: Bifrost, metadata_writer: MetadataWriter) -> Result<Self> {
         //  fetches latest logs or init it with an empty logs variant
-        BifrostAdmin::new(&bifrost, &metadata_writer, &metadata_store_client)
+        bifrost
+            .admin()
             .init_metadata()
             .await
             .map_err(|e| LogsControllerError::Other(e.into()))?;
@@ -955,7 +951,6 @@ impl LogsController {
                 retry_policy,
             ),
             bifrost,
-            metadata_store_client,
             metadata_writer,
             async_operations: JoinSet::default(),
             find_logs_tail_semaphore: Arc::new(Semaphore::new(1)),
@@ -974,17 +969,12 @@ impl LogsController {
 
         let logs = Arc::clone(&self.inner.current_logs);
         let bifrost = self.bifrost.clone();
-        let metadata_store_client = self.metadata_store_client.clone();
-        let metadata_writer = self.metadata_writer.clone();
         let find_tail = async move {
-            let bifrost_admin =
-                BifrostAdmin::new(&bifrost, &metadata_writer, &metadata_store_client);
-
             let mut updates = LogsTailUpdates::default();
             for (log_id, chain) in logs.iter() {
                 let tail_segment = chain.tail();
 
-                let writable_loglet = match bifrost_admin.writeable_loglet(*log_id).await {
+                let writable_loglet = match bifrost.admin().writeable_loglet(*log_id).await {
                     Ok(loglet) => loglet,
                     Err(BifrostError::Shutdown(_)) => break,
                     Err(err) => {
@@ -1088,7 +1078,6 @@ impl LogsController {
         logs: Arc<Logs>,
         mut debounce: Option<RetryIter<'static>>,
     ) {
-        let metadata_store_client = self.metadata_store_client.clone();
         let metadata_writer = self.metadata_writer.clone();
 
         self.async_operations.spawn(async move {
@@ -1098,7 +1087,7 @@ impl LogsController {
                     tokio::time::sleep(delay).await;
                 }
 
-                if let Err(err) = metadata_store_client
+                if let Err(err) = metadata_writer.metadata_store_client()
                     .put(
                         BIFROST_CONFIG_KEY.clone(),
                         logs.deref(),
@@ -1110,7 +1099,7 @@ impl LogsController {
                         WriteError::FailedPrecondition(_) => {
                             debug!("Detected a concurrent modification of logs. Fetching the latest logs now.");
                             // There was a concurrent modification of the logs. Fetch the latest version.
-                            match metadata_store_client
+                            match metadata_writer.metadata_store_client()
                                 .get::<Logs>(BIFROST_CONFIG_KEY.clone())
                                 .await
                             {
@@ -1156,8 +1145,6 @@ impl LogsController {
         mut debounce: Option<RetryIter<'static>>,
     ) {
         let bifrost = self.bifrost.clone();
-        let metadata_store_client = self.metadata_store_client.clone();
-        let metadata_writer = self.metadata_writer.clone();
 
         self.async_operations.spawn(
             async move {
@@ -1167,10 +1154,7 @@ impl LogsController {
                     tokio::time::sleep(delay).await;
                 }
 
-                let bifrost_admin =
-                    BifrostAdmin::new(&bifrost, &metadata_writer, &metadata_store_client);
-
-                match bifrost_admin.seal(log_id, segment_index).await {
+                match bifrost.admin().seal(log_id, segment_index).await {
                     Ok(sealed_segment) => {
                         if sealed_segment.tail.is_sealed() {
                             Event::SealSucceeded {

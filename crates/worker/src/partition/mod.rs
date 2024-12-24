@@ -344,6 +344,7 @@ where
 
         // Start reading after the last applied lsn
         let key_query = KeyFilter::Within(self.partition_key_range.clone());
+
         let mut log_reader = self
             .bifrost
             .create_reader(
