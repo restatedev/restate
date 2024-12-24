@@ -26,7 +26,7 @@ use tracing::{debug, info};
 use restate_metadata_store::ReadModifyWriteError;
 use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::logs::metadata::{
-    DefaultProvider, LogletParams, Logs, LogsConfiguration, ProviderKind, SegmentIndex,
+    LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
@@ -104,6 +104,10 @@ where
         metadata_writer: MetadataWriter,
         metadata_store_client: MetadataStoreClient,
     ) -> Self {
+        println!(
+            "CONFIGURATION DEFaAULT IS: {}",
+            configuration.live_load().bifrost.default_provider
+        );
         let (command_tx, command_rx) = mpsc::channel(2);
 
         let cluster_state_refresher =
@@ -183,7 +187,7 @@ enum ClusterControllerCommand {
     UpdateClusterConfiguration {
         num_partitions: NonZeroU16,
         replication_strategy: ReplicationStrategy,
-        default_provider: DefaultProvider,
+        default_provider: ProviderConfiguration,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
     },
     SealAndExtendChain {
@@ -249,7 +253,7 @@ impl ClusterControllerHandle {
         &self,
         num_partitions: NonZeroU16,
         replication_strategy: ReplicationStrategy,
-        default_provider: DefaultProvider,
+        default_provider: ProviderConfiguration,
     ) -> Result<anyhow::Result<()>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -439,7 +443,7 @@ impl<T: TransportConnect> Service<T> {
         &self,
         num_partitions: u16,
         replication_strategy: ReplicationStrategy,
-        default_provider: DefaultProvider,
+        default_provider: ProviderConfiguration,
     ) -> anyhow::Result<()> {
         let logs = self
             .metadata_store_client
@@ -457,8 +461,7 @@ impl<T: TransportConnect> Service<T> {
 
                 // we can only change the default provider
                 if logs.version() != Version::INVALID
-                    && logs.configuration().default_provider.as_provider_kind()
-                        != default_provider.as_provider_kind()
+                    && logs.configuration().default_provider.kind() != default_provider.kind()
                 {
                     {
                         return Err(
@@ -786,16 +789,16 @@ impl SealAndExtendTask {
 
         let (provider, params) = match &logs.configuration().default_provider {
             #[cfg(any(test, feature = "memory-loglet"))]
-            DefaultProvider::InMemory => (
+            ProviderConfiguration::InMemory => (
                 ProviderKind::InMemory,
                 u64::from(loglet_id.next()).to_string().into(),
             ),
-            DefaultProvider::Local => (
+            ProviderConfiguration::Local => (
                 ProviderKind::Local,
                 u64::from(loglet_id.next()).to_string().into(),
             ),
             #[cfg(feature = "replicated-loglet")]
-            DefaultProvider::Replicated(config) => {
+            ProviderConfiguration::Replicated(config) => {
                 let schedule_plan = self
                     .metadata_store_client
                     .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
@@ -833,6 +836,7 @@ mod tests {
 
     use googletest::assert_that;
     use googletest::matchers::eq;
+    use restate_types::logs::metadata::ProviderKind;
     use test_log::test;
 
     use restate_bifrost::providers::memory_loglet;
@@ -843,7 +847,7 @@ mod tests {
     use restate_core::test_env::NoOpMessageHandler;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
-    use restate_types::config::{AdminOptions, Configuration};
+    use restate_types::config::{AdminOptions, BifrostOptions, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
@@ -1086,8 +1090,11 @@ mod tests {
         admin_options.log_trim_threshold = 0;
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
+        let mut bifrost_options = BifrostOptions::default();
+        bifrost_options.default_provider = ProviderKind::InMemory;
         let config = Configuration {
             admin: admin_options,
+            bifrost: bifrost_options,
             ..Default::default()
         };
 
@@ -1136,6 +1143,7 @@ mod tests {
     where
         F: FnMut(TestCoreEnvBuilder<FailingConnector>) -> TestCoreEnvBuilder<FailingConnector>,
     {
+        restate_types::config::set_current_config(config);
         let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
@@ -1143,7 +1151,7 @@ mod tests {
         let mut server_builder = NetworkServerBuilder::default();
 
         let svc = Service::new(
-            Live::from_value(config),
+            Configuration::updateable(),
             HealthStatus::default(),
             bifrost.clone(),
             builder.networking.clone(),
