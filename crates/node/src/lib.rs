@@ -30,7 +30,7 @@ use restate_core::network::{
 };
 use restate_core::partitions::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
-use restate_core::protobuf::node_ctl_svc::{ProvisionClusterRequest, ProvisionClusterResponseKind};
+use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest;
 use restate_core::{cancellation_watcher, Metadata, TaskKind};
 use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter};
 #[cfg(feature = "replicated-loglet")]
@@ -387,22 +387,16 @@ impl Node {
                         .await;
 
                     match response {
-                        Ok(response) => match response.into_inner().kind() {
-                            ProvisionClusterResponseKind::ProvisionClusterResponseTypeUnknown => {
-                                panic!("unknown cluster response type")
-                            }
-                            ProvisionClusterResponseKind::DryRun => {
-                                unreachable!("call w/o dry run")
-                            }
-                            ProvisionClusterResponseKind::NewlyProvisioned => {
-                                debug!("Successfully auto provisioned the cluster")
-                            }
-                            ProvisionClusterResponseKind::AlreadyProvisioned => {
-                                debug!("The cluster is already provisioned.")
-                            }
-                        },
+                        Ok(response) => {
+                            let response = response.into_inner();
+                            debug_assert!(!response.dry_run, "Provision w/o dry run");
+                        }
                         Err(err) => {
-                            warn!("Failed to auto provision the cluster. In order to continue you have to provision the cluster manually: {err}");
+                            if err.code() == Code::AlreadyExists {
+                                debug!("The cluster is already provisioned.")
+                            } else {
+                                warn!("Failed to auto provision the cluster. In order to continue you have to provision the cluster manually: {err}");
+                            }
                         }
                     }
 
