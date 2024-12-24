@@ -16,16 +16,19 @@ use dashmap::DashMap;
 use tracing::debug;
 
 use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
-use restate_core::{TaskCenter, TaskKind};
+use restate_core::{my_node_id, Metadata, TaskCenter, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::Configuration;
-use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::{LogId, RecordCache};
+use restate_types::logs::metadata::{
+    Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
+};
+use restate_types::logs::{LogId, LogletId, RecordCache};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use super::loglet::ReplicatedLoglet;
 use super::metric_definitions;
 use super::network::RequestPump;
+use super::nodeset_selector::{NodeSelectionError, NodeSetSelector, ObservedClusterState};
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
 use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
@@ -199,6 +202,76 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
     ) -> Result<Arc<dyn Loglet>, Error> {
         let loglet = self.get_or_create_loglet(log_id, segment_index, params)?;
         Ok(loglet as Arc<dyn Loglet>)
+    }
+
+    fn propose_new_loglet_params(
+        &self,
+        log_id: LogId,
+        chain: Option<&Chain>,
+        defaults: &ProviderConfiguration,
+    ) -> Result<LogletParams, OperationError> {
+        let ProviderConfiguration::Replicated(defaults) = defaults else {
+            panic!("ProviderConfiguration::Replicated is expected");
+        };
+
+        let new_segment_index = chain
+            .map(|c| c.tail_index())
+            .unwrap_or(SegmentIndex::OLDEST);
+
+        let loglet_id = LogletId::new(log_id, new_segment_index);
+
+        let mut rng = rand::thread_rng();
+
+        let replication = defaults.replication_property.clone();
+        let strategy = defaults.nodeset_selection_strategy;
+
+        // if the last loglet in the chain is of the same provider kind, we can use this to
+        // influence the nodeset selector.
+        let previous_params = chain.and_then(|chain| {
+            let tail_config = chain.tail().config;
+            match tail_config.kind {
+                ProviderKind::Replicated => Some(
+                    ReplicatedLogletParams::deserialize_from(tail_config.params.as_bytes())
+                        .expect("params serde must be infallible"),
+                ),
+                // Another kind, we don't care about its config
+                _ => None,
+            }
+        });
+
+        let preferred_nodes = previous_params
+            .map(|p| p.nodeset.clone())
+            .unwrap_or_default();
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+
+        let selection = NodeSetSelector::new(&nodes_config, &ObservedClusterState).select(
+            strategy,
+            &replication,
+            &mut rng,
+            &preferred_nodes,
+        );
+
+        match selection {
+            Ok(nodeset) => Ok(LogletParams::from(
+                ReplicatedLogletParams {
+                    loglet_id,
+                    // We choose ourselves to be the sequencer for this loglet
+                    sequencer: my_node_id(),
+                    replication,
+                    nodeset,
+                }
+                .serialize()
+                .expect("params serde must be infallible"),
+            )),
+            Err(e @ NodeSelectionError::InsufficientWriteableNodes) => {
+                debug!(
+                    ?loglet_id,
+                    "Insufficient writeable nodes to select new nodeset for replicated loglet"
+                );
+
+                Err(OperationError::terminal(e))
+            }
+        }
     }
 
     async fn shutdown(&self) -> Result<(), OperationError> {

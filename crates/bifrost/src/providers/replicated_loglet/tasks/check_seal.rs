@@ -94,6 +94,7 @@ impl CheckSealTask {
                     loglet_id = %my_params.loglet_id,
                     status = %nodeset_checker,
                     effective_nodeset = %effective_nodeset,
+                    replication = %my_params.replication,
                     "Insufficient nodes responded to GetLogletInfo requests, we cannot determine seal status, we'll assume it's unsealed for now",
                 );
                 return Ok(CheckSealOutcome::ProbablyOpen);
