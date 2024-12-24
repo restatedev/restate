@@ -23,7 +23,7 @@ use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
 use restate_types::logs::metadata::{
-    DefaultProvider, NodeSetSelectionStrategy, ProviderKind, ReplicatedLogletConfig,
+    NodeSetSelectionStrategy, ProviderConfiguration, ProviderKind, ReplicatedLogletConfig,
 };
 use restate_types::partition_table::ReplicationStrategy;
 use restate_types::replicated_loglet::ReplicationProperty;
@@ -89,8 +89,8 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
 
     if let Some(provider) = set_opts.bifrost_provider {
         let default_provider = match provider {
-            ProviderKind::InMemory => DefaultProvider::InMemory,
-            ProviderKind::Local => DefaultProvider::Local,
+            ProviderKind::InMemory => ProviderConfiguration::InMemory,
+            ProviderKind::Local => ProviderConfiguration::Local,
             ProviderKind::Replicated => {
                 let config = ReplicatedLogletConfig {
                     replication_property: set_opts
@@ -101,7 +101,7 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
                         .nodeset_selection_strategy
                         .unwrap_or_default(),
                 };
-                DefaultProvider::Replicated(config)
+                ProviderConfiguration::Replicated(config)
             }
         };
 

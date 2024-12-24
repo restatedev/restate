@@ -15,7 +15,7 @@ use enumset::{enum_set, EnumSet};
 use googletest::internal::test_outcome::TestAssertionFailure;
 use googletest::IntoTestResult;
 
-use restate_bifrost::{loglet::Loglet, Bifrost, BifrostAdmin};
+use restate_bifrost::{loglet::Loglet, Bifrost};
 use restate_core::metadata_store::Precondition;
 use restate_core::TaskCenter;
 use restate_core::{metadata_store::MetadataStoreClient, MetadataWriter};
@@ -90,16 +90,6 @@ pub struct TestEnv {
     pub metadata_writer: MetadataWriter,
     pub metadata_store_client: MetadataStoreClient,
     pub cluster: StartedCluster,
-}
-
-impl TestEnv {
-    pub fn bifrost_admin(&self) -> BifrostAdmin<'_> {
-        BifrostAdmin::new(
-            &self.bifrost,
-            &self.metadata_writer,
-            &self.metadata_store_client,
-        )
-    }
 }
 
 pub async fn run_in_test_env<F, O>(

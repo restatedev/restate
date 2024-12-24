@@ -11,11 +11,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::Context;
 use enum_map::EnumMap;
 use tracing::{debug, error, trace};
 
-use restate_core::{cancellation_watcher, TaskCenter, TaskCenterFutureExt, TaskKind};
+use restate_core::{
+    cancellation_watcher, MetadataWriter, TaskCenter, TaskCenterFutureExt, TaskKind,
+};
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::logs::metadata::ProviderKind;
@@ -34,16 +35,10 @@ pub struct BifrostService {
     factories: HashMap<ProviderKind, Box<dyn LogletProviderFactory>>,
 }
 
-impl Default for BifrostService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl BifrostService {
-    pub fn new() -> Self {
+    pub fn new(metadata_writer: MetadataWriter) -> Self {
         let (watchdog_sender, watchdog_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let inner = Arc::new(BifrostInner::new(watchdog_sender.clone()));
+        let inner = Arc::new(BifrostInner::new(watchdog_sender.clone(), metadata_writer));
         let bifrost = Bifrost::new(inner.clone());
         let watchdog = Watchdog::new(inner.clone(), watchdog_sender, watchdog_receiver);
         Self {
@@ -85,11 +80,10 @@ impl BifrostService {
     ///
     /// This requires to run within a task_center context.
     pub async fn start(self) -> anyhow::Result<()> {
-        // Perform an initial metadata sync.
-        self.inner
-            .sync_metadata()
-            .await
-            .context("Initial bifrost metadata sync has failed!")?;
+        // Make sure we have v1 metadata written to metadata store with the default
+        // configuration. If metadata is already initialized, this will make sure we have the
+        // latest version set in metadata manager.
+        self.bifrost.admin().init_metadata().await?;
 
         // initialize all enabled providers.
         if self.factories.is_empty() {

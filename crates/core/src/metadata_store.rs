@@ -105,7 +105,6 @@ pub trait MetadataStore {
 /// Metadata store client which allows storing [`Versioned`] values into a [`MetadataStore`].
 #[derive(Clone)]
 pub struct MetadataStoreClient {
-    // premature optimization? Maybe introduce trait object once we have multiple implementations?
     inner: Arc<dyn MetadataStore + Send + Sync>,
     backoff_policy: Option<RetryPolicy>,
 }

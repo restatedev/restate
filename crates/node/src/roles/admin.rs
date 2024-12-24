@@ -14,7 +14,6 @@ use codederror::CodedError;
 use restate_admin::cluster_controller;
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
-use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
@@ -70,7 +69,6 @@ impl<T: TransportConnect> AdminRole<T> {
         metadata_writer: MetadataWriter,
         server_builder: &mut NetworkServerBuilder,
         router_builder: &mut MessageRouterBuilder,
-        metadata_store_client: MetadataStoreClient,
         local_query_context: Option<QueryContext>,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
@@ -104,7 +102,6 @@ impl<T: TransportConnect> AdminRole<T> {
 
         let admin = AdminService::new(
             metadata_writer.clone(),
-            metadata_store_client.clone(),
             bifrost.clone(),
             config.ingress.clone(),
             service_discovery,
@@ -121,7 +118,6 @@ impl<T: TransportConnect> AdminRole<T> {
                 router_builder,
                 server_builder,
                 metadata_writer,
-                metadata_store_client,
             ))
         } else {
             None

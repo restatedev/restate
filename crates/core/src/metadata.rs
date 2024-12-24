@@ -29,7 +29,7 @@ use restate_types::schema::Schema;
 use restate_types::{GenerationalNodeId, Version, Versioned};
 
 use crate::metadata::manager::Command;
-use crate::metadata_store::ReadError;
+use crate::metadata_store::{MetadataStoreClient, ReadError};
 use crate::network::WeakConnection;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 
@@ -335,6 +335,7 @@ struct MetadataInner {
 /// so it's safe to call update_* without checking the current version.
 #[derive(Clone)]
 pub struct MetadataWriter {
+    metadata_store_client: MetadataStoreClient,
     sender: manager::CommandSender,
     /// strictly used to set my node id. Do not use this to update metadata
     /// directly to avoid race conditions.
@@ -342,8 +343,20 @@ pub struct MetadataWriter {
 }
 
 impl MetadataWriter {
-    fn new(sender: manager::CommandSender, inner: Arc<MetadataInner>) -> Self {
-        Self { sender, inner }
+    fn new(
+        sender: manager::CommandSender,
+        metadata_store_client: MetadataStoreClient,
+        inner: Arc<MetadataInner>,
+    ) -> Self {
+        Self {
+            metadata_store_client,
+            sender,
+            inner,
+        }
+    }
+
+    pub fn metadata_store_client(&self) -> &MetadataStoreClient {
+        &self.metadata_store_client
     }
 
     // Returns when the nodes configuration update is performed.

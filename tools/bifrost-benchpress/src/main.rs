@@ -176,7 +176,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (task_center
         metadata_writer.submit(Arc::new(logs));
         spawn_metadata_manager(metadata_manager).expect("metadata manager starts");
 
-        let bifrost_svc = BifrostService::new()
+        let bifrost_svc = BifrostService::new(metadata_writer)
             .enable_in_memory_loglet()
             .enable_local_loglet(&config);
         let bifrost = bifrost_svc.handle();
