@@ -16,9 +16,7 @@ use itertools::Itertools;
 use regex::{Regex, RegexSet};
 use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
-use restate_core::protobuf::node_ctl_svc::{
-    ProvisionClusterRequest as ProtoProvisionClusterRequest, ProvisionClusterResponseKind,
-};
+use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest as ProtoProvisionClusterRequest;
 use restate_types::logs::metadata::DefaultProvider;
 use restate_types::partition_table::ReplicationStrategy;
 use restate_types::retries::RetryPolicy;
@@ -54,6 +52,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio::{process::Command, sync::mpsc::Sender};
+use tonic::Code;
 use tracing::{error, info, warn};
 use typed_builder::TypedBuilder;
 
@@ -788,17 +787,23 @@ impl StartedNode {
                 let request = request.clone();
                 async move { client.provision_cluster(request).await }
             })
-            .await?
-            .into_inner();
+            .await;
 
-        Ok(match response.kind() {
-            ProvisionClusterResponseKind::ProvisionClusterResponseTypeUnknown => {
-                panic!("unknown cluster response type")
+        match response {
+            Ok(response) => {
+                let response = response.into_inner();
+
+                assert!(!response.dry_run, "provision command was run w/o dry run");
+                Ok(true)
             }
-            ProvisionClusterResponseKind::DryRun => unreachable!("request non dry run"),
-            ProvisionClusterResponseKind::NewlyProvisioned => true,
-            ProvisionClusterResponseKind::AlreadyProvisioned => false,
-        })
+            Err(status) => {
+                if status.code() == Code::AlreadyExists {
+                    Ok(false)
+                } else {
+                    Err(status.into())
+                }
+            }
+        }
     }
 }
 

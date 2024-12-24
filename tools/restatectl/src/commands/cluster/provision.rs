@@ -17,7 +17,7 @@ use cling::{Collect, Run};
 use restate_cli_util::ui::console::confirm_or_exit;
 use restate_cli_util::{c_error, c_println, c_warn};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
-use restate_core::protobuf::node_ctl_svc::{ProvisionClusterRequest, ProvisionClusterResponseKind};
+use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest;
 use restate_types::logs::metadata::{
     NodeSetSelectionStrategy, ProviderConfiguration, ProviderKind, ReplicatedLogletConfig,
 };
@@ -26,6 +26,7 @@ use restate_types::partition_table::ReplicationStrategy;
 use restate_types::replicated_loglet::ReplicationProperty;
 use std::num::NonZeroU16;
 use tonic::codec::CompressionEncoding;
+use tonic::Code;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "cluster_provision")]
@@ -91,21 +92,10 @@ async fn cluster_provision(
         }
     };
 
-    let cluster_configuration_to_provision = match response.kind() {
-        ProvisionClusterResponseKind::ProvisionClusterResponseTypeUnknown => {
-            panic!("unknown cluster response type")
-        }
-        ProvisionClusterResponseKind::DryRun => response
-            .cluster_configuration
-            .expect("dry run response needs to carry a cluster configuration"),
-        ProvisionClusterResponseKind::NewlyProvisioned => {
-            unreachable!("provisioning a cluster with dry run should not have an effect")
-        }
-        ProvisionClusterResponseKind::AlreadyProvisioned => {
-            c_println!("🏃The cluster has already been provisioned.");
-            return Ok(());
-        }
-    };
+    debug_assert!(response.dry_run, "Provision with dry run");
+    let cluster_configuration_to_provision = response
+        .cluster_configuration
+        .expect("Provision response should carry a cluster configuration");
 
     c_println!(
         "{}",
@@ -134,28 +124,21 @@ async fn cluster_provision(
         log_provider: cluster_configuration_to_provision.default_provider,
     };
 
-    let response = match client.provision_cluster(request).await {
-        Ok(response) => response.into_inner(),
-        Err(err) => {
-            c_error!("Failed to provision cluster: {}", err.message());
-            return Ok(());
-        }
-    };
+    match client.provision_cluster(request).await {
+        Ok(response) => {
+            let response = response.into_inner();
+            debug_assert!(!response.dry_run, "Provision w/o dry run");
 
-    match response.kind() {
-        ProvisionClusterResponseKind::ProvisionClusterResponseTypeUnknown => {
-            panic!("unknown provision cluster response kind")
-        }
-        ProvisionClusterResponseKind::DryRun => {
-            unreachable!("provisioning a cluster w/o dry run should have an effect")
-        }
-        ProvisionClusterResponseKind::NewlyProvisioned => {
             c_println!("✅ Cluster has been successfully provisioned.");
         }
-        ProvisionClusterResponseKind::AlreadyProvisioned => {
-            c_println!("🤷 Cluster has been provisioned by somebody else.");
+        Err(err) => {
+            if err.code() == Code::AlreadyExists {
+                c_println!("🤷 Cluster has been provisioned by somebody else.");
+            } else {
+                c_error!("Failed to provision cluster: {}", err.message());
+            }
         }
-    }
+    };
 
     Ok(())
 }

@@ -6474,6 +6474,7 @@ dependencies = [
  "thiserror 2.0.6",
  "tokio",
  "toml",
+ "tonic",
  "tracing",
  "tracing-subscriber",
  "typed-builder",

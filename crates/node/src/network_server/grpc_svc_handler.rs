@@ -22,7 +22,7 @@ use restate_core::network::{ConnectionManager, ProtocolError, TransportConnect};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
 use restate_core::protobuf::node_ctl_svc::{
     GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
-    ProvisionClusterResponse, ProvisionClusterResponseKind,
+    ProvisionClusterResponse,
 };
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
@@ -278,10 +278,9 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
         if dry_run {
-            return Ok(Response::new(ProvisionClusterResponse {
-                kind: ProvisionClusterResponseKind::DryRun.into(),
-                cluster_configuration: Some(ProtoClusterConfiguration::from(cluster_configuration)),
-            }));
+            return Ok(Response::new(ProvisionClusterResponse::dry_run(
+                ProtoClusterConfiguration::from(cluster_configuration),
+            )));
         }
 
         let newly_provisioned = self
@@ -289,16 +288,15 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
-        let kind = if newly_provisioned {
-            ProvisionClusterResponseKind::NewlyProvisioned
-        } else {
-            ProvisionClusterResponseKind::AlreadyProvisioned
-        };
+        if !newly_provisioned {
+            return Err(Status::already_exists(
+                "The cluster has already been provisioned",
+            ));
+        }
 
-        Ok(Response::new(ProvisionClusterResponse {
-            kind: kind.into(),
-            cluster_configuration: Some(ProtoClusterConfiguration::from(cluster_configuration)),
-        }))
+        Ok(Response::new(ProvisionClusterResponse::provisioned(
+            ProtoClusterConfiguration::from(cluster_configuration),
+        )))
     }
 }
 
