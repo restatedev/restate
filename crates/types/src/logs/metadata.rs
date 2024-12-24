@@ -514,6 +514,7 @@ impl Logs {
     pub fn with_logs_configuration(logs_configuration: LogsConfiguration) -> Self {
         Logs {
             config: logs_configuration,
+            version: Version::MIN,
             ..Default::default()
         }
     }
