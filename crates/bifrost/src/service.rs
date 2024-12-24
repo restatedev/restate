@@ -15,7 +15,9 @@ use anyhow::Context;
 use enum_map::EnumMap;
 use tracing::{debug, error, trace};
 
-use restate_core::{cancellation_watcher, TaskCenter, TaskCenterFutureExt, TaskKind};
+use restate_core::{
+    cancellation_watcher, MetadataWriter, TaskCenter, TaskCenterFutureExt, TaskKind,
+};
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::logs::metadata::ProviderKind;
@@ -34,16 +36,10 @@ pub struct BifrostService {
     factories: HashMap<ProviderKind, Box<dyn LogletProviderFactory>>,
 }
 
-impl Default for BifrostService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl BifrostService {
-    pub fn new() -> Self {
+    pub fn new(metadata_writer: MetadataWriter) -> Self {
         let (watchdog_sender, watchdog_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let inner = Arc::new(BifrostInner::new(watchdog_sender.clone()));
+        let inner = Arc::new(BifrostInner::new(watchdog_sender.clone(), metadata_writer));
         let bifrost = Bifrost::new(inner.clone());
         let watchdog = Watchdog::new(inner.clone(), watchdog_sender, watchdog_receiver);
         Self {

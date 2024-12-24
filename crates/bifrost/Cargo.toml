@@ -31,6 +31,7 @@ derive_more = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
 googletest = { workspace = true, features = ["anyhow"], optional = true }
+itertools = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }

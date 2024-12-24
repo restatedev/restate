@@ -22,9 +22,11 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, info};
 
 use restate_core::ShutdownError;
-use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
+use restate_types::logs::metadata::{
+    Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
+};
 use restate_types::logs::{
-    KeyFilter, LogId, LogletOffset, MatchKeyQuery, Record, SequenceNumber, TailState,
+    KeyFilter, LogId, LogletId, LogletOffset, MatchKeyQuery, Record, SequenceNumber, TailState,
 };
 
 use crate::loglet::util::TailOffsetWatch;
@@ -98,6 +100,20 @@ impl LogletProvider for MemoryLogletProvider {
         };
 
         Ok(loglet as Arc<dyn Loglet>)
+    }
+
+    fn propose_new_loglet_params(
+        &self,
+        log_id: LogId,
+        chain: Option<&Chain>,
+        _defaults: &ProviderConfiguration,
+    ) -> Result<LogletParams, OperationError> {
+        let new_segment_index = chain
+            .map(|c| c.tail_index())
+            .unwrap_or(SegmentIndex::OLDEST);
+        Ok(LogletParams::from(
+            LogletId::new(log_id, new_segment_index).to_string(),
+        ))
     }
 
     async fn shutdown(&self) -> Result<(), OperationError> {

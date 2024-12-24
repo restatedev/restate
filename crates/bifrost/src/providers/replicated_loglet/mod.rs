@@ -13,6 +13,7 @@ mod log_server_manager;
 mod loglet;
 pub(crate) mod metric_definitions;
 mod network;
+mod nodeset_selector;
 mod provider;
 mod read_path;
 mod remote_sequencer;

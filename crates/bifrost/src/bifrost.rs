@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use enum_map::EnumMap;
 use tracing::instrument;
 
-use restate_core::{Metadata, MetadataKind, TargetVersion};
+use restate_core::{Metadata, MetadataKind, MetadataWriter, TargetVersion};
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
 use restate_types::storage::StorageEncode;
@@ -25,7 +25,7 @@ use crate::background_appender::BackgroundAppender;
 use crate::loglet::LogletProvider;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
-use crate::{Error, InputRecord, LogReadStream, Result};
+use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
 
 /// The strategy to use when bifrost fails to append or when it observes
 /// a sealed loglet while it's tailing a log.
@@ -77,20 +77,20 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init_in_memory() -> Self {
+    pub async fn init_in_memory(metadata_writer: MetadataWriter) -> Self {
         use crate::providers::memory_loglet;
 
-        Self::init_with_factory(memory_loglet::Factory::default()).await
+        Self::init_with_factory(metadata_writer, memory_loglet::Factory::default()).await
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init_local() -> Self {
+    pub async fn init_local(metadata_writer: MetadataWriter) -> Self {
         use restate_types::config::Configuration;
 
         use crate::BifrostService;
 
         let config = Configuration::updateable();
-        let bifrost_svc = BifrostService::new().enable_local_loglet(&config);
+        let bifrost_svc = BifrostService::new(metadata_writer).enable_local_loglet(&config);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -102,10 +102,13 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init_with_factory(factory: impl crate::loglet::LogletProviderFactory) -> Self {
+    pub async fn init_with_factory(
+        metadata_writer: MetadataWriter,
+        factory: impl crate::loglet::LogletProviderFactory,
+    ) -> Self {
         use crate::BifrostService;
 
-        let bifrost_svc = BifrostService::new().with_factory(factory);
+        let bifrost_svc = BifrostService::new(metadata_writer).with_factory(factory);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -114,6 +117,11 @@ impl Bifrost {
             .await
             .expect("in memory loglet must start");
         bifrost
+    }
+
+    /// Admin operations of bifrost
+    pub fn admin(&self) -> BifrostAdmin<'_> {
+        BifrostAdmin::new(self)
     }
 
     /// Appends a single record to a log. The log id must exist, otherwise the
@@ -302,15 +310,17 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 pub struct BifrostInner {
     #[allow(unused)]
     watchdog: WatchdogSender,
+    pub(crate) metadata_writer: MetadataWriter,
     // Initialized after BifrostService::start completes.
     pub(crate) providers: OnceLock<EnumMap<ProviderKind, Option<Arc<dyn LogletProvider>>>>,
     shutting_down: AtomicBool,
 }
 
 impl BifrostInner {
-    pub fn new(watchdog: WatchdogSender) -> Self {
+    pub fn new(watchdog: WatchdogSender, metadata_writer: MetadataWriter) -> Self {
         Self {
             watchdog,
+            metadata_writer,
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
         }
@@ -558,13 +568,12 @@ mod tests {
     use restate_types::{Version, Versioned};
 
     use crate::providers::memory_loglet::{self};
-    use crate::BifrostAdmin;
 
     #[restate_core::test]
     #[traced_test]
     async fn test_append_smoke() -> googletest::Result<()> {
         let num_partitions = 5;
-        let _ = TestCoreEnvBuilder::with_incoming_only_connector()
+        let env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 num_partitions,
@@ -572,7 +581,7 @@ mod tests {
             .build()
             .await;
 
-        let bifrost = Bifrost::init_in_memory().await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
 
         let clean_bifrost_clone = bifrost.clone();
 
@@ -637,12 +646,12 @@ mod tests {
 
     #[restate_core::test(start_paused = true)]
     async fn test_lazy_initialization() -> googletest::Result<()> {
-        let _ = TestCoreEnv::create_with_single_node(1, 1).await;
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
         let delay = Duration::from_secs(5);
         // This memory provider adds a delay to its loglet initialization, we want
         // to ensure that appends do not fail while waiting for the loglet;
         let factory = memory_loglet::Factory::with_init_delay(delay);
-        let bifrost = Bifrost::init_with_factory(factory).await;
+        let bifrost = Bifrost::init_with_factory(env.metadata_writer, factory).await;
 
         let start = tokio::time::Instant::now();
         let lsn = bifrost
@@ -664,12 +673,7 @@ mod tests {
             .await;
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-        let bifrost = Bifrost::init_local().await;
-        let bifrost_admin = BifrostAdmin::new(
-            &bifrost,
-            &node_env.metadata_writer,
-            &node_env.metadata_store_client,
-        );
+        let bifrost = Bifrost::init_local(node_env.metadata_writer).await;
 
         assert_eq!(Lsn::OLDEST, bifrost.find_tail(LOG_ID).await?.offset());
 
@@ -681,7 +685,7 @@ mod tests {
             appender.append("").await?;
         }
 
-        bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
+        bifrost.admin().trim(LOG_ID, Lsn::from(5)).await?;
 
         let tail = bifrost.find_tail(LOG_ID).await?;
         assert_eq!(tail.offset(), Lsn::from(11));
@@ -703,7 +707,7 @@ mod tests {
         }
 
         // trimming beyond the release point will fall back to the release point
-        bifrost_admin.trim(LOG_ID, Lsn::MAX).await?;
+        bifrost.admin().trim(LOG_ID, Lsn::MAX).await?;
 
         assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
         let new_trim_point = bifrost.get_trim_point(LOG_ID).await?;
@@ -737,12 +741,7 @@ mod tests {
             ))
             .build()
             .await;
-        let bifrost = Bifrost::init_in_memory().await;
-        let bifrost_admin = BifrostAdmin::new(
-            &bifrost,
-            &node_env.metadata_writer,
-            &node_env.metadata_store_client,
-        );
+        let bifrost = Bifrost::init_in_memory(node_env.metadata_writer).await;
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
         // Lsns [1..5]
@@ -765,7 +764,8 @@ mod tests {
             .unwrap();
 
         // seal the segment
-        bifrost_admin
+        bifrost
+            .admin()
             .seal(LOG_ID, segment_1.segment_index())
             .await?;
 
@@ -925,12 +925,7 @@ mod tests {
             .build()
             .await;
         RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let bifrost = Bifrost::init_local().await;
-        let bifrost_admin = BifrostAdmin::new(
-            &bifrost,
-            &node_env.metadata_writer,
-            &node_env.metadata_store_client,
-        );
+        let bifrost = Bifrost::init_local(node_env.metadata_writer).await;
 
         // create an appender
         let stop_signal = Arc::new(AtomicBool::default());
@@ -976,7 +971,7 @@ mod tests {
         }
 
         // seal and don't extend the chain.
-        let _ = bifrost_admin.seal(LOG_ID, SegmentIndex::from(0)).await?;
+        let _ = bifrost.admin().seal(LOG_ID, SegmentIndex::from(0)).await?;
 
         // appends should stall!
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -998,7 +993,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(500)).await;
             // seal the loglet and extend with an in-memory one
             let new_segment_params = new_single_node_loglet_params(ProviderKind::Local);
-            bifrost_admin
+            bifrost
+                .admin()
                 .seal_and_extend_chain(
                     LOG_ID,
                     None,

@@ -116,7 +116,7 @@ impl Appender {
                     info!(
                         attempt = attempt,
                         segment_index = %loglet.segment_index(),
-                        "Append batch will be retried (loglet being sealed), waiting for tail to be determined"
+                        "Append batch will be retried (loglet is being sealed), waiting for tail to be determined"
                     );
                     let new_loglet = Self::wait_next_unsealed_loglet(
                         self.log_id,
@@ -131,7 +131,7 @@ impl Appender {
                 Err(AppendError::Other(err)) if err.retryable() => {
                     if let Some(retry_dur) = retry_iter.next() {
                         info!(
-                            ?err,
+                            %err,
                             attempt = attempt,
                             segment_index = %loglet.segment_index(),
                             "Failed to append this batch. Since underlying error is retryable, will retry in {:?}",
@@ -140,7 +140,7 @@ impl Appender {
                         tokio::time::sleep(retry_dur).await;
                     } else {
                         warn!(
-                            ?err,
+                            %err,
                             attempt = attempt,
                             segment_index = %loglet.segment_index(),
                             "Failed to append this batch and exhausted all attempts to retry",

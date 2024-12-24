@@ -628,7 +628,7 @@ mod tests {
 
         let (truncation_tx, _truncation_rx) = mpsc::channel(1);
 
-        let bifrost = Bifrost::init_in_memory().await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer.clone()).await;
         let shuffle = Shuffle::new(metadata, outbox_reader, truncation_tx, 1, bifrost.clone());
 
         ShuffleEnv {

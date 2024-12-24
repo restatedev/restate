@@ -213,14 +213,14 @@ mod tests {
     // Start paused makes sure the timer is immediately fired
     #[test(restate_core::test(start_paused = true))]
     pub async fn cleanup_works() {
-        let _env = TestCoreEnvBuilder::with_incoming_only_connector()
+        let env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_partition_table(PartitionTable::with_equally_sized_partitions(
                 Version::MIN,
                 1,
             ))
             .build()
             .await;
-        let bifrost = Bifrost::init_in_memory().await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
 
         let expired_invocation =
             InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
