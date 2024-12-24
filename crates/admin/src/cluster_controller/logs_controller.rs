@@ -19,16 +19,13 @@ use std::time::Duration;
 use futures::never::Never;
 use rand::prelude::IteratorRandom;
 use rand::thread_rng;
-use restate_types::config::Configuration;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, trace_span, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_bifrost::{Bifrost, Error as BifrostError};
-use restate_core::metadata_store::{
-    retry_on_network_error, Precondition, ReadWriteError, WriteError,
-};
+use restate_core::metadata_store::{Precondition, ReadWriteError, WriteError};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -930,26 +927,7 @@ pub struct LogsController {
 }
 
 impl LogsController {
-    pub async fn init(
-        configuration: &Configuration,
-        bifrost: Bifrost,
-        metadata_writer: MetadataWriter,
-    ) -> Result<Self> {
-        // obtain the latest logs or init it with an empty logs variant
-        let logs = retry_on_network_error(
-            configuration.common.network_error_retry_policy.clone(),
-            || {
-                metadata_writer
-                    .metadata_store_client()
-                    .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                        Logs::from_configuration(configuration)
-                    })
-            },
-        )
-        .await?;
-
-        metadata_writer.update(Arc::new(logs)).await?;
-
+    pub async fn init(bifrost: Bifrost, metadata_writer: MetadataWriter) -> Result<Self> {
         //todo(azmy): make configurable
         let retry_policy = RetryPolicy::exponential(
             Duration::from_millis(10),
