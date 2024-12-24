@@ -316,6 +316,7 @@ impl<'a> BifrostAdmin<'a> {
                 .metadata_writer
                 .metadata_store_client()
                 .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
+                    debug!("Attempting to initialize logs metadata in metadata store");
                     Logs::from_configuration(&Configuration::pinned())
                 })
         })
