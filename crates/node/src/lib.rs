@@ -184,7 +184,8 @@ impl Node {
             record_cache.clone(),
             &mut router_builder,
         );
-        let bifrost_svc = BifrostService::new().enable_local_loglet(&updateable_config);
+        let bifrost_svc =
+            BifrostService::new(metadata_manager.writer()).enable_local_loglet(&updateable_config);
 
         #[cfg(feature = "replicated-loglet")]
         let bifrost_svc = bifrost_svc.with_factory(replicated_loglet_factory);
@@ -271,7 +272,6 @@ impl Node {
                     metadata_manager.writer(),
                     &mut server_builder,
                     &mut router_builder,
-                    metadata_store_client.clone(),
                     worker_role
                         .as_ref()
                         .map(|worker_role| worker_role.storage_query_context().clone()),

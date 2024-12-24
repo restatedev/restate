@@ -248,22 +248,12 @@ mod tests {
                 }
 
                 let mut sealer_handle: JoinHandle<googletest::Result<()>> = tokio::task::spawn({
-                    let (bifrost, metadata_writer, metadata_store_client) = (
-                        test_env.bifrost.clone(),
-                        test_env.metadata_writer.clone(),
-                        test_env.metadata_store_client.clone()
-                    );
+                    let bifrost = test_env.bifrost.clone();
 
                     async move {
                         let cancellation_token = cancellation_token();
 
                         let mut chain = metadata.updateable_logs_metadata().map(|logs| logs.chain(&log_id).expect("a chain to exist"));
-
-                        let bifrost_admin = restate_bifrost::BifrostAdmin::new(
-                            &bifrost,
-                            &metadata_writer,
-                            &metadata_store_client,
-                        );
 
                         let mut last_loglet_id = None;
 
@@ -280,7 +270,8 @@ mod tests {
                             eprintln!("Sealing loglet {} and creating new loglet {}", params.loglet_id, params.loglet_id.next());
                             params.loglet_id = params.loglet_id.next();
 
-                            bifrost_admin
+                            bifrost
+                                .admin()
                                 .seal_and_extend_chain(
                                     log_id,
                                     None,
