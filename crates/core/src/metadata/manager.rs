@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::any::type_name;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -428,11 +429,18 @@ impl MetadataManager {
         let mut maybe_new_version = new_value.version();
 
         if new_value.version() > current_value.version() {
+            trace!(
+                "Updating {} from {} to {}",
+                type_name::<M>(),
+                current_value.version(),
+                new_value.version(),
+            );
             container.store(new_value);
         } else {
             /* Do nothing, current is already newer */
             trace!(
-                "Ignoring update {} because we are at {}",
+                "Ignoring update of {} to {} because we are already at {}",
+                type_name::<M>(),
                 new_value.version(),
                 current_value.version(),
             );

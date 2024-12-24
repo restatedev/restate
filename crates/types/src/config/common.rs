@@ -233,7 +233,7 @@ pub struct CommonOptions {
 
     /// # Network error retry policy
     ///
-    /// The retry policy for node network error
+    /// The retry policy for network related errors
     pub network_error_retry_policy: RetryPolicy,
 }
 
