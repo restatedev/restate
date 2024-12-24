@@ -433,7 +433,9 @@ impl PartitionProcessorManager {
                                 .remove(processor.as_ref().expect("must be some").key_range());
 
                             match result {
-                                Ok(ProcessorStopReason::LogTrimGap { to_lsn }) => {
+                                Err(ProcessorStopReason::TrimGapEncountered {
+                                    gap_to_lsn: to_lsn,
+                                }) => {
                                     if self.snapshot_repository.is_some() {
                                         info!(
                                             trim_gap_to_lsn = ?to_lsn,
@@ -442,12 +444,16 @@ impl PartitionProcessorManager {
                                         self.fast_forward_on_startup.insert(partition_id, to_lsn);
                                     } else {
                                         warn!(
-                                            "Partition processor stopped due to a log trim gap, and no snapshot repository is configured: {result:?}",
+                                            trim_gap_to_lsn = ?to_lsn,
+                                            "Partition processor stopped due to a log trim gap, and no snapshot repository is configured",
                                         );
                                     }
                                 }
-                                _ => {
+                                Err(_) => {
                                     warn!("Partition processor exited unexpectedly: {result:?}")
+                                }
+                                Ok(_) => {
+                                    info!("Partition processor stopped.")
                                 }
                             }
                         }
@@ -511,7 +517,7 @@ impl PartitionProcessorManager {
     fn await_runtime_task_result(
         &mut self,
         partition_id: PartitionId,
-        runtime_task_handle: RuntimeTaskHandle<anyhow::Result<ProcessorStopReason>>,
+        runtime_task_handle: RuntimeTaskHandle<Result<(), ProcessorStopReason>>,
     ) {
         self.asynchronous_operations.spawn(
             async move {
@@ -946,10 +952,10 @@ enum EventKind {
     Started(
         anyhow::Result<(
             StartedProcessor,
-            RuntimeTaskHandle<anyhow::Result<ProcessorStopReason>>,
+            RuntimeTaskHandle<Result<(), ProcessorStopReason>>,
         )>,
     ),
-    Stopped(anyhow::Result<ProcessorStopReason>),
+    Stopped(Result<(), ProcessorStopReason>),
     NewLeaderEpoch {
         leader_epoch_token: LeaderEpochToken,
         result: anyhow::Result<LeaderEpoch>,
