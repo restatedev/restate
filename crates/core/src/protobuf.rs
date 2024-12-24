@@ -19,22 +19,15 @@ pub mod node_ctl_svc {
     impl ProvisionClusterResponse {
         pub fn dry_run(cluster_configuration: ClusterConfiguration) -> Self {
             ProvisionClusterResponse {
-                kind: ProvisionClusterResponseKind::DryRun.into(),
+                dry_run: true,
                 cluster_configuration: Some(cluster_configuration),
             }
         }
 
-        pub fn newly_provisioned(cluster_configuration: ClusterConfiguration) -> Self {
+        pub fn provisioned(cluster_configuration: ClusterConfiguration) -> Self {
             ProvisionClusterResponse {
-                kind: ProvisionClusterResponseKind::NewlyProvisioned.into(),
+                dry_run: false,
                 cluster_configuration: Some(cluster_configuration),
-            }
-        }
-
-        pub fn already_provisioned() -> Self {
-            ProvisionClusterResponse {
-                kind: ProvisionClusterResponseKind::AlreadyProvisioned.into(),
-                ..Default::default()
             }
         }
     }
