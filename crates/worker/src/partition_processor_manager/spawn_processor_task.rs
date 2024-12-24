@@ -311,9 +311,8 @@ async fn import_snapshot(
                 // This is not critical; since we move the SST files into RocksDB on import,
                 // at worst only the snapshot metadata file will remain in the staging dir
                 warn!(
-                    partition_id = %partition_id,
-                    ?snapshot_path,
-                    "Failed to remove local snapshot directory, continuing with startup: {:?}",
+                    snapshot_path = %snapshot_path.display(),
+                    "Failed to remove local snapshot directory, continuing with startup: {}",
                     e,
                 );
             }
@@ -321,8 +320,7 @@ async fn import_snapshot(
         }
         Err(e) => {
             warn!(
-                partition_id = %partition_id,
-                ?snapshot_path,
+                snapshot_path = %snapshot_path.display(),
                 "Failed to import snapshot, local snapshot data retained"
             );
             Err(anyhow::anyhow!(e))

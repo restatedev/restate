@@ -274,23 +274,22 @@ where
     Codec: RawEntryCodec + Default + Debug,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
-    #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
+    #[instrument(
+        level = "error", skip_all,
+        fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty)
+    )]
     pub async fn run(mut self) -> anyhow::Result<ProcessorStopReason> {
         info!("Starting the partition processor.");
 
         let res = tokio::select! {
             res = self.run_inner() => {
                 match res.as_ref() {
-                    Ok(stopped) => {
-                        match stopped {
-                            ProcessorStopReason::LogTrimGap { to_lsn } =>
-                                info!(
-                                    trim_gap_to_lsn = ?to_lsn,
-                                    "Shutting partition processor down because it encountered a trim gap in the log."
-                                ),
-                            _ => warn!("Shutting partition processor down because it stopped unexpectedly.")
-                        }
-                    },
+                    Ok( ProcessorStopReason::LogTrimGap { to_lsn } ) =>
+                        info!(
+                            trim_gap_to_lsn = ?to_lsn,
+                            "Shutting partition processor down because it encountered a trim gap in the log."
+                        ),
+                    Ok(_) => warn!("Shutting partition processor down because it stopped unexpectedly."),
                     Err(err) => warn!("Shutting partition processor down because it failed: {err}"),
                 }
                 res
