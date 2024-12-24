@@ -103,11 +103,10 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
 
     // We start the Meta service, then download the openapi schema generated
     let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
-    let bifrost = Bifrost::init_in_memory().await;
+    let bifrost = Bifrost::init_in_memory(node_env.metadata_writer.clone()).await;
 
     let admin_service = AdminService::new(
         node_env.metadata_writer.clone(),
-        node_env.metadata_store_client.clone(),
         bifrost,
         Mock,
         ServiceDiscovery::new(

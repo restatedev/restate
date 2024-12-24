@@ -454,14 +454,14 @@ mod tests {
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
     use restate_types::Versioned;
 
-    use crate::{BifrostAdmin, BifrostService, ErrorRecoveryStrategy};
+    use crate::{BifrostService, ErrorRecoveryStrategy};
 
     #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
     async fn test_readstream_one_loglet() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let _ = TestCoreEnvBuilder::with_incoming_only_connector()
+        let env = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
@@ -471,7 +471,7 @@ mod tests {
         let config = Live::from_value(Configuration::default());
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-        let svc = BifrostService::new().enable_local_loglet(&config);
+        let svc = BifrostService::new(env.metadata_writer).enable_local_loglet(&config);
         let bifrost = svc.handle();
         svc.start().await.expect("loglet must start");
 
@@ -548,14 +548,10 @@ mod tests {
         let config = Live::from_value(Configuration::default());
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-        let svc = BifrostService::new().enable_local_loglet(&config);
+        let svc =
+            BifrostService::new(node_env.metadata_writer.clone()).enable_local_loglet(&config);
         let bifrost = svc.handle();
 
-        let bifrost_admin = BifrostAdmin::new(
-            &bifrost,
-            &node_env.metadata_writer,
-            &node_env.metadata_store_client,
-        );
         svc.start().await.expect("loglet must start");
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
@@ -569,7 +565,7 @@ mod tests {
         }
 
         // [1..5] trimmed. trim_point = 5
-        bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
+        bifrost.admin().trim(LOG_ID, Lsn::from(5)).await?;
 
         assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
         assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
@@ -590,7 +586,7 @@ mod tests {
 
         let tail = bifrost.find_tail(LOG_ID).await?.offset();
         // trimming beyond the release point will fall back to the release point
-        bifrost_admin.trim(LOG_ID, Lsn::from(u64::MAX)).await?;
+        bifrost.admin().trim(LOG_ID, Lsn::from(u64::MAX)).await?;
         let trim_point = bifrost.get_trim_point(LOG_ID).await?;
         assert_eq!(Lsn::from(10), bifrost.get_trim_point(LOG_ID).await?);
         // trim point becomes the point before the next slot available for writes (aka. the
@@ -643,7 +639,7 @@ mod tests {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
         // enable both in-memory and local loglet types
-        let svc = BifrostService::new()
+        let svc = BifrostService::new(node_env.metadata_writer.clone())
             .enable_local_loglet(&config)
             .enable_in_memory_loglet();
         let bifrost = svc.handle();
@@ -799,15 +795,10 @@ mod tests {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
         // enable both in-memory and local loglet types
-        let svc = BifrostService::new()
+        let svc = BifrostService::new(node_env.metadata_writer)
             .enable_local_loglet(&config)
             .enable_in_memory_loglet();
         let bifrost = svc.handle();
-        let bifrost_admin = BifrostAdmin::new(
-            &bifrost,
-            &node_env.metadata_writer,
-            &node_env.metadata_store_client,
-        );
         svc.start().await.expect("loglet must start");
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
@@ -825,7 +816,8 @@ mod tests {
 
         // seal the loglet and extend with an in-memory one
         let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
-        bifrost_admin
+        bifrost
+            .admin()
             .seal_and_extend_chain(
                 LOG_ID,
                 None,
@@ -917,7 +909,7 @@ mod tests {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
         // enable both in-memory and local loglet types
-        let svc = BifrostService::new()
+        let svc = BifrostService::new(node_env.metadata_writer)
             .enable_local_loglet(&config)
             .enable_in_memory_loglet();
         let bifrost = svc.handle();
