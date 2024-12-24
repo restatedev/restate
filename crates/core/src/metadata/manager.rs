@@ -258,7 +258,11 @@ impl MetadataManager {
     }
 
     pub fn writer(&self) -> MetadataWriter {
-        MetadataWriter::new(self.metadata.sender.clone(), self.metadata.inner.clone())
+        MetadataWriter::new(
+            self.metadata.sender.clone(),
+            self.metadata_store_client.clone(),
+            self.metadata.inner.clone(),
+        )
     }
 
     /// Start and wait for shutdown signal.

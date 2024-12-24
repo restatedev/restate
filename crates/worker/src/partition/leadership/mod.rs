@@ -637,12 +637,12 @@ mod tests {
 
     #[test(restate_core::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
-        let _env = TestCoreEnv::create_with_single_node(0, 0).await;
+        let env = TestCoreEnv::create_with_single_node(0, 0).await;
         let storage_options = StorageOptions::default();
         let rocksdb_options = RocksDbOptions::default();
 
         RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let bifrost = Bifrost::init_in_memory().await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
 
         let partition_store_manager = PartitionStoreManager::create(
             Constant::new(storage_options.clone()).boxed(),

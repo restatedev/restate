@@ -36,8 +36,8 @@ use restate_types::partition_table::{
 };
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
-use restate_bifrost::{Bifrost, BifrostAdmin, SealedSegment};
-use restate_core::metadata_store::{retry_on_network_error, MetadataStoreClient};
+use restate_bifrost::{Bifrost, SealedSegment};
+use restate_core::metadata_store::retry_on_network_error;
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
@@ -79,7 +79,6 @@ pub struct Service<T> {
     cluster_state_refresher: ClusterStateRefresher<T>,
     configuration: Live<Configuration>,
     metadata_writer: MetadataWriter,
-    metadata_store_client: MetadataStoreClient,
 
     processor_manager_client: PartitionProcessorManagerClient<Networking<T>>,
     command_tx: mpsc::Sender<ClusterControllerCommand>,
@@ -102,7 +101,6 @@ where
         router_builder: &mut MessageRouterBuilder,
         server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
-        metadata_store_client: MetadataStoreClient,
     ) -> Self {
         println!(
             "CONFIGURATION DEFaAULT IS: {}",
@@ -126,7 +124,6 @@ where
                     ClusterControllerHandle {
                         tx: command_tx.clone(),
                     },
-                    metadata_store_client.clone(),
                     bifrost.clone(),
                     metadata_writer.clone(),
                 ))
@@ -144,7 +141,6 @@ where
             bifrost,
             cluster_state_refresher,
             metadata_writer,
-            metadata_store_client,
             processor_manager_client,
             command_tx,
             command_rx,
@@ -313,12 +309,6 @@ impl<T: TransportConnect> Service<T> {
 
         let mut shutdown = std::pin::pin!(cancellation_watcher());
 
-        let bifrost_admin = BifrostAdmin::new(
-            &self.bifrost,
-            &self.metadata_writer,
-            &self.metadata_store_client,
-        );
-
         let mut state: ClusterControllerState<T> = ClusterControllerState::Follower;
 
         self.health_status.update(AdminStatus::Ready);
@@ -337,7 +327,7 @@ impl<T: TransportConnect> Service<T> {
                 }
                 Some(cmd) = self.command_rx.recv() => {
                     // it is still safe to handle cluster commands as a follower
-                    self.on_cluster_cmd(cmd, bifrost_admin).await;
+                    self.on_cluster_cmd(cmd).await;
                 }
                 _ = config_watcher.changed() => {
                     debug!("Updating the cluster controller settings.");
@@ -364,8 +354,9 @@ impl<T: TransportConnect> Service<T> {
         let partition_table = retry_on_network_error(
             configuration.common.network_error_retry_policy.clone(),
             || {
-                self.metadata_store_client
-                    .get_or_insert(PARTITION_TABLE_KEY.clone(), || {
+                self.metadata_writer.metadata_store_client().get_or_insert(
+                    PARTITION_TABLE_KEY.clone(),
+                    || {
                         let partition_table = PartitionTable::with_equally_sized_partitions(
                             Version::MIN,
                             configuration.common.bootstrap_num_partitions.get(),
@@ -374,7 +365,8 @@ impl<T: TransportConnect> Service<T> {
                         debug!("Initializing the partition table with '{partition_table:?}'");
 
                         partition_table
-                    })
+                    },
+                )
             },
         )
         .await?;
@@ -446,7 +438,8 @@ impl<T: TransportConnect> Service<T> {
         default_provider: ProviderConfiguration,
     ) -> anyhow::Result<()> {
         let logs = self
-            .metadata_store_client
+            .metadata_writer
+            .metadata_store_client()
             .read_modify_write(BIFROST_CONFIG_KEY.clone(), |current: Option<Logs>| {
                 let logs = match current {
                     Some(logs) => logs,
@@ -497,7 +490,8 @@ impl<T: TransportConnect> Service<T> {
         };
 
         let partition_table = self
-            .metadata_store_client
+            .metadata_writer
+            .metadata_store_client()
             .read_modify_write(
                 PARTITION_TABLE_KEY.clone(),
                 |current: Option<PartitionTable>| {
@@ -561,7 +555,6 @@ impl<T: TransportConnect> Service<T> {
             extension,
             min_version,
             bifrost: self.bifrost.clone(),
-            metadata_store_client: self.metadata_store_client.clone(),
             metadata_writer: self.metadata_writer.clone(),
             observed_cluster_state: self.observed_cluster_state.clone(),
         };
@@ -573,11 +566,7 @@ impl<T: TransportConnect> Service<T> {
         });
     }
 
-    async fn on_cluster_cmd(
-        &self,
-        command: ClusterControllerCommand,
-        bifrost_admin: BifrostAdmin<'_>,
-    ) {
+    async fn on_cluster_cmd(&self, command: ClusterControllerCommand) {
         match command {
             ClusterControllerCommand::GetClusterState(tx) => {
                 let _ = tx.send(self.cluster_state_refresher.get_cluster_state());
@@ -591,7 +580,7 @@ impl<T: TransportConnect> Service<T> {
                     ?log_id,
                     trim_point_inclusive = ?trim_point,
                     "Manual trim log command received");
-                let result = bifrost_admin.trim(log_id, trim_point).await;
+                let result = self.bifrost.admin().trim(log_id, trim_point).await;
                 let _ = response_tx.send(result.map_err(Into::into));
             }
             ClusterControllerCommand::CreateSnapshot {
@@ -719,7 +708,6 @@ struct SealAndExtendTask {
     extension: Option<ChainExtension>,
     bifrost: Bifrost,
     metadata_writer: MetadataWriter,
-    metadata_store_client: MetadataStoreClient,
     observed_cluster_state: ObservedClusterState,
 }
 
@@ -730,18 +718,14 @@ impl SealAndExtendTask {
             .as_ref()
             .and_then(|ext| ext.segment_index_to_seal);
 
-        let bifrost_admin = BifrostAdmin::new(
-            &self.bifrost,
-            &self.metadata_writer,
-            &self.metadata_store_client,
-        );
-
         let (provider, params) = match self.extension.take() {
             Some(extension) => (extension.provider_kind, extension.params),
             None => self.next_segment().await?,
         };
 
-        let sealed_segment = bifrost_admin
+        let sealed_segment = self
+            .bifrost
+            .admin()
             .seal_and_extend_chain(
                 self.log_id,
                 last_segment_index,
@@ -800,7 +784,8 @@ impl SealAndExtendTask {
             #[cfg(feature = "replicated-loglet")]
             ProviderConfiguration::Replicated(config) => {
                 let schedule_plan = self
-                    .metadata_store_client
+                    .metadata_writer
+                    .metadata_store_client()
                     .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
                     .await?;
 
@@ -862,7 +847,8 @@ mod tests {
     async fn manual_log_trim() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
         let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
-        let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
+        let bifrost_svc = BifrostService::new(builder.metadata_writer.clone())
+            .with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
 
         let svc = Service::new(
@@ -873,7 +859,6 @@ mod tests {
             &mut builder.router_builder,
             &mut NetworkServerBuilder::default(),
             builder.metadata_writer.clone(),
-            builder.metadata_store_client.clone(),
         );
         let svc_handle = svc.handle();
 
@@ -1145,7 +1130,8 @@ mod tests {
     {
         restate_types::config::set_current_config(config);
         let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
-        let bifrost_svc = BifrostService::new().with_factory(memory_loglet::Factory::default());
+        let bifrost_svc = BifrostService::new(builder.metadata_writer.clone())
+            .with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
 
         let mut server_builder = NetworkServerBuilder::default();
@@ -1158,7 +1144,6 @@ mod tests {
             &mut builder.router_builder,
             &mut server_builder,
             builder.metadata_writer.clone(),
-            builder.metadata_store_client.clone(),
         );
 
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
