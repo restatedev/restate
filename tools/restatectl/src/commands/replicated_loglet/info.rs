@@ -13,8 +13,8 @@ use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 
 use restate_cli_util::{c_indentln, c_println};
-use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
-use restate_core::network::protobuf::node_ctl_svc::GetMetadataRequest;
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_core::protobuf::node_ctl_svc::GetMetadataRequest;
 use restate_core::MetadataKind;
 use restate_types::logs::metadata::Logs;
 use restate_types::logs::LogletId;

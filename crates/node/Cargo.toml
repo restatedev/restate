@@ -38,6 +38,7 @@ arc-swap = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
+bytestring = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
 derive_builder = { workspace = true }
@@ -53,6 +54,7 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 metrics-tracing-context = { workspace = true }
 metrics-util = { workspace = true }
+prost-dto = { workspace = true }
 prost-types = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
