@@ -10,7 +10,8 @@
 syntax = "proto3";
 
 import "restate/common.proto";
-import "restate/cluster.proto";
+import "restate/cluster_configuration.proto";
+import "restate/deprecated_cluster.proto";
 import "google/protobuf/empty.proto";
 
 package restate.cluster_ctrl;
@@ -43,17 +44,19 @@ service ClusterCtrlSvc {
 
 message SetClusterConfigurationResponse {}
 message SetClusterConfigurationRequest {
-  restate.cluster.ClusterConfiguration cluster_configuration = 1;
+  restate.cluster_configuration.ClusterConfiguration cluster_configuration = 1;
 }
 
 message GetClusterConfigurationRequest {}
 message GetClusterConfigurationResponse {
-  restate.cluster.ClusterConfiguration cluster_configuration = 1;
+  restate.cluster_configuration.ClusterConfiguration cluster_configuration = 1;
 }
 
 message ClusterStateRequest {}
 
-message ClusterStateResponse { restate.cluster.ClusterState cluster_state = 1; }
+message ClusterStateResponse {
+  restate.deprecated_cluster.ClusterState cluster_state = 1;
+}
 
 message ListLogsRequest {}
 

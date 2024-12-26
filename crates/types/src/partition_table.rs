@@ -19,7 +19,7 @@ use anyhow::Context;
 use regex::Regex;
 
 use crate::identifiers::{PartitionId, PartitionKey};
-use crate::protobuf::cluster::ReplicationStrategy as ProtoReplicationStrategy;
+use crate::protobuf::cluster_configuration::ReplicationStrategy as ProtoReplicationStrategy;
 use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 static REPLICATION_STRATEGY_FACTOR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
@@ -440,7 +440,7 @@ impl TryFrom<ProtoReplicationStrategy> for ReplicationStrategy {
     type Error = anyhow::Error;
 
     fn try_from(value: ProtoReplicationStrategy) -> Result<Self, Self::Error> {
-        use crate::protobuf::cluster::ReplicationStrategyKind;
+        use crate::protobuf::cluster_configuration::ReplicationStrategyKind;
 
         if value.kind == i32::from(ReplicationStrategyKind::OnAllNodes) {
             Ok(Self::OnAllNodes)
@@ -495,7 +495,7 @@ impl FromStr for ReplicationStrategy {
 
 impl From<ReplicationStrategy> for ProtoReplicationStrategy {
     fn from(value: ReplicationStrategy) -> Self {
-        use crate::protobuf::cluster::ReplicationStrategyKind;
+        use crate::protobuf::cluster_configuration::ReplicationStrategyKind;
 
         let mut result = Self::default();
         match value {

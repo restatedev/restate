@@ -17,7 +17,7 @@ use cling::prelude::*;
 
 use restate_types::{
     logs::metadata::DefaultProvider, partition_table::ReplicationStrategy,
-    protobuf::cluster::ClusterConfiguration,
+    protobuf::cluster_configuration::ClusterConfiguration,
 };
 
 #[derive(Run, Subcommand, Clone)]

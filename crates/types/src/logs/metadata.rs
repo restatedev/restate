@@ -26,7 +26,7 @@ use super::builder::LogsBuilder;
 use super::LogletId;
 use crate::config::Configuration;
 use crate::logs::{LogId, Lsn, SequenceNumber};
-use crate::protobuf::cluster::{
+use crate::protobuf::cluster_configuration::{
     NodeSetSelectionStrategy as ProtoNodeSetSelectionStrategy, NodeSetSelectionStrategyKind,
 };
 use crate::replicated_loglet::{ReplicatedLogletParams, ReplicationProperty};
@@ -213,11 +213,11 @@ impl DefaultProvider {
     }
 }
 
-impl From<DefaultProvider> for crate::protobuf::cluster::DefaultProvider {
+impl From<DefaultProvider> for crate::protobuf::cluster_configuration::DefaultProvider {
     fn from(value: DefaultProvider) -> Self {
-        use crate::protobuf::cluster;
+        use crate::protobuf::cluster_configuration;
 
-        let mut result = crate::protobuf::cluster::DefaultProvider::default();
+        let mut result = crate::protobuf::cluster_configuration::DefaultProvider::default();
 
         match value {
             DefaultProvider::Local => result.provider = ProviderKind::Local.to_string(),
@@ -225,7 +225,7 @@ impl From<DefaultProvider> for crate::protobuf::cluster::DefaultProvider {
             DefaultProvider::InMemory => result.provider = ProviderKind::InMemory.to_string(),
             DefaultProvider::Replicated(config) => {
                 result.provider = ProviderKind::Replicated.to_string();
-                result.replicated_config = Some(cluster::ReplicatedProviderConfig {
+                result.replicated_config = Some(cluster_configuration::ReplicatedProviderConfig {
                     replication_property: config.replication_property.to_string(),
                     nodeset_selection_strategy: Some(config.nodeset_selection_strategy.into()),
                 })
@@ -236,9 +236,11 @@ impl From<DefaultProvider> for crate::protobuf::cluster::DefaultProvider {
     }
 }
 
-impl TryFrom<crate::protobuf::cluster::DefaultProvider> for DefaultProvider {
+impl TryFrom<crate::protobuf::cluster_configuration::DefaultProvider> for DefaultProvider {
     type Error = anyhow::Error;
-    fn try_from(value: crate::protobuf::cluster::DefaultProvider) -> Result<Self, Self::Error> {
+    fn try_from(
+        value: crate::protobuf::cluster_configuration::DefaultProvider,
+    ) -> Result<Self, Self::Error> {
         let provider_kind: ProviderKind = value.provider.parse()?;
 
         match provider_kind {

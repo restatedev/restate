@@ -45,8 +45,8 @@ pub mod common {
     }
 }
 
-pub mod cluster {
-    include!(concat!(env!("OUT_DIR"), "/restate.cluster.rs"));
+pub mod partition_processor {
+    include!(concat!(env!("OUT_DIR"), "/restate.partition_processor.rs"));
 
     impl std::fmt::Display for RunMode {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -58,6 +58,17 @@ pub mod cluster {
             write!(f, "{o}")
         }
     }
+}
+
+pub mod deprecated_cluster {
+    include!(concat!(env!("OUT_DIR"), "/restate.deprecated_cluster.rs"));
+}
+
+pub mod cluster_configuration {
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/restate.cluster_configuration.rs"
+    ));
 }
 
 pub mod node {

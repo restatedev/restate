@@ -12,8 +12,9 @@ use std::collections::{HashMap, HashSet};
 
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
+use restate_types::deprecated_cluster::cluster_state::{ClusterState, NodeState};
 use restate_types::identifiers::PartitionId;
+use restate_types::partition_processor::RunMode;
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
 /// Represents the scheduler's observed state of the cluster. The scheduler will use this
@@ -135,10 +136,11 @@ mod tests {
     };
     use googletest::prelude::{empty, eq};
     use googletest::{assert_that, elements_are, unordered_elements_are};
-    use restate_types::cluster::cluster_state::{
-        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
+    use restate_types::deprecated_cluster::cluster_state::{
+        AliveNode, ClusterState, DeadNode, NodeState,
     };
     use restate_types::identifiers::PartitionId;
+    use restate_types::partition_processor::{PartitionProcessorStatus, RunMode};
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
     use std::collections::{BTreeMap, HashMap};
