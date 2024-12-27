@@ -433,9 +433,7 @@ impl PartitionProcessorManager {
                                 .remove(processor.as_ref().expect("must be some").key_range());
 
                             match result {
-                                Err(ProcessorError::TrimGapEncountered {
-                                    gap_to_lsn: to_lsn,
-                                }) => {
+                                Err(ProcessorError::TrimGapEncountered { gap_to_lsn: to_lsn }) => {
                                     if self.snapshot_repository.is_some() {
                                         info!(
                                             trim_gap_to_lsn = ?to_lsn,
