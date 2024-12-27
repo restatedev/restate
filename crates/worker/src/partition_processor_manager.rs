@@ -73,7 +73,7 @@ use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
-use crate::partition::ProcessorStopReason;
+use crate::partition::ProcessorError;
 use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
 use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
 use crate::partition_processor_manager::processor_state::{
@@ -433,7 +433,7 @@ impl PartitionProcessorManager {
                                 .remove(processor.as_ref().expect("must be some").key_range());
 
                             match result {
-                                Err(ProcessorStopReason::TrimGapEncountered {
+                                Err(ProcessorError::TrimGapEncountered {
                                     gap_to_lsn: to_lsn,
                                 }) => {
                                     if self.snapshot_repository.is_some() {
@@ -517,7 +517,7 @@ impl PartitionProcessorManager {
     fn await_runtime_task_result(
         &mut self,
         partition_id: PartitionId,
-        runtime_task_handle: RuntimeTaskHandle<Result<(), ProcessorStopReason>>,
+        runtime_task_handle: RuntimeTaskHandle<Result<(), ProcessorError>>,
     ) {
         self.asynchronous_operations.spawn(
             async move {
@@ -952,10 +952,10 @@ enum EventKind {
     Started(
         anyhow::Result<(
             StartedProcessor,
-            RuntimeTaskHandle<Result<(), ProcessorStopReason>>,
+            RuntimeTaskHandle<Result<(), ProcessorError>>,
         )>,
     ),
-    Stopped(Result<(), ProcessorStopReason>),
+    Stopped(Result<(), ProcessorError>),
     NewLeaderEpoch {
         leader_epoch_token: LeaderEpochToken,
         result: anyhow::Result<LeaderEpoch>,

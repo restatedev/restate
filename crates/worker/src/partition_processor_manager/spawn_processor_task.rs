@@ -30,7 +30,7 @@ use restate_types::schema::Schema;
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::snapshots::SnapshotRepository;
-use crate::partition::ProcessorStopReason;
+use crate::partition::ProcessorError;
 use crate::partition_processor_manager::processor_state::StartedProcessor;
 use crate::PartitionProcessorBuilder;
 
@@ -79,7 +79,7 @@ impl SpawnPartitionProcessorTask {
         self,
     ) -> anyhow::Result<(
         StartedProcessor,
-        RuntimeTaskHandle<Result<(), ProcessorStopReason>>,
+        RuntimeTaskHandle<Result<(), ProcessorError>>,
     )> {
         let Self {
             task_name,
@@ -152,12 +152,12 @@ impl SpawnPartitionProcessorTask {
                         invoker_name,
                         invoker.run(invoker_config),
                     )
-                    .map_err(|e| ProcessorStopReason::from(anyhow::anyhow!(e)))?;
+                    .map_err(|e| ProcessorError::from(anyhow::anyhow!(e)))?;
 
                     pp_builder
                         .build::<ProtobufRawEntryCodec>(bifrost, partition_store)
                         .await
-                        .map_err(ProcessorStopReason::from)?
+                        .map_err(ProcessorError::from)?
                         .run()
                         .await
                 }
