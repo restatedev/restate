@@ -1,0 +1,53 @@
+// Copyright (c) 2024 - 2025 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+syntax = "proto3";
+
+import "restate/common.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+package restate.cluster_configuration;
+
+enum NodeSetSelectionStrategyKind {
+  NodeSetSelectionStrategyKind_UNKNOWN = 0;
+  StrictFaultTolerantGreedy = 1;
+}
+
+message NodeSetSelectionStrategy { NodeSetSelectionStrategyKind kind = 1; }
+
+message ReplicatedProviderConfig {
+  string replication_property = 1;
+  NodeSetSelectionStrategy nodeset_selection_strategy = 2;
+}
+
+message DefaultProvider {
+  string provider = 1;
+  // only required if provider = "replicated"
+  optional ReplicatedProviderConfig replicated_config = 2;
+}
+
+enum ReplicationStrategyKind {
+  ReplicationStrategyKind_UNKNOWN = 0;
+  OnAllNodes = 1;
+  Factor = 2;
+}
+
+message ReplicationStrategy {
+  ReplicationStrategyKind kind = 1;
+  // required if kind == "Factor"
+  optional uint32 factor = 2;
+}
+
+message ClusterConfiguration {
+  uint32 num_partitions = 1;
+  ReplicationStrategy replication_strategy = 2;
+  DefaultProvider default_provider = 3;
+}

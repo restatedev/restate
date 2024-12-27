@@ -10,10 +10,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, SnapshotId};
 use crate::net::define_rpc;
 use crate::net::{define_message, TargetName};
+use crate::partition_processor::RunMode;
 use crate::Version;
 
 define_message! {
