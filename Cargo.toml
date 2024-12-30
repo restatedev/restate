@@ -34,6 +34,7 @@ description = "Restate makes distributed applications easy!"
 [workspace.dependencies]
 # Own crates
 codederror = { path = "crates/codederror" }
+mock-service-endpoint = { path = "tools/mock-service-endpoint" }
 restate-admin = { path = "crates/admin" }
 restate-admin-rest-model = { path = "crates/admin-rest-model" }
 restate-base64-util = { path = "crates/base64-util" }
