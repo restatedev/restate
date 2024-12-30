@@ -15,7 +15,9 @@ use tokio::time::MissedTickBehavior;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, trace};
 
-use crate::network_server::metrics::{install_global_prometheus_recorder, render_metrics};
+use crate::network_server::metrics::{
+    install_global_prometheus_recorder, render_metrics, report_health,
+};
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvcServer;
 use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
@@ -80,6 +82,7 @@ impl NetworkServer {
 
         // -- HTTP service (for prometheus et al.)
         let axum_router = axum::Router::new()
+            .route("/health", get(report_health))
             .route("/metrics", get(render_metrics))
             .route("/debug/pprof/heap", get(pprof::heap))
             .route(

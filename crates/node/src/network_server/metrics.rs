@@ -11,6 +11,7 @@
 use std::fmt::Write;
 
 use axum::extract::State;
+use http::StatusCode;
 use metrics_exporter_prometheus::formatting;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use metrics_tracing_context::TracingContextLayer;
@@ -202,6 +203,10 @@ pub(crate) fn install_global_prometheus_recorder(opts: &CommonOptions) -> Promet
 }
 
 // -- Direct HTTP Handlers --
+pub async fn report_health() -> StatusCode {
+    StatusCode::OK
+}
+
 pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String {
     let default_cf = CfName::new("default");
     let mut out = String::new();
