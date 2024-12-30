@@ -31,6 +31,7 @@ ciborium = { workspace = true}
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
+prost-dto = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
 etcd-client = { workspace = true }

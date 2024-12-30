@@ -6586,6 +6586,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "prost",
+ "prost-dto",
  "prost-types",
  "rand 0.9.0",
  "restate-core-derive",

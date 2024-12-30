@@ -10,18 +10,16 @@
 
 use std::fmt::Write;
 
-use axum::extract::State;
-use metrics_exporter_prometheus::formatting;
-use rocksdb::statistics::{Histogram, Ticker};
-
-use restate_core::task_center::TaskCenterMonitoring;
-use restate_rocksdb::{CfName, RocksDbManager};
-
 use crate::network_server::prometheus_helpers::{
     MetricUnit, format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
     format_rocksdb_stat_ticker_for_prometheus,
 };
 use crate::network_server::state::NodeCtrlHandlerState;
+use axum::extract::State;
+use metrics_exporter_prometheus::formatting;
+use restate_core::task_center::TaskCenterMonitoring;
+use restate_rocksdb::{CfName, RocksDbManager};
+use rocksdb::statistics::{Histogram, Ticker};
 
 const ROCKSDB_TICKERS: &[Ticker] = &[
     Ticker::BlockCacheBytesRead,
@@ -174,6 +172,7 @@ const ROCKSDB_CF_PROPERTIES: &[(&str, MetricUnit)] = &[
 ];
 
 // -- Direct HTTP Handlers --
+
 pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String {
     let default_cf = CfName::new("default");
     let mut out = String::new();

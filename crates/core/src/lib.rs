@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod error;
+mod identification;
 mod metadata;
 pub mod metadata_store;
 mod metric_definitions;
@@ -40,6 +41,8 @@ pub use error::*;
 ///
 #[cfg(any(test, feature = "test-util"))]
 pub use restate_core_derive::test;
+
+pub use identification::Identification;
 
 pub use metadata::{
     Metadata, MetadataBuilder, MetadataKind, MetadataManager, MetadataWriter, SyncError,

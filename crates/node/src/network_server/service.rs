@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use axum::Json;
 use axum::routing::{MethodFilter, get, on};
 use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::MetadataProxySvcServer;
 use tonic::codec::CompressionEncoding;
 
+use restate_core::Identification;
 use restate_core::TaskCenter;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::grpc::CoreNodeSvcHandler;
@@ -49,6 +51,7 @@ impl NetworkServer {
 
         // -- HTTP service (for prometheus et al.)
         let axum_router = axum::Router::new()
+            .route("/health", get(report_health))
             .route("/metrics", get(render_metrics))
             .route("/debug/pprof/heap", get(pprof::heap))
             .route(
@@ -68,14 +71,9 @@ impl NetworkServer {
         });
 
         server_builder.register_grpc_service(
-            NodeCtlSvcServer::new(NodeCtlSvcHandler::new(
-                TaskCenter::current(),
-                options.cluster_name().to_owned(),
-                options.roles,
-                metadata_store_client.clone(),
-            ))
-            .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Gzip),
+            NodeCtlSvcServer::new(NodeCtlSvcHandler::new(metadata_store_client.clone()))
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
             restate_core::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
         );
 
@@ -100,4 +98,8 @@ impl NetworkServer {
 
         Ok(())
     }
+}
+
+pub async fn report_health() -> Json<Identification> {
+    Json(Identification::get())
 }

@@ -103,6 +103,11 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
             "#[derive(::enum_map::Enum, ::derive_more::IsVariant, ::derive_more::Display)]",
         )
         .enum_attribute("Message.body", "#[derive(::derive_more::IsVariant)]")
+        .enum_attribute("NodeStatus", "#[derive(::serde::Serialize)]")
+        .enum_attribute("AdminStatus", "#[derive(::serde::Serialize)]")
+        .enum_attribute("LogServerStatus", "#[derive(::serde::Serialize)]")
+        .enum_attribute("WorkerStatus", "#[derive(::serde::Serialize)]")
+        .enum_attribute("MetadataServerStatus", "#[derive(::serde::Serialize)]")
         .btree_map([
             ".restate.cluster.ClusterState",
             ".restate.cluster.AliveNode",

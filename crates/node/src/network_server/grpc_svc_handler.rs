@@ -13,7 +13,7 @@ use std::num::NonZeroU16;
 
 use anyhow::Context;
 use bytes::BytesMut;
-use enumset::EnumSet;
+
 use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::MetadataProxySvc;
 use restate_core::protobuf::metadata_proxy_svc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest,
@@ -21,6 +21,7 @@ use restate_core::protobuf::metadata_proxy_svc::{
 use tonic::{Request, Response, Status};
 use tracing::debug;
 
+use restate_core::Identification;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
@@ -28,8 +29,7 @@ use restate_core::protobuf::node_ctl_svc::{
     ClusterHealthResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest, GetMetadataResponse,
     IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse,
 };
-use restate_core::task_center::TaskCenterMonitoring;
-use restate_core::{Metadata, MetadataKind, TargetVersion, TaskCenter, task_center};
+use restate_core::{Metadata, MetadataKind, TargetVersion};
 use restate_metadata_server::WriteError;
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::Version;
@@ -45,23 +45,12 @@ use restate_types::storage::StorageCodec;
 use crate::{ClusterConfiguration, provision_cluster_metadata};
 
 pub struct NodeCtlSvcHandler {
-    task_center: task_center::Handle,
-    cluster_name: String,
-    roles: EnumSet<Role>,
     metadata_store_client: MetadataStoreClient,
 }
 
 impl NodeCtlSvcHandler {
-    pub fn new(
-        task_center: task_center::Handle,
-        cluster_name: String,
-        roles: EnumSet<Role>,
-        metadata_store_client: MetadataStoreClient,
-    ) -> Self {
+    pub fn new(metadata_store_client: MetadataStoreClient) -> Self {
         Self {
-            task_center,
-            cluster_name,
-            roles,
             metadata_store_client,
         }
     }
@@ -120,34 +109,8 @@ impl NodeCtlSvcHandler {
 #[async_trait::async_trait]
 impl NodeCtlSvc for NodeCtlSvcHandler {
     async fn get_ident(&self, _request: Request<()>) -> Result<Response<IdentResponse>, Status> {
-        let (node_status, admin_status, worker_status, metadata_server_status, log_server_status) =
-            TaskCenter::with_current(|tc| {
-                let health = tc.health();
-                (
-                    health.current_node_status(),
-                    health.current_admin_status(),
-                    health.current_worker_status(),
-                    health.current_metadata_store_status(),
-                    health.current_log_server_status(),
-                )
-            });
-        let age_s = self.task_center.age().as_secs();
-        let metadata = Metadata::current();
-        Ok(Response::new(IdentResponse {
-            status: node_status.into(),
-            node_id: metadata.my_node_id_opt().map(Into::into),
-            roles: self.roles.iter().map(|r| r.to_string()).collect(),
-            cluster_name: self.cluster_name.clone(),
-            age_s,
-            admin_status: admin_status.into(),
-            worker_status: worker_status.into(),
-            metadata_server_status: metadata_server_status.into(),
-            log_server_status: log_server_status.into(),
-            nodes_config_version: metadata.nodes_config_version().into(),
-            logs_version: metadata.logs_version().into(),
-            schema_version: metadata.schema_version().into(),
-            partition_table_version: metadata.partition_table_version().into(),
-        }))
+        let identification = Identification::get();
+        Ok(Response::new(IdentResponse::from(identification)))
     }
 
     async fn get_metadata(
