@@ -81,13 +81,3 @@ message Message {
     BinaryMessage encoded = 5;
   }
 }
-
-// # Common node types
-
-enum MetadataKind {
-  MetadataKind_UNKNOWN = 0;
-  NODES_CONFIGURATION = 1;
-  SCHEMA = 2;
-  PARTITION_TABLE = 3;
-  LOGS = 4;
-}

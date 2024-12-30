@@ -65,7 +65,7 @@ define_message! {
     IntoProto,
     FromProto,
 )]
-#[proto(target = "crate::protobuf::node::MetadataKind")]
+#[proto(target = "crate::protobuf::common::MetadataKind")]
 pub enum MetadataKind {
     NodesConfiguration,
     Schema,
@@ -74,18 +74,20 @@ pub enum MetadataKind {
 }
 
 // todo remove once prost_dto supports TryFromProto
-impl TryFrom<crate::protobuf::node::MetadataKind> for MetadataKind {
+impl TryFrom<crate::protobuf::common::MetadataKind> for MetadataKind {
     type Error = anyhow::Error;
 
-    fn try_from(value: crate::protobuf::node::MetadataKind) -> Result<Self, Self::Error> {
+    fn try_from(value: crate::protobuf::common::MetadataKind) -> Result<Self, Self::Error> {
         match value {
-            crate::protobuf::node::MetadataKind::Unknown => bail!("unknown metadata kind"),
-            crate::protobuf::node::MetadataKind::NodesConfiguration => {
+            crate::protobuf::common::MetadataKind::Unknown => bail!("unknown metadata kind"),
+            crate::protobuf::common::MetadataKind::NodesConfiguration => {
                 Ok(MetadataKind::NodesConfiguration)
             }
-            crate::protobuf::node::MetadataKind::Schema => Ok(MetadataKind::Schema),
-            crate::protobuf::node::MetadataKind::PartitionTable => Ok(MetadataKind::PartitionTable),
-            crate::protobuf::node::MetadataKind::Logs => Ok(MetadataKind::Logs),
+            crate::protobuf::common::MetadataKind::Schema => Ok(MetadataKind::Schema),
+            crate::protobuf::common::MetadataKind::PartitionTable => {
+                Ok(MetadataKind::PartitionTable)
+            }
+            crate::protobuf::common::MetadataKind::Logs => Ok(MetadataKind::Logs),
         }
     }
 }

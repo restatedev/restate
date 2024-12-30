@@ -11,7 +11,6 @@ syntax = "proto3";
 
 import "google/protobuf/empty.proto";
 import "restate/common.proto";
-import "restate/node.proto";
 
 package restate.node_ctl_svc;
 
@@ -45,7 +44,7 @@ message GetMetadataRequest {
   // If set, we'll first sync with metadata store to esnure we are returning the latest value.
   // Otherwise, we'll return the local value on this node.
   bool sync = 1;
-  restate.node.MetadataKind kind = 2;
+  restate.common.MetadataKind kind = 2;
 }
 
 message GetMetadataResponse {
