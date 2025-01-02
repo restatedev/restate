@@ -220,7 +220,7 @@ impl Node {
         nodes
     }
 
-    /// Start this Node, providing the base_dir and the cluster_name of the cluster its
+    /// Start this Node, providing the base_dir and the cluster_name of the cluster it's
     /// expected to attach to. All relative file paths addresses specified in the node config
     /// (eg, nodename/node.sock) will be absolutized against the base path, and the base dir
     /// and cluster name present in config will be overwritten.
@@ -752,6 +752,11 @@ impl StartedNode {
 impl Drop for StartedNode {
     fn drop(&mut self) {
         if let StartedNodeStatus::Running { pid, .. } = self.status {
+            warn!(
+                "Node {} (pid {}) dropped without explicit shutdown",
+                self.config.node_name(),
+                pid,
+            );
             match nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
                 nix::sys::signal::SIGKILL,
