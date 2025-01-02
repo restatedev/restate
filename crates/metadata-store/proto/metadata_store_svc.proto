@@ -26,6 +26,9 @@ service MetadataStoreSvc {
 
   // Deletes the given kv-pair
   rpc Delete(DeleteRequest) returns (google.protobuf.Empty);
+
+  // Provisions the metadata store with the given input
+  rpc Provision(ProvisionRequest) returns (ProvisionResponse);
 }
 
 message GetRequest {
@@ -71,6 +74,14 @@ message Precondition {
   PreconditionKind kind = 1;
   // needs to be set in case of PreconditionKind::MATCHES_VERSION
   optional Version version = 2;
+}
+
+message ProvisionRequest {
+  bytes nodes_configuration = 1;
+}
+
+message ProvisionResponse {
+  bool newly_provisioned = 1;
 }
 
 
