@@ -13,7 +13,8 @@ use crate::network::Networking;
 use crate::raft::storage;
 use crate::raft::storage::RocksDbStorage;
 use crate::{
-    Callback, MetadataStoreBackend, Request, RequestError, RequestReceiver, RequestSender,
+    Callback, MetadataStoreBackend, ProvisionSender, Request, RequestError, RequestReceiver,
+    RequestSender,
 };
 use futures::TryFutureExt;
 use protobuf::{Message as ProtobufMessage, ProtobufError};
@@ -312,6 +313,10 @@ impl From<raft::Error> for RequestError {
 impl MetadataStoreBackend for RaftMetadataStore {
     fn request_sender(&self) -> RequestSender {
         self.request_sender()
+    }
+
+    fn provision_sender(&self) -> Option<ProvisionSender> {
+        None
     }
 
     fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
