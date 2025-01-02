@@ -10,6 +10,7 @@
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use bytes::BytesMut;
 use bytestring::ByteString;
 use rand::seq::SliceRandom;
 use std::sync::Arc;
@@ -17,19 +18,21 @@ use tonic::transport::Channel;
 use tonic::{Code, Status};
 
 use restate_core::metadata_store::{
-    retry_on_network_error, Precondition, ProvisionedMetadataStore, ReadError, VersionedValue,
-    WriteError,
+    retry_on_network_error, MetadataStore, MetadataStoreClientError, Precondition, ProvisionError,
+    ReadError, VersionedValue, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::network::net_util::CommonClientConnectionOptions;
 use restate_types::config::Configuration;
 use restate_types::net::AdvertisedAddress;
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::retries::RetryPolicy;
+use restate_types::storage::StorageCodec;
 use restate_types::Version;
 
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
-use crate::grpc_svc::{DeleteRequest, GetRequest, PutRequest};
+use crate::grpc_svc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
 
 /// Client end to interact with the metadata store.
 #[derive(Debug, Clone)]
@@ -85,7 +88,7 @@ impl GrpcMetadataStoreClient {
 }
 
 #[async_trait]
-impl ProvisionedMetadataStore for GrpcMetadataStoreClient {
+impl MetadataStore for GrpcMetadataStoreClient {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         let retry_policy = Self::retry_policy();
 
@@ -99,7 +102,7 @@ impl ProvisionedMetadataStore for GrpcMetadataStoreClient {
                 .await
                 .map_err(map_status_to_read_error);
 
-            if response.is_err() {
+            if response.as_ref().is_err_and(|err| err.is_network_error()) {
                 self.choose_different_endpoint();
             }
 
@@ -126,7 +129,7 @@ impl ProvisionedMetadataStore for GrpcMetadataStoreClient {
                 .await
                 .map_err(map_status_to_read_error);
 
-            if response.is_err() {
+            if response.as_ref().is_err_and(|err| err.is_network_error()) {
                 self.choose_different_endpoint();
             }
 
@@ -157,7 +160,7 @@ impl ProvisionedMetadataStore for GrpcMetadataStoreClient {
                 .await
                 .map_err(map_status_to_write_error);
 
-            if response.is_err() {
+            if response.as_ref().is_err_and(|err| err.is_network_error()) {
                 self.choose_different_endpoint();
             }
 
@@ -182,7 +185,7 @@ impl ProvisionedMetadataStore for GrpcMetadataStoreClient {
                 .await
                 .map_err(map_status_to_write_error);
 
-            if response.is_err() {
+            if response.as_ref().is_err_and(|err| err.is_network_error()) {
                 self.choose_different_endpoint();
             }
 
@@ -191,6 +194,35 @@ impl ProvisionedMetadataStore for GrpcMetadataStoreClient {
         .await?;
 
         Ok(())
+    }
+
+    async fn provision(
+        &self,
+        nodes_configuration: &NodesConfiguration,
+    ) -> Result<bool, ProvisionError> {
+        let retry_policy = Self::retry_policy();
+
+        retry_on_network_error(retry_policy, || async {
+            let mut client = self.svc_client.load().as_ref().clone();
+
+            let mut buffer = BytesMut::new();
+            StorageCodec::encode(nodes_configuration, &mut buffer)
+                .map_err(|err| ProvisionError::Codec(err.into()))?;
+
+            let response = client
+                .provision(ProvisionRequest {
+                    nodes_configuration: buffer.freeze(),
+                })
+                .await
+                .map_err(map_status_to_provision_error);
+
+            if response.as_ref().is_err_and(|err| err.is_network_error()) {
+                self.choose_different_endpoint();
+            }
+
+            response.map(|response| response.into_inner().newly_provisioned)
+        })
+        .await
     }
 }
 
@@ -206,5 +238,12 @@ fn map_status_to_write_error(status: Status) -> WriteError {
         Code::Unavailable => WriteError::Network(status.into()),
         Code::FailedPrecondition => WriteError::FailedPrecondition(status.message().to_string()),
         _ => WriteError::Internal(status.to_string()),
+    }
+}
+
+fn map_status_to_provision_error(status: Status) -> ProvisionError {
+    match &status.code() {
+        Code::Unavailable => ProvisionError::Network(status.into()),
+        _ => ProvisionError::Internal(status.to_string()),
     }
 }
