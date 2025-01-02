@@ -807,6 +807,25 @@ impl StartedNode {
     }
 }
 
+impl Drop for StartedNode {
+    fn drop(&mut self) {
+        if let StartedNodeStatus::Running { pid, .. } = self.status {
+            match nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
+                nix::sys::signal::SIGKILL,
+            ) {
+                Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+                err => error!(
+                    "Failed to send SIGKILL to running node {} (pid {}): {:?}",
+                    self.config.node_name(),
+                    pid,
+                    err,
+                ),
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum HealthCheck {
     Admin,
