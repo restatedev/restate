@@ -16,12 +16,12 @@ use futures_util::StreamExt;
 use googletest::fail;
 use hyper_util::rt::TokioIo;
 use tempfile::TempDir;
-use test_log::test;
 use tokio::io;
 use tokio::net::UnixStream;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
+use tracing::level_filters::LevelFilter;
 use tracing::{error, info};
 use url::Url;
 
@@ -42,8 +42,17 @@ use restate_types::{config::Configuration, nodes_config::Role};
 
 mod common;
 
-#[test(restate_core::test)]
+#[tokio::test]
 async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
+    tracing_subscriber::fmt()
+        .event_format(tracing_subscriber::fmt::format().compact())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .init();
+
     let mut base_config = Configuration::default();
     base_config.common.bootstrap_num_partitions = 1.try_into()?;
     base_config.bifrost.default_provider = Replicated;
@@ -106,7 +115,6 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         .json(&serde_json::json!({ "uri": "http://localhost:9080" }))
         .send()
         .await?;
-    info!("Registration response: {:?}", registration_response);
     assert!(registration_response.status().is_success());
 
     let ingress_url = format!(
@@ -134,31 +142,9 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         .await?
         .into_inner();
 
-    // todo(pavel): we don't have a confirmed trimmed LSN, and it takes a bit of time for the log tail info to propagate
-    client
-        .trim_log(TrimLogRequest {
-            log_id: 0,
-            trim_point: 3,
-        })
-        .await?;
-
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    client
-        .trim_log(TrimLogRequest {
-            log_id: 0,
-            trim_point: 3,
-        })
-        .await?;
-
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    client
-        .trim_log(TrimLogRequest {
-            log_id: 0,
-            trim_point: 3,
-        })
-        .await?;
-
     // todo(pavel): if create snapshot returned an LSN, we could trim the log to that specific LSN instead of guessing
+    trim_log(&mut client, 3).await?;
+
     let mut no_snapshot_config = base_config.clone();
     no_snapshot_config.worker.snapshots.destination = None;
     let node_3_name = "node-3";
@@ -196,12 +182,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         address: cluster.nodes[0].node_address().clone(),
     };
 
-    let worker_3_ingress_url = format!(
-        "http://{}/Counter/0/get",
-        worker_3.config().ingress.bind_address
-    );
-
-    let mut worker_3_ready = worker_3.lines(
+    let mut worker_3_imported_snapshot = worker_3.lines(
         format!(
             "Importing partition store snapshot.*{}",
             snapshot_response.snapshot_id
@@ -209,21 +190,30 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         .parse()?,
     );
 
-    worker_3
+    let ingress_url = format!(
+        "http://{}/Counter/0/get",
+        worker_3.config().ingress.bind_address
+    );
+
+    let _started_node = worker_3
         .start_clustered(cluster.base_dir(), cluster.cluster_name())
         .await?;
-
     assert!(
-        tokio::time::timeout(Duration::from_secs(20), worker_3_ready.next())
+        tokio::time::timeout(Duration::from_secs(20), worker_3_imported_snapshot.next())
             .await
             .is_ok()
     );
 
-    let invoke_response = http_client
-        .post(worker_3_ingress_url.clone())
+    // todo(pavel): promote node 3 to be the leader for partition 0 and invoke the service again
+    // for now, we just ensure that the new node is applying newly appended log records
+    assert!(http_client
+        .post(ingress_url)
         .send()
-        .await?;
-    assert!(invoke_response.status().is_success());
+        .await?
+        .status()
+        .is_success());
+
+    applied_lsn_converged(&mut client, Duration::from_secs(5), 3, 0).await?;
 
     Ok(())
 }
@@ -250,7 +240,7 @@ async fn any_partition_active(
                 _ => false,
             })
         }) {
-            break; // partition is ready; we can request snapshot
+            break;
         }
         if tokio::time::Instant::now() > deadline {
             fail!(
@@ -260,6 +250,86 @@ async fn any_partition_active(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+    Ok(())
+}
+
+async fn applied_lsn_converged(
+    client: &mut ClusterCtrlSvcClient<Channel>,
+    timeout: Duration,
+    expected_processors: usize,
+    partition_id: u32,
+) -> googletest::Result<()> {
+    assert!(expected_processors > 0);
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let cluster_state = client
+            .get_cluster_state(ClusterStateRequest {})
+            .await?
+            .into_inner()
+            .cluster_state
+            .unwrap();
+
+        let applied_lsn: Vec<_> = cluster_state
+            .nodes
+            .values()
+            .filter_map(|n| {
+                n.state
+                    .as_ref()
+                    .map(|s| match s {
+                        State::Alive(s) => s
+                            .partitions
+                            .get(&partition_id)
+                            .map(|p| p.last_applied_log_lsn)
+                            .unwrap_or_default()
+                            .map(|lsn| (partition_id, lsn.value)),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        if applied_lsn.len() == expected_processors
+            && applied_lsn.iter().all(|(_, lsn)| *lsn == applied_lsn[0].1)
+        {
+            info!("All partition processors converged: {:?}", applied_lsn);
+            break;
+        }
+
+        if tokio::time::Instant::now() > deadline {
+            fail!(
+                "Partition processors did not converge on the same applied LSN within {:?}",
+                timeout
+            )?;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    Ok(())
+}
+
+async fn trim_log(
+    client: &mut ClusterCtrlSvcClient<Channel>,
+    trim_point: u64,
+) -> googletest::Result<()> {
+    // todo(pavel): remove this hack which ensures we actually trim the log
+
+    // Since we don't have a confirmed trimmed LSN in the response, and it takes a bit of time for
+    // the log tail info to propagate to the admin node, we must wait long enough to cover the
+    // heartbeat interval before we retry. The first attempt is usually a no-op as the admin does
+    // not know the effective global tail.
+    client
+        .trim_log(TrimLogRequest {
+            log_id: 0,
+            trim_point,
+        })
+        .await?;
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    client
+        .trim_log(TrimLogRequest {
+            log_id: 0,
+            trim_point,
+        })
+        .await?;
     Ok(())
 }
 
