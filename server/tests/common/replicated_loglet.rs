@@ -89,7 +89,6 @@ pub struct TestEnv {
     pub loglet: Arc<dyn Loglet>,
     pub metadata_writer: MetadataWriter,
     pub metadata_store_client: MetadataStoreClient,
-    pub cluster: StartedCluster,
 }
 
 pub async fn run_in_test_env<F, O>(
@@ -118,7 +117,7 @@ where
 
     RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
 
-    let cluster = Cluster::builder()
+    let mut cluster = Cluster::builder()
         .base_dir(base_dir.as_path().to_owned())
         .nodes(nodes)
         .build()
@@ -165,12 +164,12 @@ where
     future(TestEnv {
         bifrost,
         loglet,
-        cluster,
         metadata_writer,
         metadata_store_client,
     })
     .await?;
 
+    cluster.graceful_shutdown(Duration::from_secs(1)).await?;
     TaskCenter::shutdown_node("test completed", 0).await;
     RocksDbManager::get().shutdown().await;
     Ok(())
