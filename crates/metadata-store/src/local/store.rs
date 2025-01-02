@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::{
-    util, MetadataStoreBackend, MetadataStoreRequest, PreconditionViolation, RequestError,
-    RequestReceiver, RequestSender,
+    util, MetadataStoreBackend, MetadataStoreRequest, PreconditionViolation, ProvisionSender,
+    RequestError, RequestReceiver, RequestSender,
 };
 use bytes::BytesMut;
 use bytestring::ByteString;
@@ -307,6 +307,10 @@ impl LocalMetadataStore {
 impl MetadataStoreBackend for LocalMetadataStore {
     fn request_sender(&self) -> RequestSender {
         self.request_sender()
+    }
+
+    fn provision_sender(&self) -> Option<ProvisionSender> {
+        None
     }
 
     fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
