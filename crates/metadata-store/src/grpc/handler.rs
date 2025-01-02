@@ -10,9 +10,16 @@
 
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvc;
-use crate::grpc_svc::{DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest};
-use crate::{MetadataStoreRequest, RequestError, RequestSender};
+use crate::grpc_svc::{
+    DeleteRequest, GetRequest, GetResponse, GetVersionResponse,
+    ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest,
+};
+use crate::{
+    MetadataStoreRequest, ProvisionError, ProvisionRequest, ProvisionSender, RequestError,
+    RequestSender,
+};
 use async_trait::async_trait;
+use restate_types::storage::StorageCodec;
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status};
 
@@ -20,11 +27,15 @@ use tonic::{Request, Response, Status};
 #[derive(Debug)]
 pub struct MetadataStoreHandler {
     request_tx: RequestSender,
+    provision_tx: Option<ProvisionSender>,
 }
 
 impl MetadataStoreHandler {
-    pub fn new(request_tx: RequestSender) -> Self {
-        Self { request_tx }
+    pub fn new(request_tx: RequestSender, provision_tx: Option<ProvisionSender>) -> Self {
+        Self {
+            request_tx,
+            provision_tx,
+        }
     }
 }
 
@@ -127,6 +138,38 @@ impl MetadataStoreSvc for MetadataStoreHandler {
 
         Ok(Response::new(()))
     }
+
+    async fn provision(
+        &self,
+        request: Request<ProtoProvisionRequest>,
+    ) -> Result<Response<ProvisionResponse>, Status> {
+        if let Some(provision_tx) = self.provision_tx.as_ref() {
+            let (result_tx, result_rx) = oneshot::channel();
+
+            let mut request = request.into_inner();
+
+            let nodes_configuration = StorageCodec::decode(&mut request.nodes_configuration)
+                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+            provision_tx
+                .send(ProvisionRequest {
+                    nodes_configuration,
+                    result_tx,
+                })
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+
+            let newly_provisioned = result_rx
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+
+            Ok(Response::new(ProvisionResponse { newly_provisioned }))
+        } else {
+            Ok(Response::new(ProvisionResponse {
+                newly_provisioned: false,
+            }))
+        }
+    }
 }
 
 impl From<RequestError> for Status {
@@ -136,5 +179,11 @@ impl From<RequestError> for Status {
             RequestError::Unavailable(err) => Status::unavailable(err.to_string()),
             err => Status::internal(err.to_string()),
         }
+    }
+}
+
+impl From<ProvisionError> for Status {
+    fn from(err: ProvisionError) -> Self {
+        match err {}
     }
 }

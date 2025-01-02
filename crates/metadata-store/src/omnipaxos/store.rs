@@ -13,8 +13,8 @@ use crate::network::Networking;
 use crate::omnipaxos::storage::RocksDbStorage;
 use crate::omnipaxos::{BuildError, Error, OmniPaxosMessage};
 use crate::{
-    MetadataStoreBackend, MetadataStoreRequest, Request, RequestError, RequestReceiver,
-    RequestSender,
+    MetadataStoreBackend, MetadataStoreRequest, ProvisionReceiver, ProvisionSender, Request,
+    RequestError, RequestReceiver, RequestSender,
 };
 use futures::TryFutureExt;
 use omnipaxos::storage::{Entry, NoSnapshot};
@@ -38,8 +38,6 @@ impl Entry for Request {
 pub struct OmnipaxosMetadataStore {
     networking: Networking<OmniPaxosMessage>,
     msg_rx: mpsc::Receiver<OmniPaxosMessage>,
-    request_tx: RequestSender,
-    request_rx: RequestReceiver,
     omni_paxos: OmniPaxos,
 
     own_node_id: NodeId,
@@ -48,6 +46,12 @@ pub struct OmnipaxosMetadataStore {
     last_applied_index: usize,
 
     kv_storage: KvMemoryStorage,
+
+    request_tx: RequestSender,
+    request_rx: RequestReceiver,
+
+    provision_tx: ProvisionSender,
+    provision_rx: ProvisionReceiver,
 }
 
 impl OmnipaxosMetadataStore {
@@ -58,6 +62,7 @@ impl OmnipaxosMetadataStore {
         msg_rx: mpsc::Receiver<OmniPaxosMessage>,
     ) -> Result<Self, BuildError> {
         let (request_tx, request_rx) = mpsc::channel(2);
+        let (provision_tx, provision_rx) = mpsc::channel(1);
 
         for (peer, address) in &omni_paxos_options.peers {
             networking.register_address(peer.get(), address.clone());
@@ -106,6 +111,8 @@ impl OmnipaxosMetadataStore {
             msg_rx,
             request_tx,
             request_rx,
+            provision_tx,
+            provision_rx,
             kv_storage: KvMemoryStorage::default(),
             last_applied_index: 0,
             is_leader,
@@ -114,6 +121,10 @@ impl OmnipaxosMetadataStore {
 
     pub(crate) fn request_sender(&self) -> RequestSender {
         self.request_tx.clone()
+    }
+
+    pub(crate) fn provision_sender(&self) -> ProvisionSender {
+        self.provision_tx.clone()
     }
 
     pub(crate) async fn run(mut self) -> Result<(), Error> {
@@ -125,6 +136,9 @@ impl OmnipaxosMetadataStore {
             tokio::select! {
                 _ = &mut shutdown => {
                     break;
+                },
+                Some(request) = self.provision_rx.recv() => {
+                    let _ = request.result_tx.send(Ok(false));
                 },
                 Some(request) = self.request_rx.recv() => {
                     self.handle_request(request);
@@ -245,6 +259,10 @@ impl From<ProposeErr<Request>> for RequestError {
 impl MetadataStoreBackend for OmnipaxosMetadataStore {
     fn request_sender(&self) -> RequestSender {
         self.request_sender()
+    }
+
+    fn provision_sender(&self) -> Option<ProvisionSender> {
+        Some(self.provision_sender())
     }
 
     fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {

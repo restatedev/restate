@@ -17,6 +17,8 @@ pub mod omnipaxos;
 pub mod raft;
 mod util;
 
+use crate::grpc::handler::MetadataStoreHandler;
+use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
 use assert2::let_assert;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
@@ -29,6 +31,7 @@ use restate_types::config::{MetadataStoreKind, MetadataStoreOptions, RocksDbOpti
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::{flexbuffers_storage_encode_decode, Version};
@@ -36,13 +39,13 @@ use std::future::Future;
 use tokio::sync::{mpsc, oneshot};
 use ulid::Ulid;
 
-use crate::grpc::handler::MetadataStoreHandler;
-use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
-
 pub type BoxedMetadataStoreService = Box<dyn MetadataStoreService>;
 
 pub type RequestSender = mpsc::Sender<MetadataStoreRequest>;
 pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
+
+pub type ProvisionSender = mpsc::Sender<ProvisionRequest>;
+pub type ProvisionReceiver = mpsc::Receiver<ProvisionRequest>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
@@ -80,6 +83,9 @@ impl PreconditionViolation {
         PreconditionViolation::VersionMismatch { expected, actual }
     }
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProvisionError {}
 
 #[async_trait::async_trait]
 pub trait MetadataStoreServiceBoxed {
@@ -135,9 +141,18 @@ pub enum MetadataStoreRequest {
     },
 }
 
+#[derive(Debug)]
+pub struct ProvisionRequest {
+    nodes_configuration: NodesConfiguration,
+    result_tx: oneshot::Sender<Result<bool, ProvisionError>>,
+}
+
 pub trait MetadataStoreBackend {
     /// Create a request sender for this backend.
     fn request_sender(&self) -> RequestSender;
+
+    /// Create a provision sender for this backend.
+    fn provision_sender(&self) -> Option<ProvisionSender>;
 
     /// Run the metadata store backend
     fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static;
@@ -158,7 +173,10 @@ where
         server_builder: &mut NetworkServerBuilder,
     ) -> Self {
         server_builder.register_grpc_service(
-            MetadataStoreSvcServer::new(MetadataStoreHandler::new(store.request_sender())),
+            MetadataStoreSvcServer::new(MetadataStoreHandler::new(
+                store.request_sender(),
+                store.provision_sender(),
+            )),
             grpc_svc::FILE_DESCRIPTOR_SET,
         );
 
