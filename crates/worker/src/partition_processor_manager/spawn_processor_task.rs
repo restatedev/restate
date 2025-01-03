@@ -190,6 +190,7 @@ async fn open_partition_store(
         .await
         && fast_forward_lsn.is_none()
     {
+        // We have an initialized partition store, and no fast-forward target - go on and open it.
         return Ok(partition_store_manager
             .open_partition_store(
                 partition_id,
@@ -227,6 +228,8 @@ async fn open_partition_store(
                 .await?)
         }
         (Some(snapshot), None) => {
+            // We only reach this point if there is no initialized store for the partition (early
+            // return at start of method), we can import without first dropping the column family.
             info!(partition_id = %partition_id, "Found partition snapshot, restoring it");
             Ok(import_snapshot(
                 partition_id,

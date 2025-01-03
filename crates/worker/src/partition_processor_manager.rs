@@ -447,8 +447,8 @@ impl PartitionProcessorManager {
                                         );
                                     }
                                 }
-                                Err(_) => {
-                                    warn!("Partition processor exited unexpectedly: {result:?}")
+                                Err(err) => {
+                                    warn!("Partition processor exited unexpectedly: {err}")
                                 }
                                 Ok(_) => {
                                     info!("Partition processor stopped.")
