@@ -30,8 +30,9 @@ use restate_core::{
 };
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
-use restate_metadata_store::local::LocalMetadataStoreService;
-use restate_metadata_store::MetadataStoreClient;
+use restate_metadata_store::{
+    BoxedMetadataStoreService, MetadataStoreClient, MetadataStoreService,
+};
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::GenericError;
 use restate_types::health::Health;
@@ -104,7 +105,7 @@ pub enum BuildError {
 
     #[error("building metadata store failed: {0}")]
     #[code(unknown)]
-    MetadataStore(#[from] restate_metadata_store::local::BuildError),
+    MetadataStore(#[from] anyhow::Error),
 }
 
 pub struct Node {
@@ -115,7 +116,7 @@ pub struct Node {
     partition_routing_refresher: PartitionRoutingRefresher,
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
-    metadata_store_role: Option<LocalMetadataStoreService>,
+    metadata_store_role: Option<BoxedMetadataStoreService>,
     base_role: BaseRole,
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole>,
@@ -136,13 +137,13 @@ impl Node {
 
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(
-                LocalMetadataStoreService::create(
-                    health.metadata_server_status(),
+                restate_metadata_store::create_metadata_store(
                     &config.metadata_store,
                     updateable_config
                         .clone()
                         .map(|config| &config.metadata_store.rocksdb)
                         .boxed(),
+                    health.metadata_server_status(),
                     &mut server_builder,
                 )
                 .await?,
@@ -239,9 +240,9 @@ impl Node {
             && config.has_role(Role::HttpIngress)
             // todo remove once the safe fallback version supports the HttpIngress role
             || !config
-                .ingress
-                .experimental_feature_enable_separate_ingress_role
-                && config.has_role(Role::Worker)
+            .ingress
+            .experimental_feature_enable_separate_ingress_role
+            && config.has_role(Role::Worker)
         {
             Some(IngressRole::create(
                 updateable_config
