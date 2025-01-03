@@ -20,6 +20,7 @@ use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
 use bytes::BytesMut;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
+use object_store::path::Path as ObjectPath;
 use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -57,7 +58,7 @@ use restate_types::logs::Lsn;
 pub struct SnapshotRepository {
     object_store: Arc<dyn ObjectStore>,
     destination: Url,
-    prefix: String,
+    prefix: ObjectPath,
     /// Ingested snapshots staging location.
     staging_dir: PathBuf,
     /// Expected cluster name for the snapshots in this repository.
@@ -100,7 +101,7 @@ pub struct LatestSnapshot {
 }
 
 impl LatestSnapshot {
-    pub fn from_snapshot(snapshot: &PartitionSnapshotMetadata, path: String) -> Self {
+    pub fn from_snapshot(snapshot: &PartitionSnapshotMetadata) -> Self {
         LatestSnapshot {
             version: snapshot.version,
             cluster_name: snapshot.cluster_name.clone(),
@@ -109,8 +110,32 @@ impl LatestSnapshot {
             snapshot_id: snapshot.snapshot_id,
             created_at: snapshot.created_at.clone(),
             min_applied_lsn: snapshot.min_applied_lsn,
-            path,
+            path: UniqueSnapshotKey::from_metadata(snapshot).padded_key(),
         }
+    }
+}
+
+struct UniqueSnapshotKey {
+    lsn: Lsn,
+    snapshot_id: SnapshotId,
+}
+
+impl UniqueSnapshotKey {
+    fn from_metadata(snapshot: &PartitionSnapshotMetadata) -> Self {
+        UniqueSnapshotKey {
+            lsn: snapshot.min_applied_lsn,
+            snapshot_id: snapshot.snapshot_id,
+        }
+    }
+
+    /// Construct the unique path component for a snapshot, e.g. `lsn_00001234-snap_abc123`.
+    /// The LSN is zero-padded for correct lexicographical sorting in object stores.
+    fn padded_key(&self) -> String {
+        format!(
+            "lsn_{lsn:020}-{snapshot_id}",
+            lsn = self.lsn,
+            snapshot_id = self.snapshot_id
+        )
     }
 }
 
@@ -132,20 +157,13 @@ impl SnapshotRepository {
             .inspect(|params| info!("Snapshot destination parameters ignored: {params}"));
         destination.set_query(None);
 
+        let prefix = destination.path().to_string();
         let object_store = create_object_store_client(destination.clone()).await?;
-
-        // The prefix must be stripped of any leading slash and, unless it is empty, must end in a
-        // single "/" character.
-        let prefix: String = destination.path().into();
-        let prefix = match prefix.as_str() {
-            "" | "/" => "".to_string(),
-            prefix => format!("{}/", prefix.trim_start_matches('/').trim_end_matches('/')),
-        };
 
         Ok(Some(SnapshotRepository {
             object_store,
             destination,
-            prefix,
+            prefix: ObjectPath::from(prefix),
             staging_dir,
             cluster_name,
         }))
@@ -183,10 +201,7 @@ impl SnapshotRepository {
             Ok(_) => Ok(()),
             Err(put_error) => {
                 for filename in put_error.uploaded_files {
-                    let path = object_store::path::Path::from(format!(
-                        "{}{}",
-                        put_error.full_snapshot_path, filename
-                    ));
+                    let path = put_error.full_snapshot_path.child(filename);
 
                     // We disregard errors at this point; the snapshot repository pruning mechanism
                     // should catch these eventually.
@@ -208,29 +223,17 @@ impl SnapshotRepository {
         snapshot: &PartitionSnapshotMetadata,
         local_snapshot_path: &Path,
     ) -> Result<(), PutSnapshotError> {
-        // A unique snapshot path within the partition prefix. We pad the LSN to ensure correct
-        // lexicographic sorting.
-        let snapshot_prefix = Self::get_snapshot_prefix(snapshot);
-        let full_snapshot_path = format!(
-            "{prefix}{partition_id}/{snapshot_prefix}",
-            prefix = self.prefix,
-            partition_id = snapshot.partition_id,
-        );
-
+        let snapshot_prefix = self.get_base_prefix(snapshot);
         debug!(
             "Uploading snapshot from {:?} to {}",
-            local_snapshot_path, full_snapshot_path
+            local_snapshot_path, snapshot_prefix
         );
 
-        let mut progress = SnapshotUploadProgress::with_snapshot_path(full_snapshot_path.clone());
+        let mut progress = SnapshotUploadProgress::with_snapshot_path(snapshot_prefix);
         let mut buf = BytesMut::new();
         for file in &snapshot.files {
             let filename = file.name.trim_start_matches("/");
-            let key = object_store::path::Path::from(format!(
-                "{}/{}",
-                full_snapshot_path.as_str(),
-                filename
-            ));
+            let key = self.get_snapshot_file(snapshot, filename);
 
             let put_result = put_snapshot_object(
                 local_snapshot_path.join(filename).as_path(),
@@ -249,10 +252,7 @@ impl SnapshotRepository {
             progress.push(file.name.clone());
         }
 
-        let metadata_key = object_store::path::Path::from(format!(
-            "{}/metadata.json",
-            full_snapshot_path.as_str()
-        ));
+        let metadata_key = self.get_snapshot_file(snapshot, "metadata.json");
         let metadata_json_payload = PutPayload::from(
             serde_json::to_string_pretty(snapshot).expect("Can always serialize JSON"),
         );
@@ -270,11 +270,7 @@ impl SnapshotRepository {
             "Successfully published snapshot metadata",
         );
 
-        let latest_path = object_store::path::Path::from(format!(
-            "{prefix}{partition_id}/latest.json",
-            prefix = self.prefix,
-            partition_id = snapshot.partition_id,
-        ));
+        let latest_path = self.get_latest_snapshot_pointer(snapshot.partition_id);
 
         // By performing a CAS on the latest snapshot pointer, we can ensure strictly monotonic updates.
         let maybe_stored = self
@@ -293,7 +289,7 @@ impl SnapshotRepository {
             return Ok(());
         }
 
-        let latest = LatestSnapshot::from_snapshot(snapshot, snapshot_prefix);
+        let latest = LatestSnapshot::from_snapshot(snapshot);
         let latest = PutPayload::from(
             serde_json::to_string_pretty(&latest)
                 .map_err(|e| PutSnapshotError::from(e, progress.clone()))?,
@@ -329,14 +325,6 @@ impl SnapshotRepository {
         Ok(())
     }
 
-    fn get_snapshot_prefix(snapshot: &PartitionSnapshotMetadata) -> String {
-        format!(
-            "lsn_{lsn:020}-{snapshot_id}",
-            lsn = snapshot.min_applied_lsn,
-            snapshot_id = snapshot.snapshot_id
-        )
-    }
-
     /// Discover and download the latest snapshot available. It is the caller's responsibility
     /// to delete the snapshot directory when it is no longer needed.
     #[instrument(
@@ -349,15 +337,9 @@ impl SnapshotRepository {
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
-        let latest_path = object_store::path::Path::from(format!(
-            "{prefix}{partition_id}/latest.json",
-            prefix = self.prefix,
-            partition_id = partition_id,
-        ));
+        let latest_path = self.get_latest_snapshot_pointer(partition_id);
 
-        let latest = self.object_store.get(&latest_path).await;
-
-        let latest = match latest {
+        let latest = match self.object_store.get(&latest_path).await {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => {
                 debug!("Latest snapshot data not found in repository");
@@ -369,12 +351,11 @@ impl SnapshotRepository {
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
         debug!("Latest snapshot metadata: {:?}", latest);
 
-        let snapshot_metadata_path = object_store::path::Path::from(format!(
-            "{prefix}{partition_id}/{path}/metadata.json",
-            prefix = self.prefix,
-            partition_id = partition_id,
-            path = latest.path,
-        ));
+        let snapshot_metadata_path = self
+            .prefix
+            .child(partition_id.to_string())
+            .child(latest.path.as_str())
+            .child("metadata.json");
         let snapshot_metadata = self.object_store.get(&snapshot_metadata_path).await;
 
         let snapshot_metadata = match snapshot_metadata {
@@ -417,8 +398,8 @@ impl SnapshotRepository {
         )?;
         debug!(
             snapshot_id = %snapshot_metadata.snapshot_id,
-            path = ?snapshot_dir.path(),
-            "Getting snapshot data",
+            path = %snapshot_dir.path().display(),
+            "Getting snapshot data files",
         );
 
         let directory = snapshot_dir.path().to_string_lossy().to_string();
@@ -428,19 +409,18 @@ impl SnapshotRepository {
         for file in &mut snapshot_metadata.files {
             let filename = file.name.trim_start_matches("/");
             let expected_size = file.size;
-            let key = object_store::path::Path::from(format!(
-                "{prefix}{partition_id}/{path}/{filename}",
-                prefix = self.prefix,
-                partition_id = partition_id,
-                path = latest.path,
-                filename = filename,
-            ));
+            let key = self
+                .prefix
+                .child(partition_id.to_string())
+                .child(latest.path.as_str())
+                .child(filename);
             let file_path = snapshot_dir.path().join(filename);
             let concurrency_limiter = Arc::clone(&concurrency_limiter);
             let object_store = Arc::clone(&self.object_store);
 
             let handle = downloads.build_task().name(filename).spawn(async move {
                 let _permit = concurrency_limiter.acquire().await?;
+                debug!(%key, "Downloading snapshot file");
                 let mut file_data = StreamReader::new(
                     object_store
                         .get(&key)
@@ -496,7 +476,7 @@ impl SnapshotRepository {
 
         info!(
             snapshot_id = %snapshot_metadata.snapshot_id,
-            path = ?snapshot_dir.path(),
+            path = %snapshot_dir.path().display(),
             "Downloaded partition snapshot",
         );
         Ok(Some(LocalPartitionSnapshot {
@@ -511,8 +491,9 @@ impl SnapshotRepository {
     async fn get_latest_snapshot_metadata_for_update(
         &self,
         snapshot: &PartitionSnapshotMetadata,
-        path: &object_store::path::Path,
+        path: &ObjectPath,
     ) -> anyhow::Result<Option<(LatestSnapshot, UpdateVersion)>> {
+        debug!(%path, "Getting latest snapshot pointer from repository");
         match self.object_store.get(path).await {
             Ok(result) => {
                 let version = UpdateVersion {
@@ -522,15 +503,15 @@ impl SnapshotRepository {
                 let latest: LatestSnapshot = serde_json::from_slice(
                     &result.bytes().await?,
                 )
-                .inspect_err(|e| {
-                    debug!(
+                    .inspect_err(|e| {
+                        debug!(
                         repository_latest_lsn = "unknown",
                         new_snapshot_lsn = ?snapshot.min_applied_lsn,
                         "Failed to parse stored latest snapshot pointer, refusing to overwrite: {}",
                         e
                     )
-                })
-                .map_err(|e| anyhow!("Failed to parse latest snapshot metadata: {}", e))?;
+                    })
+                    .map_err(|e| anyhow!("Failed to parse latest snapshot metadata: {}", e))?;
                 if snapshot.cluster_name != latest.cluster_name {
                     // This indicates a serious misconfiguration and we should complain loudly
                     bail!("Snapshot does not match the cluster name of latest snapshot at destination!");
@@ -549,6 +530,32 @@ impl SnapshotRepository {
                 bail!("Failed to get latest snapshot pointer: {}", e);
             }
         }
+    }
+
+    /// Construct the full object path to the latest snapshot pointer for a given partition.
+    fn get_latest_snapshot_pointer(&self, partition_id: PartitionId) -> ObjectPath {
+        self.get_partition_snapshots_prefix(partition_id)
+            .child("latest.json")
+    }
+
+    /// Construct the prefix relative to the destination root for a given partition's snapshots.
+    fn get_partition_snapshots_prefix(&self, partition_id: PartitionId) -> ObjectPath {
+        self.prefix.child(partition_id.to_string())
+    }
+
+    /// Construct the complete snapshot prefix from the base of the object store destination.
+    fn get_base_prefix(&self, snapshot_metadata: &PartitionSnapshotMetadata) -> ObjectPath {
+        self.get_partition_snapshots_prefix(snapshot_metadata.partition_id)
+            .child(UniqueSnapshotKey::from_metadata(snapshot_metadata).padded_key())
+    }
+
+    /// Construct the full object path for a specific file from the given snapshot.
+    fn get_snapshot_file(
+        &self,
+        snapshot_metadata: &PartitionSnapshotMetadata,
+        filename: &str,
+    ) -> ObjectPath {
+        self.get_base_prefix(snapshot_metadata).child(filename)
     }
 }
 
@@ -594,14 +601,14 @@ async fn create_object_store_client(destination: Url) -> anyhow::Result<Arc<dyn 
 
 #[derive(Clone, Debug)]
 struct SnapshotUploadProgress {
-    pub full_snapshot_path: String,
+    pub snapshot_complete_path: ObjectPath,
     pub uploaded_files: Vec<String>,
 }
 
 impl SnapshotUploadProgress {
-    fn with_snapshot_path(full_snapshot_path: String) -> Self {
+    fn with_snapshot_path(snapshot_complete_path: ObjectPath) -> Self {
         SnapshotUploadProgress {
-            full_snapshot_path,
+            snapshot_complete_path,
             uploaded_files: vec![],
         }
     }
@@ -612,7 +619,7 @@ impl SnapshotUploadProgress {
 }
 
 struct PutSnapshotError {
-    pub full_snapshot_path: String,
+    pub full_snapshot_path: ObjectPath,
     pub uploaded_files: Vec<String>,
     pub error: anyhow::Error,
 }
@@ -624,7 +631,7 @@ impl PutSnapshotError {
     {
         PutSnapshotError {
             error: error.into(),
-            full_snapshot_path: progress.full_snapshot_path,
+            full_snapshot_path: progress.snapshot_complete_path,
             uploaded_files: progress.uploaded_files,
         }
     }
@@ -635,7 +642,7 @@ impl PutSnapshotError {
 // conflicts to arise.
 async fn put_snapshot_object(
     file_path: &Path,
-    key: &object_store::path::Path,
+    key: &ObjectPath,
     object_store: &Arc<dyn ObjectStore>,
     buf: &mut BytesMut,
 ) -> anyhow::Result<object_store::PutResult> {
@@ -726,7 +733,7 @@ impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use object_store::path::Path;
+    use object_store::path::Path as ObjectPath;
     use object_store::ObjectStore;
     use std::time::SystemTime;
     use tempfile::TempDir;
@@ -737,7 +744,7 @@ mod tests {
     use tracing_subscriber::{fmt, EnvFilter};
     use url::Url;
 
-    use super::{LatestSnapshot, SnapshotRepository};
+    use super::{LatestSnapshot, SnapshotRepository, UniqueSnapshotKey};
     use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
     use restate_types::config::SnapshotsOptions;
     use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
@@ -782,7 +789,9 @@ mod tests {
         .unwrap();
 
         // Write invalid JSON to latest.json
-        let latest_path = destination_dir.join(format!("{}/latest.json", PartitionId::MIN));
+        let latest_path = destination_dir
+            .join(PartitionId::MIN.to_string())
+            .join("latest.json");
         tokio::fs::create_dir_all(latest_path.parent().unwrap()).await?;
         info!("Creating file: {:?}", latest_path);
         let mut latest = tokio::fs::File::create(&latest_path).await?;
@@ -823,16 +832,12 @@ mod tests {
         let source_dir = snapshot_source.path().to_path_buf();
 
         let destination_url = Url::parse(destination.as_str())?;
-        let path = destination_url.path().to_string();
-        let object_store = super::create_object_store_client(destination_url).await?;
+        let latest_path = ObjectPath::from(destination_url.path().to_string())
+            .child(PartitionId::MIN.to_string())
+            .child("latest.json");
+        let object_store = super::create_object_store_client(destination_url.clone()).await?;
 
-        let latest = object_store
-            .get(&Path::from(format!(
-                "{}/{}/latest.json",
-                path,
-                PartitionId::MIN,
-            )))
-            .await;
+        let latest = object_store.get(&latest_path).await;
         assert!(matches!(latest, Err(object_store::Error::NotFound { .. })));
 
         let data = b"snapshot-data";
@@ -865,35 +870,31 @@ mod tests {
 
         repository.put(&snapshot1, source_dir.clone()).await?;
 
-        let snapshot_prefix = SnapshotRepository::get_snapshot_prefix(&snapshot1);
+        let partition_prefix =
+            ObjectPath::from(destination_url.path()).child(snapshot1.partition_id.to_string());
+
+        let snapshot_1_prefix = partition_prefix.child(
+            UniqueSnapshotKey::from_metadata(&snapshot1)
+                .padded_key()
+                .as_str(),
+        );
+
         let data = object_store
-            .get(&Path::from(format!(
-                "{}/{}/{}/data.sst",
-                path, snapshot1.partition_id, snapshot_prefix,
-            )))
+            .get(&snapshot_1_prefix.child("data.sst"))
             .await?;
         assert_eq!(data.bytes().await?, Bytes::from_static(b"snapshot-data"));
 
         let metadata = object_store
-            .get(&Path::from(format!(
-                "{}/{}/{}/metadata.json",
-                path, snapshot1.partition_id, snapshot_prefix,
-            )))
+            .get(&snapshot_1_prefix.child("metadata.json"))
             .await?;
         let metadata: PartitionSnapshotMetadata = serde_json::from_slice(&metadata.bytes().await?)?;
         assert_eq!(snapshot1.snapshot_id, metadata.snapshot_id);
 
         let latest = object_store
-            .get(&Path::from(format!(
-                "{}/{}/latest.json",
-                path, snapshot1.partition_id,
-            )))
+            .get(&partition_prefix.child("latest.json"))
             .await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
-        assert_eq!(
-            LatestSnapshot::from_snapshot(&snapshot1, snapshot_prefix),
-            latest
-        );
+        assert_eq!(LatestSnapshot::from_snapshot(&snapshot1), latest);
 
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
@@ -912,19 +913,10 @@ mod tests {
         repository.put(&snapshot2, source_dir).await?;
 
         let latest = object_store
-            .get(&Path::from(format!(
-                "{}/{}/latest.json",
-                path, snapshot2.partition_id,
-            )))
+            .get(&partition_prefix.child("latest.json"))
             .await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
-        assert_eq!(
-            LatestSnapshot::from_snapshot(
-                &snapshot2,
-                SnapshotRepository::get_snapshot_prefix(&snapshot2)
-            ),
-            latest
-        );
+        assert_eq!(LatestSnapshot::from_snapshot(&snapshot2,), latest);
 
         let latest = repository.get_latest(PartitionId::MIN).await?.unwrap();
         assert_eq!(latest.min_applied_lsn, snapshot2.min_applied_lsn);
