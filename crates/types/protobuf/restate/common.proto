@@ -132,3 +132,11 @@ enum IngressStatus {
   IngressStatus_READY = 1;
   IngressStatus_STARTING_UP = 2;
 }
+
+enum MetadataKind {
+  MetadataKind_UNKNOWN = 0;
+  NODES_CONFIGURATION = 1;
+  SCHEMA = 2;
+  PARTITION_TABLE = 3;
+  LOGS = 4;
+}

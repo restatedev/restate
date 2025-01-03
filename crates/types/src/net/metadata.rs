@@ -65,7 +65,7 @@ define_message! {
     IntoProto,
     FromProto,
 )]
-#[proto(target = "crate::protobuf::node::MetadataKind")]
+#[proto(target = "crate::protobuf::common::MetadataKind")]
 pub enum MetadataKind {
     NodesConfiguration,
     Schema,
