@@ -107,6 +107,12 @@ impl GenerationalNodeId {
     }
 }
 
+impl From<GenerationalNodeId> for u64 {
+    fn from(value: GenerationalNodeId) -> Self {
+        u64::from(u32::from(value.0)) << 32 | u64::from(value.1)
+    }
+}
+
 #[derive(
     Debug,
     Default,
