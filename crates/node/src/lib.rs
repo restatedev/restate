@@ -358,10 +358,11 @@ impl Node {
             .await;
 
         if let Some(metadata_store) = self.metadata_store_role {
-            TaskCenter::spawn(TaskKind::MetadataStore, "metadata-store", async move {
-                metadata_store.run().await?;
-                Ok(())
-            })?;
+            TaskCenter::spawn(
+                TaskKind::MetadataStore,
+                "metadata-store",
+                metadata_store.run(),
+            )?;
         }
 
         if config.common.allow_bootstrap {
