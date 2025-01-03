@@ -217,6 +217,10 @@ impl MetadataStore for GrpcMetadataStoreClient {
                 .map_err(map_status_to_provision_error);
 
             if response.as_ref().is_err_and(|err| err.is_network_error()) {
+                // This is potentially dangerous because we might have provisioned before on a
+                // different node but delivering of the response failed.
+                // todo harden by choosing oneself if one runs the metadata store. If not, then pick
+                //  a single node to reach out to.
                 self.choose_different_endpoint();
             }
 

@@ -13,6 +13,7 @@ use bytestring::ByteString;
 use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_types::Version;
 use std::collections::HashMap;
+use tracing::trace;
 use ulid::Ulid;
 
 #[derive(Default)]
@@ -33,6 +34,7 @@ impl KvMemoryStorage {
     }
 
     pub fn handle_request(&mut self, request: Request) {
+        trace!("Handle request: {request:?}");
         match request.kind {
             RequestKind::Get { key } => {
                 let result = self.get(key);
