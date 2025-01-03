@@ -253,8 +253,8 @@ async fn create_or_recreate_store(
                 .await?
         }
         (Some(snapshot), None) => {
-            // We only reach this point if there is no initialized store for the partition (early
-            // return at start of method), we can import without first dropping the column family.
+            // Based on the assumptions for calling this method, we should only reach this point if
+            // there is no existing store - we can import without first dropping the column family.
             info!(partition_id = %partition_id, "Found partition snapshot, restoring it");
             import_snapshot(
                 partition_id,
