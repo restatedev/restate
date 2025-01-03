@@ -8,13 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod node_ctl_svc {
-    tonic::include_proto!("restate.node_ctl_svc");
-
-    pub const FILE_DESCRIPTOR_SET: &[u8] =
-        tonic::include_file_descriptor_set!("node_ctl_svc_descriptor");
-}
-
 pub mod core_node_svc {
     tonic::include_proto!("restate.core_node_svc");
 

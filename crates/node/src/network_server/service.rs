@@ -15,12 +15,11 @@ use tokio::time::MissedTickBehavior;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, trace};
 
-use crate::network_server::metrics::{install_global_prometheus_recorder, render_metrics};
-use crate::network_server::state::NodeCtrlHandlerStateBuilder;
+use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvcServer;
-use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportConnect};
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_types::config::CommonOptions;
 use restate_types::health::Health;
@@ -28,6 +27,8 @@ use restate_types::protobuf::common::NodeStatus;
 
 use super::grpc_svc_handler::{CoreNodeSvcHandler, NodeCtlSvcHandler};
 use super::pprof;
+use crate::network_server::metrics::{install_global_prometheus_recorder, render_metrics};
+use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 
 pub struct NetworkServer {}
 
@@ -37,6 +38,7 @@ impl NetworkServer {
         connection_manager: ConnectionManager<T>,
         mut server_builder: NetworkServerBuilder,
         options: CommonOptions,
+        metadata_store_client: MetadataStoreClient,
     ) -> Result<(), anyhow::Error> {
         // Configure Metric Exporter
         let mut state_builder = NodeCtrlHandlerStateBuilder::default();
@@ -103,10 +105,11 @@ impl NetworkServer {
                 options.cluster_name().to_owned(),
                 options.roles,
                 health,
+                metadata_store_client,
             ))
             .accept_compressed(CompressionEncoding::Gzip)
             .send_compressed(CompressionEncoding::Gzip),
-            restate_core::network::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
+            restate_core::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder.register_grpc_service(

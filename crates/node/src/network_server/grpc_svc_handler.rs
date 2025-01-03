@@ -8,31 +8,39 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::{provision_cluster_metadata, ClusterConfiguration};
+use anyhow::Context;
 use bytes::BytesMut;
 use enumset::EnumSet;
 use futures::stream::BoxStream;
-use tokio_stream::StreamExt;
-use tonic::{Request, Response, Status, Streaming};
-
+use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvc;
-use restate_core::network::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
-use restate_core::network::protobuf::node_ctl_svc::{
-    GetMetadataRequest, GetMetadataResponse, IdentResponse,
+use restate_core::network::{ConnectionManager, ProtocolError, TransportConnect};
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
+use restate_core::protobuf::node_ctl_svc::{
+    GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
+    ProvisionClusterResponse,
 };
-use restate_core::network::ConnectionManager;
-use restate_core::network::{ProtocolError, TransportConnect};
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
+use restate_types::config::Configuration;
 use restate_types::health::Health;
+use restate_types::logs::metadata::DefaultProvider;
 use restate_types::nodes_config::Role;
+use restate_types::partition_table::ReplicationStrategy;
+use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::node::Message;
 use restate_types::storage::StorageCodec;
+use std::num::NonZeroU16;
+use tokio_stream::StreamExt;
+use tonic::{Request, Response, Status, Streaming};
 
 pub struct NodeCtlSvcHandler {
     task_center: task_center::Handle,
     cluster_name: String,
     roles: EnumSet<Role>,
     health: Health,
+    metadata_store_client: MetadataStoreClient,
 }
 
 impl NodeCtlSvcHandler {
@@ -41,13 +49,48 @@ impl NodeCtlSvcHandler {
         cluster_name: String,
         roles: EnumSet<Role>,
         health: Health,
+        metadata_store_client: MetadataStoreClient,
     ) -> Self {
         Self {
             task_center,
             cluster_name,
             roles,
             health,
+            metadata_store_client,
         }
+    }
+
+    fn resolve_cluster_configuration(
+        config: &Configuration,
+        request: ProvisionClusterRequest,
+    ) -> anyhow::Result<ClusterConfiguration> {
+        let num_partitions = request
+            .num_partitions
+            .map(|num_partitions| {
+                u16::try_from(num_partitions)
+                    .context("Restate only supports running up to 65535 partitions.")
+                    .and_then(|num_partitions| {
+                        NonZeroU16::try_from(num_partitions)
+                            .context("The number of partitions needs to be > 0")
+                    })
+            })
+            .transpose()?
+            .unwrap_or(config.common.bootstrap_num_partitions);
+        let replication_strategy = request
+            .placement_strategy
+            .map(ReplicationStrategy::try_from)
+            .transpose()?
+            .unwrap_or_default();
+        let default_provider = request
+            .log_provider
+            .map(DefaultProvider::try_from)
+            .unwrap_or_else(|| Ok(DefaultProvider::from_configuration(config)))?;
+
+        Ok(ClusterConfiguration {
+            num_partitions,
+            replication_strategy,
+            default_provider,
+        })
     }
 }
 
@@ -113,6 +156,42 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         Ok(Response::new(GetMetadataResponse {
             encoded: encoded.freeze(),
         }))
+    }
+
+    async fn provision_cluster(
+        &self,
+        request: Request<ProvisionClusterRequest>,
+    ) -> Result<Response<ProvisionClusterResponse>, Status> {
+        let request = request.into_inner();
+        let config = Configuration::pinned();
+
+        let dry_run = request.dry_run;
+        let cluster_configuration = Self::resolve_cluster_configuration(&config, request)
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+        if dry_run {
+            return Ok(Response::new(ProvisionClusterResponse::dry_run(
+                ProtoClusterConfiguration::from(cluster_configuration),
+            )));
+        }
+
+        let newly_provisioned = provision_cluster_metadata(
+            &self.metadata_store_client,
+            &config.common,
+            &cluster_configuration,
+        )
+        .await
+        .map_err(|err| Status::internal(err.to_string()))?;
+
+        if !newly_provisioned {
+            return Err(Status::already_exists(
+                "The cluster has already been provisioned",
+            ));
+        }
+
+        Ok(Response::new(ProvisionClusterResponse::provisioned(
+            ProtoClusterConfiguration::from(cluster_configuration),
+        )))
     }
 }
 

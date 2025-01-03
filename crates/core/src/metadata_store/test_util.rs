@@ -8,7 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metadata_store::{MetadataStore, Precondition, ReadError, VersionedValue, WriteError};
+use crate::metadata_store::{
+    Precondition, ProvisionedMetadataStore, ReadError, VersionedValue, WriteError,
+};
 use bytestring::ByteString;
 use restate_types::Version;
 use std::collections::HashMap;
@@ -47,7 +49,7 @@ impl InMemoryMetadataStore {
 }
 
 #[async_trait::async_trait]
-impl MetadataStore for InMemoryMetadataStore {
+impl ProvisionedMetadataStore for InMemoryMetadataStore {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         Ok(self.kv_pairs.lock().unwrap().get(&key).cloned())
     }
