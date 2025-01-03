@@ -185,23 +185,48 @@ async fn open_partition_store(
     options: &WorkerOptions,
     key_range: RangeInclusive<PartitionKey>,
 ) -> anyhow::Result<PartitionStore> {
-    if partition_store_manager
+    let partition_store_exists = partition_store_manager
         .has_partition_store(partition_id)
-        .await
-        && fast_forward_lsn.is_none()
-    {
+        .await;
+
+    if partition_store_exists && fast_forward_lsn.is_none() {
         // We have an initialized partition store, and no fast-forward target - go on and open it.
-        return Ok(partition_store_manager
+        Ok(partition_store_manager
             .open_partition_store(
                 partition_id,
                 key_range,
                 OpenMode::OpenExisting,
                 &options.storage.rocksdb,
             )
-            .await?);
+            .await?)
+    } else {
+        // We either don't have an existing local partition store initialized - or we have a
+        // fast-forward LSN target for the local state (probably due to seeing a log trim-gap).
+        Ok(create_or_recreate_store(
+            partition_id,
+            partition_store_manager,
+            snapshot_repository,
+            fast_forward_lsn,
+            &options,
+            key_range,
+        )
+        .await?)
     }
+}
 
-    // We don't have a local partition store initialized - or we have a fast-forward LSN target set.
+/// (Re-)creates a fresh partition store based on the available snapshot and an optional
+/// fast-forward LSN. Assumes that the partition store does not yet exist, unless a fast-forward
+/// LSN is set. If a fast-forward LSN is set, but there is no snapshot repository, this will always
+/// fail. An existing store will be dropped only if a snapshot is found in the repository with an
+/// LSN greater than the fast-forward target.
+async fn create_or_recreate_store(
+    partition_id: PartitionId,
+    partition_store_manager: PartitionStoreManager,
+    snapshot_repository: Option<SnapshotRepository>,
+    fast_forward_lsn: Option<Lsn>,
+    options: &&WorkerOptions,
+    key_range: RangeInclusive<PartitionKey>,
+) -> anyhow::Result<PartitionStore> {
     // Attempt to get the latest available snapshot from the snapshot repository:
     let snapshot = match snapshot_repository {
         Some(repository) => {
@@ -215,30 +240,30 @@ async fn open_partition_store(
         }
     };
 
-    match (snapshot, fast_forward_lsn) {
+    Ok(match (snapshot, fast_forward_lsn) {
         (None, None) => {
             info!("No snapshot found to bootstrap partition, creating new store");
-            Ok(partition_store_manager
+            partition_store_manager
                 .open_partition_store(
                     partition_id,
                     key_range,
                     OpenMode::CreateIfMissing,
                     &options.storage.rocksdb,
                 )
-                .await?)
+                .await?
         }
         (Some(snapshot), None) => {
             // We only reach this point if there is no initialized store for the partition (early
             // return at start of method), we can import without first dropping the column family.
             info!(partition_id = %partition_id, "Found partition snapshot, restoring it");
-            Ok(import_snapshot(
+            import_snapshot(
                 partition_id,
                 key_range,
                 snapshot,
                 partition_store_manager,
                 options,
             )
-            .await?)
+            .await?
         }
         (Some(snapshot), Some(fast_forward_lsn))
             if snapshot.min_applied_lsn >= fast_forward_lsn =>
@@ -250,14 +275,14 @@ async fn open_partition_store(
                 "Found snapshot with LSN >= target LSN, dropping local partition store state",
             );
             partition_store_manager.drop_partition(partition_id).await;
-            Ok(import_snapshot(
+            import_snapshot(
                 partition_id,
                 key_range,
                 snapshot,
                 partition_store_manager,
                 options,
             )
-            .await?)
+            .await?
         }
         (maybe_snapshot, Some(fast_forward_lsn)) => {
             // Play it safe and keep the partition store intact; we can't do much else at this
@@ -282,16 +307,16 @@ async fn open_partition_store(
             ))
             .await;
 
-            Ok(partition_store_manager
+            partition_store_manager
                 .open_partition_store(
                     partition_id,
                     key_range,
                     OpenMode::OpenExisting,
                     &options.storage.rocksdb,
                 )
-                .await?)
+                .await?
         }
-    }
+    })
 }
 
 async fn import_snapshot(
