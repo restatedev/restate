@@ -18,6 +18,7 @@ use crate::network::{
 use crate::raft::store::BuildError;
 use crate::{network, MetadataStoreRunner};
 use anyhow::Context;
+use arc_swap::ArcSwapOption;
 use bytes::{Buf, BufMut};
 use protobuf::Message as ProtobufMessage;
 use restate_core::network::NetworkServerBuilder;
@@ -25,6 +26,7 @@ use restate_types::config::{RaftOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
+use std::sync::Arc;
 pub use store::RaftMetadataStore;
 use tokio::sync::mpsc;
 
@@ -45,7 +47,9 @@ pub async fn create_store(
     .await?;
 
     server_builder.register_grpc_service(
-        MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(connection_manager)),
+        MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(Arc::new(
+            ArcSwapOption::from_pointee(connection_manager),
+        ))),
         network::FILE_DESCRIPTOR_SET,
     );
 

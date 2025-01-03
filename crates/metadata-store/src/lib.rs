@@ -85,7 +85,10 @@ impl PreconditionViolation {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum ProvisionError {}
+pub enum ProvisionError {
+    #[error("failed provisioning: {0}")]
+    Internal(GenericError),
+}
 
 #[async_trait::async_trait]
 pub trait MetadataStoreServiceBoxed {
@@ -230,15 +233,12 @@ pub async fn create_metadata_store(
                 .map_err(anyhow::Error::from)
                 .map(|store| store.boxed())
         }
-        MetadataStoreKind::Omnipaxos(ref omnipaxos_options) => omnipaxos::create_store(
-            omnipaxos_options,
-            rocksdb_options,
-            health_status,
-            server_builder,
-        )
-        .await
-        .map_err(anyhow::Error::from)
-        .map(|store| store.boxed()),
+        MetadataStoreKind::Omnipaxos => {
+            omnipaxos::create_store(rocksdb_options, health_status, server_builder)
+                .await
+                .map_err(anyhow::Error::from)
+                .map(|store| store.boxed())
+        }
     }
 }
 impl MetadataStoreRequest {

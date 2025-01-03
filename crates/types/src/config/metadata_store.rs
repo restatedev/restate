@@ -74,7 +74,7 @@ pub enum MetadataStoreKind {
     #[default]
     Local,
     Raft(RaftOptions),
-    Omnipaxos(OmniPaxosOptions),
+    Omnipaxos,
 }
 
 impl MetadataStoreOptions {
@@ -136,17 +136,6 @@ impl Default for MetadataStoreOptions {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct RaftOptions {
-    pub id: NonZeroU64,
-    #[cfg_attr(feature = "schemars", schemars(with = "Vec<(u64, String)>"))]
-    #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    pub peers: HashMap<NonZeroU64, AdvertisedAddress>,
-}
-
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct OmniPaxosOptions {
     pub id: NonZeroU64,
     #[cfg_attr(feature = "schemars", schemars(with = "Vec<(u64, String)>"))]
     #[serde_as(as = "serde_with::Seq<(_, _)>")]

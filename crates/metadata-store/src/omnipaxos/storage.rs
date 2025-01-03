@@ -25,7 +25,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::sync::Arc;
 
-use crate::omnipaxos::BuildError;
+use crate::omnipaxos::{BuildError, OmniPaxosConfiguration};
 use crate::util;
 
 const DB_NAME: &str = "omni-paxos-metadata-store";
@@ -37,6 +37,7 @@ const DECIDE: &[u8] = b"DECIDE";
 const TRIM: &[u8] = b"TRIM";
 const STOPSIGN: &[u8] = b"STOPSIGN";
 const SNAPSHOT: &[u8] = b"SNAPSHOT";
+const CONFIGURATION: &[u8] = b"CONFIG";
 
 #[derive(Debug, thiserror::Error)]
 #[error("missing bytes")]
@@ -114,7 +115,7 @@ where
                     .expect("Couldn't recover storage: Reading compacted_idx failed.")
                 {
                     Some(bytes) => usize::from_be_bytes(bytes.try_into().expect(
-                        "Couldn't recover storage: Commpacted index has unexpected format.",
+                        "Couldn't recover storage: Compacted index has unexpected format.",
                     )),
                     None => 0,
                 }
@@ -160,7 +161,7 @@ where
             .expect("OMNI_PAXOS_CF exists")
     }
 
-    fn batch_append_entry(&mut self, entry: T) -> StorageResult<()> {
+    pub fn batch_append_entry(&mut self, entry: T) -> StorageResult<()> {
         let mut write_batch = mem::take(&mut self.write_batch);
         let serialized_entry = self.serialize_entry(&entry)?;
 
@@ -175,7 +176,7 @@ where
         Ok(())
     }
 
-    fn batch_append_entries(&mut self, entries: Vec<T>) -> StorageResult<()> {
+    pub fn batch_append_entries(&mut self, entries: Vec<T>) -> StorageResult<()> {
         let mut write_batch = mem::take(&mut self.write_batch);
 
         for entry in entries {
@@ -253,6 +254,33 @@ where
         self.write_batch.put(SNAPSHOT, s);
         Ok(())
     }
+
+    pub fn batch_set_configuration(
+        &mut self,
+        omni_paxos_configuration: &OmniPaxosConfiguration,
+    ) -> StorageResult<()> {
+        let omni_paxos_configuration = Self::serialize_omni_paxos_entity(omni_paxos_configuration)?;
+        self.write_batch
+            .put(CONFIGURATION, omni_paxos_configuration);
+        Ok(())
+    }
+
+    pub fn get_configuration(&self) -> StorageResult<Option<OmniPaxosConfiguration>> {
+        let configuration = self.db.get_pinned(CONFIGURATION)?;
+        if let Some(configuration_bytes) = configuration {
+            Ok(Self::deserialize_omni_paxos_entity(
+                configuration_bytes.as_ref(),
+            )?)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn commit_batch(&mut self) -> StorageResult<()> {
+        self.db
+            .write_batch(&mem::take(&mut self.write_batch), &self.write_options())?;
+        Ok(())
+    }
 }
 
 impl<T> Storage<T> for RocksDbStorage<T>
@@ -276,9 +304,7 @@ where
                 StorageOp::SetSnapshot(snap) => self.batch_set_snapshot(snap)?,
             }
         }
-        Ok(self
-            .db
-            .write_batch(&mem::take(&mut self.write_batch), &self.write_options())?)
+        self.commit_batch()
     }
 
     fn append_entry(&mut self, entry: T) -> StorageResult<()> {
