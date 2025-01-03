@@ -145,9 +145,9 @@ pub enum DiscoveryError {
     Decode(#[source] serde_json::Error, Bytes),
 
     // Network related retryable errors
-    #[error("bad status code: {0}")]
-    BadStatusCode(u16),
-    #[error("client error: {0}")]
+    #[error("bad status code '{}'. Response headers: {:?}", .0.status, .0.headers)]
+    BadStatusCode(http::response::Parts),
+    #[error(transparent)]
     Client(#[from] ServiceClientError),
     #[error("cannot read body: {0}")]
     BodyError(GenericError),
@@ -180,8 +180,8 @@ impl DiscoveryError {
     /// retrying can succeed.
     pub fn is_retryable(&self) -> bool {
         match self {
-            DiscoveryError::BadStatusCode(status) => matches!(
-                StatusCode::from_u16(*status).expect("should be valid status code"),
+            DiscoveryError::BadStatusCode(parts) => matches!(
+                parts.status,
                 StatusCode::REQUEST_TIMEOUT
                     | StatusCode::TOO_MANY_REQUESTS
                     | StatusCode::INTERNAL_SERVER_ERROR
@@ -410,7 +410,7 @@ impl ServiceDiscovery {
                     .into_parts();
 
                 if !parts.status.is_success() {
-                    return Err(DiscoveryError::BadStatusCode(parts.status.as_u16()));
+                    return Err(DiscoveryError::BadStatusCode(parts));
                 }
 
                 Ok((

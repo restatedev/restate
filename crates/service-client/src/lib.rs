@@ -152,9 +152,9 @@ impl ServiceClient {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceClientError {
-    #[error(transparent)]
+    #[error("HTTP client error: {0}")]
     Http(#[from] http::HttpError),
-    #[error(transparent)]
+    #[error("Lambda client error: {0}")]
     Lambda(#[from] lambda::LambdaError),
     #[error(transparent)]
     IdentityV1(#[from] <request_identity::v1::Signer<'static, 'static> as SignRequest>::Error),
