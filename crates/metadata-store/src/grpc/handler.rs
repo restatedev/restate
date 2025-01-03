@@ -184,6 +184,8 @@ impl From<RequestError> for Status {
 
 impl From<ProvisionError> for Status {
     fn from(err: ProvisionError) -> Self {
-        match err {}
+        match err {
+            ProvisionError::Internal(err) => Status::internal(err.to_string()),
+        }
     }
 }
