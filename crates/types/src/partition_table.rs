@@ -8,19 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
+use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::num::{NonZero, NonZeroU32};
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
 use anyhow::Context;
+use fasthash::{murmur, FastHasher};
 use regex::Regex;
+use serde_with::{serde_as, FromInto};
 
 use crate::identifiers::{PartitionId, PartitionKey};
-use crate::protobuf::cluster::ReplicationStrategy as ProtoReplicationStrategy;
-use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
+use crate::nodes_config::{NodesConfiguration, Role};
+use crate::protobuf::cluster_configuration::ReplicationStrategy as ProtoReplicationStrategy;
+use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
 
 static REPLICATION_STRATEGY_FACTOR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?i)factor\(\s*(?<factor>\d+)\s*\)$").expect("is valid pattern")
@@ -53,6 +58,7 @@ impl From<KeyRange> for RangeInclusive<PartitionKey> {
 #[serde(try_from = "PartitionTableShadow", into = "PartitionTableShadow")]
 pub struct PartitionTable {
     version: Version,
+    nodes_version: Version,
     partitions: BTreeMap<PartitionId, Partition>,
     // Interval-map like structure which maps the inclusive end partition key of a partition to its
     // [`PartitionId`]. To validate that a partition key falls into a partition one also needs to
@@ -67,6 +73,7 @@ impl Default for PartitionTable {
     fn default() -> Self {
         Self {
             version: Version::INVALID,
+            nodes_version: Version::INVALID,
             partitions: BTreeMap::default(),
             partition_key_index: BTreeMap::default(),
             replication_strategy: ReplicationStrategy::default(),
@@ -166,14 +173,34 @@ impl FindPartition for PartitionTable {
     }
 }
 
+#[serde_as]
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    derive_more::Deref,
+    derive_more::DerefMut,
+    derive_more::From,
+)]
+pub struct ReplicaGroup(#[serde_as(as = "HashSet<FromInto<u32>>")] HashSet<PlainNodeId>);
+
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Partition {
     pub key_range: RangeInclusive<PartitionKey>,
+    #[serde(default)]
+    pub replica_group: ReplicaGroup,
 }
 
 impl Partition {
     pub fn new(key_range: RangeInclusive<PartitionKey>) -> Self {
-        Self { key_range }
+        Self {
+            key_range,
+            replica_group: ReplicaGroup::default(),
+        }
     }
 }
 
@@ -282,6 +309,63 @@ impl PartitionTableBuilder {
         }
     }
 
+    pub fn set_partitions_placements(&mut self, nodes_config: &NodesConfiguration) {
+        // sanity check: if the nodes config version is older than the partition table nodes_version,
+        if nodes_config.version() <= self.inner.nodes_version {
+            return;
+        }
+
+        let workers: Vec<PlainNodeId> = nodes_config
+            .iter()
+            .filter_map(|(node_id, node_config)| {
+                node_config.has_role(Role::Worker).then_some(node_id)
+            })
+            .collect();
+
+        if workers.is_empty() {
+            return;
+        }
+
+        // Note:
+        // The replication strategy does not influence how partitions are assigned to worker nodes.
+        // It's the worker that determines whether it should start processing a partition based on the replication strategy.
+        // The first active node in the worker set will act as the leader for the partition, while all other nodes
+        // will assume the role of followers according to the strategy.
+
+        // Note: We use the murmur hash function to deterministically assign partitions to workers.
+        // the murmur(md5(start_key:node_id)) shows the most stable distribution of partitions across workers.
+        // and avoids the need to shuffle partitions when the number of workers changes.
+
+        for (_, partition) in self.inner.partitions_mut() {
+            let mut nodes = vec![];
+            for node in workers.iter() {
+                let mut md5_ctx = md5::Context::new();
+                write!(
+                    &mut md5_ctx,
+                    "{}:{}",
+                    partition.key_range.start(),
+                    u32::from(*node)
+                )
+                .unwrap();
+
+                let mut state = murmur::Hasher32::new();
+                md5_ctx.compute().hash(&mut state);
+                let hash = state.finish();
+                nodes.push((*node, hash));
+            }
+
+            // sort the nodes in a descending order based on the hash value
+            nodes.sort_by(|a, b| b.1.cmp(&a.1));
+
+            let replica_group = ReplicaGroup(nodes.into_iter().map(|n| n.0).collect());
+
+            if replica_group != partition.replica_group {
+                self.modified = true;
+                partition.replica_group = replica_group;
+            }
+        }
+    }
+
     /// Builds the new [`PartitionTable`] with an incremented version.
     pub fn build(mut self) -> PartitionTable {
         self.inner.version = Version::MIN.max(self.inner.version.next());
@@ -295,6 +379,7 @@ impl PartitionTableBuilder {
 
         None
     }
+
     /// Builds the new [`PartitionTable`] with the same version.
     fn build_with_same_version(self) -> PartitionTable {
         self.inner
@@ -316,6 +401,7 @@ impl From<PartitionTable> for PartitionTableBuilder {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PartitionTableShadow {
     version: Version,
+    nodes_version: Option<Version>,
     // only needed for deserializing the FixedPartitionTable created in v1 of Restate. Can be
     // removed once we no longer support reading FixedPartitionTable data.
     num_partitions: u16,
@@ -331,6 +417,7 @@ impl From<PartitionTable> for PartitionTableShadow {
         let num_partitions = value.num_partitions();
         Self {
             version: value.version,
+            nodes_version: Some(value.nodes_version),
             num_partitions,
             partitions: Some(value.partitions),
             replication_strategy: Some(value.replication_strategy),
@@ -356,6 +443,7 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
                 builder.with_equally_sized_partitions(value.num_partitions)?;
             }
         }
+        builder.inner.nodes_version = value.nodes_version.unwrap_or(Version::INVALID);
 
         Ok(builder.build_with_same_version())
     }
@@ -440,7 +528,7 @@ impl TryFrom<ProtoReplicationStrategy> for ReplicationStrategy {
     type Error = anyhow::Error;
 
     fn try_from(value: ProtoReplicationStrategy) -> Result<Self, Self::Error> {
-        use crate::protobuf::cluster::ReplicationStrategyKind;
+        use crate::protobuf::cluster_configuration::ReplicationStrategyKind;
 
         if value.kind == i32::from(ReplicationStrategyKind::OnAllNodes) {
             Ok(Self::OnAllNodes)
@@ -495,7 +583,7 @@ impl FromStr for ReplicationStrategy {
 
 impl From<ReplicationStrategy> for ProtoReplicationStrategy {
     fn from(value: ReplicationStrategy) -> Self {
-        use crate::protobuf::cluster::ReplicationStrategyKind;
+        use crate::protobuf::cluster_configuration::ReplicationStrategyKind;
 
         let mut result = Self::default();
         match value {

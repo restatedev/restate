@@ -24,8 +24,9 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::Tense;
 use restate_types::logs::metadata::{Chain, Logs};
 use restate_types::logs::{LogId, Lsn};
-use restate_types::protobuf::cluster::{
-    node_state, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode, SuspectNode,
+use restate_types::protobuf::deprecated_cluster::{node_state, DeadNode, SuspectNode};
+use restate_types::protobuf::partition_processor::{
+    PartitionProcessorStatus, ReplayStatus, RunMode,
 };
 use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod cluster_state;
 mod error;
 mod metadata;
 pub mod metadata_store;

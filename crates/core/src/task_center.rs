@@ -43,6 +43,7 @@ use tracing::{debug, error, info, trace, warn};
 use restate_types::identifiers::PartitionId;
 use restate_types::GenerationalNodeId;
 
+use crate::cluster_state::ClusterState;
 use crate::metric_definitions::{
     self, TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED,
 };
@@ -277,6 +278,7 @@ struct TaskCenterInner {
     current_exit_code: AtomicI32,
     managed_tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
     global_metadata: OnceLock<Metadata>,
+    global_cluster_state: OnceLock<ClusterState>,
     root_task_context: TaskContext,
 }
 
@@ -310,6 +312,7 @@ impl TaskCenterInner {
             current_exit_code: AtomicI32::new(0),
             managed_tasks: Mutex::new(HashMap::new()),
             global_metadata: OnceLock::new(),
+            global_cluster_state: OnceLock::new(),
             managed_runtimes: Mutex::new(HashMap::with_capacity(64)),
             root_task_context,
             pause_time,
@@ -322,8 +325,18 @@ impl TaskCenterInner {
         self.global_metadata.set(metadata).is_ok()
     }
 
+    /// Attempt to set the global cluster state handle. This should be called once
+    /// at the startup of the node.
+    pub fn try_set_global_cluster_state(self: &Arc<Self>, cluster_state: ClusterState) -> bool {
+        self.global_cluster_state.set(cluster_state).is_ok()
+    }
+
     pub fn global_metadata(self: &Arc<Self>) -> Option<&Metadata> {
         self.global_metadata.get()
+    }
+
+    pub fn cluster_state(self: &Arc<Self>) -> Option<&ClusterState> {
+        self.global_cluster_state.get()
     }
 
     pub fn metadata(self: &Arc<Self>) -> Option<Metadata> {

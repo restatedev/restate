@@ -19,11 +19,11 @@ use ulid::Ulid;
 use restate_core::network::Incoming;
 use restate_core::{TaskCenter, TaskKind};
 use restate_invoker_impl::ChannelStatusReader;
-use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcRequest,
 };
+use restate_types::partition_processor::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::time::MillisSinceEpoch;
 
 use crate::partition::PartitionProcessorControlCommand;

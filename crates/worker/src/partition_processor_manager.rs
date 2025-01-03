@@ -44,8 +44,6 @@ use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::snapshots::PartitionSnapshotMetadata;
 use restate_partition_store::PartitionStoreManager;
-use restate_types::cluster::cluster_state::ReplayStatus;
-use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
@@ -60,6 +58,7 @@ use restate_types::net::partition_processor::{
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
+use restate_types::partition_processor::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::GenerationalNodeId;
