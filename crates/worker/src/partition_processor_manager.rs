@@ -73,6 +73,7 @@ use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
+use crate::partition::ProcessorError;
 use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
 use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
 use crate::partition_processor_manager::processor_state::{
@@ -104,6 +105,7 @@ pub struct PartitionProcessorManager {
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
     snapshot_repository: Option<SnapshotRepository>,
+    fast_forward_on_startup: HashMap<PartitionId, Lsn>,
 }
 
 struct PendingSnapshotTask {
@@ -201,6 +203,7 @@ impl PartitionProcessorManager {
             snapshot_export_tasks: FuturesUnordered::default(),
             pending_snapshots: HashMap::default(),
             snapshot_repository,
+            fast_forward_on_startup: HashMap::default(),
         }
     }
 
@@ -345,8 +348,11 @@ impl PartitionProcessorManager {
         }
     }
 
-    #[instrument(level = "debug", skip_all, fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner)
-    ))]
+    #[instrument(
+        level = "debug",
+        skip_all,
+        fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner))
+    )]
     fn on_asynchronous_event(&mut self, event: AsynchronousEvent) {
         let AsynchronousEvent {
             partition_id,
@@ -425,7 +431,29 @@ impl PartitionProcessorManager {
                         ProcessorState::Started { processor, .. } => {
                             self.invokers_status_reader
                                 .remove(processor.as_ref().expect("must be some").key_range());
-                            warn!(%partition_id, "Partition processor exited unexpectedly: {result:?}");
+
+                            match result {
+                                Err(ProcessorError::TrimGapEncountered { gap_to_lsn: to_lsn }) => {
+                                    if self.snapshot_repository.is_some() {
+                                        info!(
+                                            trim_gap_to_lsn = ?to_lsn,
+                                            "Partition processor stopped due to a log trim gap, will attempt to fast-forward on restart",
+                                        );
+                                        self.fast_forward_on_startup.insert(partition_id, to_lsn);
+                                    } else {
+                                        warn!(
+                                            trim_gap_to_lsn = ?to_lsn,
+                                            "Partition processor stopped due to a log trim gap, and no snapshot repository is configured",
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    warn!("Partition processor exited unexpectedly: {err}")
+                                }
+                                Ok(_) => {
+                                    info!("Partition processor stopped.")
+                                }
+                            }
                         }
                         ProcessorState::Stopping {
                             processor,
@@ -487,7 +515,7 @@ impl PartitionProcessorManager {
     fn await_runtime_task_result(
         &mut self,
         partition_id: PartitionId,
-        runtime_task_handle: RuntimeTaskHandle<anyhow::Result<()>>,
+        runtime_task_handle: RuntimeTaskHandle<Result<(), ProcessorError>>,
     ) {
         self.asynchronous_operations.spawn(
             async move {
@@ -716,10 +744,7 @@ impl PartitionProcessorManager {
         self.spawn_create_snapshot_task(partition_id, snapshot_repository, Some(sender));
     }
 
-    fn on_create_snapshot_task_completed(
-        &mut self,
-        result: Result<PartitionSnapshotMetadata, SnapshotError>,
-    ) {
+    fn on_create_snapshot_task_completed(&mut self, result: SnapshotResultInternal) {
         let (partition_id, response) = match result {
             Ok(metadata) => {
                 self.archived_lsns
@@ -876,6 +901,7 @@ impl PartitionProcessorManager {
             self.bifrost.clone(),
             self.partition_store_manager.clone(),
             self.snapshot_repository.clone(),
+            self.fast_forward_on_startup.remove(&partition_id),
         )
     }
 
@@ -921,8 +947,13 @@ struct AsynchronousEvent {
 
 #[derive(strum::IntoStaticStr)]
 enum EventKind {
-    Started(anyhow::Result<(StartedProcessor, RuntimeTaskHandle<anyhow::Result<()>>)>),
-    Stopped(anyhow::Result<()>),
+    Started(
+        anyhow::Result<(
+            StartedProcessor,
+            RuntimeTaskHandle<Result<(), ProcessorError>>,
+        )>,
+    ),
+    Stopped(Result<(), ProcessorError>),
     NewLeaderEpoch {
         leader_epoch_token: LeaderEpochToken,
         result: anyhow::Result<LeaderEpoch>,

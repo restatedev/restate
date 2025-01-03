@@ -24,7 +24,7 @@ use tracing::{debug, error, info, instrument, trace, warn, Span};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{HasConnection, Incoming, Outgoing};
-use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
+use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -60,6 +60,7 @@ use restate_types::net::partition_processor::{
     InvocationOutput, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
+use restate_types::storage::StorageDecodeError;
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
@@ -252,20 +253,44 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
     partition_store: PartitionStore,
 }
 
+#[derive(Debug, derive_more::Display, thiserror::Error)]
+pub enum ProcessorError {
+    TrimGapEncountered { gap_to_lsn: Lsn },
+    Storage(#[from] StorageError),
+    Decode(#[from] StorageDecodeError),
+    Bifrost(#[from] restate_bifrost::Error),
+    StateMachine(#[from] state_machine::Error),
+    ActionEffect(#[from] leadership::Error),
+    ShutdownError(#[from] ShutdownError),
+    LogReadStreamTerminated,
+    Other(#[from] anyhow::Error),
+}
+
+type LsnEnvelope = (Lsn, Arc<Envelope>);
+
 impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
 where
     Codec: RawEntryCodec + Default + Debug,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
-    #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    #[instrument(
+        level = "error", skip_all,
+        fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty)
+    )]
+    pub async fn run(mut self) -> Result<(), ProcessorError> {
         info!("Starting the partition processor.");
 
         let res = tokio::select! {
             res = self.run_inner() => {
                 match res.as_ref() {
+                    // run_inner never returns normally
                     Ok(_) => warn!("Shutting partition processor down because it stopped unexpectedly."),
-                    Err(err) => warn!("Shutting partition processor down because it failed: {err}"),
+                    Err(ProcessorError::TrimGapEncountered { gap_to_lsn }) =>
+                        info!(
+                            trim_gap_to_lsn = ?gap_to_lsn,
+                            "Shutting partition processor down because it encountered a trim gap in the log."
+                        ),
+                    Err(err) => warn!("Shutting partition processor down because of error: {err}"),
                 }
                 res
             },
@@ -293,7 +318,7 @@ where
         res
     }
 
-    async fn run_inner(&mut self) -> anyhow::Result<()> {
+    async fn run_inner(&mut self) -> Result<(), ProcessorError> {
         let mut partition_store = self.partition_store.clone();
         let last_applied_lsn = partition_store.get_applied_lsn().await?;
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
@@ -344,7 +369,7 @@ where
 
         // Start reading after the last applied lsn
         let key_query = KeyFilter::Within(self.partition_key_range.clone());
-        let mut log_reader = self
+        let mut record_stream = self
             .bifrost
             .create_reader(
                 LogId::from(self.partition_id),
@@ -352,24 +377,32 @@ where
                 last_applied_lsn.next(),
                 Lsn::MAX,
             )?
-            .map_ok(|entry| {
-                trace!(?entry, "Read entry");
-                let lsn = entry.sequence_number();
-                let Some(envelope) = entry.try_decode_arc::<Envelope>() else {
-                    // trim-gap
-                    unimplemented!("Handling trim gap is currently not supported")
-                };
-                anyhow::Ok((lsn, envelope?))
+            .map(|entry| match entry {
+                Ok(entry) => {
+                    trace!(?entry, "Read entry");
+                    let lsn = entry.sequence_number();
+                    if entry.is_data_record() {
+                        entry
+                            .try_decode_arc::<Envelope>()
+                            .map(|envelope| Ok((lsn, envelope?)))
+                            .expect("data record is present")
+                    } else {
+                        Err(ProcessorError::TrimGapEncountered {
+                            gap_to_lsn: entry
+                                .trim_gap_to_sequence_number()
+                                .expect("trim gap has to-LSN"),
+                        })
+                    }
+                }
+                Err(err) => Err(ProcessorError::from(err)),
             })
-            .try_take_while(|entry| {
+            .try_take_while(|(_, envelope)| {
                 // a catch-all safety net if all lower layers didn't filter this record out. This
                 // could happen for old records that didn't store `Keys` in the log store.
                 //
                 // At some point, we should remove this and trust that stored records have Keys
                 // stored correctly.
-                std::future::ready(Ok(entry
-                    .as_ref()
-                    .is_ok_and(|(_, envelope)| envelope.matches_key_query(&key_query))))
+                std::future::ready(Ok(envelope.matches_key_query(&key_query)))
             });
 
         // avoid synchronized timers. We pick a randomised timer between 500 and 1023 millis.
@@ -406,7 +439,7 @@ where
                         old.updated_at = MillisSinceEpoch::now();
                     });
                 }
-                operation = Self::read_commands(&mut log_reader, self.max_command_batch_size, &mut command_buffer) => {
+                operation = Self::read_commands(&mut record_stream, self.max_command_batch_size, &mut command_buffer) => {
                     // check that reading has succeeded
                     operation?;
 
@@ -813,36 +846,32 @@ where
     }
 
     /// Tries to read as many records from the `log_reader` as are immediately available and stops
-    /// reading at `max_batching_size`.
+    /// reading at `max_batching_size`. Trim gaps will result in an immediate error.
     async fn read_commands<S>(
         log_reader: &mut S,
         max_batching_size: usize,
-        record_buffer: &mut Vec<(Lsn, Arc<Envelope>)>,
-    ) -> anyhow::Result<()>
+        record_buffer: &mut Vec<LsnEnvelope>,
+    ) -> Result<(), ProcessorError>
     where
-        S: Stream<Item = Result<anyhow::Result<(Lsn, Arc<Envelope>)>, restate_bifrost::Error>>
-            + Unpin,
+        S: Stream<Item = Result<LsnEnvelope, ProcessorError>> + Unpin,
     {
         // beyond this point we must not await; otherwise we are no longer cancellation safe
         let first_record = log_reader.next().await;
 
         let Some(first_record) = first_record else {
-            // read stream terminated!
-            anyhow::bail!("Read stream terminated for partition processor");
+            return Err(ProcessorError::LogReadStreamTerminated);
         };
 
         record_buffer.clear();
-        record_buffer.push(first_record??);
+        record_buffer.push(first_record?);
 
         while record_buffer.len() < max_batching_size {
             // read more message from the stream but only if they are immediately available
             if let Some(record) = log_reader.next().now_or_never() {
                 let Some(record) = record else {
-                    // read stream terminated!
-                    anyhow::bail!("Read stream terminated for partition processor");
+                    return Err(ProcessorError::LogReadStreamTerminated);
                 };
-
-                record_buffer.push(record??);
+                record_buffer.push(record?);
             } else {
                 // no more immediately available records found
                 break;
