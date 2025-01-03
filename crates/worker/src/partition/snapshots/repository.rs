@@ -229,7 +229,7 @@ impl SnapshotRepository {
             local_snapshot_path, snapshot_prefix
         );
 
-        let mut progress = SnapshotUploadProgress::with_snapshot_path(snapshot_prefix.clone());
+        let mut progress = SnapshotUploadProgress::with_snapshot_path(snapshot_prefix);
         let mut buf = BytesMut::new();
         for file in &snapshot.files {
             let filename = file.name.trim_start_matches("/");
@@ -398,7 +398,7 @@ impl SnapshotRepository {
         )?;
         debug!(
             snapshot_id = %snapshot_metadata.snapshot_id,
-            path = ?snapshot_dir.path(),
+            path = %snapshot_dir.path().display(),
             "Getting snapshot data files",
         );
 
@@ -476,7 +476,7 @@ impl SnapshotRepository {
 
         info!(
             snapshot_id = %snapshot_metadata.snapshot_id,
-            path = ?snapshot_dir.path(),
+            path = %snapshot_dir.path().display(),
             "Downloaded partition snapshot",
         );
         Ok(Some(LocalPartitionSnapshot {
@@ -879,7 +879,9 @@ mod tests {
                 .as_str(),
         );
 
-        let data = object_store.get(&snapshot_1_prefix.child("data.sst")).await?;
+        let data = object_store
+            .get(&snapshot_1_prefix.child("data.sst"))
+            .await?;
         assert_eq!(data.bytes().await?, Bytes::from_static(b"snapshot-data"));
 
         let metadata = object_store
