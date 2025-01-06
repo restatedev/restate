@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
 use clap::Parser;
 use cling::{Collect, Run};
 use tonic::{codec::CompressionEncoding, Code};
@@ -27,14 +26,7 @@ use crate::{
 pub struct ConfigGetOpts {}
 
 async fn config_get(connection: &ConnectionInfo, _get_opts: &ConfigGetOpts) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "cannot connect to cluster controller at {}",
-                connection.cluster_controller
-            )
-        })?;
+    let channel = grpc_connect(connection.cluster_controller.clone());
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 

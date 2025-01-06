@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 
@@ -35,14 +34,7 @@ pub struct InfoOpts {
 }
 
 async fn get_info(connection: &ConnectionInfo, opts: &InfoOpts) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "cannot connect to node at {}",
-                connection.cluster_controller
-            )
-        })?;
+    let channel = grpc_connect(connection.cluster_controller.clone());
     let mut client = NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
     let req = GetMetadataRequest {

@@ -26,7 +26,7 @@ static GLOBAL_CLI_CONTEXT: OnceLock<ArcSwap<CliContext>> = OnceLock::new();
 pub struct CliContext {
     confirm_mode: ConfirmMode,
     ui: UiOpts,
-    network: NetworkOpts,
+    pub network: NetworkOpts,
     colors_enabled: bool,
     loaded_dotenv: Option<PathBuf>,
 }

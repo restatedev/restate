@@ -10,7 +10,6 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::Context;
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 
@@ -34,14 +33,7 @@ use crate::util::grpc_connect;
 pub struct ListLogsOpts {}
 
 pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "cannot connect to cluster controller at {}",
-                connection.cluster_controller
-            )
-        })?;
+    let channel = grpc_connect(connection.cluster_controller.clone());
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 

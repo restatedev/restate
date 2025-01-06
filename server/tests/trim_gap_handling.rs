@@ -14,19 +14,18 @@ use std::time::Duration;
 use enumset::enum_set;
 use futures_util::StreamExt;
 use googletest::fail;
-use hyper_util::rt::TokioIo;
 use tempfile::TempDir;
-use tokio::io;
-use tokio::net::UnixStream;
 use tonic::codec::CompressionEncoding;
-use tonic::transport::{Channel, Endpoint, Uri};
-use tower::service_fn;
+use tonic::transport::Channel;
 use tracing::{error, info};
 use url::Url;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{
     ClusterStateRequest, CreatePartitionSnapshotRequest, DescribeLogRequest, TrimLogRequest,
+};
+use restate_core::network::net_util::{
+    create_tonic_channel_from_advertised_address, CommonClientConnectionOptions,
 };
 use restate_local_cluster_runner::{
     cluster::Cluster,
@@ -36,7 +35,6 @@ use restate_types::config::{LogFormat, MetadataStoreClient};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
 use restate_types::logs::{LogId, Lsn};
-use restate_types::net::AdvertisedAddress;
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::protobuf::cluster::RunMode;
 use restate_types::retries::RetryPolicy;
@@ -86,9 +84,11 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     tokio::time::timeout(Duration::from_secs(10), worker_1_ready.next()).await?;
     tokio::time::timeout(Duration::from_secs(10), worker_2_ready.next()).await?;
 
-    let mut client =
-        ClusterCtrlSvcClient::new(grpc_connect(cluster.nodes[0].node_address().clone()).await?)
-            .accept_compressed(CompressionEncoding::Gzip);
+    let mut client = ClusterCtrlSvcClient::new(create_tonic_channel_from_advertised_address(
+        cluster.nodes[0].node_address().clone(),
+        &TestNetworkOptions::default(),
+    ))
+    .accept_compressed(CompressionEncoding::Gzip);
 
     tokio::time::timeout(Duration::from_secs(5), any_partition_active(&mut client)).await??;
 
@@ -320,26 +320,34 @@ async fn applied_lsn_converged(
     Ok(())
 }
 
-async fn grpc_connect(address: AdvertisedAddress) -> Result<Channel, tonic::transport::Error> {
-    match address {
-        AdvertisedAddress::Uds(uds_path) => {
-            // dummy endpoint required to specify an uds connector, it is not used anywhere
-            Endpoint::try_from("http://127.0.0.1")
-                .expect("/ should be a valid Uri")
-                .connect_with_connector(service_fn(move |_: Uri| {
-                    let uds_path = uds_path.clone();
-                    async move {
-                        Ok::<_, io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
-                    }
-                })).await
+struct TestNetworkOptions {
+    connect_timeout: u64,
+    request_timeout: u64,
+}
+
+impl Default for TestNetworkOptions {
+    fn default() -> Self {
+        Self {
+            connect_timeout: 1000,
+            request_timeout: 5000,
         }
-        AdvertisedAddress::Http(uri) => {
-            Channel::builder(uri)
-                .connect_timeout(Duration::from_secs(2))
-                .timeout(Duration::from_secs(2))
-                .http2_adaptive_window(true)
-                .connect()
-                .await
-        }
+    }
+}
+
+impl CommonClientConnectionOptions for TestNetworkOptions {
+    fn connect_timeout(&self) -> Duration {
+        Duration::from_millis(self.connect_timeout)
+    }
+
+    fn keep_alive_interval(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+
+    fn keep_alive_timeout(&self) -> Duration {
+        Duration::from_millis(self.request_timeout)
+    }
+
+    fn http2_adaptive_window(&self) -> bool {
+        true
     }
 }

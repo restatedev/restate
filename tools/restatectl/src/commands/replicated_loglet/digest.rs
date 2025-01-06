@@ -53,14 +53,7 @@ pub struct DigestOpts {
 }
 
 async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "cannot connect to node at {}",
-                connection.cluster_controller
-            )
-        })?;
+    let channel = grpc_connect(connection.cluster_controller.clone());
     let mut client = NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
     let req = GetMetadataRequest {
         kind: MetadataKind::Logs.into(),
@@ -105,11 +98,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
             continue;
         }
 
-        let Ok(channel) = grpc_connect(node.address.clone()).await else {
-            warn!("Failed to connect to node {} at {}", node_id, node.address);
-            continue;
-        };
-
+        let channel = grpc_connect(node.address.clone());
         let mut client =
             LogServerSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
