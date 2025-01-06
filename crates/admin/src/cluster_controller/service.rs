@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use restate_metadata_store::ReadModifyWriteError;
 use restate_types::cluster_controller::SchedulingPlan;
@@ -46,7 +46,7 @@ use restate_core::{
     TaskKind,
 };
 use restate_types::cluster::cluster_state::ClusterState;
-use restate_types::config::{AdminOptions, Configuration};
+use restate_types::config::{AdminOptions, ConfigWatch, Configuration};
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::live::Live;
@@ -57,7 +57,7 @@ use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, Version, Versioned};
 
 use self::state::ClusterControllerState;
-use super::cluster_state_refresher::ClusterStateRefresher;
+use super::cluster_state_refresher::{ClusterStateRefresher, ClusterStateWatcher};
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
 use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use crate::cluster_controller::logs_controller::{self, NodeSetSelectorHints};
@@ -304,29 +304,10 @@ impl<T: TransportConnect> Service<T> {
 
         loop {
             tokio::select! {
-                _ = self.heartbeat_interval.tick() => {
-                    // Ignore error if system is shutting down
-                    let _ = self.cluster_state_refresher.schedule_refresh();
-                },
-                Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
-                    self.observed_cluster_state.update(&cluster_state);
-                    state.update(&self).await?;
-
-                    state.on_observed_cluster_state(&self.observed_cluster_state).await?;
-                }
-                Some(cmd) = self.command_rx.recv() => {
-                    // it is still safe to handle cluster commands as a follower
-                    self.on_cluster_cmd(cmd).await;
-                }
-                _ = config_watcher.changed() => {
-                    debug!("Updating the cluster controller settings.");
-                    let configuration = self.configuration.live_load();
-                    self.heartbeat_interval = Self::create_heartbeat_interval(&configuration.admin);
-                    state.reconfigure(configuration);
-                }
-                result = state.run() => {
-                    let leader_event = result?;
-                    state.on_leader_event(leader_event).await?;
+                result = self.run_inner(&mut config_watcher, &mut cluster_state_watcher, &mut state) => {
+                    if let Err(err) = result {
+                        warn!("Cluster controller failed doing its job. Retrying. {err}");
+                    }
                 }
                 _ = &mut shutdown => {
                     self.health_status.update(AdminStatus::Unknown);
@@ -334,6 +315,42 @@ impl<T: TransportConnect> Service<T> {
                 }
             }
         }
+    }
+
+    async fn run_inner(
+        &mut self,
+        config_watcher: &mut ConfigWatch,
+        cluster_state_watcher: &mut ClusterStateWatcher,
+        state: &mut ClusterControllerState<T>,
+    ) -> anyhow::Result<()> {
+        tokio::select! {
+            _ = self.heartbeat_interval.tick() => {
+                // Ignore error if system is shutting down
+                let _ = self.cluster_state_refresher.schedule_refresh();
+            },
+            Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
+                self.observed_cluster_state.update(&cluster_state);
+                state.update(self).await?;
+
+                state.on_observed_cluster_state(&self.observed_cluster_state).await?;
+            }
+            Some(cmd) = self.command_rx.recv() => {
+                // it is still safe to handle cluster commands as a follower
+                self.on_cluster_cmd(cmd).await;
+            }
+            _ = config_watcher.changed() => {
+                debug!("Updating the cluster controller settings.");
+                let configuration = self.configuration.live_load();
+                self.heartbeat_interval = Self::create_heartbeat_interval(&configuration.admin);
+                state.reconfigure(configuration);
+            }
+            result = state.run() => {
+                let leader_event = result?;
+                state.on_leader_event(leader_event).await?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Triggers a snapshot creation for the given partition by issuing an RPC
