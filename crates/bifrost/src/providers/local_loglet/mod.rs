@@ -216,9 +216,10 @@ impl Loglet for LocalLoglet {
         }
     }
 
-    /// Trim the log to the minimum of new_trim_point and last_committed_offset
-    /// new_trim_point is inclusive (will be trimmed)
-    async fn trim(&self, new_trim_point: LogletOffset) -> Result<(), OperationError> {
+    async fn trim(
+        &self,
+        new_trim_point: LogletOffset,
+    ) -> Result<Option<LogletOffset>, OperationError> {
         let effective_trim_point = new_trim_point.min(LogletOffset::new(
             self.last_committed_offset.load(Ordering::Relaxed),
         ));
@@ -233,7 +234,7 @@ impl Loglet for LocalLoglet {
 
         if current_trim_point >= effective_trim_point {
             // nothing to do since we have already trimmed beyond new_trim_point
-            return Ok(());
+            return Ok(None);
         }
 
         counter!(BIFROST_LOCAL_TRIM).increment(1);
@@ -255,7 +256,7 @@ impl Loglet for LocalLoglet {
             "Loglet trim operation enqueued"
         );
 
-        Ok(())
+        Ok(Some(effective_trim_point))
     }
 
     async fn seal(&self) -> Result<(), OperationError> {

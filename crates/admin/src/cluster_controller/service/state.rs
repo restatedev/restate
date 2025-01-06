@@ -348,7 +348,12 @@ where
                     debug!(
                     "Automatic trim log '{log_id}' for all records before='{min_persisted_lsn}'"
                 );
-                    bifrost_admin.trim(log_id, min_persisted_lsn).await?
+                    let trim_point = bifrost_admin.trim(log_id, min_persisted_lsn).await?;
+                    if let Some(trim_point) = trim_point {
+                        debug!("Trimmed log '{log_id}' to '{trim_point}'",);
+                    } else {
+                        info!("Attempted to trim log '{log_id}' to '{min_persisted_lsn}' but got none response");
+                    }
                 }
             } else {
                 warn!("Stop automatically trimming log '{log_id}' because not all nodes are running a partition processor applying this log.");

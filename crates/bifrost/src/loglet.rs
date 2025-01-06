@@ -127,14 +127,16 @@ pub trait Loglet: Send + Sync + std::fmt::Debug {
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError>;
 
     /// Trim the loglet prefix up to and including the `trim_point`.
-    /// If trim_point equal or higher than the loglet tail, the loglet trims its data until the tail.
+    /// If trim_point equal or higher than the loglet tail, the loglet trims its data up to the tail.
     ///
-    /// It's acceptable to pass `trim_point` beyond the tail of the loglet (Offset::MAX is legal).
-    /// The behaviour in this case is equivalent to trim(find_tail() - 1).
+    /// It's acceptable to pass `trim_point` beyond the tail of the loglet (i.e. `Offset::MAX` is legal).
+    /// The behaviour in this case is equivalent to `trim(find_tail() - 1)`.
     ///
     /// Passing `Offset::INVALID` is a no-op. (success)
     /// Passing `Offset::OLDEST` trims the first record in the loglet (if exists).
-    async fn trim(&self, trim_point: LogletOffset) -> Result<(), OperationError>;
+    ///
+    /// Returns the new trim point offset if a trim was performed by this call, or `None` otherwise.
+    async fn trim(&self, trim_point: LogletOffset) -> Result<Option<LogletOffset>, OperationError>;
 
     /// Seal the loglet. This operation is idempotent.
     ///

@@ -370,24 +370,27 @@ impl Loglet for MemoryLoglet {
         }
     }
 
-    async fn trim(&self, new_trim_point: LogletOffset) -> Result<(), OperationError> {
+    async fn trim(
+        &self,
+        requested_trim_point: LogletOffset,
+    ) -> Result<Option<LogletOffset>, OperationError> {
         let mut log = self.log.lock().unwrap();
-        let actual_trim_point = new_trim_point.min(LogletOffset::new(
+        let requested_trim_point = requested_trim_point.min(LogletOffset::new(
             self.last_committed_offset.load(Ordering::Relaxed),
         ));
 
         let current_trim_point = LogletOffset::new(self.trim_point_offset.load(Ordering::Relaxed));
 
-        if current_trim_point >= actual_trim_point {
-            return Ok(());
+        if current_trim_point >= requested_trim_point {
+            return Ok(Some(current_trim_point));
         }
 
-        let trim_point_index = self.saturating_offset_to_index(actual_trim_point);
+        let trim_point_index = self.saturating_offset_to_index(requested_trim_point);
         self.trim_point_offset
-            .store(*actual_trim_point, Ordering::Relaxed);
+            .store(*requested_trim_point, Ordering::Relaxed);
         log.drain(0..=trim_point_index);
 
-        Ok(())
+        Ok(Some(requested_trim_point))
     }
 
     async fn seal(&self) -> Result<(), OperationError> {

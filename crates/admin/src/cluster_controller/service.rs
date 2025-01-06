@@ -174,7 +174,7 @@ enum ClusterControllerCommand {
     TrimLog {
         log_id: LogId,
         trim_point: Lsn,
-        response_tx: oneshot::Sender<anyhow::Result<()>>,
+        response_tx: oneshot::Sender<anyhow::Result<Option<Lsn>>>,
     },
     CreateSnapshot {
         partition_id: PartitionId,
@@ -213,7 +213,7 @@ impl ClusterControllerHandle {
         &self,
         log_id: LogId,
         trim_point: Lsn,
-    ) -> Result<Result<(), anyhow::Error>, ShutdownError> {
+    ) -> Result<Result<Option<Lsn>, anyhow::Error>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         let _ = self
@@ -587,7 +587,7 @@ impl<T: TransportConnect> Service<T> {
                 info!(
                     ?log_id,
                     trim_point_inclusive = ?trim_point,
-                    "Manual trim log command received");
+                    "Trim log command received");
                 let result = bifrost_admin.trim(log_id, trim_point).await;
                 let _ = response_tx.send(result.map_err(Into::into));
             }
