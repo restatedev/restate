@@ -47,7 +47,9 @@ use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfigurati
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
-use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
+use restate_types::nodes_config::{
+    LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role,
+};
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
@@ -620,6 +622,7 @@ fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfi
         common_opts.advertised_address.clone(),
         common_opts.roles,
         LogServerConfig::default(),
+        MetadataStoreConfig::default(),
     );
     initial_nodes_configuration.upsert_node(node_config);
     initial_nodes_configuration

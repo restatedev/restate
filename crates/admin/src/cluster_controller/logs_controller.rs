@@ -1276,7 +1276,7 @@ pub mod tests {
     };
     use restate_types::logs::LogletId;
     use restate_types::nodes_config::{
-        LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
+        LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
     use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
     use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
@@ -1461,6 +1461,7 @@ pub mod tests {
             format!("https://node-{id}").parse().unwrap(),
             roles,
             LogServerConfig { storage_state },
+            MetadataStoreConfig::default(),
         )
     }
 
