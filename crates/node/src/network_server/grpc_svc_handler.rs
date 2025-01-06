@@ -84,7 +84,10 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
     ) -> Result<Response<GetMetadataResponse>, Status> {
         let request = request.into_inner();
         let metadata = Metadata::current();
-        let kind = request.kind.into();
+        let kind = request
+            .kind()
+            .try_into()
+            .map_err(|err: anyhow::Error| Status::invalid_argument(err.to_string()))?;
         if request.sync {
             metadata
                 .sync(kind, TargetVersion::Latest)
