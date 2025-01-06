@@ -11,7 +11,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
-use anyhow::Context;
 use chrono::TimeDelta;
 use cling::prelude::*;
 use itertools::Itertools;
@@ -47,14 +46,7 @@ pub struct ListNodesOpts {
 }
 
 pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "cannot connect to cluster controller at {}",
-                connection.cluster_controller
-            )
-        })?;
+    let channel = grpc_connect(connection.cluster_controller.clone());
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
@@ -154,9 +146,9 @@ async fn fetch_extra_info(
     for (node_id, node_config) in nodes_configuration.iter() {
         let address = node_config.address.clone();
         let get_ident = async move {
-            let node_channel = grpc_connect(address).await?;
+            let channel = grpc_connect(address);
             let mut node_ctl_svc_client =
-                NodeCtlSvcClient::new(node_channel).accept_compressed(CompressionEncoding::Gzip);
+                NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
             Ok(node_ctl_svc_client
                 .get_ident(())
