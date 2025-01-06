@@ -90,7 +90,7 @@ async fn create_and_restore_snapshot() -> googletest::Result<()> {
         enum_set!(Role::Worker),
     );
     *node_2.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-        address: cluster.nodes[0].node_address().clone(),
+        addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     let mut snapshot_restored = node_2.lines(

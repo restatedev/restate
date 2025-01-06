@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
+use anyhow::bail;
 use enum_map::Enum;
 use prost_dto::{FromProto, IntoProto};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use strum::EnumIter;
 
 use crate::logs::metadata::Logs;
@@ -71,6 +71,23 @@ pub enum MetadataKind {
     Schema,
     PartitionTable,
     Logs,
+}
+
+// todo remove once prost_dto supports TryFromProto
+impl TryFrom<crate::protobuf::node::MetadataKind> for MetadataKind {
+    type Error = anyhow::Error;
+
+    fn try_from(value: crate::protobuf::node::MetadataKind) -> Result<Self, Self::Error> {
+        match value {
+            crate::protobuf::node::MetadataKind::Unknown => bail!("unknown metadata kind"),
+            crate::protobuf::node::MetadataKind::NodesConfiguration => {
+                Ok(MetadataKind::NodesConfiguration)
+            }
+            crate::protobuf::node::MetadataKind::Schema => Ok(MetadataKind::Schema),
+            crate::protobuf::node::MetadataKind::PartitionTable => Ok(MetadataKind::PartitionTable),
+            crate::protobuf::node::MetadataKind::Logs => Ok(MetadataKind::Logs),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::From)]

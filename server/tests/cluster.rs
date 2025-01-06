@@ -8,18 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU16;
+use std::num::{NonZeroU16, NonZeroU8};
 use std::time::Duration;
 
 use enumset::enum_set;
 use futures_util::StreamExt;
+use googletest::IntoTestResult;
 use regex::Regex;
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
 use restate_types::config::MetadataStoreClient;
-use restate_types::logs::metadata::ProviderKind;
+use restate_types::logs::metadata::{
+    DefaultProvider, NodeSetSelectionStrategy, ReplicatedLogletConfig,
+};
+use restate_types::replicated_loglet::ReplicationProperty;
 use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
 use test_log::test;
 
@@ -60,7 +64,7 @@ async fn node_id_mismatch() -> googletest::Result<()> {
         .build();
 
     *mismatch_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-        address: cluster.nodes[0].node_address().clone(),
+        addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     cluster.push_node(mismatch_node).await?;
@@ -105,7 +109,7 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
     );
 
     *mismatch_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-        address: cluster.nodes[0].node_address().clone(),
+        addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     let mut mismatch_node = mismatch_node
@@ -113,7 +117,7 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
         .await?;
 
     assert!(mismatch_node
-        .lines("Cluster name mismatch".parse()?)
+        .lines("trying to join wrong cluster".parse()?)
         .next()
         .await
         .is_some());
@@ -126,7 +130,8 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
 #[test(restate_core::test)]
 async fn replicated_loglet() -> googletest::Result<()> {
     let mut base_config = Configuration::default();
-    base_config.bifrost.default_provider = ProviderKind::Replicated;
+    // require an explicit provision step to configure the replication property to 2
+    base_config.common.allow_bootstrap = false;
     base_config.common.bootstrap_num_partitions = NonZeroU16::new(1).expect("1 to be non-zero");
 
     let nodes = Node::new_test_nodes_with_metadata(
@@ -147,6 +152,20 @@ async fn replicated_loglet() -> googletest::Result<()> {
         .build()
         .start()
         .await?;
+
+    let replicated_loglet_config = ReplicatedLogletConfig {
+        replication_property: ReplicationProperty::new(NonZeroU8::new(2).expect("to be non-zero")),
+        nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
+    };
+
+    cluster.nodes[0]
+        .provision_cluster(
+            None,
+            None,
+            Some(DefaultProvider::Replicated(replicated_loglet_config)),
+        )
+        .await
+        .into_test_result()?;
 
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 

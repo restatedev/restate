@@ -23,10 +23,13 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, trace, trace_span, Instrument};
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
-use restate_core::metadata_store::{
-    retry_on_network_error, MetadataStoreClient, Precondition, ReadWriteError, WriteError,
+use crate::cluster_controller::logs_controller::nodeset_selection::{
+    NodeSelectionError, NodeSetSelector,
 };
+use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use crate::cluster_controller::scheduler;
+use restate_bifrost::{Bifrost, BifrostAdmin, Error as BifrostError};
+use restate_core::metadata_store::{MetadataStoreClient, Precondition, ReadWriteError, WriteError};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
@@ -44,12 +47,6 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::{logs, GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
-
-use crate::cluster_controller::logs_controller::nodeset_selection::{
-    NodeSelectionError, NodeSetSelector,
-};
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler;
 
 type Result<T, E = LogsControllerError> = std::result::Result<T, E>;
 
@@ -639,9 +636,9 @@ struct LogsControllerInner {
 }
 
 impl LogsControllerInner {
-    fn new(configuration: LogsConfiguration, retry_policy: RetryPolicy) -> Self {
+    fn new(retry_policy: RetryPolicy) -> Self {
         Self {
-            current_logs: Arc::new(Logs::with_logs_configuration(configuration)),
+            current_logs: Arc::new(Logs::from_configuration(&Configuration::pinned())),
             logs_state: HashMap::with_hasher(Xxh3Builder::default()),
             logs_write_in_progress: None,
             retry_policy,
@@ -784,8 +781,7 @@ impl LogsControllerInner {
                 }
             }
             Event::NewLogs => {
-                self.on_logs_update(Metadata::with_current(|m| m.logs_ref()))?;
-                effects.push(Effect::FindLogsTail);
+                self.on_logs_update(Metadata::with_current(|m| m.logs_ref()), effects)?;
             }
             Event::SealSucceeded {
                 log_id,
@@ -824,7 +820,7 @@ impl LogsControllerInner {
         }
     }
 
-    fn on_logs_update(&mut self, logs: Pinned<Logs>) -> Result<()> {
+    fn on_logs_update(&mut self, logs: Pinned<Logs>, effects: &mut Vec<Effect>) -> Result<()> {
         // rebuild the internal state if we receive a newer logs or one with a version we were
         // supposed to write (race condition)
         if logs.version() > self.current_logs.version()
@@ -865,6 +861,9 @@ impl LogsControllerInner {
                     );
                 }
             }
+
+            // check whether we have a pending seal operation for any of the logs
+            effects.push(Effect::FindLogsTail);
         }
 
         Ok(())
@@ -925,26 +924,11 @@ pub struct LogsController {
 }
 
 impl LogsController {
-    pub async fn init(
-        configuration: &Configuration,
+    pub fn new(
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
         metadata_writer: MetadataWriter,
-    ) -> Result<Self> {
-        // obtain the latest logs or init it with an empty logs variant
-        let logs = retry_on_network_error(
-            configuration.common.network_error_retry_policy.clone(),
-            || {
-                metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                    Logs::from_configuration(configuration)
-                })
-            },
-        )
-        .await?;
-
-        let logs_configuration = logs.configuration().clone();
-        metadata_writer.update(Arc::new(logs)).await?;
-
+    ) -> Self {
         //todo(azmy): make configurable
         let retry_policy = RetryPolicy::exponential(
             Duration::from_millis(10),
@@ -953,18 +937,15 @@ impl LogsController {
             Some(Duration::from_secs(5)),
         );
 
-        let mut this = Self {
+        Self {
             effects: Some(Vec::new()),
-            inner: LogsControllerInner::new(logs_configuration, retry_policy),
+            inner: LogsControllerInner::new(retry_policy),
             bifrost,
             metadata_store_client,
             metadata_writer,
             async_operations: JoinSet::default(),
             find_logs_tail_semaphore: Arc::new(Semaphore::new(1)),
-        };
-
-        this.find_logs_tail();
-        Ok(this)
+        }
     }
 
     pub fn find_logs_tail(&mut self) {
@@ -1054,7 +1035,11 @@ impl LogsController {
     }
 
     pub fn on_logs_update(&mut self, logs: Pinned<Logs>) -> Result<()> {
-        self.inner.on_logs_update(logs)
+        self.inner
+            .on_logs_update(logs, self.effects.as_mut().expect("to be present"))?;
+        self.apply_effects();
+
+        Ok(())
     }
 
     fn apply_effects(&mut self) {

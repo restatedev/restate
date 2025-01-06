@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::metadata_store::{
-    MetadataStore, Precondition, ReadError, Version, VersionedValue, WriteError,
+    Precondition, ProvisionedMetadataStore, ReadError, Version, VersionedValue, WriteError,
 };
 use crate::network::net_util::CommonClientConnectionOptions;
 use anyhow::Context;
@@ -145,7 +145,7 @@ impl EtcdMetadataStore {
 }
 
 #[async_trait::async_trait]
-impl MetadataStore for EtcdMetadataStore {
+impl ProvisionedMetadataStore for EtcdMetadataStore {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         let mut client = self.client.kv_client();
         let mut response = client.get(key.into_bytes(), None).await?;
