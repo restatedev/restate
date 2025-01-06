@@ -13,7 +13,7 @@ debug = []
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-indexmap = { version = "2", features = ["serde"] }
+indexmap = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 assert-json-diff = "2"

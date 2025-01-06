@@ -14,6 +14,7 @@ mod roles;
 
 use std::sync::Arc;
 
+use restate_core::cluster_state::ClusterState;
 use tracing::{debug, error, info, trace};
 
 use codederror::CodedError;
@@ -322,6 +323,10 @@ impl Node {
         let metadata = self.metadata_manager.metadata().clone();
         let is_set = TaskCenter::try_set_global_metadata(metadata.clone());
         debug_assert!(is_set, "Global metadata was already set");
+
+        // todo(azmy): this is just a dummy setup until failure detector is actually implemented
+        let is_set = TaskCenter::try_set_global_cluster_state(ClusterState::new());
+        debug_assert!(is_set, "Cluster state was already set");
 
         // Start metadata manager
         spawn_metadata_manager(self.metadata_manager)?;

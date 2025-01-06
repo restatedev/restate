@@ -17,7 +17,7 @@ use restate_types::identifiers::PartitionId;
 use tokio_util::sync::CancellationToken;
 use tracing::{instrument, Instrument};
 
-use crate::{Metadata, ShutdownError};
+use crate::{cluster_state::ClusterState, Metadata, ShutdownError};
 
 use super::{
     RuntimeError, RuntimeTaskHandle, TaskCenterInner, TaskContext, TaskHandle, TaskId, TaskKind,
@@ -58,6 +58,12 @@ impl Handle {
     /// at the startup of the node.
     pub fn try_set_global_metadata(&self, metadata: Metadata) -> bool {
         self.inner.try_set_global_metadata(metadata)
+    }
+
+    /// Attempt to set the global cluster state handle. This should be called once
+    /// at the startup of the node.
+    pub fn try_set_global_cluster_state(&self, cluster_state: ClusterState) -> bool {
+        self.inner.try_set_global_cluster_state(cluster_state)
     }
 
     /// Sets the current task_center but doesn't create a task. Use this when you need to run a
@@ -151,6 +157,10 @@ impl Handle {
 
     pub fn metadata(&self) -> Option<Metadata> {
         self.inner.metadata()
+    }
+
+    pub fn cluster_state(&self) -> Option<ClusterState> {
+        self.inner.cluster_state().cloned()
     }
 
     /// Take control over the running task from task-center. This returns None if the task was not

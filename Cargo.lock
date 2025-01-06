@@ -6231,6 +6231,7 @@ dependencies = [
  "humantime",
  "hyper 1.5.1",
  "hyper-util",
+ "indexmap 2.7.0",
  "metrics",
  "object_store",
  "opentelemetry",
