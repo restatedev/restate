@@ -442,6 +442,7 @@ impl LeaderState {
                 self.pending_cleanup_timers_to_schedule
                     .push_back((invocation_id, retention));
             }
+            Action::ForwardNotification { .. } => todo!(),
         }
 
         Ok(())

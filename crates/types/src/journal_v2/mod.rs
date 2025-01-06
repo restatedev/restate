@@ -44,6 +44,7 @@ pub use notification::{Notification, NotificationId};
 // -- Various alias types for Ids
 
 pub type EntryIndex = u32;
+pub type CompletionIndex = u32;
 pub type NotificationIndex = i64;
 pub type NotificationName = ByteString;
 

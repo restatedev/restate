@@ -20,6 +20,7 @@ use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable
 use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::TerminationFlavor;
 use restate_types::journal::enriched::EnrichedEntryHeader;
+use restate_types::journal_v2::NotificationId;
 use restate_types::service_protocol;
 use rstest::rstest;
 use test_log::test;
@@ -528,7 +529,15 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         &invocation_id,
         &InvocationStatus::Suspended {
             metadata: in_flight_meta,
-            waiting_for_notifications: HashSet::from([3, 4, 5, 6, 7, 8, 9]),
+            waiting_for_notifications: HashSet::from([
+                NotificationId::for_index(3),
+                NotificationId::for_index(4),
+                NotificationId::for_index(5),
+                NotificationId::for_index(6),
+                NotificationId::for_index(7),
+                NotificationId::for_index(8),
+                NotificationId::for_index(9),
+            ]),
         },
     )
     .await;

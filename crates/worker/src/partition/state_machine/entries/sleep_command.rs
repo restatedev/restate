@@ -6,14 +6,14 @@ use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::command::SleepCommand;
 use restate_wal_protocol::timer::TimerKeyValue;
 
-pub(super) struct HandleSleepCommand<'e> {
+pub(super) struct ApplySleepCommand<'e> {
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_status: &'e mut InvocationStatus,
     pub(super) entry: SleepCommand,
 }
 
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for HandleSleepCommand<'e>
+    for ApplySleepCommand<'e>
 where
     S: TimerTable,
 {
@@ -41,7 +41,7 @@ where
             TimerKeyValue::complete_journal_entry(
                 self.entry.wake_up_time,
                 self.invocation_id,
-                self.entry.completion_id,
+                self.entry.notification_idx,
             ),
             invocation_metadata.journal_metadata.span_context.clone(),
         )

@@ -2,7 +2,7 @@ use crate::identifiers::InvocationId;
 use crate::invocation::{Header, InvocationTarget, ServiceInvocationSpanContext};
 use crate::journal_v2::notification::Failure;
 use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
-use crate::journal_v2::{Entry, EntryMetadata, EntryType, NotificationIndex};
+use crate::journal_v2::{CompletionIndex, Entry, EntryMetadata, EntryType};
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -104,7 +104,7 @@ impl_entry_accessors!(Input);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCommand {
-    pub notification_idx: NotificationIndex,
+    pub notification_idx: CompletionIndex,
 }
 impl_entry_accessors!(Run);
 
@@ -121,22 +121,22 @@ pub struct CallRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SleepCommand {
     pub wake_up_time: MillisSinceEpoch,
-    pub notification_idx: NotificationIndex,
+    pub notification_idx: CompletionIndex,
 }
 impl_entry_accessors!(Sleep);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallCommand {
     pub request: CallRequest,
-    pub invocation_id_notification_idx: NotificationIndex,
-    pub result_notification_idx: NotificationIndex,
+    pub invocation_id_notification_idx: CompletionIndex,
+    pub result_notification_idx: CompletionIndex,
 }
 impl_entry_accessors!(Call);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OneWayCallCommand {
     pub request: CallRequest,
-    pub invocation_id_notification_idx: NotificationIndex,
+    pub invocation_id_notification_idx: CompletionIndex,
 }
 impl_entry_accessors!(OneWayCall);
 

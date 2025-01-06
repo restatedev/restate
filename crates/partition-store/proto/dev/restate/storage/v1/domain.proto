@@ -155,8 +155,8 @@ message InvocationStatusV2 {
   optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
 
   // Suspended
-  repeated uint32 waiting_for_completion_ids = 17;
-  repeated string waiting_for_signal_ids = 23;
+  repeated int64 waiting_for_notification_indexes = 17;
+  repeated string waiting_for_notification_names = 23;
 
   // Completed
   ResponseResult result = 18;
@@ -501,7 +501,7 @@ message Entry {
     map<string, string> metadata = 2;
   }
 
-  message CallOrSendCommandJournalEntryMetadata {
+  message CallOrSendCommandMetadata {
     InvocationId invocation_id = 1;
     InvocationTarget invocation_target = 2;
     SpanContext span_context = 3;
@@ -528,18 +528,18 @@ message Entry {
   uint64 append_time = 5;
 
   // Additional metadata for RUN_COMMAND and CALL_COMMAND
-  CallOrSendCommandJournalEntryMetadata call_command_journal_entry_additional_metadata = 6;
+  CallOrSendCommandMetadata call_or_send_command_metadata = 6;
 
   // Additional metadata for NOTIFICATION
   oneof notification_id {
-    uint32 completion = 7;
-    string signal = 8;
+    int64 notification_idx = 7;
+    string notification_name = 8;
   }
 }
 
 message NotificationsIndex {
-  map<uint32, uint32> completions_index = 1;
-  map<string, uint32> signals_index = 2;
+  map<int64, uint32> notification_idx_to_journal_idx = 1;
+  map<string, uint32> notification_name_to_journal_idx = 2;
 }
 
 message ResponseResult {

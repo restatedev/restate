@@ -112,6 +112,8 @@ pub mod v1 {
     ));
 
     pub mod pb_conversion {
+        use crate::protobuf_types::v1::entry::EntryType;
+        use crate::protobuf_types::v1::entry::EventEntry;
         use std::collections::{HashMap, HashSet};
         use std::str::FromStr;
 
@@ -129,16 +131,13 @@ pub mod v1 {
             GetInvocationOutput, GetPromise, GetState, GetStateKeys, Input, Invoke, Output,
             PeekPromise, SetState, SideEffect, Sleep,
         };
-        use crate::storage::v1::entry::{EntryType, EventEntry};
         use crate::protobuf_types::v1::invocation_status::{
             Completed, Free, Inboxed, Invoked, Suspended,
         };
         use crate::protobuf_types::v1::journal_entry::completion_result::{
             Empty, Failure, Success,
         };
-        use crate::protobuf_types::v1::journal_entry::{
-            completion_result, CompletionResult, Kind,
-        };
+        use crate::protobuf_types::v1::journal_entry::{completion_result, CompletionResult, Kind};
         use crate::protobuf_types::v1::outbox_message::{
             OutboxCancel, OutboxKill, OutboxServiceInvocation, OutboxServiceInvocationResponse,
         };
@@ -366,8 +365,8 @@ pub mod v1 {
                     journal_length,
                     deployment_id,
                     service_protocol_version,
-                    waiting_for_completion_ids,
-                    waiting_for_signal_ids,
+                    waiting_for_notification_indexes,
+                    waiting_for_notification_names,
                     result,
                 } = value;
 
@@ -485,11 +484,11 @@ pub mod v1 {
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                             },
-                            waiting_for_notifications: waiting_for_completion_ids
+                            waiting_for_notifications: waiting_for_notification_indexes
                                 .into_iter()
                                 .map(NotificationId::for_index)
                                 .chain(
-                                    waiting_for_signal_ids
+                                    waiting_for_notification_names
                                         .into_iter()
                                         .map(|s| NotificationId::for_name(s.into())),
                                 )
@@ -593,8 +592,8 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
-                        waiting_for_completion_ids: vec![],
-                        waiting_for_signal_ids: vec![],
+                        waiting_for_notification_indexes: vec![],
+                        waiting_for_notification_names: vec![],
                         result: None,
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Inboxed(
@@ -647,8 +646,8 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
-                        waiting_for_completion_ids: vec![],
-                        waiting_for_signal_ids: vec![],
+                        waiting_for_notification_indexes: vec![],
+                        waiting_for_notification_names: vec![],
                         result: None,
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
@@ -710,8 +709,8 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
-                            waiting_for_completion_ids: vec![],
-                            waiting_for_signal_ids: vec![],
+                            waiting_for_notification_indexes: vec![],
+                            waiting_for_notification_names: vec![],
                             result: None,
                         }
                     }
@@ -737,15 +736,15 @@ pub mod v1 {
                             ),
                         };
 
-                        let mut waiting_for_completion_ids: Vec<u32> = Default::default();
-                        let mut waiting_for_signal_ids: Vec<String> = Default::default();
+                        let mut waiting_for_notification_indexes: Vec<i64> = Default::default();
+                        let mut waiting_for_notification_names: Vec<String> = Default::default();
                         for id in waiting_for_notifications {
                             match id {
-                                journal_v2::NotificationId::Signal(c) => {
-                                    waiting_for_completion_ids.push(c);
+                                journal_v2::NotificationId::Index(c) => {
+                                    waiting_for_notification_indexes.push(c);
                                 }
-                                journal_v2::NotificationId::NamedSignal(s) => {
-                                    waiting_for_signal_ids.push(s.to_string());
+                                journal_v2::NotificationId::Name(s) => {
+                                    waiting_for_notification_names.push(s.to_string());
                                 }
                             };
                         }
@@ -789,8 +788,8 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
-                            waiting_for_completion_ids,
-                            waiting_for_signal_ids,
+                            waiting_for_notification_indexes,
+                            waiting_for_notification_names,
                             result: None,
                         }
                     }
@@ -853,8 +852,8 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
-                            waiting_for_completion_ids: vec![],
-                            waiting_for_signal_ids: vec![],
+                            waiting_for_notification_indexes: vec![],
+                            waiting_for_notification_names: vec![],
                             result: None,
                         }
                     }
@@ -898,8 +897,8 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
-                        waiting_for_completion_ids: vec![],
-                        waiting_for_signal_ids: vec![],
+                        waiting_for_notification_indexes: vec![],
+                        waiting_for_notification_names: vec![],
                         result: Some(response_result.into()),
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Free => {
@@ -989,7 +988,7 @@ pub mod v1 {
                             metadata,
                             waiting_for_notifications: waiting_for_completed_entries
                                 .into_iter()
-                                .map(NotificationId::for_index)
+                                .map(|i| NotificationId::for_index(i.into()))
                                 .collect(),
                         }
                     }
@@ -1033,8 +1032,10 @@ pub mod v1 {
                         waiting_for_notifications
                             .into_iter()
                             .map(|notification_id| match notification_id {
-                                NotificationId::Signal(c) => c,
-                                NotificationId::NamedSignal(s) => {
+                                NotificationId::Index(c) => c.try_into().expect(
+                                    "Old invocation status cannot contain negative numbers",
+                                ),
+                                NotificationId::Name(s) => {
                                     panic!("Unsupported waiting signals with old invocation status")
                                 }
                             })
@@ -2716,12 +2717,10 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<entry::CallOrSendCommandJournalEntryMetadata> for journal_v2::raw::CallOrSendMetadata {
+        impl TryFrom<entry::CallOrSendCommandMetadata> for journal_v2::raw::CallOrSendMetadata {
             type Error = ConversionError;
 
-            fn try_from(
-                value: entry::CallOrSendCommandJournalEntryMetadata,
-            ) -> Result<Self, Self::Error> {
+            fn try_from(value: entry::CallOrSendCommandMetadata) -> Result<Self, Self::Error> {
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
                     value
                         .invocation_id
@@ -2748,9 +2747,9 @@ pub mod v1 {
             }
         }
 
-        impl From<journal_v2::raw::CallOrSendMetadata> for entry::CallOrSendCommandJournalEntryMetadata {
+        impl From<journal_v2::raw::CallOrSendMetadata> for entry::CallOrSendCommandMetadata {
             fn from(value: journal_v2::raw::CallOrSendMetadata) -> Self {
-                entry::CallOrSendCommandJournalEntryMetadata {
+                entry::CallOrSendCommandMetadata {
                     invocation_id: Some(InvocationId::from(value.invocation_id)),
                     invocation_target: Some(value.invocation_target.into()),
                     span_context: Some(SpanContext::from(value.span_context)),
@@ -2856,11 +2855,11 @@ pub mod v1 {
                                 .notification_id
                                 .ok_or(ConversionError::missing_field("notification_id"))?
                             {
-                                entry::NotificationId::Completion(c) => {
-                                    journal_v2::NotificationId::Signal(c)
+                                entry::NotificationId::NotificationIdx(c) => {
+                                    journal_v2::NotificationId::Index(c)
                                 }
-                                entry::NotificationId::Signal(s) => {
-                                    journal_v2::NotificationId::NamedSignal(s.into())
+                                entry::NotificationId::NotificationName(s) => {
+                                    journal_v2::NotificationId::Name(s.into())
                                 }
                             };
 
@@ -2882,10 +2881,10 @@ pub mod v1 {
                                     journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
                                         journal_v2::raw::CallOrSendMetadata::try_from(
                                             value
-                                                .call_command_journal_entry_additional_metadata
+                                                .call_or_send_command_metadata
                                                 .ok_or(ConversionError::missing_field(
-                                                    "call_command_journal_entry_additional_metadata",
-                                                ))?,
+                                                "call_command_journal_entry_additional_metadata",
+                                            ))?,
                                         )?,
                                     ),
                                 ),
@@ -2906,9 +2905,8 @@ pub mod v1 {
                 let ty = EntryType::from(raw_entry.ty());
                 let append_time = raw_entry.header().append_time.into();
 
-                let mut call_command_journal_entry_additional_metadata: Option<
-                    entry::CallOrSendCommandJournalEntryMetadata,
-                > = None;
+                let mut call_or_send_command_metadata: Option<entry::CallOrSendCommandMetadata> =
+                    None;
                 let mut notification_id: Option<entry::NotificationId> = None;
                 let content = match raw_entry.inner {
                     journal_v2::raw::RawEntryInner::Command(cmd) => {
@@ -2916,7 +2914,7 @@ pub mod v1 {
                             journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
                                 call_or_send_metadata,
                             ) => {
-                                call_command_journal_entry_additional_metadata =
+                                call_or_send_command_metadata =
                                     Some(call_or_send_metadata.clone().into())
                             }
                             journal_v2::raw::RawCommandSpecificMetadata::None => {}
@@ -2926,11 +2924,11 @@ pub mod v1 {
                     }
                     journal_v2::raw::RawEntryInner::Notification(notification) => {
                         notification_id = Some(match notification.id() {
-                            journal_v2::NotificationId::Signal(c) => {
-                                entry::NotificationId::Completion(c)
+                            journal_v2::NotificationId::Index(c) => {
+                                entry::NotificationId::NotificationIdx(c)
                             }
-                            journal_v2::NotificationId::NamedSignal(s) => {
-                                entry::NotificationId::Signal(s.into())
+                            journal_v2::NotificationId::Name(s) => {
+                                entry::NotificationId::NotificationName(s.into())
                             }
                         });
 
@@ -2944,15 +2942,15 @@ pub mod v1 {
                             .map(|(k, v)| (k, v.to_string()))
                             .collect(),
                     }
-                        .encode_to_vec()
-                        .into(),
+                    .encode_to_vec()
+                    .into(),
                 };
 
                 Entry {
                     ty: ty.into(),
                     content,
                     append_time,
-                    call_command_journal_entry_additional_metadata,
+                    call_or_send_command_metadata,
                     notification_id,
                 }
             }
@@ -2964,12 +2962,12 @@ pub mod v1 {
             fn try_from(value: NotificationsIndex) -> Result<Self, Self::Error> {
                 Ok(Self(
                     value
-                        .completions_index
+                        .notification_idx_to_journal_idx
                         .into_iter()
                         .map(|(k, v)| (journal_v2::NotificationId::for_index(k), v))
                         .chain(
                             value
-                                .signals_index
+                                .notification_name_to_journal_idx
                                 .into_iter()
                                 .map(|(k, v)| (journal_v2::NotificationId::for_name(k.into()), v)),
                         )
@@ -2980,23 +2978,24 @@ pub mod v1 {
 
         impl From<crate::journal_table_v2::NotificationsIndex> for NotificationsIndex {
             fn from(value: crate::journal_table_v2::NotificationsIndex) -> Self {
-                let mut completions_index: HashMap<u32, u32> = Default::default();
-                let mut signals_index: HashMap<String, u32> = Default::default();
+                let mut notification_idx_to_journal_idx: HashMap<i64, u32> = Default::default();
+                let mut notification_name_to_journal_idx: HashMap<String, u32> = Default::default();
                 for (id, index) in value.0 {
                     match id {
-                        journal_v2::NotificationId::Signal(c) => completions_index.insert(c, index),
-                        journal_v2::NotificationId::NamedSignal(s) => {
-                            signals_index.insert(s.to_string(), index)
+                        journal_v2::NotificationId::Index(c) => {
+                            notification_idx_to_journal_idx.insert(c, index)
+                        }
+                        journal_v2::NotificationId::Name(s) => {
+                            notification_name_to_journal_idx.insert(s.to_string(), index)
                         }
                     };
                 }
                 Self {
-                    completions_index,
-                    signals_index,
+                    notification_idx_to_journal_idx,
+                    notification_name_to_journal_idx,
                 }
             }
         }
-
 
         impl TryFrom<OutboxMessage> for restate_storage_api::outbox_table::OutboxMessage {
             type Error = ConversionError;

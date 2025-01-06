@@ -11,6 +11,7 @@
 use crate::keys::TableKey;
 use crate::keys::{define_table_key, KeyKind};
 use crate::owned_iter::OwnedIterator;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::scan::TableScan::FullScanPartitionKeyRange;
 use crate::TableKind::Journal;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
@@ -18,16 +19,13 @@ use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::journal_table_v2::{
-    JournalTable, NotificationsIndex, ReadOnlyJournalTable, StoredEntry,
-};
+use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
 use restate_types::journal_v2::raw::{RawEntry, RawEntryInner};
 use restate_types::journal_v2::NotificationId;
-use restate_types::storage::StorageCodec;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
@@ -64,6 +62,18 @@ fn write_journal_notifications_index(invocation_id: &InvocationId) -> JournalNot
         .invocation_uuid(invocation_id.invocation_uuid())
 }
 
+#[derive(Debug, Clone)]
+pub struct StoredEntry(pub RawEntry);
+impl PartitionStoreProtobufValue for StoredEntry {
+    type ProtobufType = crate::protobuf_types::v1::Entry;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NotificationsIndex(pub HashMap<NotificationId, EntryIndex>);
+impl PartitionStoreProtobufValue for NotificationsIndex {
+    type ProtobufType = crate::protobuf_types::v1::NotificationsIndex;
+}
+
 fn put_journal_entry<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
@@ -73,7 +83,7 @@ fn put_journal_entry<S: StorageAccess>(
     let key = write_journal_entry_key(invocation_id, journal_index);
 
     if let RawEntryInner::Notification(notification) = &journal_entry.inner {
-        let key = write_journal_notifications_index(&invocation_id);
+        let key = write_journal_notifications_index(invocation_id);
         let mut notifications_index: NotificationsIndex =
             storage.get_value(key.clone())?.unwrap_or_default();
         notifications_index
@@ -118,8 +128,8 @@ fn get_journal<S: StorageAccess>(
                     .journal_index
                     .expect("The journal index must be part of the journal key.")
             });
-            let entry = StorageCodec::decode::<StoredEntry, _>(&mut v)
-                .map_err(|error| StorageError::Generic(error.into()));
+            let entry =
+                StoredEntry::decode(&mut v).map_err(|error| StorageError::Generic(error.into()));
 
             let result = key.and_then(|key| entry.map(|entry| (key, entry.0)));
 
@@ -140,8 +150,8 @@ fn all_journals<S: StorageAccess>(
     let iter = storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range));
     stream::iter(OwnedIterator::new(iter).map(|(mut key, mut value)| {
         let journal_key = JournalKey::deserialize_from(&mut key)?;
-        let journal_entry = StorageCodec::decode::<StoredEntry, _>(&mut value)
-            .map_err(|err| StorageError::Conversion(err.into()))?;
+        let journal_entry =
+            StoredEntry::decode(&mut value).map_err(|err| StorageError::Conversion(err.into()))?;
 
         let (partition_key, invocation_uuid, entry_index) = journal_key.into_inner_ok_or()?;
 
@@ -270,9 +280,13 @@ impl<'a> JournalTable for PartitionStoreTransaction<'a> {
 
 #[cfg(test)]
 mod tests {
+
     use super::write_journal_entry_key;
+
     use crate::keys::TableKey;
+    use crate::protobuf_types::v1::NotificationsIndex;
     use bytes::Bytes;
+    use prost::Message;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
 
     fn journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> Bytes {
@@ -310,5 +324,33 @@ mod tests {
             assert!(previous_key < current_key);
             previous_key = current_key;
         }
+    }
+
+    #[test]
+    fn merging_notifications_map() {
+        let mut total = vec![];
+        total.append(
+            &mut NotificationsIndex {
+                notification_idx_to_journal_idx: [(1, 1)].into(),
+                notification_name_to_journal_idx: [("a".to_string(), 2)].into(),
+            }
+            .encode_to_vec(),
+        );
+        total.append(
+            &mut NotificationsIndex {
+                notification_idx_to_journal_idx: [(3, 3)].into(),
+                notification_name_to_journal_idx: [("b".to_string(), 4)].into(),
+            }
+            .encode_to_vec(),
+        );
+
+        assert_eq!(
+            NotificationsIndex::decode(total.as_slice()).unwrap(),
+            NotificationsIndex {
+                notification_idx_to_journal_idx: [(1, 1), (3, 3)].into(),
+                notification_name_to_journal_idx: [("a".to_string(), 2), ("b".to_string(), 4)]
+                    .into()
+            }
+        );
     }
 }

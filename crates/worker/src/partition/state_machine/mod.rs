@@ -77,6 +77,7 @@ use restate_types::journal::EntryType;
 use restate_types::journal::*;
 use restate_types::journal_v2;
 use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::NotificationId;
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
 use restate_types::service_protocol::ServiceProtocolVersion;
@@ -297,7 +298,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
     fn forward_notification(&mut self, invocation_id: InvocationId, notification: RawNotification) {
         debug_if_leader!(
             self.is_leader,
-            restate.notification.id = notification.id(),
+            restate.notification.id = %notification.id(),
             "Forward notification to deployment",
         );
 
@@ -1060,13 +1061,21 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
             InvocationStatus::Suspended {
                 metadata,
-                waiting_for_notifications: waiting_for_completed_entries,
+                waiting_for_notifications,
             } => {
                 if self
                     .cancel_journal_leaves(
                         ctx,
                         invocation_id,
-                        InvocationStatusProjection::Suspended(waiting_for_completed_entries),
+                        InvocationStatusProjection::Suspended(
+                            waiting_for_notifications
+                                .into_iter()
+                                .map(|n| match n {
+                                    NotificationId::Index(idx) => idx as u32,
+                                    NotificationId::Name(_) => panic!("When using Service Protocol <= 3, an invocation cannot be suspended on a named notification")
+                                }).collect()
+
+                        ),
                         metadata.journal_metadata.length,
                     )
                     .await?
@@ -1710,7 +1719,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 .await?;
             }
             InvokerEffectKind::JournalEntryV2 { entry } => {
-                entries::AppendJournalEntryCommand {
+                entries::OnJournalEntryCommand {
                     entry,
                     invocation_id,
                     invocation_status,
@@ -1762,7 +1771,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             InvokerEffectKind::SuspendedV2 {
                 waiting_for_notifications,
             } => {
-                todo!()
+                lifecycle::OnSuspendCommand {
+                    invocation_id,
+                    invocation_status,
+                    waiting_for_notifications,
+                }
+                .apply(ctx)
+                .await?;
             }
             InvokerEffectKind::End => {
                 self.end_invocation(
@@ -2857,7 +2872,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .is_none_or(|pinned_deployment| {
                 pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
             })
-        {}
+        {
+            todo!("Wire up protocol v4 here!")
+        }
 
         match status {
             InvocationStatus::Invoked(_) => {
@@ -2871,7 +2888,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     ctx,
                     invocation_id,
                     completion,
-                    &waiting_for_notifications.into_iter(),
+                    &waiting_for_notifications
+                        .into_iter()
+                        .map(|n| match n {
+                            NotificationId::Index(idx) => idx as u32,
+                            NotificationId::Name(_) => panic!("When using Service Protocol <= 3, an invocation cannot be suspended on a named notification")
+                        }).collect()
+                    ,
                 )
                 .await?
                 {
@@ -3230,7 +3253,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 &invocation_id,
                 &InvocationStatus::Suspended {
                     metadata,
-                    waiting_for_notifications: waiting_for_completed_entries,
+                    waiting_for_notifications: waiting_for_completed_entries
+                        .into_iter()
+                        .map(|i| NotificationId::Index(i as i64))
+                        .collect(),
                 },
             )
             .await;

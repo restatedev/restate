@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! TODO(slinkydeveloper) this file will need a cleanup when we remove protocol version <= 3
+
 use crate::errors::InvocationError;
 use std::ops::RangeInclusive;
 

@@ -33,11 +33,11 @@ pub enum EffectKind {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
     },
-    JournalEntryV2 {
-        entry: journal_v2::raw::RawEntry,
-    },
     Suspended {
         waiting_for_completed_entries: HashSet<EntryIndex>,
+    },
+    JournalEntryV2 {
+        entry: journal_v2::raw::RawEntry,
     },
     SuspendedV2 {
         waiting_for_notifications: HashSet<journal_v2::NotificationId>,

@@ -5,14 +5,14 @@ use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawNotification;
 
-pub(super) struct HandleJournalNotificationCommand<'e> {
+pub(super) struct ApplyNotificationCommand<'e> {
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_status: &'e mut InvocationStatus,
     pub(super) entry: &'e mut RawNotification,
 }
 
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for HandleJournalNotificationCommand<'e>
+    for ApplyNotificationCommand<'e>
 where
     S: ReadOnlyJournalTable,
 {
@@ -35,6 +35,8 @@ where
             // Just forward the notification if we're invoked
             ctx.forward_notification(self.invocation_id, self.entry.clone());
         }
+
+        // In all the other cases, just move on.
 
         Ok(())
     }

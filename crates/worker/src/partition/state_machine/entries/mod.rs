@@ -3,31 +3,27 @@ mod notification;
 mod sleep_command;
 
 use crate::debug_if_leader;
-use crate::partition::state_machine::entries::event::HandleJournalEventCommand;
-use crate::partition::state_machine::entries::notification::HandleJournalNotificationCommand;
-use crate::partition::state_machine::entries::sleep_command::HandleSleepCommand;
-use crate::partition::state_machine::{
-    CommandHandler, Error, StateMachine, StateMachineApplyContext,
-};
+use crate::partition::state_machine::entries::event::ApplyEventCommand;
+use crate::partition::state_machine::entries::notification::ApplyNotificationCommand;
+use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_service_protocol_v4::ServiceProtocolV4Codec;
-use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
-};
+use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
 use restate_storage_api::journal_table_v2::JournalTable;
 use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{CommandType, EntryMetadata, EntryType};
-use tracing::{info, warn};
+use tracing::info;
 
-pub(super) struct AppendJournalEntryCommand {
+pub(super) struct OnJournalEntryCommand {
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_status: InvocationStatus,
     pub(super) entry: RawEntry,
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for AppendJournalEntryCommand
+    for OnJournalEntryCommand
 where
     S: JournalTable + InvocationStatusTable + TimerTable,
 {
@@ -49,7 +45,7 @@ where
                 // Just store it
             }
             EntryType::Command(CommandType::Sleep) => {
-                HandleSleepCommand {
+                ApplySleepCommand {
                     invocation_id: self.invocation_id,
                     invocation_status: &mut self.invocation_status,
                     entry: self.entry.deserialize_to::<ServiceProtocolV4Codec, _>()?,
@@ -67,7 +63,7 @@ where
                 // Just store it, on End we send back the responses
             }
             EntryType::Notification => {
-                HandleJournalNotificationCommand {
+                ApplyNotificationCommand {
                     invocation_id: self.invocation_id,
                     invocation_status: &mut self.invocation_status,
                     entry: self
@@ -80,7 +76,7 @@ where
                 .await?;
             }
             EntryType::Event => {
-                HandleJournalEventCommand {
+                ApplyEventCommand {
                     invocation_id: self.invocation_id,
                     invocation_status: &mut self.invocation_status,
                     entry: self
