@@ -15,7 +15,9 @@ use restate_core::{
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration};
+use restate_types::nodes_config::{
+    LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration,
+};
 use restate_types::retries::RetryPolicy;
 use restate_types::PlainNodeId;
 use std::sync::Arc;
@@ -284,6 +286,7 @@ impl<'a> NodeInit<'a> {
                             common_opts.advertised_address.clone(),
                             common_opts.roles,
                             LogServerConfig::default(),
+                            MetadataStoreConfig::default(),
                         )
                     };
 
