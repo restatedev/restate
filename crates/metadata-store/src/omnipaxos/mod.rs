@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::network::{MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, NetworkMessage};
-use crate::omnipaxos::store::OmnipaxosMetadataStore;
+use crate::omnipaxos::store::OmniPaxosMetadataStore;
 use crate::{network, MetadataStoreRunner, Request};
 use bytes::{Buf, BufMut};
 use omnipaxos::messages::Message;
@@ -36,9 +36,9 @@ pub enum BuildError {
     OpeningRocksDb(#[from] RocksError),
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct OmniPaxosConfiguration {
-    own_peer_id: NodeId,
+    own_node_id: NodeId,
     cluster_config: ClusterConfig,
 }
 
@@ -46,12 +46,13 @@ pub(crate) async fn create_store(
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataServerStatus>,
     server_builder: &mut NetworkServerBuilder,
-) -> Result<MetadataStoreRunner<OmnipaxosMetadataStore>, BuildError> {
-    let store = OmnipaxosMetadataStore::create(rocksdb_options).await?;
+) -> Result<MetadataStoreRunner<OmniPaxosMetadataStore>, BuildError> {
+    let store = OmniPaxosMetadataStore::create(rocksdb_options).await?;
 
     server_builder.register_grpc_service(
         MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
             store.connection_manager(),
+            Some(store.join_cluster_handle()),
         )),
         network::FILE_DESCRIPTOR_SET,
     );

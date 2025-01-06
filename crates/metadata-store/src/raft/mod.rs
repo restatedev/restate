@@ -47,9 +47,10 @@ pub async fn create_store(
     .await?;
 
     server_builder.register_grpc_service(
-        MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(Arc::new(
-            ArcSwapOption::from_pointee(connection_manager),
-        ))),
+        MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
+            Arc::new(ArcSwapOption::from_pointee(connection_manager)),
+            None,
+        )),
         network::FILE_DESCRIPTOR_SET,
     );
 
