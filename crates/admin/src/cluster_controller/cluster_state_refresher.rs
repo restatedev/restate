@@ -22,16 +22,16 @@ use restate_core::network::{
 use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind,
 };
-use restate_types::cluster::cluster_state::{
+use restate_types::deprecated_cluster::cluster_state::{
     AliveNode, ClusterState, DeadNode, NodeState, SuspectNode,
 };
-use restate_types::net::node::GetNodeState;
+use restate_types::net::node::GetPartitionsProcessorsState;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::Version;
 
 pub struct ClusterStateRefresher<T> {
     network_sender: Networking<T>,
-    get_state_router: RpcRouter<GetNodeState>,
+    get_state_router: RpcRouter<GetPartitionsProcessorsState>,
     in_flight_refresh: Option<TaskHandle<anyhow::Result<()>>>,
     cluster_state_update_rx: watch::Receiver<Arc<ClusterState>>,
     cluster_state_update_tx: Arc<watch::Sender<Arc<ClusterState>>>,
@@ -99,7 +99,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
     }
 
     fn start_refresh_task(
-        get_state_router: RpcRouter<GetNodeState>,
+        get_state_router: RpcRouter<GetPartitionsProcessorsState>,
         network_sender: Networking<T>,
         cluster_state_tx: Arc<watch::Sender<Arc<ClusterState>>>,
     ) -> Result<Option<TaskHandle<anyhow::Result<()>>>, ShutdownError> {
@@ -134,8 +134,11 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                         async move {
                             match network_sender.node_connection(node_id).await {
                                 Ok(connection) => {
-                                    let outgoing = Outgoing::new(node_id, GetNodeState::default())
-                                        .assign_connection(connection);
+                                    let outgoing = Outgoing::new(
+                                        node_id,
+                                        GetPartitionsProcessorsState::default(),
+                                    )
+                                    .assign_connection(connection);
 
                                     (
                                         node_id,

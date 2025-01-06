@@ -14,8 +14,8 @@ use std::io;
 use tokio::sync::{mpsc, oneshot};
 
 use restate_types::{
-    cluster::cluster_state::PartitionProcessorStatus,
     identifiers::{PartitionId, SnapshotId},
+    partition_processor::PartitionProcessorStatus,
 };
 
 use crate::ShutdownError;

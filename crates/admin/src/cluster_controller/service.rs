@@ -47,8 +47,8 @@ use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
     TaskKind,
 };
-use restate_types::cluster::cluster_state::ClusterState;
 use restate_types::config::{AdminOptions, Configuration};
+use restate_types::deprecated_cluster::cluster_state::ClusterState;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::live::Live;
@@ -842,16 +842,18 @@ mod tests {
     };
     use restate_core::test_env::NoOpMessageHandler;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
-    use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::{AdminOptions, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
-    use restate_types::net::node::{GetNodeState, NodeStateResponse};
+    use restate_types::net::node::{
+        GetPartitionsProcessorsState, PartitionsProcessorsStateResponse,
+    };
     use restate_types::net::partition_processor_manager::ControlProcessors;
     use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
+    use restate_types::partition_processor::PartitionProcessorStatus;
     use restate_types::{GenerationalNodeId, Version};
 
     #[test(restate_core::test)]
@@ -902,7 +904,7 @@ mod tests {
     }
 
     impl MessageHandler for NodeStateHandler {
-        type MessageType = GetNodeState;
+        type MessageType = GetPartitionsProcessorsState;
 
         async fn on_message(&self, msg: Incoming<Self::MessageType>) {
             if self.block_list.contains(&msg.peer()) {
@@ -916,7 +918,7 @@ mod tests {
             };
 
             let state = [(PartitionId::MIN, partition_processor_status)].into();
-            let response = msg.to_rpc_response(NodeStateResponse {
+            let response = msg.to_rpc_response(PartitionsProcessorsStateResponse {
                 partition_processor_state: Some(state),
             });
 

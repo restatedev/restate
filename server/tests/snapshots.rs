@@ -34,7 +34,7 @@ use restate_local_cluster_runner::{
 };
 use restate_types::config::{LogFormat, MetadataStoreClient};
 use restate_types::net::AdvertisedAddress;
-use restate_types::protobuf::cluster::node_state::State;
+use restate_types::protobuf::deprecated_cluster::node_state::State;
 use restate_types::{config::Configuration, nodes_config::Role};
 
 mod common;

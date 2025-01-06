@@ -12,7 +12,7 @@ use std::num::NonZeroU16;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-use restate_types::protobuf::cluster::ClusterConfiguration;
+use restate_types::protobuf::cluster_configuration::ClusterConfiguration;
 use tonic::{async_trait, Request, Response, Status};
 use tracing::info;
 

@@ -14,8 +14,8 @@ use std::ops::RangeInclusive;
 use serde_with::serde_as;
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, PartitionKey};
+use crate::partition_processor::RunMode;
 use crate::partition_table::PartitionTable;
 use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
 

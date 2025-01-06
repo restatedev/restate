@@ -17,8 +17,9 @@ mod node_id;
 mod version;
 
 pub mod art;
-pub mod cluster;
+pub mod deprecated_cluster;
 pub mod health;
+pub mod partition_processor;
 
 pub mod cluster_controller;
 pub mod config;

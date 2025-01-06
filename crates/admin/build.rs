@@ -22,6 +22,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .protoc_arg("--experimental_allow_proto3_optional")
         .extern_path(".restate.common", "::restate_types::protobuf::common")
         .extern_path(".restate.cluster", "::restate_types::protobuf::cluster")
+        .extern_path(
+            ".restate.deprecated_cluster",
+            "::restate_types::protobuf::deprecated_cluster",
+        )
+        .extern_path(
+            ".restate.cluster_configuration",
+            "::restate_types::protobuf::cluster_configuration",
+        )
         .compile_protos(
             &["./protobuf/cluster_ctrl_svc.proto"],
             &["protobuf", "../types/protobuf"],

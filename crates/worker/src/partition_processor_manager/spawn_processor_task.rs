@@ -20,11 +20,11 @@ use restate_invoker_impl::Service as InvokerService;
 use restate_partition_store::snapshots::LocalPartitionSnapshot;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::config::{Configuration, WorkerOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::Lsn;
+use restate_types::partition_processor::PartitionProcessorStatus;
 use restate_types::schema::Schema;
 
 use crate::invoker_integration::EntryEnricher;
