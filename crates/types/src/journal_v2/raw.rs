@@ -32,6 +32,20 @@ pub struct RawEntryHeader {
     pub append_time: MillisSinceEpoch,
 }
 
+impl RawEntryHeader {
+    pub fn new() -> Self {
+        Self {
+            append_time: MillisSinceEpoch::now(),
+        }
+    }
+}
+
+impl Default for RawEntryHeader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Container of the raw entry.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawEntry {
@@ -83,11 +97,11 @@ pub struct RawCommand {
 }
 
 impl RawCommand {
-    pub fn new(ty: CommandType, serialized_content: Bytes) -> Self {
+    pub fn new(ty: CommandType, serialized_content: impl Into<Bytes>) -> Self {
         Self {
             ty,
             command_specific_metadata: RawCommandSpecificMetadata::None,
-            serialized_content,
+            serialized_content: serialized_content.into(),
         }
     }
 

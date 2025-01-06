@@ -39,12 +39,13 @@ use crate::journal_v2::raw::RawEntry;
 pub use command::{Command, CommandType};
 pub use encoding::{Decoder, Encoder};
 pub use event::{Event, EventType};
-pub use notification::{Notification, NotificationId};
+pub use notification::{Failure, Notification, NotificationId, NotificationResult};
 
 // -- Various alias types for Ids
 
 pub type EntryIndex = u32;
-pub type CompletionIndex = u32;
+pub type CommandIndex = u32;
+pub type CompletionNotificationIndex = u32;
 pub type NotificationIndex = i64;
 pub type NotificationName = ByteString;
 

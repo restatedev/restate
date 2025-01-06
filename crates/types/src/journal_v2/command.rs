@@ -2,7 +2,7 @@ use crate::identifiers::InvocationId;
 use crate::invocation::{Header, InvocationTarget, ServiceInvocationSpanContext};
 use crate::journal_v2::notification::Failure;
 use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
-use crate::journal_v2::{CompletionIndex, Entry, EntryMetadata, EntryType};
+use crate::journal_v2::{CompletionNotificationIndex, Entry, EntryMetadata, EntryType};
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -14,10 +14,29 @@ pub struct CommandMetadata {
     pub(crate) name: ByteString,
 }
 
+impl CommandMetadata {
+    pub fn new(name: impl Into<ByteString>) -> Self {
+        Self { name: name.into() }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
-    pub(crate) metadata: CommandMetadata,
-    pub(crate) inner: CommandInner,
+    pub metadata: CommandMetadata,
+    pub inner: CommandInner,
+}
+
+impl Command {
+    pub fn new(metadata: CommandMetadata, inner: impl Into<CommandInner>) -> Self {
+        Self {
+            metadata,
+            inner: inner.into(),
+        }
+    }
 }
 
 impl EntryMetadata for Command {
@@ -98,13 +117,14 @@ macro_rules! impl_entry_accessors {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputCommand {
+    pub headers: Vec<Header>,
     pub payload: Bytes,
 }
 impl_entry_accessors!(Input);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCommand {
-    pub notification_idx: CompletionIndex,
+    pub notification_idx: CompletionNotificationIndex,
 }
 impl_entry_accessors!(Run);
 
@@ -121,22 +141,23 @@ pub struct CallRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SleepCommand {
     pub wake_up_time: MillisSinceEpoch,
-    pub notification_idx: CompletionIndex,
+    pub notification_idx: CompletionNotificationIndex,
 }
 impl_entry_accessors!(Sleep);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallCommand {
     pub request: CallRequest,
-    pub invocation_id_notification_idx: CompletionIndex,
-    pub result_notification_idx: CompletionIndex,
+    pub invocation_id_notification_idx: CompletionNotificationIndex,
+    pub result_notification_idx: CompletionNotificationIndex,
 }
 impl_entry_accessors!(Call);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OneWayCallCommand {
     pub request: CallRequest,
-    pub invocation_id_notification_idx: CompletionIndex,
+    pub invoke_time: MillisSinceEpoch,
+    pub invocation_id_notification_idx: CompletionNotificationIndex,
 }
 impl_entry_accessors!(OneWayCall);
 

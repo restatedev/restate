@@ -46,7 +46,13 @@ impl fmt::Display for NotificationId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notification {
     pub id: NotificationId,
-    result: NotificationResult,
+    pub result: NotificationResult,
+}
+
+impl Notification {
+    pub fn new(id: NotificationId, result: NotificationResult) -> Self {
+        Self { id, result }
+    }
 }
 
 impl EntryMetadata for Notification {
@@ -80,8 +86,8 @@ pub enum NotificationResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
-    code: InvocationErrorCode,
-    message: ByteString,
+    pub code: InvocationErrorCode,
+    pub message: ByteString,
 }
 
 impl From<InvocationError> for Failure {

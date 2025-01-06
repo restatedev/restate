@@ -48,7 +48,10 @@ use restate_storage_api::Transaction;
 use restate_test_util::matchers::*;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::errors::{codes, InvocationError, KILLED_INVOCATION_ERROR};
-use restate_types::identifiers::{AwakeableIdentifier, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId};
+use restate_types::identifiers::{
+    AwakeableIdentifier, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
+    ServiceId,
+};
 use restate_types::invocation::{
     Header, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
     ServiceInvocation, ServiceInvocationResponseSink, Source, VirtualObjectHandlerType,

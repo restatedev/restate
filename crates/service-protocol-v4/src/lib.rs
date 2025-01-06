@@ -10,20 +10,12 @@
 
 //! This crate contains the code-generated structs of [service-protocol](https://github.com/restatedev/service-protocol) and the codec to use them.
 
-use restate_types::journal_v2::encoding::EncodingError;
-use restate_types::journal_v2::raw::RawEntry;
-use restate_types::journal_v2::{Decoder, Encoder, Entry};
+#[cfg(feature = "entry-codec")]
+pub mod entry_codec;
+#[cfg(feature = "message-codec")]
+pub mod message_codec;
 
-pub struct ServiceProtocolV4Codec;
-
-impl Encoder for ServiceProtocolV4Codec {
-    fn encode_entry(_entry: &Entry) -> Result<RawEntry, EncodingError> {
-        todo!()
-    }
-}
-
-impl Decoder for ServiceProtocolV4Codec {
-    fn decode_entry(_entry: &RawEntry) -> Result<Entry, EncodingError> {
-        todo!()
-    }
+#[allow(clippy::enum_variant_names)]
+mod proto {
+    include!(concat!(env!("OUT_DIR"), "/dev.restate.service.protocol.rs"));
 }

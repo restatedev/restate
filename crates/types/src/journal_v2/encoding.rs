@@ -4,7 +4,7 @@ use crate::journal_v2::Entry;
 
 #[derive(Debug, thiserror::Error)]
 #[error("encoding error: {0:?}")]
-pub struct EncodingError(#[from] Option<GenericError>);
+pub struct EncodingError(#[from] GenericError);
 
 /// The decoder is the abstraction encapsulating how serialized data represents entries.
 ///

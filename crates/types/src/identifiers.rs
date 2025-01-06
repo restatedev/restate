@@ -10,6 +10,7 @@
 
 //! Restate uses many identifiers to uniquely identify its services and entities.
 
+use base64::Engine;
 use bytes::{BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use rand::RngCore;
@@ -19,7 +20,6 @@ use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
-use base64::Engine;
 use ulid::Ulid;
 
 use crate::base62_util::base62_encode_fixed_width;
@@ -1252,7 +1252,7 @@ mod tests {
             invocation_id: expected_invocation_id,
             entry_index: expected_entry_index,
         }
-            .to_string();
+        .to_string();
         dbg!(&input_str);
 
         let actual = AwakeableIdentifier::from_str(&input_str).unwrap();
