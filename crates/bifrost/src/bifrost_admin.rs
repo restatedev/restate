@@ -46,7 +46,7 @@ impl<'a> BifrostAdmin<'a> {
     /// Set `trim_point` to the value returned from `find_tail()` or `Lsn::MAX` to
     /// trim all records of the log.
     #[instrument(level = "debug", skip(self), err)]
-    pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<()> {
+    pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<Option<Lsn>> {
         self.bifrost.inner.fail_if_shutting_down()?;
         self.bifrost.inner.trim(log_id, trim_point).await
     }

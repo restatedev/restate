@@ -46,7 +46,7 @@ pub(super) struct ReplicatedLoglet<T> {
     #[debug(skip)]
     networking: Networking<T>,
     #[debug(skip)]
-    logservers_rpc: LogServersRpc,
+    log_servers_rpc: LogServersRpc,
     #[debug(skip)]
     sequencers_rpc: SequencersRpc,
     #[debug(skip)]
@@ -66,7 +66,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         segment_index: SegmentIndex,
         my_params: ReplicatedLogletParams,
         networking: Networking<T>,
-        logservers_rpc: LogServersRpc,
+        log_servers_rpc: LogServersRpc,
         sequencers_rpc: SequencersRpc,
         record_cache: RecordCache,
     ) -> Self {
@@ -85,7 +85,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
                     my_params.clone(),
                     selector_strategy,
                     networking.clone(),
-                    logservers_rpc.store.clone(),
+                    log_servers_rpc.store.clone(),
                     record_cache.clone(),
                     known_global_tail.clone(),
                 ),
@@ -107,7 +107,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
             segment_index,
             my_params,
             networking,
-            logservers_rpc,
+            log_servers_rpc,
             sequencers_rpc,
             record_cache,
             known_global_tail,
@@ -156,12 +156,12 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         let known_global_tail = self.known_global_tail.clone();
         let my_params = self.my_params.clone();
         let networking = self.networking.clone();
-        let logservers_rpc = self.logservers_rpc.clone();
+        let log_servers_rpc = self.log_servers_rpc.clone();
 
         let (rx_stream, reader_task) = ReadStreamTask::start(
             my_params,
             networking,
-            logservers_rpc,
+            log_servers_rpc,
             filter,
             from,
             to,
@@ -183,7 +183,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     #[instrument(
-        level="trace",
+        level = "trace",
         skip_all,
         fields(
             otel.name = "replicated_loglet: enqueue_batch",
@@ -219,7 +219,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
                 // happening.
                 let result = CheckSealTask::run(
                     &self.my_params,
-                    &self.logservers_rpc.get_loglet_info,
+                    &self.log_servers_rpc.get_loglet_info,
                     &self.known_global_tail,
                     &self.networking,
                 )
@@ -237,7 +237,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
                     self.segment_index,
                     self.my_params.clone(),
                     self.networking.clone(),
-                    self.logservers_rpc.clone(),
+                    self.log_servers_rpc.clone(),
                     self.sequencers_rpc.clone(),
                     self.known_global_tail.clone(),
                     self.record_cache.clone(),
@@ -261,7 +261,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     #[instrument(
-        level="error",
+        level = "error",
         skip_all,
         fields(
             loglet_id = %self.my_params.loglet_id,
@@ -271,7 +271,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
         GetTrimPointTask::new(
             &self.my_params,
-            self.logservers_rpc.clone(),
+            self.log_servers_rpc.clone(),
             self.known_global_tail.clone(),
         )
         .run(self.networking.clone())
@@ -280,38 +280,53 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     #[instrument(
-        level="error",
+        level = "error",
         skip_all,
         fields(
             loglet_id = %self.my_params.loglet_id,
-            new_trim_point,
+            trim_point,
             otel.name = "replicated_loglet: trim",
         )
     )]
-    /// Trim the log to the min(trim_point, last_committed_offset)
-    /// trim_point is inclusive (will be trimmed)
-    async fn trim(&self, trim_point: LogletOffset) -> Result<(), OperationError> {
-        let trim_point = trim_point.min(self.known_global_tail.latest_offset().prev_unchecked());
+    async fn trim(
+        &self,
+        requested_trim_point: LogletOffset,
+    ) -> Result<Option<LogletOffset>, OperationError> {
+        let known_global_tail = self.known_global_tail.latest_offset().prev_unchecked();
+        let trim_point = if requested_trim_point > known_global_tail {
+            debug!(
+                loglet_id = %self.my_params.loglet_id,
+                requested_trim_point = %requested_trim_point,
+                known_global_tail = %self.known_global_tail,
+                "Trim point clamped to the last known global tail"
+            );
+            known_global_tail
+        } else {
+            requested_trim_point
+        };
 
-        TrimTask::new(
+        let new_trim_point = TrimTask::new(
             &self.my_params,
-            self.logservers_rpc.clone(),
+            self.log_servers_rpc.clone(),
             self.known_global_tail.clone(),
         )
         .run(trim_point, self.networking.clone())
         .await?;
+
         info!(
             loglet_id=%self.my_params.loglet_id,
             ?trim_point,
-            "Loglet has been trimmed successfully"
+            ?new_trim_point,
+            "Loglet trim task completed successfully"
         );
-        Ok(())
+
+        Ok(new_trim_point)
     }
 
     async fn seal(&self) -> Result<(), OperationError> {
         let _ = SealTask::new(
             self.my_params.clone(),
-            self.logservers_rpc.seal.clone(),
+            self.log_servers_rpc.seal.clone(),
             self.known_global_tail.clone(),
         )
         .run(self.networking.clone())

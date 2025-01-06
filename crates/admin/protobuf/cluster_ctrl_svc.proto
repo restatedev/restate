@@ -24,7 +24,7 @@ service ClusterCtrlSvc {
 
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
 
-  rpc TrimLog(TrimLogRequest) returns (google.protobuf.Empty);
+  rpc TrimLog(TrimLogRequest) returns (TrimLogResponse);
 
   rpc CreatePartitionSnapshot(CreatePartitionSnapshotRequest)
       returns (CreatePartitionSnapshotResponse);
@@ -92,6 +92,11 @@ message ListNodesResponse {
 message TrimLogRequest {
   uint32 log_id = 1;
   uint64 trim_point = 2;
+}
+
+message TrimLogResponse {
+  uint32 log_id = 1;
+  optional uint64 trim_point = 2;
 }
 
 message CreatePartitionSnapshotRequest { uint32 partition_id = 1; }

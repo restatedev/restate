@@ -190,16 +190,21 @@ impl LogletWrapper {
         Ok(offset.map(|o| self.base_lsn.offset_by(o)))
     }
 
-    // trim_point is inclusive.
-    pub async fn trim(&self, trim_point: Lsn) -> Result<(), OperationError> {
+    /// `trim_point`: inclusive LSN up to which to trim the loglet; if the LSN is beyond the
+    /// loglet's end, it will be trimmed in full.
+    ///
+    /// Returns the effective trim point of the loglet after a trim was performed, `None` otherwise.
+    pub async fn trim(&self, trim_point: Lsn) -> Result<Option<Lsn>, OperationError> {
         // trimming to INVALID is no-op
         if trim_point == Lsn::INVALID {
-            return Ok(());
+            return Ok(None);
         }
         // saturate to the loglet max possible offset.
         let trim_point = trim_point.min(Lsn::new(LogletOffset::MAX.into()));
         let trim_point = trim_point.into_offset(self.base_lsn);
-        self.loglet.trim(trim_point).await
+
+        let trim_offset = self.loglet.trim(trim_point).await?;
+        Ok(trim_offset.map(|o| self.base_lsn.offset_by(o)))
     }
 
     pub async fn seal(&self) -> Result<(), OperationError> {

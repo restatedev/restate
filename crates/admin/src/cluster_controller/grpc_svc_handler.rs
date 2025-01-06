@@ -16,7 +16,7 @@ use restate_types::protobuf::cluster::ClusterConfiguration;
 use tonic::{async_trait, Request, Response, Status};
 use tracing::info;
 
-use restate_bifrost::{Bifrost, Error as BiforstError};
+use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_core::{Metadata, MetadataWriter};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
@@ -32,7 +32,7 @@ use crate::cluster_controller::protobuf::{
     CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
     FindTailResponse, ListLogsRequest, ListLogsResponse, ListNodesRequest, ListNodesResponse,
     SealAndExtendChainRequest, SealAndExtendChainResponse, SealedSegment, TailState,
-    TrimLogRequest,
+    TrimLogRequest, TrimLogResponse,
 };
 
 use super::protobuf::{
@@ -166,20 +166,28 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
     }
 
     /// Internal operations API to trigger the log truncation
-    async fn trim_log(&self, request: Request<TrimLogRequest>) -> Result<Response<()>, Status> {
+    async fn trim_log(
+        &self,
+        request: Request<TrimLogRequest>,
+    ) -> Result<Response<TrimLogResponse>, Status> {
         let request = request.into_inner();
         let log_id = LogId::from(request.log_id);
         let trim_point = Lsn::from(request.trim_point);
-        if let Err(err) = self
+        match self
             .controller_handle
             .trim_log(log_id, trim_point)
             .await
             .map_err(|_| Status::aborted("Node is shutting down"))?
         {
-            info!("Failed trimming the log: {err}");
-            return Err(Status::internal(err.to_string()));
+            Err(err) => {
+                info!("Failed trimming the log: {err}");
+                Err(Status::internal(err.to_string()))
+            }
+            Ok(trim_point) => Ok(Response::new(TrimLogResponse {
+                log_id: request.log_id,
+                trim_point: trim_point.map(Lsn::as_u64),
+            })),
         }
-        Ok(Response::new(()))
     }
 
     /// Handles ad-hoc snapshot requests, as sent by `restatectl snapshots create`. This is
@@ -266,13 +274,13 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .writeable_loglet(log_id)
             .await
             .map_err(|err| match err {
-                BiforstError::UnknownLogId(_) => Status::invalid_argument("Unknown log-id"),
+                BifrostError::UnknownLogId(_) => Status::invalid_argument("Unknown log-id"),
                 err => Status::internal(err.to_string()),
             })?;
 
         let tail_state = tokio::time::timeout(Duration::from_secs(2), writable_loglet.find_tail())
             .await
-            .map_err(|_elapsed| Status::deadline_exceeded("Timedout finding tail"))?
+            .map_err(|_elapsed| Status::deadline_exceeded("Timeout finding tail"))?
             .map_err(|err| Status::internal(err.to_string()))?;
 
         let response = FindTailResponse {
@@ -292,7 +300,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
     async fn get_cluster_configuration(
         &self,
-        _request: tonic::Request<GetClusterConfigurationRequest>,
+        _request: Request<GetClusterConfigurationRequest>,
     ) -> Result<Response<GetClusterConfigurationResponse>, Status> {
         let logs = Metadata::with_current(|m| m.logs_ref());
         let partition_table = Metadata::with_current(|m| m.partition_table_ref());

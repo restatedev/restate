@@ -329,10 +329,8 @@ where
                 let current_trim_point = self.bifrost.get_trim_point(log_id).await?;
 
                 if min_persisted_lsn >= current_trim_point + self.log_trim_threshold {
-                    debug!(
-                    "Automatic trim log '{log_id}' for all records before='{min_persisted_lsn}'"
-                );
-                    self.bifrost.admin().trim(log_id, min_persisted_lsn).await?
+                    debug!("Automatic trim log '{log_id}' for all records before='{min_persisted_lsn}'");
+                    self.bifrost.admin().trim(log_id, min_persisted_lsn).await?;
                 }
             } else {
                 warn!("Stop automatically trimming log '{log_id}' because not all nodes are running a partition processor applying this log.");

@@ -48,13 +48,24 @@ async fn trim_log(connection: &ConnectionInfo, opts: &TrimLogOpts) -> anyhow::Re
         log_id: opts.log_id,
         trim_point: opts.trim_point,
     };
-    client
+    let response = client
         .trim_log(trim_request)
         .await
         .with_context(|| "failed to submit trim request")?
         .into_inner();
 
-    c_println!("Submitted");
+    match response.trim_point {
+        Some(trim_point) => {
+            c_println!(
+                "Log id {} successfully trimmed to LSN {}",
+                opts.log_id,
+                trim_point
+            );
+        }
+        None => {
+            c_println!("Log trim request was a no-op");
+        }
+    }
 
     Ok(())
 }

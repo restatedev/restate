@@ -33,7 +33,7 @@ struct TrimError;
 /// Sends a trim request to as many log-servers in the nodeset.
 ///
 /// We broadcast the trim to all nodes that we can, but only wait for write-quorum
-/// responses before acknowleding the trim.
+/// responses before acknowledging the trim.
 ///
 /// The trim operation is idempotent. It's safe to trim a loglet if it's already partially or fully
 /// trimmed and if it's sealed.
@@ -47,22 +47,22 @@ struct TrimError;
 /// are trimmed to the requested (possibly clamped) trim point or higher.
 ///
 /// Calls to `get_trim_point()` that happen after this task should return the clamped trim point
-/// or higher (best effort).
+/// or higher (best-effort).
 pub struct TrimTask<'a> {
     my_params: &'a ReplicatedLogletParams,
-    logservers_rpc: LogServersRpc,
+    log_servers_rpc: LogServersRpc,
     known_global_tail: TailOffsetWatch,
 }
 
 impl<'a> TrimTask<'a> {
     pub fn new(
         my_params: &'a ReplicatedLogletParams,
-        logservers_rpc: LogServersRpc,
+        log_servers_rpc: LogServersRpc,
         known_global_tail: TailOffsetWatch,
     ) -> Self {
         Self {
             my_params,
-            logservers_rpc,
+            log_servers_rpc,
             known_global_tail,
         }
     }
@@ -71,7 +71,7 @@ impl<'a> TrimTask<'a> {
         self,
         trim_point: LogletOffset,
         networking: Networking<T>,
-    ) -> Result<(), OperationError> {
+    ) -> Result<Option<LogletOffset>, OperationError> {
         // Use the entire nodeset except for StorageState::Disabled.
         let effective_nodeset = EffectiveNodeSet::new(
             &self.my_params.nodeset,
@@ -87,7 +87,7 @@ impl<'a> TrimTask<'a> {
                 known_global_tail = %self.known_global_tail,
                 "Will not send trim messages to log-servers since the effective trim_point requested is 0"
             );
-            return Ok(());
+            return Ok(None);
         }
 
         let mut nodeset_checker = NodeSetChecker::<'_, bool>::new(
@@ -116,7 +116,7 @@ impl<'a> TrimTask<'a> {
 
             inflight_requests.spawn({
                 let networking = networking.clone();
-                let trim_rpc_router = self.logservers_rpc.trim.clone();
+                let trim_rpc_router = self.log_servers_rpc.trim.clone();
                 let known_global_tail = self.known_global_tail.clone();
 
                 async move {
@@ -155,13 +155,13 @@ impl<'a> TrimTask<'a> {
                 // Let's keep the rest of the trim requests running in the background.
                 debug!(
                     loglet_id = %self.my_params.loglet_id,
-                     trim_point = %trim_point,
+                    trim_point = %trim_point,
                     known_global_tail = %self.known_global_tail,
                     "Loglet has been trimmed"
                 );
                 // continue to run the rest of trim requests in the background
                 inflight_requests.detach_all();
-                return Ok(());
+                return Ok(Some(trim_point));
             }
         }
 

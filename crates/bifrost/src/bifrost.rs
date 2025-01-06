@@ -171,7 +171,7 @@ impl Bifrost {
     }
 
     /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
-    /// start reading from. This means that the record returned will have a LSN that is equal
+    /// start reading from. This means that the record returned will have an LSN that is equal
     /// or greater than `from`. If no records are committed yet at this LSN, this read operation
     /// will immediately return `None`.
     ///
@@ -415,13 +415,16 @@ impl BifrostInner {
         Ok(trim_point.unwrap_or(Lsn::INVALID))
     }
 
-    pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
+    /// Trim the log to the specified LSN trim point (inclusive). Returns the new trim point LSN if
+    /// the log was actually trimmed by this call, or `None` otherwise.
+    pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<Option<Lsn>, Error> {
         let log_metadata = Metadata::with_current(|m| m.logs_ref());
 
         let log_chain = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?;
 
+        let mut max_trim_point = Lsn::INVALID;
         for segment in log_chain.iter() {
             let loglet = self.get_loglet(log_id, segment).await?;
 
@@ -429,10 +432,16 @@ impl BifrostInner {
                 break;
             }
 
-            loglet.trim(trim_point).await?;
+            if let Some(effective_trim_point) = loglet.trim(trim_point).await? {
+                max_trim_point = Lsn::max(max_trim_point, effective_trim_point);
+            }
         }
         // todo: Update logs configuration to remove sealed and empty loglets
-        Ok(())
+        Ok(if max_trim_point == Lsn::INVALID {
+            None
+        } else {
+            Some(max_trim_point)
+        })
     }
 
     #[inline]
@@ -685,7 +694,14 @@ mod tests {
             appender.append("").await?;
         }
 
-        bifrost.admin().trim(LOG_ID, Lsn::from(5)).await?;
+        assert_eq!(bifrost.admin().trim(LOG_ID, Lsn::INVALID).await?, None); // no-op
+        assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+
+        assert_eq!(
+            bifrost.admin().trim(LOG_ID, Lsn::from(5)).await?,
+            Some(Lsn::from(5))
+        );
+        assert_eq!(bifrost.admin().trim(LOG_ID, Lsn::from(5)).await?, None); // no-op
 
         let tail = bifrost.find_tail(LOG_ID).await?;
         assert_eq!(tail.offset(), Lsn::from(11));
@@ -707,7 +723,10 @@ mod tests {
         }
 
         // trimming beyond the release point will fall back to the release point
-        bifrost.admin().trim(LOG_ID, Lsn::MAX).await?;
+        assert_eq!(
+            bifrost.admin().trim(LOG_ID, Lsn::MAX).await?,
+            Some(Lsn::from(10))
+        );
 
         assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
         let new_trim_point = bifrost.get_trim_point(LOG_ID).await?;
@@ -952,7 +971,7 @@ mod tests {
                         let lsn = appender.append_batch(payloads).await?;
                         println!("Appended batch {lsn}");
                     }
-                    append_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    append_counter.fetch_add(1, Ordering::Relaxed);
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
                 println!("Appender terminated");
