@@ -16,8 +16,8 @@ use hyper_util::service::TowerToHyperService;
 use tonic::body::boxed;
 use tonic::service::Routes;
 use tower::ServiceExt;
-use tower_http::trace::TraceLayer;
-use tracing::debug;
+use tower_http::trace::{DefaultOnFailure, TraceLayer};
+use tracing::{debug, Level};
 
 use restate_types::health::HealthStatus;
 use restate_types::net::BindAddress;
@@ -85,7 +85,11 @@ impl NetworkServerBuilder {
         }
 
         let server_builder = tonic::transport::Server::builder()
-            .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
+            .layer(
+                TraceLayer::new_for_grpc()
+                    .make_span_with(span_factory)
+                    .on_failure(DefaultOnFailure::new().level(Level::DEBUG)),
+            )
             .add_routes(self.grpc_routes.unwrap_or_default())
             .add_service(reflection_service_builder.build_v1()?);
 
