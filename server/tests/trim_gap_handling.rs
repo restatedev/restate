@@ -144,7 +144,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         .into_inner();
 
     // todo(pavel): if create snapshot returned an LSN, we could trim the log to that specific LSN instead of guessing
-    trim_log(&mut client, 3).await?;
+    trim_log(&mut client, 3, Duration::from_secs(3)).await?;
 
     let mut worker_3 = Node::new_test_node(
         "node-3",
@@ -254,26 +254,26 @@ async fn any_partition_active(
 async fn trim_log(
     client: &mut ClusterCtrlSvcClient<Channel>,
     trim_point: u64,
+    timeout: Duration,
 ) -> googletest::Result<()> {
-    // todo(pavel): this is flimsy, ensure we actually trim the log to a particular LSN
-
-    // Since we don't have a confirmed trimmed LSN in the response, and it takes a bit of time for
-    // the log tail info to propagate to the admin node, we must wait long enough to cover the
-    // heartbeat interval before we retry. The first attempt is usually a no-op as the admin does
-    // not know the effective global tail.
-    let mut i = 0;
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        client
+        let response = client
             .trim_log(TrimLogRequest {
                 log_id: 0,
                 trim_point,
             })
-            .await?;
-        if i >= 2 {
+            .await?
+            .into_inner();
+
+        if response.trim_point.is_some_and(|tp| tp == trim_point) {
             break;
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        i += 1;
+
+        if tokio::time::Instant::now() > deadline {
+            fail!("Failed to trim log to LSN {} within {:?}", trim_point, timeout)?;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Ok(())
 }
