@@ -21,7 +21,6 @@ use tokio::net::UnixStream;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
-use tracing::level_filters::LevelFilter;
 use tracing::{error, info};
 use url::Url;
 
@@ -37,22 +36,14 @@ use restate_types::config::{LogFormat, MetadataStoreClient};
 use restate_types::logs::metadata::ProviderKind::Replicated;
 use restate_types::net::AdvertisedAddress;
 use restate_types::protobuf::cluster::node_state::State;
+use restate_types::protobuf::cluster::RunMode;
 use restate_types::retries::RetryPolicy;
 use restate_types::{config::Configuration, nodes_config::Role};
 
 mod common;
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
-    tracing_subscriber::fmt()
-        .event_format(tracing_subscriber::fmt::format().compact())
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
-
     let mut base_config = Configuration::default();
     base_config.common.bootstrap_num_partitions = 1.try_into()?;
     base_config.bifrost.default_provider = Replicated;
@@ -231,10 +222,9 @@ async fn any_partition_active(
 
         if cluster_state.nodes.values().any(|n| {
             n.state.as_ref().is_some_and(|s| match s {
-                State::Alive(s) => s
-                    .partitions
-                    .values()
-                    .any(|p| p.effective_mode.cmp(&1).is_eq()),
+                State::Alive(s) => s.partitions.values().any(|p| {
+                    RunMode::try_from(p.effective_mode).is_ok_and(|m| m == RunMode::Leader)
+                }),
                 _ => false,
             })
         }) {
@@ -271,7 +261,11 @@ async fn trim_log(
         }
 
         if tokio::time::Instant::now() > deadline {
-            fail!("Failed to trim log to LSN {} within {:?}", trim_point, timeout)?;
+            fail!(
+                "Failed to trim log to LSN {} within {:?}",
+                trim_point,
+                timeout
+            )?;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
