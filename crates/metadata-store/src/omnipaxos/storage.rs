@@ -194,7 +194,11 @@ where
         Ok(())
     }
 
-    fn batch_append_on_prefix(&mut self, from_idx: usize, entries: Vec<T>) -> StorageResult<()> {
+    pub fn batch_append_on_prefix(
+        &mut self,
+        from_idx: usize,
+        entries: Vec<T>,
+    ) -> StorageResult<()> {
         // Don't need to delete entries that will be overwritten.
         let delete_idx = from_idx + entries.len();
         if delete_idx < self.next_log_key {
@@ -217,7 +221,11 @@ where
         Ok(())
     }
 
-    fn batch_set_decided_idx(&mut self, ld: usize) -> StorageResult<()> {
+    pub fn batch_delete_promise(&mut self) {
+        self.write_batch.delete(NPROM);
+    }
+
+    pub fn batch_set_decided_idx(&mut self, ld: usize) -> StorageResult<()> {
         let ld_bytes = ld.to_be_bytes();
         self.write_batch.put(DECIDE, ld_bytes);
         Ok(())
@@ -249,6 +257,10 @@ where
         let stopsign = Self::serialize_omni_paxos_entity(&ss)?;
         self.write_batch.put(STOPSIGN, stopsign);
         Ok(())
+    }
+
+    pub fn batch_delete_stopsign(&mut self) {
+        self.write_batch.delete(STOPSIGN);
     }
 
     fn batch_set_snapshot(&mut self, snapshot: Option<T::Snapshot>) -> StorageResult<()> {

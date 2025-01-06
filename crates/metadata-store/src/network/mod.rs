@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod connection_manager;
-mod grpc_svc;
+pub mod grpc_svc;
 mod handler;
 mod networking;
 
