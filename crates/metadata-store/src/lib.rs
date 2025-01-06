@@ -27,6 +27,7 @@ pub use restate_core::metadata_store::{
     MetadataStoreClient, Precondition, ReadError, ReadModifyWriteError, WriteError,
 };
 use restate_core::network::NetworkServerBuilder;
+use restate_core::ShutdownError;
 use restate_types::config::{MetadataStoreKind, MetadataStoreOptions, RocksDbOptions};
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
@@ -34,7 +35,7 @@ use restate_types::live::BoxedLiveLoad;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
-use restate_types::{flexbuffers_storage_encode_decode, Version};
+use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId, Version};
 use std::future::Future;
 use tokio::sync::{mpsc, oneshot};
 use ulid::Ulid;
@@ -407,4 +408,76 @@ enum RequestKind {
         key: ByteString,
         precondition: Precondition,
     },
+}
+
+type JoinClusterSender = mpsc::Sender<JoinClusterRequest>;
+type JoinClusterReceiver = mpsc::Receiver<JoinClusterRequest>;
+
+#[derive(Debug, thiserror::Error)]
+enum JoinClusterError {
+    #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
+    #[error("cannot accept new members since I am not active.")]
+    NotActive,
+    #[error("cannot accept new members since I am not the leader.")]
+    NotLeader,
+    #[error("invalid omni paxos configuration: {0}")]
+    ConfigError(String),
+    #[error("pending reconfiguration")]
+    PendingReconfiguration,
+    #[error("rejecting because node id '{0}' is outdated")]
+    OutdatedNode(GenerationalNodeId),
+    #[error("received a concurrent join request for node id '{0}'")]
+    ConcurrentRequest(GenerationalNodeId),
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
+struct JoinClusterRequest {
+    node_id: u64,
+    response_tx: oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>,
+}
+
+impl JoinClusterRequest {
+    fn into_inner(
+        self,
+    ) -> (
+        oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>,
+        u64,
+    ) {
+        (self.response_tx, self.node_id)
+    }
+}
+
+struct JoinClusterResponse {
+    log_prefix: Bytes,
+    metadata_store_config: Bytes,
+}
+
+#[derive(Debug)]
+struct JoinClusterHandle {
+    join_cluster_tx: JoinClusterSender,
+}
+
+impl JoinClusterHandle {
+    pub fn new(join_cluster_tx: JoinClusterSender) -> Self {
+        JoinClusterHandle { join_cluster_tx }
+    }
+
+    pub async fn join_cluster(
+        &self,
+        node_id: u64,
+    ) -> Result<JoinClusterResponse, JoinClusterError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.join_cluster_tx
+            .send(JoinClusterRequest {
+                node_id,
+                response_tx,
+            })
+            .await
+            .map_err(|_| ShutdownError)?;
+
+        response_rx.await.map_err(|_| ShutdownError)?
+    }
 }

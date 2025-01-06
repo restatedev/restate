@@ -16,9 +16,21 @@ package dev.restate.metadata_store_network_svc;
 // Grpc service definition for the metadata store network implementation.
 service MetadataStoreNetworkSvc {
   rpc ConnectTo(stream NetworkMessage) returns (stream NetworkMessage);
+
+  // Try to join an existing metadata store cluster
+  rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
 }
 
 message NetworkMessage {
   bytes payload = 1;
+}
+
+message JoinClusterRequest {
+  uint64 node_id = 1;
+}
+
+message JoinClusterResponse {
+  bytes metadata_store_config = 1;
+  bytes log_prefix = 2;
 }
 
