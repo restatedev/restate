@@ -17,11 +17,11 @@ use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use http_body_util::Full;
-use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
 use restate_types::invocation::{InvocationResponse, ResponseResult};
 use std::str::FromStr;
 use tracing::{info, trace, warn};
+use restate_types::identifiers::AwakeableIdentifier;
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
