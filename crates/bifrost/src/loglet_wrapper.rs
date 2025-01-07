@@ -193,11 +193,11 @@ impl LogletWrapper {
     /// `trim_point`: inclusive LSN up to which to trim the loglet; if the LSN is beyond the
     /// loglet's end, it will be trimmed in full.
     ///
-    /// Returns the effective trim point of the loglet after a trim was performed, `None` otherwise.
+    /// Returns the trim point of the loglet regardless of whether the call caused it to change.
     pub async fn trim(&self, trim_point: Lsn) -> Result<Option<Lsn>, OperationError> {
         // trimming to INVALID is no-op
         if trim_point == Lsn::INVALID {
-            return Ok(None);
+            return self.get_trim_point().await;
         }
         // saturate to the loglet max possible offset.
         let trim_point = trim_point.min(Lsn::new(LogletOffset::MAX.into()));

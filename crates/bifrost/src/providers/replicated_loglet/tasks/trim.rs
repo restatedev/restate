@@ -144,7 +144,7 @@ impl<'a> TrimTask<'a> {
                 // task panicked or runtime is shutting down.
                 continue;
             };
-            if res.is_err() {
+            let Ok(actual_trim_point) = res else {
                 // Trim task failed/aborted on this node. The inner task will log the error in this case.
                 continue;
             };
@@ -155,13 +155,14 @@ impl<'a> TrimTask<'a> {
                 // Let's keep the rest of the trim requests running in the background.
                 debug!(
                     loglet_id = %self.my_params.loglet_id,
-                    trim_point = %trim_point,
+                    %trim_point,
+                    %actual_trim_point,
                     known_global_tail = %self.known_global_tail,
                     "Loglet has been trimmed"
                 );
-                // continue to run the rest of trim requests in the background
+                // Let the remaining trim requests finish in the background
                 inflight_requests.detach_all();
-                return Ok(Some(trim_point));
+                return Ok(Some(actual_trim_point));
             }
         }
 
@@ -170,12 +171,12 @@ impl<'a> TrimTask<'a> {
             .map(|(node_id, _)| *node_id)
             .collect();
 
-        // Not enough nodes have successful responses
+        // Not enough nodes have returned successful responses
         warn!(
             loglet_id = %self.my_params.loglet_id,
-             trim_point = %trim_point,
+            %trim_point,
             known_global_tail = %self.known_global_tail,
-            effective_nodeset = %effective_nodeset,
+            %effective_nodeset,
             "Could not trim the loglet, since we could not confirm the new trim point with write-quorum nodes. Nodes that have confirmed are {}",
             confirmed_nodes,
         );
@@ -184,9 +185,9 @@ impl<'a> TrimTask<'a> {
     }
 }
 
-fn on_trim_response(msg: Incoming<Trimmed>) -> Disposition<()> {
+fn on_trim_response(msg: Incoming<Trimmed>) -> Disposition<LogletOffset> {
     if let Status::Ok = msg.body().header.status {
-        Disposition::Return(())
+        Disposition::Return(msg.body().trim_point)
     } else {
         trace!(
             "Trim request failed on node {}, status is {:?}",

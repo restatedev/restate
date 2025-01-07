@@ -514,9 +514,9 @@ impl<S: LogStore> LogletWorker<S> {
 
     fn process_trim(&mut self, msg: Incoming<Trim>) {
         // When trimming, we eagerly update the in-memory view of the trim-point _before_ we
-        // perform the trim on the log-store since it's safer to over report the trim-point than
-        // under report.
-        //
+        // perform the trim on the log-store since it's safer to over-report the trim point than
+        // under-report.
+
         // fails on shutdown, in this case, we ignore the request
         let mut loglet_state = self.loglet_state.clone();
         let log_store = self.log_store.clone();
@@ -531,7 +531,8 @@ impl<S: LogStore> LogletWorker<S> {
                 let _ = msg
                     .to_rpc_response(
                         Trimmed::new(loglet_state.local_tail(), known_global_tail)
-                            .with_status(Status::Malformed),
+                            .with_status(Status::Malformed)
+                            .with_trim_point(loglet_state.trim_point()),
                     )
                     .send()
                     .await;
@@ -544,10 +545,12 @@ impl<S: LogStore> LogletWorker<S> {
             msg.trim_point = msg.trim_point.min(local_tail.offset().prev());
 
             let body = if loglet_state.update_trim_point(msg.trim_point) {
+                let trim_point = msg.trim_point;
                 match log_store.enqueue_trim(msg).await?.await {
                     Ok(_) => {
                         Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
                             .with_status(Status::Ok)
+                            .with_trim_point(trim_point)
                     }
                     Err(_) => {
                         warn!(
@@ -557,11 +560,13 @@ impl<S: LogStore> LogletWorker<S> {
                         );
                         Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
                             .with_status(Status::Disabled)
+                            .with_trim_point(new_trim_point)
                     }
                 }
             } else {
                 // it's already trimmed
                 Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
+                    .with_trim_point(loglet_state.trim_point())
             };
 
             // ship the response to the original connection

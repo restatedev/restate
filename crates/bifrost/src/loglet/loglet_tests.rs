@@ -185,15 +185,30 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     let start = tokio::time::Instant::now();
     let res = tokio::time::timeout(Duration::from_secs(10), handle2).await;
 
-    // We have timedout waiting.
+    // We have timed out waiting.
     assert!(res.is_err());
     assert!(start.elapsed() >= Duration::from_secs(10));
     // Tail didn't change.
     assert_eq!(Lsn::new(5), loglet.find_tail().await?.offset());
 
     // trim the loglet to and including 3
-    loglet.trim(Lsn::new(3)).await?;
+    assert_eq!(Some(Lsn::new(3)), loglet.trim(Lsn::new(3)).await?);
     assert_eq!(Some(Lsn::new(3)), loglet.get_trim_point().await?);
+    assert_eq!(
+        Some(Lsn::new(3)),
+        loglet.trim(Lsn::new(3)).await?,
+        "repeated calls should return the same result"
+    );
+    assert_eq!(
+        Some(Lsn::new(3)),
+        loglet.trim(Lsn::new(2)).await?,
+        "trim returns the actual trim point if a smaller LSN is requested"
+    );
+    assert_eq!(
+        Some(Lsn::new(3)),
+        loglet.trim(Lsn::INVALID).await?,
+        "trim to INVALID is a no-op, effectively the same as a call to get_trim_point"
+    );
 
     // tail didn't change
     {

@@ -130,7 +130,7 @@ impl Bifrost {
     /// It's recommended to use the [`Appender`] interface. Use [`Self::create_appender`]
     /// and reuse this appender to create a sequential write stream to the virtual log.
     #[instrument(
-        level="trace",
+        level = "trace",
         skip(self, body),
         fields(
             otel.name = "Bifrost: append",
@@ -152,7 +152,7 @@ impl Bifrost {
     /// operation fails with [`Error::UnknownLogId`]. The returned Lsn is the Lsn of the last
     /// record in this batch. This will only return after all records have been stored.
     #[instrument(
-        level="trace",
+        level = "trace",
         skip(self, batch),
         fields(
             otel.name = "Bifrost: append_batch",
@@ -415,8 +415,8 @@ impl BifrostInner {
         Ok(trim_point.unwrap_or(Lsn::INVALID))
     }
 
-    /// Trim the log to the specified LSN trim point (inclusive). Returns the new trim point LSN if
-    /// the log was actually trimmed by this call, or `None` otherwise.
+    /// Trim the log to the specified LSN trim point (inclusive). Returns the log's actual trim
+    /// point.
     pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<Option<Lsn>, Error> {
         let log_metadata = Metadata::with_current(|m| m.logs_ref());
 
@@ -701,7 +701,16 @@ mod tests {
             bifrost.admin().trim(LOG_ID, Lsn::from(5)).await?,
             Some(Lsn::from(5))
         );
-        assert_eq!(bifrost.admin().trim(LOG_ID, Lsn::from(5)).await?, None); // no-op
+        assert_eq!(
+            bifrost.admin().trim(LOG_ID, Lsn::from(5)).await?,
+            Some(Lsn::from(5)),
+            "repeated calls should return the same result"
+        );
+        assert_eq!(
+            bifrost.admin().trim(LOG_ID, Lsn::from(3)).await?,
+            Some(Lsn::from(5)),
+            "trim returns the actual trim point if a lower trim LSN is requested"
+        );
 
         let tail = bifrost.find_tail(LOG_ID).await?;
         assert_eq!(tail.offset(), Lsn::from(11));
@@ -722,10 +731,10 @@ mod tests {
             assert!(record.is_data_record());
         }
 
-        // trimming beyond the release point will fall back to the release point
         assert_eq!(
             bifrost.admin().trim(LOG_ID, Lsn::MAX).await?,
-            Some(Lsn::from(10))
+            Some(Lsn::from(10)),
+            "trimming beyond the release point should fall back to the release point"
         );
 
         assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());

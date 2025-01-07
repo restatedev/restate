@@ -547,6 +547,8 @@ pub struct Trim {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trimmed {
     pub header: LogServerResponseHeader,
+    /// The effective trim point.
+    pub trim_point: LogletOffset,
 }
 
 impl Deref for Trimmed {
@@ -567,17 +569,24 @@ impl Trimmed {
     pub fn empty() -> Self {
         Self {
             header: LogServerResponseHeader::empty(),
+            trim_point: LogletOffset::INVALID,
         }
     }
 
     pub fn new(tail_state: TailState<LogletOffset>, known_global_tail: LogletOffset) -> Self {
         Self {
             header: LogServerResponseHeader::new(tail_state, known_global_tail),
+            trim_point: LogletOffset::INVALID,
         }
     }
 
     pub fn with_status(mut self, status: Status) -> Self {
         self.header.status = status;
+        self
+    }
+
+    pub fn with_trim_point(mut self, trim_point: LogletOffset) -> Self {
+        self.trim_point = trim_point;
         self
     }
 }

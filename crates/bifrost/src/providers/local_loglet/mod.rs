@@ -224,7 +224,7 @@ impl Loglet for LocalLoglet {
             self.last_committed_offset.load(Ordering::Relaxed),
         ));
 
-        // the lock is needed to prevent concurrent trim operations from over taking each other :-(
+        // The lock is needed to prevent concurrent trim operations from over taking each other :-(
         // The problem is that the LogStoreWriter is not the component holding the ground truth
         // but the LocalLoglet is. The bad thing that could happen is that we might not trim earlier
         // parts in case two trim operations get reordered and we crash before applying the second.
@@ -234,7 +234,7 @@ impl Loglet for LocalLoglet {
 
         if current_trim_point >= effective_trim_point {
             // nothing to do since we have already trimmed beyond new_trim_point
-            return Ok(None);
+            return Ok(Some(current_trim_point));
         }
 
         counter!(BIFROST_LOCAL_TRIM).increment(1);

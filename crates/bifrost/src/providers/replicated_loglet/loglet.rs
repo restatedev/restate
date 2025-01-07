@@ -284,7 +284,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         skip_all,
         fields(
             loglet_id = %self.my_params.loglet_id,
-            trim_point,
+            requested_trim_point,
             otel.name = "replicated_loglet: trim",
         )
     )]
@@ -293,10 +293,10 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         requested_trim_point: LogletOffset,
     ) -> Result<Option<LogletOffset>, OperationError> {
         let known_global_tail = self.known_global_tail.latest_offset().prev_unchecked();
-        let trim_point = if requested_trim_point > known_global_tail {
+        let requested_trim_point = if requested_trim_point > known_global_tail {
             debug!(
                 loglet_id = %self.my_params.loglet_id,
-                requested_trim_point = %requested_trim_point,
+                %requested_trim_point,
                 known_global_tail = %self.known_global_tail,
                 "Trim point clamped to the last known global tail"
             );
@@ -305,22 +305,22 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
             requested_trim_point
         };
 
-        let new_trim_point = TrimTask::new(
+        let trim_point = TrimTask::new(
             &self.my_params,
             self.log_servers_rpc.clone(),
             self.known_global_tail.clone(),
         )
-        .run(trim_point, self.networking.clone())
+        .run(requested_trim_point, self.networking.clone())
         .await?;
 
         info!(
             loglet_id=%self.my_params.loglet_id,
+            ?requested_trim_point,
             ?trim_point,
-            ?new_trim_point,
             "Loglet trim task completed successfully"
         );
 
-        Ok(new_trim_point)
+        Ok(trim_point)
     }
 
     async fn seal(&self) -> Result<(), OperationError> {
@@ -567,7 +567,7 @@ mod tests {
             nodeset: NodeSet::from_single(PlainNodeId::new(1)),
         };
         // For this test to work, we need to disable the record cache to ensure we
-        // observer the moving trimpoint.
+        // observe the moving trim point.
         let mut config = Configuration::default();
         // disable read-ahead to avoid reading records from log-servers before the trim taking
         // place.

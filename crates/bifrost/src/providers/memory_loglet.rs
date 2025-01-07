@@ -394,9 +394,11 @@ impl Loglet for MemoryLoglet {
         let requested_trim_point = requested_trim_point.min(LogletOffset::new(
             self.last_committed_offset.load(Ordering::Relaxed),
         ));
+        if requested_trim_point == LogletOffset::INVALID {
+            return Ok(None);
+        }
 
         let current_trim_point = LogletOffset::new(self.trim_point_offset.load(Ordering::Relaxed));
-
         if current_trim_point >= requested_trim_point {
             return Ok(Some(current_trim_point));
         }

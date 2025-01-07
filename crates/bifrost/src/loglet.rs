@@ -135,7 +135,7 @@ pub trait Loglet: Send + Sync + std::fmt::Debug {
     /// Passing `Offset::INVALID` is a no-op. (success)
     /// Passing `Offset::OLDEST` trims the first record in the loglet (if exists).
     ///
-    /// Returns the new trim point offset if a trim was performed by this call, or `None` otherwise.
+    /// Returns the trim point offset regardless of whether a trim was performed by this call.
     async fn trim(&self, trim_point: LogletOffset) -> Result<Option<LogletOffset>, OperationError>;
 
     /// Seal the loglet. This operation is idempotent.
