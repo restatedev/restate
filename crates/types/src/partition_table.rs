@@ -41,6 +41,11 @@ pub trait FindPartition {
         &self,
         partition_key: PartitionKey,
     ) -> Result<PartitionId, PartitionTableError>;
+
+    fn find_partition(
+        &self,
+        partition_key: PartitionKey,
+    ) -> Result<(PartitionId, &Partition), PartitionTableError>;
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -166,6 +171,32 @@ impl FindPartition for PartitionTable {
             .and_then(|partition| {
                 if partition.key_range.start() <= &partition_key {
                     Some(candidate)
+                } else {
+                    None
+                }
+            })
+            .ok_or(PartitionTableError(partition_key))
+    }
+
+    fn find_partition(
+        &self,
+        partition_key: PartitionKey,
+    ) -> Result<(PartitionId, &Partition), PartitionTableError> {
+        // partition key ranges are inclusive, so let's look for the next partition key boundary >=
+        // partition_key to find the owning partition candidate
+        let candidate = self
+            .partition_key_index
+            .range(partition_key..)
+            .next()
+            .map(|(_, partition_id)| *partition_id)
+            .ok_or(PartitionTableError(partition_key))?;
+
+        // next we validate that the partition key is actually contained within the partition
+        self.partitions
+            .get(&candidate)
+            .and_then(|partition| {
+                if partition.key_range.start() <= &partition_key {
+                    Some((candidate, partition))
                 } else {
                     None
                 }

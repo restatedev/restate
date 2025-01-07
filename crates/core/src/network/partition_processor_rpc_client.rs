@@ -21,6 +21,7 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
 
+use crate::cluster_state::ClusterState;
 use crate::network::rpc_router::{ConnectionAwareRpcError, ConnectionAwareRpcRouter, RpcError};
 use crate::network::{HasConnection, Networking, Outgoing, TransportConnect};
 use crate::partitions::PartitionRouting;
@@ -324,15 +325,17 @@ where
         request_id: PartitionProcessorRpcRequestId,
         inner_request: PartitionProcessorRpcRequestInner,
     ) -> Result<PartitionProcessorRpcResponse, PartitionProcessorRpcClientError> {
-        let partition_id = self
-            .partition_table
-            .pinned()
-            .find_partition_id(inner_request.partition_key())?;
+        let partition_table = self.partition_table.pinned();
+        let (partition_id, partition) =
+            partition_table.find_partition(inner_request.partition_key())?;
 
-        let node_id = self
-            .partition_routing
-            .get_node_by_partition(partition_id)
-            .ok_or(PartitionProcessorRpcClientError::UnknownNode(partition_id))?;
+        // todo(azmy): keep an instance on self
+        let cluster_state = ClusterState::current();
+        let routing = cluster_state.intersect(&partition.replica_group);
+        let node_id = routing
+            .first()
+            .cloned()
+            .ok_or_else(|| PartitionProcessorRpcClientError::UnknownNode(partition_id))?;
 
         let rpc_result = self
             .rpc_router
