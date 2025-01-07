@@ -8,15 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU16;
+
 use anyhow::Context;
 use bytes::BytesMut;
-use bytestring::ByteString;
 use enumset::EnumSet;
 use futures::stream::BoxStream;
-use prost_dto::IntoProto;
-use restate_core::metadata_store::{
-    retry_on_network_error, MetadataStoreClient, Precondition, WriteError,
-};
+use tokio_stream::StreamExt;
+use tonic::{Request, Response, Status, Streaming};
+
+use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvc;
 use restate_core::network::{ConnectionManager, ProtocolError, TransportConnect};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
@@ -26,19 +27,16 @@ use restate_core::protobuf::node_ctl_svc::{
 };
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::config::Configuration;
 use restate_types::health::Health;
-use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
-use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
-use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
-use restate_types::partition_table::{PartitionTable, PartitionTableBuilder, ReplicationStrategy};
+use restate_types::logs::metadata::ProviderConfiguration;
+use restate_types::nodes_config::Role;
+use restate_types::partition_table::ReplicationStrategy;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::node::Message;
-use restate_types::storage::{StorageCodec, StorageEncode};
-use restate_types::{GenerationalNodeId, Version, Versioned};
-use std::num::NonZeroU16;
-use tokio_stream::StreamExt;
-use tonic::{Request, Response, Status, Streaming};
+use restate_types::storage::StorageCodec;
+
+use crate::{provision_cluster_metadata, ClusterConfiguration};
 
 pub struct NodeCtlSvcHandler {
     task_center: task_center::Handle,
@@ -62,106 +60,6 @@ impl NodeCtlSvcHandler {
             roles,
             health,
             metadata_store_client,
-        }
-    }
-
-    /// Provision the cluster metadata. Returns `true` if the cluster was newly provisioned. Returns
-    /// `false` if the cluster is already provisioned.
-    async fn provision_cluster_metadata(
-        &self,
-        common_opts: &CommonOptions,
-        cluster_configuration: &ClusterConfiguration,
-    ) -> anyhow::Result<bool> {
-        let (initial_nodes_configuration, initial_partition_table, initial_logs) =
-            Self::generate_initial_metadata(common_opts, cluster_configuration);
-
-        let result = retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
-            self.metadata_store_client
-                .provision(&initial_nodes_configuration)
-        })
-        .await?;
-
-        retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
-            self.write_initial_value_dont_fail_if_it_exists(
-                PARTITION_TABLE_KEY.clone(),
-                &initial_partition_table,
-            )
-        })
-        .await
-        .context("failed provisioning the initial partition table")?;
-
-        retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
-            self.write_initial_value_dont_fail_if_it_exists(
-                BIFROST_CONFIG_KEY.clone(),
-                &initial_logs,
-            )
-        })
-        .await
-        .context("failed provisioning the initial logs configuration")?;
-
-        Ok(result)
-    }
-
-    pub fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfiguration {
-        let mut initial_nodes_configuration =
-            NodesConfiguration::new(Version::MIN, common_opts.cluster_name().to_owned());
-        let node_config = NodeConfig::new(
-            common_opts.node_name().to_owned(),
-            common_opts
-                .force_node_id
-                .map(|force_node_id| force_node_id.with_generation(1))
-                .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID),
-            common_opts.advertised_address.clone(),
-            common_opts.roles,
-            LogServerConfig::default(),
-        );
-        initial_nodes_configuration.upsert_node(node_config);
-        initial_nodes_configuration
-    }
-
-    fn generate_initial_metadata(
-        common_opts: &CommonOptions,
-        cluster_configuration: &ClusterConfiguration,
-    ) -> (NodesConfiguration, PartitionTable, Logs) {
-        let mut initial_partition_table_builder = PartitionTableBuilder::default();
-        initial_partition_table_builder
-            .with_equally_sized_partitions(cluster_configuration.num_partitions.get())
-            .expect("Empty partition table should not have conflicts");
-        initial_partition_table_builder
-            .set_replication_strategy(cluster_configuration.replication_strategy);
-        let initial_partition_table = initial_partition_table_builder.build();
-
-        let mut logs_builder = Logs::default().into_builder();
-        logs_builder.set_configuration(LogsConfiguration::from(
-            cluster_configuration.default_provider.clone(),
-        ));
-        let initial_logs = logs_builder.build();
-
-        let initial_nodes_configuration = Self::create_initial_nodes_configuration(common_opts);
-
-        (
-            initial_nodes_configuration,
-            initial_partition_table,
-            initial_logs,
-        )
-    }
-
-    async fn write_initial_value_dont_fail_if_it_exists<T: Versioned + StorageEncode>(
-        &self,
-        key: ByteString,
-        initial_value: &T,
-    ) -> Result<(), WriteError> {
-        match self
-            .metadata_store_client
-            .put(key, initial_value, Precondition::DoesNotExist)
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(WriteError::FailedPrecondition(_)) => {
-                // we might have failed on a previous attempt after writing this value; so let's continue
-                Ok(())
-            }
-            Err(err) => Err(err),
         }
     }
 
@@ -283,10 +181,13 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             )));
         }
 
-        let newly_provisioned = self
-            .provision_cluster_metadata(&config.common, &cluster_configuration)
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+        let newly_provisioned = provision_cluster_metadata(
+            &self.metadata_store_client,
+            &config.common,
+            &cluster_configuration,
+        )
+        .await
+        .map_err(|err| Status::internal(err.to_string()))?;
 
         if !newly_provisioned {
             return Err(Status::already_exists(
@@ -298,21 +199,6 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             ProtoClusterConfiguration::from(cluster_configuration),
         )))
     }
-}
-
-#[derive(Clone, Debug, IntoProto)]
-#[proto(target = "restate_types::protobuf::cluster::ClusterConfiguration")]
-pub struct ClusterConfiguration {
-    #[into_proto(map = "num_partitions_to_u32")]
-    pub num_partitions: NonZeroU16,
-    #[proto(required)]
-    pub replication_strategy: ReplicationStrategy,
-    #[proto(required)]
-    pub default_provider: ProviderConfiguration,
-}
-
-fn num_partitions_to_u32(num_partitions: NonZeroU16) -> u32 {
-    u32::from(num_partitions.get())
 }
 
 pub struct CoreNodeSvcHandler<T> {

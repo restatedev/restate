@@ -21,7 +21,7 @@ use restate_local_cluster_runner::{
 };
 use restate_types::config::MetadataStoreClient;
 use restate_types::logs::metadata::{
-    DefaultProvider, NodeSetSelectionStrategy, ReplicatedLogletConfig,
+    NodeSetSelectionStrategy, ProviderConfiguration, ReplicatedLogletConfig,
 };
 use restate_types::replicated_loglet::ReplicationProperty;
 use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
@@ -162,7 +162,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
         .provision_cluster(
             None,
             None,
-            Some(DefaultProvider::Replicated(replicated_loglet_config)),
+            Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
         )
         .await
         .into_test_result()?;

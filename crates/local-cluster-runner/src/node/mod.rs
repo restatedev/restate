@@ -17,7 +17,7 @@ use regex::{Regex, RegexSet};
 use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest as ProtoProvisionClusterRequest;
-use restate_types::logs::metadata::DefaultProvider;
+use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::partition_table::ReplicationStrategy;
 use restate_types::retries::RetryPolicy;
 use restate_types::{
@@ -759,7 +759,7 @@ impl StartedNode {
         &self,
         num_partitions: Option<NonZeroU16>,
         placement_strategy: Option<ReplicationStrategy>,
-        log_provider: Option<DefaultProvider>,
+        log_provider: Option<ProviderConfiguration>,
     ) -> anyhow::Result<bool> {
         let channel = create_tonic_channel_from_advertised_address(
             self.node_address().clone(),
