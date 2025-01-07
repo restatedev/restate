@@ -27,6 +27,7 @@
 //! 3. [`RawEntry`] only. This is used in the Invoker when preparing service protocol messages.
 
 use bytestring::ByteString;
+use std::fmt;
 
 pub mod command;
 pub mod encoding;
@@ -56,6 +57,15 @@ pub enum EntryType {
     Command(CommandType),
     Notification,
     Event,
+}
+
+impl fmt::Display for EntryType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EntryType::Command(cmd) => fmt::Display::fmt(cmd, f),
+            e => fmt::Debug::fmt(e, f),
+        }
+    }
 }
 
 #[enum_delegate::register]

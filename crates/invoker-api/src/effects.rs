@@ -37,6 +37,7 @@ pub enum EffectKind {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     JournalEntryV2 {
+        index_to_ack: EntryIndex,
         entry: journal_v2::raw::RawEntry,
     },
     SuspendedV2 {

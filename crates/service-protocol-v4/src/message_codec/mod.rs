@@ -128,7 +128,10 @@ macro_rules! gen_message {
             }
         }
     };
-    (@gen_message_type_enum_allows_ack [$variant:ident $($noparse:ident)? allows_ack = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
+   (@gen_message_type_enum_allows_ack [$variant:ident noparse allows_ack = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
+        gen_message!(@gen_message_type_enum_allows_ack [$($tail)*] -> [MessageType::$variant | $($variants)*]);
+    };
+    (@gen_message_type_enum_allows_ack [$variant:ident allows_ack = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
         gen_message!(@gen_message_type_enum_allows_ack [$($tail)*] -> [MessageType::$variant | $($variants)*]);
     };
     (@gen_message_type_enum_allows_ack [$variant:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
@@ -223,8 +226,8 @@ gen_message!(
     CompletePromiseCommand noparse allows_ack = 0x080A,
 
     SleepCommand noparse allows_ack = 0x0C00,
-    CallCommand noparse allows_ack = 0x0C01,
-    OneWayCallCommand noparse allows_ack = 0x0C02,
+    CallCommand allows_ack = 0x0C01,
+    OneWayCallCommand allows_ack = 0x0C02,
 
     SendNotificationCommand noparse allows_ack = 0x0C04,
 

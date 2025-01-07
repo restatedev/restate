@@ -18,7 +18,6 @@ use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::state_table::ReadOnlyStateTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::ServiceId;
-use restate_types::journal::raw::PlainRawEntry;
 use std::vec::IntoIter;
 
 #[derive(Debug, thiserror::Error)]
@@ -42,7 +41,7 @@ impl<Storage> restate_invoker_api::JournalReader for InvokerStorageReader<Storag
 where
     for<'a> Storage: ReadOnlyJournalTable + ReadOnlyInvocationStatusTable + Send + 'a,
 {
-    type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
+    type JournalStream = stream::Iter<IntoIter<restate_invoker_api::journal_reader::JournalEntry>>;
     type Error = InvokerStorageReaderError;
 
     async fn read_journal<'a>(

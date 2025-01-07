@@ -380,9 +380,9 @@ mod test_util {
             }
         }
 
-        fn serialize_input_entry(InputEntry { value }: InputEntry) -> Bytes {
+        fn serialize_input_entry(InputEntry { headers, value }: InputEntry) -> Bytes {
             InputEntryMessage {
-                headers: vec![],
+                headers: headers.into_iter().map(Into::into).collect(),
                 value,
                 ..Default::default()
             }

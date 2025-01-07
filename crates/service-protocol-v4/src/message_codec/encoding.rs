@@ -56,12 +56,24 @@ impl Encoder {
         buf.freeze()
     }
 
+    /// Encodes a raw message to bytes
+    pub fn encode_raw(&self, msg_ty: MessageType, content: Bytes) -> Bytes {
+        let mut buf = BytesMut::with_capacity(8 + content.len());
+        let len: u32 = content
+            .len()
+            .try_into()
+            .expect("Protocol messages can't be larger than u32");
+        buf.put_u64(MessageHeader::new(msg_ty, len).into());
+        buf.put(content);
+        buf.freeze()
+    }
+
     /// Includes header len
-    pub fn encoded_len(&self, msg: &Message) -> usize {
+    fn encoded_len(&self, msg: &Message) -> usize {
         8 + msg.encoded_len()
     }
 
-    pub fn encode_to_buf_mut(
+    fn encode_to_buf_mut(
         &self,
         mut buf: impl BufMut,
         msg: Message,

@@ -13,6 +13,7 @@ use restate_invoker_api::{Effect, InvocationStatusReport, InvokeInputJournal, St
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
+use restate_types::journal_v2::raw::RawEntry;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 
@@ -34,6 +35,11 @@ pub(crate) enum InputCommand<SR> {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         completion: Completion,
+    },
+    Entry {
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        entry: RawEntry,
     },
     StoredEntryAck {
         partition: PartitionLeaderEpoch,
@@ -98,6 +104,21 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
                 partition,
                 invocation_id,
                 completion,
+            })
+            .map_err(|_| NotRunningError)
+    }
+
+    async fn notify_entry(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        entry: RawEntry,
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::Entry {
+                partition,
+                invocation_id,
+                entry,
             })
             .map_err(|_| NotRunningError)
     }

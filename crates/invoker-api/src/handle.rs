@@ -11,12 +11,13 @@
 use super::Effect;
 use super::JournalMetadata;
 
+use crate::journal_reader::JournalEntry;
 use restate_errors::NotRunningError;
 use restate_types::identifiers::PartitionKey;
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
-use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
+use restate_types::journal_v2::raw::RawEntry;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
@@ -25,7 +26,7 @@ use tokio::sync::mpsc;
 pub enum InvokeInputJournal {
     #[default]
     NoCachedJournal,
-    CachedJournal(JournalMetadata, Vec<PlainRawEntry>),
+    CachedJournal(JournalMetadata, Vec<JournalEntry>),
 }
 
 pub trait InvokerHandle<SR> {
@@ -42,6 +43,13 @@ pub trait InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         completion: Completion,
+    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
+
+    fn notify_entry(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        entry: RawEntry,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
     fn notify_stored_entry_ack(

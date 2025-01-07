@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 entry-codec = ["dep:bytestring", "dep:assert2"]
-message-codec = ["dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:size", "dep:tracing"]
+message-codec = ["dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:size", "dep:tracing", "dep:paste"]
 
 [dependencies]
 restate-errors = { workspace = true, optional = true }

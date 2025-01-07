@@ -6,7 +6,7 @@ use crate::debug_if_leader;
 use crate::partition::state_machine::entries::event::ApplyEventCommand;
 use crate::partition::state_machine::entries::notification::ApplyNotificationCommand;
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{ CommandHandler, Error, StateMachineApplyContext};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
 use restate_storage_api::journal_table_v2::JournalTable;

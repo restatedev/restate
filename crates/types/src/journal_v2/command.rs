@@ -6,6 +6,7 @@ use crate::journal_v2::{CompletionNotificationIndex, Entry, EntryMetadata, Entry
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use bytestring::ByteString;
+use std::fmt;
 use strum::EnumDiscriminants;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +58,12 @@ pub enum CommandInner {
     Call(CallCommand),
     OneWayCall(OneWayCallCommand),
     Output(OutputCommand),
+}
+
+impl fmt::Display for CommandType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
 }
 
 // Little macro to reduce boilerplate for CompletableCommandAccessor, TryFromEntry and EntryMetadata.

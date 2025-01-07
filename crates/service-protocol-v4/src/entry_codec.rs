@@ -12,7 +12,7 @@ use crate::proto;
 use assert2::let_assert;
 use bytestring::ByteString;
 use prost::Message;
-use restate_types::errors::GenericError;
+use restate_types::errors::{GenericError, InvocationError};
 use restate_types::invocation::Header;
 use restate_types::journal_v2::command::{
     CallCommand, CallRequest, CommandInner, CommandMetadata, InputCommand, OneWayCallCommand,
@@ -401,5 +401,15 @@ impl TryFrom<proto::notification_message::Result> for NotificationResult {
                     .map_err(|e| EncodingError::from(GenericError::from(e)))?,
             ),
         })
+    }
+}
+
+impl From<proto::ErrorMessage> for InvocationError {
+    fn from(value: proto::ErrorMessage) -> Self {
+        if value.description.is_empty() {
+            InvocationError::new(value.code, value.message)
+        } else {
+            InvocationError::new(value.code, value.message).with_description(value.description)
+        }
     }
 }

@@ -1718,7 +1718,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 )
                 .await?;
             }
-            InvokerEffectKind::JournalEntryV2 { entry } => {
+            InvokerEffectKind::JournalEntryV2 {
+                index_to_ack,
+                entry,
+            } => {
                 entries::OnJournalEntryCommand {
                     entry,
                     invocation_id,
@@ -1726,6 +1729,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 }
                 .apply(ctx)
                 .await?;
+                ctx.action_collector.push(Action::AckStoredEntry {
+                    invocation_id,
+                    entry_index: index_to_ack,
+                });
             }
             InvokerEffectKind::Suspended {
                 waiting_for_completed_entries,

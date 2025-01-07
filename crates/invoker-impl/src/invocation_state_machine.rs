@@ -252,6 +252,15 @@ impl InvocationStateMachine {
         }
     }
 
+    pub(super) fn notify_entry(&mut self, entry: RawEntry) {
+        if let InvocationState::InFlight {
+            notifications_tx, ..
+        } = &mut self.invocation_state
+        {
+            Self::try_send_notification(notifications_tx, Notification::Entry(entry));
+        }
+    }
+
     pub(super) fn try_send_notification(
         notifications_tx: &mut Option<mpsc::UnboundedSender<Notification>>,
         notification: Notification,
