@@ -72,6 +72,7 @@ restate-core = { workspace = true, features = ["test-util"] }
 restate-local-cluster-runner = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+restate-metadata-store = { workspace = true }
 mock-service-endpoint = { workspace = true }
 
 anyhow = { workspace = true }
