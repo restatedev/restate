@@ -44,7 +44,8 @@ pub trait LogletProvider: Send + Sync {
     /// This will not perform any updates, it just statically generates a valid
     /// configuration for a potentially new loglet.
     ///
-    /// if `chain` is None, this means we no chain exists already for this log.
+    /// if `chain` is None, the provider should assume that no chain exists already
+    /// for this log.
     fn propose_new_loglet_params(
         &self,
         log_id: LogId,

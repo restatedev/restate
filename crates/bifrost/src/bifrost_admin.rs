@@ -8,14 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::Deref;
 use std::sync::Arc;
 
-use restate_core::metadata_store::retry_on_network_error;
 use tracing::{debug, info, instrument};
 
-use restate_core::{Metadata, MetadataKind, MetadataWriter};
-use restate_metadata_store::MetadataStoreClient;
+use restate_core::metadata_store::retry_on_network_error;
+use restate_core::{Metadata, MetadataKind};
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Chain, LogletParams, Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, TailState};
@@ -30,21 +28,6 @@ use crate::{Bifrost, Error, Result};
 #[derive(Clone, Copy)]
 pub struct BifrostAdmin<'a> {
     bifrost: &'a Bifrost,
-    metadata_writer: &'a MetadataWriter,
-    metadata_store_client: &'a MetadataStoreClient,
-}
-
-impl<'a> AsRef<Bifrost> for BifrostAdmin<'a> {
-    fn as_ref(&self) -> &Bifrost {
-        self.bifrost
-    }
-}
-
-impl<'a> Deref for BifrostAdmin<'a> {
-    type Target = Bifrost;
-    fn deref(&self) -> &Self::Target {
-        self.bifrost
-    }
 }
 
 #[derive(Debug)]
@@ -56,16 +39,8 @@ pub struct SealedSegment {
 }
 
 impl<'a> BifrostAdmin<'a> {
-    pub fn new(
-        bifrost: &'a Bifrost,
-        metadata_writer: &'a MetadataWriter,
-        metadata_store_client: &'a MetadataStoreClient,
-    ) -> Self {
-        Self {
-            bifrost,
-            metadata_writer,
-            metadata_store_client,
-        }
+    pub fn new(bifrost: &'a Bifrost) -> Self {
+        Self { bifrost }
     }
     /// Trim the log prefix up to and including the `trim_point`.
     /// Set `trim_point` to the value returned from `find_tail()` or `Lsn::MAX` to
@@ -179,7 +154,7 @@ impl<'a> BifrostAdmin<'a> {
     }
 
     pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
-        self.inner.writeable_loglet(log_id).await
+        self.bifrost.inner.writeable_loglet(log_id).await
     }
 
     #[instrument(level = "debug", skip(self), err)]
@@ -247,9 +222,11 @@ impl<'a> BifrostAdmin<'a> {
             .network_error_retry_policy
             .clone();
         let logs = retry_on_network_error(retry_policy, || {
-            self.metadata_store_client.read_modify_write(
-                BIFROST_CONFIG_KEY.clone(),
-                |logs: Option<Logs>| {
+            self.bifrost
+                .inner
+                .metadata_writer
+                .metadata_store_client()
+                .read_modify_write(BIFROST_CONFIG_KEY.clone(), |logs: Option<Logs>| {
                     let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
 
                     let mut builder = logs.into_builder();
@@ -268,13 +245,16 @@ impl<'a> BifrostAdmin<'a> {
                         .append_segment(base_lsn, provider, params.clone())
                         .map_err(AdminError::from)?;
                     Ok(builder.build())
-                },
-            )
+                })
         })
         .await
         .map_err(|e| e.transpose())?;
 
-        self.metadata_writer.update(Arc::new(logs)).await?;
+        self.bifrost
+            .inner
+            .metadata_writer
+            .update(Arc::new(logs))
+            .await?;
         Ok(())
     }
 
@@ -292,25 +272,33 @@ impl<'a> BifrostAdmin<'a> {
             .network_error_retry_policy
             .clone();
         let logs = retry_on_network_error(retry_policy, || {
-            self.metadata_store_client.read_modify_write::<_, _, Error>(
-                BIFROST_CONFIG_KEY.clone(),
-                |logs: Option<Logs>| {
-                    // We assume that we'll always see a value set in metadata for BIFROST_CONFIG_KEY,
-                    // provisioning the empty logs metadata is not our responsibility.
-                    let logs = logs.ok_or(Error::LogsMetadataNotProvisioned)?;
+            self.bifrost
+                .inner
+                .metadata_writer
+                .metadata_store_client()
+                .read_modify_write::<_, _, Error>(
+                    BIFROST_CONFIG_KEY.clone(),
+                    |logs: Option<Logs>| {
+                        // We assume that we'll always see a value set in metadata for BIFROST_CONFIG_KEY,
+                        // provisioning the empty logs metadata is not our responsibility.
+                        let logs = logs.ok_or(Error::LogsMetadataNotProvisioned)?;
 
-                    let mut builder = logs.into_builder();
-                    builder
-                        .add_log(log_id, Chain::new(provider, params.clone()))
-                        .map_err(AdminError::from)?;
-                    Ok(builder.build())
-                },
-            )
+                        let mut builder = logs.into_builder();
+                        builder
+                            .add_log(log_id, Chain::new(provider, params.clone()))
+                            .map_err(AdminError::from)?;
+                        Ok(builder.build())
+                    },
+                )
         })
         .await
         .map_err(|e| e.transpose())?;
 
-        self.metadata_writer.update(Arc::new(logs)).await?;
+        self.bifrost
+            .inner
+            .metadata_writer
+            .update(Arc::new(logs))
+            .await?;
         Ok(())
     }
 
@@ -323,14 +311,21 @@ impl<'a> BifrostAdmin<'a> {
             .clone();
 
         let logs = retry_on_network_error(retry_policy, || {
-            self.metadata_store_client
+            self.bifrost
+                .inner
+                .metadata_writer
+                .metadata_store_client()
                 .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
                     Logs::from_configuration(&Configuration::pinned())
                 })
         })
         .await?;
 
-        self.metadata_writer.update(Arc::new(logs)).await?;
+        self.bifrost
+            .inner
+            .metadata_writer
+            .update(Arc::new(logs))
+            .await?;
         Ok(())
     }
 }
