@@ -158,12 +158,8 @@ where
         )
         .await?;
 
-        let logs_controller = LogsController::init(
-            &configuration,
-            service.bifrost.clone(),
-            service.metadata_writer.clone(),
-        )
-        .await?;
+        let logs_controller =
+            LogsController::init(service.bifrost.clone(), service.metadata_writer.clone()).await?;
 
         let (log_trim_interval, log_trim_threshold) =
             create_log_trim_interval(&configuration.admin);
