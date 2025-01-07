@@ -16,6 +16,8 @@ replicated-loglet = ["restate-bifrost/replicated-loglet"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 restate-admin-rest-model = { workspace = true, features = ["schema"] }
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }

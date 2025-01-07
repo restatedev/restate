@@ -12,6 +12,8 @@ default = []
 schema = ["dep:schemars", "restate-serde-util/schema", "restate-types/schemars"]
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 restate-types = { workspace = true }
 restate-serde-util = { workspace = true }
 

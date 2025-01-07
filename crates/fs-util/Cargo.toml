@@ -11,6 +11,8 @@ publish = false
 default = []
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
