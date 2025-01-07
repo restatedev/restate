@@ -12,6 +12,8 @@ default = []
 options_schema = ["dep:schemars", "restate-types/schemars"]
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 arc-swap = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }

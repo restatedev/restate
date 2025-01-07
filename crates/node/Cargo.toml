@@ -18,6 +18,8 @@ options_schema = [
     "restate-metadata-store/options_schema"]
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 restate-admin = { workspace = true }
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
