@@ -12,13 +12,16 @@ mod message_handler;
 mod persisted_lsn_watchdog;
 mod processor_state;
 mod spawn_processor_task;
+mod update_placement_task;
 
+use restate_core::cluster_state::ClusterState;
 use restate_types::identifiers::SnapshotId;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
+use update_placement_task::UpdatePlacementTask;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use metrics::gauge;
@@ -55,11 +58,9 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcRequest,
 };
-use restate_types::net::partition_processor_manager::{
-    ControlProcessor, ControlProcessors, ProcessorCommand,
-};
+use restate_types::net::partition_processor_manager::ProcessorCommand;
 use restate_types::partition_processor::{PartitionProcessorStatus, ReplayStatus, RunMode};
-use restate_types::partition_table::PartitionTable;
+use restate_types::partition_table::{PartitionTable, ReplicationStrategy};
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::GenerationalNodeId;
 
@@ -88,7 +89,6 @@ pub struct PartitionProcessorManager {
 
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
-    incoming_update_processors: MessageStream<ControlProcessors>,
     incoming_partition_processor_rpc: MessageStream<PartitionProcessorRpcRequest>,
     bifrost: Bifrost,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
@@ -97,7 +97,6 @@ pub struct PartitionProcessorManager {
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
     archived_lsns: HashMap<PartitionId, Lsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
-    pending_control_processors: Option<ControlProcessors>,
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
@@ -178,7 +177,6 @@ impl PartitionProcessorManager {
         bifrost: Bifrost,
         snapshot_repository: Option<SnapshotRepository>,
     ) -> Self {
-        let incoming_update_processors = router_builder.subscribe_to_stream(2);
         let incoming_partition_processor_rpc = router_builder.subscribe_to_stream(128);
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
@@ -189,7 +187,6 @@ impl PartitionProcessorManager {
             name_cache: Default::default(),
             metadata_store_client,
             partition_store_manager,
-            incoming_update_processors,
             incoming_partition_processor_rpc,
             bifrost,
             rx,
@@ -197,7 +194,6 @@ impl PartitionProcessorManager {
             persisted_lsns_rx: None,
             archived_lsns: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
-            pending_control_processors: None,
             asynchronous_operations: JoinSet::default(),
             snapshot_export_tasks: FuturesUnordered::default(),
             pending_snapshots: HashMap::default(),
@@ -236,6 +232,7 @@ impl PartitionProcessorManager {
 
         let mut logs_version_watcher = metadata.watch(MetadataKind::Logs);
         let mut partition_table_version_watcher = metadata.watch(MetadataKind::PartitionTable);
+        let mut nodes_config_version_watcher = metadata.watch(MetadataKind::NodesConfiguration);
 
         let mut latest_snapshot_check_interval = tokio::time::interval(Duration::from_secs(5));
         latest_snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -249,21 +246,25 @@ impl PartitionProcessorManager {
                 _ = latest_snapshot_check_interval.tick() => {
                     self.trigger_periodic_partition_snapshots();
                 }
-                Some(control_processors) = self.incoming_update_processors.next() => {
-                    self.pending_control_processors = Some(control_processors.into_body());
-                    self.on_control_processors();
-                }
-                _ = logs_version_watcher.changed(), if self.pending_control_processors.is_some() => {
+                _ = logs_version_watcher.changed() => {
                     // logs version has changed. and we have a control_processors message
                     // waiting for processing. We can check now if logs version matches
                     // and if we can apply this now.
-                    self.on_control_processors();
+                    self.control_processors();
                 }
-                _ = partition_table_version_watcher.changed(), if self.pending_control_processors.is_some() => {
-                    // partition table version has changed. and we have a control_processors message
-                    // waiting for processing. We can check now if logs version matches
-                    // and if we can apply this now.
-                    self.on_control_processors();
+                _ = nodes_config_version_watcher.changed() => {
+                    // nodes configuration version has changed. We need to make sure partition
+                    // placement is set then we try to reschedule the partitions
+                    // based on the placement and cluster state
+                    self.update_partitions_placements().await?;
+                    self.control_processors();
+                }
+                _ = partition_table_version_watcher.changed() => {
+                    // partition table version has changed. We need to make sure partition
+                    // placement is set then we try to reschedule the partitions
+                    // based on the placement and cluster state
+                    self.update_partitions_placements().await?;
+                    self.control_processors();
                 }
                 Some(event) = self.asynchronous_operations.join_next() => {
                     self.on_asynchronous_event(event.expect("asynchronous operations must not panic"));
@@ -286,6 +287,12 @@ impl PartitionProcessorManager {
 
         self.shutdown().await;
         Ok(())
+    }
+
+    async fn update_partitions_placements(&self) -> anyhow::Result<()> {
+        let update_placement_task = UpdatePlacementTask::new(self.metadata_store_client.clone());
+        // todo: run in the background
+        update_placement_task.run().await
     }
 
     async fn shutdown(&mut self) {
@@ -465,10 +472,8 @@ impl PartitionProcessorManager {
 
                             if let Some(restart_as) = restart_as {
                                 self.on_control_processor(
-                                    ControlProcessor {
-                                        partition_id,
-                                        command: ProcessorCommand::from(restart_as),
-                                    },
+                                    partition_id,
+                                    ProcessorCommand::from(restart_as),
                                     &Metadata::with_current(|m| m.partition_table_ref()),
                                 );
                             }
@@ -620,38 +625,36 @@ impl PartitionProcessorManager {
         }
     }
 
-    fn on_control_processors(&mut self) {
-        let (current_logs_version, current_partition_table_version) =
-            Metadata::with_current(|m| (m.logs_version(), m.partition_table_version()));
-        if self
-            .pending_control_processors
-            .as_ref()
-            .is_some_and(|control_processors| {
-                control_processors.min_logs_table_version <= current_logs_version
-                    && control_processors.min_partition_table_version
-                        <= current_partition_table_version
-            })
-        {
-            let control_processors = self
-                .pending_control_processors
-                .take()
-                .expect("must be some");
-            let partition_table = Metadata::with_current(|m| m.partition_table_snapshot());
+    fn control_processors(&mut self) {
+        let state = ClusterState::current();
+        let (my_node_id, partition_table) =
+            Metadata::with_current(|m| (m.my_node_id(), m.partition_table_ref()));
 
-            for control_processor in control_processors.commands {
-                self.on_control_processor(control_processor, &partition_table);
-            }
+        for (partition_id, partition) in partition_table.partitions() {
+            let alive = state.intersect(&partition.replica_group);
+            let command = match alive.get_index_of(&my_node_id) {
+                None => ProcessorCommand::Stop,
+                Some(index) => match (index, partition_table.replication_strategy()) {
+                    (0, _) => ProcessorCommand::Leader,
+                    (_, ReplicationStrategy::OnAllNodes) => ProcessorCommand::Follower,
+                    (n, ReplicationStrategy::Factor(f)) if n <= f.get() as usize => {
+                        ProcessorCommand::Follower
+                    }
+                    _ => ProcessorCommand::Stop,
+                },
+            };
+
+            self.on_control_processor(*partition_id, command, &partition_table);
         }
     }
 
     fn on_control_processor(
         &mut self,
-        control_processor: ControlProcessor,
+        partition_id: PartitionId,
+        command: ProcessorCommand,
         partition_table: &PartitionTable,
     ) {
-        let partition_id = control_processor.partition_id;
-
-        match control_processor.command {
+        match command {
             ProcessorCommand::Stop => {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
                     processor_state.stop();
@@ -662,7 +665,7 @@ impl PartitionProcessorManager {
             }
             ProcessorCommand::Follower | ProcessorCommand::Leader => {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
-                    if control_processor.command == ProcessorCommand::Leader {
+                    if command == ProcessorCommand::Leader {
                         if let Some(leader_epoch_token) = processor_state.run_as_leader() {
                             Self::obtain_new_leader_epoch(
                                 partition_id,
@@ -671,7 +674,7 @@ impl PartitionProcessorManager {
                                 &mut self.asynchronous_operations,
                             );
                         }
-                    } else if control_processor.command == ProcessorCommand::Follower {
+                    } else if command == ProcessorCommand::Follower {
                         if let Err(err) = processor_state.run_as_follower() {
                             info!("Partition processor '{partition_id}' failed to run as follower: {err}. Stopping it now.");
                             processor_state.stop();
@@ -698,8 +701,7 @@ impl PartitionProcessorManager {
                     self.processor_states.insert(
                         partition_id,
                         ProcessorState::starting(
-                            control_processor
-                                .command
+                            command
                                 .as_run_mode()
                                 .expect("to be follower/leader command"),
                         ),
@@ -709,7 +711,7 @@ impl PartitionProcessorManager {
                 } else {
                     debug!(
                         "Unknown partition id '{partition_id}'. Ignoring {} command.",
-                        control_processor.command
+                        command
                     );
                 }
             }

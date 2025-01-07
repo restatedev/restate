@@ -28,6 +28,7 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::node::Message;
 use restate_types::{GenerationalNodeId, Version};
 
+use crate::cluster_state::ClusterState;
 use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
     ConnectionManager, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder,
@@ -93,6 +94,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 10);
         let scheduling_plan = SchedulingPlan::from(&partition_table);
         TaskCenter::try_set_global_metadata(metadata.clone());
+        TaskCenter::try_set_global_cluster_state(ClusterState::new());
 
         // Use memory-loglet as a default if in test-mode
         #[cfg(any(test, feature = "test-util"))]
