@@ -6745,6 +6745,7 @@ dependencies = [
  "restate-errors",
  "restate-fs-util",
  "restate-local-cluster-runner",
+ "restate-metadata-store",
  "restate-node",
  "restate-rocksdb",
  "restate-test-util",
