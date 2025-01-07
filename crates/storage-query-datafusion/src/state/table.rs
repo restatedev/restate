@@ -20,6 +20,7 @@ use restate_storage_api::state_table::ReadOnlyStateTable;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::context::{QueryContext, SelectPartitions};
+use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::state::row::append_state_row;
 use crate::state::schema::StateBuilder;
@@ -42,6 +43,7 @@ pub(crate) fn register_self(
         partition_selector,
         StateBuilder::schema(),
         ctx.create_distributed_scanner(NAME, local_scanner),
+        FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key"),
     );
     ctx.register_partitioned_table(NAME, Arc::new(table))
 }

@@ -13,6 +13,9 @@ use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use crate::context::SelectPartitions;
+use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
+use crate::table_util::compute_ordering;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
@@ -25,9 +28,7 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream,
 };
 use restate_types::identifiers::{PartitionId, PartitionKey};
-
-use crate::context::SelectPartitions;
-use crate::table_util::compute_ordering;
+use restate_types::partition_table::Partition;
 
 pub trait ScanPartition: Send + Sync + Debug + 'static {
     fn scan_partition(
@@ -42,16 +43,41 @@ pub(crate) struct PartitionedTableProvider<T, S> {
     partition_selector: S,
     schema: SchemaRef,
     partition_scanner: T,
+    partition_key_extractor: FirstMatchingPartitionKeyExtractor,
 }
 
 impl<T, S> PartitionedTableProvider<T, S> {
-    pub(crate) fn new(partition_selector: S, schema: SchemaRef, partition_scanner: T) -> Self {
+    pub(crate) fn new(
+        partition_selector: S,
+        schema: SchemaRef,
+        partition_scanner: T,
+        partition_key_extractor: FirstMatchingPartitionKeyExtractor,
+    ) -> Self {
         Self {
             partition_selector,
             schema,
             partition_scanner,
+            partition_key_extractor,
         }
     }
+}
+
+fn filter_partitions(
+    partition_key: PartitionKey,
+    mut partitions: impl Iterator<Item = (PartitionId, Partition)>,
+) -> Vec<(PartitionId, Partition)> {
+    partitions
+        .find_map(|(partition_id, partition)| {
+            if partition.key_range.contains(&partition_key) {
+                let new_range = partition_key..=partition_key;
+                let new_partition = Partition::new(new_range);
+                Some((partition_id, new_partition))
+            } else {
+                None
+            }
+        })
+        .into_iter()
+        .collect()
 }
 
 #[async_trait]
@@ -76,18 +102,30 @@ where
         &self,
         _state: &(dyn datafusion::catalog::Session),
         projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
+        filters: &[Expr],
         _limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let projected_schema = match projection {
             Some(p) => SchemaRef::new(self.schema.project(p)?),
             None => self.schema.clone(),
         };
+
+        let partition_key = self
+            .partition_key_extractor
+            .try_extract(filters)
+            .map_err(|e| DataFusionError::External(e.into()))?;
+
         let live_partitions = self
             .partition_selector
             .get_live_partitions()
             .await
             .map_err(DataFusionError::External)?;
+
+        let required_partitions = if let Some(partition_key) = partition_key {
+            filter_partitions(partition_key, live_partitions.into_iter())
+        } else {
+            live_partitions
+        };
 
         let eq_properties = if let Some(ordering) = compute_ordering(projected_schema.clone()) {
             EquivalenceProperties::new_with_orderings(projected_schema.clone(), &[ordering])
@@ -97,12 +135,12 @@ where
 
         let plan = PlanProperties::new(
             eq_properties,
-            Partitioning::UnknownPartitioning(live_partitions.len()),
+            Partitioning::UnknownPartitioning(required_partitions.len()),
             ExecutionMode::Bounded,
         );
 
         Ok(Arc::new(PartitionedExecutionPlan {
-            live_partitions,
+            live_partitions: required_partitions,
             projected_schema,
             scanner: self.partition_scanner.clone(),
             plan,
@@ -124,7 +162,7 @@ where
 
 #[derive(Debug, Clone)]
 struct PartitionedExecutionPlan<T> {
-    live_partitions: Vec<PartitionId>,
+    live_partitions: Vec<(PartitionId, Partition)>,
     projected_schema: SchemaRef,
     scanner: T,
     plan: PlanProperties,
@@ -172,13 +210,11 @@ where
         partition: usize,
         _context: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        // fake range until we can handle filters
-        let range = 0..=PartitionKey::MAX;
-        // map df partitions to our partition ids by index.
-        let partition_id = self
+        let (partition_id, partition) = self
             .live_partitions
             .get(partition)
             .expect("num_partitions within bounds");
+        let range = partition.key_range.clone();
         let stream = self
             .scanner
             .scan_partition(*partition_id, range, self.projected_schema.clone())

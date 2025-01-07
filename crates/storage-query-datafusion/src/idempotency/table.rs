@@ -21,6 +21,7 @@ use restate_types::identifiers::{IdempotencyId, PartitionKey};
 use super::row::append_idempotency_row;
 use super::schema::SysIdempotencyBuilder;
 use crate::context::{QueryContext, SelectPartitions};
+use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
@@ -41,6 +42,9 @@ pub(crate) fn register_self(
         partition_selector,
         SysIdempotencyBuilder::schema(),
         ctx.create_distributed_scanner(NAME, local_scanner),
+        FirstMatchingPartitionKeyExtractor::default()
+            .with_service_key("service_key")
+            .with_invocation_id("invocation_id"),
     );
     ctx.register_partitioned_table(NAME, Arc::new(table))
 }

@@ -20,6 +20,7 @@ use restate_types::identifiers::{JournalEntryId, PartitionKey};
 use crate::context::{QueryContext, SelectPartitions};
 use crate::journal::row::append_journal_row;
 use crate::journal::schema::SysJournalBuilder;
+use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
@@ -40,6 +41,7 @@ pub(crate) fn register_self(
         partition_selector,
         SysJournalBuilder::schema(),
         ctx.create_distributed_scanner(NAME, local_scanner),
+        FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
     );
     ctx.register_partitioned_table(NAME, Arc::new(journal_table))
 }

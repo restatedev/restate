@@ -31,6 +31,7 @@ use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Live;
+use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
@@ -95,7 +96,7 @@ pub enum BuildError {
 
 #[async_trait]
 pub trait SelectPartitions: Send + Sync + Debug + 'static {
-    async fn get_live_partitions(&self) -> Result<Vec<PartitionId>, GenericError>;
+    async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError>;
 }
 
 #[derive(Clone)]
@@ -327,9 +328,12 @@ pub struct SelectPartitionsFromMetadata;
 
 #[async_trait]
 impl SelectPartitions for SelectPartitionsFromMetadata {
-    async fn get_live_partitions(&self) -> Result<Vec<PartitionId>, GenericError> {
+    async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError> {
         Ok(Metadata::with_current(|m| {
-            m.partition_table_ref().partition_ids().cloned().collect()
+            m.partition_table_ref()
+                .partitions()
+                .map(|(a, b)| (*a, b.clone()))
+                .collect()
         }))
     }
 }
