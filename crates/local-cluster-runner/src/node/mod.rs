@@ -557,7 +557,7 @@ impl StartedNode {
                     pid
                 );
                 match nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
+                    nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
                     nix::sys::signal::SIGKILL,
                 ) {
                     Ok(()) => (&mut self.status).await,
@@ -582,7 +582,7 @@ impl StartedNode {
                     pid
                 );
                 match nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
+                    nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
                     nix::sys::signal::SIGTERM,
                 ) {
                     Err(nix::errno::Errno::ESRCH) => {
@@ -816,7 +816,7 @@ impl Drop for StartedNode {
                 pid,
             );
             match nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(pid.try_into().unwrap()),
+                nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
                 nix::sys::signal::SIGKILL,
             ) {
                 Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
