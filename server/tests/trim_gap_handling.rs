@@ -256,7 +256,7 @@ async fn trim_log(
             .await?
             .into_inner();
 
-        if response.trim_point.is_some_and(|tp| tp == trim_point) {
+        if response.trim_point.is_some_and(|tp| tp >= trim_point) {
             break;
         }
 
