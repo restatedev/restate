@@ -96,6 +96,7 @@ message TrimLogRequest {
 
 message TrimLogResponse {
   uint32 log_id = 1;
+  // the underlying log's actual trim point as reported by the loglet provider
   optional uint64 trim_point = 2;
 }
 
