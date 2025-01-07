@@ -194,7 +194,7 @@ impl TryFrom<ProtoNodeSetSelectionStrategy> for NodeSetSelectionStrategy {
 
 #[derive(Debug, Clone, Eq, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum DefaultProvider {
+pub enum ProviderConfiguration {
     #[cfg(any(test, feature = "memory-loglet"))]
     InMemory,
     #[default]
@@ -202,8 +202,8 @@ pub enum DefaultProvider {
     Replicated(ReplicatedLogletConfig),
 }
 
-impl DefaultProvider {
-    pub fn as_provider_kind(&self) -> ProviderKind {
+impl ProviderConfiguration {
+    pub fn kind(&self) -> ProviderKind {
         match self {
             #[cfg(any(test, feature = "memory-loglet"))]
             Self::InMemory => ProviderKind::InMemory,
@@ -213,17 +213,17 @@ impl DefaultProvider {
     }
 }
 
-impl From<DefaultProvider> for crate::protobuf::cluster::DefaultProvider {
-    fn from(value: DefaultProvider) -> Self {
+impl From<ProviderConfiguration> for crate::protobuf::cluster::DefaultProvider {
+    fn from(value: ProviderConfiguration) -> Self {
         use crate::protobuf::cluster;
 
         let mut result = crate::protobuf::cluster::DefaultProvider::default();
 
         match value {
-            DefaultProvider::Local => result.provider = ProviderKind::Local.to_string(),
+            ProviderConfiguration::Local => result.provider = ProviderKind::Local.to_string(),
             #[cfg(any(test, feature = "memory-loglet"))]
-            DefaultProvider::InMemory => result.provider = ProviderKind::InMemory.to_string(),
-            DefaultProvider::Replicated(config) => {
+            ProviderConfiguration::InMemory => result.provider = ProviderKind::InMemory.to_string(),
+            ProviderConfiguration::Replicated(config) => {
                 result.provider = ProviderKind::Replicated.to_string();
                 result.replicated_config = Some(cluster::ReplicatedProviderConfig {
                     replication_property: config.replication_property.to_string(),
@@ -236,7 +236,7 @@ impl From<DefaultProvider> for crate::protobuf::cluster::DefaultProvider {
     }
 }
 
-impl TryFrom<crate::protobuf::cluster::DefaultProvider> for DefaultProvider {
+impl TryFrom<crate::protobuf::cluster::DefaultProvider> for ProviderConfiguration {
     type Error = anyhow::Error;
     fn try_from(value: crate::protobuf::cluster::DefaultProvider) -> Result<Self, Self::Error> {
         let provider_kind: ProviderKind = value.provider.parse()?;
@@ -272,7 +272,7 @@ pub struct ReplicatedLogletConfig {
 
 #[derive(Debug, Clone, Eq, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct LogsConfiguration {
-    pub default_provider: DefaultProvider,
+    pub default_provider: ProviderConfiguration,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -325,12 +325,14 @@ impl TryFrom<LogsSerde> for Logs {
                         // this means we are migrating from an older setup that had replication-property
                         // hardcoded to {node:2}
                         config = Some(LogsConfiguration {
-                            default_provider: DefaultProvider::Replicated(ReplicatedLogletConfig {
-                                nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
-                                replication_property: ReplicationProperty::new(
-                                    NonZeroU8::new(2).expect("2 is not 0"),
-                                ),
-                            }),
+                            default_provider: ProviderConfiguration::Replicated(
+                                ReplicatedLogletConfig {
+                                    nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
+                                    replication_property: ReplicationProperty::new(
+                                        NonZeroU8::new(2).expect("2 is not 0"),
+                                    ),
+                                },
+                            ),
                         })
                     }
                 }
@@ -495,14 +497,16 @@ impl Logs {
         Self::with_logs_configuration(LogsConfiguration {
             default_provider: match config.bifrost.default_provider {
                 #[cfg(any(test, feature = "memory-loglet"))]
-                ProviderKind::InMemory => DefaultProvider::InMemory,
-                ProviderKind::Local => DefaultProvider::Local,
-                ProviderKind::Replicated => DefaultProvider::Replicated(ReplicatedLogletConfig {
-                    nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
-                    replication_property: ReplicationProperty::new(
-                        NonZeroU8::new(1).expect("1 is not zero"),
-                    ),
-                }),
+                ProviderKind::InMemory => ProviderConfiguration::InMemory,
+                ProviderKind::Local => ProviderConfiguration::Local,
+                ProviderKind::Replicated => {
+                    ProviderConfiguration::Replicated(ReplicatedLogletConfig {
+                        nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
+                        replication_property: ReplicationProperty::new(
+                            NonZeroU8::new(1).expect("1 is not zero"),
+                        ),
+                    })
+                }
             },
         })
     }
@@ -510,6 +514,7 @@ impl Logs {
     pub fn with_logs_configuration(logs_configuration: LogsConfiguration) -> Self {
         Logs {
             config: logs_configuration,
+            version: Version::MIN,
             ..Default::default()
         }
     }
