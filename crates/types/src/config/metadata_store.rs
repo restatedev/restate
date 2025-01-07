@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
+use std::collections::HashMap;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,7 @@ use restate_serde_util::NonZeroByteCount;
 use tracing::warn;
 
 use super::{data_dir, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use crate::net::AdvertisedAddress;
 
 /// # Metadata store options
 #[serde_as]
@@ -53,6 +55,26 @@ pub struct MetadataStoreOptions {
     ///
     /// The RocksDB options which will be used to configure the metadata store's RocksDB instance.
     pub rocksdb: RocksDbOptions,
+
+    /// # Type of metadata store to start
+    ///
+    /// The type of metadata store to start when running the metadata store role.
+    #[serde(flatten)]
+    pub kind: MetadataStoreKind,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "kebab-case"
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum MetadataStoreKind {
+    #[default]
+    Local,
+    Raft(RaftOptions),
+    Omnipaxos(OmniPaxosOptions),
 }
 
 impl MetadataStoreOptions {
@@ -104,6 +126,29 @@ impl Default for MetadataStoreOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.01,
             rocksdb,
+            kind: MetadataStoreKind::default(),
         }
     }
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct RaftOptions {
+    pub id: NonZeroU64,
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<(u64, String)>"))]
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    pub peers: HashMap<NonZeroU64, AdvertisedAddress>,
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct OmniPaxosOptions {
+    pub id: NonZeroU64,
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<(u64, String)>"))]
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    pub peers: HashMap<NonZeroU64, AdvertisedAddress>,
 }

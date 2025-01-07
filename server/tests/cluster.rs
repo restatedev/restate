@@ -64,7 +64,7 @@ async fn node_id_mismatch() -> googletest::Result<()> {
         .build();
 
     *mismatch_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-        address: cluster.nodes[0].node_address().clone(),
+        addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     cluster.push_node(mismatch_node).await?;
@@ -109,7 +109,7 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
     );
 
     *mismatch_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-        address: cluster.nodes[0].node_address().clone(),
+        addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     let mut mismatch_node = mismatch_node
