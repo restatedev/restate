@@ -8,6 +8,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 include_dir = "0.7.4"
 
 [build-dependencies]

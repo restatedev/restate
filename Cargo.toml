@@ -11,6 +11,7 @@ members = [
     "tools/restatectl",
     "tools/service-protocol-wireshark-dissector",
     "tools/xtask",
+    "workspace-hack",
 ]
 default-members = [
     "cli",
