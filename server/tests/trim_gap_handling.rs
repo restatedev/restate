@@ -33,7 +33,9 @@ use restate_local_cluster_runner::{
     node::{BinarySource, Node},
 };
 use restate_types::config::{LogFormat, MetadataStoreClient};
+use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
+use restate_types::logs::{LogId, Lsn};
 use restate_types::net::AdvertisedAddress;
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::protobuf::cluster::RunMode;
@@ -88,7 +90,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         ClusterCtrlSvcClient::new(grpc_connect(cluster.nodes[0].node_address().clone()).await?)
             .accept_compressed(CompressionEncoding::Gzip);
 
-    any_partition_active(&mut client, Duration::from_secs(5)).await?;
+    tokio::time::timeout(Duration::from_secs(5), any_partition_active(&mut client)).await??;
 
     let addr: SocketAddr = "127.0.0.1:9080".parse()?;
     tokio::spawn(async move {
@@ -135,7 +137,11 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         .into_inner();
 
     // todo(pavel): if create snapshot returned an LSN, we could trim the log to that specific LSN instead of guessing
-    trim_log(&mut client, 3, Duration::from_secs(3)).await?;
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        trim_log(&mut client, LogId::new(0), Lsn::new(3)),
+    )
+    .await??;
 
     let mut worker_3 = Node::new_test_node(
         "node-3",
@@ -200,7 +206,11 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         .await?
         .status()
         .is_success());
-    applied_lsn_converged(&mut client, Duration::from_secs(5), 3, 0).await?;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        applied_lsn_converged(&mut client, 3, PartitionId::from(0)),
+    )
+    .await??;
 
     worker_3.graceful_shutdown(Duration::from_secs(1)).await?;
     cluster.graceful_shutdown(Duration::from_secs(1)).await?;
@@ -209,9 +219,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
 
 async fn any_partition_active(
     client: &mut ClusterCtrlSvcClient<Channel>,
-    timeout: Duration,
 ) -> googletest::Result<()> {
-    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let cluster_state = client
             .get_cluster_state(ClusterStateRequest {})
@@ -230,12 +238,6 @@ async fn any_partition_active(
         }) {
             break;
         }
-        if tokio::time::Instant::now() > deadline {
-            fail!(
-                "Partition processor did not become ready within {:?}",
-                timeout
-            )?;
-        }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Ok(())
@@ -243,29 +245,23 @@ async fn any_partition_active(
 
 async fn trim_log(
     client: &mut ClusterCtrlSvcClient<Channel>,
-    trim_point: u64,
-    timeout: Duration,
+    log_id: LogId,
+    trim_point: Lsn,
 ) -> googletest::Result<()> {
-    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let response = client
             .trim_log(TrimLogRequest {
-                log_id: 0,
-                trim_point,
+                log_id: log_id.into(),
+                trim_point: trim_point.as_u64(),
             })
             .await?
             .into_inner();
 
-        if response.trim_point.is_some_and(|tp| tp >= trim_point) {
+        if response
+            .trim_point
+            .is_some_and(|tp| tp >= trim_point.as_u64())
+        {
             break;
-        }
-
-        if tokio::time::Instant::now() > deadline {
-            fail!(
-                "Failed to trim log to LSN {} within {:?}",
-                trim_point,
-                timeout
-            )?;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -274,16 +270,14 @@ async fn trim_log(
 
 async fn applied_lsn_converged(
     client: &mut ClusterCtrlSvcClient<Channel>,
-    timeout: Duration,
     expected_processors: usize,
-    partition_id: u32,
+    partition_id: PartitionId,
 ) -> googletest::Result<()> {
     assert!(expected_processors > 0);
     info!(
         "Waiting for {} partition processors to converge on the same applied LSN",
         expected_processors
     );
-    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let cluster_state = client
             .get_cluster_state(ClusterStateRequest {})
@@ -301,7 +295,7 @@ async fn applied_lsn_converged(
                     .map(|s| match s {
                         State::Alive(s) => s
                             .partitions
-                            .get(&partition_id)
+                            .get(&partition_id.into())
                             .map(|p| p.last_applied_log_lsn)
                             .unwrap_or_default()
                             .map(|lsn| (partition_id, lsn.value)),
@@ -315,14 +309,6 @@ async fn applied_lsn_converged(
             && applied_lsn.iter().all(|(_, lsn)| *lsn == applied_lsn[0].1)
         {
             break;
-        }
-
-        if tokio::time::Instant::now() > deadline {
-            fail!(
-                "Partition processors did not converge on the same applied LSN within {:?}: {:?}",
-                timeout,
-                applied_lsn
-            )?;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
