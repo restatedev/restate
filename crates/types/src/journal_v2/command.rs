@@ -17,6 +17,7 @@ use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use bytestring::ByteString;
 use std::fmt;
+use std::time::Duration;
 use strum::EnumDiscriminants;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +154,7 @@ pub struct CallRequest {
     pub parameter: Bytes,
     pub headers: Vec<Header>,
     pub idempotency_key: Option<ByteString>,
+    pub completion_retention_duration: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

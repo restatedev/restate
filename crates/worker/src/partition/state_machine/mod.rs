@@ -80,7 +80,7 @@ use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{
-    CommandType, EntryMetadata, Notification, NotificationId, NotificationIndex, NotificationResult,
+    CommandType, EntryMetadata, Notification, NotificationId, NotificationResult,
 };
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
@@ -2876,7 +2876,12 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
         completion: Completion,
     ) -> Result<(), Error>
     where
-        S: JournalTable + journal_table_v2::JournalTable + InvocationStatusTable + TimerTable,
+        S: JournalTable
+            + journal_table_v2::JournalTable
+            + InvocationStatusTable
+            + TimerTable
+            + FsmTable
+            + OutboxTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
 
@@ -2890,7 +2895,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             // THIS IS JOURNAL V2 CASE!
             // Convert it to entry, then use OnJournalEntryCommand
             let new_notification: journal_v2::Entry = Notification::new(
-                NotificationId::for_index(completion.entry_index as NotificationIndex),
+                NotificationId::for_command(completion.entry_index),
                 match completion.result {
                     CompletionResult::Empty => NotificationResult::Void,
                     CompletionResult::Success(s) => NotificationResult::Success(s),

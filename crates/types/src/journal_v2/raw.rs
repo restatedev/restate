@@ -16,6 +16,7 @@ use crate::journal_v2::{
 };
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
+use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 #[error("Unexpected mapping, expecting entry {expected:?} but was {actual:?}. This might be a symptom of data corruption.")]
@@ -148,6 +149,7 @@ pub struct CallOrSendMetadata {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
     pub span_context: ServiceInvocationSpanContext,
+    pub completion_retention_duration: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

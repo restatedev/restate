@@ -2739,10 +2739,15 @@ pub mod v1 {
                             .ok_or(ConversionError::missing_field("span_context"))?,
                     )?;
 
+                let completion_retention_duration = Some(std::time::Duration::try_from(
+                    value.completion_retention_duration.unwrap_or_default(),
+                )?);
+
                 Ok(journal_v2::raw::CallOrSendMetadata {
                     invocation_id,
                     span_context,
                     invocation_target,
+                    completion_retention_duration,
                 })
             }
         }
@@ -2753,6 +2758,9 @@ pub mod v1 {
                     invocation_id: Some(InvocationId::from(value.invocation_id)),
                     invocation_target: Some(value.invocation_target.into()),
                     span_context: Some(SpanContext::from(value.span_context)),
+                    completion_retention_duration: Some(Duration::from(
+                        value.completion_retention_duration.unwrap_or_default(),
+                    )),
                 }
             }
         }

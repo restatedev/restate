@@ -236,6 +236,8 @@ impl Decoder for ServiceProtocolV4Codec {
                                 parameter: pb.parameter,
                                 headers: pb.headers.into_iter().map(Into::into).collect(),
                                 idempotency_key: pb.idempotency_key.map(|s| s.into()),
+                                completion_retention_duration: metadata
+                                    .completion_retention_duration,
                             },
                             invocation_id_notification_idx: pb.invocation_id_notification_idx,
                             result_notification_idx: pb.result_notification_idx,
@@ -259,6 +261,8 @@ impl Decoder for ServiceProtocolV4Codec {
                                 parameter: pb.parameter,
                                 headers: pb.headers.into_iter().map(Into::into).collect(),
                                 idempotency_key: pb.idempotency_key.map(|s| s.into()),
+                                completion_retention_duration: metadata
+                                    .completion_retention_duration,
                             },
                             invoke_time: pb.invoke_time.into(),
                             invocation_id_notification_idx: pb.invocation_id_notification_idx,

@@ -307,6 +307,10 @@ impl InvocationRequestHeader {
         self.span_context = ServiceInvocationSpanContext::start(&self.id, span_relation);
     }
 
+    pub fn with_headers(&mut self, headers: Vec<Header>) {
+        self.headers.extend(headers);
+    }
+
     /// Invocations are idempotent if they have an idempotency key specified or are of type workflow
     pub fn is_idempotent(&self) -> bool {
         self.idempotency_key.is_some() || matches!(self.target.service_ty(), ServiceType::Workflow)

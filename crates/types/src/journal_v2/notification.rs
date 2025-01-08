@@ -10,7 +10,9 @@
 
 use crate::errors::{InvocationError, InvocationErrorCode};
 use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
-use crate::journal_v2::{Entry, EntryMetadata, EntryType, NotificationIndex, NotificationName};
+use crate::journal_v2::{
+    CommandIndex, Entry, EntryMetadata, EntryType, NotificationIndex, NotificationName,
+};
 use bytes::Bytes;
 use bytestring::ByteString;
 use std::fmt;
@@ -35,6 +37,10 @@ pub enum NotificationId {
 impl NotificationId {
     pub const fn for_index(id: NotificationIndex) -> Self {
         Self::Index(id)
+    }
+
+    pub const fn for_command(id: CommandIndex) -> Self {
+        Self::for_index(id as i64)
     }
 
     pub const fn for_builtin_signal(signal: BuiltInSignal) -> Self {
