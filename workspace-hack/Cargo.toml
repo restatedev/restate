@@ -224,6 +224,7 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
+bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
 hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
@@ -238,6 +239,7 @@ tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "unprefixed_mall
 tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
+bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
 hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
@@ -252,6 +254,7 @@ tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "unprefixed_mall
 tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 
 [target.aarch64-apple-darwin.dependencies]
+bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
 hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
@@ -266,6 +269,7 @@ tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "unprefixed_mall
 tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
+bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
 hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
