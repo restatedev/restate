@@ -26,6 +26,7 @@ use restate_bifrost::Bifrost;
 use restate_core::network::{HasConnection, Incoming, Outgoing};
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
     ReadOnlyDeduplicationTable,
@@ -46,7 +47,6 @@ use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
-use restate_types::invocation;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
     ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, SubmitNotificationSink,
@@ -61,6 +61,7 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{invocation, journal_v2};
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
@@ -71,6 +72,7 @@ use crate::metric_definitions::{
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
 use crate::partition::state_machine::{ActionCollector, ExperimentalFeature, StateMachine};
+use crate::partition::types::{InvokerEffect, InvokerEffectKind};
 
 mod cleaner;
 pub mod invoker_storage_reader;
@@ -655,6 +657,38 @@ where
                     .self_propose_and_respond_asynchronously(
                         invocation_response.partition_key(),
                         Command::InvocationResponse(invocation_response),
+                        response_tx,
+                    )
+                    .await;
+            }
+            PartitionProcessorRpcRequestInner::AppendSignal(signal_id, response_result) => {
+                // Convert to InvokerEffect command for now.
+                // TODO(slinkydeveloper) we should model a proper signal command in future, that also works for built-in signals.
+
+                let (invocation_id, signal_index) = signal_id.into_inner();
+                let notification: journal_v2::Entry = journal_v2::Notification::new(
+                    journal_v2::NotificationId::for_index(-(signal_index as i64)),
+                    match response_result {
+                        ResponseResult::Success(b) => journal_v2::NotificationResult::Success(b),
+                        ResponseResult::Failure(f) => {
+                            journal_v2::NotificationResult::Failure(f.into())
+                        }
+                    },
+                )
+                .into();
+
+                self.leadership_state
+                    .self_propose_and_respond_asynchronously(
+                        invocation_id.partition_key(),
+                        Command::InvokerEffect(InvokerEffect {
+                            invocation_id,
+                            kind: InvokerEffectKind::JournalEntryV2 {
+                                entry: notification
+                                    .encode::<ServiceProtocolV4Codec>()
+                                    .expect("Encoding an entry should not fail"),
+                                command_index_to_ack: None,
+                            },
+                        }),
                         response_tx,
                     )
                     .await;

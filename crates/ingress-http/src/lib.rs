@@ -23,7 +23,10 @@ use std::net::{IpAddr, SocketAddr};
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
 };
-use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
+use restate_types::identifiers::SignalIdentifier;
+use restate_types::invocation::{
+    InvocationQuery, InvocationRequest, InvocationResponse, ResponseResult,
+};
 use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 
 /// Client connection information for a given RPC request
@@ -81,6 +84,13 @@ pub trait RequestDispatcher {
     fn send_invocation_response(
         &self,
         invocation_response: InvocationResponse,
+    ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send;
+
+    /// Send invocation response (for awakeables).
+    fn send_signal(
+        &self,
+        signal: SignalIdentifier,
+        result: ResponseResult,
     ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send;
 }
 
@@ -255,6 +265,14 @@ mod mocks {
             invocation_response: InvocationResponse,
         ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send {
             MockRequestDispatcher::send_invocation_response(self, invocation_response)
+        }
+
+        fn send_signal(
+            &self,
+            signal: SignalIdentifier,
+            result: ResponseResult,
+        ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send {
+            MockRequestDispatcher::send_signal(self, signal, result)
         }
     }
 }

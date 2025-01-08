@@ -10,9 +10,12 @@
 
 use crate::errors::InvocationError;
 use crate::identifiers::{
-    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
+    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, SignalIdentifier,
+    WithPartitionKey,
 };
-use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget};
+use crate::invocation::{
+    InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget, ResponseResult,
+};
 use crate::net::define_rpc;
 use crate::net::TargetName;
 use crate::time::MillisSinceEpoch;
@@ -57,6 +60,7 @@ pub enum PartitionProcessorRpcRequestInner {
     AppendInvocation(InvocationRequest, AppendInvocationReplyOn),
     GetInvocationOutput(InvocationQuery, GetInvocationOutputResponseMode),
     AppendInvocationResponse(InvocationResponse),
+    AppendSignal(SignalIdentifier, ResponseResult),
 }
 
 impl WithPartitionKey for PartitionProcessorRpcRequestInner {
@@ -65,6 +69,7 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
             PartitionProcessorRpcRequestInner::AppendInvocation(si, _) => si.partition_key(),
             PartitionProcessorRpcRequestInner::GetInvocationOutput(iq, _) => iq.partition_key(),
             PartitionProcessorRpcRequestInner::AppendInvocationResponse(ir) => ir.partition_key(),
+            PartitionProcessorRpcRequestInner::AppendSignal(si, _) => si.partition_key(),
         }
     }
 }

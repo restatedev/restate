@@ -11,8 +11,12 @@
 use assert2::let_assert;
 use tracing::trace;
 
-use restate_types::identifiers::{PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey};
-use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
+use restate_types::identifiers::{
+    PartitionId, PartitionProcessorRpcRequestId, SignalIdentifier, WithPartitionKey,
+};
+use restate_types::invocation::{
+    InvocationQuery, InvocationRequest, InvocationResponse, ResponseResult,
+};
 use restate_types::live::Live;
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, GetInvocationOutputResponseMode, InvocationOutput,
@@ -308,6 +312,27 @@ where
             .resolve_partition_id_and_send(
                 request_id,
                 PartitionProcessorRpcRequestInner::AppendInvocationResponse(invocation_response),
+            )
+            .await?;
+
+        let_assert!(
+            PartitionProcessorRpcResponse::Appended = response,
+            "Expecting PartitionProcessorRpcResponse::Appended"
+        );
+
+        Ok(())
+    }
+
+    pub async fn append_signal(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        signal_id: SignalIdentifier,
+        result: ResponseResult,
+    ) -> Result<(), PartitionProcessorRpcClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::AppendSignal(signal_id, result),
             )
             .await?;
 

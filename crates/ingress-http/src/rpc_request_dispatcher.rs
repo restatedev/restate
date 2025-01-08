@@ -17,8 +17,12 @@ use restate_core::network::partition_processor_rpc_client::{
     PartitionProcessorRpcClient, PartitionProcessorRpcClientError,
 };
 use restate_core::network::TransportConnect;
-use restate_types::identifiers::{PartitionProcessorRpcRequestId, WithInvocationId};
-use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
+use restate_types::identifiers::{
+    PartitionProcessorRpcRequestId, SignalIdentifier, WithInvocationId,
+};
+use restate_types::invocation::{
+    InvocationQuery, InvocationRequest, InvocationResponse, ResponseResult,
+};
 use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::retries::RetryPolicy;
 use std::future::Future;
@@ -148,5 +152,19 @@ where
         })
         .instrument(debug_span!("send invocation response", %request_id, invocation_id = %invocation_response.id))
         .await
+    }
+
+    async fn send_signal(
+        &self,
+        signal_id: SignalIdentifier,
+        result: ResponseResult,
+    ) -> Result<(), RequestDispatcherError> {
+        let request_id = PartitionProcessorRpcRequestId::default();
+        self.execute_rpc(true, || {
+            self.partition_processor_rpc_client
+                .append_signal(request_id, signal_id.clone(), result.clone())
+        })
+            .instrument(debug_span!("send invocation response", %request_id, invocation_id = %signal_id.invocation_id()))
+            .await
     }
 }

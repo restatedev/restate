@@ -14,6 +14,7 @@ use base64::Engine;
 use bytes::{BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fmt::{Display, Formatter};
@@ -1036,6 +1037,91 @@ impl Display for AwakeableIdentifier {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalIdentifier {
+    invocation_id: InvocationId,
+    signal_index: u32,
+}
+
+impl ResourceId for SignalIdentifier {
+    const SIZE_IN_BYTES: usize = InvocationId::SIZE_IN_BYTES + size_of::<EntryIndex>();
+    const RESOURCE_TYPE: IdResourceType = IdResourceType::Signal;
+    const STRING_CAPACITY_HINT: usize = 0; /* Not needed since encoding is custom */
+
+    /// We use a custom strategy for awakeable identifiers since they need to be encoded as base64
+    /// for wider language support.
+    fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+        let mut input_buf =
+            BytesMut::with_capacity(size_of::<EncodedInvocationId>() + size_of::<EntryIndex>());
+        input_buf.put_slice(&self.invocation_id.to_bytes());
+        input_buf.put_u32(self.signal_index);
+        let encoded_base64 = restate_base64_util::URL_SAFE.encode(input_buf.freeze());
+        encoder.push_str(encoded_base64);
+    }
+}
+
+impl SignalIdentifier {
+    pub fn new(invocation_id: InvocationId, signal_index: u32) -> Self {
+        Self {
+            invocation_id,
+            signal_index,
+        }
+    }
+
+    pub fn into_inner(self) -> (InvocationId, u32) {
+        (self.invocation_id, self.signal_index)
+    }
+}
+
+impl FromStr for SignalIdentifier {
+    type Err = IdDecodeError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let decoder = IdDecoder::new(input)?;
+        // Ensure we are decoding the right type
+        if decoder.resource_type != Self::RESOURCE_TYPE {
+            return Err(IdDecodeError::TypeMismatch);
+        }
+        let remaining = decoder.cursor.take_remaining()?;
+
+        let buffer = restate_base64_util::URL_SAFE
+            .decode(remaining)
+            .map_err(|_| IdDecodeError::Codec)?;
+
+        if buffer.len() != size_of::<EncodedInvocationId>() + size_of::<EntryIndex>() {
+            return Err(IdDecodeError::Length);
+        }
+
+        let invocation_id: InvocationId =
+            InvocationId::from_slice(&buffer[..size_of::<EncodedInvocationId>()])?;
+        let signal_index = u32::from_be_bytes(
+            buffer[size_of::<EncodedInvocationId>()..]
+                .try_into()
+                // Unwrap is safe because we check the size above.
+                .unwrap(),
+        );
+
+        Ok(Self {
+            invocation_id,
+            signal_index,
+        })
+    }
+}
+
+impl Display for SignalIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut encoder = IdEncoder::<Self>::new();
+        self.push_contents_to_encoder(&mut encoder);
+        std::fmt::Display::fmt(&encoder.finalize(), f)
+    }
+}
+
+impl WithInvocationId for SignalIdentifier {
+    fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
+    }
+}
+
 #[cfg(any(test, feature = "test-util"))]
 mod mocks {
     use super::*;
@@ -1260,5 +1346,24 @@ mod tests {
 
         assert_eq!(expected_invocation_id, actual_invocation_id);
         assert_eq!(expected_entry_index, actual_entry_index);
+    }
+
+    #[test]
+    fn roundtrip_signal_id() {
+        let expected_invocation_id = InvocationId::mock_random();
+        let expected_signal_index = 2_u32;
+
+        let input_str = SignalIdentifier {
+            invocation_id: expected_invocation_id,
+            signal_index: expected_signal_index,
+        }
+        .to_string();
+        dbg!(&input_str);
+
+        let actual = SignalIdentifier::from_str(&input_str).unwrap();
+        let (actual_invocation_id, actual_signal_index) = actual.into_inner();
+
+        assert_eq!(expected_invocation_id, actual_invocation_id);
+        assert_eq!(expected_signal_index, actual_signal_index);
     }
 }
