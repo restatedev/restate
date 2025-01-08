@@ -10,7 +10,7 @@
 
 use anyhow::bail;
 use enum_map::Enum;
-use prost_dto::{FromProto, IntoProto};
+use prost_dto::{FromProst, IntoProst};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use strum::EnumIter;
@@ -62,10 +62,10 @@ define_message! {
     Deserialize,
     derive_more::Display,
     strum::EnumCount,
-    IntoProto,
-    FromProto,
+    IntoProst,
+    FromProst,
 )]
-#[proto(target = "crate::protobuf::common::MetadataKind")]
+#[prost(target = "crate::protobuf::common::MetadataKind")]
 pub enum MetadataKind {
     NodesConfiguration,
     Schema,
@@ -73,7 +73,7 @@ pub enum MetadataKind {
     Logs,
 }
 
-// todo remove once prost_dto supports TryFromProto
+// todo remove once prost_dto supports TryFromProst
 impl TryFrom<crate::protobuf::common::MetadataKind> for MetadataKind {
     type Error = anyhow::Error;
 
