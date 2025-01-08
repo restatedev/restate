@@ -121,7 +121,7 @@ impl Bifrost {
 
     /// Admin operations of bifrost
     pub fn admin(&self) -> BifrostAdmin<'_> {
-        BifrostAdmin::new(self)
+        BifrostAdmin::new(&self.inner)
     }
 
     /// Appends a single record to a log. The log id must exist, otherwise the
