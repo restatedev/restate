@@ -20,14 +20,15 @@ use restate_types::logs::{LogId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::Version;
 
+use crate::bifrost::BifrostInner;
 use crate::error::AdminError;
 use crate::loglet_wrapper::LogletWrapper;
-use crate::{Bifrost, Error, Result};
+use crate::{Error, Result};
 
 /// Bifrost's Admin API
 #[derive(Clone, Copy)]
 pub struct BifrostAdmin<'a> {
-    bifrost: &'a Bifrost,
+    inner: &'a Arc<BifrostInner>,
 }
 
 #[derive(Debug)]
@@ -39,16 +40,16 @@ pub struct SealedSegment {
 }
 
 impl<'a> BifrostAdmin<'a> {
-    pub fn new(bifrost: &'a Bifrost) -> Self {
-        Self { bifrost }
+    pub(crate) fn new(inner: &'a Arc<BifrostInner>) -> Self {
+        Self { inner }
     }
     /// Trim the log prefix up to and including the `trim_point`.
     /// Set `trim_point` to the value returned from `find_tail()` or `Lsn::MAX` to
     /// trim all records of the log.
     #[instrument(level = "debug", skip(self), err)]
     pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<()> {
-        self.bifrost.inner.fail_if_shutting_down()?;
-        self.bifrost.inner.trim(log_id, trim_point).await
+        self.inner.fail_if_shutting_down()?;
+        self.inner.trim(log_id, trim_point).await
     }
 
     /// Seals a loglet under a set of conditions.
@@ -64,10 +65,10 @@ impl<'a> BifrostAdmin<'a> {
         log_id: LogId,
         segment_index: Option<SegmentIndex>,
     ) -> Result<()> {
-        self.bifrost.inner.fail_if_shutting_down()?;
+        self.inner.fail_if_shutting_down()?;
         let logs = Metadata::with_current(|m| m.logs_snapshot());
         let provider_config = &logs.configuration().default_provider;
-        let provider = self.bifrost.inner.provider_for(provider_config.kind())?;
+        let provider = self.inner.provider_for(provider_config.kind())?;
         // if this is a new log, we don't need to seal and we can immediately write to metadata
         // store, otherwise, we need to seal first.
         if logs.chain(&log_id).is_none() && segment_index.is_none() {
@@ -123,7 +124,7 @@ impl<'a> BifrostAdmin<'a> {
         provider: ProviderKind,
         params: LogletParams,
     ) -> Result<SealedSegment> {
-        self.bifrost.inner.fail_if_shutting_down()?;
+        self.inner.fail_if_shutting_down()?;
         let metadata = Metadata::current();
         let _ = metadata
             .wait_for_version(MetadataKind::Logs, min_version)
@@ -154,14 +155,14 @@ impl<'a> BifrostAdmin<'a> {
     }
 
     pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
-        self.bifrost.inner.writeable_loglet(log_id).await
+        self.inner.writeable_loglet(log_id).await
     }
 
     #[instrument(level = "debug", skip(self), err)]
     pub async fn seal(&self, log_id: LogId, segment_index: SegmentIndex) -> Result<SealedSegment> {
-        self.bifrost.inner.fail_if_shutting_down()?;
+        self.inner.fail_if_shutting_down()?;
         // first find the tail segment for this log.
-        let loglet = self.bifrost.inner.writeable_loglet(log_id).await?;
+        let loglet = self.inner.writeable_loglet(log_id).await?;
 
         if segment_index != loglet.segment_index() {
             // Not the same segment. Bail!
@@ -216,14 +217,13 @@ impl<'a> BifrostAdmin<'a> {
         provider: ProviderKind,
         params: LogletParams,
     ) -> Result<()> {
-        self.bifrost.inner.fail_if_shutting_down()?;
+        self.inner.fail_if_shutting_down()?;
         let retry_policy = Configuration::pinned()
             .common
             .network_error_retry_policy
             .clone();
         let logs = retry_on_network_error(retry_policy, || {
-            self.bifrost
-                .inner
+            self.inner
                 .metadata_writer
                 .metadata_store_client()
                 .read_modify_write(BIFROST_CONFIG_KEY.clone(), |logs: Option<Logs>| {
@@ -250,11 +250,7 @@ impl<'a> BifrostAdmin<'a> {
         .await
         .map_err(|e| e.transpose())?;
 
-        self.bifrost
-            .inner
-            .metadata_writer
-            .update(Arc::new(logs))
-            .await?;
+        self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
     }
 
@@ -266,14 +262,13 @@ impl<'a> BifrostAdmin<'a> {
         provider: ProviderKind,
         params: LogletParams,
     ) -> Result<()> {
-        self.bifrost.inner.fail_if_shutting_down()?;
+        self.inner.fail_if_shutting_down()?;
         let retry_policy = Configuration::pinned()
             .common
             .network_error_retry_policy
             .clone();
         let logs = retry_on_network_error(retry_policy, || {
-            self.bifrost
-                .inner
+            self.inner
                 .metadata_writer
                 .metadata_store_client()
                 .read_modify_write::<_, _, Error>(
@@ -294,11 +289,7 @@ impl<'a> BifrostAdmin<'a> {
         .await
         .map_err(|e| e.transpose())?;
 
-        self.bifrost
-            .inner
-            .metadata_writer
-            .update(Arc::new(logs))
-            .await?;
+        self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
     }
 
@@ -311,8 +302,7 @@ impl<'a> BifrostAdmin<'a> {
             .clone();
 
         let logs = retry_on_network_error(retry_policy, || {
-            self.bifrost
-                .inner
+            self.inner
                 .metadata_writer
                 .metadata_store_client()
                 .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
@@ -322,11 +312,7 @@ impl<'a> BifrostAdmin<'a> {
         })
         .await?;
 
-        self.bifrost
-            .inner
-            .metadata_writer
-            .update(Arc::new(logs))
-            .await?;
+        self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
     }
 }
