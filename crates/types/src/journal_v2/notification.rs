@@ -5,8 +5,13 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use std::fmt;
 
+pub const CANCEL_NOTIFICATION: Notification = Notification::new(
+    NotificationId::for_builtin_signal(BuiltInSignal::Cancel),
+    NotificationResult::Void,
+);
+
 #[repr(i64)]
-pub enum BuiltInSignals {
+pub enum BuiltInSignal {
     Cancel = -1,
 }
 
@@ -18,8 +23,12 @@ pub enum NotificationId {
 }
 
 impl NotificationId {
-    pub fn for_index(id: NotificationIndex) -> Self {
+    pub const fn for_index(id: NotificationIndex) -> Self {
         Self::Index(id)
+    }
+
+    pub const fn for_builtin_signal(signal: BuiltInSignal) -> Self {
+        Self::for_index(signal as i64)
     }
 
     pub fn for_name(id: NotificationName) -> Self {
@@ -50,7 +59,7 @@ pub struct Notification {
 }
 
 impl Notification {
-    pub fn new(id: NotificationId, result: NotificationResult) -> Self {
+    pub const fn new(id: NotificationId, result: NotificationResult) -> Self {
         Self { id, result }
     }
 }

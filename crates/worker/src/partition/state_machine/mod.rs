@@ -14,6 +14,7 @@ mod lifecycle;
 mod utils;
 
 use crate::metric_definitions::PARTITION_APPLY_COMMAND;
+use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 use ::tracing::{debug, trace, warn, Instrument, Span};
 pub use actions::{Action, ActionCollector};
@@ -25,6 +26,7 @@ use futures::{StreamExt, TryStreamExt};
 use metrics::{histogram, Histogram};
 use restate_invoker_api::InvokeInputJournal;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
@@ -75,8 +77,11 @@ use restate_types::journal::CompletionResult;
 use restate_types::journal::EntryType;
 use restate_types::journal::*;
 use restate_types::journal_v2;
+use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawNotification;
-use restate_types::journal_v2::{CommandType, EntryMetadata, Notification, NotificationId, NotificationIndex, NotificationResult};
+use restate_types::journal_v2::{
+    CommandType, EntryMetadata, Notification, NotificationId, NotificationIndex, NotificationResult,
+};
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
 use restate_types::service_protocol::ServiceProtocolVersion;
@@ -90,12 +95,9 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::time::Instant;
 use tracing::{error, info};
-use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use utils::SpanExt;
 
 #[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
@@ -108,7 +110,7 @@ pub enum ExperimentalFeature {
     InvocationStatusKilled,
 }
 
-pub struct StateMachine<Codec> {
+pub struct StateMachine {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
     /// First outbox message index.
@@ -116,15 +118,13 @@ pub struct StateMachine<Codec> {
     /// Sequence number of the next outbox message to be appended.
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
-    latency: Histogram,
+    invoker_apply_latency: Histogram,
 
     /// Enabled experimental features.
     experimental_features: EnumSet<ExperimentalFeature>,
-
-    _codec: PhantomData<Codec>,
 }
 
-impl<Codec> Debug for StateMachine<Codec> {
+impl Debug for StateMachine {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateMachine")
             .field("inbox_seq_number", &self.inbox_seq_number)
@@ -180,7 +180,7 @@ macro_rules! info_span_if_leader {
     }};
 }
 
-impl<Codec> StateMachine<Codec> {
+impl StateMachine {
     pub fn new(
         inbox_seq_number: MessageIndex,
         outbox_seq_number: MessageIndex,
@@ -188,16 +188,15 @@ impl<Codec> StateMachine<Codec> {
         partition_key_range: RangeInclusive<PartitionKey>,
         experimental_features: EnumSet<ExperimentalFeature>,
     ) -> Self {
-        let latency =
+        let invoker_apply_latency =
             histogram!(crate::metric_definitions::PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
         Self {
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
             partition_key_range,
-            latency,
+            invoker_apply_latency,
             experimental_features,
-            _codec: PhantomData,
         }
     }
 }
@@ -205,7 +204,51 @@ impl<Codec> StateMachine<Codec> {
 pub(crate) struct StateMachineApplyContext<'a, S> {
     storage: &'a mut S,
     action_collector: &'a mut ActionCollector,
+    inbox_seq_number: &'a mut MessageIndex,
+    outbox_seq_number: &'a mut MessageIndex,
+    outbox_head_seq_number: &'a mut Option<MessageIndex>,
+    partition_key_range: RangeInclusive<PartitionKey>,
+    invoker_apply_latency: &'a Histogram,
+    experimental_features: &'a EnumSet<ExperimentalFeature>,
     is_leader: bool,
+}
+
+trait CommandHandler<CTX> {
+    async fn apply(self, ctx: CTX) -> Result<(), Error>;
+}
+
+impl StateMachine {
+    pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
+        &mut self,
+        command: Command,
+        transaction: &mut TransactionType,
+        action_collector: &mut ActionCollector,
+        is_leader: bool,
+    ) -> Result<(), Error> {
+        let span = utils::state_machine_apply_command_span(is_leader, &command);
+        async {
+            let start = Instant::now();
+            // Apply the command
+            let command_type = command.name();
+            let res = StateMachineApplyContext {
+                storage: transaction,
+                action_collector,
+                inbox_seq_number: &mut self.inbox_seq_number,
+                outbox_seq_number: &mut self.outbox_seq_number,
+                outbox_head_seq_number: &mut self.outbox_head_seq_number,
+                partition_key_range: self.partition_key_range.clone(),
+                invoker_apply_latency: &self.invoker_apply_latency,
+                experimental_features: &self.experimental_features,
+                is_leader,
+            }
+            .on_apply(command)
+            .await;
+            histogram!(PARTITION_APPLY_COMMAND, "command" => command_type).record(start.elapsed());
+            res
+        }
+        .instrument(span)
+        .await
+    }
 }
 
 impl<'a, S> StateMachineApplyContext<'a, S> {
@@ -310,44 +353,23 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             notification,
         });
     }
-}
 
-trait CommandHandler<CTX> {
-    async fn apply(self, ctx: CTX) -> Result<(), Error>;
-}
+    fn send_abort_invocation_to_invoker(&mut self, invocation_id: InvocationId, acknowledge: bool) {
+        debug_if_leader!(
+            self.is_leader,
+            restate.invocation.id = %invocation_id,
+            "Send abort command to invoker"
+        );
 
-impl<Codec: RawEntryCodec> StateMachine<Codec> {
-    pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
-        &mut self,
-        command: Command,
-        transaction: &mut TransactionType,
-        action_collector: &mut ActionCollector,
-        is_leader: bool,
-    ) -> Result<(), Error> {
-        let span = utils::state_machine_apply_command_span(is_leader, &command);
-        async {
-            let start = Instant::now();
-            // Apply the command
-            let command_type = command.name();
-            let res = self
-                .on_apply(
-                    StateMachineApplyContext {
-                        storage: transaction,
-                        action_collector,
-                        is_leader,
-                    },
-                    command,
-                )
-                .await;
-            histogram!(PARTITION_APPLY_COMMAND, "command" => command_type).record(start.elapsed());
-            res
-        }
-        .instrument(span)
-        .await
+        self.action_collector.push(Action::AbortInvocation {
+            invocation_id,
+            acknowledge,
+        });
     }
 
-    async fn on_apply<
-        State: IdempotencyTable
+    async fn on_apply(&mut self, command: Command) -> Result<(), Error>
+    where
+        S: IdempotencyTable
             + PromiseTable
             + JournalTable
             + InvocationStatusTable
@@ -358,15 +380,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + InboxTable
             + StateTable
             + journal_table_v2::JournalTable,
-    >(
-        &mut self,
-        mut ctx: StateMachineApplyContext<'_, State>,
-        command: Command,
-    ) -> Result<(), Error> {
+    {
         match command {
             Command::Invoke(service_invocation) => {
-                self.on_service_invocation(&mut ctx, service_invocation)
-                    .await
+                self.on_service_invocation(service_invocation).await
             }
             Command::InvocationResponse(InvocationResponse {
                 id,
@@ -378,56 +395,53 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     result: result.into(),
                 };
 
-                Self::handle_completion(&mut ctx, id, completion).await
+                self.handle_completion(id, completion).await
             }
             Command::ProxyThrough(service_invocation) => {
-                self.handle_outgoing_message(
-                    &mut ctx,
-                    OutboxMessage::ServiceInvocation(service_invocation),
-                )
-                .await?;
+                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
+                    .await?;
                 Ok(())
             }
             Command::AttachInvocation(attach_invocation_request) => {
-                self.handle_attach_invocation_request(&mut ctx, attach_invocation_request)
+                self.handle_attach_invocation_request(attach_invocation_request)
                     .await
             }
-            Command::InvokerEffect(effect) => self.try_invoker_effect(&mut ctx, effect).await,
+            Command::InvokerEffect(effect) => self.try_invoker_effect(effect).await,
             Command::TruncateOutbox(index) => {
-                Self::do_truncate_outbox(
-                    &mut ctx,
-                    RangeInclusive::new(self.outbox_head_seq_number.unwrap_or(index), index),
-                )
+                self.do_truncate_outbox(RangeInclusive::new(
+                    (*self.outbox_head_seq_number).unwrap_or(index),
+                    index,
+                ))
                 .await?;
-                self.outbox_head_seq_number = Some(index + 1);
+                *self.outbox_head_seq_number = Some(index + 1);
                 Ok(())
             }
-            Command::Timer(timer) => self.on_timer(&mut ctx, timer).await,
+            Command::Timer(timer) => self.on_timer(timer).await,
             Command::TerminateInvocation(invocation_termination) => {
-                self.on_terminate_invocation(&mut ctx, invocation_termination)
-                    .await
+                self.on_terminate_invocation(invocation_termination).await
             }
             Command::PurgeInvocation(purge_invocation_request) => {
-                self.on_purge_invocation(&mut ctx, purge_invocation_request.invocation_id)
+                self.on_purge_invocation(purge_invocation_request.invocation_id)
                     .await
             }
-            Command::PatchState(mutation) => {
-                self.handle_external_state_mutation(&mut ctx, mutation)
-                    .await
-            }
+            Command::PatchState(mutation) => self.handle_external_state_mutation(mutation).await,
             Command::AnnounceLeader(_) => {
                 // no-op :-)
                 Ok(())
             }
             Command::ScheduleTimer(timer) => {
-                Self::register_timer(&mut ctx, timer, Default::default()).await?;
+                self.register_timer(timer, Default::default()).await?;
                 Ok(())
             }
         }
     }
 
-    async fn on_service_invocation<
-        State: IdempotencyTable
+    async fn on_service_invocation(
+        &mut self,
+        service_invocation: ServiceInvocation,
+    ) -> Result<(), Error>
+    where
+        S: IdempotencyTable
             + InvocationStatusTable
             + OutboxTable
             + FsmTable
@@ -436,11 +450,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + InboxTable
             + FsmTable
             + JournalTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        service_invocation: ServiceInvocation,
-    ) -> Result<(), Error> {
+    {
         let invocation_id = service_invocation.invocation_id;
         debug_assert!(
             self.partition_key_range.contains(&service_invocation.partition_key()),
@@ -457,9 +467,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // 4. Execute it
 
         // 1. Try deduplicate it first
-        let Some(mut service_invocation) = self
-            .handle_duplicated_requests(ctx, service_invocation)
-            .await?
+        let Some(mut service_invocation) =
+            self.handle_duplicated_requests(service_invocation).await?
         else {
             // Invocation was deduplicated, nothing else to do here
             return Ok(());
@@ -472,46 +481,31 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         // 2. Check if we need to schedule it
         let Some(pre_flight_invocation_metadata) = self
-            .handle_service_invocation_execution_time(
-                ctx,
-                invocation_id,
-                pre_flight_invocation_metadata,
-            )
+            .handle_service_invocation_execution_time(invocation_id, pre_flight_invocation_metadata)
             .await?
         else {
             // Invocation was scheduled, send back the ingress attach notification and return
-            Self::send_submit_notification_if_needed(
-                ctx,
-                invocation_id,
-                true,
-                submit_notification_sink,
-            );
+            self.send_submit_notification_if_needed(invocation_id, true, submit_notification_sink);
             return Ok(());
         };
 
         // 3. Check if we need to inbox it (only for exclusive methods of virtual objects)
         let Some(pre_flight_invocation_metadata) = self
             .handle_service_invocation_exclusive_handler(
-                ctx,
                 invocation_id,
                 pre_flight_invocation_metadata,
             )
             .await?
         else {
             // Invocation was inboxed, send back the ingress attach notification and return
-            Self::send_submit_notification_if_needed(
-                ctx,
-                invocation_id,
-                true,
-                submit_notification_sink,
-            );
+            self.send_submit_notification_if_needed(invocation_id, true, submit_notification_sink);
             // Invocation was inboxed, nothing else to do here
             return Ok(());
         };
 
         // 4. Execute it
         Self::send_submit_notification_if_needed(
-            ctx,
+            self,
             invocation_id,
             true,
             submit_notification_sink,
@@ -522,8 +516,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 pre_flight_invocation_metadata,
             );
 
-        Self::init_journal_and_invoke(
-            ctx,
+        self.init_journal_and_invoke(
             invocation_id,
             in_flight_invocation_metadata,
             invocation_input,
@@ -532,17 +525,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     }
 
     /// Returns the invocation in case the invocation is not a duplicate
-    async fn handle_duplicated_requests<
-        State: IdempotencyTable
+    async fn handle_duplicated_requests(
+        &mut self,
+        mut service_invocation: ServiceInvocation,
+    ) -> Result<Option<ServiceInvocation>, Error>
+    where
+        S: IdempotencyTable
             + InvocationStatusTable
             + VirtualObjectStatusTable
             + OutboxTable
             + FsmTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        mut service_invocation: ServiceInvocation,
-    ) -> Result<Option<ServiceInvocation>, Error> {
+    {
         let invocation_id = service_invocation.invocation_id;
         let is_workflow_run = service_invocation.invocation_target.invocation_target_ty()
             == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow);
@@ -554,7 +547,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }
 
         let previous_invocation_status = async {
-            let mut invocation_status = ctx.get_invocation_status(&invocation_id).await?;
+            let mut invocation_status = self.get_invocation_status(&invocation_id).await?;
             if invocation_status != InvocationStatus::Free {
                 // Deduplicated invocation with the new deterministic invocation id
               Ok::<_, Error>(invocation_status)
@@ -566,8 +559,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .compute_idempotency_id()
                         .expect("Idempotency key must be present");
 
-                    if let Some(idempotency_metadata) = ctx.storage.get_idempotency_metadata(&idempotency_id).await? {
-                        invocation_status = ctx.get_invocation_status(&idempotency_metadata.invocation_id).await?;
+                    if let Some(idempotency_metadata) = self.storage.get_idempotency_metadata(&idempotency_id).await? {
+                        invocation_status = self.get_invocation_status(&idempotency_metadata.invocation_id).await?;
                     }
                 }
                 // Or on lock status for workflow runs with old invocation ids
@@ -578,11 +571,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .as_keyed_service_id()
                         .expect("When the handler type is Workflow, the invocation target must have a key");
 
-                    if let VirtualObjectStatus::Locked(locked_invocation_id) = ctx
+                    if let VirtualObjectStatus::Locked(locked_invocation_id) = self
                         .storage
                         .get_virtual_object_status(&keyed_service_id)
                         .await? {
-                        invocation_status = ctx.get_invocation_status(&locked_invocation_id).await?;
+                        invocation_status = self.get_invocation_status(&locked_invocation_id).await?;
                     }
                 }
                 Ok(invocation_status)
@@ -593,7 +586,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         if previous_invocation_status == InvocationStatus::Free {
             // --- New invocation
             debug_if_leader!(
-                ctx.is_leader,
+                self.is_leader,
                 "First time we see this invocation id, invocation will be processed"
             );
 
@@ -604,7 +597,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     .experimental_features
                     .contains(ExperimentalFeature::DisableIdempotencyTable)
             {
-                ctx.storage
+                self.storage
                         .put_virtual_object_status(
                             &service_invocation
                                 .invocation_target
@@ -620,8 +613,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     .experimental_features
                     .contains(ExperimentalFeature::DisableIdempotencyTable)
             {
-                Self::do_store_idempotency_id(
-                    ctx,
+                self.do_store_idempotency_id(
                     service_invocation
                         .compute_idempotency_id()
                         .expect("Idempotency key must be present"),
@@ -635,8 +627,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // --- Invocation already exists
 
         // Send submit notification
-        Self::send_submit_notification_if_needed(
-            ctx,
+        self.send_submit_notification_if_needed(
             service_invocation.invocation_id,
             // is_new_invocation is true if the RPC ingress request is a duplicate.
             service_invocation.source
@@ -650,11 +641,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // This is a special handling we do only for workflows.
         if is_workflow_run {
             debug_if_leader!(
-                ctx.is_leader,
+                self.is_leader,
                 "Invocation to workflow method is a duplicate"
             );
             self.send_response_to_sinks(
-                ctx,
                 service_invocation.response_sink.take().into_iter(),
                 ResponseResult::Failure(WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR),
                 Some(invocation_id),
@@ -667,7 +657,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // For all the other type of duplicate requests, append the response sink or return back the original result
         if has_idempotency_key {
             debug_if_leader!(
-                ctx.is_leader,
+                self.is_leader,
                 restate.idempotency.key = ?service_invocation.idempotency_key.unwrap(),
                 "Invocation with idempotency key is a duplicate"
             );
@@ -684,14 +674,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .expect("response sink must be present")
                         .contains(response_sink)
                     {
-                        Self::do_append_response_sink(ctx, invocation_id, is, response_sink.clone())
+                        self.do_append_response_sink(invocation_id, is, response_sink.clone())
                             .await?
                     }
                 }
             }
             InvocationStatus::Killed(metadata) => {
                 self.send_response_to_sinks(
-                    ctx,
                     service_invocation.response_sink.take().into_iter(),
                     KILLED_INVOCATION_ERROR,
                     Some(invocation_id),
@@ -704,7 +693,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
                 let completion_expiry_time = unsafe { completed.completion_expiry_time() };
                 self.send_response_to_sinks(
-                    ctx,
                     service_invocation.response_sink.take().into_iter(),
                     completed.response_result,
                     Some(invocation_id),
@@ -722,24 +710,25 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     }
 
     /// Returns the invocation in case the invocation should run immediately
-    async fn handle_service_invocation_execution_time<State: TimerTable + InvocationStatusTable>(
+    async fn handle_service_invocation_execution_time(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         metadata: PreFlightInvocationMetadata,
-    ) -> Result<Option<PreFlightInvocationMetadata>, Error> {
+    ) -> Result<Option<PreFlightInvocationMetadata>, Error>
+    where
+        S: TimerTable + InvocationStatusTable,
+    {
         if let Some(execution_time) = metadata.execution_time {
             let span_context = metadata.span_context.clone();
-            debug_if_leader!(ctx.is_leader, "Store scheduled invocation");
+            debug_if_leader!(self.is_leader, "Store scheduled invocation");
 
-            Self::register_timer(
-                ctx,
+            self.register_timer(
                 TimerKeyValue::neo_invoke(execution_time, invocation_id),
                 span_context,
             )
             .await?;
 
-            ctx.storage
+            self.storage
                 .put_invocation_status(
                     &invocation_id.clone(),
                     &InvocationStatus::Scheduled(
@@ -755,14 +744,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     }
 
     /// Returns the invocation in case the invocation was not inboxed
-    async fn handle_service_invocation_exclusive_handler<
-        State: VirtualObjectStatusTable + InvocationStatusTable + InboxTable + FsmTable,
-    >(
+    async fn handle_service_invocation_exclusive_handler(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         metadata: PreFlightInvocationMetadata,
-    ) -> Result<Option<PreFlightInvocationMetadata>, Error> {
+    ) -> Result<Option<PreFlightInvocationMetadata>, Error>
+    where
+        S: VirtualObjectStatusTable + InvocationStatusTable + InboxTable + FsmTable,
+    {
         if metadata.invocation_target.invocation_target_ty()
             == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
         {
@@ -770,7 +759,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 "When the handler type is Exclusive, the invocation target must have a key",
             );
 
-            let service_status = ctx
+            let service_status = self
                 .storage
                 .get_virtual_object_status(&keyed_service_id)
                 .await?;
@@ -778,18 +767,15 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             if let VirtualObjectStatus::Locked(_) = service_status {
                 // If locked, enqueue in inbox and be done with it
                 let inbox_seq_number = self
-                    .enqueue_into_inbox(
-                        ctx,
-                        InboxEntry::Invocation(keyed_service_id, invocation_id),
-                    )
+                    .enqueue_into_inbox(InboxEntry::Invocation(keyed_service_id, invocation_id))
                     .await?;
 
                 debug_if_leader!(
-                    ctx.is_leader,
+                    self.is_leader,
                     restate.outbox.seq = inbox_seq_number,
                     "Store inboxed invocation"
                 );
-                ctx.storage
+                self.storage
                     .put_invocation_status(
                         &invocation_id,
                         &InvocationStatus::Inboxed(
@@ -805,12 +791,12 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             } else {
                 // If unlocked, lock it
                 debug_if_leader!(
-                    ctx.is_leader,
+                    self.is_leader,
                     restate.service.id = %keyed_service_id,
                     "Locking service"
                 );
 
-                ctx.storage
+                self.storage
                     .put_virtual_object_status(
                         &keyed_service_id,
                         &VirtualObjectStatus::Locked(invocation_id),
@@ -821,22 +807,24 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(Some(metadata))
     }
 
-    async fn init_journal_and_invoke<State: JournalTable + InvocationStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn init_journal_and_invoke(
+        &mut self,
         invocation_id: InvocationId,
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         invocation_input: InvocationInput,
-    ) -> Result<(), Error> {
-        let invoke_input_journal = Self::init_journal(
-            ctx,
-            invocation_id,
-            &mut in_flight_invocation_metadata,
-            invocation_input,
-        )
-        .await?;
+    ) -> Result<(), Error>
+    where
+        S: JournalTable + InvocationStatusTable,
+    {
+        let invoke_input_journal = self
+            .init_journal(
+                invocation_id,
+                &mut in_flight_invocation_metadata,
+                invocation_input,
+            )
+            .await?;
 
-        Self::invoke(
-            ctx,
+        self.invoke(
             invocation_id,
             in_flight_invocation_metadata,
             invoke_input_journal,
@@ -844,13 +832,16 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         .await
     }
 
-    async fn init_journal<State: JournalTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn init_journal(
+        &mut self,
         invocation_id: InvocationId,
         in_flight_invocation_metadata: &mut InFlightInvocationMetadata,
         invocation_input: InvocationInput,
-    ) -> Result<InvokeInputJournal, Error> {
-        debug_if_leader!(ctx.is_leader, "Init journal with input entry");
+    ) -> Result<InvokeInputJournal, Error>
+    where
+        S: JournalTable,
+    {
+        debug_if_leader!(self.is_leader, "Init journal with input entry");
 
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
         in_flight_invocation_metadata.journal_metadata.length = 1;
@@ -859,11 +850,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // When pinning the deployment version we figure the concrete protocol version
         // * If <= V3, we keep everything in JournalTable V1
         // * If >= V4, we migrate the JournalTable to V2
-        let input_entry = JournalEntry::Entry(Codec::serialize_as_input_entry(
+        let input_entry = JournalEntry::Entry(ProtobufRawEntryCodec::serialize_as_input_entry(
             invocation_input.headers,
             invocation_input.argument,
         ));
-        ctx.storage
+        self.storage
             .put_journal_entry(&invocation_id, 0, &input_entry)
             .await;
 
@@ -888,20 +879,23 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ))
     }
 
-    async fn invoke<State: InvocationStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn invoke(
+        &mut self,
         invocation_id: InvocationId,
         in_flight_invocation_metadata: InFlightInvocationMetadata,
         invoke_input_journal: InvokeInputJournal,
-    ) -> Result<(), Error> {
-        debug_if_leader!(ctx.is_leader, "Invoke");
+    ) -> Result<(), Error>
+    where
+        S: InvocationStatusTable,
+    {
+        debug_if_leader!(self.is_leader, "Invoke");
 
-        ctx.action_collector.push(Action::Invoke {
+        self.action_collector.push(Action::Invoke {
             invocation_id,
             invocation_target: in_flight_invocation_metadata.invocation_target.clone(),
             invoke_input_journal,
         });
-        ctx.storage
+        self.storage
             .put_invocation_status(
                 &invocation_id,
                 &InvocationStatus::Invoked(in_flight_invocation_metadata),
@@ -911,74 +905,74 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn enqueue_into_inbox<State: InboxTable + FsmTable>(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        inbox_entry: InboxEntry,
-    ) -> Result<MessageIndex, Error> {
-        let seq_number = self.inbox_seq_number;
+    async fn enqueue_into_inbox(&mut self, inbox_entry: InboxEntry) -> Result<MessageIndex, Error>
+    where
+        S: InboxTable + FsmTable,
+    {
+        let seq_number = *self.inbox_seq_number;
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.inbox.seq = seq_number,
             "Enqueue inbox entry"
         );
 
-        ctx.storage.put_inbox_entry(seq_number, &inbox_entry).await;
+        self.storage.put_inbox_entry(seq_number, &inbox_entry).await;
         // need to store the next inbox sequence number
-        ctx.storage.put_inbox_seq_number(seq_number + 1).await;
-        self.inbox_seq_number += 1;
+        self.storage.put_inbox_seq_number(seq_number + 1).await;
+        *self.inbox_seq_number += 1;
         Ok(seq_number)
     }
 
-    async fn handle_external_state_mutation<
-        State: StateTable + InboxTable + FsmTable + VirtualObjectStatusTable,
-    >(
+    async fn handle_external_state_mutation(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         mutation: ExternalStateMutation,
-    ) -> Result<(), Error> {
-        let service_status = ctx
+    ) -> Result<(), Error>
+    where
+        S: StateTable + InboxTable + FsmTable + VirtualObjectStatusTable,
+    {
+        let service_status = self
             .storage
             .get_virtual_object_status(&mutation.service_id)
             .await?;
 
         match service_status {
             VirtualObjectStatus::Locked(_) => {
-                self.enqueue_into_inbox(ctx, InboxEntry::StateMutation(mutation))
+                self.enqueue_into_inbox(InboxEntry::StateMutation(mutation))
                     .await?;
             }
-            VirtualObjectStatus::Unlocked => Self::do_mutate_state(ctx, mutation).await?,
+            VirtualObjectStatus::Unlocked => Self::do_mutate_state(self, mutation).await?,
         }
 
         Ok(())
     }
 
-    async fn on_terminate_invocation<
-        State: VirtualObjectStatusTable
+    async fn on_terminate_invocation(
+        &mut self,
+        InvocationTermination {
+            invocation_id,
+            flavor: termination_flavor,
+        }: InvocationTermination,
+    ) -> Result<(), Error>
+    where
+        S: VirtualObjectStatusTable
             + InvocationStatusTable
             + InboxTable
             + FsmTable
             + StateTable
             + JournalTable
             + OutboxTable
-        +journal_table_v2::JournalTable
+            + journal_table_v2::JournalTable
             + TimerTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        InvocationTermination {
-            invocation_id,
-            flavor: termination_flavor,
-        }: InvocationTermination,
-    ) -> Result<(), Error> {
+    {
         match termination_flavor {
-            TerminationFlavor::Kill => self.on_kill_invocation(ctx, invocation_id).await,
-            TerminationFlavor::Cancel => self.on_cancel_invocation(ctx, invocation_id).await,
+            TerminationFlavor::Kill => self.on_kill_invocation(invocation_id).await,
+            TerminationFlavor::Cancel => self.on_cancel_invocation(invocation_id).await,
         }
     }
 
-    async fn on_kill_invocation<
-        State: VirtualObjectStatusTable
+    async fn on_kill_invocation(&mut self, invocation_id: InvocationId) -> Result<(), Error>
+    where
+        S: VirtualObjectStatusTable
             + InvocationStatusTable
             + InboxTable
             + FsmTable
@@ -987,35 +981,25 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + OutboxTable
             + TimerTable
             + FsmTable
-    + journal_table_v2::JournalTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-    ) -> Result<(), Error> {
-        let status = ctx.get_invocation_status(&invocation_id).await?;
+            + journal_table_v2::JournalTable,
+    {
+        let status = self.get_invocation_status(&invocation_id).await?;
 
         match status {
             InvocationStatus::Invoked(metadata) => {
-                self.kill_invoked_invocation(ctx, invocation_id, metadata)
+                self.kill_invoked_invocation(invocation_id, metadata)
                     .await?;
             }
             InvocationStatus::Suspended { metadata, .. } => {
-                self.kill_suspended_invocation(ctx, invocation_id, metadata)
+                self.kill_suspended_invocation(invocation_id, metadata)
                     .await?;
             }
             InvocationStatus::Inboxed(inboxed) => {
-                self.terminate_inboxed_invocation(
-                    ctx,
-                    TerminationFlavor::Kill,
-                    invocation_id,
-                    inboxed,
-                )
-                .await?
+                self.terminate_inboxed_invocation(TerminationFlavor::Kill, invocation_id, inboxed)
+                    .await?
             }
             InvocationStatus::Scheduled(scheduled) => {
                 self.terminate_scheduled_invocation(
-                    ctx,
                     TerminationFlavor::Kill,
                     invocation_id,
                     scheduled,
@@ -1025,7 +1009,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             InvocationStatus::Killed(_) => {
                 trace!("Received kill command for an already killed invocation with id '{invocation_id}'.");
                 // Nothing to do here really, let's send again the abort signal to the invoker just in case
-                Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, true);
+                self.do_send_abort_invocation_to_invoker(invocation_id, true);
             }
             InvocationStatus::Completed(_) => {
                 debug!("Received kill command for completed invocation '{invocation_id}'. To cleanup the invocation after it's been completed, use the purge invocation command.");
@@ -1038,44 +1022,60 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
+                self.do_send_abort_invocation_to_invoker(invocation_id, false);
             }
         };
 
         Ok(())
     }
 
-    async fn on_cancel_invocation<
-        State: VirtualObjectStatusTable
+    async fn on_cancel_invocation(&mut self, invocation_id: InvocationId) -> Result<(), Error>
+    where
+        S: VirtualObjectStatusTable
             + InvocationStatusTable
             + InboxTable
             + FsmTable
             + StateTable
             + JournalTable
             + OutboxTable
+            + journal_table_v2::JournalTable
             + TimerTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-    ) -> Result<(), Error> {
-        let status = ctx.get_invocation_status(&invocation_id).await?;
+    {
+        let status = self.get_invocation_status(&invocation_id).await?;
 
-        // We ignore the cancel when we haven't a pinned deployment yet,
-        // because we don't know what we should do (cancellation works differently between journal table v1 and v2).
-        // In any case, this would have no visible effect to the user
-        if status
-            .get_invocation_metadata()
-            .is_some_and(|meta| meta.pinned_deployment.is_none())
-        {
-            info!("Ignoring cancellation because the invocation made no progress so far!");
-            return Ok(());
-        }
+        match status.get_invocation_metadata().and_then(|meta| {
+            meta.pinned_deployment
+                .as_ref()
+                .map(|pd| pd.service_protocol_version)
+        }) {
+            Some(sp_version) if sp_version >= ServiceProtocolVersion::V4 => {
+                OnCancelCommand {
+                    invocation_id,
+                    invocation_status: status,
+                }
+                .apply(self)
+                .await?;
+                return Ok(());
+            }
+            None if matches!(
+                status,
+                InvocationStatus::Invoked(_) | InvocationStatus::Suspended { .. }
+            ) =>
+            {
+                // We ignore the cancel when we haven't a pinned deployment yet,
+                // because we don't know what we should do (cancellation works differently between journal table v1 and v2).
+                // In any case, this would have no visible effect to the user
+                info!("Ignoring cancellation because the invocation made no progress so far!");
+                return Ok(());
+            }
+            _ => {
+                // Continue below
+            }
+        };
 
         match status {
             InvocationStatus::Invoked(metadata) => {
                 self.cancel_journal_leaves(
-                    ctx,
                     invocation_id,
                     InvocationStatusProjection::Invoked,
                     metadata.journal_metadata.length,
@@ -1088,7 +1088,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             } => {
                 if self
                     .cancel_journal_leaves(
-                        ctx,
                         invocation_id,
                         InvocationStatusProjection::Suspended(
                             waiting_for_notifications
@@ -1103,12 +1102,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     )
                     .await?
                 {
-                    Self::do_resume_service(ctx, invocation_id, metadata).await?;
+                    self.do_resume_service( invocation_id, metadata).await?;
                 }
             }
             InvocationStatus::Inboxed(inboxed) => {
                 self.terminate_inboxed_invocation(
-                    ctx,
                     TerminationFlavor::Cancel,
                     invocation_id,
                     inboxed,
@@ -1117,7 +1115,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
             InvocationStatus::Scheduled(scheduled) => {
                 self.terminate_scheduled_invocation(
-                    ctx,
                     TerminationFlavor::Cancel,
                     invocation_id,
                     scheduled,
@@ -1129,7 +1126,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     "Received cancel command for an already killed invocation '{invocation_id}'."
                 );
                 // Nothing to do here really, let's send again the abort signal to the invoker just in case
-                Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, true);
+                self.do_send_abort_invocation_to_invoker( invocation_id, true);
             }
             InvocationStatus::Completed(_) => {
                 debug!("Received cancel command for completed invocation '{invocation_id}'. To cleanup the invocation after it's been completed, use the purge invocation command.");
@@ -1142,22 +1139,22 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
+                self.do_send_abort_invocation_to_invoker(invocation_id, false);
             }
         };
 
         Ok(())
     }
 
-    async fn terminate_inboxed_invocation<
-        State: InvocationStatusTable + InboxTable + OutboxTable + FsmTable,
-    >(
+    async fn terminate_inboxed_invocation(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         termination_flavor: TerminationFlavor,
         invocation_id: InvocationId,
         inboxed_invocation: InboxedInvocation,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        S: InvocationStatusTable + InboxTable + OutboxTable + FsmTable,
+    {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
             TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
@@ -1176,7 +1173,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         // Reply back to callers with error, and publish end trace
         self.send_response_to_sinks(
-            ctx,
             response_sinks,
             &error,
             Some(invocation_id),
@@ -1186,18 +1182,16 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         .await?;
 
         // Delete inbox entry and invocation status.
-        Self::do_delete_inbox_entry(
-            ctx,
+        self.do_delete_inbox_entry(
             invocation_target
                 .as_keyed_service_id()
                 .expect("Because the invocation is inboxed, it must have a keyed service id"),
             inbox_sequence_number,
         )
         .await?;
-        Self::do_free_invocation(ctx, invocation_id).await;
+        self.do_free_invocation(invocation_id).await;
 
         self.notify_invocation_result(
-            ctx,
             invocation_id,
             invocation_target,
             span_context,
@@ -1208,15 +1202,15 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn terminate_scheduled_invocation<
-        State: InvocationStatusTable + TimerTable + OutboxTable + FsmTable,
-    >(
+    async fn terminate_scheduled_invocation(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         termination_flavor: TerminationFlavor,
         invocation_id: InvocationId,
         scheduled_invocation: ScheduledInvocation,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        S: InvocationStatusTable + TimerTable + OutboxTable + FsmTable,
+    {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
             TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
@@ -1235,7 +1229,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         // Reply back to callers with error, and publish end trace
         self.send_response_to_sinks(
-            ctx,
             response_sinks,
             &error,
             Some(invocation_id),
@@ -1246,18 +1239,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         // Delete timer
         if let Some(execution_time) = execution_time {
-            Self::do_delete_timer(
-                ctx,
-                TimerKey::neo_invoke(execution_time.as_u64(), invocation_id.invocation_uuid()),
-            )
+            self.do_delete_timer(TimerKey::neo_invoke(
+                execution_time.as_u64(),
+                invocation_id.invocation_uuid(),
+            ))
             .await?;
         } else {
             warn!("Scheduled invocations must always have an execution time.");
         }
-        Self::do_free_invocation(ctx, invocation_id).await;
+        self.do_free_invocation(invocation_id).await;
 
         self.notify_invocation_result(
-            ctx,
             invocation_id,
             invocation_target,
             span_context,
@@ -1268,8 +1260,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn kill_invoked_invocation<
-        State: InboxTable
+    async fn kill_invoked_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        metadata: InFlightInvocationMetadata,
+    ) -> Result<(), Error>
+    where
+        S: InboxTable
             + VirtualObjectStatusTable
             + InvocationStatusTable
             + VirtualObjectStatusTable
@@ -1277,14 +1274,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + JournalTable
             + OutboxTable
             + FsmTable
-        +journal_table_v2::JournalTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-        metadata: InFlightInvocationMetadata,
-    ) -> Result<(), Error> {
-        self.kill_child_invocations(ctx, &invocation_id, metadata.journal_metadata.length)
+            + journal_table_v2::JournalTable,
+    {
+        self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length)
             .await?;
 
         if self
@@ -1292,30 +1284,34 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .contains(ExperimentalFeature::InvocationStatusKilled)
         {
             debug_if_leader!(
-                ctx.is_leader,
+                self.is_leader,
                 restate.invocation.id = %invocation_id,
                 "Effect: Store killed invocation"
             );
 
-            ctx.storage
+            self.storage
                 .put_invocation_status(&invocation_id, &InvocationStatus::Killed(metadata))
                 .await;
-            Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, true);
+            self.do_send_abort_invocation_to_invoker(invocation_id, true);
         } else {
             self.end_invocation(
-                ctx,
                 invocation_id,
                 metadata,
                 Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
             )
             .await?;
-            Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
+            self.do_send_abort_invocation_to_invoker(invocation_id, false);
         }
         Ok(())
     }
 
-    async fn kill_suspended_invocation<
-        State: InboxTable
+    async fn kill_suspended_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        metadata: InFlightInvocationMetadata,
+    ) -> Result<(), Error>
+    where
+        S: InboxTable
             + VirtualObjectStatusTable
             + InvocationStatusTable
             + VirtualObjectStatusTable
@@ -1323,36 +1319,32 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + JournalTable
             + OutboxTable
             + FsmTable
-        +journal_table_v2::JournalTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-        metadata: InFlightInvocationMetadata,
-    ) -> Result<(), Error> {
-        self.kill_child_invocations(ctx, &invocation_id, metadata.journal_metadata.length)
+            + journal_table_v2::JournalTable,
+    {
+        self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length)
             .await?;
 
         // No need to go through the Killed state when we're suspended,
         // because it means we already got a terminal state from the invoker.
         self.end_invocation(
-            ctx,
             invocation_id,
             metadata,
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
-        Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
+        self.do_send_abort_invocation_to_invoker(invocation_id, false);
         Ok(())
     }
 
-    async fn kill_child_invocations<State: OutboxTable + FsmTable + ReadOnlyJournalTable>(
+    async fn kill_child_invocations(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
-    ) -> Result<(), Error> {
-        let invocation_ids_to_kill: Vec<InvocationId> = ctx
+    ) -> Result<(), Error>
+    where
+        S: OutboxTable + FsmTable + ReadOnlyJournalTable,
+    {
+        let invocation_ids_to_kill: Vec<InvocationId> = self
             .storage
             .get_journal(invocation_id, journal_length)
             .try_filter_map(|(_, journal_entry)| async {
@@ -1377,24 +1369,25 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .await?;
 
         for id in invocation_ids_to_kill {
-            self.handle_outgoing_message(
-                ctx,
-                OutboxMessage::InvocationTermination(InvocationTermination::kill(id)),
-            )
+            self.handle_outgoing_message(OutboxMessage::InvocationTermination(
+                InvocationTermination::kill(id),
+            ))
             .await?;
         }
 
         Ok(())
     }
 
-    async fn cancel_journal_leaves<State: JournalTable + OutboxTable + FsmTable + TimerTable>(
+    async fn cancel_journal_leaves(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         invocation_status: InvocationStatusProjection,
         journal_length: EntryIndex,
-    ) -> Result<bool, Error> {
-        let journal_entries_to_cancel: Vec<(EntryIndex, EnrichedRawEntry)> = ctx
+    ) -> Result<bool, Error>
+    where
+        S: JournalTable + OutboxTable + FsmTable + TimerTable,
+    {
+        let journal_entries_to_cancel: Vec<(EntryIndex, EnrichedRawEntry)> = self
             .storage
             .get_journal(&invocation_id, journal_length)
             .try_filter_map(|(journal_index, journal_entry)| async move {
@@ -1424,23 +1417,20 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 } => {
                     // For calls, we don't immediately complete the call entry with cancelled,
                     // but we let the cancellation result propagate from the callee.
-                    self.handle_outgoing_message(
-                        ctx,
-                        OutboxMessage::InvocationTermination(InvocationTermination::cancel(
-                            enrichment_result.invocation_id,
-                        )),
-                    )
+                    self.handle_outgoing_message(OutboxMessage::InvocationTermination(
+                        InvocationTermination::cancel(enrichment_result.invocation_id),
+                    ))
                     .await?;
                 }
                 EnrichedEntryHeader::Sleep { is_completed } if !is_completed => {
-                    resume_invocation |= Self::cancel_journal_entry_with(
-                        ctx,
-                        invocation_id,
-                        &invocation_status,
-                        journal_index,
-                        canceled_result.clone(),
-                    )
-                    .await?;
+                    resume_invocation |= self
+                        .cancel_journal_entry_with(
+                            invocation_id,
+                            &invocation_status,
+                            journal_index,
+                            canceled_result.clone(),
+                        )
+                        .await?;
 
                     // For the sleep, we also delete the associated timer
                     let_assert!(
@@ -1451,17 +1441,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     let (timer_key, _) =
                         Timer::complete_journal_entry(wake_up_time, invocation_id, journal_index);
 
-                    Self::do_delete_timer(ctx, timer_key).await?;
+                    self.do_delete_timer(timer_key).await?;
                 }
                 _ => {
-                    resume_invocation |= Self::cancel_journal_entry_with(
-                        ctx,
-                        invocation_id,
-                        &invocation_status,
-                        journal_index,
-                        canceled_result.clone(),
-                    )
-                    .await?;
+                    resume_invocation |= self
+                        .cancel_journal_entry_with(
+                            invocation_id,
+                            &invocation_status,
+                            journal_index,
+                            canceled_result.clone(),
+                        )
+                        .await?;
                 }
             }
         }
@@ -1470,17 +1460,19 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     }
 
     /// Cancels a generic completable journal entry
-    async fn cancel_journal_entry_with<State: JournalTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn cancel_journal_entry_with(
+        &mut self,
         invocation_id: InvocationId,
         invocation_status: &InvocationStatusProjection,
         journal_index: EntryIndex,
         canceled_result: CompletionResult,
-    ) -> Result<bool, Error> {
+    ) -> Result<bool, Error>
+    where
+        S: JournalTable,
+    {
         match invocation_status {
             InvocationStatusProjection::Invoked => {
-                Self::handle_completion_for_invoked(
-                    ctx,
+                self.handle_completion_for_invoked(
                     invocation_id,
                     Completion::new(journal_index, canceled_result),
                 )
@@ -1488,8 +1480,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 Ok(false)
             }
             InvocationStatusProjection::Suspended(waiting_for_completed_entry) => {
-                Self::handle_completion_for_suspended(
-                    ctx,
+                self.handle_completion_for_suspended(
                     invocation_id,
                     Completion::new(journal_index, canceled_result),
                     waiting_for_completed_entry,
@@ -1499,31 +1490,29 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }
     }
 
-    async fn on_purge_invocation<
-        State: InvocationStatusTable
+    async fn on_purge_invocation(&mut self, invocation_id: InvocationId) -> Result<(), Error>
+    where
+        S: InvocationStatusTable
             + IdempotencyTable
             + VirtualObjectStatusTable
             + StateTable
             + PromiseTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-    ) -> Result<(), Error> {
-        match ctx.get_invocation_status(&invocation_id).await? {
+    {
+        match self.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Completed(CompletedInvocation {
                 invocation_target,
                 idempotency_key,
                 ..
             }) => {
-                Self::do_free_invocation(ctx, invocation_id).await;
+                self.do_free_invocation(invocation_id).await;
 
                 // Also cleanup the associated idempotency key if any
                 if let Some(idempotency_key) = idempotency_key {
-                    Self::do_delete_idempotency_id(
-                        ctx,
-                        IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key),
-                    )
+                    self.do_delete_idempotency_id(IdempotencyId::combine(
+                        invocation_id,
+                        &invocation_target,
+                        idempotency_key,
+                    ))
                     .await?;
                 }
 
@@ -1535,9 +1524,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .as_keyed_service_id()
                         .expect("Workflow methods must have keyed service id");
 
-                    Self::do_unlock_service(ctx, service_id.clone()).await?;
-                    Self::do_clear_all_state(ctx, service_id.clone(), invocation_id).await?;
-                    Self::do_clear_all_promises(ctx, service_id).await?;
+                    self.do_unlock_service(service_id.clone()).await?;
+                    self.do_clear_all_state(service_id.clone(), invocation_id)
+                        .await?;
+                    self.do_clear_all_promises(service_id).await?;
                 }
             }
             InvocationStatus::Free => {
@@ -1554,8 +1544,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn on_timer<
-        State: IdempotencyTable
+    async fn on_timer(&mut self, timer_value: TimerKeyValue) -> Result<(), Error>
+    where
+        S: IdempotencyTable
             + InvocationStatusTable
             + OutboxTable
             + FsmTable
@@ -1567,19 +1558,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + TimerTable
             + PromiseTable
             + StateTable
-        + journal_table_v2::JournalTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        timer_value: TimerKeyValue,
-    ) -> Result<(), Error> {
+            + journal_table_v2::JournalTable,
+    {
         let (key, value) = timer_value.into_inner();
-        Self::do_delete_timer(ctx, key).await?;
+        self.do_delete_timer(key).await?;
 
         match value {
             Timer::CompleteJournalEntry(invocation_id, entry_index) => {
-                Self::handle_completion(
-                    ctx,
+                self.handle_completion(
                     invocation_id,
                     Completion {
                         entry_index,
@@ -1594,27 +1580,24 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
                 // ServiceInvocations scheduled with a timer are always owned by the same partition processor
                 // where the invocation should be executed
-                self.on_service_invocation(ctx, service_invocation).await
+                self.on_service_invocation(service_invocation).await
             }
             Timer::CleanInvocationStatus(invocation_id) => {
-                self.on_purge_invocation(ctx, invocation_id).await
+                self.on_purge_invocation(invocation_id).await
             }
-            Timer::NeoInvoke(invocation_id) => self.on_neo_invoke_timer(ctx, invocation_id).await,
+            Timer::NeoInvoke(invocation_id) => self.on_neo_invoke_timer(invocation_id).await,
         }
     }
 
-    async fn on_neo_invoke_timer<
-        State: VirtualObjectStatusTable + InvocationStatusTable + InboxTable + FsmTable + JournalTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-    ) -> Result<(), Error> {
+    async fn on_neo_invoke_timer(&mut self, invocation_id: InvocationId) -> Result<(), Error>
+    where
+        S: VirtualObjectStatusTable + InvocationStatusTable + InboxTable + FsmTable + JournalTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             "Handle scheduled invocation timer with invocation id {invocation_id}"
         );
-        let invocation_status = ctx.get_invocation_status(&invocation_id).await?;
+        let invocation_status = self.get_invocation_status(&invocation_id).await?;
 
         if let InvocationStatus::Free = &invocation_status {
             warn!("Fired a timer for an unknown invocation. The invocation might have been deleted/purged previously.");
@@ -1632,7 +1615,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // 3. Check if we need to inbox it (only for exclusive methods of virtual objects)
         let Some(pre_flight_invocation_metadata) = self
             .handle_service_invocation_exclusive_handler(
-                ctx,
                 invocation_id,
                 scheduled_invocation.metadata,
             )
@@ -1648,8 +1630,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 pre_flight_invocation_metadata,
             );
 
-        Self::init_journal_and_invoke(
-            ctx,
+        self.init_journal_and_invoke(
             invocation_id,
             in_flight_invocation_metadata,
             invocation_input,
@@ -1657,8 +1638,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         .await
     }
 
-    async fn try_invoker_effect<
-        State: InvocationStatusTable
+    async fn try_invoker_effect(&mut self, invoker_effect: InvokerEffect) -> Result<(), Error>
+    where
+        S: InvocationStatusTable
             + JournalTable
             + StateTable
             + PromiseTable
@@ -1668,47 +1650,43 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + InboxTable
             + VirtualObjectStatusTable
             + journal_table_v2::JournalTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invoker_effect: InvokerEffect,
-    ) -> Result<(), Error> {
+    {
         let start = Instant::now();
-        let status = ctx
+        let status = self
             .get_invocation_status(&invoker_effect.invocation_id)
             .await?;
-        self.on_invoker_effect(ctx, invoker_effect, status).await?;
-        self.latency.record(start.elapsed());
+        self.on_invoker_effect(invoker_effect, status).await?;
+        self.invoker_apply_latency.record(start.elapsed());
 
         Ok(())
     }
 
-    async fn on_invoker_effect<
-        State: InvocationStatusTable
-            + JournalTable
-            + StateTable
-            + PromiseTable
-            + OutboxTable
-            + FsmTable
-            + TimerTable
-            + InboxTable
-            + VirtualObjectStatusTable
-            + journal_table_v2::JournalTable,
-    >(
+    async fn on_invoker_effect(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         InvokerEffect {
             invocation_id,
             kind,
         }: InvokerEffect,
         invocation_status: InvocationStatus,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        S: InvocationStatusTable
+            + JournalTable
+            + StateTable
+            + PromiseTable
+            + OutboxTable
+            + FsmTable
+            + TimerTable
+            + InboxTable
+            + VirtualObjectStatusTable
+            + journal_table_v2::JournalTable,
+    {
         let is_status_invoked = matches!(invocation_status, InvocationStatus::Invoked(_));
         let is_status_killed = matches!(invocation_status, InvocationStatus::Killed(_));
 
         if !is_status_invoked && !is_status_killed {
             trace!("Received invoker effect for invocation not in invoked nor killed status. Ignoring the effect.");
-            Self::do_send_abort_invocation_to_invoker(ctx, invocation_id, false);
+            self.do_send_abort_invocation_to_invoker(invocation_id, false);
             return Ok(());
         }
         if is_status_killed
@@ -1727,12 +1705,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     invocation_status,
                     pinned_deployment,
                 }
-                .apply(ctx)
+                .apply(self)
                 .await?;
             }
             InvokerEffectKind::JournalEntry { entry_index, entry } => {
                 self.handle_journal_entry(
-                    ctx,
                     invocation_id,
                     entry_index,
                     entry,
@@ -1751,10 +1728,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     invocation_id,
                     invocation_status,
                 }
-                .apply(ctx)
+                .apply(self)
                 .await?;
                 if let Some(command_index_to_ack) = command_index_to_ack {
-                    ctx.action_collector.push(Action::AckStoredCommand {
+                    self.action_collector.push(Action::AckStoredCommand {
                         invocation_id,
                         command_index: command_index_to_ack,
                     });
@@ -1773,7 +1750,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 let mut any_completed = false;
                 for entry_index in &waiting_for_completed_entries {
                     if ReadOnlyJournalTable::get_journal_entry(
-                        ctx.storage,
+                        self.storage,
                         &invocation_id,
                         *entry_index,
                     )
@@ -1783,17 +1760,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     {
                         trace!(
                             rpc.service = %invocation_metadata.invocation_target.service_name(),
-                            rectx.storage.invocation.id = %invocation_id,
+                            reself.storage.invocation.id = %invocation_id,
                             "Resuming instead of suspending service because an awaited entry is completed/acked.");
                         any_completed = true;
                         break;
                     }
                 }
                 if any_completed {
-                    Self::do_resume_service(ctx, invocation_id, invocation_metadata).await?;
+                    self.do_resume_service(invocation_id, invocation_metadata)
+                        .await?;
                 } else {
-                    Self::do_suspend_service(
-                        ctx,
+                    self.do_suspend_service(
                         invocation_id,
                         invocation_metadata,
                         waiting_for_completed_entries,
@@ -1809,12 +1786,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     invocation_status,
                     waiting_for_notifications,
                 }
-                .apply(ctx)
+                .apply(self)
                 .await?;
             }
             InvokerEffectKind::End => {
                 self.end_invocation(
-                    ctx,
                     invocation_id,
                     invocation_status
                         .into_invocation_metadata()
@@ -1830,7 +1806,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
             InvokerEffectKind::Failed(e) => {
                 self.end_invocation(
-                    ctx,
                     invocation_id,
                     invocation_status
                         .into_invocation_metadata()
@@ -1845,23 +1820,23 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     }
 
     /// TODO(slinkydeveloper) move this to lifecycle command
-    async fn end_invocation<
-        State: InboxTable
+    async fn end_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_metadata: InFlightInvocationMetadata,
+        // If given, this will override any Output Entry available in the journal table
+        response_result_override: Option<ResponseResult>,
+    ) -> Result<(), Error>
+    where
+        S: InboxTable
             + VirtualObjectStatusTable
             + JournalTable
             + OutboxTable
             + FsmTable
             + InvocationStatusTable
             + StateTable
-        + journal_table_v2::JournalTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-        invocation_metadata: InFlightInvocationMetadata,
-        // If given, this will override any Output Entry available in the journal table
-        response_result_override: Option<ResponseResult>,
-    ) -> Result<(), Error> {
+            + journal_table_v2::JournalTable,
+    {
         let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
         let completion_retention_time = invocation_metadata.completion_retention_duration;
@@ -1871,10 +1846,16 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention_time.is_zero() {
             let response_result = if let Some(response_result) = response_result_override {
                 response_result
-            } else if let Some(response_result) =
-                self
-                .read_last_output_entry_result(ctx, &invocation_id, journal_length, invocation_metadata.pinned_deployment.as_ref()
-                    .map(|pd| pd.service_protocol_version).unwrap_or_default())
+            } else if let Some(response_result) = self
+                .read_last_output_entry_result(
+                    &invocation_id,
+                    journal_length,
+                    invocation_metadata
+                        .pinned_deployment
+                        .as_ref()
+                        .map(|pd| pd.service_protocol_version)
+                        .unwrap_or_default(),
+                )
                 .await?
             {
                 response_result
@@ -1886,7 +1867,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
             // Send responses out
             self.send_response_to_sinks(
-                ctx,
                 invocation_metadata.response_sinks.clone(),
                 response_result.clone(),
                 Some(invocation_id),
@@ -1897,7 +1877,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
             // Notify invocation result
             self.notify_invocation_result(
-                ctx,
                 invocation_id,
                 invocation_metadata.invocation_target.clone(),
                 invocation_metadata.journal_metadata.span_context.clone(),
@@ -1915,12 +1894,12 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     invocation_metadata,
                     response_result,
                 );
-                Self::do_store_completed_invocation(ctx, invocation_id, completed_invocation).await;
+                self.do_store_completed_invocation(invocation_id, completed_invocation)
+                    .await;
             }
         } else {
             // Just notify Ok, no need to read the output entry
             self.notify_invocation_result(
-                ctx,
                 invocation_id,
                 invocation_target.clone(),
                 invocation_metadata.journal_metadata.span_context.clone(),
@@ -1932,26 +1911,28 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         // If no retention, immediately cleanup the invocation status
         if completion_retention_time.is_zero() {
-            Self::do_free_invocation(ctx, invocation_id).await;
+            self.do_free_invocation(invocation_id).await;
         }
-        Self::do_drop_journal(ctx, invocation_id, journal_length).await;
+        self.do_drop_journal(invocation_id, journal_length).await;
 
         // Consume inbox and move on
-        Self::consume_inbox(ctx, &invocation_target).await?;
+        self.consume_inbox(&invocation_target).await?;
 
         Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn send_response_to_sinks<State: OutboxTable + FsmTable>(
+    async fn send_response_to_sinks(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         response_sinks: impl IntoIterator<Item = ServiceInvocationResponseSink>,
         res: impl Into<ResponseResult>,
         invocation_id: Option<InvocationId>,
         completion_expiry_time: Option<MillisSinceEpoch>,
         invocation_target: Option<&InvocationTarget>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        S: OutboxTable + FsmTable,
+    {
         let result = res.into();
         for response_sink in response_sinks {
             match response_sink {
@@ -1959,20 +1940,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     entry_index,
                     caller,
                 } => {
-                    self.handle_outgoing_message(
-                        ctx,
-                        OutboxMessage::ServiceResponse(InvocationResponse {
+                    self.handle_outgoing_message(OutboxMessage::ServiceResponse(
+                        InvocationResponse {
                             id: caller,
                             entry_index,
                             result: result.clone(),
-                        }),
-                    )
+                        },
+                    ))
                     .await?
                 }
-                ServiceInvocationResponseSink::Ingress {
-                    request_id,
-                } => Self::send_ingress_response(
-                    ctx,
+                ServiceInvocationResponseSink::Ingress { request_id } => self
+                    .send_ingress_response(
                     request_id,
                     invocation_id,
                     completion_expiry_time,
@@ -1993,17 +1971,15 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn consume_inbox<
-        State: InboxTable
+    async fn consume_inbox(&mut self, invocation_target: &InvocationTarget) -> Result<(), Error>
+    where
+        S: InboxTable
             + VirtualObjectStatusTable
             + InvocationStatusTable
             + VirtualObjectStatusTable
             + StateTable
             + JournalTable,
-    >(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_target: &InvocationTarget,
-    ) -> Result<(), Error> {
+    {
         // Inbox exists only for virtual object exclusive handler cases
         if invocation_target.invocation_target_ty()
             == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
@@ -2013,17 +1989,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             );
 
             debug_if_leader!(
-                ctx.is_leader,
+                self.is_leader,
                 rpc.service = %keyed_service_id,
                 "Consume inbox"
             );
 
             // Pop until we find the first inbox entry.
             // Note: the inbox seq numbers can have gaps.
-            while let Some(inbox_entry) = ctx.storage.pop_inbox(&keyed_service_id).await? {
+            while let Some(inbox_entry) = self.storage.pop_inbox(&keyed_service_id).await? {
                 match inbox_entry.inbox_entry {
                     InboxEntry::Invocation(_, invocation_id) => {
-                        let inboxed_status = ctx.get_invocation_status(&invocation_id).await?;
+                        let inboxed_status = self.get_invocation_status(&invocation_id).await?;
 
                         let_assert!(
                             InvocationStatus::Inboxed(inboxed_invocation) = inboxed_status,
@@ -2032,13 +2008,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         );
 
                         debug_if_leader!(
-                            ctx.is_leader,
+                            self.is_leader,
                             rpc.service = %keyed_service_id,
                             "Invoke inboxed"
                         );
 
                         // Lock the service
-                        ctx.storage
+                        self.storage
                             .put_virtual_object_status(
                                 &keyed_service_id,
                                 &VirtualObjectStatus::Locked(invocation_id),
@@ -2047,8 +2023,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
                         let (in_flight_invocation_meta, invocation_input) =
                             InFlightInvocationMetadata::from_inboxed_invocation(inboxed_invocation);
-                        Self::init_journal_and_invoke(
-                            ctx,
+                        self.init_journal_and_invoke(
                             invocation_id,
                             in_flight_invocation_meta,
                             invocation_input,
@@ -2059,13 +2034,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         return Ok(());
                     }
                     InboxEntry::StateMutation(state_mutation) => {
-                        Self::mutate_state(ctx.storage, state_mutation).await?;
+                        self.mutate_state(state_mutation).await?;
                     }
                 }
             }
 
             // We consumed the inbox, nothing else to do here
-            ctx.storage
+            self.storage
                 .put_virtual_object_status(&keyed_service_id, &VirtualObjectStatus::Unlocked)
                 .await;
         }
@@ -2073,22 +2048,22 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn handle_journal_entry<
-        State: StateTable
+    async fn handle_journal_entry(
+        &mut self,
+        invocation_id: InvocationId,
+        entry_index: EntryIndex,
+        mut journal_entry: EnrichedRawEntry,
+        invocation_metadata: InFlightInvocationMetadata,
+    ) -> Result<(), Error>
+    where
+        S: StateTable
             + PromiseTable
             + OutboxTable
             + FsmTable
             + TimerTable
             + JournalTable
             + InvocationStatusTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-        mut journal_entry: EnrichedRawEntry,
-        invocation_metadata: InFlightInvocationMetadata,
-    ) -> Result<(), Error> {
+    {
         debug_assert_eq!(
             entry_index, invocation_metadata.journal_metadata.length,
             "Expect to receive next journal entry for {invocation_id}"
@@ -2104,21 +2079,23 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 if !is_completed {
                     let_assert!(
                         Entry::GetState(GetStateEntry { key, .. }) =
-                            journal_entry.deserialize_entry_ref::<Codec>()?
+                            journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
                     if let Some(service_id) =
                         invocation_metadata.invocation_target.as_keyed_service_id()
                     {
                         // Load state and write completion
-                        let value = ctx.storage.get_user_state(&service_id, &key).await?;
+                        let value = self.storage.get_user_state(&service_id, &key).await?;
                         let completion_result = value
                             .map(CompletionResult::Success)
                             .unwrap_or(CompletionResult::Empty);
-                        Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+                        ProtobufRawEntryCodec::write_completion(
+                            &mut journal_entry,
+                            completion_result.clone(),
+                        )?;
 
-                        Self::forward_completion(
-                            ctx,
+                        self.forward_completion(
                             invocation_id,
                             Completion::new(entry_index, completion_result),
                         );
@@ -2127,8 +2104,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             "Trying to process entry {} for a target that has no state",
                             journal_entry.header().as_entry_type()
                         );
-                        Self::forward_completion(
-                            ctx,
+                        self.forward_completion(
                             invocation_id,
                             Completion::new(entry_index, CompletionResult::Empty),
                         );
@@ -2138,7 +2114,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             EnrichedEntryHeader::SetState { .. } => {
                 let_assert!(
                     Entry::SetState(SetStateEntry { key, value }) =
-                        journal_entry.deserialize_entry_ref::<Codec>()?
+                        journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
 
                 let _span = instrumentation::info_invocation_span!(
@@ -2157,7 +2133,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
-                    Self::do_set_state(ctx, service_id, invocation_id, key, value).await;
+                    self.do_set_state(service_id, invocation_id, key, value)
+                        .await;
                 } else {
                     warn!(
                         "Trying to process entry {} for a target that has no state",
@@ -2168,7 +2145,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             EnrichedEntryHeader::ClearState { .. } => {
                 let_assert!(
                     Entry::ClearState(ClearStateEntry { key }) =
-                        journal_entry.deserialize_entry_ref::<Codec>()?
+                        journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
 
                 let _span = instrumentation::info_invocation_span!(
@@ -2187,7 +2164,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
-                    Self::do_clear_state(ctx, service_id, invocation_id, key).await;
+                    self.do_clear_state(service_id, invocation_id, key).await;
                 } else {
                     warn!(
                         "Trying to process entry {} for a target that has no state",
@@ -2212,7 +2189,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
-                    Self::do_clear_all_state(ctx, service_id, invocation_id).await?;
+                    self.do_clear_all_state(service_id, invocation_id).await?;
                 } else {
                     warn!(
                         "Trying to process entry {} for a target that has no state",
@@ -2226,7 +2203,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     let value = if let Some(service_id) =
                         invocation_metadata.invocation_target.as_keyed_service_id()
                     {
-                        ctx.storage
+                        self.storage
                             .get_all_user_states_for_service(&service_id)
                             .map(|res| res.map(|v| v.0))
                             .try_collect()
@@ -2239,12 +2216,15 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         vec![]
                     };
 
-                    let completion_result = Codec::serialize_get_state_keys_completion(value);
-                    Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+                    let completion_result =
+                        ProtobufRawEntryCodec::serialize_get_state_keys_completion(value);
+                    ProtobufRawEntryCodec::write_completion(
+                        &mut journal_entry,
+                        completion_result.clone(),
+                    )?;
 
                     // We can already forward the completion
-                    Self::forward_completion(
-                        ctx,
+                    self.forward_completion(
                         invocation_id,
                         Completion::new(entry_index, completion_result),
                     );
@@ -2254,14 +2234,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 if !is_completed {
                     let_assert!(
                         Entry::GetPromise(GetPromiseEntry { key, .. }) =
-                            journal_entry.deserialize_entry_ref::<Codec>()?
+                            journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
                     if let Some(service_id) =
                         invocation_metadata.invocation_target.as_keyed_service_id()
                     {
                         // Load state and write completion
-                        let promise_metadata = ctx.storage.get_promise(&service_id, &key).await?;
+                        let promise_metadata = self.storage.get_promise(&service_id, &key).await?;
 
                         match promise_metadata {
                             Some(Promise {
@@ -2269,14 +2249,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             }) => {
                                 // Result is already available
                                 let completion_result: CompletionResult = result.into();
-                                Codec::write_completion(
+                                ProtobufRawEntryCodec::write_completion(
                                     &mut journal_entry,
                                     completion_result.clone(),
                                 )?;
 
                                 // Forward completion
-                                Self::forward_completion(
-                                    ctx,
+                                self.forward_completion(
                                     invocation_id,
                                     Completion::new(entry_index, completion_result),
                                 );
@@ -2285,8 +2264,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                                 state: PromiseState::NotCompleted(mut v),
                             }) => {
                                 v.push(JournalEntryId::from_parts(invocation_id, entry_index));
-                                Self::do_put_promise(
-                                    ctx,
+                                self.do_put_promise(
                                     service_id,
                                     key,
                                     Promise {
@@ -2296,8 +2274,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                                 .await;
                             }
                             None => {
-                                Self::do_put_promise(
-                                    ctx,
+                                self.do_put_promise(
                                     service_id,
                                     key,
                                     Promise {
@@ -2314,8 +2291,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             "Trying to process entry {} for a target that has no promises",
                             journal_entry.header().as_entry_type()
                         );
-                        Self::forward_completion(
-                            ctx,
+                        self.forward_completion(
                             invocation_id,
                             Completion::new(entry_index, CompletionResult::Success(Bytes::new())),
                         );
@@ -2326,14 +2302,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 if !is_completed {
                     let_assert!(
                         Entry::PeekPromise(PeekPromiseEntry { key, .. }) =
-                            journal_entry.deserialize_entry_ref::<Codec>()?
+                            journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
                     if let Some(service_id) =
                         invocation_metadata.invocation_target.as_keyed_service_id()
                     {
                         // Load state and write completion
-                        let promise_metadata = ctx.storage.get_promise(&service_id, &key).await?;
+                        let promise_metadata = self.storage.get_promise(&service_id, &key).await?;
 
                         let completion_result = match promise_metadata {
                             Some(Promise {
@@ -2342,11 +2318,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             _ => CompletionResult::Empty,
                         };
 
-                        Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+                        ProtobufRawEntryCodec::write_completion(
+                            &mut journal_entry,
+                            completion_result.clone(),
+                        )?;
 
                         // Forward completion
-                        Self::forward_completion(
-                            ctx,
+                        self.forward_completion(
                             invocation_id,
                             Completion::new(entry_index, completion_result),
                         );
@@ -2355,8 +2333,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             "Trying to process entry {} for a target that has no promises",
                             journal_entry.header().as_entry_type()
                         );
-                        Self::forward_completion(
-                            ctx,
+                        self.forward_completion(
                             invocation_id,
                             Completion::new(entry_index, CompletionResult::Empty),
                         );
@@ -2370,20 +2347,19 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             key,
                             completion,
                             ..
-                        }) = journal_entry.deserialize_entry_ref::<Codec>()?
+                        }) = journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
                     if let Some(service_id) =
                         invocation_metadata.invocation_target.as_keyed_service_id()
                     {
                         // Load state and write completion
-                        let promise_metadata = ctx.storage.get_promise(&service_id, &key).await?;
+                        let promise_metadata = self.storage.get_promise(&service_id, &key).await?;
 
                         let completion_result = match promise_metadata {
                             None => {
                                 // Just register the promise completion
-                                Self::do_put_promise(
-                                    ctx,
+                                self.do_put_promise(
                                     service_id,
                                     key,
                                     Promise {
@@ -2398,20 +2374,18 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             }) => {
                                 // Send response to listeners
                                 for listener in listeners {
-                                    self.handle_outgoing_message(
-                                        ctx,
-                                        OutboxMessage::ServiceResponse(InvocationResponse {
+                                    self.handle_outgoing_message(OutboxMessage::ServiceResponse(
+                                        InvocationResponse {
                                             id: listener.invocation_id(),
                                             entry_index: listener.journal_index(),
                                             result: completion.clone().into(),
-                                        }),
-                                    )
+                                        },
+                                    ))
                                     .await?;
                                 }
 
                                 // Now register the promise completion
-                                Self::do_put_promise(
-                                    ctx,
+                                self.do_put_promise(
                                     service_id,
                                     key,
                                     Promise {
@@ -2429,11 +2403,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             }
                         };
 
-                        Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+                        ProtobufRawEntryCodec::write_completion(
+                            &mut journal_entry,
+                            completion_result.clone(),
+                        )?;
 
                         // Forward completion
-                        Self::forward_completion(
-                            ctx,
+                        self.forward_completion(
                             invocation_id,
                             Completion::new(entry_index, completion_result),
                         );
@@ -2442,8 +2418,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                             "Trying to process entry {} for a target that has no promises",
                             journal_entry.header().as_entry_type()
                         );
-                        Self::forward_completion(
-                            ctx,
+                        self.forward_completion(
                             invocation_id,
                             Completion::new(entry_index, CompletionResult::Empty),
                         );
@@ -2467,10 +2442,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
                 let_assert!(
                     Entry::Sleep(SleepEntry { wake_up_time, .. }) =
-                        journal_entry.deserialize_entry_ref::<Codec>()?
+                        journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
-                Self::register_timer(
-                    ctx,
+                self.register_timer(
                     TimerKeyValue::complete_journal_entry(
                         MillisSinceEpoch::new(wake_up_time),
                         invocation_id,
@@ -2492,7 +2466,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 {
                     let_assert!(
                         Entry::Call(InvokeEntry { request, .. }) =
-                            journal_entry.deserialize_entry_ref::<Codec>()?
+                            journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
                     let service_invocation = ServiceInvocation {
@@ -2515,10 +2489,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         submit_notification_sink: None,
                     };
 
-                    self.handle_outgoing_message(
-                        ctx,
-                        OutboxMessage::ServiceInvocation(service_invocation),
-                    )
+                    self.handle_outgoing_message(OutboxMessage::ServiceInvocation(
+                        service_invocation,
+                    ))
                     .await?;
                 } else {
                     // no action needed for an invoke entry that has been completed by the deployment
@@ -2538,7 +2511,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     Entry::OneWayCall(OneWayCallEntry {
                         request,
                         invoke_time
-                    }) = journal_entry.deserialize_entry_ref::<Codec>()?
+                    }) = journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
 
                 // 0 is equal to not set, meaning execute now
@@ -2581,18 +2554,15 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     submit_notification_sink: None,
                 };
 
-                self.handle_outgoing_message(
-                    ctx,
-                    OutboxMessage::ServiceInvocation(service_invocation),
-                )
-                .await?;
+                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
+                    .await?;
             }
             EnrichedEntryHeader::Awakeable { is_completed, .. } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
                 // Check the awakeable_completion_received_before_entry test in state_machine/server for more details
 
                 // If completion is already here, let's merge it and forward it.
-                if let Some(completion_result) = ctx
+                if let Some(completion_result) = self
                     .storage
                     .get_journal_entry(&invocation_id, entry_index)
                     .await?
@@ -2601,10 +2571,12 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         JournalEntry::Completion(completion_result) => Some(completion_result),
                     })
                 {
-                    Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+                    ProtobufRawEntryCodec::write_completion(
+                        &mut journal_entry,
+                        completion_result.clone(),
+                    )?;
 
-                    Self::forward_completion(
-                        ctx,
+                    self.forward_completion(
                         invocation_id,
                         Completion::new(entry_index, completion_result),
                     );
@@ -2620,17 +2592,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             } => {
                 let_assert!(
                     Entry::CompleteAwakeable(entry) =
-                        journal_entry.deserialize_entry_ref::<Codec>()?
+                        journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
 
-                self.handle_outgoing_message(
-                    ctx,
-                    OutboxMessage::from_awakeable_completion(
-                        *invocation_id,
-                        *entry_index,
-                        entry.result.into(),
-                    ),
-                )
+                self.handle_outgoing_message(OutboxMessage::from_awakeable_completion(
+                    *invocation_id,
+                    *entry_index,
+                    entry.result.into(),
+                ))
                 .await?;
             }
             EnrichedEntryHeader::Run { .. } => {
@@ -2640,7 +2609,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         .span_context
                         .as_parent(),
                     id = invocation_id,
-                    name = match journal_entry.deserialize_name::<Codec>()?.as_deref() {
+                    name = match journal_entry
+                        .deserialize_name::<ProtobufRawEntryCodec>()?
+                        .as_deref()
+                    {
                         None | Some("") => Cow::Borrowed("run"),
                         Some(name) => Cow::Owned(format!("run {name}")),
                     },
@@ -2658,39 +2630,40 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             EntryHeader::CancelInvocation => {
                 let_assert!(
                     Entry::CancelInvocation(entry) =
-                        journal_entry.deserialize_entry_ref::<Codec>()?
+                        journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
-                self.apply_cancel_invocation_journal_entry_action(ctx, &invocation_id, entry)
+                self.apply_cancel_invocation_journal_entry_action(&invocation_id, entry)
                     .await?;
             }
             EntryHeader::GetCallInvocationId { is_completed } => {
                 if !is_completed {
                     let_assert!(
                         Entry::GetCallInvocationId(entry) =
-                            journal_entry.deserialize_entry_ref::<Codec>()?
+                            journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
-                    let callee_invocation_id = Self::get_journal_entry_callee_invocation_id(
-                        ctx,
-                        &invocation_id,
-                        entry.call_entry_index,
-                    )
-                    .await?;
+                    let callee_invocation_id = self
+                        .get_journal_entry_callee_invocation_id(
+                            &invocation_id,
+                            entry.call_entry_index,
+                        )
+                        .await?;
 
                     if let Some(callee_invocation_id) = callee_invocation_id {
                         let completion_result = CompletionResult::Success(Bytes::from(
                             callee_invocation_id.to_string(),
                         ));
 
-                        Codec::write_completion(&mut journal_entry, completion_result.clone())?;
-                        Self::forward_completion(
-                            ctx,
+                        ProtobufRawEntryCodec::write_completion(
+                            &mut journal_entry,
+                            completion_result.clone(),
+                        )?;
+                        self.forward_completion(
                             invocation_id,
                             Completion::new(entry_index, completion_result),
                         );
                     } else {
                         // Nothing we can do here, just forward an empty completion (which is invalid for this entry).
-                        Self::forward_completion(
-                            ctx,
+                        self.forward_completion(
                             invocation_id,
                             Completion::new(entry_index, CompletionResult::Empty),
                         );
@@ -2701,28 +2674,26 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 if !is_completed {
                     let_assert!(
                         Entry::AttachInvocation(entry) =
-                            journal_entry.deserialize_entry_ref::<Codec>()?
+                            journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
-                    if let Some(invocation_query) =
-                        Self::get_invocation_query_from_attach_invocation_target(
-                            ctx,
+                    if let Some(invocation_query) = self
+                        .get_invocation_query_from_attach_invocation_target(
                             &invocation_id,
                             entry.target,
                         )
                         .await?
                     {
-                        self.handle_outgoing_message(
-                            ctx,
-                            OutboxMessage::AttachInvocation(AttachInvocationRequest {
+                        self.handle_outgoing_message(OutboxMessage::AttachInvocation(
+                            AttachInvocationRequest {
                                 invocation_query,
                                 block_on_inflight: true,
                                 response_sink: ServiceInvocationResponseSink::partition_processor(
                                     invocation_id,
                                     entry_index,
                                 ),
-                            }),
-                        )
+                            },
+                        ))
                         .await?;
                     }
                 }
@@ -2731,36 +2702,33 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 if !is_completed {
                     let_assert!(
                         Entry::GetInvocationOutput(entry) =
-                            journal_entry.deserialize_entry_ref::<Codec>()?
+                            journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
-                    if let Some(invocation_query) =
-                        Self::get_invocation_query_from_attach_invocation_target(
-                            ctx,
+                    if let Some(invocation_query) = self
+                        .get_invocation_query_from_attach_invocation_target(
                             &invocation_id,
                             entry.target,
                         )
                         .await?
                     {
-                        self.handle_outgoing_message(
-                            ctx,
-                            OutboxMessage::AttachInvocation(AttachInvocationRequest {
+                        self.handle_outgoing_message(OutboxMessage::AttachInvocation(
+                            AttachInvocationRequest {
                                 invocation_query,
                                 block_on_inflight: false,
                                 response_sink: ServiceInvocationResponseSink::partition_processor(
                                     invocation_id,
                                     entry_index,
                                 ),
-                            }),
-                        )
+                            },
+                        ))
                         .await?;
                     }
                 }
             }
         }
 
-        Self::append_journal_entry(
-            ctx,
+        self.append_journal_entry(
             invocation_id,
             InvocationStatus::Invoked(invocation_metadata),
             entry_index,
@@ -2768,7 +2736,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         )
         .await;
         // In the old journal world, command_index == entry_index
-        ctx.action_collector.push(Action::AckStoredCommand {
+        self.action_collector.push(Action::AckStoredCommand {
             invocation_id,
             command_index: entry_index,
         });
@@ -2776,14 +2744,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn apply_cancel_invocation_journal_entry_action<
-        State: OutboxTable + FsmTable + ReadOnlyJournalTable,
-    >(
+    async fn apply_cancel_invocation_journal_entry_action(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: &InvocationId,
         entry: CancelInvocationEntry,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        S: OutboxTable + FsmTable + ReadOnlyJournalTable,
+    {
         let target_invocation_id = match entry.target {
             CancelInvocationTarget::InvocationId(id) => {
                 if let Ok(id) = id.parse::<InvocationId>() {
@@ -2799,29 +2767,31 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
             CancelInvocationTarget::CallEntryIndex(call_entry_index) => {
                 // Look for the given entry index, then resolve the invocation id.
-                Self::get_journal_entry_callee_invocation_id(ctx, invocation_id, call_entry_index)
+                self.get_journal_entry_callee_invocation_id(invocation_id, call_entry_index)
                     .await?
             }
         };
 
         if let Some(target_invocation_id) = target_invocation_id {
-            self.handle_outgoing_message(
-                ctx,
-                OutboxMessage::InvocationTermination(InvocationTermination {
+            self.handle_outgoing_message(OutboxMessage::InvocationTermination(
+                InvocationTermination {
                     invocation_id: target_invocation_id,
                     flavor: TerminationFlavor::Cancel,
-                }),
-            )
+                },
+            ))
             .await?;
         }
         Ok(())
     }
 
-    async fn get_invocation_query_from_attach_invocation_target<State: ReadOnlyJournalTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn get_invocation_query_from_attach_invocation_target(
+        &mut self,
         invocation_id: &InvocationId,
         target: AttachInvocationTarget,
-    ) -> Result<Option<InvocationQuery>, Error> {
+    ) -> Result<Option<InvocationQuery>, Error>
+    where
+        S: ReadOnlyJournalTable,
+    {
         Ok(match target {
             AttachInvocationTarget::InvocationId(id) => {
                 if let Ok(id) = id.parse::<InvocationId>() {
@@ -2837,7 +2807,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
             AttachInvocationTarget::CallEntryIndex(call_entry_index) => {
                 // Look for the given entry index, then resolve the invocation id.
-                Self::get_journal_entry_callee_invocation_id(ctx, invocation_id, call_entry_index)
+                self.get_journal_entry_callee_invocation_id(invocation_id, call_entry_index)
                     .await?
                     .map(InvocationQuery::Invocation)
             }
@@ -2850,13 +2820,16 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         })
     }
 
-    async fn get_journal_entry_callee_invocation_id<State: ReadOnlyJournalTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn get_journal_entry_callee_invocation_id(
+        &mut self,
         invocation_id: &InvocationId,
         call_entry_index: EntryIndex,
-    ) -> Result<Option<InvocationId>, Error> {
+    ) -> Result<Option<InvocationId>, Error>
+    where
+        S: ReadOnlyJournalTable,
+    {
         Ok(
-            match ctx
+            match self
                 .storage
                 .get_journal_entry(invocation_id, call_entry_index)
                 .await?
@@ -2897,12 +2870,15 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         )
     }
 
-    async fn handle_completion<State: JournalTable + journal_table_v2::JournalTable + InvocationStatusTable + TimerTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn handle_completion(
+        &mut self,
         invocation_id: InvocationId,
         completion: Completion,
-    ) -> Result<(), Error> {
-        let status = ctx.get_invocation_status(&invocation_id).await?;
+    ) -> Result<(), Error>
+    where
+        S: JournalTable + journal_table_v2::JournalTable + InvocationStatusTable + TimerTable,
+    {
+        let status = self.get_invocation_status(&invocation_id).await?;
 
         if status
             .get_invocation_metadata()
@@ -2918,33 +2894,35 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 match completion.result {
                     CompletionResult::Empty => NotificationResult::Void,
                     CompletionResult::Success(s) => NotificationResult::Success(s),
-                    CompletionResult::Failure(c, m) => NotificationResult::Failure(journal_v2::Failure {
-                        code: c,
-                        message: m
-                    })
-                }
-            ).into();
+                    CompletionResult::Failure(c, m) => {
+                        NotificationResult::Failure(journal_v2::Failure {
+                            code: c,
+                            message: m,
+                        })
+                    }
+                },
+            )
+            .into();
             let raw_entry = new_notification.encode::<ServiceProtocolV4Codec>()?;
             entries::OnJournalEntryCommand {
                 invocation_id,
                 invocation_status: status,
                 entry: raw_entry,
             }
-                .apply(ctx)
-                .await?;
-            return Ok(())
+            .apply(self)
+            .await?;
+            return Ok(());
         }
 
         match status {
             InvocationStatus::Invoked(_) => {
-                Self::handle_completion_for_invoked(ctx, invocation_id, completion).await?;
+        self.handle_completion_for_invoked( invocation_id, completion).await?;
             }
             InvocationStatus::Suspended {
                 metadata,
                 waiting_for_notifications,
             } => {
-                if Self::handle_completion_for_suspended(
-                    ctx,
+                if self.handle_completion_for_suspended(
                     invocation_id,
                     completion,
                     &waiting_for_notifications
@@ -2957,12 +2935,12 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 )
                 .await?
                 {
-                    Self::do_resume_service(ctx, invocation_id, metadata).await?;
+            self.do_resume_service( invocation_id, metadata).await?;
                 }
             }
             _ => {
                 debug!(
-                    rectx.storage.invocation.id = %invocation_id,
+                    reself.storage.invocation.id = %invocation_id,
                     ?completion,
                     "Ignoring completion for invocation that is no longer running."
                 )
@@ -2972,49 +2950,60 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn handle_completion_for_suspended<State: JournalTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn handle_completion_for_suspended(
+        &mut self,
         invocation_id: InvocationId,
         completion: Completion,
         waiting_for_completed_entries: &HashSet<EntryIndex>,
-    ) -> Result<bool, Error> {
+    ) -> Result<bool, Error>
+    where
+        S: JournalTable,
+    {
         let resume_invocation = waiting_for_completed_entries.contains(&completion.entry_index);
-        Self::store_completion(ctx, invocation_id, completion).await?;
+        self.store_completion(invocation_id, completion).await?;
 
         Ok(resume_invocation)
     }
 
-    async fn handle_completion_for_invoked<State: JournalTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn handle_completion_for_invoked(
+        &mut self,
         invocation_id: InvocationId,
         completion: Completion,
-    ) -> Result<(), Error> {
-        if let Some(completion) = Self::store_completion(ctx, invocation_id, completion).await? {
-            Self::forward_completion(ctx, invocation_id, completion);
+    ) -> Result<(), Error>
+    where
+        S: JournalTable,
+    {
+        if let Some(completion) = self.store_completion(invocation_id, completion).await? {
+            self.forward_completion(invocation_id, completion);
         }
         Ok(())
     }
 
-    async fn read_last_output_entry_result<State: ReadOnlyJournalTable + journal_table_v2::ReadOnlyJournalTable>(
+    async fn read_last_output_entry_result(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
-        service_protocol_version: ServiceProtocolVersion
-    ) -> Result<Option<ResponseResult>, Error> {
+        service_protocol_version: ServiceProtocolVersion,
+    ) -> Result<Option<ResponseResult>, Error>
+    where
+        S: ReadOnlyJournalTable + journal_table_v2::ReadOnlyJournalTable,
+    {
         if service_protocol_version >= ServiceProtocolVersion::V4 {
             // Find last output entry
             for i in (0..journal_length).rev() {
-                let entry =
-                    journal_table_v2::ReadOnlyJournalTable::get_journal_entry(ctx.storage, *invocation_id, i)
-                        .await?
-                        .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"));
+                let entry = journal_table_v2::ReadOnlyJournalTable::get_journal_entry(
+                    self.storage,
+                    *invocation_id,
+                    i,
+                )
+                .await?
+                .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"));
                 if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
                     let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
                     return Ok(Some(match cmd.result {
                         OutputResult::Success(s) => ResponseResult::Success(s),
-                        OutputResult::Failure(f) => ResponseResult::Failure(f.into())
-                    }))
+                        OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
+                    }));
                 }
             }
             Ok(None)
@@ -3023,9 +3012,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             let mut output_entry = None;
             for i in (0..journal_length).rev() {
                 if let JournalEntry::Entry(e) =
-                    ReadOnlyJournalTable::get_journal_entry(
-                        ctx
-                            .storage, invocation_id, i)
+                    ReadOnlyJournalTable::get_journal_entry(self.storage, invocation_id, i)
                         .await?
                         .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"))
                 {
@@ -3038,16 +3025,18 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
             output_entry
                 .map(|enriched_entry| {
-                    let_assert!(Entry::Output(e) = enriched_entry.deserialize_entry_ref::<Codec>()?);
+                    let_assert!(
+                        Entry::Output(e) =
+                            enriched_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
+                    );
                     Ok(e.result.into())
                 })
                 .transpose()
         }
     }
 
-    fn notify_invocation_result<State>(
+    fn notify_invocation_result(
         &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         span_context: ServiceInvocationSpanContext,
@@ -3059,7 +3048,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             Err(_) => ("Failure", true),
         };
 
-        if ctx.is_leader && span_context.is_sampled() {
+        if self.is_leader && span_context.is_sampled() {
             instrumentation::info_invocation_span!(
                 relation = span_context.causing_span_relation(),
                 prefix = "invoke",
@@ -3079,11 +3068,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }
     }
 
-    async fn handle_outgoing_message<State: OutboxTable + FsmTable>(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        message: OutboxMessage,
-    ) -> Result<(), Error> {
+    async fn handle_outgoing_message(&mut self, message: OutboxMessage) -> Result<(), Error>
+    where
+        S: OutboxTable + FsmTable,
+    {
         // TODO Here we could add an optimization to immediately execute outbox message command
         //  for partition_key within the range of this PP, but this is problematic due to how we tie
         //  the effects buffer with tracing. Once we solve that, we could implement that by roughly uncommenting this code :)
@@ -3097,22 +3085,23 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         //             ).await
         //         }
 
-        Self::do_enqueue_into_outbox(ctx, self.outbox_seq_number, message).await?;
-        self.outbox_seq_number += 1;
+        self.do_enqueue_into_outbox(*self.outbox_seq_number, message)
+            .await?;
+        *self.outbox_seq_number += 1;
         Ok(())
     }
 
-    async fn handle_attach_invocation_request<
-        State: ReadOnlyIdempotencyTable
+    async fn handle_attach_invocation_request(
+        &mut self,
+        attach_invocation_request: AttachInvocationRequest,
+    ) -> Result<(), Error>
+    where
+        S: ReadOnlyIdempotencyTable
             + InvocationStatusTable
             + ReadOnlyVirtualObjectStatusTable
             + OutboxTable
             + FsmTable,
-    >(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        attach_invocation_request: AttachInvocationRequest,
-    ) -> Result<(), Error> {
+    {
         debug_assert!(
             self.partition_key_range.contains(&attach_invocation_request.partition_key()),
             "Attach invocation request with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
@@ -3122,7 +3111,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         let invocation_id = match attach_invocation_request.invocation_query {
             InvocationQuery::Invocation(iid) => iid,
             ref q @ InvocationQuery::Workflow(ref sid) => {
-                match ctx.storage.get_virtual_object_status(sid).await? {
+                match self.storage.get_virtual_object_status(sid).await? {
                     VirtualObjectStatus::Locked(iid) => iid,
                     VirtualObjectStatus::Unlocked => {
                         // Try the deterministic id
@@ -3131,7 +3120,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 }
             }
             ref q @ InvocationQuery::IdempotencyId(ref iid) => {
-                match ctx.storage.get_idempotency_metadata(iid).await? {
+                match self.storage.get_idempotency_metadata(iid).await? {
                     Some(idempotency_metadata) => idempotency_metadata.invocation_id,
                     None => {
                         // Try the deterministic id
@@ -3140,10 +3129,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 }
             }
         };
-        match ctx.get_invocation_status(&invocation_id).await? {
+        match self.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Free => {
                 self.send_response_to_sinks(
-                    ctx,
                     vec![attach_invocation_request.response_sink],
                     NOT_FOUND_INVOCATION_ERROR,
                     Some(invocation_id),
@@ -3161,7 +3149,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     )) =>
             {
                 self.send_response_to_sinks(
-                    ctx,
                     vec![attach_invocation_request.response_sink],
                     ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
                     Some(invocation_id),
@@ -3175,8 +3162,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             | is @ InvocationStatus::Inboxed(_)
             | is @ InvocationStatus::Scheduled(_) => {
                 if attach_invocation_request.block_on_inflight {
-                    Self::do_append_response_sink(
-                        ctx,
+                    self.do_append_response_sink(
                         invocation_id,
                         is,
                         attach_invocation_request.response_sink,
@@ -3184,7 +3170,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     .await?;
                 } else {
                     self.send_response_to_sinks(
-                        ctx,
                         vec![attach_invocation_request.response_sink],
                         NOT_READY_INVOCATION_ERROR,
                         Some(invocation_id),
@@ -3196,7 +3181,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
             InvocationStatus::Killed(metadata) => {
                 self.send_response_to_sinks(
-                    ctx,
                     vec![attach_invocation_request.response_sink],
                     KILLED_INVOCATION_ERROR,
                     Some(invocation_id),
@@ -3209,7 +3193,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
                 let completion_expiry_time = unsafe { completed.completion_expiry_time() };
                 self.send_response_to_sinks(
-                    ctx,
                     vec![attach_invocation_request.response_sink],
                     completed.response_result,
                     Some(invocation_id),
@@ -3223,8 +3206,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    fn send_ingress_response<State>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    fn send_ingress_response(
+        &mut self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: Option<InvocationId>,
         completion_expiry_time: Option<MillisSinceEpoch>,
@@ -3233,14 +3216,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         match &response {
             IngressResponseResult::Success(_, _) => {
                 debug_if_leader!(
-                    ctx.is_leader,
+                    self.is_leader,
                     "Send response to ingress with request id '{:?}': Success",
                     request_id
                 )
             }
             IngressResponseResult::Failure(e) => {
                 debug_if_leader!(
-                    ctx.is_leader,
+                    self.is_leader,
                     "Send response to ingress with request id '{:?}': Failure({})",
                     request_id,
                     e
@@ -3248,7 +3231,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
         };
 
-        ctx.action_collector.push(Action::IngressResponse {
+        self.action_collector.push(Action::IngressResponse {
             request_id,
             invocation_id,
             completion_expiry_time,
@@ -3256,8 +3239,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         });
     }
 
-    fn send_submit_notification_if_needed<State>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    fn send_submit_notification_if_needed(
+        &mut self,
         invocation_id: InvocationId,
         is_new_invocation: bool,
         submit_notification_sink: Option<SubmitNotificationSink>,
@@ -3265,12 +3248,12 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // Notify the ingress, if needed, of the chosen invocation_id
         if let Some(SubmitNotificationSink::Ingress { request_id }) = submit_notification_sink {
             debug_if_leader!(
-                ctx.is_leader,
+                self.is_leader,
                 "Sending ingress attach invocation for {}",
                 invocation_id,
             );
 
-            ctx.action_collector
+            self.action_collector
                 .push(Action::IngressSubmitNotification {
                     request_id,
                     is_new_invocation,
@@ -3278,24 +3261,27 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }
     }
 
-    async fn do_resume_service<State: InvocationStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn do_resume_service(
+        &mut self,
         invocation_id: InvocationId,
         mut metadata: InFlightInvocationMetadata,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        S: InvocationStatusTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.journal.length = metadata.journal_metadata.length,
             "Effect: Resume service"
         );
 
         metadata.timestamps.update();
         let invocation_target = metadata.invocation_target.clone();
-        ctx.storage
+        self.storage
             .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
             .await;
 
-        ctx.action_collector.push(Action::Invoke {
+        self.action_collector.push(Action::Invoke {
             invocation_id,
             invocation_target,
             invoke_input_journal: InvokeInputJournal::NoCachedJournal,
@@ -3313,21 +3299,23 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             restate.invocation.id = %invocation_id)
         )
     ]
-    async fn do_suspend_service<State: InvocationStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn do_suspend_service(
+        &mut self,
         invocation_id: InvocationId,
         mut metadata: InFlightInvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
-    ) {
+    ) where
+        S: InvocationStatusTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.journal.length = metadata.journal_metadata.length,
             "Effect: Suspend service waiting on entries {:?}",
             waiting_for_completed_entries
         );
 
         metadata.timestamps.update();
-        ctx.storage
+        self.storage
             .put_invocation_status(
                 &invocation_id,
                 &InvocationStatus::Suspended {
@@ -3341,18 +3329,20 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .await;
     }
 
-    async fn do_store_completed_invocation<State: InvocationStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn do_store_completed_invocation(
+        &mut self,
         invocation_id: InvocationId,
         completed_invocation: CompletedInvocation,
-    ) {
+    ) where
+        S: InvocationStatusTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.invocation.id = %invocation_id,
             "Effect: Store completed invocation"
         );
 
-        ctx.storage
+        self.storage
             .put_invocation_status(
                 &invocation_id,
                 &InvocationStatus::Completed(completed_invocation),
@@ -3360,49 +3350,55 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .await;
     }
 
-    async fn do_free_invocation<State: InvocationStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-    ) {
+    async fn do_free_invocation(&mut self, invocation_id: InvocationId)
+    where
+        S: InvocationStatusTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.invocation.id = %invocation_id,
             "Effect: Free invocation"
         );
 
-        ctx.storage
+        self.storage
             .put_invocation_status(&invocation_id, &InvocationStatus::Free)
             .await;
     }
 
-    async fn do_delete_inbox_entry<State: InboxTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn do_delete_inbox_entry(
+        &mut self,
         service_id: ServiceId,
         sequence_number: MessageIndex,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        S: InboxTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             rpc.service = %service_id.service_name,
             restate.inbox.seq = sequence_number,
             "Effect: Delete inbox entry",
         );
 
-        ctx.storage
+        self.storage
             .delete_inbox_entry(&service_id, sequence_number)
             .await;
 
         Ok(())
     }
 
-    async fn do_enqueue_into_outbox<State: OutboxTable + FsmTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn do_enqueue_into_outbox(
+        &mut self,
         seq_number: MessageIndex,
         message: OutboxMessage,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        S: OutboxTable + FsmTable,
+    {
         match &message {
             OutboxMessage::ServiceInvocation(service_invocation) => {
                 debug_if_leader!(
-                    ctx.is_leader,
+                    self.is_leader,
                     rpc.service = %service_invocation.invocation_target.service_name(),
                     rpc.method = %service_invocation.invocation_target.handler_name(),
                     restate.invocation.id = %service_invocation.invocation_id,
@@ -3417,7 +3413,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 id,
             }) => {
                 debug_if_leader!(
-                    ctx.is_leader,
+                    self.is_leader,
                     restate.invocation.id = %id,
                     restate.outbox.seq = seq_number,
                     "Effect: Send success response to another invocation, completing entry index {}",
@@ -3426,7 +3422,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
             OutboxMessage::InvocationTermination(invocation_termination) => {
                 debug_if_leader!(
-                    ctx.is_leader,
+                    self.is_leader,
                     restate.invocation.id = %invocation_termination.invocation_id,
                     restate.outbox.seq = seq_number,
                     "Effect: Send invocation termination command '{:?}' to partition processor",
@@ -3439,7 +3435,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 id,
             }) => {
                 debug_if_leader!(
-                    ctx.is_leader,
+                    self.is_leader,
                     restate.invocation.id = %id,
                     restate.outbox.seq = seq_number,
                     "Effect: Send failure '{}' response to another invocation, completing entry index {}",
@@ -3451,7 +3447,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 invocation_query, ..
             }) => {
                 debug_if_leader!(
-                    ctx.is_leader,
+                    self.is_leader,
                     restate.outbox.seq = seq_number,
                     "Effect: Enqueuing attach invocation request to '{:?}'",
                     invocation_query,
@@ -3459,11 +3455,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             }
         };
 
-        ctx.storage.put_outbox_message(seq_number, &message).await;
+        self.storage.put_outbox_message(seq_number, &message).await;
         // need to store the next outbox sequence number
-        ctx.storage.put_outbox_seq_number(seq_number + 1).await;
+        self.storage.put_outbox_seq_number(seq_number + 1).await;
 
-        ctx.action_collector.push(Action::NewOutboxMessage {
+        self.action_collector.push(Action::NewOutboxMessage {
             seq_number,
             message,
         });
@@ -3471,17 +3467,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn do_unlock_service<State: VirtualObjectStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        service_id: ServiceId,
-    ) -> Result<(), Error> {
+    async fn do_unlock_service(&mut self, service_id: ServiceId) -> Result<(), Error>
+    where
+        S: VirtualObjectStatusTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             rpc.service = %service_id.service_name,
             "Effect: Unlock service id",
         );
 
-        ctx.storage
+        self.storage
             .put_virtual_object_status(&service_id, &VirtualObjectStatus::Unlocked)
             .await;
 
@@ -3498,20 +3494,22 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             rpc.service = %service_id.service_name
         )
     )]
-    async fn do_set_state<State: StateTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn do_set_state(
+        &mut self,
         service_id: ServiceId,
         invocation_id: InvocationId,
         key: Bytes,
         value: Bytes,
-    ) {
+    ) where
+        S: StateTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.state.key = ?key,
             "Effect: Set state"
         );
 
-        ctx.storage.put_user_state(&service_id, key, value).await;
+        self.storage.put_user_state(&service_id, key, value).await;
     }
 
     #[tracing::instrument(
@@ -3524,19 +3522,21 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             rpc.service = %service_id.service_name
         )
     )]
-    async fn do_clear_state<State: StateTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn do_clear_state(
+        &mut self,
         service_id: ServiceId,
         invocation_id: InvocationId,
         key: Bytes,
-    ) {
+    ) where
+        S: StateTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.state.key = ?key,
             "Effect: Clear state"
         );
 
-        ctx.storage.delete_user_state(&service_id, &key).await;
+        self.storage.delete_user_state(&service_id, &key).await;
     }
 
     #[tracing::instrument(
@@ -3548,106 +3548,40 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             rpc.service = %service_id.service_name
         )
     )]
-    async fn do_clear_all_state<State: StateTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn do_clear_all_state(
+        &mut self,
         service_id: ServiceId,
         invocation_id: InvocationId,
-    ) -> Result<(), Error> {
-        debug_if_leader!(ctx.is_leader, "Effect: Clear all state");
+    ) -> Result<(), Error>
+    where
+        S: StateTable,
+    {
+        debug_if_leader!(self.is_leader, "Effect: Clear all state");
 
-        ctx.storage.delete_all_user_state(&service_id).await?;
-
-        Ok(())
-    }
-
-    async fn register_timer<State: TimerTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        timer_value: TimerKeyValue,
-        span_context: ServiceInvocationSpanContext,
-    ) -> Result<(), Error> {
-        match timer_value.value() {
-            Timer::CompleteJournalEntry(_, entry_index) => {
-                info_span_if_leader!(
-                    ctx.is_leader,
-                    span_context.is_sampled(),
-                    span_context.as_parent(),
-                    "sleep",
-                    restate.journal.index = entry_index,
-                    restate.timer.wake_up_time = %timer_value.wake_up_time(),
-                    restate.timer.key = %TimerKeyDisplay(timer_value.key()),
-                    // without converting to i64 this field will encode as a string
-                    // however, overflowing i64 seems unlikely
-                    restate.internal.end_time = i64::try_from(timer_value.wake_up_time().as_u64()).expect("wake up time should fit into i64"),
-                );
-
-                debug_if_leader!(
-                    ctx.is_leader,
-                    restate.journal.index = entry_index,
-                    restate.timer.wake_up_time = %timer_value.wake_up_time(),
-                    restate.timer.key = %TimerKeyDisplay(timer_value.key()),
-                    "Register Sleep timer"
-                )
-            }
-            Timer::Invoke(service_invocation) => {
-                // no span necessary; there will already be a background_invoke span
-                debug_if_leader!(
-                    ctx.is_leader,
-                    rpc.service = %service_invocation.invocation_target.service_name(),
-                    rpc.method = %service_invocation.invocation_target.handler_name(),
-                    restate.invocation.target = %service_invocation.invocation_target,
-                    restate.timer.wake_up_time = %timer_value.wake_up_time(),
-                    restate.timer.key = %TimerKeyDisplay(timer_value.key()),
-                    "Register background invoke timer"
-                )
-            }
-            Timer::NeoInvoke(invocation_id) => {
-                // no span necessary; there will already be a background_invoke span
-                debug_if_leader!(
-                    ctx.is_leader,
-                    restate.invocation.id = %invocation_id,
-                    restate.timer.wake_up_time = %timer_value.wake_up_time(),
-                    restate.timer.key = %TimerKeyDisplay(timer_value.key()),
-                    "Register background invoke timer"
-                )
-            }
-            Timer::CleanInvocationStatus(_) => {
-                debug_if_leader!(
-                    ctx.is_leader,
-                    restate.timer.wake_up_time = %timer_value.wake_up_time(),
-                    restate.timer.key = %TimerKeyDisplay(timer_value.key()),
-                    "Register cleanup invocation status timer"
-                )
-            }
-        };
-
-        ctx.storage
-            .put_timer(timer_value.key(), timer_value.value())
-            .await;
-
-        ctx.action_collector
-            .push(Action::RegisterTimer { timer_value });
+        self.storage.delete_all_user_state(&service_id).await?;
 
         Ok(())
     }
 
-    async fn do_delete_timer<State: TimerTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        timer_key: TimerKey,
-    ) -> Result<(), Error> {
+    async fn do_delete_timer(&mut self, timer_key: TimerKey) -> Result<(), Error>
+    where
+        S: TimerTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.timer.key = %TimerKeyDisplay(&timer_key),
             "Effect: Delete timer"
         );
 
-        ctx.storage.delete_timer(&timer_key).await;
-        ctx.action_collector.push(Action::DeleteTimer { timer_key });
+        self.storage.delete_timer(&timer_key).await;
+        self.action_collector
+            .push(Action::DeleteTimer { timer_key });
 
         Ok(())
     }
 
-    async fn append_journal_entry<State: JournalTable + InvocationStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn append_journal_entry(
+        &mut self,
         invocation_id: InvocationId,
         // We pass around the invocation_status here to avoid an additional read.
         // We could in theory get rid of this here (and in other places, such as StoreDeploymentId),
@@ -3655,9 +3589,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         mut previous_invocation_status: InvocationStatus,
         entry_index: EntryIndex,
         journal_entry: &JournalEntry,
-    ) {
+    ) where
+        S: JournalTable + InvocationStatusTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.journal.index = entry_index,
             restate.invocation.id = %invocation_id,
             "Write journal entry {:?} to storage",
@@ -3665,7 +3601,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         );
 
         // Store journal entry
-        ctx.storage
+        self.storage
             .put_journal_entry(&invocation_id, entry_index, journal_entry)
             .await;
 
@@ -3685,58 +3621,59 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }
 
         // Store invocation status
-        ctx.storage
+        self.storage
             .put_invocation_status(&invocation_id, &previous_invocation_status)
             .await;
     }
 
-    async fn do_drop_journal<State: JournalTable + journal_table_v2::JournalTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-        journal_length: EntryIndex,
-    ) {
+    async fn do_drop_journal(&mut self, invocation_id: InvocationId, journal_length: EntryIndex)
+    where
+        S: JournalTable + journal_table_v2::JournalTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.journal.length = journal_length,
             "Effect: Drop journal"
         );
 
         // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
-        JournalTable::delete_journal(ctx.storage, &invocation_id, journal_length)
-            .await;
-        journal_table_v2::JournalTable::delete_journal(ctx.storage, invocation_id, journal_length)
+        JournalTable::delete_journal(self.storage, &invocation_id, journal_length).await;
+        journal_table_v2::JournalTable::delete_journal(self.storage, invocation_id, journal_length)
             .await;
     }
 
-    async fn do_truncate_outbox<State: OutboxTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        range: RangeInclusive<MessageIndex>,
-    ) -> Result<(), Error> {
+    async fn do_truncate_outbox(&mut self, range: RangeInclusive<MessageIndex>) -> Result<(), Error>
+    where
+        S: OutboxTable,
+    {
         trace!(
             restate.outbox.seq_from = range.start(),
             restate.outbox.seq_to = range.end(),
             "Effect: Truncate outbox"
         );
 
-        ctx.storage.truncate_outbox(range).await;
+        self.storage.truncate_outbox(range).await;
 
         Ok(())
     }
 
     /// Returns the completion if it should be forwarded.
-    async fn store_completion<State: JournalTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn store_completion(
+        &mut self,
         invocation_id: InvocationId,
         mut completion: Completion,
-    ) -> Result<Option<Completion>, Error> {
+    ) -> Result<Option<Completion>, Error>
+    where
+        S: JournalTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.journal.index = completion.entry_index,
             "Store completion {}",
             CompletionResultFmt(&completion.result)
         );
 
-        if let Some(mut journal_entry) = ctx
+        if let Some(mut journal_entry) = self
             .storage
             .get_journal_entry(&invocation_id, completion.entry_index)
             .await?
@@ -3778,8 +3715,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 completion.result = CompletionResult::Empty;
             }
 
-            Codec::write_completion(&mut journal_entry, completion.result.clone())?;
-            ctx.storage
+            ProtobufRawEntryCodec::write_completion(&mut journal_entry, completion.result.clone())?;
+            self.storage
                 .put_journal_entry(
                     &invocation_id,
                     completion.entry_index,
@@ -3790,7 +3727,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         } else {
             // In case we don't have the journal entry (only awakeables case),
             // we'll send the completion afterward once we receive the entry.
-            ctx.storage
+            self.storage
                 .put_journal_entry(
                     &invocation_id,
                     completion.entry_index,
@@ -3801,35 +3738,34 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }
     }
 
-    fn forward_completion<State>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-        completion: Completion,
-    ) {
+    fn forward_completion(&mut self, invocation_id: InvocationId, completion: Completion) {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.journal.index = completion.entry_index,
             "Forward completion {} to deployment",
             CompletionResultFmt(&completion.result)
         );
 
-        ctx.action_collector.push(Action::ForwardCompletion {
+        self.action_collector.push(Action::ForwardCompletion {
             invocation_id,
             completion,
         });
     }
 
-    async fn do_append_response_sink<State: InvocationStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn do_append_response_sink(
+        &mut self,
         invocation_id: InvocationId,
         // We pass around the invocation_status here to avoid an additional read.
         // We could in theory get rid of this here (and in other places, such as StoreDeploymentId),
         // by using a merge operator in rocksdb.
         mut previous_invocation_status: InvocationStatus,
         additional_response_sink: ServiceInvocationResponseSink,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        S: InvocationStatusTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.invocation.id = %invocation_id,
             "Effect: Store additional response sink {:?}",
             additional_response_sink
@@ -3843,107 +3779,108 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             timestamps.update();
         }
 
-        ctx.storage
+        self.storage
             .put_invocation_status(&invocation_id, &previous_invocation_status)
             .await;
 
         Ok(())
     }
 
-    async fn do_store_idempotency_id<State: IdempotencyTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    async fn do_store_idempotency_id(
+        &mut self,
         idempotency_id: IdempotencyId,
         invocation_id: InvocationId,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        S: IdempotencyTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             restate.invocation.id = %invocation_id,
             "Effect: Store idempotency id {:?}",
             idempotency_id
         );
 
-        ctx.storage
+        self.storage
             .put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
             .await;
 
         Ok(())
     }
 
-    async fn do_delete_idempotency_id<State: IdempotencyTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        idempotency_id: IdempotencyId,
-    ) -> Result<(), Error> {
+    async fn do_delete_idempotency_id(&mut self, idempotency_id: IdempotencyId) -> Result<(), Error>
+    where
+        S: IdempotencyTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             "Effect: Delete idempotency id {:?}",
             idempotency_id
         );
 
-        ctx.storage
+        self.storage
             .delete_idempotency_metadata(&idempotency_id)
             .await;
 
         Ok(())
     }
 
-    fn do_send_abort_invocation_to_invoker<State>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
+    fn do_send_abort_invocation_to_invoker(
+        &mut self,
         invocation_id: InvocationId,
         acknowledge: bool,
     ) {
-        debug_if_leader!(ctx.is_leader, restate.invocation.id = %invocation_id, "Effect: Send abort command to invoker");
+        debug_if_leader!(self.is_leader, restate.invocation.id = %invocation_id, "Send abort command to invoker");
 
-        ctx.action_collector.push(Action::AbortInvocation {
+        self.action_collector.push(Action::AbortInvocation {
             invocation_id,
             acknowledge,
         });
     }
 
-    async fn do_mutate_state<State: StateTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        state_mutation: ExternalStateMutation,
-    ) -> Result<(), Error> {
+    async fn do_mutate_state(&mut self, state_mutation: ExternalStateMutation) -> Result<(), Error>
+    where
+        S: StateTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             "Effect: Mutate state for service id '{:?}'",
             &state_mutation.service_id
         );
 
-        Self::mutate_state(ctx.storage, state_mutation).await?;
+        self.mutate_state(state_mutation).await?;
 
         Ok(())
     }
 
-    async fn do_put_promise<State: PromiseTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        service_id: ServiceId,
-        key: ByteString,
-        promise: Promise,
-    ) {
-        debug_if_leader!(ctx.is_leader, rpc.service = %service_id.service_name, "Effect: Put promise {} in non completed state", key);
+    async fn do_put_promise(&mut self, service_id: ServiceId, key: ByteString, promise: Promise)
+    where
+        S: PromiseTable,
+    {
+        debug_if_leader!(self.is_leader, rpc.service = %service_id.service_name, "Effect: Put promise {} in non completed state", key);
 
-        ctx.storage.put_promise(&service_id, &key, &promise).await;
+        self.storage.put_promise(&service_id, &key, &promise).await;
     }
 
-    async fn do_clear_all_promises<State: PromiseTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        service_id: ServiceId,
-    ) -> Result<(), Error> {
+    async fn do_clear_all_promises(&mut self, service_id: ServiceId) -> Result<(), Error>
+    where
+        S: PromiseTable,
+    {
         debug_if_leader!(
-            ctx.is_leader,
+            self.is_leader,
             rpc.service = %service_id.service_name,
             "Effect: Clear all promises"
         );
 
-        ctx.storage.delete_all_promises(&service_id).await;
+        self.storage.delete_all_promises(&service_id).await;
 
         Ok(())
     }
 
-    async fn mutate_state<State: StateTable>(
-        state_storage: &mut State,
-        state_mutation: ExternalStateMutation,
-    ) -> StorageResult<()> {
+    async fn mutate_state(&mut self, state_mutation: ExternalStateMutation) -> StorageResult<()>
+    where
+        S: StateTable,
+    {
         let ExternalStateMutation {
             service_id,
             version,
@@ -3952,7 +3889,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         // overwrite all existing key value pairs with the provided ones; delete all entries that
         // are not contained in state
-        let all_user_states: Vec<(Bytes, Bytes)> = state_storage
+        let all_user_states: Vec<(Bytes, Bytes)> = self
+            .storage
             .get_all_user_states_for_service(&service_id)
             .try_collect()
             .await?;
@@ -3969,13 +3907,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         for (key, _) in &all_user_states {
             if !state.contains_key(key) {
-                state_storage.delete_user_state(&service_id, key).await;
+                self.storage.delete_user_state(&service_id, key).await;
             }
         }
 
         // overwrite existing key value pairs
         for (key, value) in state {
-            state_storage.put_user_state(&service_id, key, value).await
+            self.storage.put_user_state(&service_id, key, value).await
         }
 
         Ok(())

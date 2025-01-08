@@ -31,8 +31,8 @@ where
                 invocation_id: self.invocation_id,
                 journal_length: in_flight_invocation_metadata.journal_metadata.length,
             }
-                .apply(ctx)
-                .await?;
+            .apply(ctx)
+            .await?;
         }
 
         debug_if_leader!(

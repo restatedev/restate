@@ -97,9 +97,7 @@ pub mod actions {
         })
     }
 
-    pub fn forward_canceled_completion(
-        entry_index: EntryIndex,
-    ) -> impl Matcher<ActualT = Action> {
+    pub fn forward_canceled_completion(entry_index: EntryIndex) -> impl Matcher<ActualT = Action> {
         pat!(Action::ForwardCompletion {
             completion: canceled_completion(entry_index),
         })

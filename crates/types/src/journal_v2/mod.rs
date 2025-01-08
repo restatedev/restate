@@ -32,7 +32,7 @@ use std::fmt;
 pub mod command;
 pub mod encoding;
 mod event;
-mod notification;
+pub mod notification;
 pub mod raw;
 
 use crate::journal_v2::encoding::EncodingError;

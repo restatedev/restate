@@ -1202,8 +1202,8 @@ pub mod v1 {
 
         impl TryFrom<Suspended>
             for (
-            restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
-            HashSet<restate_types::identifiers::EntryIndex>,
+                restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
+                HashSet<restate_types::identifiers::EntryIndex>,
             )
         {
             type Error = ConversionError;
