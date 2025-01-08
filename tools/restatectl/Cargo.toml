@@ -61,6 +61,7 @@ tracing = { workspace = true }
 tracing-log = { version = "0.2" }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [build-dependencies]
 vergen = { version = "8", default-features = false, features = [

@@ -16,9 +16,6 @@ console = [
     "tokio/tracing",
     "restate-tracing-instrumentation/console-subscriber",
 ]
-io-uring = [
-    "rocksdb/io-uring"
-]
 options_schema = [
     "dep:schemars",
     "restate-core/options_schema",
@@ -64,6 +61,7 @@ tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
 regex = "1.10.4"
 url = { version = "2.5.4", features = [] }
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
 restate-admin = { workspace = true, features = ["memory-loglet", "clients"] }

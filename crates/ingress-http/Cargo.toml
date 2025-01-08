@@ -12,6 +12,7 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 # Restate
 restate-core = { workspace = true }
 restate-errors = { workspace = true }

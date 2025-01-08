@@ -19,6 +19,8 @@ options_schema = ["dep:schemars"]
 rt-tokio = ["dep:tokio"]
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 restate-types = { workspace = true }
 
 arc-swap = { workspace = true }

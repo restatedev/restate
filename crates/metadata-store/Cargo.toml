@@ -12,6 +12,8 @@ options_schema = ["dep:schemars"]
 test-util = []
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 codederror = { workspace = true }
 restate-core = { workspace = true }
 restate-rocksdb = { workspace = true }

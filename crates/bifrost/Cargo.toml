@@ -16,6 +16,8 @@ test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util"]
 auto-extend = []
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 restate-core = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
