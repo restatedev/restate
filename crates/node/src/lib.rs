@@ -15,7 +15,7 @@ mod roles;
 
 use anyhow::Context;
 use bytestring::ByteString;
-use prost_dto::IntoProto;
+use prost_dto::IntoProst;
 use std::num::NonZeroU16;
 use tracing::{debug, error, info, trace, warn};
 
@@ -540,14 +540,14 @@ impl Node {
     }
 }
 
-#[derive(Clone, Debug, IntoProto)]
-#[proto(target = "restate_types::protobuf::cluster::ClusterConfiguration")]
+#[derive(Clone, Debug, IntoProst)]
+#[prost(target = "restate_types::protobuf::cluster::ClusterConfiguration")]
 pub struct ClusterConfiguration {
-    #[into_proto(map = "num_partitions_to_u32")]
+    #[into_prost(map = "num_partitions_to_u32")]
     pub num_partitions: NonZeroU16,
-    #[proto(required)]
+    #[prost(required)]
     pub replication_strategy: ReplicationStrategy,
-    #[proto(required)]
+    #[prost(required)]
     pub default_provider: ProviderConfiguration,
 }
 
