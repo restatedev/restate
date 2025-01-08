@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use prost_dto::IntoProto;
+use prost_dto::IntoProst;
 use serde::{Deserialize, Serialize};
 
 use crate::identifiers::{LeaderEpoch, PartitionId};
@@ -21,16 +21,16 @@ use crate::{GenerationalNodeId, PlainNodeId, Version};
 
 /// A container for health information about every node and partition in the
 /// cluster.
-#[derive(Debug, Clone, IntoProto)]
-#[proto(target = "crate::protobuf::cluster::ClusterState")]
+#[derive(Debug, Clone, IntoProst)]
+#[prost(target = "crate::protobuf::cluster::ClusterState")]
 pub struct ClusterState {
-    #[into_proto(map = "instant_to_proto")]
+    #[into_prost(map = "instant_to_proto")]
     pub last_refreshed: Option<Instant>,
-    #[proto(required)]
+    #[prost(required)]
     pub nodes_config_version: Version,
-    #[proto(required)]
+    #[prost(required)]
     pub partition_table_version: Version,
-    #[proto(required)]
+    #[prost(required)]
     pub logs_metadata_version: Version,
     pub nodes: BTreeMap<PlainNodeId, NodeState>,
 }
@@ -74,62 +74,62 @@ fn instant_to_proto(t: Instant) -> prost_types::Duration {
     t.elapsed().try_into().unwrap()
 }
 
-#[derive(Debug, Clone, IntoProto)]
-#[proto(target = "crate::protobuf::cluster::NodeState", oneof = "state")]
+#[derive(Debug, Clone, IntoProst)]
+#[prost(target = "crate::protobuf::cluster::NodeState", oneof = "state")]
 pub enum NodeState {
     Alive(AliveNode),
     Dead(DeadNode),
     Suspect(SuspectNode),
 }
 
-#[derive(Debug, Clone, IntoProto)]
-#[proto(target = "crate::protobuf::cluster::AliveNode")]
+#[derive(Debug, Clone, IntoProst)]
+#[prost(target = "crate::protobuf::cluster::AliveNode")]
 pub struct AliveNode {
-    #[proto(required)]
+    #[prost(required)]
     pub last_heartbeat_at: MillisSinceEpoch,
-    #[proto(required)]
+    #[prost(required)]
     pub generational_node_id: GenerationalNodeId,
     pub partitions: BTreeMap<PartitionId, PartitionProcessorStatus>,
 }
 
-#[derive(Debug, Clone, IntoProto)]
-#[proto(target = "crate::protobuf::cluster::DeadNode")]
+#[derive(Debug, Clone, IntoProst)]
+#[prost(target = "crate::protobuf::cluster::DeadNode")]
 pub struct DeadNode {
     pub last_seen_alive: Option<MillisSinceEpoch>,
 }
 
-#[derive(Debug, Clone, IntoProto)]
-#[proto(target = "crate::protobuf::cluster::SuspectNode")]
+#[derive(Debug, Clone, IntoProst)]
+#[prost(target = "crate::protobuf::cluster::SuspectNode")]
 /// As the name implies, SuspectNode is both dead and alive
 /// until we receive a heartbeat
 pub struct SuspectNode {
-    #[proto(required)]
+    #[prost(required)]
     pub generational_node_id: GenerationalNodeId,
-    #[proto(required)]
+    #[prost(required)]
     pub last_attempt: MillisSinceEpoch,
 }
 
 #[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProto, derive_more::Display,
+    Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProst, derive_more::Display,
 )]
-#[proto(target = "crate::protobuf::cluster::RunMode")]
+#[prost(target = "crate::protobuf::cluster::RunMode")]
 pub enum RunMode {
     Leader,
     Follower,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoProto)]
-#[proto(target = "crate::protobuf::cluster::ReplayStatus")]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoProst)]
+#[prost(target = "crate::protobuf::cluster::ReplayStatus")]
 pub enum ReplayStatus {
     Starting,
     Active,
     CatchingUp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProto)]
-#[proto(target = "crate::protobuf::cluster::PartitionProcessorStatus")]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst)]
+#[prost(target = "crate::protobuf::cluster::PartitionProcessorStatus")]
 pub struct PartitionProcessorStatus {
-    #[proto(required)]
+    #[prost(required)]
     pub updated_at: MillisSinceEpoch,
     pub planned_mode: RunMode,
     pub effective_mode: RunMode,

@@ -35,6 +35,7 @@ description = "Restate makes distributed applications easy!"
 [workspace.dependencies]
 # Own crates
 codederror = { path = "crates/codederror" }
+mock-service-endpoint = { path = "tools/mock-service-endpoint" }
 restate-admin = { path = "crates/admin" }
 restate-admin-rest-model = { path = "crates/admin-rest-model" }
 restate-base64-util = { path = "crates/base64-util" }
@@ -156,7 +157,7 @@ pin-project-lite = { version = "0.2" }
 prost = { version = "0.13.1" }
 prost-build = { version = "0.13.1" }
 priority-queue = "2.0.3"
-prost-dto = { version = "0.0.2" }
+prost-dto = { version = "0.0.3" }
 prost-types = { version = "0.13.1" }
 rand = "0.8.5"
 rayon = { version = "1.10" }
