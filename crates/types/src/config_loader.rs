@@ -14,8 +14,9 @@ use std::time::Duration;
 use crate::config::Configuration;
 use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
-use notify_debouncer_mini::{
-    new_debouncer, DebounceEventResult, DebouncedEvent, DebouncedEventKind,
+use notify::{EventKind, INotifyWatcher, RecursiveMode};
+use notify_debouncer_full::{
+    new_debouncer, DebounceEventResult, DebouncedEvent, Debouncer, NoCache,
 };
 use tracing::{error, info, warn};
 
@@ -113,6 +114,7 @@ impl ConfigLoader {
         // the current platform.
         let Ok(mut debouncer) = new_debouncer(
             Duration::from_secs(3),
+            None,
             move |res: DebounceEventResult| match res {
                 Ok(events) => tx.send(events).unwrap(),
                 Err(e) => warn!("Error {:?}", e),
@@ -125,10 +127,7 @@ impl ConfigLoader {
         };
 
         info!("Installing watcher for config changes: {}", path.display());
-        if let Err(e) = debouncer
-            .watcher()
-            .watch(&path, notify::RecursiveMode::NonRecursive)
-        {
+        if let Err(e) = debouncer.watch(&path, notify::RecursiveMode::NonRecursive) {
             warn!("Couldn't install configuration watcher: {}", e);
             return;
         };
@@ -138,13 +137,12 @@ impl ConfigLoader {
             .spawn(move || {
                 // It's important that we capture the watcher in the thread,
                 // otherwise it'll be dropped and we won't be watching anything!
-                let _debouncer = debouncer;
                 info!("Configuration watcher thread has started");
                 let mut should_run = true;
                 while should_run {
                     match rx.recv() {
                         Ok(evs) => {
-                            self.handle_events(evs);
+                            self.handle_events(&mut debouncer, evs);
                         }
                         Err(e) => {
                             error!("Cannot continue watching configuration changes: '{}!", e);
@@ -157,11 +155,39 @@ impl ConfigLoader {
             .expect("start config watcher thread");
     }
 
-    fn handle_events(&self, events: Vec<DebouncedEvent>) {
+    fn handle_events(
+        &self,
+        debouncer: &mut Debouncer<INotifyWatcher, NoCache>,
+        events: Vec<DebouncedEvent>,
+    ) {
         let mut should_update = false;
-        for event in events.iter().filter(|e| e.kind == DebouncedEventKind::Any) {
-            should_update = true;
-            warn!("Detected configuration file changes: {:?}", event.path);
+        for event in events {
+            match event.kind {
+                EventKind::Modify(_) => {
+                    if let Some(path) = event.paths.first() {
+                        warn!("Detected configuration file changes: {:?}", path.display());
+                    } else {
+                        warn!("Detected configuration file changes");
+                    }
+
+                    should_update = true;
+                }
+                EventKind::Remove(_) => {
+                    // some editors (looking at you vim) replaces the entire file
+                    // on save. This triggers the `remove`` event, and then the watch
+                    // stops (since the inode has changed) so we need to re-watch
+                    // the file.
+                    should_update = true;
+                    for path in &event.event.paths {
+                        warn!("Detected configuration file changes: {:?}", path.display());
+                        _ = debouncer.unwatch(path);
+                        if let Err(err) = debouncer.watch(path, RecursiveMode::NonRecursive) {
+                            warn!(error = %err, "Failed to unwatch {}", path.display());
+                        }
+                    }
+                }
+                _ => continue,
+            }
         }
 
         if should_update {
