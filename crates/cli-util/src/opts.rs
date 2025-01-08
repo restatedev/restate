@@ -81,12 +81,16 @@ impl CommonClientConnectionOptions for NetworkOpts {
         Duration::from_millis(self.connect_timeout)
     }
 
+    fn request_timeout(&self) -> Option<Duration> {
+        Some(Duration::from_millis(self.request_timeout))
+    }
+
     fn keep_alive_interval(&self) -> Duration {
         Duration::from_secs(60)
     }
 
     fn keep_alive_timeout(&self) -> Duration {
-        Duration::from_millis(self.request_timeout)
+        Duration::from_millis(self.connect_timeout)
     }
 
     fn http2_adaptive_window(&self) -> bool {

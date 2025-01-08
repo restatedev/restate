@@ -24,9 +24,7 @@ use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::Cluste
 use restate_admin::cluster_controller::protobuf::{
     ClusterStateRequest, CreatePartitionSnapshotRequest, DescribeLogRequest, TrimLogRequest,
 };
-use restate_core::network::net_util::{
-    create_tonic_channel_from_advertised_address, CommonClientConnectionOptions,
-};
+use restate_core::network::net_util::{create_tonic_channel, CommonClientConnectionOptions};
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
@@ -84,7 +82,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     tokio::time::timeout(Duration::from_secs(10), worker_1_ready.next()).await?;
     tokio::time::timeout(Duration::from_secs(10), worker_2_ready.next()).await?;
 
-    let mut client = ClusterCtrlSvcClient::new(create_tonic_channel_from_advertised_address(
+    let mut client = ClusterCtrlSvcClient::new(create_tonic_channel(
         cluster.nodes[0].node_address().clone(),
         &TestNetworkOptions::default(),
     ))
@@ -321,22 +319,26 @@ async fn applied_lsn_converged(
 }
 
 struct TestNetworkOptions {
-    connect_timeout: u64,
-    request_timeout: u64,
+    connect_timeout: Duration,
+    request_timeout: Duration,
 }
 
 impl Default for TestNetworkOptions {
     fn default() -> Self {
         Self {
-            connect_timeout: 1000,
-            request_timeout: 5000,
+            connect_timeout: Duration::from_secs(1),
+            request_timeout: Duration::from_secs(5),
         }
     }
 }
 
 impl CommonClientConnectionOptions for TestNetworkOptions {
     fn connect_timeout(&self) -> Duration {
-        Duration::from_millis(self.connect_timeout)
+        self.connect_timeout
+    }
+
+    fn request_timeout(&self) -> Option<Duration> {
+        Some(self.request_timeout)
     }
 
     fn keep_alive_interval(&self) -> Duration {
@@ -344,7 +346,7 @@ impl CommonClientConnectionOptions for TestNetworkOptions {
     }
 
     fn keep_alive_timeout(&self) -> Duration {
-        Duration::from_millis(self.request_timeout)
+        self.connect_timeout
     }
 
     fn http2_adaptive_window(&self) -> bool {

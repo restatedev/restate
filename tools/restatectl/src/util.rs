@@ -11,10 +11,10 @@
 use tonic::transport::Channel;
 
 use restate_cli_util::CliContext;
-use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
+use restate_core::network::net_util::create_tonic_channel;
 use restate_types::net::AdvertisedAddress;
 
 pub fn grpc_connect(address: AdvertisedAddress) -> Channel {
     let ctx = CliContext::get();
-    create_tonic_channel_from_advertised_address(address, &ctx.network)
+    create_tonic_channel(address, &ctx.network)
 }
