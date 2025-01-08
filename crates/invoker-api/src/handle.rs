@@ -17,7 +17,7 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
-use restate_types::journal_v2::raw::RawEntry;
+use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::CommandIndex;
 use std::future::Future;
 use std::ops::RangeInclusive;
@@ -46,11 +46,11 @@ pub trait InvokerHandle<SR> {
         completion: Completion,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
-    fn notify_entry(
+    fn notify_notification(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry: RawEntry,
+        entry: RawNotification,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
     fn notify_stored_command_ack(

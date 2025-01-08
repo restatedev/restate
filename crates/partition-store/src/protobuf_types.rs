@@ -1202,8 +1202,8 @@ pub mod v1 {
 
         impl TryFrom<Suspended>
             for (
-                restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
-                HashSet<restate_types::identifiers::CommandIndex>,
+            restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
+            HashSet<restate_types::identifiers::EntryIndex>,
             )
         {
             type Error = ConversionError;
@@ -1278,13 +1278,13 @@ pub mod v1 {
         impl
             From<(
                 restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
-                HashSet<restate_types::identifiers::CommandIndex>,
+                HashSet<restate_types::identifiers::EntryIndex>,
             )> for Suspended
         {
             fn from(
                 (metadata, waiting_for_completed_entries): (
                     restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
-                    HashSet<restate_types::identifiers::CommandIndex>,
+                    HashSet<restate_types::identifiers::EntryIndex>,
                 ),
             ) -> Self {
                 let journal_meta = JournalMeta::from(metadata.journal_metadata);

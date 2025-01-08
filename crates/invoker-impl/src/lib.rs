@@ -65,7 +65,7 @@ use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2;
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader, RawNotification};
-use restate_types::journal_v2::{CommandIndex, EntryMetadata, EntryType, NotificationId};
+use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
@@ -378,8 +378,8 @@ where
                     InputCommand::Completion { partition, invocation_id, completion } => {
                         self.handle_completion(partition, invocation_id, completion);
                     },
-                    InputCommand::Entry { partition, invocation_id, entry } => {
-                        self.handle_entry(partition, invocation_id, entry);
+                    InputCommand::Notification { partition, invocation_id, notification } => {
+                        self.handle_notification(partition, invocation_id, notification);
                     },
                     InputCommand::StoredCommandAck { partition, invocation_id, command_index } => {
                         self.handle_stored_command_ack(options, partition, invocation_id, command_index);
@@ -717,7 +717,7 @@ where
         fields(
             restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
-            restate.journal.entry.ty = %EntryType::Notification,
+            restate.journal.entry.ty = %notification.ty(),
             restate.journal.notification.id = ?notification.id(),
         )
     )]
@@ -849,11 +849,11 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    fn handle_entry(
+    fn handle_notification(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry: RawEntry,
+        notification: RawNotification,
     ) {
         if let Some((_, ism)) = self
             .invocation_state_machine_manager
@@ -861,10 +861,10 @@ where
         {
             trace!(
                 restate.invocation.target = %ism.invocation_target,
-                restate.journal.ty = %entry.ty(),
+                restate.journal.ty = %notification.ty(),
                 "Sending entry"
             );
-            ism.notify_entry(entry);
+            ism.notify_entry(RawEntry::new(RawEntryHeader::default(), notification));
         } else {
             // If no state machine is registered, the PP will send a new invoke
             trace!("No state machine found for given completion");

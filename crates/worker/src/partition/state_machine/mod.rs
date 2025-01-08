@@ -47,14 +47,13 @@ use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, TimerTable};
 use restate_storage_api::Result as StorageResult;
 use restate_tracing_instrumentation as instrumentation;
-use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::{
     InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR, ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
     CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
     NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    CommandIndex, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
+    EntryIndex, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::identifiers::{
     IdempotencyId, JournalEntryId, WithInvocationId, WithPartitionKey,
@@ -77,7 +76,7 @@ use restate_types::journal::EntryType;
 use restate_types::journal::*;
 use restate_types::journal_v2;
 use restate_types::journal_v2::raw::RawNotification;
-use restate_types::journal_v2::NotificationId;
+use restate_types::journal_v2::{CommandType, EntryMetadata, Notification, NotificationId, NotificationIndex, NotificationResult};
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
 use restate_types::service_protocol::ServiceProtocolVersion;
@@ -94,7 +93,9 @@ use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::time::Instant;
-use tracing::error;
+use tracing::{error, info};
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use utils::SpanExt;
 
 #[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
@@ -141,6 +142,8 @@ pub enum Error {
     Storage(#[from] restate_storage_api::StorageError),
     #[error("expecting entry type {0:?}, but wasn't. This indicates data corruption.")]
     BadEntryVariant(journal_v2::EntryType),
+    #[error(transparent)]
+    EntryEncoding(#[from] journal_v2::encoding::EncodingError),
     #[error("failed to deserialize entry: {0}")]
     EntryDecoding(#[from] journal_v2::raw::RawEntryError),
 }
@@ -852,11 +855,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
         in_flight_invocation_metadata.journal_metadata.length = 1;
 
+        // We store the entry in the JournalTable V1.
+        // When pinning the deployment version we figure the concrete protocol version
+        // * If <= V3, we keep everything in JournalTable V1
+        // * If >= V4, we migrate the JournalTable to V2
         let input_entry = JournalEntry::Entry(Codec::serialize_as_input_entry(
             invocation_input.headers,
             invocation_input.argument,
         ));
-
         ctx.storage
             .put_journal_entry(&invocation_id, 0, &input_entry)
             .await;
@@ -955,6 +961,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + StateTable
             + JournalTable
             + OutboxTable
+        +journal_table_v2::JournalTable
             + TimerTable,
     >(
         &mut self,
@@ -979,7 +986,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + JournalTable
             + OutboxTable
             + TimerTable
-            + FsmTable,
+            + FsmTable
+    + journal_table_v2::JournalTable,
     >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
@@ -1052,6 +1060,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         invocation_id: InvocationId,
     ) -> Result<(), Error> {
         let status = ctx.get_invocation_status(&invocation_id).await?;
+
+        // We ignore the cancel when we haven't a pinned deployment yet,
+        // because we don't know what we should do (cancellation works differently between journal table v1 and v2).
+        // In any case, this would have no visible effect to the user
+        if status
+            .get_invocation_metadata()
+            .is_some_and(|meta| meta.pinned_deployment.is_none())
+        {
+            info!("Ignoring cancellation because the invocation made no progress so far!");
+            return Ok(());
+        }
 
         match status {
             InvocationStatus::Invoked(metadata) => {
@@ -1257,7 +1276,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + StateTable
             + JournalTable
             + OutboxTable
-            + FsmTable,
+            + FsmTable
+        +journal_table_v2::JournalTable,
     >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
@@ -1302,7 +1322,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + StateTable
             + JournalTable
             + OutboxTable
-            + FsmTable,
+            + FsmTable
+        +journal_table_v2::JournalTable,
     >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
@@ -1329,7 +1350,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: &InvocationId,
-        journal_length: CommandIndex,
+        journal_length: EntryIndex,
     ) -> Result<(), Error> {
         let invocation_ids_to_kill: Vec<InvocationId> = ctx
             .storage
@@ -1371,9 +1392,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         invocation_status: InvocationStatusProjection,
-        journal_length: CommandIndex,
+        journal_length: EntryIndex,
     ) -> Result<bool, Error> {
-        let journal_entries_to_cancel: Vec<(CommandIndex, EnrichedRawEntry)> = ctx
+        let journal_entries_to_cancel: Vec<(EntryIndex, EnrichedRawEntry)> = ctx
             .storage
             .get_journal(&invocation_id, journal_length)
             .try_filter_map(|(journal_index, journal_entry)| async move {
@@ -1453,7 +1474,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         invocation_status: &InvocationStatusProjection,
-        journal_index: CommandIndex,
+        journal_index: EntryIndex,
         canceled_result: CompletionResult,
     ) -> Result<bool, Error> {
         match invocation_status {
@@ -1545,7 +1566,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + JournalTable
             + TimerTable
             + PromiseTable
-            + StateTable,
+            + StateTable
+        + journal_table_v2::JournalTable,
     >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
@@ -1700,15 +1722,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         match kind {
             InvokerEffectKind::PinnedDeployment(pinned_deployment) => {
-                Self::do_store_pinned_deployment(
-                    ctx,
+                lifecycle::OnPinnedDeploymentCommand {
                     invocation_id,
+                    invocation_status,
                     pinned_deployment,
-                    invocation_status
-                        .into_invocation_metadata()
-                        .expect("Must be present if status is killed or invoked"),
-                )
-                .await;
+                }
+                .apply(ctx)
+                .await?;
             }
             InvokerEffectKind::JournalEntry { entry_index, entry } => {
                 self.handle_journal_entry(
@@ -1824,6 +1844,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
+    /// TODO(slinkydeveloper) move this to lifecycle command
     async fn end_invocation<
         State: InboxTable
             + VirtualObjectStatusTable
@@ -1831,7 +1852,8 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             + OutboxTable
             + FsmTable
             + InvocationStatusTable
-            + StateTable,
+            + StateTable
+        + journal_table_v2::JournalTable,
     >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
@@ -1849,11 +1871,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention_time.is_zero() {
             let response_result = if let Some(response_result) = response_result_override {
                 response_result
-            } else if let Some(output_entry) = self
-                .read_last_output_entry(ctx, &invocation_id, journal_length)
+            } else if let Some(response_result) =
+                self
+                .read_last_output_entry_result(ctx, &invocation_id, journal_length, invocation_metadata.pinned_deployment.as_ref()
+                    .map(|pd| pd.service_protocol_version).unwrap_or_default())
                 .await?
             {
-                ResponseResult::from(output_entry.result)
+                response_result
             } else {
                 // We don't panic on this, although it indicates a bug at the moment.
                 warn!("Invocation completed without an output entry. This is not supported yet.");
@@ -2061,7 +2085,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
-        entry_index: CommandIndex,
+        entry_index: EntryIndex,
         mut journal_entry: EnrichedRawEntry,
         invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
@@ -2829,7 +2853,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     async fn get_journal_entry_callee_invocation_id<State: ReadOnlyJournalTable>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: &InvocationId,
-        call_entry_index: CommandIndex,
+        call_entry_index: EntryIndex,
     ) -> Result<Option<InvocationId>, Error> {
         Ok(
             match ctx
@@ -2873,7 +2897,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         )
     }
 
-    async fn handle_completion<State: JournalTable + InvocationStatusTable>(
+    async fn handle_completion<State: JournalTable + journal_table_v2::JournalTable + InvocationStatusTable + TimerTable>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         completion: Completion,
@@ -2883,11 +2907,32 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         if status
             .get_invocation_metadata()
             .and_then(|im| im.pinned_deployment.as_ref())
-            .is_none_or(|pinned_deployment| {
+            .is_some_and(|pinned_deployment| {
                 pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
             })
         {
-            todo!("Wire up protocol v4 here!")
+            // THIS IS JOURNAL V2 CASE!
+            // Convert it to entry, then use OnJournalEntryCommand
+            let new_notification: journal_v2::Entry = Notification::new(
+                NotificationId::for_index(completion.entry_index as NotificationIndex),
+                match completion.result {
+                    CompletionResult::Empty => NotificationResult::Void,
+                    CompletionResult::Success(s) => NotificationResult::Success(s),
+                    CompletionResult::Failure(c, m) => NotificationResult::Failure(journal_v2::Failure {
+                        code: c,
+                        message: m
+                    })
+                }
+            ).into();
+            let raw_entry = new_notification.encode::<ServiceProtocolV4Codec>()?;
+            entries::OnJournalEntryCommand {
+                invocation_id,
+                invocation_status: status,
+                entry: raw_entry,
+            }
+                .apply(ctx)
+                .await?;
+            return Ok(())
         }
 
         match status {
@@ -2931,7 +2976,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         completion: Completion,
-        waiting_for_completed_entries: &HashSet<CommandIndex>,
+        waiting_for_completed_entries: &HashSet<EntryIndex>,
     ) -> Result<bool, Error> {
         let resume_invocation = waiting_for_completed_entries.contains(&completion.entry_index);
         Self::store_completion(ctx, invocation_id, completion).await?;
@@ -2950,34 +2995,54 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn read_last_output_entry<State: ReadOnlyJournalTable>(
+    async fn read_last_output_entry_result<State: ReadOnlyJournalTable + journal_table_v2::ReadOnlyJournalTable>(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: &InvocationId,
-        journal_length: CommandIndex,
-    ) -> Result<Option<OutputEntry>, Error> {
-        // Find last output entry
-        let mut output_entry = None;
-        for i in (0..journal_length).rev() {
-            if let JournalEntry::Entry(e) = ctx
-                .storage
-                .get_journal_entry(invocation_id, i)
-                .await?
-                .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"))
-            {
-                if e.ty() == EntryType::Output {
-                    output_entry = Some(e);
-                    break;
+        journal_length: EntryIndex,
+        service_protocol_version: ServiceProtocolVersion
+    ) -> Result<Option<ResponseResult>, Error> {
+        if service_protocol_version >= ServiceProtocolVersion::V4 {
+            // Find last output entry
+            for i in (0..journal_length).rev() {
+                let entry =
+                    journal_table_v2::ReadOnlyJournalTable::get_journal_entry(ctx.storage, *invocation_id, i)
+                        .await?
+                        .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"));
+                if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
+                    let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
+                    return Ok(Some(match cmd.result {
+                        OutputResult::Success(s) => ResponseResult::Success(s),
+                        OutputResult::Failure(f) => ResponseResult::Failure(f.into())
+                    }))
                 }
             }
-        }
+            Ok(None)
+        } else {
+            // Find last output entry
+            let mut output_entry = None;
+            for i in (0..journal_length).rev() {
+                if let JournalEntry::Entry(e) =
+                    ReadOnlyJournalTable::get_journal_entry(
+                        ctx
+                            .storage, invocation_id, i)
+                        .await?
+                        .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"))
+                {
+                    if e.ty() == EntryType::Output {
+                        output_entry = Some(e);
+                        break;
+                    }
+                }
+            }
 
-        output_entry
-            .map(|enriched_entry| {
-                let_assert!(Entry::Output(e) = enriched_entry.deserialize_entry_ref::<Codec>()?);
-                Ok(e)
-            })
-            .transpose()
+            output_entry
+                .map(|enriched_entry| {
+                    let_assert!(Entry::Output(e) = enriched_entry.deserialize_entry_ref::<Codec>()?);
+                    Ok(e.result.into())
+                })
+                .transpose()
+        }
     }
 
     fn notify_invocation_result<State>(
@@ -3252,7 +3317,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         mut metadata: InFlightInvocationMetadata,
-        waiting_for_completed_entries: HashSet<CommandIndex>,
+        waiting_for_completed_entries: HashSet<EntryIndex>,
     ) {
         debug_if_leader!(
             ctx.is_leader,
@@ -3581,28 +3646,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn do_store_pinned_deployment<State: InvocationStatusTable>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: InvocationId,
-        pinned_deployment: PinnedDeployment,
-        mut metadata: InFlightInvocationMetadata,
-    ) {
-        debug_if_leader!(
-            ctx.is_leader,
-            restate.deployment.id = %pinned_deployment.deployment_id,
-            restate.deployment.service_protocol_version = %pinned_deployment.service_protocol_version.as_repr(),
-            "Effect: Store chosen deployment to storage"
-        );
-
-        metadata.set_pinned_deployment(pinned_deployment);
-
-        // We recreate the InvocationStatus in Invoked state as the invoker can notify the
-        // chosen deployment_id only when the invocation is in-flight.
-        ctx.storage
-            .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
-            .await;
-    }
-
     async fn append_journal_entry<State: JournalTable + InvocationStatusTable>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
@@ -3610,7 +3653,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // We could in theory get rid of this here (and in other places, such as StoreDeploymentId),
         // by using a merge operator in rocksdb.
         mut previous_invocation_status: InvocationStatus,
-        entry_index: CommandIndex,
+        entry_index: EntryIndex,
         journal_entry: &JournalEntry,
     ) {
         debug_if_leader!(
@@ -3647,10 +3690,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .await;
     }
 
-    async fn do_drop_journal<State: JournalTable>(
+    async fn do_drop_journal<State: JournalTable + journal_table_v2::JournalTable>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
-        journal_length: CommandIndex,
+        journal_length: EntryIndex,
     ) {
         debug_if_leader!(
             ctx.is_leader,
@@ -3659,8 +3702,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         );
 
         // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
-        ctx.storage
-            .delete_journal(&invocation_id, journal_length)
+        JournalTable::delete_journal(ctx.storage, &invocation_id, journal_length)
+            .await;
+        journal_table_v2::JournalTable::delete_journal(ctx.storage, invocation_id, journal_length)
             .await;
     }
 
@@ -3954,7 +3998,7 @@ impl<'a> fmt::Display for CompletionResultFmt<'a> {
 /// Projected [`InvocationStatus`] for cancellation purposes.
 enum InvocationStatusProjection {
     Invoked,
-    Suspended(HashSet<CommandIndex>),
+    Suspended(HashSet<EntryIndex>),
 }
 
 #[cfg(test)]

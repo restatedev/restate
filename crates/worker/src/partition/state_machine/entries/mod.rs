@@ -6,9 +6,11 @@ use crate::debug_if_leader;
 use crate::partition::state_machine::entries::event::ApplyEventCommand;
 use crate::partition::state_machine::entries::notification::ApplyNotificationCommand;
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
+use crate::partition::state_machine::lifecycle::VerifyOrMigrateJournalTableToV2Command;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::JournalTable;
 use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
@@ -25,7 +27,7 @@ pub(super) struct OnJournalEntryCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnJournalEntryCommand
 where
-    S: JournalTable + InvocationStatusTable + TimerTable,
+    S: JournalTable + journal_table_v1::JournalTable + InvocationStatusTable + TimerTable,
 {
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         if !matches!(self.invocation_status, InvocationStatus::Invoked(_))
@@ -35,6 +37,21 @@ where
                 "Received entry for invocation that is not invoked nor suspended. Ignoring the effect."
             );
             return Ok(());
+        }
+
+        // In case we get a notification (e.g. awakeable completion),
+        // but we haven't pinned the deployment yet, we might need to run a migration to V2.
+        if let Some(meta) = self.invocation_status.get_invocation_metadata() {
+            if meta.pinned_deployment.is_none() {
+                // The pinned deployment wasn't established yet, but we have a V2 journal entry.
+                // So we need to try to run the migration
+                VerifyOrMigrateJournalTableToV2Command {
+                    invocation_id: self.invocation_id,
+                    journal_length: meta.journal_metadata.length,
+                }
+                .apply(ctx)
+                .await?;
+            }
         }
 
         match self.entry.ty() {
@@ -48,7 +65,7 @@ where
                 ApplySleepCommand {
                     invocation_id: self.invocation_id,
                     invocation_status: &mut self.invocation_status,
-                    entry: self.entry.deserialize_to::<ServiceProtocolV4Codec, _>()?,
+                    entry: self.entry.decode::<ServiceProtocolV4Codec, _>()?,
                 }
                 .apply(ctx)
                 .await?;
@@ -106,8 +123,7 @@ where
         );
 
         // Store journal entry
-        ctx.storage
-            .put_journal_entry(self.invocation_id, entry_index, &self.entry)
+        JournalTable::put_journal_entry(ctx.storage, self.invocation_id, entry_index, &self.entry)
             .await?;
 
         // Update journal length

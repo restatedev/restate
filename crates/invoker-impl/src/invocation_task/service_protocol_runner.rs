@@ -32,7 +32,7 @@ use restate_service_protocol::message::{
 };
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{CommandIndex, InvocationId};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::EntryType;
@@ -69,7 +69,7 @@ pub struct ServiceProtocolRunner<'a, SR, JR, EE, DMR> {
     decoder: Decoder,
 
     // task state
-    next_journal_index: CommandIndex,
+    next_journal_index: EntryIndex,
 }
 
 impl<'a, SR, JR, EE, DMR> ServiceProtocolRunner<'a, SR, JR, EE, DMR>
@@ -312,7 +312,7 @@ where
                         },
                         Some(JournalEntry::JournalV2(re)) => {
                             if re.ty() == journal_v2::EntryType::Command(journal_v2::CommandType::Input) {
-                                let input_entry = crate::shortcircuit!(re.deserialize_to::<ServiceProtocolV4Codec, journal_v2::command::InputCommand>());
+                                let input_entry = crate::shortcircuit!(re.decode::<ServiceProtocolV4Codec, journal_v2::command::InputCommand>());
                                   crate::shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(
                                     ProtobufRawEntryCodec::serialize_as_input_entry(
                                         input_entry.headers,

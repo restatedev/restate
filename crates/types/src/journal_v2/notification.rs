@@ -98,3 +98,9 @@ impl From<InvocationError> for Failure {
         }
     }
 }
+
+impl From<Failure> for InvocationError {
+    fn from(value: Failure) -> Self {
+        InvocationError::new(value.code, value.message)
+    }
+}

@@ -29,6 +29,7 @@ pub enum RawEntryError {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawEntryHeader {
+    /// **NOTE: This is currently not agreed among leaders and followers!**
     pub append_time: MillisSinceEpoch,
 }
 
@@ -67,7 +68,7 @@ impl RawEntry {
 }
 
 impl RawEntry {
-    pub fn deserialize_to<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
+    pub fn decode<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
         Ok(<T as TryFromEntry>::try_from(D::decode_entry(self)?)?)
     }
 }

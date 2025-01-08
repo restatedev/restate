@@ -442,7 +442,15 @@ impl LeaderState {
                 self.pending_cleanup_timers_to_schedule
                     .push_back((invocation_id, retention));
             }
-            Action::ForwardNotification { .. } => todo!(),
+            Action::ForwardNotification {
+                invocation_id,
+                notification,
+            } => {
+                invoker_tx
+                    .notify_notification(partition_leader_epoch, invocation_id, notification)
+                    .await
+                    .map_err(Error::Invoker)?;
+            }
         }
 
         Ok(())

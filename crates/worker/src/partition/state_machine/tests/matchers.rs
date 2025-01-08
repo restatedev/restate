@@ -13,7 +13,7 @@ use bytestring::ByteString;
 use googletest::prelude::*;
 use restate_storage_api::timer_table::{TimerKey, TimerKeyKind};
 use restate_types::errors::codes;
-use restate_types::identifiers::CommandIndex;
+use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::{InvocationTermination, TerminationFlavor};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{Completion, CompletionResult};
@@ -70,7 +70,7 @@ pub mod actions {
         })
     }
 
-    pub fn delete_sleep_timer(entry_index: CommandIndex) -> impl Matcher<ActualT = Action> {
+    pub fn delete_sleep_timer(entry_index: EntryIndex) -> impl Matcher<ActualT = Action> {
         pat!(Action::DeleteTimer {
             timer_key: pat!(TimerKey {
                 kind: pat!(TimerKeyKind::CompleteJournalEntry {
@@ -98,7 +98,7 @@ pub mod actions {
     }
 
     pub fn forward_canceled_completion(
-        entry_index: CommandIndex,
+        entry_index: EntryIndex,
     ) -> impl Matcher<ActualT = Action> {
         pat!(Action::ForwardCompletion {
             completion: canceled_completion(entry_index),
@@ -117,7 +117,7 @@ pub mod actions {
 
     pub fn invocation_response_to_partition_processor(
         caller_invocation_id: InvocationId,
-        caller_entry_index: CommandIndex,
+        caller_entry_index: EntryIndex,
         response_result_matcher: impl Matcher<ActualT = ResponseResult> + 'static,
     ) -> impl Matcher<ActualT = Action> {
         pat!(Action::NewOutboxMessage {
@@ -139,7 +139,7 @@ pub mod outbox {
 
     pub fn invocation_response_to_partition_processor(
         caller_invocation_id: InvocationId,
-        caller_entry_index: CommandIndex,
+        caller_entry_index: EntryIndex,
         response_result_matcher: impl Matcher<ActualT = ResponseResult> + 'static,
     ) -> impl Matcher<ActualT = OutboxMessage> {
         pat!(
@@ -155,7 +155,7 @@ pub mod outbox {
 }
 
 pub fn completion(
-    entry_index: CommandIndex,
+    entry_index: EntryIndex,
     completion_result: CompletionResult,
 ) -> impl Matcher<ActualT = Completion> {
     pat!(Completion {
@@ -165,13 +165,13 @@ pub fn completion(
 }
 
 pub fn success_completion(
-    entry_index: CommandIndex,
+    entry_index: EntryIndex,
     bytes: impl Into<Bytes>,
 ) -> impl Matcher<ActualT = Completion> {
     completion(entry_index, CompletionResult::Success(bytes.into()))
 }
 
-pub fn canceled_completion(entry_index: CommandIndex) -> impl Matcher<ActualT = Completion> {
+pub fn canceled_completion(entry_index: EntryIndex) -> impl Matcher<ActualT = Completion> {
     completion(
         entry_index,
         CompletionResult::Failure(codes::ABORTED, ByteString::from_static("canceled")),

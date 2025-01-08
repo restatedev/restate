@@ -29,11 +29,11 @@ pub mod test_util {
     use bytes::Bytes;
     use restate_errors::NotRunningError;
     use restate_types::identifiers::{
-        CommandIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
+        EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
     use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
     use restate_types::journal::Completion;
-    use restate_types::journal_v2::raw::RawEntry;
+    use restate_types::journal_v2::raw::RawNotification;
     use restate_types::time::MillisSinceEpoch;
     use std::convert::Infallible;
     use std::iter::empty;
@@ -109,11 +109,11 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn notify_entry(
+        async fn notify_notification(
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-            _entry: RawEntry,
+            _notification: RawNotification,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }
@@ -122,7 +122,7 @@ pub mod test_util {
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-            _entry_index: CommandIndex,
+            _entry_index: EntryIndex,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }

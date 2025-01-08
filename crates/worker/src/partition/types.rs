@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::{CommandIndex, InvocationId};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{InvocationResponse, ResponseResult};
 use restate_wal_protocol::Command;
 
@@ -20,7 +20,7 @@ pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
 pub(crate) trait OutboxMessageExt {
     fn from_awakeable_completion(
         invocation_id: InvocationId,
-        entry_index: CommandIndex,
+        entry_index: EntryIndex,
         result: ResponseResult,
     ) -> OutboxMessage;
 
@@ -30,7 +30,7 @@ pub(crate) trait OutboxMessageExt {
 impl OutboxMessageExt for OutboxMessage {
     fn from_awakeable_completion(
         invocation_id: InvocationId,
-        entry_index: CommandIndex,
+        entry_index: EntryIndex,
         result: ResponseResult,
     ) -> OutboxMessage {
         OutboxMessage::ServiceResponse(InvocationResponse {

@@ -13,7 +13,7 @@
 use super::*;
 
 use crate::errors::{InvocationError, InvocationErrorCode};
-use crate::identifiers::{CommandIndex, IdempotencyId, ServiceId};
+use crate::identifiers::{EntryIndex, IdempotencyId, ServiceId};
 use crate::invocation::Header;
 use crate::time::MillisSinceEpoch;
 use std::fmt;
@@ -116,7 +116,7 @@ impl Entry {
     }
 
     pub fn get_call_invocation_id(
-        call_entry_index: CommandIndex,
+        call_entry_index: EntryIndex,
         result: Option<GetCallInvocationIdResult>,
     ) -> Entry {
         Entry::GetCallInvocationId(GetCallInvocationIdEntry {
@@ -128,12 +128,12 @@ impl Entry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Completion {
-    pub entry_index: CommandIndex,
+    pub entry_index: EntryIndex,
     pub result: CompletionResult,
 }
 
 impl Completion {
-    pub fn new(entry_index: CommandIndex, result: CompletionResult) -> Self {
+    pub fn new(entry_index: EntryIndex, result: CompletionResult) -> Self {
         Self {
             entry_index,
             result,
@@ -410,7 +410,7 @@ pub struct RunEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CancelInvocationTarget {
     InvocationId(ByteString),
-    CallEntryIndex(CommandIndex),
+    CallEntryIndex(EntryIndex),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,7 +426,7 @@ pub enum GetCallInvocationIdResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetCallInvocationIdEntry {
-    pub call_entry_index: CommandIndex,
+    pub call_entry_index: EntryIndex,
     pub result: Option<GetCallInvocationIdResult>,
 }
 
@@ -451,7 +451,7 @@ impl CompletableEntry for AttachInvocationEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttachInvocationTarget {
     InvocationId(ByteString),
-    CallEntryIndex(CommandIndex),
+    CallEntryIndex(EntryIndex),
     IdempotentRequest(IdempotencyId),
     Workflow(ServiceId),
 }

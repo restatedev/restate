@@ -13,12 +13,12 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::Stream;
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{CommandIndex, InvocationId, PartitionKey};
+use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
-use restate_types::journal_v2::NotificationId;
+use restate_types::journal_v2::{EntryIndex, NotificationId};
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 use std::future::Future;
@@ -363,12 +363,12 @@ pub enum InvocationStatusDiscriminants {
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]
 pub struct JournalMetadata {
-    pub length: CommandIndex,
+    pub length: EntryIndex,
     pub span_context: ServiceInvocationSpanContext,
 }
 
 impl JournalMetadata {
-    pub fn new(length: CommandIndex, span_context: ServiceInvocationSpanContext) -> Self {
+    pub fn new(length: EntryIndex, span_context: ServiceInvocationSpanContext) -> Self {
         Self {
             span_context,
             length,
