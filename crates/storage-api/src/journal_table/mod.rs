@@ -10,7 +10,7 @@
 
 use crate::Result;
 use futures_util::Stream;
-use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
+use restate_types::identifiers::{CommandIndex, InvocationId, JournalEntryId, PartitionKey};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{CompletionResult, EntryType};
 use std::future::Future;
@@ -55,8 +55,8 @@ pub trait ReadOnlyJournalTable {
     fn get_journal(
         &mut self,
         invocation_id: &InvocationId,
-        journal_length: EntryIndex,
-    ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send;
+        journal_length: CommandIndex,
+    ) -> impl Stream<Item = Result<(CommandIndex, JournalEntry)>> + Send;
 
     fn all_journals(
         &self,
@@ -75,6 +75,6 @@ pub trait JournalTable: ReadOnlyJournalTable {
     fn delete_journal(
         &mut self,
         invocation_id: &InvocationId,
-        journal_length: EntryIndex,
+        journal_length: CommandIndex,
     ) -> impl Future<Output = ()> + Send;
 }

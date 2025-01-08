@@ -10,10 +10,11 @@
 
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::EntryIndex;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::EntryIndex;
 use restate_types::journal_v2;
+use restate_types::journal_v2::CommandIndex;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,8 +38,9 @@ pub enum EffectKind {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     JournalEntryV2 {
-        index_to_ack: EntryIndex,
         entry: journal_v2::raw::RawEntry,
+        /// This is used by the invoker to establish when it's safe to retry
+        command_index_to_ack: Option<CommandIndex>,
     },
     SuspendedV2 {
         waiting_for_notifications: HashSet<journal_v2::NotificationId>,

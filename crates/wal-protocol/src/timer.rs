@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
-use restate_types::identifiers::{EntryIndex, InvocationId};
+use restate_types::identifiers::{CommandIndex, InvocationId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::time::MillisSinceEpoch;
 use std::borrow::Borrow;
@@ -31,7 +31,7 @@ impl TimerKeyValue {
     pub fn complete_journal_entry(
         wake_up_time: MillisSinceEpoch,
         invocation_id: InvocationId,
-        entry_index: EntryIndex,
+        entry_index: CommandIndex,
     ) -> Self {
         let (timer_key, value) =
             Timer::complete_journal_entry(wake_up_time.as_u64(), invocation_id, entry_index);

@@ -376,12 +376,12 @@ impl LeaderState {
             Action::DeleteTimer { timer_key } => {
                 self.timer_service.as_mut().remove_timer(timer_key)
             }
-            Action::AckStoredEntry {
+            Action::AckStoredCommand {
                 invocation_id,
-                entry_index,
+                command_index,
             } => {
                 invoker_tx
-                    .notify_stored_entry_ack(partition_leader_epoch, invocation_id, entry_index)
+                    .notify_stored_command_ack(partition_leader_epoch, invocation_id, command_index)
                     .await
                     .map_err(Error::Invoker)?;
             }

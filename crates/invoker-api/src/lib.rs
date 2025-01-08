@@ -29,7 +29,7 @@ pub mod test_util {
     use bytes::Bytes;
     use restate_errors::NotRunningError;
     use restate_types::identifiers::{
-        EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
+        CommandIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
     use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
     use restate_types::journal::Completion;
@@ -118,11 +118,11 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn notify_stored_entry_ack(
+        async fn notify_stored_command_ack(
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-            _entry_index: EntryIndex,
+            _entry_index: CommandIndex,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }

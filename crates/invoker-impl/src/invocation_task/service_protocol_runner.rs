@@ -32,7 +32,7 @@ use restate_service_protocol::message::{
 };
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EntryIndex, InvocationId};
+use restate_types::identifiers::{CommandIndex, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::EntryType;
@@ -69,7 +69,7 @@ pub struct ServiceProtocolRunner<'a, SR, JR, EE, DMR> {
     decoder: Decoder,
 
     // task state
-    next_journal_index: EntryIndex,
+    next_journal_index: CommandIndex,
 }
 
 impl<'a, SR, JR, EE, DMR> ServiceProtocolRunner<'a, SR, JR, EE, DMR>

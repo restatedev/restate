@@ -22,7 +22,7 @@ use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
+    CommandIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
 use restate_types::journal_v2::raw::{RawEntry, RawEntryInner};
 use restate_types::journal_v2::NotificationId;
@@ -69,7 +69,7 @@ impl PartitionStoreProtobufValue for StoredEntry {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct NotificationsIndex(pub HashMap<NotificationId, EntryIndex>);
+pub struct NotificationsIndex(pub HashMap<NotificationId, CommandIndex>);
 impl PartitionStoreProtobufValue for NotificationsIndex {
     type ProtobufType = crate::protobuf_types::v1::NotificationsIndex;
 }
@@ -112,8 +112,8 @@ fn get_journal_entry<S: StorageAccess>(
 fn get_journal<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
-    journal_length: EntryIndex,
-) -> Vec<Result<(EntryIndex, RawEntry)>> {
+    journal_length: CommandIndex,
+) -> Vec<Result<(CommandIndex, RawEntry)>> {
     let _x = RocksDbPerfGuard::new("get-journal");
     let key = JournalKey::default()
         .partition_key(invocation_id.partition_key())
@@ -168,7 +168,7 @@ fn all_journals<S: StorageAccess>(
 fn delete_journal<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
-    journal_length: EntryIndex,
+    journal_length: CommandIndex,
 ) {
     let mut key = write_journal_entry_key(invocation_id, 0);
     let k = &mut key;
@@ -184,7 +184,7 @@ fn delete_journal<S: StorageAccess>(
 fn get_notifications_index<S: StorageAccess>(
     storage: &mut S,
     invocation_id: InvocationId,
-) -> Result<HashMap<NotificationId, EntryIndex>> {
+) -> Result<HashMap<NotificationId, CommandIndex>> {
     let key = write_journal_notifications_index(&invocation_id);
     let opt: Option<NotificationsIndex> = storage.get_value(key)?;
     Ok(opt.map(|e| e.0).unwrap_or_default())
@@ -204,8 +204,8 @@ impl ReadOnlyJournalTable for PartitionStore {
     fn get_journal(
         &mut self,
         invocation_id: InvocationId,
-        journal_length: EntryIndex,
-    ) -> impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send {
+        journal_length: CommandIndex,
+    ) -> impl Stream<Item = Result<(CommandIndex, RawEntry)>> + Send {
         self.assert_partition_key(&invocation_id);
         stream::iter(get_journal(self, &invocation_id, journal_length))
     }
@@ -220,7 +220,7 @@ impl ReadOnlyJournalTable for PartitionStore {
     async fn get_notifications_index(
         &mut self,
         invocation_id: InvocationId,
-    ) -> Result<HashMap<NotificationId, EntryIndex>> {
+    ) -> Result<HashMap<NotificationId, CommandIndex>> {
         get_notifications_index(self, invocation_id)
     }
 }
@@ -239,8 +239,8 @@ impl<'a> ReadOnlyJournalTable for PartitionStoreTransaction<'a> {
     fn get_journal(
         &mut self,
         invocation_id: InvocationId,
-        journal_length: EntryIndex,
-    ) -> impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send {
+        journal_length: CommandIndex,
+    ) -> impl Stream<Item = Result<(CommandIndex, RawEntry)>> + Send {
         self.assert_partition_key(&invocation_id);
         stream::iter(get_journal(self, &invocation_id, journal_length))
     }
@@ -255,7 +255,7 @@ impl<'a> ReadOnlyJournalTable for PartitionStoreTransaction<'a> {
     async fn get_notifications_index(
         &mut self,
         invocation_id: InvocationId,
-    ) -> Result<HashMap<NotificationId, EntryIndex>> {
+    ) -> Result<HashMap<NotificationId, CommandIndex>> {
         get_notifications_index(self, invocation_id)
     }
 }
@@ -271,7 +271,7 @@ impl<'a> JournalTable for PartitionStoreTransaction<'a> {
         put_journal_entry(self, &invocation_id, journal_index, journal_entry)
     }
 
-    async fn delete_journal(&mut self, invocation_id: InvocationId, journal_length: EntryIndex) {
+    async fn delete_journal(&mut self, invocation_id: InvocationId, journal_length: CommandIndex) {
         self.assert_partition_key(&invocation_id);
         let _x = RocksDbPerfGuard::new("delete-journal");
         delete_journal(self, &invocation_id, journal_length)

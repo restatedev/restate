@@ -13,7 +13,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::Stream;
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
+use restate_types::identifiers::{CommandIndex, InvocationId, PartitionKey};
 use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
@@ -363,12 +363,12 @@ pub enum InvocationStatusDiscriminants {
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]
 pub struct JournalMetadata {
-    pub length: EntryIndex,
+    pub length: CommandIndex,
     pub span_context: ServiceInvocationSpanContext,
 }
 
 impl JournalMetadata {
-    pub fn new(length: EntryIndex, span_context: ServiceInvocationSpanContext) -> Self {
+    pub fn new(length: CommandIndex, span_context: ServiceInvocationSpanContext) -> Self {
         Self {
             span_context,
             length,

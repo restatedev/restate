@@ -29,12 +29,13 @@ use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClient
 use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::RawEntryCodecError;
 use restate_types::journal::EntryType;
 use restate_types::journal_v2;
+use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
@@ -133,7 +134,10 @@ pub(crate) enum InvocationTaskError {
         "got bad SuspensionMessage, suspending on journal indexes {0:?}, but journal length is {1}"
     )]
     #[code(restate_errors::RT0012)]
-    BadSuspensionMessage(HashSet<EntryIndex>, EntryIndex),
+    BadSuspensionMessage(HashSet<CommandIndex>, CommandIndex),
+    #[error("malformed ProposeRunCompletion, missing result field")]
+    #[code(restate_errors::RT0012)]
+    MalformedProposeRunCompletion,
 
     #[error("error when trying to read the journal: {0}")]
     #[code(restate_errors::RT0006)]
@@ -161,7 +165,7 @@ pub(crate) enum InvocationTaskError {
 
     #[error("cannot process incoming entry at index {0} of type {1}: {2}")]
     #[code(unknown)]
-    EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
+    EntryEnrichment(CommandIndex, EntryType, #[source] InvocationError),
     #[error("cannot process incoming command {0} of type {1}: {2}")]
     #[code(unknown)]
     EntryEnrichmentV2(
@@ -280,7 +284,7 @@ pub(super) enum InvocationTaskOutputInner {
     PinnedDeployment(PinnedDeployment, /* has_changed: */ bool),
     ServerHeaderReceived(String),
     NewEntry {
-        entry_index: EntryIndex,
+        entry_index: CommandIndex,
         entry: EnrichedRawEntry,
         /// If true, the SDK requested to be notified when the entry is correctly stored.
         ///
@@ -299,8 +303,11 @@ pub(super) enum InvocationTaskOutputInner {
         /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#acknowledgment-of-stored-entries
         requires_ack: bool,
     },
+    NewNotificationProposal {
+        notification: RawNotification,
+    },
     Closed,
-    Suspended(HashSet<EntryIndex>),
+    Suspended(HashSet<CommandIndex>),
     SuspendedV2(HashSet<NotificationId>),
     Failed(InvocationTaskError),
 }
@@ -345,7 +352,7 @@ pub(super) struct InvocationTask<SR, JR, EE, DMR> {
 enum TerminalLoopState<T> {
     Continue(T),
     Closed,
-    Suspended(HashSet<EntryIndex>),
+    Suspended(HashSet<CommandIndex>),
     SuspendedV2(HashSet<NotificationId>),
     Failed(InvocationTaskError),
 }

@@ -14,10 +14,11 @@ use super::JournalMetadata;
 use crate::journal_reader::JournalEntry;
 use restate_errors::NotRunningError;
 use restate_types::identifiers::PartitionKey;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
 use restate_types::journal_v2::raw::RawEntry;
+use restate_types::journal_v2::CommandIndex;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
@@ -52,11 +53,11 @@ pub trait InvokerHandle<SR> {
         entry: RawEntry,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
-    fn notify_stored_entry_ack(
+    fn notify_stored_command_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry_index: EntryIndex,
+        command_index: CommandIndex,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
     fn abort_all_partition(

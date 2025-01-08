@@ -17,7 +17,7 @@ use prost::Message;
 use restate_storage_api::invocation_status_table::JournalMetadata;
 use restate_storage_api::journal_table::JournalTable;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
-use restate_types::identifiers::EntryIndex;
+use restate_types::identifiers::CommandIndex;
 use restate_types::invocation::TerminationFlavor;
 use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal_v2::NotificationId;
@@ -411,7 +411,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     // Update journal length
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await?;
     invocation_status.get_journal_metadata_mut().unwrap().length =
-        (journal_length + 1) as EntryIndex;
+        (journal_length + 1) as CommandIndex;
     tx.put_invocation_status(&invocation_id, &invocation_status)
         .await;
     // Add timer
@@ -524,7 +524,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     // Update journal length and suspend invocation
     let invocation_status = tx.get_invocation_status(&invocation_id).await?;
     let_assert!(InvocationStatus::Invoked(mut in_flight_meta) = invocation_status);
-    in_flight_meta.journal_metadata.length = (journal_length + 1) as EntryIndex;
+    in_flight_meta.journal_metadata.length = (journal_length + 1) as CommandIndex;
     tx.put_invocation_status(
         &invocation_id,
         &InvocationStatus::Suspended {
@@ -689,7 +689,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
 async fn assert_entry_completed(
     test_env: &mut TestEnv,
     invocation_id: InvocationId,
-    idx: EntryIndex,
+    idx: CommandIndex,
 ) {
     assert_that!(
         test_env

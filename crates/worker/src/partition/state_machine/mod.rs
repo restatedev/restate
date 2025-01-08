@@ -54,7 +54,7 @@ use restate_types::errors::{
     NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
+    CommandIndex, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::identifiers::{
     IdempotencyId, JournalEntryId, WithInvocationId, WithPartitionKey,
@@ -874,7 +874,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 // This is safe to do as only the leader will execute the invoker command
                 MillisSinceEpoch::now(),
             ),
-            vec![input_entry.erase_enrichment()],
+            vec![
+                restate_invoker_api::journal_reader::JournalEntry::JournalV1(
+                    input_entry.erase_enrichment(),
+                ),
+            ],
         ))
     }
 
@@ -1325,7 +1329,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: &InvocationId,
-        journal_length: EntryIndex,
+        journal_length: CommandIndex,
     ) -> Result<(), Error> {
         let invocation_ids_to_kill: Vec<InvocationId> = ctx
             .storage
@@ -1367,9 +1371,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         invocation_status: InvocationStatusProjection,
-        journal_length: EntryIndex,
+        journal_length: CommandIndex,
     ) -> Result<bool, Error> {
-        let journal_entries_to_cancel: Vec<(EntryIndex, EnrichedRawEntry)> = ctx
+        let journal_entries_to_cancel: Vec<(CommandIndex, EnrichedRawEntry)> = ctx
             .storage
             .get_journal(&invocation_id, journal_length)
             .try_filter_map(|(journal_index, journal_entry)| async move {
@@ -1449,7 +1453,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         invocation_status: &InvocationStatusProjection,
-        journal_index: EntryIndex,
+        journal_index: CommandIndex,
         canceled_result: CompletionResult,
     ) -> Result<bool, Error> {
         match invocation_status {
@@ -1719,7 +1723,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 .await?;
             }
             InvokerEffectKind::JournalEntryV2 {
-                index_to_ack,
+                command_index_to_ack,
                 entry,
             } => {
                 entries::OnJournalEntryCommand {
@@ -1729,10 +1733,12 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 }
                 .apply(ctx)
                 .await?;
-                ctx.action_collector.push(Action::AckStoredEntry {
-                    invocation_id,
-                    entry_index: index_to_ack,
-                });
+                if let Some(command_index_to_ack) = command_index_to_ack {
+                    ctx.action_collector.push(Action::AckStoredCommand {
+                        invocation_id,
+                        command_index: command_index_to_ack,
+                    });
+                }
             }
             InvokerEffectKind::Suspended {
                 waiting_for_completed_entries,
@@ -2055,7 +2061,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
-        entry_index: EntryIndex,
+        entry_index: CommandIndex,
         mut journal_entry: EnrichedRawEntry,
         invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
@@ -2737,9 +2743,10 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             &JournalEntry::Entry(journal_entry),
         )
         .await;
-        ctx.action_collector.push(Action::AckStoredEntry {
+        // In the old journal world, command_index == entry_index
+        ctx.action_collector.push(Action::AckStoredCommand {
             invocation_id,
-            entry_index,
+            command_index: entry_index,
         });
 
         Ok(())
@@ -2822,7 +2829,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     async fn get_journal_entry_callee_invocation_id<State: ReadOnlyJournalTable>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: &InvocationId,
-        call_entry_index: EntryIndex,
+        call_entry_index: CommandIndex,
     ) -> Result<Option<InvocationId>, Error> {
         Ok(
             match ctx
@@ -2924,7 +2931,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         completion: Completion,
-        waiting_for_completed_entries: &HashSet<EntryIndex>,
+        waiting_for_completed_entries: &HashSet<CommandIndex>,
     ) -> Result<bool, Error> {
         let resume_invocation = waiting_for_completed_entries.contains(&completion.entry_index);
         Self::store_completion(ctx, invocation_id, completion).await?;
@@ -2947,7 +2954,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: &InvocationId,
-        journal_length: EntryIndex,
+        journal_length: CommandIndex,
     ) -> Result<Option<OutputEntry>, Error> {
         // Find last output entry
         let mut output_entry = None;
@@ -3245,7 +3252,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         mut metadata: InFlightInvocationMetadata,
-        waiting_for_completed_entries: HashSet<EntryIndex>,
+        waiting_for_completed_entries: HashSet<CommandIndex>,
     ) {
         debug_if_leader!(
             ctx.is_leader,
@@ -3603,7 +3610,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // We could in theory get rid of this here (and in other places, such as StoreDeploymentId),
         // by using a merge operator in rocksdb.
         mut previous_invocation_status: InvocationStatus,
-        entry_index: EntryIndex,
+        entry_index: CommandIndex,
         journal_entry: &JournalEntry,
     ) {
         debug_if_leader!(
@@ -3643,7 +3650,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     async fn do_drop_journal<State: JournalTable>(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
-        journal_length: EntryIndex,
+        journal_length: CommandIndex,
     ) {
         debug_if_leader!(
             ctx.is_leader,
@@ -3947,7 +3954,7 @@ impl<'a> fmt::Display for CompletionResultFmt<'a> {
 /// Projected [`InvocationStatus`] for cancellation purposes.
 enum InvocationStatusProjection {
     Invoked,
-    Suspended(HashSet<EntryIndex>),
+    Suspended(HashSet<CommandIndex>),
 }
 
 #[cfg(test)]

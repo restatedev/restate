@@ -125,7 +125,7 @@ impl PartitionId {
 pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 
 // Just an alias
-pub type EntryIndex = u32;
+pub type CommandIndex = u32;
 
 /// Identifying to which partition a key belongs. This is unlike the [`PartitionId`]
 /// which identifies a consecutive range of partition keys.
@@ -653,24 +653,24 @@ fn encode_invocation_id(
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct JournalEntryId {
     invocation_id: InvocationId,
-    journal_index: EntryIndex,
+    journal_index: CommandIndex,
 }
 
 impl JournalEntryId {
-    pub const fn from_parts(invocation_id: InvocationId, journal_index: EntryIndex) -> Self {
+    pub const fn from_parts(invocation_id: InvocationId, journal_index: CommandIndex) -> Self {
         Self {
             invocation_id,
             journal_index,
         }
     }
 
-    pub fn journal_index(&self) -> EntryIndex {
+    pub fn journal_index(&self) -> CommandIndex {
         self.journal_index
     }
 }
 
-impl From<(InvocationId, EntryIndex)> for JournalEntryId {
-    fn from(value: (InvocationId, EntryIndex)) -> Self {
+impl From<(InvocationId, CommandIndex)> for JournalEntryId {
+    fn from(value: (InvocationId, CommandIndex)) -> Self {
         Self::from_parts(value.0, value.1)
     }
 }
@@ -960,11 +960,11 @@ ulid_backed_id!(Snapshot @with_resource_id);
 #[derive(Debug, Clone)]
 pub struct AwakeableIdentifier {
     invocation_id: InvocationId,
-    entry_index: EntryIndex,
+    entry_index: CommandIndex,
 }
 
 impl ResourceId for AwakeableIdentifier {
-    const SIZE_IN_BYTES: usize = InvocationId::SIZE_IN_BYTES + size_of::<EntryIndex>();
+    const SIZE_IN_BYTES: usize = InvocationId::SIZE_IN_BYTES + size_of::<CommandIndex>();
     const RESOURCE_TYPE: IdResourceType = IdResourceType::Awakeable;
     const STRING_CAPACITY_HINT: usize = 0; /* Not needed since encoding is custom */
 
@@ -972,7 +972,7 @@ impl ResourceId for AwakeableIdentifier {
     /// for wider language support.
     fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
         let mut input_buf =
-            BytesMut::with_capacity(size_of::<EncodedInvocationId>() + size_of::<EntryIndex>());
+            BytesMut::with_capacity(size_of::<EncodedInvocationId>() + size_of::<CommandIndex>());
         input_buf.put_slice(&self.invocation_id.to_bytes());
         input_buf.put_u32(self.entry_index);
         let encoded_base64 = restate_base64_util::URL_SAFE.encode(input_buf.freeze());
@@ -981,14 +981,14 @@ impl ResourceId for AwakeableIdentifier {
 }
 
 impl AwakeableIdentifier {
-    pub fn new(invocation_id: InvocationId, entry_index: EntryIndex) -> Self {
+    pub fn new(invocation_id: InvocationId, entry_index: CommandIndex) -> Self {
         Self {
             invocation_id,
             entry_index,
         }
     }
 
-    pub fn into_inner(self) -> (InvocationId, EntryIndex) {
+    pub fn into_inner(self) -> (InvocationId, CommandIndex) {
         (self.invocation_id, self.entry_index)
     }
 }
@@ -1008,13 +1008,13 @@ impl FromStr for AwakeableIdentifier {
             .decode(remaining)
             .map_err(|_| IdDecodeError::Codec)?;
 
-        if buffer.len() != size_of::<EncodedInvocationId>() + size_of::<EntryIndex>() {
+        if buffer.len() != size_of::<EncodedInvocationId>() + size_of::<CommandIndex>() {
             return Err(IdDecodeError::Length);
         }
 
         let invocation_id: InvocationId =
             InvocationId::from_slice(&buffer[..size_of::<EncodedInvocationId>()])?;
-        let entry_index = EntryIndex::from_be_bytes(
+        let entry_index = CommandIndex::from_be_bytes(
             buffer[size_of::<EncodedInvocationId>()..]
                 .try_into()
                 // Unwrap is safe because we check the size above.

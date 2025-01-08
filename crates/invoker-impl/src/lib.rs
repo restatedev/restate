@@ -31,8 +31,8 @@ use restate_invoker_api::{
 use restate_queue::SegmentQueue;
 use restate_timer_queue::TimerQueue;
 use restate_types::config::{InvokerOptions, ServiceClientOptions};
+use restate_types::identifiers::PartitionLeaderEpoch;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
-use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::Completion;
 use restate_types::live::{Live, LiveLoad};
@@ -64,16 +64,16 @@ use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2;
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader};
-use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
+use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader, RawNotification};
+use restate_types::journal_v2::{CommandIndex, EntryMetadata, EntryType, NotificationId};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
     Completion(Completion),
-    Entry(journal_v2::raw::RawEntry),
-    Ack(EntryIndex),
+    Entry(RawEntry),
+    Ack(CommandIndex),
 }
 
 // -- InvocationTask factory: we use this to mock the state machine in tests
@@ -381,8 +381,8 @@ where
                     InputCommand::Entry { partition, invocation_id, entry } => {
                         self.handle_entry(partition, invocation_id, entry);
                     },
-                    InputCommand::StoredEntryAck { partition, invocation_id, entry_index } => {
-                        self.handle_stored_entry_ack(options, partition, invocation_id, entry_index);
+                    InputCommand::StoredCommandAck { partition, invocation_id, command_index } => {
+                        self.handle_stored_command_ack(options, partition, invocation_id, command_index);
                     }
                 }
             },
@@ -420,6 +420,13 @@ where
                             entry_index,
                             entry,
                             requires_ack
+                        ).await
+                    },
+                    InvocationTaskOutputInner::NewNotificationProposal { notification } => {
+                        self.handle_new_notification_proposal(
+                            partition,
+                            invocation_id,
+                            notification
                         ).await
                     },
                     InvocationTaskOutputInner::Closed => {
@@ -561,19 +568,19 @@ where
         fields(
             restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
-            restate.journal.index = entry_index,
+            restate.journal.command.index = command_index,
         )
     )]
-    fn handle_stored_entry_ack(
+    fn handle_stored_command_ack(
         &mut self,
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry_index: EntryIndex,
+        command_index: CommandIndex,
     ) {
-        trace!("Received a new stored journal entry acknowledgement");
+        trace!("Received a new stored command entry acknowledgement");
         self.handle_retry_event(options, partition, invocation_id, |sm| {
-            sm.notify_stored_ack(entry_index)
+            sm.notify_stored_ack(command_index)
         });
     }
 
@@ -670,7 +677,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry_index: EntryIndex,
+        entry_index: CommandIndex,
         entry: EnrichedRawEntry,
         requires_ack: bool,
     ) {
@@ -678,7 +685,7 @@ where
             .invocation_state_machine_manager
             .resolve_invocation(partition, &invocation_id)
         {
-            ism.notify_new_entry(entry_index, requires_ack);
+            ism.notify_new_command(entry_index, requires_ack);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Received a new entry. Invocation state: {:?}",
@@ -710,6 +717,55 @@ where
         fields(
             restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
+            restate.journal.entry.ty = %EntryType::Notification,
+            restate.journal.notification.id = ?notification.id(),
+        )
+    )]
+    async fn handle_new_notification_proposal(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        notification: RawNotification,
+    ) {
+        if let Some((output_tx, ism)) = self
+            .invocation_state_machine_manager
+            .resolve_invocation(partition, &invocation_id)
+        {
+            ism.notify_new_notification_proposal(notification.id());
+            trace!(
+                restate.invocation.target = %ism.invocation_target,
+                "Received a new notification. Invocation state: {:?}",
+                ism.invocation_state_debug()
+            );
+            if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
+                let _ = output_tx
+                    .send(Effect {
+                        invocation_id,
+                        kind: EffectKind::PinnedDeployment(pinned_deployment),
+                    })
+                    .await;
+            }
+            let _ = output_tx
+                .send(Effect {
+                    invocation_id,
+                    kind: EffectKind::JournalEntryV2 {
+                        command_index_to_ack: None,
+                        entry: RawEntry::new(RawEntryHeader::new(), notification),
+                    },
+                })
+                .await;
+        } else {
+            // If no state machine, this might be an entry for an aborted invocation.
+            trace!("No state machine found for given notification");
+        }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.invocation.id = %invocation_id,
+            restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.command.index = command_index,
             restate.journal.entry.ty = %command.ty(),
         )
@@ -726,10 +782,10 @@ where
             .invocation_state_machine_manager
             .resolve_invocation(partition, &invocation_id)
         {
-            ism.notify_new_entry(command_index, requires_ack);
+            ism.notify_new_command(command_index, requires_ack);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
-                "Received a new entry. Invocation state: {:?}",
+                "Received a new command. Invocation state: {:?}",
                 ism.invocation_state_debug()
             );
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
@@ -744,7 +800,7 @@ where
                 .send(Effect {
                     invocation_id,
                     kind: EffectKind::JournalEntryV2 {
-                        index_to_ack: command_index,
+                        command_index_to_ack: Some(command_index),
                         entry: RawEntry::new(RawEntryHeader::new(), command),
                     },
                 })
@@ -862,7 +918,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry_indexes: HashSet<EntryIndex>,
+        entry_indexes: HashSet<CommandIndex>,
     ) {
         if let Some((sender, _, ism)) = self
             .invocation_state_machine_manager
@@ -1112,7 +1168,7 @@ where
             partition,
             invocation_id,
             ism.invocation_target.clone(),
-            ism.start_message_retry_count_since_last_stored_entry,
+            ism.start_message_retry_count_since_last_stored_command,
             storage_reader,
             self.invocation_tasks_tx.clone(),
             completions_rx,
