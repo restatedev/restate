@@ -8,6 +8,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 restate-fs-util = { workspace = true }
 
 bincode = { version = "2.0.0-rc", default-features = false, features = ["std", "serde"] }
