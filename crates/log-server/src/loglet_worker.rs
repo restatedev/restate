@@ -26,7 +26,7 @@ use crate::metadata::LogletState;
 /// A loglet worker
 ///
 /// The design of the store flow assumes that sequencer will send records in the order we can
-/// accept then (per-connection) to reduce complexity on the log-server side. This means that
+/// accept them (per-connection) to reduce complexity on the log-server side. This means that
 /// the log-server does not need to re-order or buffer records in memory.
 /// Records will be rejected if:
 ///   1) Record offset > local tail

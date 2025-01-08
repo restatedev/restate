@@ -138,6 +138,10 @@ impl<'a> TrimTask<'a> {
             });
         }
 
+        // If we get a quorum, we will acknowledge the trim request with the highest trim point
+        // reported by any log server. This may be higher than what was requested.
+        let mut response_trim_point = LogletOffset::INVALID;
+
         // Waiting for trim responses
         while let Some(res) = inflight_requests.join_next().await {
             let Ok((node_id, res)) = res else {
@@ -149,20 +153,21 @@ impl<'a> TrimTask<'a> {
                 continue;
             };
 
+            response_trim_point = response_trim_point.max(actual_trim_point);
             nodeset_checker.set_attribute(node_id, true);
             if nodeset_checker.check_write_quorum(|s| *s) {
                 // We have enough nodes with a trim point at or higher than what we requested.
                 // Let's keep the rest of the trim requests running in the background.
                 debug!(
                     loglet_id = %self.my_params.loglet_id,
-                    %trim_point,
-                    %actual_trim_point,
+                    requested_trim_point = %trim_point,
+                    %response_trim_point,
                     known_global_tail = %self.known_global_tail,
                     "Loglet has been trimmed"
                 );
                 // Let the remaining trim requests finish in the background
                 inflight_requests.detach_all();
-                return Ok(Some(actual_trim_point));
+                return Ok(Some(response_trim_point));
             }
         }
 

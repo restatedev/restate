@@ -314,7 +314,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         .await?;
 
         info!(
-            loglet_id=%self.my_params.loglet_id,
+            loglet_id = %self.my_params.loglet_id,
             ?requested_trim_point,
             ?trim_point,
             "Loglet trim task completed successfully"
@@ -340,7 +340,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         // returns Sealed. We should NOT:
         // - Use AppendError::Sealed to mark our sealed global_tail
         // - Mark our global tail as sealed on successful seal() call.
-        info!(loglet_id=%self.my_params.loglet_id, "Loglet has been sealed successfully");
+        info!(loglet_id = %self.my_params.loglet_id, "Loglet has been sealed successfully");
         Ok(())
     }
 }
