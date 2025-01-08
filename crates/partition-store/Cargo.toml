@@ -12,6 +12,8 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }

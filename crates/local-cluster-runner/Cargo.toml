@@ -11,6 +11,8 @@ publish = false
 default = []
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 restate-core = { workspace = true }
 restate-metadata-store = { workspace = true }
 # nb features here will also affect the compiled restate-server binary in integration tests

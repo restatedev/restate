@@ -8,5 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 futures = { workspace = true }
 tokio = { workspace = true }

@@ -1026,6 +1026,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1547,6 +1548,7 @@ version = "1.1.6"
 dependencies = [
  "codederror-derive",
  "thiserror 2.0.6",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1556,6 +1558,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4380,6 +4383,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6010,6 +6014,7 @@ dependencies = [
  "tower 0.4.13",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
  "xxhash-rust",
 ]
 
@@ -6029,6 +6034,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "strum",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6036,6 +6042,7 @@ name = "restate-base64-util"
 version = "1.1.6"
 dependencies = [
  "base64 0.22.1",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6062,6 +6069,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6112,6 +6120,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
+ "workspace-hack",
  "xxhash-rust",
 ]
 
@@ -6179,6 +6188,7 @@ dependencies = [
  "url",
  "uuid",
  "vergen",
+ "workspace-hack",
  "zip 0.6.6",
 ]
 
@@ -6203,6 +6213,7 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "unicode-width 0.1.14",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6262,6 +6273,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "tracing-test",
+ "workspace-hack",
  "xxhash-rust",
 ]
 
@@ -6272,6 +6284,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.90",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6285,6 +6298,7 @@ dependencies = [
  "thiserror 2.0.6",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6294,6 +6308,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6309,6 +6324,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6356,6 +6372,7 @@ dependencies = [
  "tracing-test",
  "url",
  "urlencoding",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6386,6 +6403,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-opentelemetry",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6402,6 +6420,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.6",
  "tokio",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6445,6 +6464,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6478,6 +6498,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "typed-builder",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6522,6 +6543,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
+ "workspace-hack",
  "xxhash-rust",
 ]
 
@@ -6557,6 +6579,7 @@ dependencies = [
  "tonic-build",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6621,6 +6644,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6665,6 +6689,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6678,6 +6703,7 @@ dependencies = [
  "serde",
  "tempfile",
  "tokio",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6707,6 +6733,7 @@ dependencies = [
  "threadpool",
  "tokio",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6724,6 +6751,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6775,6 +6803,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "vergen",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6820,6 +6849,7 @@ dependencies = [
  "tower 0.4.13",
  "tower-service",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6851,6 +6881,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6866,6 +6897,7 @@ dependencies = [
  "serde",
  "strum",
  "thiserror 2.0.6",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6900,6 +6932,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6930,6 +6963,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6941,6 +6975,7 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "prost-types",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6963,6 +6998,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6971,6 +7007,7 @@ version = "1.1.6"
 dependencies = [
  "futures",
  "tokio",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6999,6 +7036,7 @@ dependencies = [
  "tracing-core",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7070,6 +7108,7 @@ dependencies = [
  "tracing-opentelemetry",
  "typify",
  "ulid",
+ "workspace-hack",
  "xxhash-rust",
 ]
 
@@ -7082,6 +7121,7 @@ dependencies = [
  "restate-utoipa",
  "serde",
  "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7114,6 +7154,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7121,6 +7162,7 @@ name = "restate-web-ui"
 version = "1.1.6"
 dependencies = [
  "include_dir",
+ "workspace-hack",
  "zip 2.2.1",
 ]
 
@@ -7190,6 +7232,7 @@ dependencies = [
  "tracing-subscriber",
  "ulid",
  "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7241,6 +7284,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "vergen",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7356,7 +7400,6 @@ dependencies = [
  "libc",
  "libz-sys",
  "lz4-sys",
- "pkg-config",
  "tikv-jemalloc-sys",
  "zstd-sys",
 ]
@@ -9518,6 +9561,126 @@ dependencies = [
 ]
 
 [[package]]
+name = "workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "ahash 0.8.11",
+ "arrayvec",
+ "arrow-array",
+ "arrow-cast",
+ "arrow-ipc",
+ "axum",
+ "axum-core",
+ "bytes",
+ "bzip2-sys",
+ "cc",
+ "chrono",
+ "clap",
+ "clap_builder",
+ "comfy-table",
+ "criterion",
+ "crossbeam-channel",
+ "crossbeam-deque",
+ "crossbeam-epoch",
+ "crossbeam-utils",
+ "crossterm 0.28.1",
+ "digest",
+ "either",
+ "enum-map",
+ "enumset",
+ "enumset_derive",
+ "flate2",
+ "futures",
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-util",
+ "getrandom",
+ "half",
+ "hashbrown 0.14.5",
+ "hashbrown 0.15.2",
+ "hdrhistogram",
+ "hex",
+ "hmac",
+ "hyper 0.14.31",
+ "hyper 1.5.1",
+ "hyper-rustls 0.24.2",
+ "hyper-rustls 0.27.3",
+ "hyper-util",
+ "idna",
+ "indexmap 1.9.3",
+ "indexmap 2.7.0",
+ "itertools 0.12.1",
+ "lazy-regex",
+ "libc",
+ "libz-sys",
+ "log",
+ "md-5",
+ "memchr",
+ "mio 1.0.3",
+ "nix 0.29.0",
+ "nom",
+ "num",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "opentelemetry_sdk",
+ "petgraph",
+ "phf_shared",
+ "pprof",
+ "proc-macro2",
+ "prost",
+ "prost-types",
+ "quote",
+ "rand",
+ "rand_core",
+ "regex",
+ "regex-automata 0.4.9",
+ "regex-syntax 0.8.5",
+ "reqwest",
+ "ring",
+ "rustix",
+ "rustls 0.21.12",
+ "rustls 0.23.19",
+ "schemars",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "signal-hook-mio",
+ "smallvec",
+ "stable_deref_trait",
+ "strum",
+ "syn 1.0.109",
+ "syn 2.0.90",
+ "sync_wrapper 1.0.2",
+ "tikv-jemalloc-sys",
+ "tikv-jemallocator",
+ "time",
+ "tokio",
+ "tokio-rustls 0.26.1",
+ "tokio-stream",
+ "tokio-util",
+ "toml_datetime",
+ "toml_edit 0.22.22",
+ "tonic",
+ "tower 0.4.13",
+ "tower 0.5.1",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "zerocopy",
+ "zeroize",
+ "zstd-sys",
+]
+
+[[package]]
 name = "write16"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9563,6 +9726,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tonic",
+ "workspace-hack",
 ]
 
 [[package]]
