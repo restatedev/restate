@@ -26,7 +26,7 @@ use url::Url;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, CreatePartitionSnapshotRequest, TrimLogRequest,
+    ClusterStateRequest, CreatePartitionSnapshotRequest, DescribeLogRequest, TrimLogRequest,
 };
 use restate_local_cluster_runner::{
     cluster::Cluster,
@@ -249,20 +249,25 @@ async fn trim_log(
     trim_point: Lsn,
 ) -> googletest::Result<()> {
     loop {
-        let response = client
+        // We have to keep retrying the trim operation as the admin node may decide to no-op it if
+        // the trim point is after the known global tail.
+        client
             .trim_log(TrimLogRequest {
                 log_id: log_id.into(),
                 trim_point: trim_point.as_u64(),
             })
+            .await?;
+
+        let response = client
+            .describe_log(DescribeLogRequest {
+                log_id: log_id.into(),
+            })
             .await?
             .into_inner();
-
-        if response
-            .trim_point
-            .is_some_and(|tp| tp >= trim_point.as_u64())
-        {
+        if response.trim_point >= trim_point.as_u64() {
             break;
         }
+
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Ok(())
