@@ -331,15 +331,17 @@ mod tests {
         let mut total = vec![];
         total.append(
             &mut NotificationsIndex {
-                notification_idx_to_journal_idx: [(1, 1)].into(),
-                notification_name_to_journal_idx: [("a".to_string(), 2)].into(),
+                completion_idx_to_journal_idx: [(1, 1)].into(),
+                signal_idx_to_journal_idx: [(1, 4)].into(),
+                signal_name_to_journal_idx: [("a".to_string(), 2)].into(),
             }
             .encode_to_vec(),
         );
         total.append(
             &mut NotificationsIndex {
-                notification_idx_to_journal_idx: [(3, 3)].into(),
-                notification_name_to_journal_idx: [("b".to_string(), 4)].into(),
+                signal_idx_to_journal_idx: [(2, 6)].into(),
+                completion_idx_to_journal_idx: [(3, 3)].into(),
+                signal_name_to_journal_idx: [("b".to_string(), 4)].into(),
             }
             .encode_to_vec(),
         );
@@ -347,9 +349,9 @@ mod tests {
         assert_eq!(
             NotificationsIndex::decode(total.as_slice()).unwrap(),
             NotificationsIndex {
-                notification_idx_to_journal_idx: [(1, 1), (3, 3)].into(),
-                notification_name_to_journal_idx: [("a".to_string(), 2), ("b".to_string(), 4)]
-                    .into()
+                completion_idx_to_journal_idx: [(1, 1), (3, 3)].into(),
+                signal_idx_to_journal_idx: [(1, 4), (2, 6)].into(),
+                signal_name_to_journal_idx: [("a".to_string(), 2), ("b".to_string(), 4)].into()
             }
         );
     }

@@ -19,7 +19,7 @@ mod header;
 
 pub use encoding::{Decoder, Encoder, EncodingError};
 pub use header::MessageHeader;
-use restate_types::journal_v2::CommandIndex;
+use restate_types::journal_v2::{CommandIndex, CommandType, CompletionType, NotificationType};
 
 /// Protobuf protocol messages
 pub mod proto {
@@ -51,11 +51,14 @@ macro_rules! gen_message {
             Custom(u16, bytes::Bytes)
         }
     };
-    (@gen_message_enum [$variant:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message!(@gen_message_enum [$($tail)*] -> [$variant(bytes::Bytes), $($body)*]); }
-    };
-    (@gen_message_enum [$variant:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_enum [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         paste::paste! { gen_message!(@gen_message_enum [$($tail)*] -> [$variant(proto::[< $variant Message >]), $($body)*]); }
+    };
+    (@gen_message_enum [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_enum [$($tail)*] -> [[< $variant $ty >](bytes::Bytes), $($body)*]); }
+    };
+    (@gen_message_enum [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_enum [$($tail)*] -> [[< $variant $ty >](proto::[< $variant $ty Message >]), $($body)*]); }
     };
 
     (@gen_message_enum_encoded_len [] -> [$($body:tt)*]) => {
@@ -68,11 +71,14 @@ macro_rules! gen_message {
             }
         }
     };
-    (@gen_message_enum_encoded_len [$variant:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [Message::$variant(b) => b.len(), $($body)*]);
-    };
-    (@gen_message_enum_encoded_len [$variant:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_enum_encoded_len [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [Message::$variant(msg) => prost::Message::encoded_len(msg), $($body)*]);
+    };
+    (@gen_message_enum_encoded_len [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [Message::[< $variant $ty >](b) => b.len(), $($body)*]); }
+    };
+    (@gen_message_enum_encoded_len [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_enum_encoded_len [$($tail)*] -> [Message::[< $variant $ty >](msg) => prost::Message::encoded_len(msg), $($body)*]); }
     };
 
     (@gen_message_enum_ty [] -> [$($body:tt)*]) => {
@@ -85,8 +91,11 @@ macro_rules! gen_message {
             }
         }
     };
-    (@gen_message_enum_ty [$variant:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_enum_ty [$variant:ident Control $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         gen_message!(@gen_message_enum_ty [$($tail)*] -> [Message::$variant(_) => MessageType::$variant, $($body)*]);
+    };
+    (@gen_message_enum_ty [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_enum_ty [$($tail)*] -> [Message::[< $variant $ty >](_) => MessageType::[< $variant $ty >], $($body)*]); }
     };
 
     (@gen_message_enum_encode [] -> [$($body:tt)*]) => {
@@ -100,11 +109,14 @@ macro_rules! gen_message {
             }
         }
     };
-    (@gen_message_enum_encode [$variant:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::$variant(b), buf) => buf.put(b.clone()), $($body)*]);
-    };
-    (@gen_message_enum_encode [$variant:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_enum_encode [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::$variant(msg), buf) => prost::Message::encode(msg, buf)?, $($body)*]);
+    };
+    (@gen_message_enum_encode [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::[< $variant $ty >](b), buf) => buf.put(b.clone()), $($body)*]); }
+    };
+    (@gen_message_enum_encode [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_enum_encode [$($tail)*] -> [(Message::[< $variant $ty >](msg), buf) => prost::Message::encode(msg, buf)?, $($body)*]); }
     };
 
     (@gen_message_type_enum [] -> [$($body:tt)*]) => {
@@ -114,8 +126,11 @@ macro_rules! gen_message {
             Custom(u16)
         }
     };
-    (@gen_message_type_enum [$variant:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_type_enum [$variant:ident Control $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         gen_message!(@gen_message_type_enum [$($tail)*] -> [$variant, $($body)*]);
+    };
+    (@gen_message_type_enum [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_type_enum [$($tail)*] -> [[<$variant $ty>], $($body)*]); }
     };
 
     (@gen_message_type_enum_allows_ack [] -> [$($variants:tt)*]) => {
@@ -128,14 +143,17 @@ macro_rules! gen_message {
             }
         }
     };
-   (@gen_message_type_enum_allows_ack [$variant:ident noparse allows_ack = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
-        gen_message!(@gen_message_type_enum_allows_ack [$($tail)*] -> [MessageType::$variant | $($variants)*]);
-    };
-    (@gen_message_type_enum_allows_ack [$variant:ident allows_ack = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
-        gen_message!(@gen_message_type_enum_allows_ack [$($tail)*] -> [MessageType::$variant | $($variants)*]);
-    };
-    (@gen_message_type_enum_allows_ack [$variant:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
+    (@gen_message_type_enum_allows_ack [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
         gen_message!(@gen_message_type_enum_allows_ack [$($tail)*] -> [$($variants)*]);
+    };
+    (@gen_message_type_enum_allows_ack [$variant:ident $ty:ident noparse allows_ack = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_type_enum_allows_ack [$($tail)*] -> [MessageType::[<$variant $ty>] | $($variants)*]); }
+    };
+    (@gen_message_type_enum_allows_ack [$variant:ident $ty:ident allows_ack = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_type_enum_allows_ack [$($tail)*] -> [MessageType::[<$variant $ty>] | $($variants)*]); }
+    };
+    (@gen_message_type_enum_allows_ack [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($variants:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_type_enum_allows_ack [$($tail)*] -> [$($variants)*]); }
     };
 
     (@gen_message_type_enum_decode [] -> [$($body:tt)*]) => {
@@ -148,11 +166,14 @@ macro_rules! gen_message {
             }
         }
     };
-    (@gen_message_type_enum_decode [$variant:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::$variant, mut buf) => Ok(Message::$variant(buf.copy_to_bytes(buf.remaining()))), $($body)*]);
-    };
-    (@gen_message_type_enum_decode [$variant:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_message_type_enum_decode [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         paste::paste! { gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::$variant, buf) => Ok(Message::$variant(<proto::[< $variant Message >] as prost::Message>::decode(buf)?)), $($body)*]); }
+    };
+    (@gen_message_type_enum_decode [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::[< $variant $ty >], mut buf) => Ok(Message::[< $variant $ty >](buf.copy_to_bytes(buf.remaining()))), $($body)*]); }
+    };
+    (@gen_message_type_enum_decode [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_type_enum_decode [$($tail)*] -> [(MessageType::[< $variant $ty >], buf) => Ok(Message::[< $variant $ty >](<proto::[< $variant $ty Message >] as prost::Message>::decode(buf)?)), $($body)*]); }
     };
 
     (@gen_to_id [] -> [$($variant:ident, $id:literal,)*]) => {
@@ -165,8 +186,11 @@ macro_rules! gen_message {
             }
         }
     };
-    (@gen_to_id [$variant:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_to_id [$variant:ident Control $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         gen_message!(@gen_to_id [$($tail)*] -> [$variant, $id, $($body)*]);
+    };
+    (@gen_to_id [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_to_id [$($tail)*] -> [[<$variant $ty >], $id, $($body)*]); }
     };
 
     (@gen_from_id [] -> [$($variant:ident, $id:literal,)*]) => {
@@ -175,16 +199,69 @@ macro_rules! gen_message {
 
             fn try_from(value: MessageTypeId) -> Result<Self, UnknownMessageType> {
                 match value {
-                    $($id => Ok(MessageType::$variant),)*
+                     $($id => Ok(MessageType::$variant),)*
                     v if (v & CUSTOM_MESSAGE_MASK) != 0 => Ok(MessageType::Custom(v)),
                     v => Err(UnknownMessageType(v)),
                 }
             }
         }
     };
-    (@gen_from_id [$variant:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+    (@gen_from_id [$variant:ident Control $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         gen_message!(@gen_from_id [$($tail)*] -> [$variant, $id, $($body)*]);
     };
+    (@gen_from_id [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_from_id [$($tail)*] -> [[<$variant $ty>], $id, $($body)*]); }
+    };
+
+    (@gen_from_command_ty [] -> [$($variant:ident,)*]) => {
+        impl From<CommandType> for MessageType {
+            fn from(value: CommandType) -> Self {
+                match value {
+                    $(CommandType::$variant => paste::paste! { MessageType::[< $variant Command >] },)*
+                }
+            }
+        }
+    };
+    (@gen_from_command_ty [$variant:ident Command $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message!(@gen_from_command_ty [$($tail)*] -> [$variant, $($body)*]);
+    };
+    (@gen_from_command_ty [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message!(@gen_from_command_ty [$($tail)*] -> [$($body)*]);
+    };
+
+    (@gen_from_completion_ty [] -> [$($variant:ident,)*]) => {
+        impl From<CompletionType> for MessageType {
+            fn from(value: CompletionType) -> Self {
+                match value {
+                    $(CompletionType::$variant => paste::paste! { MessageType::[< $variant CompletionNotification >] },)*
+                }
+            }
+        }
+    };
+    (@gen_from_completion_ty [$variant:ident CompletionNotification $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message!(@gen_from_completion_ty [$($tail)*] -> [$variant, $($body)*]);
+    };
+    (@gen_from_completion_ty [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message!(@gen_from_completion_ty [$($tail)*] -> [$($body)*]);
+    };
+
+    (@gen_from_notification_ty [] -> [$($variant:ident,)*]) => {
+        impl From<NotificationType> for MessageType {
+            fn from(value: NotificationType) -> Self {
+                match value {
+                    $(NotificationType::$variant => paste::paste! { MessageType::[< $variant Notification >] },)*
+                    NotificationType::Completion(completion) => completion.into()
+                }
+            }
+        }
+    };
+    (@gen_from_notification_ty [$variant:ident Notification $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message!(@gen_from_notification_ty [$($tail)*] -> [$variant, $($body)*]);
+    };
+    (@gen_from_notification_ty [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message!(@gen_from_notification_ty [$($tail)*] -> [$($body)*]);
+    };
+
 
     // Entrypoint of the macro
     ($($tokens:tt)*) => {
@@ -197,44 +274,58 @@ macro_rules! gen_message {
         gen_message!(@gen_message_type_enum_decode [$($tokens)*] -> []);
         gen_message!(@gen_to_id [$($tokens)*] -> []);
         gen_message!(@gen_from_id [$($tokens)*] -> []);
+        gen_message!(@gen_from_command_ty [$($tokens)*] -> []);
+        gen_message!(@gen_from_completion_ty [$($tokens)*] -> []);
+        gen_message!(@gen_from_notification_ty [$($tokens)*] -> []);
     };
 }
 
 gen_message!(
-    Start = 0x0000,
-    Suspension = 0x0002,
-    Error = 0x0003,
-    End = 0x0005,
-    CommandAck = 0x0004,
-    ProposeRunCompletion = 0x0006,
+    Start Control = 0x0000,
+    Suspension Control = 0x0002,
+    Error Control = 0x0003,
+    End Control = 0x0005,
+    CommandAck Control = 0x0004,
+    ProposeRunCompletion Control = 0x0006,
 
-    Notification noparse = 0x0001,
+    Input Command noparse allows_ack = 0x0400,
+    Output Command noparse allows_ack = 0x0401,
 
-    InputCommand noparse allows_ack = 0x0400,
-    OutputCommand noparse allows_ack = 0x0401,
+    GetLazyState Command noparse allows_ack = 0x0800,
+    GetLazyState CompletionNotification noparse = 0x080B,
+    SetState Command noparse allows_ack = 0x0801,
+    ClearState Command noparse allows_ack = 0x0802,
+    ClearAllState Command noparse allows_ack = 0x0803,
+    GetLazyStateKeys Command noparse allows_ack = 0x0804,
+    GetLazyStateKeys CompletionNotification noparse = 0x080C,
+    GetEagerState Command noparse allows_ack = 0x0805,
+    GetEagerStateKeys Command noparse allows_ack = 0x0806,
 
-    GetLazyStateCommand noparse allows_ack = 0x0800,
-    SetStateCommand noparse allows_ack = 0x0801,
-    ClearStateCommand noparse allows_ack = 0x0802,
-    ClearAllStateCommand noparse allows_ack = 0x0803,
-    GetLazyStateKeysCommand noparse allows_ack = 0x0804,
-    GetEagerStateCommand noparse allows_ack = 0x0805,
-    GetEagerStateKeysCommand noparse allows_ack = 0x0806,
+    GetPromise Command noparse allows_ack = 0x0808,
+    GetPromise CompletionNotification noparse = 0x080D,
+    PeekPromise Command noparse allows_ack = 0x0809,
+    PeekPromise CompletionNotification noparse = 0x080E,
+    CompletePromise Command noparse allows_ack = 0x080A,
+    CompletePromise CompletionNotification noparse = 0x080F,
 
-    GetPromiseCommand noparse allows_ack = 0x0808,
-    PeekPromiseCommand noparse allows_ack = 0x0809,
-    CompletePromiseCommand noparse allows_ack = 0x080A,
+    Sleep Command noparse allows_ack = 0x0C00,
+    Sleep CompletionNotification noparse = 0x0C0A,
+    Call Command allows_ack = 0x0C01,
+    CallInvocationId CompletionNotification noparse = 0x0C0B,
+    Call CompletionNotification noparse = 0x0C0C,
+    OneWayCall Command allows_ack = 0x0C02,
 
-    SleepCommand noparse allows_ack = 0x0C00,
-    CallCommand allows_ack = 0x0C01,
-    OneWayCallCommand allows_ack = 0x0C02,
+    SendNotification Command noparse allows_ack = 0x0C04,
 
-    SendNotificationCommand noparse allows_ack = 0x0C04,
+    Run Command noparse allows_ack = 0x0C05,
+    Run CompletionNotification noparse = 0x0C0D,
 
-    RunCommand noparse allows_ack = 0x0C05,
+    AttachInvocation Command noparse allows_ack = 0x0C08,
+    AttachInvocation CompletionNotification noparse = 0x0C0E,
+    GetInvocationOutput Command noparse allows_ack = 0x0C09,
+    GetInvocationOutput CompletionNotification noparse = 0x0C0F,
 
-    AttachInvocationCommand noparse allows_ack = 0x0C08,
-    GetInvocationOutputCommand noparse allows_ack = 0x0C09,
+    Signal Notification noparse = 0x0C10,
 );
 
 impl Message {

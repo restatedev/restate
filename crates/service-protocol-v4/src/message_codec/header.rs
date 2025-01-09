@@ -128,9 +128,9 @@ mod tests {
     }
 
     roundtrip_test!(
-        notification,
-        MessageHeader::new(Notification, 22),
-        Notification,
+        call_completion_notification,
+        MessageHeader::new(CallCompletionNotification, 22),
+        CallCompletionNotification,
         22
     );
 

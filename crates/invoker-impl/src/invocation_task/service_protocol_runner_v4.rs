@@ -39,20 +39,19 @@ use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType,
     SpanRelation,
 };
+use restate_types::journal;
 use restate_types::journal_v2::command::{
-    CallCommand, CallRequest, CommandMetadata, InputCommand, OneWayCallCommand,
+    CallCommand, CallRequest, InputCommand, OneWayCallCommand,
 };
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryInner, RawNotification};
 use restate_types::journal_v2::{
-    Command, CommandIndex, CommandType, Entry, EntryType, NotificationId, NotificationIndex,
-    NotificationResult,
+    CommandIndex, CommandType, Entry, EntryType, NotificationId, RunCompletion, RunResult, SignalId,
 };
 use restate_types::schema::deployment::{
     Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
 };
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::{journal, journal_v2};
 use std::collections::HashSet;
 use std::future::poll_fn;
 use std::ops::Deref;
@@ -323,10 +322,11 @@ where
                             if let journal::Entry::Input(input_entry) = crate::shortcircuit!(old_entry.deserialize_entry::<ProtobufRawEntryCodec>()) {
                                 crate::shortcircuit!(self.write_entry(
                                     http_stream_tx,
-                                    crate::shortcircuit!(Entry::Command(Command::new(CommandMetadata::new(""), InputCommand {
+                                    Entry::Command(InputCommand {
                                         headers: input_entry.headers,
-                                        payload: input_entry.value
-                                    })).encode::<ServiceProtocolV4Codec>())
+                                        payload: input_entry.value,
+                                        name: Default::default()
+                                    }.into()).encode::<ServiceProtocolV4Codec>()
                                 ).await);
                             } else {
                                 panic!("This is unexpected, when an entry is stored with journal v1, only input entry is allowed!")
@@ -466,62 +466,18 @@ where
         // TODO(slinkydeveloper) could this code be improved a tad bit more introducing something to our magic macro in message_codec?
         match entry.inner {
             RawEntryInner::Command(cmd) => {
-                match cmd.command_type() {
-                    CommandType::Input => {
-                        self.write_raw(
-                            http_stream_tx,
-                            MessageType::InputCommand,
-                            cmd.serialized_content(),
-                        )
-                        .await?;
-                    }
-                    CommandType::Run => {
-                        self.write_raw(
-                            http_stream_tx,
-                            MessageType::RunCommand,
-                            cmd.serialized_content(),
-                        )
-                        .await?;
-                    }
-                    CommandType::Sleep => {
-                        self.write_raw(
-                            http_stream_tx,
-                            MessageType::SleepCommand,
-                            cmd.serialized_content(),
-                        )
-                        .await?;
-                    }
-                    CommandType::Call => {
-                        self.write_raw(
-                            http_stream_tx,
-                            MessageType::CallCommand,
-                            cmd.serialized_content(),
-                        )
-                        .await?;
-                    }
-                    CommandType::OneWayCall => {
-                        self.write_raw(
-                            http_stream_tx,
-                            MessageType::OneWayCallCommand,
-                            cmd.serialized_content(),
-                        )
-                        .await?;
-                    }
-                    CommandType::Output => {
-                        self.write_raw(
-                            http_stream_tx,
-                            MessageType::OutputCommand,
-                            cmd.serialized_content(),
-                        )
-                        .await?;
-                    }
-                }
+                self.write_raw(
+                    http_stream_tx,
+                    cmd.command_type().into(),
+                    cmd.serialized_content(),
+                )
+                .await?;
                 self.command_index += 1;
             }
             RawEntryInner::Notification(notif) => {
                 self.write_raw(
                     http_stream_tx,
-                    MessageType::Notification,
+                    notif.ty().into(),
                     notif.serialized_content(),
                 )
                 .await?;
@@ -660,37 +616,33 @@ where
             Message::CommandAck(_) => TerminalLoopState::Failed(
                 InvocationTaskError::UnexpectedMessageV4(MessageType::CommandAck),
             ),
-            Message::Notification(_) => TerminalLoopState::Failed(
-                InvocationTaskError::UnexpectedMessageV4(MessageType::Notification),
-            ),
             Message::Suspension(suspension) => self.handle_suspension_message(suspension),
             Message::Error(e) => self.handle_error_message(e),
             Message::End(_) => TerminalLoopState::Closed,
 
             // Run completion proposal
             Message::ProposeRunCompletion(run_completion) => {
-                let notification = Entry::Notification(journal_v2::Notification::new(
-                    NotificationId::for_index(
-                        run_completion.result_notification_idx as NotificationIndex,
-                    ),
-                    match crate::shortcircuit!(run_completion
+                let notification: Entry = RunCompletion {
+                    completion_id: run_completion.result_completion_id,
+                    result: match crate::shortcircuit!(run_completion
                         .result
                         .ok_or(InvocationTaskError::MalformedProposeRunCompletion))
                     {
                         proto::propose_run_completion_message::Result::Value(b) => {
-                            NotificationResult::Success(b)
+                            RunResult::Success(b)
                         }
                         proto::propose_run_completion_message::Result::Failure(f) => {
-                            NotificationResult::Failure(f.into())
+                            RunResult::Failure(f.into())
                         }
                     },
-                ));
+                }
+                .into();
 
-                let raw_notification: RawNotification =
-                    crate::shortcircuit!(notification.encode::<ServiceProtocolV4Codec>())
-                        .inner
-                        .try_into()
-                        .expect("a raw notification");
+                let raw_notification: RawNotification = notification
+                    .encode::<ServiceProtocolV4Codec>()
+                    .inner
+                    .try_into()
+                    .expect("a raw notification");
 
                 self.invocation_task.send_invoker_tx(
                     InvocationTaskOutputInner::NewNotificationProposal {
@@ -710,49 +662,68 @@ where
                 self.handle_new_command(mh, RawCommand::new(CommandType::Input, cmd));
                 TerminalLoopState::Continue(())
             }
-            Message::GetInvocationOutputCommand(_) => {
-                unimplemented!()
+            Message::GetInvocationOutputCommand(cmd) => {
+                // Verify the provided InvocationId is valid
+                let _: Entry = crate::shortcircuit!(RawCommand::new(
+                    CommandType::GetInvocationOutput,
+                    cmd.clone()
+                )
+                .decode::<ServiceProtocolV4Codec, _>());
+                self.handle_new_command(mh, RawCommand::new(CommandType::GetInvocationOutput, cmd));
+                TerminalLoopState::Continue(())
             }
-            Message::AttachInvocationCommand(_) => {
-                unimplemented!()
+            Message::AttachInvocationCommand(cmd) => {
+                // Verify the provided InvocationId is valid
+                let _: Entry = crate::shortcircuit!(RawCommand::new(
+                    CommandType::AttachInvocation,
+                    cmd.clone()
+                )
+                .decode::<ServiceProtocolV4Codec, _>());
+                self.handle_new_command(mh, RawCommand::new(CommandType::AttachInvocation, cmd));
+                TerminalLoopState::Continue(())
             }
             Message::RunCommand(cmd) => {
                 self.handle_new_command(mh, RawCommand::new(CommandType::Run, cmd));
                 TerminalLoopState::Continue(())
             }
-            Message::SendNotificationCommand(_) => {
-                unimplemented!()
+            Message::SendNotificationCommand(cmd) => {
+                // Verify the provided InvocationId is valid
+                let _: Entry = crate::shortcircuit!(RawCommand::new(
+                    CommandType::SendNotification,
+                    cmd.clone()
+                )
+                .decode::<ServiceProtocolV4Codec, _>());
+                self.handle_new_command(mh, RawCommand::new(CommandType::SendNotification, cmd));
+                TerminalLoopState::Continue(())
             }
             Message::OneWayCallCommand(cmd) => {
-                let entry =
-                    Entry::Command(Command::new(
-                        CommandMetadata::new(cmd.name),
-                        OneWayCallCommand {
-                            request: crate::shortcircuit!(resolve_call_request(
-                                self.invocation_task.schemas.live_load(),
-                                InvokeRequest {
-                                    service_name: cmd.service_name.into(),
-                                    handler_name: cmd.handler_name.into(),
-                                    parameter: cmd.parameter,
-                                    headers: cmd.headers.into_iter().map(Into::into).collect(),
-                                    key: cmd.key.into(),
-                                    idempotency_key: cmd.idempotency_key.map(|s| s.into()),
-                                    span_relation: parent_span_context.as_linked()
-                                }
-                            )
-                            .map_err(|e| InvocationTaskError::EntryEnrichmentV2(
-                                self.command_index,
-                                EntryType::Command(CommandType::OneWayCall),
-                                e
-                            ))),
-                            invoke_time: cmd.invoke_time.into(),
-                            invocation_id_notification_idx: cmd.invocation_id_notification_idx,
-                        },
-                    ));
-
+                let entry: Entry = OneWayCallCommand {
+                    request: crate::shortcircuit!(resolve_call_request(
+                        self.invocation_task.schemas.live_load(),
+                        InvokeRequest {
+                            service_name: cmd.service_name.into(),
+                            handler_name: cmd.handler_name.into(),
+                            parameter: cmd.parameter,
+                            headers: cmd.headers.into_iter().map(Into::into).collect(),
+                            key: cmd.key.into(),
+                            idempotency_key: cmd.idempotency_key.map(|s| s.into()),
+                            span_relation: parent_span_context.as_linked()
+                        }
+                    )
+                    .map_err(|e| InvocationTaskError::CommandPrecondition(
+                        self.command_index,
+                        EntryType::Command(CommandType::OneWayCall),
+                        e
+                    ))),
+                    invoke_time: cmd.invoke_time.into(),
+                    invocation_id_completion_id: cmd.invocation_id_notification_idx,
+                    name: cmd.name.into(),
+                }
+                .into();
                 self.handle_new_command(
                     mh,
-                    crate::shortcircuit!(entry.encode::<ServiceProtocolV4Codec>())
+                    entry
+                        .encode::<ServiceProtocolV4Codec>()
                         .inner
                         .try_into()
                         .expect("a raw command"),
@@ -760,35 +731,33 @@ where
                 TerminalLoopState::Continue(())
             }
             Message::CallCommand(cmd) => {
-                let entry =
-                    Entry::Command(Command::new(
-                        CommandMetadata::new(cmd.name),
-                        CallCommand {
-                            request: crate::shortcircuit!(resolve_call_request(
-                                self.invocation_task.schemas.live_load(),
-                                InvokeRequest {
-                                    service_name: cmd.service_name.into(),
-                                    handler_name: cmd.handler_name.into(),
-                                    parameter: cmd.parameter,
-                                    headers: cmd.headers.into_iter().map(Into::into).collect(),
-                                    key: cmd.key.into(),
-                                    idempotency_key: cmd.idempotency_key.map(|s| s.into()),
-                                    span_relation: parent_span_context.as_linked()
-                                }
-                            )
-                            .map_err(|e| InvocationTaskError::EntryEnrichmentV2(
-                                self.command_index,
-                                EntryType::Command(CommandType::Call),
-                                e
-                            ))),
-                            invocation_id_notification_idx: cmd.invocation_id_notification_idx,
-                            result_notification_idx: cmd.result_notification_idx,
-                        },
-                    ));
-
+                let entry: Entry = CallCommand {
+                    request: crate::shortcircuit!(resolve_call_request(
+                        self.invocation_task.schemas.live_load(),
+                        InvokeRequest {
+                            service_name: cmd.service_name.into(),
+                            handler_name: cmd.handler_name.into(),
+                            parameter: cmd.parameter,
+                            headers: cmd.headers.into_iter().map(Into::into).collect(),
+                            key: cmd.key.into(),
+                            idempotency_key: cmd.idempotency_key.map(|s| s.into()),
+                            span_relation: parent_span_context.as_linked()
+                        }
+                    )
+                    .map_err(|e| InvocationTaskError::CommandPrecondition(
+                        self.command_index,
+                        EntryType::Command(CommandType::Call),
+                        e
+                    ))),
+                    invocation_id_completion_id: cmd.invocation_id_notification_idx,
+                    result_completion_id: cmd.result_completion_id,
+                    name: cmd.name.into(),
+                }
+                .into();
                 self.handle_new_command(
                     mh,
-                    crate::shortcircuit!(entry.encode::<ServiceProtocolV4Codec>())
+                    entry
+                        .encode::<ServiceProtocolV4Codec>()
                         .inner
                         .try_into()
                         .expect("a raw command"),
@@ -799,75 +768,168 @@ where
                 self.handle_new_command(mh, RawCommand::new(CommandType::Sleep, cmd));
                 TerminalLoopState::Continue(())
             }
-            Message::CompletePromiseCommand(_) => {
-                // check_workflow_type(
-                //     &header.as_entry_type(),
-                //     &current_invocation_target.service_ty(),
-                // )?;
-                unimplemented!()
+            Message::CompletePromiseCommand(cmd) => {
+                crate::shortcircuit!(check_workflow_type(
+                    self.command_index,
+                    &EntryType::Command(CommandType::CompletePromise),
+                    &self.invocation_task.invocation_target.service_ty(),
+                ));
+                self.handle_new_command(mh, RawCommand::new(CommandType::CompletePromise, cmd));
+                TerminalLoopState::Continue(())
             }
-            Message::PeekPromiseCommand(_) => {
-                // check_workflow_type(
-                //     &header.as_entry_type(),
-                //     &current_invocation_target.service_ty(),
-                // )?;
-                unimplemented!()
+            Message::PeekPromiseCommand(cmd) => {
+                crate::shortcircuit!(check_workflow_type(
+                    self.command_index,
+                    &EntryType::Command(CommandType::PeekPromise),
+                    &self.invocation_task.invocation_target.service_ty(),
+                ));
+                self.handle_new_command(mh, RawCommand::new(CommandType::PeekPromise, cmd));
+                TerminalLoopState::Continue(())
             }
-            Message::GetPromiseCommand(_) => {
-                // check_workflow_type(
-                //     &header.as_entry_type(),
-                //     &current_invocation_target.service_ty(),
-                // )?;
-                unimplemented!()
+            Message::GetPromiseCommand(cmd) => {
+                crate::shortcircuit!(check_workflow_type(
+                    self.command_index,
+                    &EntryType::Command(CommandType::GetPromise),
+                    &self.invocation_task.invocation_target.service_ty(),
+                ));
+                self.handle_new_command(mh, RawCommand::new(CommandType::GetPromise, cmd));
+                TerminalLoopState::Continue(())
             }
-            Message::GetEagerStateKeysCommand(_) => {
-                // can_read_state(
-                //     &header.as_entry_type(),
-                //     &current_invocation_target.invocation_target_ty(),
-                // )?;
-                unimplemented!()
+            Message::GetEagerStateKeysCommand(cmd) => {
+                crate::shortcircuit!(can_read_state(
+                    self.command_index,
+                    &EntryType::Command(CommandType::GetEagerStateKeys),
+                    &self
+                        .invocation_task
+                        .invocation_target
+                        .invocation_target_ty(),
+                ));
+                self.handle_new_command(mh, RawCommand::new(CommandType::GetEagerStateKeys, cmd));
+                TerminalLoopState::Continue(())
             }
-            Message::GetEagerStateCommand(_) => {
-                // can_read_state(
-                //     &header.as_entry_type(),
-                //     &current_invocation_target.invocation_target_ty(),
-                // )?;
-                unimplemented!()
+            Message::GetEagerStateCommand(cmd) => {
+                crate::shortcircuit!(can_read_state(
+                    self.command_index,
+                    &EntryType::Command(CommandType::GetEagerState),
+                    &self
+                        .invocation_task
+                        .invocation_target
+                        .invocation_target_ty(),
+                ));
+                self.handle_new_command(mh, RawCommand::new(CommandType::GetEagerState, cmd));
+                TerminalLoopState::Continue(())
             }
-            Message::GetLazyStateKeysCommand(_) => {
-                // can_read_state(
-                //     &header.as_entry_type(),
-                //     &current_invocation_target.invocation_target_ty(),
-                // )?;
-                unimplemented!()
+            Message::GetLazyStateKeysCommand(cmd) => {
+                crate::shortcircuit!(can_read_state(
+                    self.command_index,
+                    &EntryType::Command(CommandType::GetLazyStateKeys),
+                    &self
+                        .invocation_task
+                        .invocation_target
+                        .invocation_target_ty(),
+                ));
+                self.handle_new_command(mh, RawCommand::new(CommandType::GetLazyStateKeys, cmd));
+                TerminalLoopState::Continue(())
             }
-            Message::ClearAllStateCommand(_) => {
-                // can_write_state(
-                //     &header.as_entry_type(),
-                //     &current_invocation_target.invocation_target_ty(),
-                // )?;
-                unimplemented!()
+            Message::ClearAllStateCommand(cmd) => {
+                crate::shortcircuit!(can_write_state(
+                    self.command_index,
+                    &EntryType::Command(CommandType::ClearAllState),
+                    &self
+                        .invocation_task
+                        .invocation_target
+                        .invocation_target_ty(),
+                ));
+                self.handle_new_command(mh, RawCommand::new(CommandType::ClearAllState, cmd));
+                TerminalLoopState::Continue(())
             }
-            Message::ClearStateCommand(_) => {
-                // can_write_state(
-                //     &header.as_entry_type(),
-                //     &current_invocation_target.invocation_target_ty(),
-                // )?;
-                unimplemented!()
+            Message::ClearStateCommand(cmd) => {
+                crate::shortcircuit!(can_write_state(
+                    self.command_index,
+                    &EntryType::Command(CommandType::ClearState),
+                    &self
+                        .invocation_task
+                        .invocation_target
+                        .invocation_target_ty(),
+                ));
+                self.handle_new_command(mh, RawCommand::new(CommandType::ClearState, cmd));
+                TerminalLoopState::Continue(())
             }
-            Message::SetStateCommand(_) => {
-                // can_write_state(
-                //     &header.as_entry_type(),
-                //     &current_invocation_target.invocation_target_ty(),
-                // )?;
-                unimplemented!()
+            Message::SetStateCommand(cmd) => {
+                crate::shortcircuit!(can_write_state(
+                    self.command_index,
+                    &EntryType::Command(CommandType::SetState),
+                    &self
+                        .invocation_task
+                        .invocation_target
+                        .invocation_target_ty(),
+                ));
+                self.handle_new_command(mh, RawCommand::new(CommandType::SetState, cmd));
+                TerminalLoopState::Continue(())
             }
-            Message::GetLazyStateCommand(_) => {
-                // can_read_state(
-                //     &header.as_entry_type(),
-                //     &current_invocation_target.invocation_target_ty(),
-                // )?;
-                unimplemented!()
+            Message::GetLazyStateCommand(cmd) => {
+                crate::shortcircuit!(can_read_state(
+                    self.command_index,
+                    &EntryType::Command(CommandType::GetLazyState),
+                    &self
+                        .invocation_task
+                        .invocation_target
+                        .invocation_target_ty(),
+                ));
+                self.handle_new_command(mh, RawCommand::new(CommandType::GetLazyState, cmd));
+                TerminalLoopState::Continue(())
+            }
+            Message::SignalNotification(_) => TerminalLoopState::Failed(
+                InvocationTaskError::UnexpectedMessageV4(MessageType::SignalNotification),
+            ),
+            Message::GetInvocationOutputCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvocationTaskError::UnexpectedMessageV4(
+                    MessageType::GetInvocationOutputCompletionNotification,
+                ))
+            }
+            Message::AttachInvocationCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvocationTaskError::UnexpectedMessageV4(
+                    MessageType::AttachInvocationCompletionNotification,
+                ))
+            }
+            Message::RunCompletionNotification(_) => TerminalLoopState::Failed(
+                InvocationTaskError::UnexpectedMessageV4(MessageType::RunCompletionNotification),
+            ),
+            Message::CallCompletionNotification(_) => TerminalLoopState::Failed(
+                InvocationTaskError::UnexpectedMessageV4(MessageType::CallCompletionNotification),
+            ),
+            Message::CallInvocationIdCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvocationTaskError::UnexpectedMessageV4(
+                    MessageType::CallInvocationIdCompletionNotification,
+                ))
+            }
+            Message::SleepCompletionNotification(_) => TerminalLoopState::Failed(
+                InvocationTaskError::UnexpectedMessageV4(MessageType::SleepCompletionNotification),
+            ),
+            Message::CompletePromiseCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvocationTaskError::UnexpectedMessageV4(
+                    MessageType::CompletePromiseCompletionNotification,
+                ))
+            }
+            Message::PeekPromiseCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvocationTaskError::UnexpectedMessageV4(
+                    MessageType::PeekPromiseCompletionNotification,
+                ))
+            }
+            Message::GetPromiseCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvocationTaskError::UnexpectedMessageV4(
+                    MessageType::GetPromiseCompletionNotification,
+                ))
+            }
+            Message::GetLazyStateKeysCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvocationTaskError::UnexpectedMessageV4(
+                    MessageType::GetLazyStateKeysCompletionNotification,
+                ))
+            }
+            Message::GetLazyStateCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvocationTaskError::UnexpectedMessageV4(
+                    MessageType::GetLazyStateCompletionNotification,
+                ))
             }
             Message::Custom(_, _) => {
                 unimplemented!()
@@ -880,14 +942,22 @@ where
         suspension: proto::SuspensionMessage,
     ) -> TerminalLoopState<()> {
         let suspension_indexes: HashSet<_> = suspension
-            .waiting_notification_idx
+            .waiting_completions
             .into_iter()
-            .map(NotificationId::for_index)
+            .map(NotificationId::for_completion)
             .chain(
                 suspension
-                    .waiting_notification_name
+                    .waiting_signals
                     .into_iter()
-                    .map(|s| NotificationId::for_name(s.into())),
+                    .map(SignalId::for_index)
+                    .map(NotificationId::for_signal),
+            )
+            .chain(
+                suspension
+                    .waiting_named_signals
+                    .into_iter()
+                    .map(|s| SignalId::for_name(s.into()))
+                    .map(NotificationId::for_signal),
             )
             .collect();
         // We currently don't support empty suspension_indexes set
@@ -983,54 +1053,67 @@ fn resolve_call_request(
     })
 }
 
-#[allow(dead_code)]
 #[inline]
 fn check_workflow_type(
+    command_index: CommandIndex,
     entry_type: &EntryType,
     service_type: &ServiceType,
-) -> Result<(), InvocationError> {
+) -> Result<(), InvocationTaskError> {
     if *service_type != ServiceType::Workflow {
-        return Err(InvocationError::new(
-            codes::BAD_REQUEST,
-            format!(
-                "The service type {service_type} does not support the entry type {entry_type}, only Workflow supports it"
-            ),
+        return Err(
+            InvocationTaskError::CommandPrecondition(
+                command_index,
+                entry_type.clone(),
+                InvocationError::new(
+                    codes::BAD_REQUEST,
+                    format!(
+                        "The service type {service_type} does not support the entry type {entry_type}, only Workflow supports it"
+                    ),
+            )
         ));
     }
     Ok(())
 }
 
-#[allow(dead_code)]
 #[inline]
 fn can_read_state(
+    command_index: CommandIndex,
     entry_type: &EntryType,
     invocation_target_type: &InvocationTargetType,
-) -> Result<(), InvocationError> {
+) -> Result<(), InvocationTaskError> {
     if !invocation_target_type.can_read_state() {
-        return Err(InvocationError::new(
+        return Err(
+            InvocationTaskError::CommandPrecondition(
+                command_index,
+                entry_type.clone(),
+                InvocationError::new(
             codes::BAD_REQUEST,
             format!(
                 "The service/handler type {invocation_target_type} does not have state and, therefore, does not support the entry type {entry_type}"
             ),
-        ));
+        )));
     }
     Ok(())
 }
 
-#[allow(dead_code)]
 #[inline]
 fn can_write_state(
+    command_index: CommandIndex,
     entry_type: &EntryType,
     invocation_target_type: &InvocationTargetType,
-) -> Result<(), InvocationError> {
-    can_read_state(entry_type, invocation_target_type)?;
+) -> Result<(), InvocationTaskError> {
+    can_read_state(command_index, entry_type, invocation_target_type)?;
     if !invocation_target_type.can_write_state() {
-        return Err(InvocationError::new(
+        return Err(
+            InvocationTaskError::CommandPrecondition(
+                command_index,
+                entry_type.clone(),
+                InvocationError::new(
             codes::BAD_REQUEST,
             format!(
                 "The service/handler type {invocation_target_type} has no exclusive state access and, therefore, does not support the entry type {entry_type}"
             ),
-        ));
+        )));
     }
     Ok(())
 }

@@ -8,67 +8,52 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::identifiers::InvocationId;
+use crate::identifiers::{IdempotencyId, InvocationId, ServiceId};
 use crate::invocation::{Header, InvocationTarget, ServiceInvocationSpanContext};
-use crate::journal_v2::notification::Failure;
-use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
-use crate::journal_v2::{CompletionNotificationIndex, Entry, EntryMetadata, EntryType};
+use crate::journal_v2::raw::{RawEntry, TryFromEntry, TryFromEntryError};
+use crate::journal_v2::{
+    CompletionId, Encoder, Entry, EntryMetadata, EntryType, Failure, GetStateResult, SignalId,
+    SignalResult,
+};
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use bytestring::ByteString;
+use enum_dispatch::enum_dispatch;
 use std::fmt;
 use std::time::Duration;
 use strum::EnumDiscriminants;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandMetadata {
-    /// User provided name, if any.
-    pub(crate) name: ByteString,
-}
-
-impl CommandMetadata {
-    pub fn new(name: impl Into<ByteString>) -> Self {
-        Self { name: name.into() }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Command {
-    pub metadata: CommandMetadata,
-    pub inner: CommandInner,
-}
-
-impl Command {
-    pub fn new(metadata: CommandMetadata, inner: impl Into<CommandInner>) -> Self {
-        Self {
-            metadata,
-            inner: inner.into(),
-        }
-    }
-}
-
-impl EntryMetadata for Command {
-    fn ty(&self) -> EntryType {
-        self.inner.ty()
-    }
-}
-
+#[enum_dispatch(EntryMetadata)]
 #[derive(Debug, Clone, PartialEq, Eq, EnumDiscriminants)]
 #[strum_discriminants(vis(pub))]
 #[strum_discriminants(name(CommandType))]
 #[strum_discriminants(derive(serde::Serialize, serde::Deserialize))]
-#[enum_delegate::implement(EntryMetadata)]
-pub enum CommandInner {
+pub enum Command {
     Input(InputCommand),
-    Run(RunCommand),
+    Output(OutputCommand),
+    GetLazyState(GetLazyStateCommand),
+    SetState(SetStateCommand),
+    ClearState(ClearStateCommand),
+    ClearAllState(ClearAllStateCommand),
+    GetLazyStateKeys(GetLazyStateKeysCommand),
+    GetEagerState(GetEagerStateCommand),
+    GetEagerStateKeys(GetEagerStateKeysCommand),
+    GetPromise(GetPromiseCommand),
+    PeekPromise(PeekPromiseCommand),
+    CompletePromise(CompletePromiseCommand),
     Sleep(SleepCommand),
     Call(CallCommand),
     OneWayCall(OneWayCallCommand),
-    Output(OutputCommand),
+    SendNotification(SendNotificationCommand),
+    Run(RunCommand),
+    AttachInvocation(AttachInvocationCommand),
+    GetInvocationOutput(GetInvocationOutputCommand),
+}
+
+impl Command {
+    pub fn encode<E: Encoder>(&self) -> RawEntry {
+        E::encode_entry(&Entry::Command(self.clone()))
+    }
 }
 
 impl fmt::Display for CommandType {
@@ -77,33 +62,16 @@ impl fmt::Display for CommandType {
     }
 }
 
-// Little macro to reduce boilerplate for CompletableCommandAccessor, TryFromEntry and EntryMetadata.
-macro_rules! impl_entry_accessors {
+// Little macro to reduce boilerplate for TryFromEntry and EntryMetadata.
+macro_rules! impl_command_accessors {
     ($ty:ident -> []) => {
         // End of macro
     };
     ($ty:ident -> [@from_entry $($tail:tt)*]) => {
-        impl TryFromEntry for (CommandMetadata, paste::paste! { [< $ty Command >] }) {
-            fn try_from(entry: Entry) -> Result<Self, TryFromEntryError> {
-                match entry {
-                    super::Entry::Command(Command {
-                        inner: CommandInner::$ty(e),
-                        metadata
-                    }) => Ok((metadata, e)),
-                    e => Err(TryFromEntryError {
-                        expected: EntryType::Command(CommandType::$ty),
-                        actual: e.ty(),
-                    }),
-                }
-            }
-        }
         impl TryFromEntry for paste::paste! { [< $ty Command >] } {
             fn try_from(entry: Entry) -> Result<Self, TryFromEntryError> {
                 match entry {
-                    super::Entry::Command(Command {
-                        inner: CommandInner::$ty(e),
-                        metadata: _
-                    }) => Ok(e),
+                    Entry::Command(Command::$ty(e)) => Ok(e),
                     e => Err(TryFromEntryError {
                         expected: EntryType::Command(CommandType::$ty),
                         actual: e.ty(),
@@ -111,7 +79,12 @@ macro_rules! impl_entry_accessors {
                 }
             }
         }
-        impl_entry_accessors!($ty -> [$($tail)*]);
+        impl From<paste::paste! { [< $ty Command >] }> for Entry {
+            fn from(v: paste::paste! { [< $ty Command >] }) -> Self {
+                Self::Command(v.into())
+            }
+        }
+        impl_command_accessors!($ty -> [$($tail)*]);
     };
     ($ty:ident -> [@metadata $($tail:tt)*]) => {
         impl EntryMetadata for paste::paste! { [< $ty Command >] } {
@@ -119,15 +92,15 @@ macro_rules! impl_entry_accessors {
                 EntryType::Command(CommandType::$ty)
             }
         }
-        impl_entry_accessors!($ty -> [$($tail)*]);
+        impl_command_accessors!($ty -> [$($tail)*]);
     };
 
     // Entrypoints of the macro
     ($ty:ident: [$($tokens:tt)*]) => {
-        impl_entry_accessors!($ty -> [$($tokens)*]);
+        impl_command_accessors!($ty -> [$($tokens)*]);
     };
     ($ty:ident) => {
-        impl_entry_accessors!($ty -> [@metadata @from_entry]);
+        impl_command_accessors!($ty -> [@metadata @from_entry]);
     };
 }
 
@@ -137,14 +110,110 @@ macro_rules! impl_entry_accessors {
 pub struct InputCommand {
     pub headers: Vec<Header>,
     pub payload: Bytes,
+    pub name: ByteString,
 }
-impl_entry_accessors!(Input);
+impl_command_accessors!(Input);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunCommand {
-    pub notification_idx: CompletionNotificationIndex,
+pub struct OutputCommand {
+    pub result: OutputResult,
+    pub name: ByteString,
 }
-impl_entry_accessors!(Run);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputResult {
+    Success(Bytes),
+    Failure(Failure),
+}
+impl_command_accessors!(Output);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetLazyStateCommand {
+    pub key: ByteString,
+    pub completion_id: CompletionId,
+    pub name: ByteString,
+}
+impl_command_accessors!(GetLazyState);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetStateCommand {
+    pub key: ByteString,
+    pub value: Bytes,
+    pub name: ByteString,
+}
+impl_command_accessors!(SetState);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearStateCommand {
+    pub key: ByteString,
+    pub name: ByteString,
+}
+impl_command_accessors!(ClearState);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearAllStateCommand {
+    pub name: ByteString,
+}
+impl_command_accessors!(ClearAllState);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetLazyStateKeysCommand {
+    pub completion_id: CompletionId,
+    pub name: ByteString,
+}
+impl_command_accessors!(GetLazyStateKeys);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetEagerStateCommand {
+    pub key: ByteString,
+    pub result: GetStateResult,
+    pub name: ByteString,
+}
+impl_command_accessors!(GetEagerState);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetEagerStateKeysCommand {
+    pub state_keys: Vec<String>,
+    pub name: ByteString,
+}
+impl_command_accessors!(GetEagerStateKeys);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetPromiseCommand {
+    pub key: ByteString,
+    pub completion_id: CompletionId,
+    pub name: ByteString,
+}
+impl_command_accessors!(GetPromise);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeekPromiseCommand {
+    pub key: ByteString,
+    pub completion_id: CompletionId,
+    pub name: ByteString,
+}
+impl_command_accessors!(PeekPromise);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletePromiseCommand {
+    pub key: ByteString,
+    pub value: CompletePromiseValue,
+    pub completion_id: CompletionId,
+    pub name: ByteString,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletePromiseValue {
+    Success(Bytes),
+    Failure(Failure),
+}
+impl_command_accessors!(CompletePromise);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SleepCommand {
+    pub wake_up_time: MillisSinceEpoch,
+    pub completion_id: CompletionId,
+    pub name: ByteString,
+}
+impl_command_accessors!(Sleep);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallRequest {
@@ -158,36 +227,58 @@ pub struct CallRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SleepCommand {
-    pub wake_up_time: MillisSinceEpoch,
-    pub notification_idx: CompletionNotificationIndex,
-}
-impl_entry_accessors!(Sleep);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallCommand {
     pub request: CallRequest,
-    pub invocation_id_notification_idx: CompletionNotificationIndex,
-    pub result_notification_idx: CompletionNotificationIndex,
+    pub invocation_id_completion_id: CompletionId,
+    pub result_completion_id: CompletionId,
+    pub name: ByteString,
 }
-impl_entry_accessors!(Call);
+impl_command_accessors!(Call);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OneWayCallCommand {
     pub request: CallRequest,
     pub invoke_time: MillisSinceEpoch,
-    pub invocation_id_notification_idx: CompletionNotificationIndex,
+    pub invocation_id_completion_id: CompletionId,
+    pub name: ByteString,
 }
-impl_entry_accessors!(OneWayCall);
+impl_command_accessors!(OneWayCall);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutputCommand {
-    pub result: OutputResult,
+pub struct SendNotificationCommand {
+    pub target_invocation_id: InvocationId,
+    pub signal_id: SignalId,
+    pub result: SignalResult,
+    pub name: ByteString,
 }
-impl_entry_accessors!(Output);
+impl_command_accessors!(SendNotification);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OutputResult {
-    Success(Bytes),
-    Failure(Failure),
+pub struct RunCommand {
+    pub completion_id: CompletionId,
+    pub name: ByteString,
 }
+impl_command_accessors!(Run);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachInvocationTarget {
+    InvocationId(InvocationId),
+    IdempotentRequest(IdempotencyId),
+    Workflow(ServiceId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachInvocationCommand {
+    pub target: AttachInvocationTarget,
+    pub completion_id: CompletionId,
+    pub name: ByteString,
+}
+impl_command_accessors!(AttachInvocation);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetInvocationOutputCommand {
+    pub target: AttachInvocationTarget,
+    pub completion_id: CompletionId,
+    pub name: ByteString,
+}
+impl_command_accessors!(GetInvocationOutput);

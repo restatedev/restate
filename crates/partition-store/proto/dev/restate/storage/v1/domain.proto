@@ -155,8 +155,9 @@ message InvocationStatusV2 {
   optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
 
   // Suspended
-  repeated int64 waiting_for_notification_indexes = 17;
-  repeated string waiting_for_notification_names = 23;
+  repeated uint32 waiting_for_completions = 17;
+  repeated uint32 waiting_for_signal_indexes = 23;
+  repeated string waiting_for_signal_names = 24;
 
   // Completed
   ResponseResult result = 18;
@@ -510,14 +511,38 @@ message Entry {
 
   enum EntryType {
     UNKNOWN = 0;
-    NOTIFICATION = 1;
-    EVENT = 2;
-    INPUT_COMMAND = 3;
-    OUTPUT_COMMAND = 4;
-    RUN_COMMAND = 5;
-    CALL_COMMAND = 6;
-    ONE_WAY_CALL_COMMAND = 7;
-    SLEEP_COMMAND = 8;
+    EVENT = 1;
+    INPUT_COMMAND = 2;
+    OUTPUT_COMMAND = 3;
+    GET_LAZY_STATE_COMMAND = 8;
+    SET_STATE_COMMAND = 9;
+    CLEAR_STATE_COMMAND = 10;
+    CLEAR_ALL_STATE_COMMAND = 32;
+    GET_LAZY_STATE_KEYS_COMMAND = 11;
+    GET_EAGER_STATE_COMMAND = 12;
+    GET_EAGER_STATE_KEYS_COMMAND = 13;
+    GET_PROMISE_COMMAND = 14;
+    PEEK_PROMISE_COMMAND = 15;
+    COMPLETE_PROMISE_COMMAND = 16;
+    SLEEP_COMMAND = 7;
+    CALL_COMMAND = 5;
+    ONE_WAY_CALL_COMMAND = 6;
+    SEND_NOTIFICATION_COMMAND = 17;
+    RUN_COMMAND = 4;
+    ATTACH_INVOCATION_COMMAND = 18;
+    GET_INVOCATION_OUTPUT_COMMAND = 19;
+    SIGNAL = 20;
+    GET_LAZY_STATE_COMPLETION = 21;
+    GET_LAZY_STATE_KEYS_COMPLETION = 22;
+    GET_PROMISE_COMPLETION = 23;
+    PEEK_PROMISE_COMPLETION = 24;
+    COMPLETE_PROMISE_COMPLETION = 25;
+    SLEEP_COMPLETION = 26;
+    CALL_INVOCATION_ID_COMPLETION = 27;
+    CALL_COMPLETION = 28;
+    RUN_COMPLETION = 29;
+    ATTACH_INVOCATION_COMPLETION = 30;
+    GET_INVOCATION_OUTPUT_COMPLETION = 31;
   }
 
   EntryType ty = 3;
@@ -533,14 +558,16 @@ message Entry {
 
   // Additional metadata for NOTIFICATION
   oneof notification_id {
-    int64 notification_idx = 7;
-    string notification_name = 8;
+    uint32 completion_idx = 7;
+    uint32 signal_idx = 8;
+    string signal_name = 9;
   }
 }
 
 message NotificationsIndex {
-  map<int64, uint32> notification_idx_to_journal_idx = 1;
-  map<string, uint32> notification_name_to_journal_idx = 2;
+  map<uint32, uint32> completion_idx_to_journal_idx = 1;
+  map<uint32, uint32> signal_idx_to_journal_idx = 2;
+  map<string, uint32> signal_name_to_journal_idx = 3;
 }
 
 message ResponseResult {

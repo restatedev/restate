@@ -21,8 +21,7 @@ use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::TerminationFlavor;
-use restate_types::journal_v2::notification::CANCEL_NOTIFICATION;
-use restate_types::journal_v2::Entry;
+use restate_types::journal_v2::CANCEL_SIGNAL;
 use tracing::{debug, trace};
 
 pub struct OnCancelCommand {
@@ -45,26 +44,11 @@ where
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         match self.invocation_status {
-            InvocationStatus::Invoked(metadata) => {
+            is @ InvocationStatus::Invoked(_) | is @ InvocationStatus::Suspended { .. } => {
                 OnJournalEntryCommand {
                     invocation_id: self.invocation_id,
-                    invocation_status: InvocationStatus::Invoked(metadata),
-                    entry: Entry::from(CANCEL_NOTIFICATION).encode::<ServiceProtocolV4Codec>()?,
-                }
-                .apply(ctx)
-                .await?;
-            }
-            InvocationStatus::Suspended {
-                metadata,
-                waiting_for_notifications,
-            } => {
-                OnJournalEntryCommand {
-                    invocation_id: self.invocation_id,
-                    invocation_status: InvocationStatus::Suspended {
-                        metadata,
-                        waiting_for_notifications,
-                    },
-                    entry: Entry::from(CANCEL_NOTIFICATION).encode::<ServiceProtocolV4Codec>()?,
+                    invocation_status: is,
+                    entry: CANCEL_SIGNAL.encode::<ServiceProtocolV4Codec>(),
                 }
                 .apply(ctx)
                 .await?;

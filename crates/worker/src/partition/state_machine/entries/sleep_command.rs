@@ -51,7 +51,7 @@ where
             TimerKeyValue::complete_journal_entry(
                 self.entry.wake_up_time,
                 self.invocation_id,
-                self.entry.notification_idx,
+                self.entry.completion_id,
             ),
             invocation_metadata.journal_metadata.span_context.clone(),
         )

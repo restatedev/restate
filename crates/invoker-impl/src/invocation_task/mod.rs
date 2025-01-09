@@ -111,7 +111,7 @@ pub(crate) enum InvocationTaskError {
     ),
     #[error("message encoding error: {0}")]
     #[code(unknown)]
-    EncodingV2(#[from] journal_v2::encoding::EncodingError),
+    EncodingV2(#[from] journal_v2::encoding::DecodingError),
     #[error("message encoding error: {0}")]
     #[code(unknown)]
     EncoderV2(#[from] restate_service_protocol_v4::message_codec::EncodingError),
@@ -168,7 +168,7 @@ pub(crate) enum InvocationTaskError {
     EntryEnrichment(CommandIndex, EntryType, #[source] InvocationError),
     #[error("cannot process incoming command {0} of type {1}: {2}")]
     #[code(unknown)]
-    EntryEnrichmentV2(
+    CommandPrecondition(
         CommandIndex,
         journal_v2::EntryType,
         #[source] InvocationError,

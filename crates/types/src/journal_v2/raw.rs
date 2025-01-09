@@ -10,12 +10,13 @@
 
 use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-use crate::journal_v2::encoding::EncodingError;
+use crate::journal_v2::encoding::DecodingError;
 use crate::journal_v2::{
-    CommandType, Decoder, Entry, EntryMetadata, EntryType, Event, NotificationId,
+    CommandType, Decoder, Entry, EntryMetadata, EntryType, Event, NotificationId, NotificationType,
 };
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
+use enum_dispatch::enum_dispatch;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -30,10 +31,16 @@ pub trait TryFromEntry: Sized {
     fn try_from(entry: Entry) -> Result<Self, TryFromEntryError>;
 }
 
+impl TryFromEntry for Entry {
+    fn try_from(entry: Entry) -> Result<Self, TryFromEntryError> {
+        Ok(entry)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RawEntryError {
     #[error(transparent)]
-    Decoder(#[from] EncodingError),
+    Decoder(#[from] DecodingError),
     #[error(transparent)]
     TryFromEntry(#[from] TryFromEntryError),
 }
@@ -90,9 +97,8 @@ impl EntryMetadata for RawEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[enum_delegate::implement(EntryMetadata)]
-#[derive(strum::EnumTryAs)]
+#[enum_dispatch(EntryMetadata)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::EnumTryAs)]
 pub enum RawEntryInner {
     Command(RawCommand),
     Notification(RawNotification),
@@ -136,6 +142,12 @@ impl RawCommand {
     pub fn serialized_content(&self) -> Bytes {
         self.serialized_content.clone()
     }
+
+    pub fn decode<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
+        Ok(<T as TryFromEntry>::try_from(D::decode_entry(
+            &RawEntry::new(RawEntryHeader::new(), RawEntryInner::Command(self.clone())),
+        )?)?)
+    }
 }
 
 impl EntryMetadata for RawCommand {
@@ -162,16 +174,26 @@ pub enum RawCommandSpecificMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawNotification {
+    ty: NotificationType,
     id: NotificationId,
     serialized_content: Bytes,
 }
 
 impl RawNotification {
-    pub fn new(id: NotificationId, serialized_content: Bytes) -> Self {
+    pub fn new(
+        ty: impl Into<NotificationType>,
+        id: NotificationId,
+        serialized_content: impl Into<Bytes>,
+    ) -> Self {
         Self {
+            ty: ty.into(),
             id,
-            serialized_content,
+            serialized_content: serialized_content.into(),
         }
+    }
+
+    pub fn ty(&self) -> NotificationType {
+        self.ty
     }
 
     pub fn id(&self) -> NotificationId {
@@ -181,10 +203,19 @@ impl RawNotification {
     pub fn serialized_content(&self) -> Bytes {
         self.serialized_content.clone()
     }
+
+    pub fn decode<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
+        Ok(<T as TryFromEntry>::try_from(D::decode_entry(
+            &RawEntry::new(
+                RawEntryHeader::new(),
+                RawEntryInner::Notification(self.clone()),
+            ),
+        )?)?)
+    }
 }
 
 impl EntryMetadata for RawNotification {
     fn ty(&self) -> EntryType {
-        EntryType::Notification
+        EntryType::Notification(self.ty)
     }
 }

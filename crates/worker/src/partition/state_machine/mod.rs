@@ -80,7 +80,7 @@ use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{
-    CommandType, EntryMetadata, Notification, NotificationId, NotificationResult,
+    CallCompletion, CommandType, EntryMetadata, NotificationId, SleepCompletion,
 };
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
@@ -143,7 +143,7 @@ pub enum Error {
     #[error("expecting entry type {0:?}, but wasn't. This indicates data corruption.")]
     BadEntryVariant(journal_v2::EntryType),
     #[error(transparent)]
-    EntryEncoding(#[from] journal_v2::encoding::EncodingError),
+    EntryEncoding(#[from] journal_v2::encoding::DecodingError),
     #[error("failed to deserialize entry: {0}")]
     EntryDecoding(#[from] journal_v2::raw::RawEntryError),
 }
@@ -394,8 +394,37 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                     entry_index,
                     result: result.into(),
                 };
+                let status = self.get_invocation_status(&id).await?;
 
-                self.handle_completion(id, completion).await
+                if should_use_journal_table_v2(&status) {
+                    // We just apply the journal entry
+                    entries::OnJournalEntryCommand {
+                        invocation_id: id,
+                        invocation_status: status,
+                        entry: journal_v2::Entry::from(
+                            CallCompletion {
+                                completion_id: completion.entry_index,
+                                result: match completion.result {
+                                    CompletionResult::Success(s) => journal_v2::CallResult::Success(s),
+                                    CompletionResult::Failure(c, m) => {
+                                        journal_v2::CallResult::Failure(journal_v2::Failure {
+                                            code: c,
+                                            message: m,
+                                        })
+                                    }
+                                    CompletionResult::Empty => {
+                                        panic!("In journal table v2, the InvocationResponse message MUST not be used to send empty, as invocations cannot reply with empty. Most likely there is a bug where this command is used to send awakeable results.")
+                                    }
+                                },
+                            }
+                        ).encode::<ServiceProtocolV4Codec>(),
+                    }
+                        .apply(self)
+                        .await?;
+                    return Ok(());
+                }
+
+                self.handle_completion(id, status, completion).await
             }
             Command::ProxyThrough(service_invocation) => {
                 self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
@@ -1093,8 +1122,8 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                             waiting_for_notifications
                                 .into_iter()
                                 .map(|n| match n {
-                                    NotificationId::Index(idx) => idx as u32,
-                                    NotificationId::Name(_) => panic!("When using Service Protocol <= 3, an invocation cannot be suspended on a named notification")
+                                    NotificationId::CompletionIndex(idx) => idx,
+                                    _ => panic!("When using Service Protocol <= 3, an invocation cannot be suspended on a named notification")
                                 }).collect()
 
                         ),
@@ -1565,8 +1594,25 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
 
         match value {
             Timer::CompleteJournalEntry(invocation_id, entry_index) => {
+                let status = self.get_invocation_status(&invocation_id).await?;
+                if should_use_journal_table_v2(&status) {
+                    // We just apply the journal entry
+                    entries::OnJournalEntryCommand {
+                        invocation_id,
+                        invocation_status: status,
+                        entry: journal_v2::Entry::from(SleepCompletion {
+                            completion_id: entry_index,
+                        })
+                        .encode::<ServiceProtocolV4Codec>(),
+                    }
+                    .apply(self)
+                    .await?;
+                    return Ok(());
+                }
+
                 self.handle_completion(
                     invocation_id,
+                    status,
                     Completion {
                         entry_index,
                         result: CompletionResult::Empty,
@@ -2873,6 +2919,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
     async fn handle_completion(
         &mut self,
         invocation_id: InvocationId,
+        status: InvocationStatus,
         completion: Completion,
     ) -> Result<(), Error>
     where
@@ -2883,45 +2930,9 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             + FsmTable
             + OutboxTable,
     {
-        let status = self.get_invocation_status(&invocation_id).await?;
-
-        if status
-            .get_invocation_metadata()
-            .and_then(|im| im.pinned_deployment.as_ref())
-            .is_some_and(|pinned_deployment| {
-                pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
-            })
-        {
-            // THIS IS JOURNAL V2 CASE!
-            // Convert it to entry, then use OnJournalEntryCommand
-            let new_notification: journal_v2::Entry = Notification::new(
-                NotificationId::for_command(completion.entry_index),
-                match completion.result {
-                    CompletionResult::Empty => NotificationResult::Void,
-                    CompletionResult::Success(s) => NotificationResult::Success(s),
-                    CompletionResult::Failure(c, m) => {
-                        NotificationResult::Failure(journal_v2::Failure {
-                            code: c,
-                            message: m,
-                        })
-                    }
-                },
-            )
-            .into();
-            let raw_entry = new_notification.encode::<ServiceProtocolV4Codec>()?;
-            entries::OnJournalEntryCommand {
-                invocation_id,
-                invocation_status: status,
-                entry: raw_entry,
-            }
-            .apply(self)
-            .await?;
-            return Ok(());
-        }
-
         match status {
             InvocationStatus::Invoked(_) => {
-        self.handle_completion_for_invoked( invocation_id, completion).await?;
+                self.handle_completion_for_invoked( invocation_id, completion).await?;
             }
             InvocationStatus::Suspended {
                 metadata,
@@ -2933,8 +2944,8 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                     &waiting_for_notifications
                         .into_iter()
                         .map(|n| match n {
-                            NotificationId::Index(idx) => idx as u32,
-                            NotificationId::Name(_) => panic!("When using Service Protocol <= 3, an invocation cannot be suspended on a named notification")
+                            NotificationId::CompletionIndex(idx) => idx,
+                            _ => panic!("When using Service Protocol <= 3, an invocation cannot be suspended on a named notification")
                         }).collect()
                     ,
                 )
@@ -3327,7 +3338,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                     metadata,
                     waiting_for_notifications: waiting_for_completed_entries
                         .into_iter()
-                        .map(|i| NotificationId::Index(i as i64))
+                        .map(NotificationId::CompletionIndex)
                         .collect(),
                 },
             )
@@ -3942,6 +3953,15 @@ impl<'a> fmt::Display for CompletionResultFmt<'a> {
 enum InvocationStatusProjection {
     Invoked,
     Suspended(HashSet<EntryIndex>),
+}
+
+fn should_use_journal_table_v2(status: &InvocationStatus) -> bool {
+    status
+        .get_invocation_metadata()
+        .and_then(|im| im.pinned_deployment.as_ref())
+        .is_some_and(|pinned_deployment| {
+            pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
+        })
 }
 
 #[cfg(test)]

@@ -241,7 +241,7 @@ mod tests {
         );
 
         let expected_msg_1 = Message::InputCommand(Bytes::from_static(b"123"));
-        let expected_msg_2 = Message::Notification(Bytes::from_static(b"456"));
+        let expected_msg_2 = Message::CallCompletionNotification(Bytes::from_static(b"456"));
 
         decoder.push(encoder.encode(expected_msg_0.clone()));
         decoder.push(encoder.encode(expected_msg_1.clone()));
@@ -261,7 +261,7 @@ mod tests {
         let (actual_msg_header_2, actual_msg_2) = decoder.consume_next().unwrap().unwrap();
         assert_eq!(
             actual_msg_header_2.message_type(),
-            MessageType::Notification
+            MessageType::CallCompletionNotification
         );
         assert_eq!(actual_msg_2, expected_msg_2);
 

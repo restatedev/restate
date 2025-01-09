@@ -549,13 +549,13 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         &InvocationStatus::Suspended {
             metadata: in_flight_meta,
             waiting_for_notifications: HashSet::from([
-                NotificationId::for_index(3),
-                NotificationId::for_index(4),
-                NotificationId::for_index(5),
-                NotificationId::for_index(6),
-                NotificationId::for_index(7),
-                NotificationId::for_index(8),
-                NotificationId::for_index(9),
+                NotificationId::for_completion(3),
+                NotificationId::for_completion(4),
+                NotificationId::for_completion(5),
+                NotificationId::for_completion(6),
+                NotificationId::for_completion(7),
+                NotificationId::for_completion(8),
+                NotificationId::for_completion(9),
             ]),
         },
     )

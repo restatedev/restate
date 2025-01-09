@@ -118,14 +118,14 @@ where
                 EntryType::Command(CommandType::Output) => {
                     // Just store it, on End we send back the responses
                 }
-                EntryType::Notification => {
+                et @ EntryType::Notification(_) => {
                     ApplyNotificationCommand {
                         invocation_id: self.invocation_id,
                         invocation_status: &mut self.invocation_status,
                         entry: entry
                             .inner
                             .try_as_notification_mut()
-                            .ok_or(Error::BadEntryVariant(EntryType::Notification))?,
+                            .ok_or(Error::BadEntryVariant(et))?,
                     }
                     .apply(ctx)
                     .await?;
@@ -142,6 +142,7 @@ where
                     .apply(ctx)
                     .await?;
                 }
+                _ => todo!("slinkydeveloper tomorrow i need to finish this!"),
             };
 
             // -- Append journal entry

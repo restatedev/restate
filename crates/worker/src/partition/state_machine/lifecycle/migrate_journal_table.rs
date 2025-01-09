@@ -15,8 +15,8 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
 use restate_types::identifiers::InvocationId;
 use restate_types::journal as journal_v1;
-use restate_types::journal_v2::command::{CommandMetadata, InputCommand};
-use restate_types::journal_v2::{Command, Entry, EntryIndex};
+use restate_types::journal_v2::command::InputCommand;
+use restate_types::journal_v2::{Entry, EntryIndex};
 
 pub struct VerifyOrMigrateJournalTableToV2Command {
     pub invocation_id: InvocationId,
@@ -48,13 +48,11 @@ where
                 );
 
                 // Prepare the new entry
-                let new_entry: Entry = Command::new(
-                    CommandMetadata::new(""),
-                    InputCommand {
-                        headers,
-                        payload: value,
-                    },
-                )
+                let new_entry: Entry = InputCommand {
+                    headers,
+                    payload: value,
+                    name: Default::default(),
+                }
                 .into();
 
                 // Now write the entry in the new table, and remove it from the old one
@@ -62,7 +60,7 @@ where
                     ctx.storage,
                     self.invocation_id,
                     0,
-                    &new_entry.encode::<ServiceProtocolV4Codec>()?,
+                    &new_entry.encode::<ServiceProtocolV4Codec>(),
                 )
                 .await?;
                 journal_table_v1::JournalTable::delete_journal(ctx.storage, &self.invocation_id, 1)

@@ -8,124 +8,376 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::errors::{InvocationError, InvocationErrorCode};
-use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
+use crate::identifiers::InvocationId;
+use crate::journal_v2::raw::{RawEntry, TryFromEntry, TryFromEntryError};
 use crate::journal_v2::{
-    CommandIndex, Entry, EntryMetadata, EntryType, NotificationIndex, NotificationName,
+    CommandIndex, CompletionId, Encoder, Entry, EntryMetadata, EntryType, Failure, SignalIndex,
+    SignalName,
 };
 use bytes::Bytes;
-use bytestring::ByteString;
+use enum_dispatch::enum_dispatch;
 use std::fmt;
-
-pub const CANCEL_NOTIFICATION: Notification = Notification::new(
-    NotificationId::for_builtin_signal(BuiltInSignal::Cancel),
-    NotificationResult::Void,
-);
-
-#[repr(i64)]
-pub enum BuiltInSignal {
-    Cancel = -1,
-}
 
 /// See [`Notification`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum NotificationId {
-    Index(NotificationIndex),
-    Name(NotificationName),
+    CompletionIndex(CommandIndex),
+    SignalIndex(SignalIndex),
+    SignalName(SignalName),
 }
 
 impl NotificationId {
-    pub const fn for_index(id: NotificationIndex) -> Self {
-        Self::Index(id)
+    pub const fn for_completion(id: CompletionId) -> Self {
+        Self::CompletionIndex(id)
     }
 
-    pub const fn for_command(id: CommandIndex) -> Self {
-        Self::for_index(id as i64)
+    pub fn for_signal(signal_id: SignalId) -> Self {
+        match signal_id {
+            SignalId::Index(idx) => NotificationId::SignalIndex(idx),
+            SignalId::Name(n) => NotificationId::SignalName(n),
+        }
     }
+}
 
-    pub const fn for_builtin_signal(signal: BuiltInSignal) -> Self {
-        Self::for_index(signal as i64)
-    }
-
-    pub fn for_name(id: NotificationName) -> Self {
-        Self::Name(id)
+impl From<SignalId> for NotificationId {
+    fn from(value: SignalId) -> Self {
+        NotificationId::for_signal(value)
     }
 }
 
 impl fmt::Display for NotificationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NotificationId::Index(idx) => write!(f, "{idx}"),
-            NotificationId::Name(name) => write!(f, "{name}"),
+            NotificationId::SignalIndex(idx) => write!(f, "{idx}"),
+            NotificationId::SignalName(name) => write!(f, "{name}"),
+            NotificationId::CompletionIndex(idx) => write!(f, "{idx}"),
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum NotificationType {
+    Completion(CompletionType),
+    Signal,
+}
+
+impl fmt::Display for NotificationType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NotificationType::Completion(cmp) => fmt::Display::fmt(cmp, f),
+            e => fmt::Debug::fmt(e, f),
         }
     }
 }
 
-/// Notifications are split in two categories:
-///
-/// * Command completions. These always have a corresponding Command in the journal **before** this notification entry. The identifier is a positive `NotificationIndex`.
-/// * A signal result. Signals are split in 3 categories:
-///     * Built-in signals. The identifier is a negative `NotificationIndex` from -1 to -15 (included).
-///     * Unnamed signals: The identifier is a negative `NotificationIndex` from -16 below.
-///     * Named signals: The identifier is a `NotificationName`.
+impl From<CompletionType> for NotificationType {
+    fn from(value: CompletionType) -> Self {
+        NotificationType::Completion(value)
+    }
+}
+
+#[enum_dispatch]
+pub trait NotificationMetadata {
+    fn id(&self) -> NotificationId;
+}
+
+#[enum_dispatch(NotificationMetadata, EntryMetadata)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Notification {
-    pub id: NotificationId,
-    pub result: NotificationResult,
+pub enum Notification {
+    Completion(Completion),
+    Signal(Signal),
 }
 
 impl Notification {
-    pub const fn new(id: NotificationId, result: NotificationResult) -> Self {
+    pub fn new_completion(completion: impl Into<Completion>) -> Self {
+        Self::Completion(completion.into())
+    }
+
+    pub fn new_signal(signal: Signal) -> Self {
+        Self::Signal(signal)
+    }
+
+    pub fn encode<E: Encoder>(&self) -> RawEntry {
+        E::encode_entry(&Entry::Notification(self.clone()))
+    }
+}
+
+#[enum_dispatch(NotificationMetadata, EntryMetadata)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants)]
+#[strum_discriminants(vis(pub))]
+#[strum_discriminants(name(CompletionType))]
+#[strum_discriminants(derive(serde::Serialize, serde::Deserialize))]
+pub enum Completion {
+    GetLazyState(GetLazyStateCompletion),
+    GetLazyStateKeys(GetLazyStateKeysCompletion),
+    GetPromise(GetPromiseCompletion),
+    PeekPromise(PeekPromiseCompletion),
+    CompletePromise(CompletePromiseCompletion),
+    Sleep(SleepCompletion),
+    CallInvocationId(CallInvocationIdCompletion),
+    Call(CallCompletion),
+    Run(RunCompletion),
+    AttachInvocation(AttachInvocationCompletion),
+    GetInvocationOutput(GetInvocationOutputCompletion),
+}
+
+impl fmt::Display for CompletionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+// Little macro to reduce boilerplate for TryFromEntry and EntryMetadata.
+macro_rules! impl_completion_accessors {
+    ($ty:ident -> []) => {
+        // End of macro
+    };
+    ($ty:ident -> [@from_entry $($tail:tt)*]) => {
+        impl TryFromEntry for paste::paste! { [< $ty Completion >] } {
+            fn try_from(entry: Entry) -> Result<Self, TryFromEntryError> {
+                match entry {
+                    Entry::Notification(Notification::Completion(Completion::$ty(e))) => Ok(e),
+                    e => Err(TryFromEntryError {
+                        expected: EntryType::Notification(NotificationType::Completion(CompletionType::$ty)),
+                        actual: e.ty(),
+                    }),
+                }
+            }
+        }
+        impl From<paste::paste! { [< $ty Completion >] }> for Entry {
+            fn from(v: paste::paste! { [< $ty Completion >] }) -> Self {
+                Self::Notification(v.into())
+            }
+        }
+        impl From<paste::paste! { [< $ty Completion >] }> for Notification {
+            fn from(v: paste::paste! { [< $ty Completion >] }) -> Self {
+                Self::Completion(v.into())
+            }
+        }
+        impl_completion_accessors!($ty -> [$($tail)*]);
+    };
+    ($ty:ident -> [@entry_metadata $($tail:tt)*]) => {
+        impl EntryMetadata for paste::paste! { [< $ty Completion >] } {
+            fn ty(&self) -> EntryType {
+                EntryType::Notification(NotificationType::Completion(CompletionType::$ty))
+            }
+        }
+        impl_completion_accessors!($ty -> [$($tail)*]);
+    };
+    ($ty:ident -> [@notification_metadata $($tail:tt)*]) => {
+        impl NotificationMetadata for paste::paste! { [< $ty Completion >] } {
+            fn id(&self) -> NotificationId {
+                NotificationId::CompletionIndex(self.completion_id)
+            }
+        }
+        impl_completion_accessors!($ty -> [$($tail)*]);
+    };
+
+    // Entrypoints of the macro
+    ($ty:ident: [$($tokens:tt)*]) => {
+        impl_completion_accessors!($ty -> [$($tokens)*]);
+    };
+    ($ty:ident) => {
+        impl_completion_accessors!($ty -> [@entry_metadata @notification_metadata @from_entry]);
+    };
+}
+
+// --- Actual implementation of individual notifications
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetLazyStateCompletion {
+    pub completion_id: CompletionId,
+    pub result: GetStateResult,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetStateResult {
+    Void,
+    Success(Bytes),
+}
+impl_completion_accessors!(GetLazyState);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetLazyStateKeysCompletion {
+    pub completion_id: CompletionId,
+    pub state_keys: Vec<String>,
+}
+impl_completion_accessors!(GetLazyStateKeys);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetPromiseCompletion {
+    pub completion_id: CompletionId,
+    pub result: GetPromiseResult,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetPromiseResult {
+    Success(Bytes),
+    Failure(Failure),
+}
+impl_completion_accessors!(GetPromise);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeekPromiseCompletion {
+    pub completion_id: CompletionId,
+    pub result: PeekPromiseResult,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeekPromiseResult {
+    Void,
+    Success(Bytes),
+    Failure(Failure),
+}
+impl_completion_accessors!(PeekPromise);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletePromiseCompletion {
+    pub completion_id: CompletionId,
+    pub result: CompletePromiseResult,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletePromiseResult {
+    Void,
+    Failure(Failure),
+}
+impl_completion_accessors!(CompletePromise);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SleepCompletion {
+    pub completion_id: CompletionId,
+}
+impl_completion_accessors!(Sleep);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallInvocationIdCompletion {
+    pub completion_id: CompletionId,
+    pub invocation_id: InvocationId,
+}
+impl_completion_accessors!(CallInvocationId);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallCompletion {
+    pub completion_id: CompletionId,
+    pub result: CallResult,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallResult {
+    Success(Bytes),
+    Failure(Failure),
+}
+impl_completion_accessors!(Call);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunCompletion {
+    pub completion_id: CompletionId,
+    pub result: RunResult,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunResult {
+    Success(Bytes),
+    Failure(Failure),
+}
+impl_completion_accessors!(Run);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachInvocationCompletion {
+    pub completion_id: CompletionId,
+    pub result: AttachInvocationResult,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachInvocationResult {
+    Success(Bytes),
+    Failure(Failure),
+}
+impl_completion_accessors!(AttachInvocation);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetInvocationOutputCompletion {
+    pub completion_id: CompletionId,
+    pub result: GetInvocationOutputResult,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetInvocationOutputResult {
+    Void,
+    Success(Bytes),
+    Failure(Failure),
+}
+impl_completion_accessors!(GetInvocationOutput);
+
+// Signal
+
+#[repr(u32)]
+pub enum BuiltInSignal {
+    Cancel = 1,
+}
+
+pub const CANCEL_SIGNAL: Notification = Notification::Signal(Signal::new(
+    SignalId::for_builtin_signal(BuiltInSignal::Cancel),
+    SignalResult::Void,
+));
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignalId {
+    Index(SignalIndex),
+    Name(SignalName),
+}
+
+impl SignalId {
+    pub const fn for_builtin_signal(signal: BuiltInSignal) -> Self {
+        Self::for_index(signal as u32)
+    }
+
+    pub const fn for_index(id: SignalIndex) -> Self {
+        Self::Index(id)
+    }
+
+    pub fn for_name(id: SignalName) -> Self {
+        Self::Name(id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signal {
+    pub id: SignalId,
+    pub result: SignalResult,
+}
+
+impl Signal {
+    pub const fn new(id: SignalId, result: SignalResult) -> Self {
         Self { id, result }
     }
 }
 
-impl EntryMetadata for Notification {
+impl EntryMetadata for Signal {
     fn ty(&self) -> EntryType {
-        EntryType::Notification
+        EntryType::Notification(NotificationType::Signal)
     }
 }
 
-impl TryFromEntry for Notification {
+impl NotificationMetadata for Signal {
+    fn id(&self) -> NotificationId {
+        self.id.clone().into()
+    }
+}
+
+impl TryFromEntry for Signal {
     fn try_from(entry: Entry) -> Result<Self, TryFromEntryError> {
         match entry {
-            Entry::Notification(e) => Ok(e),
+            Entry::Notification(Notification::Signal(e)) => Ok(e),
             e => Err(TryFromEntryError {
-                expected: EntryType::Notification,
+                expected: EntryType::Notification(NotificationType::Signal),
                 actual: e.ty(),
             }),
         }
     }
 }
 
+impl From<Signal> for Entry {
+    fn from(v: Signal) -> Self {
+        Self::Notification(v.into())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NotificationResult {
+pub enum SignalResult {
     Void,
     Success(Bytes),
     Failure(Failure),
-
-    // Special results for certain commands
-    InvocationId(ByteString),
-    StateKeys(Vec<String>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Failure {
-    pub code: InvocationErrorCode,
-    pub message: ByteString,
-}
-
-impl From<InvocationError> for Failure {
-    fn from(value: InvocationError) -> Self {
-        Failure {
-            code: value.code(),
-            message: value.message().into(),
-        }
-    }
-}
-
-impl From<Failure> for InvocationError {
-    fn from(value: Failure) -> Self {
-        InvocationError::new(value.code, value.message)
-    }
 }

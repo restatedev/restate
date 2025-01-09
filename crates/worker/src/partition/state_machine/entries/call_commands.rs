@@ -17,9 +17,7 @@ use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationResponseSink, Source};
 use restate_types::journal_v2::command::{CallCommand, CallRequest, OneWayCallCommand};
 use restate_types::journal_v2::raw::RawEntry;
-use restate_types::journal_v2::{
-    CompletionNotificationIndex, Entry, Notification, NotificationId, NotificationResult,
-};
+use restate_types::journal_v2::{CallInvocationIdCompletion, CompletionId, Entry};
 use restate_types::time::MillisSinceEpoch;
 use std::collections::VecDeque;
 
@@ -40,9 +38,9 @@ where
             caller_invocation_id: self.caller_invocation_id,
             caller_invocation_status: self.caller_invocation_status,
             request: self.entry.request,
-            invocation_id_notification_idx: self.entry.invocation_id_notification_idx,
+            invocation_id_notification_idx: self.entry.invocation_id_completion_id,
             execution_time: None,
-            result_notification_idx: Some(self.entry.result_notification_idx),
+            result_notification_idx: Some(self.entry.result_completion_id),
             additional_entries_to_process: self.additional_entries_to_process,
         }
         .apply(ctx)
@@ -72,7 +70,7 @@ where
             caller_invocation_id: self.caller_invocation_id,
             caller_invocation_status: self.caller_invocation_status,
             request: self.entry.request,
-            invocation_id_notification_idx: self.entry.invocation_id_notification_idx,
+            invocation_id_notification_idx: self.entry.invocation_id_completion_id,
             execution_time,
             result_notification_idx: None,
             additional_entries_to_process: self.additional_entries_to_process,
@@ -86,9 +84,9 @@ struct _ApplyCallCommand<'e> {
     caller_invocation_id: InvocationId,
     caller_invocation_status: &'e InvocationStatus,
     request: CallRequest,
-    invocation_id_notification_idx: CompletionNotificationIndex,
+    invocation_id_notification_idx: CompletionId,
     execution_time: Option<MillisSinceEpoch>,
-    result_notification_idx: Option<CompletionNotificationIndex>,
+    result_notification_idx: Option<CompletionId>,
     additional_entries_to_process: &'e mut VecDeque<RawEntry>,
 }
 
@@ -113,6 +111,7 @@ where
             completion_retention_duration,
         } = self.request;
 
+        // Prepare the service invocation to propose
         let service_invocation = ServiceInvocation {
             invocation_id,
             invocation_target,
@@ -138,12 +137,13 @@ where
         ctx.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
             .await?;
 
+        // Notify the invocation id back
         self.additional_entries_to_process.push_back(
-            Entry::from(Notification::new(
-                NotificationId::for_command(self.invocation_id_notification_idx),
-                NotificationResult::InvocationId(invocation_id.to_string().into()),
-            ))
-            .encode::<ServiceProtocolV4Codec>()?,
+            Entry::from(CallInvocationIdCompletion {
+                completion_id: self.invocation_id_notification_idx,
+                invocation_id,
+            })
+            .encode::<ServiceProtocolV4Codec>(),
         );
 
         Ok(())

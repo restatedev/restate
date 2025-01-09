@@ -166,7 +166,9 @@ pub mod v1 {
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::journal::raw::RawEntry;
-        use restate_types::journal_v2::{EntryMetadata, NotificationId};
+        use restate_types::journal_v2::{
+            EntryMetadata, NotificationId, NotificationType, SignalId,
+        };
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::storage::{
             StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
@@ -365,8 +367,9 @@ pub mod v1 {
                     journal_length,
                     deployment_id,
                     service_protocol_version,
-                    waiting_for_notification_indexes,
-                    waiting_for_notification_names,
+                    waiting_for_completions,
+                    waiting_for_signal_indexes,
+                    waiting_for_signal_names,
                     result,
                 } = value;
 
@@ -484,13 +487,20 @@ pub mod v1 {
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                             },
-                            waiting_for_notifications: waiting_for_notification_indexes
+                            waiting_for_notifications: waiting_for_completions
                                 .into_iter()
-                                .map(NotificationId::for_index)
+                                .map(NotificationId::for_completion)
                                 .chain(
-                                    waiting_for_notification_names
+                                    waiting_for_signal_indexes
                                         .into_iter()
-                                        .map(|s| NotificationId::for_name(s.into())),
+                                        .map(|s| SignalId::for_index(s.into()))
+                                        .map(NotificationId::for_signal),
+                                )
+                                .chain(
+                                    waiting_for_signal_names
+                                        .into_iter()
+                                        .map(|s| SignalId::for_name(s.into()))
+                                        .map(NotificationId::for_signal),
                                 )
                                 .collect(),
                         },
@@ -592,8 +602,9 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
-                        waiting_for_notification_indexes: vec![],
-                        waiting_for_notification_names: vec![],
+                        waiting_for_completions: vec![],
+                        waiting_for_signal_indexes: vec![],
+                        waiting_for_signal_names: vec![],
                         result: None,
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Inboxed(
@@ -646,8 +657,9 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
-                        waiting_for_notification_indexes: vec![],
-                        waiting_for_notification_names: vec![],
+                        waiting_for_completions: vec![],
+                        waiting_for_signal_indexes: vec![],
+                        waiting_for_signal_names: vec![],
                         result: None,
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
@@ -709,8 +721,9 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
-                            waiting_for_notification_indexes: vec![],
-                            waiting_for_notification_names: vec![],
+                            waiting_for_completions: vec![],
+                            waiting_for_signal_indexes: vec![],
+                            waiting_for_signal_names: vec![],
                             result: None,
                         }
                     }
@@ -736,15 +749,19 @@ pub mod v1 {
                             ),
                         };
 
-                        let mut waiting_for_notification_indexes: Vec<i64> = Default::default();
-                        let mut waiting_for_notification_names: Vec<String> = Default::default();
+                        let mut waiting_for_completions: Vec<u32> = Default::default();
+                        let mut waiting_for_signal_indexes: Vec<u32> = Default::default();
+                        let mut waiting_for_signal_names: Vec<String> = Default::default();
                         for id in waiting_for_notifications {
                             match id {
-                                journal_v2::NotificationId::Index(c) => {
-                                    waiting_for_notification_indexes.push(c);
+                                journal_v2::NotificationId::CompletionIndex(c) => {
+                                    waiting_for_completions.push(c);
                                 }
-                                journal_v2::NotificationId::Name(s) => {
-                                    waiting_for_notification_names.push(s.to_string());
+                                journal_v2::NotificationId::SignalIndex(c) => {
+                                    waiting_for_signal_indexes.push(c);
+                                }
+                                journal_v2::NotificationId::SignalName(s) => {
+                                    waiting_for_signal_names.push(s.to_string());
                                 }
                             };
                         }
@@ -788,8 +805,9 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
-                            waiting_for_notification_indexes,
-                            waiting_for_notification_names,
+                            waiting_for_completions,
+                            waiting_for_signal_indexes,
+                            waiting_for_signal_names,
                             result: None,
                         }
                     }
@@ -852,8 +870,9 @@ pub mod v1 {
                             journal_length: journal_metadata.length,
                             deployment_id,
                             service_protocol_version,
-                            waiting_for_notification_indexes: vec![],
-                            waiting_for_notification_names: vec![],
+                            waiting_for_completions: vec![],
+                            waiting_for_signal_indexes: vec![],
+                            waiting_for_signal_names: vec![],
                             result: None,
                         }
                     }
@@ -897,8 +916,9 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
-                        waiting_for_notification_indexes: vec![],
-                        waiting_for_notification_names: vec![],
+                        waiting_for_completions: vec![],
+                        waiting_for_signal_indexes: vec![],
+                        waiting_for_signal_names: vec![],
                         result: Some(response_result.into()),
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Free => {
@@ -988,7 +1008,7 @@ pub mod v1 {
                             metadata,
                             waiting_for_notifications: waiting_for_completed_entries
                                 .into_iter()
-                                .map(|i| NotificationId::for_index(i.into()))
+                                .map(|i| NotificationId::for_completion(i.into()))
                                 .collect(),
                         }
                     }
@@ -1032,10 +1052,8 @@ pub mod v1 {
                         waiting_for_notifications
                             .into_iter()
                             .map(|notification_id| match notification_id {
-                                NotificationId::Index(c) => c.try_into().expect(
-                                    "Old invocation status cannot contain negative numbers",
-                                ),
-                                NotificationId::Name(s) => {
+                                NotificationId::CompletionIndex(c) => c,
+                                _ => {
                                     panic!("Unsupported waiting signals with old invocation status")
                                 }
                             })
@@ -2776,7 +2794,6 @@ pub mod v1 {
                             EntryType::Unknown,
                         ))
                     }
-                    EntryType::Notification => journal_v2::EntryType::Notification,
                     EntryType::Event => journal_v2::EntryType::Event,
                     EntryType::InputCommand => {
                         journal_v2::EntryType::Command(journal_v2::CommandType::Input)
@@ -2795,6 +2812,99 @@ pub mod v1 {
                     }
                     EntryType::SleepCommand => {
                         journal_v2::EntryType::Command(journal_v2::CommandType::Sleep)
+                    }
+                    EntryType::GetLazyStateCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::GetLazyState)
+                    }
+                    EntryType::SetStateCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::SetState)
+                    }
+                    EntryType::ClearStateCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::ClearState)
+                    }
+                    EntryType::ClearAllStateCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::ClearAllState)
+                    }
+                    EntryType::GetLazyStateKeysCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::GetLazyStateKeys)
+                    }
+                    EntryType::GetEagerStateCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::GetEagerState)
+                    }
+                    EntryType::GetEagerStateKeysCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::GetEagerStateKeys)
+                    }
+                    EntryType::GetPromiseCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::GetPromise)
+                    }
+                    EntryType::PeekPromiseCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::PeekPromise)
+                    }
+                    EntryType::CompletePromiseCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::CompletePromise)
+                    }
+                    EntryType::SendNotificationCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::SendNotification)
+                    }
+                    EntryType::AttachInvocationCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::AttachInvocation)
+                    }
+                    EntryType::GetInvocationOutputCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::GetInvocationOutput)
+                    }
+                    EntryType::Signal => {
+                        journal_v2::EntryType::Notification(journal_v2::NotificationType::Signal)
+                    }
+                    EntryType::GetLazyStateCompletion => journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::GetLazyState,
+                        ),
+                    ),
+                    EntryType::GetLazyStateKeysCompletion => journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::GetLazyStateKeys,
+                        ),
+                    ),
+                    EntryType::GetPromiseCompletion => journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::GetPromise,
+                        ),
+                    ),
+                    EntryType::PeekPromiseCompletion => journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::PeekPromise,
+                        ),
+                    ),
+                    EntryType::CompletePromiseCompletion => journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::CompletePromise,
+                        ),
+                    ),
+                    EntryType::SleepCompletion => journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(journal_v2::CompletionType::Sleep),
+                    ),
+                    EntryType::CallInvocationIdCompletion => journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::CallInvocationId,
+                        ),
+                    ),
+                    EntryType::CallCompletion => journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(journal_v2::CompletionType::Call),
+                    ),
+                    EntryType::RunCompletion => journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(journal_v2::CompletionType::Run),
+                    ),
+                    EntryType::AttachInvocationCompletion => journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::AttachInvocation,
+                        ),
+                    ),
+                    EntryType::GetInvocationOutputCompletion => {
+                        journal_v2::EntryType::Notification(
+                            journal_v2::NotificationType::Completion(
+                                journal_v2::CompletionType::GetInvocationOutput,
+                            ),
+                        )
                     }
                 })
             }
@@ -2821,7 +2931,97 @@ pub mod v1 {
                     journal_v2::EntryType::Command(journal_v2::CommandType::Output) => {
                         EntryType::OutputCommand
                     }
-                    journal_v2::EntryType::Notification => EntryType::Notification,
+                    journal_v2::EntryType::Command(journal_v2::CommandType::GetLazyState) => {
+                        EntryType::GetLazyStateCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::SetState) => {
+                        EntryType::SetStateCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::ClearState) => {
+                        EntryType::ClearStateCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::ClearAllState) => {
+                        EntryType::ClearAllStateCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::GetLazyStateKeys) => {
+                        EntryType::GetLazyStateCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::GetEagerState) => {
+                        EntryType::GetEagerStateCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::GetEagerStateKeys) => {
+                        EntryType::GetEagerStateKeysCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::GetPromise) => {
+                        EntryType::GetPromiseCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::PeekPromise) => {
+                        EntryType::PeekPromiseCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::CompletePromise) => {
+                        EntryType::CompletePromiseCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::SendNotification) => {
+                        EntryType::SendNotificationCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::AttachInvocation) => {
+                        EntryType::AttachInvocationCommand
+                    }
+                    journal_v2::EntryType::Command(
+                        journal_v2::CommandType::GetInvocationOutput,
+                    ) => EntryType::GetInvocationOutputCommand,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::GetLazyState,
+                        ),
+                    ) => EntryType::GetLazyStateCompletion,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::GetLazyStateKeys,
+                        ),
+                    ) => EntryType::GetLazyStateKeysCompletion,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::GetPromise,
+                        ),
+                    ) => EntryType::GetPromiseCompletion,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::PeekPromise,
+                        ),
+                    ) => EntryType::PeekPromiseCompletion,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::CompletePromise,
+                        ),
+                    ) => EntryType::CompletePromiseCompletion,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(journal_v2::CompletionType::Sleep),
+                    ) => EntryType::SleepCompletion,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::CallInvocationId,
+                        ),
+                    ) => EntryType::CallInvocationIdCompletion,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(journal_v2::CompletionType::Call),
+                    ) => EntryType::CallCompletion,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(journal_v2::CompletionType::Run),
+                    ) => EntryType::RunCompletion,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::AttachInvocation,
+                        ),
+                    ) => EntryType::AttachInvocationCompletion,
+                    journal_v2::EntryType::Notification(
+                        journal_v2::NotificationType::Completion(
+                            journal_v2::CompletionType::GetInvocationOutput,
+                        ),
+                    ) => EntryType::GetInvocationOutputCompletion,
+                    journal_v2::EntryType::Notification(journal_v2::NotificationType::Signal) => {
+                        EntryType::Signal
+                    }
                     journal_v2::EntryType::Event => EntryType::Event,
                 }
             }
@@ -2858,22 +3058,26 @@ pub mod v1 {
                                 },
                             )
                         }
-                        journal_v2::EntryType::Notification => {
+                        journal_v2::EntryType::Notification(notification_ty) => {
                             let notification_id = match value
                                 .notification_id
                                 .ok_or(ConversionError::missing_field("notification_id"))?
                             {
-                                entry::NotificationId::NotificationIdx(c) => {
-                                    journal_v2::NotificationId::Index(c)
+                                entry::NotificationId::CompletionIdx(c) => {
+                                    journal_v2::NotificationId::CompletionIndex(c)
                                 }
-                                entry::NotificationId::NotificationName(s) => {
-                                    journal_v2::NotificationId::Name(s.into())
+                                entry::NotificationId::SignalIdx(c) => {
+                                    journal_v2::NotificationId::SignalIndex(c)
+                                }
+                                entry::NotificationId::SignalName(s) => {
+                                    journal_v2::NotificationId::SignalName(s.into())
                                 }
                             };
 
                             journal_v2::raw::RawEntry::new(
                                 header,
                                 journal_v2::raw::RawNotification::new(
+                                    notification_ty,
                                     notification_id,
                                     value.content,
                                 ),
@@ -2932,11 +3136,14 @@ pub mod v1 {
                     }
                     journal_v2::raw::RawEntryInner::Notification(notification) => {
                         notification_id = Some(match notification.id() {
-                            journal_v2::NotificationId::Index(c) => {
-                                entry::NotificationId::NotificationIdx(c)
+                            journal_v2::NotificationId::CompletionIndex(c) => {
+                                entry::NotificationId::CompletionIdx(c)
                             }
-                            journal_v2::NotificationId::Name(s) => {
-                                entry::NotificationId::NotificationName(s.into())
+                            journal_v2::NotificationId::SignalIndex(c) => {
+                                entry::NotificationId::SignalIdx(c)
+                            }
+                            journal_v2::NotificationId::SignalName(s) => {
+                                entry::NotificationId::SignalName(s.into())
                             }
                         });
 
@@ -2967,18 +3174,23 @@ pub mod v1 {
         impl TryFrom<NotificationsIndex> for crate::journal_table_v2::NotificationsIndex {
             type Error = ConversionError;
 
-            fn try_from(value: NotificationsIndex) -> Result<Self, Self::Error> {
+            fn try_from(
+                NotificationsIndex {
+                    completion_idx_to_journal_idx,
+                    signal_idx_to_journal_idx,
+                    signal_name_to_journal_idx,
+                }: NotificationsIndex,
+            ) -> Result<Self, Self::Error> {
                 Ok(Self(
-                    value
-                        .notification_idx_to_journal_idx
+                    completion_idx_to_journal_idx
                         .into_iter()
-                        .map(|(k, v)| (journal_v2::NotificationId::for_index(k), v))
-                        .chain(
-                            value
-                                .notification_name_to_journal_idx
-                                .into_iter()
-                                .map(|(k, v)| (journal_v2::NotificationId::for_name(k.into()), v)),
-                        )
+                        .map(|(k, v)| (NotificationId::for_completion(k), v))
+                        .chain(signal_idx_to_journal_idx.into_iter().map(|(k, v)| {
+                            (NotificationId::for_signal(SignalId::for_index(k.into())), v)
+                        }))
+                        .chain(signal_name_to_journal_idx.into_iter().map(|(k, v)| {
+                            (NotificationId::for_signal(SignalId::for_name(k.into())), v)
+                        }))
                         .collect(),
                 ))
             }
@@ -2986,21 +3198,26 @@ pub mod v1 {
 
         impl From<crate::journal_table_v2::NotificationsIndex> for NotificationsIndex {
             fn from(value: crate::journal_table_v2::NotificationsIndex) -> Self {
-                let mut notification_idx_to_journal_idx: HashMap<i64, u32> = Default::default();
-                let mut notification_name_to_journal_idx: HashMap<String, u32> = Default::default();
+                let mut completion_idx_to_journal_idx: HashMap<u32, u32> = Default::default();
+                let mut signal_idx_to_journal_idx: HashMap<u32, u32> = Default::default();
+                let mut signal_name_to_journal_idx: HashMap<String, u32> = Default::default();
                 for (id, index) in value.0 {
                     match id {
-                        journal_v2::NotificationId::Index(c) => {
-                            notification_idx_to_journal_idx.insert(c, index)
+                        journal_v2::NotificationId::CompletionIndex(c) => {
+                            completion_idx_to_journal_idx.insert(c, index)
                         }
-                        journal_v2::NotificationId::Name(s) => {
-                            notification_name_to_journal_idx.insert(s.to_string(), index)
+                        journal_v2::NotificationId::SignalIndex(c) => {
+                            signal_idx_to_journal_idx.insert(c, index)
+                        }
+                        journal_v2::NotificationId::SignalName(s) => {
+                            signal_name_to_journal_idx.insert(s.to_string(), index)
                         }
                     };
                 }
                 Self {
-                    notification_idx_to_journal_idx,
-                    notification_name_to_journal_idx,
+                    completion_idx_to_journal_idx,
+                    signal_idx_to_journal_idx,
+                    signal_name_to_journal_idx,
                 }
             }
         }

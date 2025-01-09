@@ -27,6 +27,7 @@
 //! 3. [`RawEntry`] only. This is used in the Invoker when preparing service protocol messages.
 
 use bytestring::ByteString;
+use enum_dispatch::enum_dispatch;
 use std::fmt;
 
 pub mod command;
@@ -34,28 +35,28 @@ pub mod encoding;
 mod event;
 pub mod notification;
 pub mod raw;
+mod types;
 
-use crate::journal_v2::encoding::EncodingError;
-use crate::journal_v2::raw::RawEntry;
-pub use command::{Command, CommandType};
-pub use encoding::{Decoder, Encoder};
-pub use event::{Event, EventType};
-pub use notification::{Failure, Notification, NotificationId, NotificationResult};
+pub use command::*;
+pub use encoding::*;
+pub use event::*;
+pub use notification::*;
+pub use types::*;
 
 // -- Various alias types for Ids
 
 pub type EntryIndex = u32;
 pub type CommandIndex = u32;
-pub type CompletionNotificationIndex = u32;
-pub type NotificationIndex = i64;
-pub type NotificationName = ByteString;
+pub type CompletionId = u32;
+pub type SignalIndex = u32;
+pub type SignalName = ByteString;
 
 // -- Entry metadata
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryType {
     Command(CommandType),
-    Notification,
+    Notification(NotificationType),
     Event,
 }
 
@@ -68,14 +69,16 @@ impl fmt::Display for EntryType {
     }
 }
 
-#[enum_delegate::register]
+use crate::journal_v2::raw::*;
+
+#[enum_dispatch]
 pub trait EntryMetadata {
     fn ty(&self) -> EntryType;
 }
 
 /// Root enum representing a decoded entry.
+#[enum_dispatch(EntryMetadata)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[enum_delegate::implement(EntryMetadata)]
 pub enum Entry {
     Command(Command),
     Notification(Notification),
@@ -83,7 +86,7 @@ pub enum Entry {
 }
 
 impl Entry {
-    pub fn encode<E: Encoder>(&self) -> Result<RawEntry, EncodingError> {
+    pub fn encode<E: Encoder>(&self) -> RawEntry {
         E::encode_entry(self)
     }
 }
