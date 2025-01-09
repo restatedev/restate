@@ -12,7 +12,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use bitflags::bitflags;
-use prost_dto::{FromProto, IntoProto};
+use prost_dto::{FromProst, IntoProst};
 use serde::{Deserialize, Serialize};
 
 use super::codec::{WireDecode, WireEncode};
@@ -69,8 +69,8 @@ macro_rules! define_logserver_rpc {
     };
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, IntoProto, FromProto)]
-#[proto(target = "crate::protobuf::log_server_common::Status")]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target = "crate::protobuf::log_server_common::Status")]
 #[repr(u8)]
 pub enum Status {
     /// Operation was successful
@@ -180,8 +180,8 @@ impl LogServerRequestHeader {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProto, FromProto)]
-#[proto(target = "crate::protobuf::log_server_common::ResponseHeader")]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target = "crate::protobuf::log_server_common::ResponseHeader")]
 pub struct LogServerResponseHeader {
     /// The position after the last locally committed record on this node
     pub local_tail: LogletOffset,
@@ -385,10 +385,10 @@ pub struct GetLogletInfo {
     pub header: LogServerRequestHeader,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProto)]
-#[proto(target = "crate::protobuf::log_server_common::LogletInfo")]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst)]
+#[prost(target = "crate::protobuf::log_server_common::LogletInfo")]
 pub struct LogletInfo {
-    #[proto(required)]
+    #[prost(required)]
     pub header: LogServerResponseHeader,
     pub trim_point: LogletOffset,
 }
@@ -656,9 +656,9 @@ pub struct GetDigest {
 }
 
 #[derive(
-    Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize, IntoProto, FromProto,
+    Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize, IntoProst, FromProst,
 )]
-#[proto(target = "crate::protobuf::log_server_common::DigestEntry")]
+#[prost(target = "crate::protobuf::log_server_common::DigestEntry")]
 #[display("[{from_offset}..{to_offset}] -> {status} ({})",  self.len())]
 pub struct DigestEntry {
     // inclusive
@@ -668,10 +668,10 @@ pub struct DigestEntry {
 }
 
 #[derive(
-    Debug, Clone, Eq, PartialEq, derive_more::Display, Serialize, Deserialize, IntoProto, FromProto,
+    Debug, Clone, Eq, PartialEq, derive_more::Display, Serialize, Deserialize, IntoProst, FromProst,
 )]
 #[repr(u8)]
-#[proto(target = "crate::protobuf::log_server_common::RecordStatus")]
+#[prost(target = "crate::protobuf::log_server_common::RecordStatus")]
 pub enum RecordStatus {
     #[display("T")]
     Trimmed,
@@ -697,10 +697,10 @@ impl DigestEntry {
 }
 
 /// Response to a `GetDigest` request
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProto, FromProto)]
-#[proto(target = "crate::protobuf::log_server_common::Digest")]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target = "crate::protobuf::log_server_common::Digest")]
 pub struct Digest {
-    #[proto(required)]
+    #[prost(required)]
     pub header: LogServerResponseHeader,
     // If the node's local trim-point (or archival-point) overlaps with the digest range, an entry will be
     // added to include where the trim-gap ends. Otherwise, offsets for non-existing records

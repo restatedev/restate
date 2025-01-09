@@ -5508,9 +5508,9 @@ dependencies = [
 
 [[package]]
 name = "prost-dto"
-version = "0.0.2"
+version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5145d3fa63cf018899b3fdb7595a84597ac4315a2296663d81b15d87994e8a"
+checksum = "507287d74904a170345662840a603bd5d937b39d3d6a589916cd33c9deda8ecd"
 dependencies = [
  "prost-dto-core",
  "prost-dto-derive",
@@ -5518,9 +5518,9 @@ dependencies = [
 
 [[package]]
 name = "prost-dto-core"
-version = "0.0.2"
+version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cfc357b4d026d9c61112e75827e7f01e6b7fbe38664836194b19c063ca124ba"
+checksum = "9d8c10eed0bdb7f642bf4c2dd85c289e9fc6db578a37b8689c6b166196b0d36c"
 dependencies = [
  "chrono",
  "darling",
@@ -5531,9 +5531,9 @@ dependencies = [
 
 [[package]]
 name = "prost-dto-derive"
-version = "0.0.2"
+version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4feef623adf0ea256c19bdc3fbcad12060be6b3fb5f29bd471b1eeb02b3d33f6"
+checksum = "f1ccc60758662c45ce4c5a5f9fa72f87c47bd282416c23e7b78e12c00b9fe344"
 dependencies = [
  "proc-macro2",
  "prost-dto-core",
