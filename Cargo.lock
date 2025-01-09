@@ -6709,6 +6709,7 @@ dependencies = [
  "rust-rocksdb",
  "schemars",
  "serde",
+ "serde_with",
  "slog",
  "static_assertions",
  "tempfile",

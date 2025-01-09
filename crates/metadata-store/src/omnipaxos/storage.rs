@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::omnipaxos::{BuildError, OmniPaxosConfiguration};
+use crate::omnipaxos::{BuildError, OmniPaxosConfiguration, StorageId};
 use crate::util;
 use bytes::{Buf, BytesMut};
 use flexbuffers::{DeserializationError, SerializationError};
@@ -39,6 +39,7 @@ const STOPSIGN: &[u8] = b"STOPSIGN";
 const SNAPSHOT: &[u8] = b"SNAPSHOT";
 const CONFIGURATION: &[u8] = b"CONFIG";
 const NODES_CONFIGURATION: &[u8] = b"NODES_CONFIG";
+const STORAGE_ID: &[u8] = b"STORAGE_ID";
 
 #[derive(Debug, thiserror::Error)]
 #[error("missing bytes")]
@@ -280,6 +281,12 @@ where
         Ok(())
     }
 
+    pub fn commit_batch(&mut self) -> StorageResult<()> {
+        self.db
+            .write_batch(&mem::take(&mut self.write_batch), &self.write_options())?;
+        Ok(())
+    }
+
     pub fn get_configuration(&self) -> StorageResult<Option<OmniPaxosConfiguration>> {
         let configuration = self.db.get_pinned(CONFIGURATION)?;
         if let Some(configuration_bytes) = configuration {
@@ -315,9 +322,20 @@ where
         }
     }
 
-    pub fn commit_batch(&mut self) -> StorageResult<()> {
-        self.db
-            .write_batch(&mem::take(&mut self.write_batch), &self.write_options())?;
+    pub fn get_storage_id(&self) -> StorageResult<Option<StorageId>> {
+        let storage_id = self.db.get_pinned(STORAGE_ID)?;
+
+        if let Some(storage_id_bytes) = storage_id {
+            Ok(Some(StorageId::from_be_bytes(
+                storage_id_bytes.as_ref().try_into()?,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_storage_id(&self, storage_id: StorageId) -> StorageResult<()> {
+        self.db.put(STORAGE_ID, storage_id.to_be_bytes())?;
         Ok(())
     }
 }

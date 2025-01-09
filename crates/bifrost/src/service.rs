@@ -83,7 +83,10 @@ impl BifrostService {
         // Make sure we have v1 metadata written to metadata store with the default
         // configuration. If metadata is already initialized, this will make sure we have the
         // latest version set in metadata manager.
-        self.bifrost.admin().init_metadata().await?;
+
+        // todo we seem to have a race condition between this call and the provision step which might
+        //  write a different logs configuration
+        // self.bifrost.admin().init_metadata().await?;
 
         // initialize all enabled providers.
         if self.factories.is_empty() {
