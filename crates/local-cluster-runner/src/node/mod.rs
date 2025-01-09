@@ -332,6 +332,7 @@ impl Node {
             &mut cmd
         }
         .env("RESTATE_CONFIG", node_config_file)
+        .env("DO_NOT_TRACK", "true") // avoid sending telemetry as part of tests
         .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
