@@ -36,6 +36,7 @@ restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
+restate-service-client = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true, features = ["clap"] }
 restate-worker = { workspace = true }
@@ -47,6 +48,8 @@ derive_builder = { workspace = true }
 enumset = { workspace = true }
 futures-util = { workspace = true }
 humantime = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
 pin-project = { workspace = true }
 rlimit = { workspace = true }
 rocksdb = { workspace = true }
@@ -60,6 +63,7 @@ toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
 regex = "1.10.4"
+ulid = { workspace = true }
 url = { version = "2.5.4", features = [] }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
