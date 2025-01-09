@@ -16,18 +16,48 @@ use omnipaxos::messages::Message;
 use omnipaxos::util::NodeId;
 use omnipaxos::ClusterConfig;
 use restate_core::network::NetworkServerBuilder;
-use restate_core::MetadataWriter;
+use restate_core::{MetadataWriter, ShutdownError};
 use restate_rocksdb::RocksError;
 use restate_types::config::RocksDbOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{decode_from_flexbuffers, encode_as_flexbuffers};
+use restate_types::PlainNodeId;
+use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 
 mod storage;
 mod store;
 
 type OmniPaxosMessage = Message<Request>;
+
+/// Identifier to detect the loss of a disk.
+type StorageId = u64;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MemberId {
+    node_id: NodeId,
+    storage_id: StorageId,
+}
+
+impl MemberId {
+    fn new(node_id: NodeId, storage_id: StorageId) -> Self {
+        MemberId {
+            node_id,
+            storage_id,
+        }
+    }
+}
+
+impl Display for MemberId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let plain_node_id = PlainNodeId::new(
+            u32::try_from(self.node_id).expect("node ids should be derived from PlainNodeIds"),
+        );
+        write!(f, "{}:{:#x}", plain_node_id, self.storage_id)
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -35,12 +65,19 @@ pub enum BuildError {
     OmniPaxos(#[from] omnipaxos::errors::ConfigError),
     #[error("failed opening RocksDb: {0}")]
     OpeningRocksDb(#[from] RocksError),
+    #[error("failed initializing the storage: {0}")]
+    InitStorage(String),
+    #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
 }
 
+#[serde_with::serde_as]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct OmniPaxosConfiguration {
-    own_node_id: NodeId,
+    own_member_id: MemberId,
     cluster_config: ClusterConfig,
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    members: HashMap<NodeId, StorageId>,
 }
 
 pub(crate) async fn create_store(
