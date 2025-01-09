@@ -142,6 +142,17 @@ impl Node {
 
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
+        let metadata_store_client = restate_metadata_store::local::create_client(
+            config.common.metadata_store_client.clone(),
+        )
+        .await
+        .map_err(BuildError::MetadataStoreClient)?;
+        let metadata_builder = MetadataBuilder::default();
+        let metadata = metadata_builder.to_metadata();
+        let metadata_manager =
+            MetadataManager::new(metadata_builder, metadata_store_client.clone());
+        let metadata_writer = metadata_manager.writer();
+
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(
                 restate_metadata_store::create_metadata_store(
@@ -151,6 +162,7 @@ impl Node {
                         .map(|config| &config.metadata_store.rocksdb)
                         .boxed(),
                     health.metadata_server_status(),
+                    Some(metadata_writer),
                     &mut server_builder,
                 )
                 .await?,
@@ -159,18 +171,8 @@ impl Node {
             None
         };
 
-        let metadata_store_client = restate_metadata_store::local::create_client(
-            config.common.metadata_store_client.clone(),
-        )
-        .await
-        .map_err(BuildError::MetadataStoreClient)?;
-
         let mut router_builder = MessageRouterBuilder::default();
-        let metadata_builder = MetadataBuilder::default();
-        let metadata = metadata_builder.to_metadata();
-        let networking = Networking::new(metadata_builder.to_metadata(), config.networking.clone());
-        let metadata_manager =
-            MetadataManager::new(metadata_builder, metadata_store_client.clone());
+        let networking = Networking::new(metadata.clone(), config.networking.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
         let partition_routing_refresher = PartitionRoutingRefresher::default();
 
