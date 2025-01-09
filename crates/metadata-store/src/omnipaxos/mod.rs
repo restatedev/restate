@@ -16,6 +16,7 @@ use omnipaxos::messages::Message;
 use omnipaxos::util::NodeId;
 use omnipaxos::ClusterConfig;
 use restate_core::network::NetworkServerBuilder;
+use restate_core::MetadataWriter;
 use restate_rocksdb::RocksError;
 use restate_types::config::RocksDbOptions;
 use restate_types::health::HealthStatus;
@@ -45,9 +46,10 @@ struct OmniPaxosConfiguration {
 pub(crate) async fn create_store(
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataServerStatus>,
+    metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> Result<MetadataStoreRunner<OmniPaxosMetadataStore>, BuildError> {
-    let store = OmniPaxosMetadataStore::create(rocksdb_options).await?;
+    let store = OmniPaxosMetadataStore::create(rocksdb_options, metadata_writer).await?;
 
     server_builder.register_grpc_service(
         MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(

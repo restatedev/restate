@@ -27,7 +27,7 @@ pub use restate_core::metadata_store::{
     MetadataStoreClient, Precondition, ReadError, ReadModifyWriteError, WriteError,
 };
 use restate_core::network::NetworkServerBuilder;
-use restate_core::ShutdownError;
+use restate_core::{MetadataWriter, ShutdownError};
 use restate_types::config::{MetadataStoreKind, MetadataStoreOptions, RocksDbOptions};
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
@@ -216,6 +216,7 @@ pub async fn create_metadata_store(
     metadata_store_options: &MetadataStoreOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataServerStatus>,
+    metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<BoxedMetadataStoreService> {
     match metadata_store_options.kind {
@@ -228,18 +229,25 @@ pub async fn create_metadata_store(
         .await
         .map_err(anyhow::Error::from)
         .map(|store| store.boxed()),
-        MetadataStoreKind::Raft(ref raft_options) => {
-            raft::create_store(raft_options, rocksdb_options, health_status, server_builder)
-                .await
-                .map_err(anyhow::Error::from)
-                .map(|store| store.boxed())
-        }
-        MetadataStoreKind::Omnipaxos => {
-            omnipaxos::create_store(rocksdb_options, health_status, server_builder)
-                .await
-                .map_err(anyhow::Error::from)
-                .map(|store| store.boxed())
-        }
+        MetadataStoreKind::Raft(ref raft_options) => raft::create_store(
+            raft_options,
+            rocksdb_options,
+            health_status,
+            metadata_writer,
+            server_builder,
+        )
+        .await
+        .map_err(anyhow::Error::from)
+        .map(|store| store.boxed()),
+        MetadataStoreKind::Omnipaxos => omnipaxos::create_store(
+            rocksdb_options,
+            health_status,
+            metadata_writer,
+            server_builder,
+        )
+        .await
+        .map_err(anyhow::Error::from)
+        .map(|store| store.boxed()),
     }
 }
 impl MetadataStoreRequest {

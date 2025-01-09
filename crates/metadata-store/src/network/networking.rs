@@ -17,6 +17,7 @@ use restate_core::network::net_util;
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::net::AdvertisedAddress;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -58,8 +59,22 @@ where
         }
     }
 
-    pub fn register_address(&mut self, peer: u64, address: AdvertisedAddress) {
-        self.addresses.insert(peer, address);
+    /// Makes the given address for the given peer known. Returns true if the address is new.
+    pub fn register_address(&mut self, peer: u64, address: AdvertisedAddress) -> bool {
+        match self.addresses.entry(peer) {
+            Entry::Occupied(mut entry) => {
+                if *entry.get() != address {
+                    entry.insert(address);
+                    true
+                } else {
+                    false
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(address);
+                true
+            }
+        }
     }
 
     pub fn try_send(&mut self, message: M) -> Result<(), TrySendError<M>> {

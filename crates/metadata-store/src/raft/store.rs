@@ -20,7 +20,7 @@ use futures::TryFutureExt;
 use protobuf::{Message as ProtobufMessage, ProtobufError};
 use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
 use raft::{Config, RawNode};
-use restate_core::cancellation_watcher;
+use restate_core::{cancellation_watcher, MetadataWriter};
 use restate_types::config::{Configuration, RaftOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
 use restate_types::storage::StorageDecodeError;
@@ -76,6 +76,7 @@ impl RaftMetadataStore {
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
         mut networking: Networking<Message>,
         raft_rx: mpsc::Receiver<Message>,
+        metadata_writer: Option<MetadataWriter>,
     ) -> Result<Self, BuildError> {
         let (request_tx, request_rx) = mpsc::channel(2);
 
@@ -114,7 +115,7 @@ impl RaftMetadataStore {
             raft_rx,
             networking,
             tick_interval,
-            kv_storage: KvMemoryStorage::default(),
+            kv_storage: KvMemoryStorage::new(metadata_writer),
             request_rx,
             request_tx,
         })

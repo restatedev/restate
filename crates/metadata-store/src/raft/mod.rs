@@ -22,6 +22,7 @@ use arc_swap::ArcSwapOption;
 use bytes::{Buf, BufMut};
 use protobuf::Message as ProtobufMessage;
 use restate_core::network::NetworkServerBuilder;
+use restate_core::MetadataWriter;
 use restate_types::config::{RaftOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
@@ -34,6 +35,7 @@ pub async fn create_store(
     raft_options: &RaftOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataServerStatus>,
+    metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> Result<MetadataStoreRunner<RaftMetadataStore>, BuildError> {
     let (router_tx, router_rx) = mpsc::channel(128);
@@ -43,6 +45,7 @@ pub async fn create_store(
         rocksdb_options,
         Networking::new(connection_manager.clone()),
         router_rx,
+        metadata_writer,
     )
     .await?;
 
