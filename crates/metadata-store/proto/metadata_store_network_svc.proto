@@ -27,6 +27,7 @@ message NetworkMessage {
 
 message JoinClusterRequest {
   uint64 node_id = 1;
+  uint64 storage_id = 2;
 }
 
 message JoinClusterResponse {
