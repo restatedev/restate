@@ -96,6 +96,7 @@ impl Entry for Request {
 pub struct OmniPaxosMetadataStore {
     connection_manager: Arc<ArcSwapOption<ConnectionManager<OmniPaxosMessage>>>,
     rocksdb_storage: RocksDbStorage<Request>,
+    metadata_writer: Option<MetadataWriter>,
 
     request_tx: RequestSender,
     request_rx: RequestReceiver,
@@ -110,6 +111,7 @@ pub struct OmniPaxosMetadataStore {
 impl OmniPaxosMetadataStore {
     pub async fn create(
         rocks_db_options: BoxedLiveLoad<RocksDbOptions>,
+        metadata_writer: Option<MetadataWriter>,
     ) -> Result<Self, BuildError> {
         let (request_tx, request_rx) = mpsc::channel(2);
         let (provision_tx, provision_rx) = mpsc::channel(1);
@@ -122,6 +124,7 @@ impl OmniPaxosMetadataStore {
         Ok(Self {
             connection_manager: Arc::default(),
             rocksdb_storage,
+            metadata_writer,
             request_tx,
             request_rx,
             provision_tx,
@@ -164,7 +167,21 @@ impl OmniPaxosMetadataStore {
         Ok(())
     }
 
-    async fn run_inner(self) -> anyhow::Result<Never> {
+    async fn run_inner(mut self) -> anyhow::Result<Never> {
+        // Try to read a persisted nodes configuration in order to learn about the addresses of our
+        // potential peers.
+        if let Some(nodes_configuration) = self
+            .rocksdb_storage
+            .get_nodes_configuration()
+            .map_err(StorageError::from)?
+        {
+            if let Some(metadata_writer) = self.metadata_writer.as_mut() {
+                metadata_writer
+                    .update(Arc::new(nodes_configuration))
+                    .await?
+            }
+        }
+
         let mut provisioned = self.await_provisioning().await?;
 
         loop {
@@ -350,24 +367,26 @@ impl OmniPaxosMetadataStore {
             rocksdb_storage,
             request_rx,
             join_cluster_rx,
+            metadata_writer,
             ..
         } = self;
 
-        Passive {
-            connection_manager,
+        Passive::new(
             rocksdb_storage,
+            connection_manager,
             request_rx,
             join_cluster_rx,
-        }
+            metadata_writer,
+        )
     }
 
     fn become_active(self, omni_paxos_configuration: OmniPaxosConfiguration) -> Active {
-        debug!(peer_id = %omni_paxos_configuration.own_node_id, "Start as active");
         let OmniPaxosMetadataStore {
             connection_manager,
             rocksdb_storage,
             request_rx,
             join_cluster_rx,
+            metadata_writer,
             ..
         } = self;
 
@@ -377,6 +396,7 @@ impl OmniPaxosMetadataStore {
             rocksdb_storage,
             request_rx,
             join_cluster_rx,
+            metadata_writer,
         )
     }
 }
@@ -406,6 +426,8 @@ struct Active {
 
     request_rx: RequestReceiver,
     join_cluster_rx: JoinClusterReceiver,
+
+    metadata_writer: Option<MetadataWriter>,
 }
 
 impl Active {
@@ -415,6 +437,7 @@ impl Active {
         rocksdb_storage: RocksDbStorage<Request>,
         request_rx: RequestReceiver,
         join_cluster_rx: JoinClusterReceiver,
+        metadata_writer: Option<MetadataWriter>,
     ) -> Active {
         let own_node_id = omni_paxos_configuration.own_node_id;
         let cluster_config = omni_paxos_configuration.cluster_config.clone();
@@ -456,10 +479,11 @@ impl Active {
             own_node_id,
             is_leader,
             last_applied_index: 0,
-            kv_storage: KvMemoryStorage::default(),
+            kv_storage: KvMemoryStorage::new(metadata_writer.clone()),
             request_rx,
             join_cluster_rx,
             pending_join_requests: HashMap::default(),
+            metadata_writer,
         }
     }
 
@@ -496,6 +520,7 @@ impl Active {
 
         let mut nodes_config_watch =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
+        nodes_config_watch.mark_changed();
 
         loop {
             tokio::select! {
@@ -509,7 +534,7 @@ impl Active {
                     self.handle_omni_paxos_message(msg);
                 },
                 Ok(()) = nodes_config_watch.changed() => {
-                    self.update_peer_addresses(&Metadata::with_current(|m| m.nodes_config_ref()));
+                    self.update_node_addresses(&Metadata::with_current(|m| m.nodes_config_ref()));
                 },
                 _ = tick_interval.tick() => {
                     self.omni_paxos.as_mut().expect("to be present").tick();
@@ -536,6 +561,7 @@ impl Active {
                         self.connection_manager,
                         self.request_rx,
                         self.join_cluster_rx,
+                        self.metadata_writer,
                     ));
                 }
                 Err(err) => {
@@ -549,7 +575,7 @@ impl Active {
         }
     }
 
-    fn update_peer_addresses(&mut self, nodes_configuration: &NodesConfiguration) {
+    fn update_node_addresses(&mut self, nodes_configuration: &NodesConfiguration) {
         for node_id in &self.cluster_config.nodes {
             if let Ok(node_config) =
                 nodes_configuration.find_node_by_id(GenerationalNodeId::from(*node_id).as_plain())
@@ -570,10 +596,14 @@ impl Active {
             .is_some_and(|(node_id, _)| node_id == self.own_node_id);
 
         if previous_is_leader && !self.is_leader {
-            // we lost leadership :-(
+            debug!(configuration_id = %self.cluster_config.configuration_id, "Lost leadership");
+
+            // we lost leadership :-( notify callers that their requests might not be committed
             self.kv_storage
                 .fail_callbacks(|| RequestError::Unavailable("lost leadership".into()));
             self.fail_join_callbacks(|| JoinClusterError::NotLeader);
+        } else if !previous_is_leader && self.is_leader {
+            debug!(configuration_id = %self.cluster_config.configuration_id, "Won leadership");
         }
     }
 
@@ -615,7 +645,7 @@ impl Active {
             .outgoing_messages();
         for outgoing_message in outgoing_messages.into_iter() {
             if let Err(err) = self.networking.try_send(outgoing_message) {
-                debug!("Failed to send message: {:?}", err);
+                trace!("Failed to send message: {:?}", err);
             }
         }
     }
@@ -749,6 +779,7 @@ impl Active {
     ) -> Result<(), StorageError> {
         rocksdb_storage.batch_set_configuration(omni_paxos_configuration)?;
         rocksdb_storage.batch_set_decided_idx(last_decided_index)?;
+        // delete stop sign and promise because we reset the storage for a new configuration
         rocksdb_storage.batch_delete_stopsign();
         rocksdb_storage.batch_delete_promise();
         rocksdb_storage.commit_batch()?;
@@ -969,6 +1000,7 @@ struct Passive {
     rocksdb_storage: RocksDbStorage<Request>,
     request_rx: RequestReceiver,
     join_cluster_rx: JoinClusterReceiver,
+    metadata_writer: Option<MetadataWriter>,
 }
 
 impl Passive {
@@ -977,6 +1009,7 @@ impl Passive {
         connection_manager: Arc<ArcSwapOption<ConnectionManager<OmniPaxosMessage>>>,
         request_rx: RequestReceiver,
         join_cluster_rx: JoinClusterReceiver,
+        metadata_writer: Option<MetadataWriter>,
     ) -> Self {
         connection_manager.store(None);
 
@@ -985,6 +1018,7 @@ impl Passive {
             rocksdb_storage,
             request_rx,
             join_cluster_rx,
+            metadata_writer,
         }
     }
 
@@ -996,6 +1030,7 @@ impl Passive {
             mut rocksdb_storage,
             mut request_rx,
             mut join_cluster_rx,
+            metadata_writer,
         } = self;
 
         // todo make configurable
@@ -1007,6 +1042,9 @@ impl Passive {
         )
         .into_iter();
 
+        rocksdb_storage
+            .set_nodes_configuration(&Metadata::with_current(|m| m.nodes_config_ref()))
+            .map_err(StorageError::from)?;
         // todo only try joining if MetadataStoreState::Candidate
         let mut join_cluster = std::pin::pin!(Self::join_cluster(None));
 
@@ -1026,7 +1064,7 @@ impl Passive {
                     match join_configuration {
                         Ok(join_configuration) => {
                             OmniPaxosMetadataStore::prepare_storage(&mut rocksdb_storage, &join_configuration.omni_paxos_configuration, join_configuration.log_prefix)?;
-                            return Ok(Active::new(join_configuration.omni_paxos_configuration, connection_manager, rocksdb_storage, request_rx, join_cluster_rx));
+                            return Ok(Active::new(join_configuration.omni_paxos_configuration, connection_manager, rocksdb_storage, request_rx, join_cluster_rx, metadata_writer));
                         },
                         Err(err) => {
                             debug!("Failed joining omni paxos cluster. Retrying. {err}");
