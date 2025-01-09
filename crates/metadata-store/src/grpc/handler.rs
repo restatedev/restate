@@ -19,6 +19,9 @@ use crate::{
     RequestSender,
 };
 use async_trait::async_trait;
+use restate_core::metadata_store::{serialize_value, Precondition};
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status};
@@ -165,9 +168,37 @@ impl MetadataStoreSvc for MetadataStoreHandler {
 
             Ok(Response::new(ProvisionResponse { newly_provisioned }))
         } else {
-            Ok(Response::new(ProvisionResponse {
-                newly_provisioned: false,
-            }))
+            // if there is no provision_tx configured, then the underlying metadata store does not
+            // need a provision step.
+            let mut request = request.into_inner();
+            let nodes_configuration: NodesConfiguration =
+                StorageCodec::decode(&mut request.nodes_configuration)
+                    .map_err(|err| Status::invalid_argument(err.to_string()))?;
+            let versioned_value = serialize_value(&nodes_configuration)
+                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+            let (result_tx, result_rx) = oneshot::channel();
+
+            self.request_tx
+                .send(MetadataStoreRequest::Put {
+                    key: NODES_CONFIG_KEY.clone(),
+                    value: versioned_value,
+                    precondition: Precondition::DoesNotExist,
+                    result_tx,
+                })
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+
+            let result = result_rx
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+
+            let newly_provisioned = match result {
+                Ok(()) => true,
+                Err(RequestError::FailedPrecondition(_)) => false,
+                Err(err) => Err(err)?,
+            };
+
+            Ok(Response::new(ProvisionResponse { newly_provisioned }))
         }
     }
 }

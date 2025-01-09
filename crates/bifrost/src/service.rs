@@ -86,7 +86,7 @@ impl BifrostService {
 
         // todo we seem to have a race condition between this call and the provision step which might
         //  write a different logs configuration
-        // self.bifrost.admin().init_metadata().await?;
+        self.bifrost.admin().init_metadata().await?;
 
         // initialize all enabled providers.
         if self.factories.is_empty() {
