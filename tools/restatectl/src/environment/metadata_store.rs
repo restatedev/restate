@@ -32,6 +32,7 @@ pub async fn start_metadata_store(
         opts,
         updateables_rocksdb_options,
         HealthStatus::default(),
+        None,
         &mut server_builder,
     )
     .await?;
