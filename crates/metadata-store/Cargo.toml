@@ -42,6 +42,7 @@ rand = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+serde_with = { workspace = true }
 slog = { version = "2.7.0" }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }

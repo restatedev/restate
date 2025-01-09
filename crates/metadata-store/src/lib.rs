@@ -35,7 +35,7 @@ use restate_types::live::BoxedLiveLoad;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
-use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId, Version};
+use restate_types::{flexbuffers_storage_encode_decode, PlainNodeId, Version};
 use std::future::Future;
 use tokio::sync::{mpsc, oneshot};
 use ulid::Ulid;
@@ -433,16 +433,15 @@ enum JoinClusterError {
     ConfigError(String),
     #[error("pending reconfiguration")]
     PendingReconfiguration,
-    #[error("rejecting because node id '{0}' is outdated")]
-    OutdatedNode(GenerationalNodeId),
     #[error("received a concurrent join request for node id '{0}'")]
-    ConcurrentRequest(GenerationalNodeId),
+    ConcurrentRequest(PlainNodeId),
     #[error("internal error: {0}")]
     Internal(String),
 }
 
 struct JoinClusterRequest {
     node_id: u64,
+    storage_id: u64,
     response_tx: oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>,
 }
 
@@ -452,8 +451,9 @@ impl JoinClusterRequest {
     ) -> (
         oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>,
         u64,
+        u64,
     ) {
-        (self.response_tx, self.node_id)
+        (self.response_tx, self.node_id, self.storage_id)
     }
 }
 
@@ -475,12 +475,14 @@ impl JoinClusterHandle {
     pub async fn join_cluster(
         &self,
         node_id: u64,
+        storage_id: u64,
     ) -> Result<JoinClusterResponse, JoinClusterError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.join_cluster_tx
             .send(JoinClusterRequest {
                 node_id,
+                storage_id,
                 response_tx,
             })
             .await
