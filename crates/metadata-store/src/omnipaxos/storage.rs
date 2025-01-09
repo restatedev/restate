@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::omnipaxos::{BuildError, OmniPaxosConfiguration};
+use crate::util;
 use bytes::{Buf, BytesMut};
 use flexbuffers::{DeserializationError, SerializationError};
 use omnipaxos::ballot_leader_election::Ballot;
@@ -17,6 +19,7 @@ use restate_rocksdb::{
 };
 use restate_types::config::{data_dir, MetadataStoreOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::{
     StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
 };
@@ -24,9 +27,6 @@ use rocksdb::{BoundColumnFamily, WriteBatch, WriteOptions, DB};
 use std::marker::PhantomData;
 use std::mem;
 use std::sync::Arc;
-
-use crate::omnipaxos::{BuildError, OmniPaxosConfiguration};
-use crate::util;
 
 const DB_NAME: &str = "omni-paxos-metadata-store";
 const OMNI_PAXOS_CF: &str = "omni_paxos";
@@ -38,6 +38,7 @@ const TRIM: &[u8] = b"TRIM";
 const STOPSIGN: &[u8] = b"STOPSIGN";
 const SNAPSHOT: &[u8] = b"SNAPSHOT";
 const CONFIGURATION: &[u8] = b"CONFIG";
+const NODES_CONFIGURATION: &[u8] = b"NODES_CONFIG";
 
 #[derive(Debug, thiserror::Error)]
 #[error("missing bytes")]
@@ -284,6 +285,30 @@ where
         if let Some(configuration_bytes) = configuration {
             Ok(Self::deserialize_omni_paxos_entity(
                 configuration_bytes.as_ref(),
+            )?)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_nodes_configuration(
+        &self,
+        nodes_configuration: &NodesConfiguration,
+    ) -> StorageResult<()> {
+        let nodes_configuration = Self::serialize_omni_paxos_entity(nodes_configuration)?;
+        self.db.put_opt(
+            NODES_CONFIGURATION,
+            nodes_configuration,
+            &self.write_options(),
+        )?;
+        Ok(())
+    }
+
+    pub fn get_nodes_configuration(&self) -> StorageResult<Option<NodesConfiguration>> {
+        let nodes_configuration = self.db.get_pinned(NODES_CONFIGURATION)?;
+        if let Some(nodes_configuration_bytes) = nodes_configuration {
+            Ok(Self::deserialize_omni_paxos_entity(
+                nodes_configuration_bytes.as_ref(),
             )?)
         } else {
             Ok(None)
