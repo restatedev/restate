@@ -21,6 +21,7 @@ pub fn generate_logserver_node(
     NodeConfig::new(
         format!("node-{id}"),
         GenerationalNodeId::new(id.into(), 1),
+        format!("region-{id}").parse().unwrap(),
         format!("unix:/tmp/my_socket-{id}").parse().unwrap(),
         Role::LogServer.into(),
         LogServerConfig { storage_state },
