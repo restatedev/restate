@@ -974,6 +974,7 @@ mod tests {
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::{Constant, Live};
+    use restate_types::locality::NodeLocation;
     use restate_types::net::partition_processor_manager::{
         ControlProcessor, ControlProcessors, ProcessorCommand,
     };
@@ -994,6 +995,7 @@ mod tests {
         let node_config = NodeConfig::new(
             "42".to_owned(),
             node_id,
+            NodeLocation::default(),
             AdvertisedAddress::Uds("foobar1".into()),
             Role::Worker | Role::Admin,
             LogServerConfig::default(),

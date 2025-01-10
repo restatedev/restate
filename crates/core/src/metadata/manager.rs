@@ -581,6 +581,7 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
+    use restate_types::locality::NodeLocation;
     use test_log::test;
 
     use restate_test_util::assert_eq;
@@ -753,6 +754,7 @@ mod tests {
         let my_node = NodeConfig::new(
             "MyNode-1".to_owned(),
             node_id,
+            NodeLocation::default(),
             address,
             roles,
             LogServerConfig::default(),

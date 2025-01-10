@@ -251,6 +251,7 @@ impl<'a> NodeInit<'a> {
                         NodeConfig::new(
                             common_opts.node_name().to_owned(),
                             my_node_id,
+                            common_opts.location().clone(),
                             common_opts.advertised_address.clone(),
                             common_opts.roles,
                             LogServerConfig::default(),

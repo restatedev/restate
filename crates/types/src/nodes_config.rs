@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// Mute clippy until this file is used.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
+use xxhash_rust::xxh3::Xxh3Builder;
 
+use crate::locality::NodeLocation;
 use crate::net::AdvertisedAddress;
 use crate::{flexbuffers_storage_encode_decode, GenerationalNodeId, NodeId, PlainNodeId};
 use crate::{Version, Versioned};
@@ -59,8 +58,8 @@ pub struct NodesConfiguration {
     cluster_name: String,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    nodes: HashMap<PlainNodeId, MaybeNode>,
-    name_lookup: HashMap<String, PlainNodeId>,
+    nodes: HashMap<PlainNodeId, MaybeNode, Xxh3Builder>,
+    name_lookup: HashMap<String, PlainNodeId, Xxh3Builder>,
 }
 
 impl Default for NodesConfiguration {
@@ -88,12 +87,15 @@ pub struct NodeConfig {
     pub roles: EnumSet<Role>,
     #[serde(default)]
     pub log_server_config: LogServerConfig,
+    #[serde(default)]
+    pub location: NodeLocation,
 }
 
 impl NodeConfig {
     pub fn new(
         name: String,
         current_generation: GenerationalNodeId,
+        location: NodeLocation,
         address: AdvertisedAddress,
         roles: EnumSet<Role>,
         log_server_config: LogServerConfig,
@@ -104,6 +106,7 @@ impl NodeConfig {
             address,
             roles,
             log_server_config,
+            location,
         }
     }
 
@@ -117,8 +120,8 @@ impl NodesConfiguration {
         Self {
             version,
             cluster_name,
-            nodes: HashMap::new(),
-            name_lookup: HashMap::new(),
+            nodes: HashMap::default(),
+            name_lookup: HashMap::default(),
         }
     }
 
@@ -344,6 +347,7 @@ mod tests {
         let node = NodeConfig::new(
             "node1".to_owned(),
             current_gen,
+            "region1.zone1".parse().unwrap(),
             address.clone(),
             roles,
             LogServerConfig::default(),
@@ -391,6 +395,7 @@ mod tests {
             // change name
             "nodeX".to_owned(),
             future_gen.as_generational().unwrap(),
+            "region1.zone1".parse().unwrap(),
             address,
             roles,
             LogServerConfig::default(),

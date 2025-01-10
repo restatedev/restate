@@ -750,6 +750,7 @@ mod tests {
 
     use googletest::assert_that;
     use googletest::matchers::eq;
+    use restate_types::locality::NodeLocation;
     use restate_types::logs::metadata::ProviderKind;
     use test_log::test;
 
@@ -1079,6 +1080,7 @@ mod tests {
         nodes_config.upsert_node(NodeConfig::new(
             "node-1".to_owned(),
             GenerationalNodeId::new(1, 1),
+            NodeLocation::default(),
             AdvertisedAddress::Uds("foobar".into()),
             Role::Worker.into(),
             LogServerConfig::default(),
@@ -1086,6 +1088,7 @@ mod tests {
         nodes_config.upsert_node(NodeConfig::new(
             "node-2".to_owned(),
             GenerationalNodeId::new(2, 2),
+            NodeLocation::default(),
             AdvertisedAddress::Uds("bar".into()),
             Role::Worker.into(),
             LogServerConfig::default(),

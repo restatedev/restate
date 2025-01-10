@@ -1278,6 +1278,7 @@ pub mod tests {
     use std::num::NonZeroU8;
 
     use enumset::{enum_set, EnumSet};
+    use restate_types::locality::NodeLocation;
     use restate_types::logs::metadata::{
         LogsConfiguration, NodeSetSelectionStrategy, ProviderConfiguration, ReplicatedLogletConfig,
     };
@@ -1465,6 +1466,7 @@ pub mod tests {
         NodeConfig::new(
             format!("node-{id}"),
             PlainNodeId::from(id).with_generation(1),
+            NodeLocation::default(),
             format!("https://node-{id}").parse().unwrap(),
             roles,
             LogServerConfig { storage_state },
