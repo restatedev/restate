@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::config::Configuration;
 use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
-use notify::{EventKind, INotifyWatcher, RecursiveMode};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{
     new_debouncer, DebounceEventResult, DebouncedEvent, Debouncer, NoCache,
 };
@@ -157,7 +157,7 @@ impl ConfigLoader {
 
     fn handle_events(
         &self,
-        debouncer: &mut Debouncer<INotifyWatcher, NoCache>,
+        debouncer: &mut Debouncer<RecommendedWatcher, NoCache>,
         events: Vec<DebouncedEvent>,
     ) {
         let mut should_update = false;
