@@ -31,7 +31,7 @@ use std::sync::Arc;
 pub use store::RaftMetadataStore;
 use tokio::sync::mpsc;
 
-pub async fn create_store(
+pub(crate) async fn create_store(
     raft_options: &RaftOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataStoreStatus>,
@@ -58,10 +58,7 @@ pub async fn create_store(
         network::FILE_DESCRIPTOR_SET,
     );
 
-    Ok(MetadataStoreRunner::new(
-        store,
-        server_builder,
-    ))
+    Ok(MetadataStoreRunner::new(store, server_builder))
 }
 
 impl NetworkMessage for raft::prelude::Message {

@@ -13,12 +13,13 @@ use crate::network::grpc_svc::metadata_store_network_svc_client::MetadataStoreNe
 use crate::network::grpc_svc::JoinClusterRequest as ProtoJoinClusterRequest;
 use crate::network::{ConnectionManager, Networking};
 use crate::omnipaxos::storage::RocksDbStorage;
-use crate::omnipaxos::{BuildError, MemberId, OmniPaxosConfiguration, OmniPaxosMessage, StorageId};
+use crate::omnipaxos::{BuildError, OmniPaxosConfiguration, OmniPaxosMessage};
 use crate::{
     JoinClusterError, JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest,
-    JoinClusterResponse, JoinClusterSender, MetadataStoreBackend, MetadataStoreRequest,
-    ProvisionError, ProvisionReceiver, ProvisionSender, Request, RequestError, RequestKind,
-    RequestReceiver, RequestSender,
+    JoinClusterResponse, JoinClusterSender, MemberId, MetadataStoreBackend,
+    MetadataStoreConfiguration, MetadataStoreRequest, MetadataStoreSummary, ProvisionError,
+    ProvisionReceiver, ProvisionSender, Request, RequestError, RequestKind, RequestReceiver,
+    RequestSender, StatusSender, StatusWatch, StorageId,
 };
 use anyhow::{bail, Context};
 use arc_swap::ArcSwapOption;
@@ -34,12 +35,14 @@ use restate_core::metadata_store::{serialize_value, Precondition};
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{cancellation_watcher, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_types::config::{Configuration, RocksDbOptions};
+use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{
     LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role,
 };
+use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageEncodeError;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
@@ -48,13 +51,11 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, instrument, trace, warn};
 use ulid::Ulid;
-use restate_types::health::HealthStatus;
-use restate_types::protobuf::common::MetadataStoreStatus;
 
 type OmniPaxos = omnipaxos::OmniPaxos<Request, RocksDbStorage<Request>>;
 
@@ -107,6 +108,8 @@ pub struct OmniPaxosMetadataStore {
 
     join_cluster_tx: JoinClusterSender,
     join_cluster_rx: JoinClusterReceiver,
+
+    status_tx: StatusSender,
 }
 
 impl OmniPaxosMetadataStore {
@@ -120,6 +123,7 @@ impl OmniPaxosMetadataStore {
         let (request_tx, request_rx) = mpsc::channel(2);
         let (provision_tx, provision_rx) = mpsc::channel(1);
         let (join_cluster_tx, join_cluster_rx) = mpsc::channel(1);
+        let (status_tx, _status_rx) = watch::channel(MetadataStoreSummary::default());
 
         let rocksdb_storage =
             RocksDbStorage::create(&Configuration::pinned().metadata_store, rocks_db_options)
@@ -155,6 +159,7 @@ impl OmniPaxosMetadataStore {
             provision_rx: Some(provision_rx),
             join_cluster_tx,
             join_cluster_rx,
+            status_tx,
         })
     }
 
@@ -164,6 +169,10 @@ impl OmniPaxosMetadataStore {
 
     pub(crate) fn provision_sender(&self) -> ProvisionSender {
         self.provision_tx.clone()
+    }
+
+    pub(crate) fn status_watch(&self) -> Option<StatusWatch> {
+        Some(self.status_tx.subscribe())
     }
 
     pub(crate) fn connection_manager(
@@ -195,7 +204,10 @@ impl OmniPaxosMetadataStore {
         result
     }
 
-    async fn run_inner(mut self, health_status: &HealthStatus<MetadataStoreStatus>) -> anyhow::Result<Never> {
+    async fn run_inner(
+        mut self,
+        health_status: &HealthStatus<MetadataStoreStatus>,
+    ) -> anyhow::Result<Never> {
         if let Some(metadata_writer) = self.metadata_writer.as_mut() {
             // Try to read a persisted nodes configuration in order to learn about the addresses of our
             // potential peers and the metadata store states.
@@ -228,6 +240,7 @@ impl OmniPaxosMetadataStore {
     }
 
     async fn await_provisioning(mut self) -> anyhow::Result<Provisioned> {
+        let _ = self.status_tx.send(MetadataStoreSummary::Provisioning);
         let mut provision_rx = self.provision_rx.take().expect("must be present");
 
         let result = if let Some(configuration) = self.read_omni_paxos_configuration()? {
@@ -414,6 +427,7 @@ impl OmniPaxosMetadataStore {
             join_cluster_rx,
             metadata_writer,
             storage_id,
+            status_tx,
             ..
         } = self;
 
@@ -424,6 +438,7 @@ impl OmniPaxosMetadataStore {
             join_cluster_rx,
             metadata_writer,
             storage_id,
+            status_tx,
         )
     }
 
@@ -434,6 +449,7 @@ impl OmniPaxosMetadataStore {
             request_rx,
             join_cluster_rx,
             metadata_writer,
+            status_tx,
             ..
         } = self;
 
@@ -444,6 +460,7 @@ impl OmniPaxosMetadataStore {
             request_rx,
             join_cluster_rx,
             metadata_writer,
+            status_tx,
         )
     }
 }
@@ -476,6 +493,8 @@ struct Active {
     join_cluster_rx: JoinClusterReceiver,
 
     metadata_writer: Option<MetadataWriter>,
+
+    status_tx: StatusSender,
 }
 
 impl Active {
@@ -486,6 +505,7 @@ impl Active {
         request_rx: RequestReceiver,
         join_cluster_rx: JoinClusterReceiver,
         metadata_writer: Option<MetadataWriter>,
+        status_tx: StatusSender,
     ) -> Active {
         let own_member_id = omni_paxos_configuration.own_member_id;
         let cluster_config = omni_paxos_configuration.cluster_config;
@@ -538,6 +558,7 @@ impl Active {
             join_cluster_rx,
             pending_join_requests: HashMap::default(),
             metadata_writer,
+            status_tx,
         }
     }
 
@@ -567,9 +588,12 @@ impl Active {
     #[instrument(level = "info", skip_all, fields(member_id = %self.own_member_id))]
     pub(crate) async fn run(mut self) -> anyhow::Result<Passive> {
         debug!("Run as active metadata store node");
+        self.update_status();
 
         let mut tick_interval = time::interval(Duration::from_millis(100));
         tick_interval.set_missed_tick_behavior(MissedTickBehavior::Burst);
+
+        let mut status_update_interval = time::interval(Duration::from_secs(5));
 
         let mut nodes_config_watch =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
@@ -592,6 +616,9 @@ impl Active {
                 _ = tick_interval.tick() => {
                     self.omni_paxos.as_mut().expect("to be present").tick();
                 },
+                _ = status_update_interval.tick() => {
+                    self.update_status();
+                }
             }
 
             self.check_leadership();
@@ -616,6 +643,7 @@ impl Active {
                         self.join_cluster_rx,
                         self.metadata_writer,
                         self.own_member_id.storage_id,
+                        self.status_tx,
                     ));
                 }
                 Err(err) => {
@@ -627,6 +655,66 @@ impl Active {
                 }
             }
         }
+    }
+
+    fn update_status(&self) {
+        self.status_tx.send_if_modified(|current_status| {
+            let current_leader = self
+                .omni_paxos
+                .as_ref()
+                .expect("to be present")
+                .get_current_leader()
+                .and_then(|(node_id, _)| {
+                    self.members
+                        .get(&node_id)
+                        .map(|storage_id| MemberId::new(node_id, *storage_id))
+                });
+
+            if let MetadataStoreSummary::Active {
+                leader,
+                configuration,
+            } = current_status
+            {
+                let mut modified = false;
+                if configuration.id != self.cluster_config.configuration_id {
+                    let members = self
+                        .members
+                        .iter()
+                        .map(|(node_id, storage_id)| MemberId::new(*node_id, *storage_id))
+                        .collect();
+
+                    *configuration = MetadataStoreConfiguration {
+                        id: self.cluster_config.configuration_id,
+                        members,
+                    };
+
+                    modified = true;
+                }
+
+                if *leader != current_leader {
+                    *leader = current_leader;
+                    modified = true;
+                }
+
+                modified
+            } else {
+                let members = self
+                    .members
+                    .iter()
+                    .map(|(node_id, storage_id)| MemberId::new(*node_id, *storage_id))
+                    .collect();
+
+                *current_status = MetadataStoreSummary::Active {
+                    leader: current_leader,
+                    configuration: MetadataStoreConfiguration {
+                        id: self.cluster_config.configuration_id,
+                        members,
+                    },
+                };
+
+                true
+            }
+        });
     }
 
     fn update_node_addresses(&mut self, nodes_configuration: &NodesConfiguration) {
@@ -802,6 +890,7 @@ impl Active {
             self.check_leadership();
 
             self.update_node_addresses(&Metadata::with_current(|m| m.nodes_config_ref()));
+            self.update_status();
 
             Ok(DecidedEntriesResult::Continue)
         } else {
@@ -1052,6 +1141,7 @@ struct Passive {
     join_cluster_rx: JoinClusterReceiver,
     metadata_writer: Option<MetadataWriter>,
     storage_id: StorageId,
+    status_tx: StatusSender,
 }
 
 impl Passive {
@@ -1062,6 +1152,7 @@ impl Passive {
         join_cluster_rx: JoinClusterReceiver,
         metadata_writer: Option<MetadataWriter>,
         storage_id: StorageId,
+        status_tx: StatusSender,
     ) -> Self {
         connection_manager.store(None);
 
@@ -1072,6 +1163,7 @@ impl Passive {
             join_cluster_rx,
             metadata_writer,
             storage_id,
+            status_tx,
         }
     }
 
@@ -1085,7 +1177,10 @@ impl Passive {
             mut join_cluster_rx,
             metadata_writer,
             storage_id,
+            status_tx,
         } = self;
+
+        let _ = status_tx.send(MetadataStoreSummary::Passive);
 
         // todo make configurable
         let mut join_retry_policy = RetryPolicy::exponential(
@@ -1124,7 +1219,8 @@ impl Passive {
                                 rocksdb_storage,
                                 request_rx,
                                 join_cluster_rx,
-                                metadata_writer));
+                                metadata_writer,
+                                status_tx));
                         },
                         Err(err) => {
                             debug!("Failed joining omni paxos cluster. Retrying. {err}");
@@ -1234,6 +1330,10 @@ impl MetadataStoreBackend for OmniPaxosMetadataStore {
 
     fn provision_sender(&self) -> Option<ProvisionSender> {
         Some(self.provision_sender())
+    }
+
+    fn status_watch(&self) -> Option<StatusWatch> {
+        self.status_watch()
     }
 
     fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {

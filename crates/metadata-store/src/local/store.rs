@@ -10,7 +10,7 @@
 
 use crate::{
     util, MetadataStoreBackend, MetadataStoreRequest, PreconditionViolation, ProvisionSender,
-    RequestError, RequestReceiver, RequestSender,
+    RequestError, RequestReceiver, RequestSender, StatusWatch,
 };
 use bytes::BytesMut;
 use bytestring::ByteString;
@@ -22,7 +22,9 @@ use restate_rocksdb::{
     RocksError,
 };
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::Version;
 use rocksdb::{BoundColumnFamily, WriteBatch, WriteOptions, DB};
@@ -30,8 +32,6 @@ use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
-use restate_types::health::HealthStatus;
-use restate_types::protobuf::common::MetadataStoreStatus;
 
 const DB_NAME: &str = "local-metadata-store";
 const KV_PAIRS: &str = "kv_pairs";
@@ -319,6 +319,10 @@ impl MetadataStoreBackend for LocalMetadataStore {
     }
 
     fn provision_sender(&self) -> Option<ProvisionSender> {
+        None
+    }
+
+    fn status_watch(&self) -> Option<StatusWatch> {
         None
     }
 
