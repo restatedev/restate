@@ -25,14 +25,15 @@ pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHan
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
     use super::*;
+    use crate::journal_reader::JournalEntry;
     use bytes::Bytes;
     use restate_errors::NotRunningError;
     use restate_types::identifiers::{
         EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
     use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-    use restate_types::journal::raw::PlainRawEntry;
     use restate_types::journal::Completion;
+    use restate_types::journal_v2::raw::RawNotification;
     use restate_types::time::MillisSinceEpoch;
     use std::convert::Infallible;
     use std::iter::empty;
@@ -44,7 +45,7 @@ pub mod test_util {
     pub struct EmptyStorageReader;
 
     impl JournalReader for EmptyStorageReader {
-        type JournalStream = futures::stream::Empty<PlainRawEntry>;
+        type JournalStream = futures::stream::Empty<JournalEntry>;
         type Error = Infallible;
 
         async fn read_journal<'a>(
@@ -108,7 +109,16 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn notify_stored_entry_ack(
+        async fn notify_notification(
+            &mut self,
+            _partition: PartitionLeaderEpoch,
+            _invocation_id: InvocationId,
+            _notification: RawNotification,
+        ) -> Result<(), NotRunningError> {
+            Ok(())
+        }
+
+        async fn notify_stored_command_ack(
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,

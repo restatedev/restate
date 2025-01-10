@@ -31,6 +31,7 @@ pub mod idempotency_table;
 pub mod inbox_table;
 pub mod invocation_status_table;
 pub mod journal_table;
+pub mod journal_table_v2;
 pub mod outbox_table;
 pub mod promise_table;
 pub mod service_status_table;
@@ -53,6 +54,7 @@ pub trait Transaction:
     + outbox_table::OutboxTable
     + deduplication_table::DeduplicationTable
     + journal_table::JournalTable
+    + journal_table_v2::JournalTable
     + fsm_table::FsmTable
     + timer_table::TimerTable
     + idempotency_table::IdempotencyTable

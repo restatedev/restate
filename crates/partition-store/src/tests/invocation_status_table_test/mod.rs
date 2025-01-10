@@ -124,7 +124,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             completion_retention_duration: Duration::ZERO,
             idempotency_key: None,
         },
-        waiting_for_completed_entries: HashSet::default(),
+        waiting_for_notifications: HashSet::default(),
     }
 }
 

@@ -31,11 +31,10 @@ use restate_invoker_api::{
 use restate_queue::SegmentQueue;
 use restate_timer_queue::TimerQueue;
 use restate_types::config::{InvokerOptions, ServiceClientOptions};
+use restate_types::identifiers::PartitionLeaderEpoch;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
-use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::raw::PlainRawEntry;
-use restate_types::journal::Completion;
+use restate_types::journal::{Completion, EntryIndex};
 use restate_types::live::{Live, LiveLoad};
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::deployment::DeploymentResolver;
@@ -59,16 +58,22 @@ use crate::metric_definitions::{
 };
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
+use restate_invoker_api::journal_reader::JournalEntry;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::invocation::InvocationTarget;
+use restate_types::journal_v2;
+use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader, RawNotification};
+use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
+use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
     Completion(Completion),
-    Ack(EntryIndex),
+    Entry(RawEntry),
+    Ack(CommandIndex),
 }
 
 // -- InvocationTask factory: we use this to mock the state machine in tests
@@ -102,7 +107,13 @@ where
     <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
-    Schemas: DeploymentResolver + ServiceMetadataResolver + Clone + Send + Sync + 'static,
+    Schemas: DeploymentResolver
+        + ServiceMetadataResolver
+        + InvocationTargetResolver
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     fn start_invocation_task(
         &self,
@@ -168,7 +179,7 @@ impl<SR, EE, Schemas> Service<SR, EE, Schemas> {
     ) -> Service<SR, EE, Schemas>
     where
         SR: JournalReader<JournalStream = JS> + StateReader + Clone + Send + Sync + 'static,
-        JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+        JS: Stream<Item = JournalEntry> + Unpin + Send + 'static,
         EE: EntryEnricher,
         Schemas: DeploymentResolver + ServiceMetadataResolver,
     {
@@ -207,7 +218,7 @@ impl<SR, EE, Schemas> Service<SR, EE, Schemas> {
     ) -> Result<Service<SR, EE, Schemas>, BuildError>
     where
         SR: JournalReader<JournalStream = JS> + StateReader + Clone + Send + Sync + 'static,
-        JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+        JS: Stream<Item = JournalEntry> + Unpin + Send + 'static,
         EE: EntryEnricher,
         Schemas: DeploymentResolver + ServiceMetadataResolver,
     {
@@ -236,7 +247,13 @@ where
     <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
-    Schemas: DeploymentResolver + ServiceMetadataResolver + Clone + Send + Sync + 'static,
+    Schemas: DeploymentResolver
+        + ServiceMetadataResolver
+        + InvocationTargetResolver
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     pub fn handle(&self) -> InvokerHandle<SR> {
         InvokerHandle {
@@ -361,8 +378,11 @@ where
                     InputCommand::Completion { partition, invocation_id, completion } => {
                         self.handle_completion(partition, invocation_id, completion);
                     },
-                    InputCommand::StoredEntryAck { partition, invocation_id, entry_index } => {
-                        self.handle_stored_entry_ack(options, partition, invocation_id, entry_index);
+                    InputCommand::Notification { partition, invocation_id, notification } => {
+                        self.handle_notification(partition, invocation_id, notification);
+                    },
+                    InputCommand::StoredCommandAck { partition, invocation_id, command_index } => {
+                        self.handle_stored_command_ack(options, partition, invocation_id, command_index);
                     }
                 }
             },
@@ -402,6 +422,13 @@ where
                             requires_ack
                         ).await
                     },
+                    InvocationTaskOutputInner::NewNotificationProposal { notification } => {
+                        self.handle_new_notification_proposal(
+                            partition,
+                            invocation_id,
+                            notification
+                        ).await
+                    },
                     InvocationTaskOutputInner::Closed => {
                         self.handle_invocation_task_closed(partition, invocation_id).await
                     },
@@ -410,6 +437,18 @@ where
                     },
                     InvocationTaskOutputInner::Suspended(indexes) => {
                         self.handle_invocation_task_suspended(partition, invocation_id, indexes).await
+                    }
+                    InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack } => {
+                        self.handle_new_command(
+                            partition,
+                            invocation_id,
+                            command_index,
+                            command,
+                            requires_ack
+                        ).await
+                    }
+                    InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
+                        self.handle_invocation_task_suspended_v2(partition, invocation_id, notification_ids).await
                     }
                 };
             },
@@ -529,19 +568,19 @@ where
         fields(
             restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
-            restate.journal.index = entry_index,
+            restate.journal.command.index = command_index,
         )
     )]
-    fn handle_stored_entry_ack(
+    fn handle_stored_command_ack(
         &mut self,
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry_index: EntryIndex,
+        command_index: CommandIndex,
     ) {
-        trace!("Received a new stored journal entry acknowledgement");
+        trace!("Received a new stored command entry acknowledgement");
         self.handle_retry_event(options, partition, invocation_id, |sm| {
-            sm.notify_stored_ack(entry_index)
+            sm.notify_stored_ack(command_index)
         });
     }
 
@@ -646,7 +685,7 @@ where
             .invocation_state_machine_manager
             .resolve_invocation(partition, &invocation_id)
         {
-            ism.notify_new_entry(entry_index, requires_ack);
+            ism.notify_new_command(entry_index, requires_ack);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Received a new entry. Invocation state: {:?}",
@@ -664,6 +703,106 @@ where
                 .send(Effect {
                     invocation_id,
                     kind: EffectKind::JournalEntry { entry_index, entry },
+                })
+                .await;
+        } else {
+            // If no state machine, this might be an entry for an aborted invocation.
+            trace!("No state machine found for given entry");
+        }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.invocation.id = %invocation_id,
+            restate.invoker.partition_leader_epoch = ?partition,
+            restate.journal.entry.ty = %notification.ty(),
+            restate.journal.notification.id = ?notification.id(),
+        )
+    )]
+    async fn handle_new_notification_proposal(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        notification: RawNotification,
+    ) {
+        if let Some((output_tx, ism)) = self
+            .invocation_state_machine_manager
+            .resolve_invocation(partition, &invocation_id)
+        {
+            ism.notify_new_notification_proposal(notification.id());
+            trace!(
+                restate.invocation.target = %ism.invocation_target,
+                "Received a new notification. Invocation state: {:?}",
+                ism.invocation_state_debug()
+            );
+            if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
+                let _ = output_tx
+                    .send(Effect {
+                        invocation_id,
+                        kind: EffectKind::PinnedDeployment(pinned_deployment),
+                    })
+                    .await;
+            }
+            let _ = output_tx
+                .send(Effect {
+                    invocation_id,
+                    kind: EffectKind::JournalEntryV2 {
+                        command_index_to_ack: None,
+                        entry: RawEntry::new(RawEntryHeader::new(), notification),
+                    },
+                })
+                .await;
+        } else {
+            // If no state machine, this might be an entry for an aborted invocation.
+            trace!("No state machine found for given notification");
+        }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.invocation.id = %invocation_id,
+            restate.invoker.partition_leader_epoch = ?partition,
+            restate.journal.command.index = command_index,
+            restate.journal.entry.ty = %command.ty(),
+        )
+    )]
+    async fn handle_new_command(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        command_index: CommandIndex,
+        command: RawCommand,
+        requires_ack: bool,
+    ) {
+        if let Some((output_tx, ism)) = self
+            .invocation_state_machine_manager
+            .resolve_invocation(partition, &invocation_id)
+        {
+            ism.notify_new_command(command_index, requires_ack);
+            trace!(
+                restate.invocation.target = %ism.invocation_target,
+                "Received a new command. Invocation state: {:?}",
+                ism.invocation_state_debug()
+            );
+            if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
+                let _ = output_tx
+                    .send(Effect {
+                        invocation_id,
+                        kind: EffectKind::PinnedDeployment(pinned_deployment),
+                    })
+                    .await;
+            }
+            let _ = output_tx
+                .send(Effect {
+                    invocation_id,
+                    kind: EffectKind::JournalEntryV2 {
+                        command_index_to_ack: Some(command_index),
+                        entry: RawEntry::new(RawEntryHeader::new(), command),
+                    },
                 })
                 .await;
         } else {
@@ -696,6 +835,36 @@ where
                 "Notifying completion"
             );
             ism.notify_completion(completion);
+        } else {
+            // If no state machine is registered, the PP will send a new invoke
+            trace!("No state machine found for given completion");
+        }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.invocation.id = %invocation_id,
+            restate.invoker.partition_leader_epoch = ?partition,
+        )
+    )]
+    fn handle_notification(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        notification: RawNotification,
+    ) {
+        if let Some((_, ism)) = self
+            .invocation_state_machine_manager
+            .resolve_invocation(partition, &invocation_id)
+        {
+            trace!(
+                restate.invocation.target = %ism.invocation_target,
+                restate.journal.ty = %notification.ty(),
+                "Sending entry"
+            );
+            ism.notify_entry(RawEntry::new(RawEntryHeader::default(), notification));
         } else {
             // If no state machine is registered, the PP will send a new invoke
             trace!("No state machine found for given completion");
@@ -766,6 +935,45 @@ where
                     invocation_id,
                     kind: EffectKind::Suspended {
                         waiting_for_completed_entries: entry_indexes,
+                    },
+                })
+                .await;
+        } else {
+            // If no state machine, this might be a result for an aborted invocation.
+            trace!("No state machine found for invocation task suspended signal");
+        }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.invocation.id = %invocation_id,
+            restate.invoker.partition_leader_epoch = ?partition,
+        )
+    )]
+    async fn handle_invocation_task_suspended_v2(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        waiting_for_notifications: HashSet<NotificationId>,
+    ) {
+        if let Some((sender, _, ism)) = self
+            .invocation_state_machine_manager
+            .remove_invocation(partition, &invocation_id)
+        {
+            counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_SUSPENDED).increment(1);
+            trace!(
+                restate.invocation.target = %ism.invocation_target,
+                "Suspending invocation"
+            );
+            self.quota.unreserve_slot();
+            self.status_store.on_end(&partition, &invocation_id);
+            let _ = sender
+                .send(Effect {
+                    invocation_id,
+                    kind: EffectKind::SuspendedV2 {
+                        waiting_for_notifications,
                     },
                 })
                 .await;
@@ -960,7 +1168,7 @@ where
             partition,
             invocation_id,
             ism.invocation_target.clone(),
-            ism.start_message_retry_count_since_last_stored_entry,
+            ism.start_message_retry_count_since_last_stored_command,
             storage_reader,
             self.invocation_tasks_tx.clone(),
             completions_rx,
@@ -1056,6 +1264,7 @@ mod tests {
     use restate_types::live::Constant;
     use restate_types::retries::RetryPolicy;
     use restate_types::schema::deployment::Deployment;
+    use restate_types::schema::invocation_target::InvocationTargetMetadata;
     use restate_types::schema::service::ServiceMetadata;
 
     use crate::invocation_task::InvocationTaskError;
@@ -1169,7 +1378,7 @@ mod tests {
         }
 
         fn resolve_latest_service_openapi(&self, _: impl AsRef<str>) -> Option<Value> {
-            todo!()
+            None
         }
 
         fn resolve_latest_service_type(&self, _: impl AsRef<str>) -> Option<ServiceType> {
@@ -1199,6 +1408,16 @@ mod tests {
 
         fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
             vec![]
+        }
+    }
+
+    impl InvocationTargetResolver for MockSchemas {
+        fn resolve_latest_invocation_target(
+            &self,
+            _service_name: impl AsRef<str>,
+            _handler_name: impl AsRef<str>,
+        ) -> Option<InvocationTargetMetadata> {
+            None
         }
     }
 

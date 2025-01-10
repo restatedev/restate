@@ -23,8 +23,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Duration, Local, TimeZone};
 use clap::ValueEnum;
 
-use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::identifiers::DeploymentId;
+use restate_types::identifiers::{AwakeableIdentifier, DeploymentId};
 use restate_types::identifiers::{InvocationId, ServiceId};
 use restate_types::invocation::ServiceType;
 

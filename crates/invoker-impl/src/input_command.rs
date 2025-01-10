@@ -10,12 +10,13 @@
 
 use restate_errors::NotRunningError;
 use restate_invoker_api::{Effect, InvocationStatusReport, InvokeInputJournal, StatusHandle};
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
+use restate_types::identifiers::{InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
+use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::CommandIndex;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
-
 // -- Input messages
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -35,10 +36,15 @@ pub(crate) enum InputCommand<SR> {
         invocation_id: InvocationId,
         completion: Completion,
     },
-    StoredEntryAck {
+    Notification {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry_index: EntryIndex,
+        notification: RawNotification,
+    },
+    StoredCommandAck {
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        command_index: CommandIndex,
     },
 
     /// Abort specific invocation id
@@ -102,17 +108,32 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .map_err(|_| NotRunningError)
     }
 
-    async fn notify_stored_entry_ack(
+    async fn notify_notification(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry_index: EntryIndex,
+        notification: RawNotification,
     ) -> Result<(), NotRunningError> {
         self.input
-            .send(InputCommand::StoredEntryAck {
+            .send(InputCommand::Notification {
                 partition,
                 invocation_id,
-                entry_index,
+                notification,
+            })
+            .map_err(|_| NotRunningError)
+    }
+
+    async fn notify_stored_command_ack(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        command_index: CommandIndex,
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::StoredCommandAck {
+                partition,
+                invocation_id,
+                command_index,
             })
             .map_err(|_| NotRunningError)
     }

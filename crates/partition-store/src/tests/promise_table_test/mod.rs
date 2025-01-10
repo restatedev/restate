@@ -17,11 +17,10 @@ use super::storage_test_environment;
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_storage_api::promise_table::{
-    Promise, PromiseState, PromiseTable, ReadOnlyPromiseTable,
+    Promise, PromiseResult, PromiseState, PromiseTable, ReadOnlyPromiseTable,
 };
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, InvocationUuid, JournalEntryId, ServiceId};
-use restate_types::journal::EntryResult;
 
 const SERVICE_ID_1: ServiceId = ServiceId::from_static(10, "MySvc", "a");
 const SERVICE_ID_2: ServiceId = ServiceId::from_static(11, "MySvc", "b");
@@ -31,7 +30,7 @@ const PROMISE_KEY_2: ByteString = ByteString::from_static("prom2");
 const PROMISE_KEY_3: ByteString = ByteString::from_static("prom3");
 
 const PROMISE_COMPLETED: Promise = Promise {
-    state: PromiseState::Completed(EntryResult::Success(Bytes::from_static(b"{}"))),
+    state: PromiseState::Completed(PromiseResult::Success(Bytes::from_static(b"{}"))),
 };
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]

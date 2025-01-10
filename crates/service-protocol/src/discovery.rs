@@ -43,6 +43,8 @@ use restate_types::service_protocol::{
     MIN_SERVICE_PROTOCOL_VERSION,
 };
 
+// TODO(slinkydeveloper) move this code somewhere else!
+
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 

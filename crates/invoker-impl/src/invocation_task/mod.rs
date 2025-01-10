@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod service_protocol_runner;
+mod service_protocol_runner_v4;
 
 use super::Notification;
 
@@ -28,12 +29,17 @@ use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClient
 use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::EntryType;
+use restate_types::journal::raw::RawEntryCodecError;
+use restate_types::journal::{EntryIndex, EntryType};
+use restate_types::journal_v2;
+use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
+use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::service_protocol::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
@@ -66,6 +72,10 @@ const SERVICE_PROTOCOL_VERSION_V3: HeaderValue =
     HeaderValue::from_static("application/vnd.restate.invocation.v3");
 
 #[allow(clippy::declare_interior_mutable_const)]
+const SERVICE_PROTOCOL_VERSION_V4: HeaderValue =
+    HeaderValue::from_static("application/vnd.restate.invocation.v4");
+
+#[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -90,12 +100,27 @@ pub(crate) enum InvocationTaskError {
     #[error("received unexpected message: {0:?}")]
     #[code(restate_errors::RT0012)]
     UnexpectedMessage(MessageType),
+    #[error("received unexpected message: {0:?}")]
+    #[code(restate_errors::RT0012)]
+    UnexpectedMessageV4(restate_service_protocol_v4::message_codec::MessageType),
     #[error("message encoding error: {0}")]
     Encoding(
         #[from]
         #[code]
         EncodingError,
     ),
+    #[error("message encoding error: {0}")]
+    #[code(unknown)]
+    EncodingV2(#[from] journal_v2::encoding::DecodingError),
+    #[error("message encoding error: {0}")]
+    #[code(unknown)]
+    EncoderV2(#[from] restate_service_protocol_v4::message_codec::EncodingError),
+    #[error("cannot decode entry: {0}")]
+    #[code(unknown)]
+    RawEntry(#[from] RawEntryCodecError),
+    #[error("cannot decode entry: {0}")]
+    #[code(unknown)]
+    RawEntryV2(#[from] journal_v2::raw::RawEntryError),
     #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry")]
     #[code(restate_errors::RT0012)]
     WriteAfterEndOfStream,
@@ -110,6 +135,9 @@ pub(crate) enum InvocationTaskError {
     )]
     #[code(restate_errors::RT0012)]
     BadSuspensionMessage(HashSet<EntryIndex>, EntryIndex),
+    #[error("malformed ProposeRunCompletion, missing result field")]
+    #[code(restate_errors::RT0012)]
+    MalformedProposeRunCompletion,
 
     #[error("error when trying to read the journal: {0}")]
     #[code(restate_errors::RT0006)]
@@ -138,6 +166,13 @@ pub(crate) enum InvocationTaskError {
     #[error("cannot process incoming entry at index {0} of type {1}: {2}")]
     #[code(unknown)]
     EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
+    #[error("cannot process incoming command {0} of type {1}: {2}")]
+    #[code(unknown)]
+    CommandPrecondition(
+        CommandIndex,
+        journal_v2::EntryType,
+        #[source] InvocationError,
+    ),
 
     #[error("Error message received from the SDK with related entry {related_entry:?}: {error}")]
     #[code(restate_errors::RT0007)]
@@ -158,6 +193,8 @@ pub(crate) enum InvocationTaskError {
     #[code(restate_errors::RT0010)]
     ServiceUnavailable(http::StatusCode),
 }
+
+// TODO update this should support journal_v2 data types
 
 #[derive(Debug, Default)]
 pub struct InvocationErrorRelatedEntry {
@@ -256,8 +293,22 @@ pub(super) enum InvocationTaskOutputInner {
         /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#acknowledgment-of-stored-entries
         requires_ack: bool,
     },
+    NewCommand {
+        command_index: CommandIndex,
+        command: journal_v2::raw::RawCommand,
+        /// If true, the SDK requested to be notified when the entry is correctly stored.
+        ///
+        /// When reading the entry from the storage this flag will always be false, as we never need to send acks for entries sent during a journal replay.
+        ///
+        /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#acknowledgment-of-stored-entries
+        requires_ack: bool,
+    },
+    NewNotificationProposal {
+        notification: RawNotification,
+    },
     Closed,
     Suspended(HashSet<EntryIndex>),
+    SuspendedV2(HashSet<NotificationId>),
     Failed(InvocationTaskError),
 }
 
@@ -292,7 +343,7 @@ pub(super) struct InvocationTask<SR, JR, EE, DMR> {
     state_reader: SR,
     journal_reader: JR,
     entry_enricher: EE,
-    deployment_metadata_resolver: Live<DMR>,
+    schemas: Live<DMR>,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 }
@@ -302,6 +353,7 @@ enum TerminalLoopState<T> {
     Continue(T),
     Closed,
     Suspended(HashSet<EntryIndex>),
+    SuspendedV2(HashSet<NotificationId>),
     Failed(InvocationTaskError),
 }
 
@@ -322,6 +374,7 @@ macro_rules! shortcircuit {
             TerminalLoopState::Continue(v) => v,
             TerminalLoopState::Closed => return TerminalLoopState::Closed,
             TerminalLoopState::Suspended(v) => return TerminalLoopState::Suspended(v),
+            TerminalLoopState::SuspendedV2(v) => return TerminalLoopState::SuspendedV2(v),
             TerminalLoopState::Failed(e) => return TerminalLoopState::Failed(e),
         }
     };
@@ -334,7 +387,7 @@ where
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher,
-    Schemas: DeploymentResolver + ServiceMetadataResolver,
+    Schemas: DeploymentResolver + ServiceMetadataResolver + InvocationTargetResolver,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -366,7 +419,7 @@ where
             state_reader,
             journal_reader,
             entry_enricher,
-            deployment_metadata_resolver,
+            schemas: deployment_metadata_resolver,
             invoker_tx,
             invoker_rx,
             message_size_limit,
@@ -400,6 +453,7 @@ where
             }
             TerminalLoopState::Closed => InvocationTaskOutputInner::Closed,
             TerminalLoopState::Suspended(v) => InvocationTaskOutputInner::Suspended(v),
+            TerminalLoopState::SuspendedV2(v) => InvocationTaskOutputInner::SuspendedV2(v),
             TerminalLoopState::Failed(e) => InvocationTaskOutputInner::Failed(e),
         };
 
@@ -447,7 +501,7 @@ where
             shortcircuit!(tokio::try_join!(read_journal_future, read_state_future));
 
         // Resolve the deployment metadata
-        let schemas = self.deployment_metadata_resolver.live_load();
+        let schemas = self.schemas.live_load();
         let (deployment, chosen_service_protocol_version, deployment_changed) =
             if let Some(pinned_deployment) = &journal_metadata.pinned_deployment {
                 // We have a pinned deployment that we can't change even if newer
@@ -516,13 +570,32 @@ where
             deployment_changed,
         ));
 
-        // create a correctly versioned service protocol runner
-        let service_protocol_runner =
-            ServiceProtocolRunner::new(self, chosen_service_protocol_version);
+        match chosen_service_protocol_version {
+            ServiceProtocolVersion::V1
+            | ServiceProtocolVersion::V2
+            | ServiceProtocolVersion::V3 => {
+                // create a correctly versioned service protocol runner
+                let service_protocol_runner =
+                    ServiceProtocolRunner::new(self, chosen_service_protocol_version);
 
-        service_protocol_runner
-            .run(journal_metadata, deployment, journal_stream, state_iter)
-            .await
+                service_protocol_runner
+                    .run(journal_metadata, deployment, journal_stream, state_iter)
+                    .await
+            }
+            ServiceProtocolVersion::V4 => {
+                // create a correctly versioned service protocol runner
+                let service_protocol_runner =
+                    service_protocol_runner_v4::ServiceProtocolRunner::new(
+                        self,
+                        chosen_service_protocol_version,
+                    );
+
+                service_protocol_runner
+                    .run(journal_metadata, deployment, journal_stream, state_iter)
+                    .await
+            }
+            ServiceProtocolVersion::Unspecified => panic!("Unexpected"),
+        }
     }
 }
 
@@ -546,6 +619,7 @@ fn service_protocol_version_to_header_value(
         ServiceProtocolVersion::V1 => SERVICE_PROTOCOL_VERSION_V1,
         ServiceProtocolVersion::V2 => SERVICE_PROTOCOL_VERSION_V2,
         ServiceProtocolVersion::V3 => SERVICE_PROTOCOL_VERSION_V3,
+        ServiceProtocolVersion::V4 => SERVICE_PROTOCOL_VERSION_V4,
     }
 }
 

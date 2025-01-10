@@ -14,11 +14,11 @@ use restate_invoker_api::{EagerState, JournalMetadata};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
-use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::state_table::ReadOnlyStateTable;
+use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
 use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::ServiceId;
-use restate_types::journal::raw::PlainRawEntry;
+use restate_types::service_protocol::ServiceProtocolVersion;
 use std::vec::IntoIter;
 
 #[derive(Debug, thiserror::Error)]
@@ -40,9 +40,13 @@ impl<Storage> InvokerStorageReader<Storage> {
 
 impl<Storage> restate_invoker_api::JournalReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: ReadOnlyJournalTable + ReadOnlyInvocationStatusTable + Send + 'a,
+    for<'a> Storage: journal_table_v1::ReadOnlyJournalTable
+        + journal_table_v2::ReadOnlyJournalTable
+        + ReadOnlyInvocationStatusTable
+        + Send
+        + 'a,
 {
-    type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
+    type JournalStream = stream::Iter<IntoIter<restate_invoker_api::journal_reader::JournalEntry>>;
     type Error = InvokerStorageReaderError;
 
     async fn read_journal<'a>(
@@ -55,19 +59,48 @@ where
             let journal_metadata = JournalMetadata::new(
                 invoked_status.journal_metadata.length,
                 invoked_status.journal_metadata.span_context,
-                invoked_status.pinned_deployment,
+                invoked_status.pinned_deployment.clone(),
                 // SAFETY: this value is used by the invoker, it's ok if it's not in sync
                 unsafe { invoked_status.timestamps.modification_time() },
             );
-            let journal_stream = self
-                .0
-                .get_journal(invocation_id, journal_metadata.length)
+
+            let journal_stream = if invoked_status
+                .pinned_deployment
+                .is_some_and(|p| p.service_protocol_version >= ServiceProtocolVersion::V4)
+            {
+                // If pinned service protocol version exists and >= V4, we need to read from Journal Table V2!
+                journal_table_v2::ReadOnlyJournalTable::get_journal(
+                    &mut self.0,
+                    *invocation_id,
+                    journal_metadata.length,
+                )
+                .map(|entry| {
+                    entry
+                        .map_err(InvokerStorageReaderError::Storage)
+                        .map(|(_, entry)| {
+                            restate_invoker_api::journal_reader::JournalEntry::JournalV2(entry)
+                        })
+                })
+                // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
+                // collecting the stream because we cannot keep the transaction open
+                .try_collect::<Vec<_>>()
+                .await?
+            } else {
+                journal_table_v1::ReadOnlyJournalTable::get_journal(
+                    &mut self.0,
+                    invocation_id,
+                    journal_metadata.length,
+                )
                 .map(|entry| {
                     entry
                         .map_err(InvokerStorageReaderError::Storage)
                         .map(|(_, journal_entry)| match journal_entry {
-                            JournalEntry::Entry(entry) => entry.erase_enrichment(),
-                            JournalEntry::Completion(_) => {
+                            journal_table_v1::JournalEntry::Entry(entry) => {
+                                restate_invoker_api::journal_reader::JournalEntry::JournalV1(
+                                    entry.erase_enrichment(),
+                                )
+                            }
+                            journal_table_v1::JournalEntry::Completion(_) => {
                                 panic!("should only read entries when reading the journal")
                             }
                         })
@@ -75,7 +108,8 @@ where
                 // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
                 // collecting the stream because we cannot keep the transaction open
                 .try_collect::<Vec<_>>()
-                .await?;
+                .await?
+            };
 
             Ok((journal_metadata, stream::iter(journal_stream)))
         } else {

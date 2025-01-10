@@ -14,6 +14,7 @@ use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryIndex;
+use restate_types::journal_v2::raw::RawEntry;
 use restate_types::time::MillisSinceEpoch;
 use std::future::Future;
 
@@ -46,8 +47,14 @@ impl JournalMetadata {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum JournalEntry {
+    JournalV1(PlainRawEntry),
+    JournalV2(RawEntry),
+}
+
 pub trait JournalReader {
-    type JournalStream: Stream<Item = PlainRawEntry>;
+    type JournalStream: Stream<Item = JournalEntry>;
     type Error: std::error::Error + Send + Sync + 'static;
 
     fn read_journal<'a>(

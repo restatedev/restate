@@ -11,12 +11,14 @@
 use super::Effect;
 use super::JournalMetadata;
 
+use crate::journal_reader::JournalEntry;
 use restate_errors::NotRunningError;
 use restate_types::identifiers::PartitionKey;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
-use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
+use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::CommandIndex;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
@@ -25,7 +27,7 @@ use tokio::sync::mpsc;
 pub enum InvokeInputJournal {
     #[default]
     NoCachedJournal,
-    CachedJournal(JournalMetadata, Vec<PlainRawEntry>),
+    CachedJournal(JournalMetadata, Vec<JournalEntry>),
 }
 
 pub trait InvokerHandle<SR> {
@@ -44,11 +46,18 @@ pub trait InvokerHandle<SR> {
         completion: Completion,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
-    fn notify_stored_entry_ack(
+    fn notify_notification(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry_index: EntryIndex,
+        entry: RawNotification,
+    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
+
+    fn notify_stored_command_ack(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        command_index: CommandIndex,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
     fn abort_all_partition(

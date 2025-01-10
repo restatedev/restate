@@ -170,8 +170,7 @@ mod test_util {
 
     use super::*;
 
-    use crate::awakeable_id::AwakeableIdentifier;
-    use restate_types::identifiers::InvocationId;
+    use restate_types::identifiers::{AwakeableIdentifier, InvocationId};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::journal::enriched::{
         AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
@@ -381,9 +380,9 @@ mod test_util {
             }
         }
 
-        fn serialize_input_entry(InputEntry { value }: InputEntry) -> Bytes {
+        fn serialize_input_entry(InputEntry { headers, value }: InputEntry) -> Bytes {
             InputEntryMessage {
-                headers: vec![],
+                headers: headers.into_iter().map(Into::into).collect(),
                 value,
                 ..Default::default()
             }

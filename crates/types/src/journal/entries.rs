@@ -51,6 +51,7 @@ pub enum Entry {
 impl Entry {
     pub fn input(result: impl Into<Bytes>) -> Self {
         Entry::Input(InputEntry {
+            headers: vec![],
             value: result.into(),
         })
     }
@@ -243,6 +244,7 @@ mod private {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputEntry {
+    pub headers: Vec<Header>,
     pub value: Bytes,
 }
 

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 //! This crate contains the code-generated structs of [service-protocol](https://github.com/restatedev/service-protocol) and the codec to use them.
+//! TODO(slinkydeveloper) get rid of this module when service-protocol version <= 3 gets dropped
 
 pub const RESTATE_SERVICE_PROTOCOL_VERSION: u16 = 2;
 
@@ -18,6 +19,3 @@ pub mod codec;
 pub mod discovery;
 #[cfg(feature = "message")]
 pub mod message;
-
-#[cfg(feature = "awakeable-id")]
-pub mod awakeable_id;

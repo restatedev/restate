@@ -39,6 +39,7 @@ async fn get_entries() {
         0,
         &JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(Entry::Input(
             InputEntry {
+                headers: vec![],
                 value: Default::default(),
             },
         ))),
@@ -135,6 +136,7 @@ async fn select_count_star() {
         0,
         &JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(Entry::Input(
             InputEntry {
+                headers: vec![],
                 value: Default::default(),
             },
         ))),

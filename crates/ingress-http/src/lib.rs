@@ -23,7 +23,9 @@ use std::net::{IpAddr, SocketAddr};
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
 };
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
+use restate_types::journal_v2::Signal;
 use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 
 /// Client connection information for a given RPC request
@@ -78,9 +80,18 @@ pub trait RequestDispatcher {
     ) -> impl Future<Output = Result<GetInvocationOutputResponse, RequestDispatcherError>> + Send;
 
     /// Send invocation response (for awakeables).
+    /// **NOTE:** This works only for targeting invocations using Journal Table V1/Service Protocol <= V3.
     fn send_invocation_response(
         &self,
         invocation_response: InvocationResponse,
+    ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send;
+
+    /// Send signal to invocation.
+    /// **NOTE:** This works only for targeting invocations using Journal Table V2/Service Protocol >= V4.
+    fn send_signal(
+        &self,
+        target_invocation: InvocationId,
+        signal: Signal,
     ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send;
 }
 
@@ -255,6 +266,14 @@ mod mocks {
             invocation_response: InvocationResponse,
         ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send {
             MockRequestDispatcher::send_invocation_response(self, invocation_response)
+        }
+
+        fn send_signal(
+            &self,
+            target_invocation: InvocationId,
+            signal: Signal,
+        ) -> impl Future<Output = Result<(), RequestDispatcherError>> + Send {
+            MockRequestDispatcher::send_signal(self, target_invocation, signal)
         }
     }
 }

@@ -45,6 +45,7 @@ prefixed_ids! {
         Deployment("dp"),
         Subscription("sub"),
         Awakeable("prom"),
+        Signal("sign"),
         Snapshot("snap"),
     }
 }

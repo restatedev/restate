@@ -27,6 +27,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
+use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 pub use opentelemetry::trace::TraceId;
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -307,6 +308,10 @@ impl InvocationRequestHeader {
         self.span_context = ServiceInvocationSpanContext::start(&self.id, span_relation);
     }
 
+    pub fn with_headers(&mut self, headers: Vec<Header>) {
+        self.headers.extend(headers);
+    }
+
     /// Invocations are idempotent if they have an idempotency key specified or are of type workflow
     pub fn is_idempotent(&self) -> bool {
         self.idempotency_key.is_some() || matches!(self.target.service_ty(), ServiceType::Workflow)
@@ -476,6 +481,20 @@ impl From<InvocationError> for ResponseResult {
 impl From<&InvocationError> for ResponseResult {
     fn from(e: &InvocationError) -> Self {
         ResponseResult::Failure(e.clone())
+    }
+}
+
+/// Representing a response to GetInvocationOutput for
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GetInvocationOutputResponse {
+    pub caller_id: InvocationId,
+    pub completion_id: CompletionId,
+    pub result: GetInvocationOutputResult,
+}
+
+impl WithInvocationId for GetInvocationOutputResponse {
+    fn invocation_id(&self) -> InvocationId {
+        self.caller_id
     }
 }
 
@@ -924,7 +943,9 @@ impl WithPartitionKey for InvocationQuery {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AttachInvocationRequest {
     pub invocation_query: InvocationQuery,
-    /// If the invocation is still in-flight when the command is processed, this command will block if this flag is true. Otherwise, the failure [crate::errors::NOT_READY_INVOCATION_ERROR] is sent instead as soon as the command is processed.
+    /// If the invocation is still in-flight when the command is processed,
+    /// this command will block if this flag is true.
+    /// Otherwise, the failure [crate::errors::NOT_READY_INVOCATION_ERROR] is sent instead as soon as the command is processed.
     #[serde(default = "restate_serde_util::default::bool::<true>")]
     pub block_on_inflight: bool,
     pub response_sink: ServiceInvocationResponseSink,
@@ -933,6 +954,19 @@ pub struct AttachInvocationRequest {
 impl WithPartitionKey for AttachInvocationRequest {
     fn partition_key(&self) -> PartitionKey {
         self.invocation_query.partition_key()
+    }
+}
+
+/// Represents a request to notify a signal to an invocation
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NotifySignalRequest {
+    pub invocation_id: InvocationId,
+    pub signal: Signal,
+}
+
+impl WithInvocationId for NotifySignalRequest {
+    fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
     }
 }
 

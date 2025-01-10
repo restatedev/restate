@@ -23,16 +23,21 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
 use restate_errors::warn_it;
+use restate_invoker_api::journal_reader::JournalEntry;
 use restate_invoker_api::{EagerState, EntryEnricher, JournalMetadata};
 use restate_service_client::{Endpoint, Method, Parts, Request};
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
     Decoder, Encoder, MessageHeader, MessageType, ProtocolMessage,
 };
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
-use restate_types::journal::raw::PlainRawEntry;
+use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::EntryType;
+use restate_types::journal_v2;
+use restate_types::journal_v2::EntryMetadata;
 use restate_types::schema::deployment::{
     Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
 };
@@ -99,7 +104,7 @@ where
         state_iter: EagerState<StateIter>,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = PlainRawEntry> + Unpin,
+        JournalStream: Stream<Item = JournalEntry> + Unpin,
         StateIter: Iterator<Item = (Bytes, Bytes)>,
     {
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
@@ -285,7 +290,7 @@ where
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = PlainRawEntry> + Unpin,
+        JournalStream: Stream<Item = JournalEntry> + Unpin,
     {
         let mut journal_stream = journal_stream.fuse();
         let got_headers_future = poll_fn(|cx| http_stream_rx.poll_only_headers(cx)).fuse();
@@ -301,10 +306,24 @@ where
                 },
                 opt_je = journal_stream.next() => {
                     match opt_je {
-                        Some(je) => {
+                        Some(JournalEntry::JournalV1(je)) => {
                             crate::shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
                             self.next_journal_index += 1;
                         },
+                        Some(JournalEntry::JournalV2(re)) => {
+                            if re.ty() == journal_v2::EntryType::Command(journal_v2::CommandType::Input) {
+                                let input_entry = crate::shortcircuit!(re.decode::<ServiceProtocolV4Codec, journal_v2::command::InputCommand>());
+                                  crate::shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(
+                                    ProtobufRawEntryCodec::serialize_as_input_entry(
+                                        input_entry.headers,
+                                        input_entry.payload
+                                    ).erase_enrichment()
+                                )).await);
+                            self.next_journal_index += 1;
+                            } else {
+                                panic!("This is unexpected, when an entry is stored with journal v2, only input entry is allowed!")
+                            }
+                        }
                         None => {
                             // No need to wait for the headers to continue
                             trace!("Finished to replay the journal");
@@ -334,6 +353,9 @@ where
                         Some(Notification::Ack(entry_index)) => {
                             trace!("Sending the ack to the wire");
                             crate::shortcircuit!(self.write(&mut http_stream_tx, ProtocolMessage::new_entry_ack(entry_index)).await);
+                        },
+                        Some(Notification::Entry(_)) => {
+                            panic!("We don't expect to receive journal_v2 entries, this is an invoker bug.")
                         },
                         None => {
                             // Completion channel is closed,
