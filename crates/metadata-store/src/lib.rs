@@ -33,7 +33,7 @@ use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::protobuf::common::MetadataServerStatus;
+use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::{flexbuffers_storage_encode_decode, PlainNodeId, Version};
 use std::future::Future;
@@ -164,7 +164,6 @@ pub trait MetadataStoreBackend {
 
 pub struct MetadataStoreRunner<S> {
     store: S,
-    health_status: HealthStatus<MetadataServerStatus>,
 }
 
 impl<S> MetadataStoreRunner<S>
@@ -173,7 +172,6 @@ where
 {
     pub fn new(
         store: S,
-        health_status: HealthStatus<MetadataServerStatus>,
         server_builder: &mut NetworkServerBuilder,
     ) -> Self {
         server_builder.register_grpc_service(
@@ -184,11 +182,8 @@ where
             grpc_svc::FILE_DESCRIPTOR_SET,
         );
 
-        health_status.update(MetadataServerStatus::StartingUp);
-
         Self {
             store,
-            health_status,
         }
     }
 }
@@ -200,13 +195,10 @@ where
 {
     async fn run(self) -> anyhow::Result<()> {
         let MetadataStoreRunner {
-            health_status,
             store,
         } = self;
 
-        health_status.update(MetadataServerStatus::Ready);
         store.run().await?;
-        health_status.update(MetadataServerStatus::Unknown);
 
         Ok(())
     }
@@ -215,7 +207,7 @@ where
 pub async fn create_metadata_store(
     metadata_store_options: &MetadataStoreOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    health_status: HealthStatus<MetadataServerStatus>,
+    health_status: HealthStatus<MetadataStoreStatus>,
     metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<BoxedMetadataStoreService> {

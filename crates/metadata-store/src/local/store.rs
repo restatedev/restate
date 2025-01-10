@@ -30,6 +30,8 @@ use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
+use restate_types::health::HealthStatus;
+use restate_types::protobuf::common::MetadataStoreStatus;
 
 const DB_NAME: &str = "local-metadata-store";
 const KV_PAIRS: &str = "kv_pairs";
@@ -44,6 +46,7 @@ pub struct LocalMetadataStore {
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     request_rx: RequestReceiver,
     buffer: BytesMut,
+    health_status: HealthStatus<MetadataStoreStatus>,
 
     // for creating other senders
     request_tx: RequestSender,
@@ -53,7 +56,9 @@ impl LocalMetadataStore {
     pub async fn create(
         options: &MetadataStoreOptions,
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        health_status: HealthStatus<MetadataStoreStatus>,
     ) -> Result<Self, RocksError> {
+        health_status.update(MetadataStoreStatus::StartingUp);
         let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
 
         let db_name = DbName::new(DB_NAME);
@@ -84,6 +89,7 @@ impl LocalMetadataStore {
             rocksdb,
             rocksdb_options: updateable_rocksdb_options,
             buffer: BytesMut::default(),
+            health_status,
             request_rx,
             request_tx,
         })
@@ -109,6 +115,7 @@ impl LocalMetadataStore {
 
     pub async fn run(mut self) {
         debug!("Running LocalMetadataStore");
+        self.health_status.update(MetadataStoreStatus::Active);
 
         loop {
             tokio::select! {
@@ -121,6 +128,8 @@ impl LocalMetadataStore {
                 },
             }
         }
+
+        self.health_status.update(MetadataStoreStatus::Unknown);
 
         debug!("Stopped LocalMetadataStore");
     }
