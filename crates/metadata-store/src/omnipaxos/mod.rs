@@ -10,7 +10,7 @@
 
 use crate::network::{MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, NetworkMessage};
 use crate::omnipaxos::store::OmniPaxosMetadataStore;
-use crate::{network, MetadataStoreRunner, Request};
+use crate::{network, MemberId, MetadataStoreRunner, Request, StorageId};
 use bytes::{Buf, BufMut};
 use omnipaxos::messages::Message;
 use omnipaxos::util::NodeId;
@@ -23,41 +23,12 @@ use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::storage::{decode_from_flexbuffers, encode_as_flexbuffers};
-use restate_types::PlainNodeId;
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
 
 mod storage;
 mod store;
 
 type OmniPaxosMessage = Message<Request>;
-
-/// Identifier to detect the loss of a disk.
-type StorageId = u64;
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct MemberId {
-    node_id: NodeId,
-    storage_id: StorageId,
-}
-
-impl MemberId {
-    fn new(node_id: NodeId, storage_id: StorageId) -> Self {
-        MemberId {
-            node_id,
-            storage_id,
-        }
-    }
-}
-
-impl Display for MemberId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let plain_node_id = PlainNodeId::new(
-            u32::try_from(self.node_id).expect("node ids should be derived from PlainNodeIds"),
-        );
-        write!(f, "{}:{:#x}", plain_node_id, self.storage_id)
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -86,7 +57,8 @@ pub(crate) async fn create_store(
     metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> Result<MetadataStoreRunner<OmniPaxosMetadataStore>, BuildError> {
-    let store = OmniPaxosMetadataStore::create(rocksdb_options, metadata_writer, health_status).await?;
+    let store =
+        OmniPaxosMetadataStore::create(rocksdb_options, metadata_writer, health_status).await?;
 
     server_builder.register_grpc_service(
         MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
@@ -96,10 +68,7 @@ pub(crate) async fn create_store(
         network::FILE_DESCRIPTOR_SET,
     );
 
-    Ok(MetadataStoreRunner::new(
-        store,
-        server_builder,
-    ))
+    Ok(MetadataStoreRunner::new(store, server_builder))
 }
 
 impl NetworkMessage for OmniPaxosMessage {

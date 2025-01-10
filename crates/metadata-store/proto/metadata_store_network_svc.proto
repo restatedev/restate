@@ -11,7 +11,7 @@ syntax = "proto3";
 
 import "google/protobuf/empty.proto";
 
-package dev.restate.metadata_store_network_svc;
+package restate.metadata_store_network_svc;
 
 // Grpc service definition for the metadata store network implementation.
 service MetadataStoreNetworkSvc {

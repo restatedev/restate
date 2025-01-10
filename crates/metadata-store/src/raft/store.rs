@@ -14,7 +14,7 @@ use crate::raft::storage;
 use crate::raft::storage::RocksDbStorage;
 use crate::{
     Callback, MetadataStoreBackend, ProvisionSender, Request, RequestError, RequestReceiver,
-    RequestSender,
+    RequestSender, StatusWatch,
 };
 use futures::TryFutureExt;
 use protobuf::{Message as ProtobufMessage, ProtobufError};
@@ -22,7 +22,9 @@ use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Messa
 use raft::{Config, RawNode};
 use restate_core::{cancellation_watcher, MetadataWriter};
 use restate_types::config::{Configuration, RaftOptions, RocksDbOptions};
+use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::storage::StorageDecodeError;
 use slog::o;
 use std::future::Future;
@@ -32,8 +34,6 @@ use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 use tracing_slog::TracingSlogDrain;
-use restate_types::health::HealthStatus;
-use restate_types::protobuf::common::MetadataStoreStatus;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -327,6 +327,10 @@ impl MetadataStoreBackend for RaftMetadataStore {
     }
 
     fn provision_sender(&self) -> Option<ProvisionSender> {
+        None
+    }
+
+    fn status_watch(&self) -> Option<StatusWatch> {
         None
     }
 

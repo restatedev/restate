@@ -6699,6 +6699,7 @@ dependencies = [
  "hyper-util",
  "omnipaxos",
  "prost",
+ "prost-dto",
  "prost-types",
  "protobuf",
  "raft",
