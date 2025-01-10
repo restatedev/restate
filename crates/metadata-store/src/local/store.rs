@@ -8,8 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::{
+    util, MetadataStoreBackend, MetadataStoreRequest, PreconditionViolation, ProvisionSender,
+    RequestError, RequestReceiver, RequestSender,
+};
 use bytes::BytesMut;
 use bytestring::ByteString;
+use futures::FutureExt;
 use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_rocksdb::{
@@ -18,73 +23,16 @@ use restate_rocksdb::{
 };
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
-use restate_types::storage::{
-    StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
-};
+use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::Version;
-use rocksdb::{BoundColumnFamily, DBCompressionType, WriteBatch, WriteOptions, DB};
+use rocksdb::{BoundColumnFamily, WriteBatch, WriteOptions, DB};
+use std::future::Future;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tracing::{debug, trace};
-
-pub type RequestSender = mpsc::Sender<MetadataStoreRequest>;
-pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
-
-type Result<T, E = Error> = std::result::Result<T, E>;
 
 const DB_NAME: &str = "local-metadata-store";
 const KV_PAIRS: &str = "kv_pairs";
-
-#[derive(Debug)]
-pub enum MetadataStoreRequest {
-    Get {
-        key: ByteString,
-        result_tx: oneshot::Sender<Result<Option<VersionedValue>>>,
-    },
-    GetVersion {
-        key: ByteString,
-        result_tx: oneshot::Sender<Result<Option<Version>>>,
-    },
-    Put {
-        key: ByteString,
-        value: VersionedValue,
-        precondition: Precondition,
-        result_tx: oneshot::Sender<Result<()>>,
-    },
-    Delete {
-        key: ByteString,
-        precondition: Precondition,
-        result_tx: oneshot::Sender<Result<()>>,
-    },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("storage error: {0}")]
-    Storage(#[from] rocksdb::Error),
-    #[error("rocksdb error: {0}")]
-    RocksDb(#[from] RocksError),
-    #[error("failed precondition: {0}")]
-    FailedPrecondition(String),
-    #[error("invalid argument: {0}")]
-    InvalidArgument(String),
-    #[error("encode error: {0}")]
-    Encode(#[from] StorageEncodeError),
-    #[error("decode error: {0}")]
-    Decode(#[from] StorageDecodeError),
-}
-
-impl Error {
-    fn kv_pair_exists() -> Self {
-        Error::FailedPrecondition("key-value pair already exists".to_owned())
-    }
-
-    fn version_mismatch(expected: Version, actual: Option<Version>) -> Self {
-        Error::FailedPrecondition(format!(
-            "Expected version '{expected}' but found version '{actual:?}'"
-        ))
-    }
-}
 
 /// Single node metadata store which stores the key value pairs in RocksDB.
 ///
@@ -105,20 +53,24 @@ impl LocalMetadataStore {
     pub async fn create(
         options: &MetadataStoreOptions,
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    ) -> std::result::Result<Self, RocksError> {
+    ) -> Result<Self, RocksError> {
         let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
 
         let db_name = DbName::new(DB_NAME);
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(KV_PAIRS)];
-        let db_spec = DbSpecBuilder::new(db_name.clone(), options.data_dir(), db_options(options))
-            .add_cf_pattern(
-                CfPrefixPattern::ANY,
-                cf_options(options.rocksdb_memory_budget()),
-            )
-            .ensure_column_families(cfs)
-            .build()
-            .expect("valid spec");
+        let db_spec = DbSpecBuilder::new(
+            db_name.clone(),
+            options.data_dir(),
+            util::db_options(options),
+        )
+        .add_cf_pattern(
+            CfPrefixPattern::ANY,
+            util::cf_options(options.rocksdb_memory_budget()),
+        )
+        .ensure_column_families(cfs)
+        .build()
+        .expect("valid spec");
 
         let db = db_manager
             .open_db(updateable_rocksdb_options.clone(), db_spec)
@@ -215,9 +167,12 @@ impl LocalMetadataStore {
         };
     }
 
-    fn get(&self, key: &ByteString) -> Result<Option<VersionedValue>> {
+    fn get(&self, key: &ByteString) -> Result<Option<VersionedValue>, RequestError> {
         let cf_handle = self.kv_cf_handle();
-        let slice = self.db.get_pinned_cf(&cf_handle, key)?;
+        let slice = self
+            .db
+            .get_pinned_cf(&cf_handle, key)
+            .map_err(|err| RequestError::Internal(err.into()))?;
 
         if let Some(bytes) = slice {
             Ok(Some(Self::decode(bytes)?))
@@ -226,9 +181,12 @@ impl LocalMetadataStore {
         }
     }
 
-    fn get_version(&self, key: &ByteString) -> Result<Option<Version>> {
+    fn get_version(&self, key: &ByteString) -> Result<Option<Version>, RequestError> {
         let cf_handle = self.kv_cf_handle();
-        let slice = self.db.get_pinned_cf(&cf_handle, key)?;
+        let slice = self
+            .db
+            .get_pinned_cf(&cf_handle, key)
+            .map_err(|err| RequestError::Internal(err.into()))?;
 
         if let Some(bytes) = slice {
             // todo only deserialize the version part
@@ -244,7 +202,7 @@ impl LocalMetadataStore {
         key: &ByteString,
         value: &VersionedValue,
         precondition: Precondition,
-    ) -> Result<()> {
+    ) -> Result<(), RequestError> {
         match precondition {
             Precondition::None => Ok(self.write_versioned_kv_pair(key, value).await?),
             Precondition::DoesNotExist => {
@@ -252,7 +210,7 @@ impl LocalMetadataStore {
                 if current_version.is_none() {
                     Ok(self.write_versioned_kv_pair(key, value).await?)
                 } else {
-                    Err(Error::kv_pair_exists())
+                    Err(PreconditionViolation::kv_pair_exists())?
                 }
             }
             Precondition::MatchesVersion(version) => {
@@ -260,7 +218,10 @@ impl LocalMetadataStore {
                 if current_version == Some(version) {
                     Ok(self.write_versioned_kv_pair(key, value).await?)
                 } else {
-                    Err(Error::version_mismatch(version, current_version))
+                    Err(PreconditionViolation::version_mismatch(
+                        version,
+                        current_version,
+                    ))?
                 }
             }
         }
@@ -270,7 +231,7 @@ impl LocalMetadataStore {
         &mut self,
         key: &ByteString,
         value: &VersionedValue,
-    ) -> Result<()> {
+    ) -> Result<(), RequestError> {
         self.buffer.clear();
         Self::encode(value, &mut self.buffer)?;
 
@@ -278,8 +239,7 @@ impl LocalMetadataStore {
         let cf_handle = self.kv_cf_handle();
         let mut wb = WriteBatch::default();
         wb.put_cf(&cf_handle, key, self.buffer.as_ref());
-        Ok(self
-            .rocksdb
+        self.rocksdb
             .write_batch(
                 "local-metadata-write-batch",
                 Priority::High,
@@ -287,10 +247,11 @@ impl LocalMetadataStore {
                 write_options,
                 wb,
             )
-            .await?)
+            .await
+            .map_err(|err| RequestError::Internal(err.into()))
     }
 
-    fn delete(&mut self, key: &ByteString, precondition: Precondition) -> Result<()> {
+    fn delete(&mut self, key: &ByteString, precondition: Precondition) -> Result<(), RequestError> {
         match precondition {
             Precondition::None => self.delete_kv_pair(key),
             // this condition does not really make sense for the delete operation
@@ -301,7 +262,7 @@ impl LocalMetadataStore {
                     // nothing to do
                     Ok(())
                 } else {
-                    Err(Error::kv_pair_exists())
+                    Err(PreconditionViolation::kv_pair_exists())?
                 }
             }
             Precondition::MatchesVersion(version) => {
@@ -310,72 +271,49 @@ impl LocalMetadataStore {
                 if current_version == Some(version) {
                     self.delete_kv_pair(key)
                 } else {
-                    Err(Error::version_mismatch(version, current_version))
+                    Err(PreconditionViolation::version_mismatch(
+                        version,
+                        current_version,
+                    ))?
                 }
             }
         }
     }
 
-    fn delete_kv_pair(&mut self, key: &ByteString) -> Result<()> {
+    fn delete_kv_pair(&mut self, key: &ByteString) -> Result<(), RequestError> {
         let write_options = self.write_options();
         self.db
             .delete_cf_opt(&self.kv_cf_handle(), key, &write_options)
-            .map_err(Into::into)
+            .map_err(|err| RequestError::Internal(err.into()))
     }
 
-    fn encode<T: StorageEncode>(value: &T, buf: &mut BytesMut) -> Result<()> {
+    fn encode<T: StorageEncode>(value: &T, buf: &mut BytesMut) -> Result<(), RequestError> {
         StorageCodec::encode(value, buf)?;
         Ok(())
     }
 
-    fn decode<T: StorageDecode>(buf: impl AsRef<[u8]>) -> Result<T> {
+    fn decode<T: StorageDecode>(buf: impl AsRef<[u8]>) -> Result<T, RequestError> {
         let value = StorageCodec::decode(&mut buf.as_ref())?;
         Ok(value)
     }
 
-    fn log_error<T>(result: &Result<T>, request: &str) {
+    fn log_error<T>(result: &Result<T, RequestError>, request: &str) {
         if let Err(err) = &result {
             debug!("failed to process request '{}': '{}'", request, err)
         }
     }
 }
 
-fn db_options(_options: &MetadataStoreOptions) -> rocksdb::Options {
-    rocksdb::Options::default()
-}
-
-fn cf_options(
-    memory_budget: usize,
-) -> impl Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync + 'static {
-    move |mut opts| {
-        set_memory_related_opts(&mut opts, memory_budget);
-        opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
-        opts.set_num_levels(3);
-
-        opts.set_compression_per_level(&[
-            DBCompressionType::None,
-            DBCompressionType::None,
-            DBCompressionType::Zstd,
-        ]);
-
-        //
-        opts
+impl MetadataStoreBackend for LocalMetadataStore {
+    fn request_sender(&self) -> RequestSender {
+        self.request_sender()
     }
-}
 
-fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
-    // We set the budget to allow 1 mutable + 3 immutable.
-    opts.set_write_buffer_size(memtables_budget / 4);
+    fn provision_sender(&self) -> Option<ProvisionSender> {
+        None
+    }
 
-    // merge 2 memtables when flushing to L0
-    opts.set_min_write_buffer_number_to_merge(2);
-    opts.set_max_write_buffer_number(4);
-    // start flushing L0->L1 as soon as possible. each file on level0 is
-    // (memtable_memory_budget / 2). This will flush level 0 when it's bigger than
-    // memtable_memory_budget.
-    opts.set_level_zero_file_num_compaction_trigger(2);
-    // doesn't really matter much, but we don't want to create too many files
-    opts.set_target_file_size_base(memtables_budget as u64 / 8);
-    // make Level1 size equal to Level0 size, so that L0->L1 compactions are fast
-    opts.set_max_bytes_for_level_base(memtables_budget as u64);
+    fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
+        self.run().map(Ok)
+    }
 }

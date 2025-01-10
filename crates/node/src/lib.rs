@@ -36,8 +36,9 @@ use restate_core::{cancellation_watcher, Metadata, TaskKind};
 use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter};
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
-use restate_metadata_store::local::LocalMetadataStoreService;
-use restate_metadata_store::MetadataStoreClient;
+use restate_metadata_store::{
+    BoxedMetadataStoreService, MetadataStoreClient, MetadataStoreService,
+};
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::GenericError;
 use restate_types::health::Health;
@@ -46,7 +47,9 @@ use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfigurati
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
-use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
+use restate_types::nodes_config::{
+    LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role,
+};
 use restate_types::partition_table::{PartitionTable, PartitionTableBuilder, ReplicationStrategy};
 use restate_types::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
@@ -109,7 +112,7 @@ pub enum BuildError {
 
     #[error("building metadata store failed: {0}")]
     #[code(unknown)]
-    MetadataStore(#[from] restate_metadata_store::local::BuildError),
+    MetadataStore(#[from] anyhow::Error),
 }
 
 pub struct Node {
@@ -120,7 +123,7 @@ pub struct Node {
     partition_routing_refresher: PartitionRoutingRefresher,
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
-    metadata_store_role: Option<LocalMetadataStoreService>,
+    metadata_store_role: Option<BoxedMetadataStoreService>,
     base_role: BaseRole,
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole>,
@@ -139,15 +142,27 @@ impl Node {
 
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
+        let metadata_store_client = restate_metadata_store::local::create_client(
+            config.common.metadata_store_client.clone(),
+        )
+        .await
+        .map_err(BuildError::MetadataStoreClient)?;
+        let metadata_builder = MetadataBuilder::default();
+        let metadata = metadata_builder.to_metadata();
+        let metadata_manager =
+            MetadataManager::new(metadata_builder, metadata_store_client.clone());
+        let metadata_writer = metadata_manager.writer();
+
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(
-                LocalMetadataStoreService::create(
-                    health.metadata_server_status(),
+                restate_metadata_store::create_metadata_store(
                     &config.metadata_store,
                     updateable_config
                         .clone()
                         .map(|config| &config.metadata_store.rocksdb)
                         .boxed(),
+                    health.metadata_server_status(),
+                    Some(metadata_writer),
                     &mut server_builder,
                 )
                 .await?,
@@ -156,18 +171,8 @@ impl Node {
             None
         };
 
-        let metadata_store_client = restate_metadata_store::local::create_client(
-            config.common.metadata_store_client.clone(),
-        )
-        .await
-        .map_err(BuildError::MetadataStoreClient)?;
-
         let mut router_builder = MessageRouterBuilder::default();
-        let metadata_builder = MetadataBuilder::default();
-        let metadata = metadata_builder.to_metadata();
-        let networking = Networking::new(metadata_builder.to_metadata(), config.networking.clone());
-        let metadata_manager =
-            MetadataManager::new(metadata_builder, metadata_store_client.clone());
+        let networking = Networking::new(metadata.clone(), config.networking.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
         let partition_routing_refresher =
             PartitionRoutingRefresher::new(metadata_store_client.clone());
@@ -245,9 +250,9 @@ impl Node {
             && config.has_role(Role::HttpIngress)
             // todo remove once the safe fallback version supports the HttpIngress role
             || !config
-                .ingress
-                .experimental_feature_enable_separate_ingress_role
-                && config.has_role(Role::Worker)
+            .ingress
+            .experimental_feature_enable_separate_ingress_role
+            && config.has_role(Role::Worker)
         {
             Some(IngressRole::create(
                 updateable_config
@@ -357,10 +362,11 @@ impl Node {
             .await;
 
         if let Some(metadata_store) = self.metadata_store_role {
-            TaskCenter::spawn(TaskKind::MetadataStore, "metadata-store", async move {
-                metadata_store.run().await?;
-                Ok(())
-            })?;
+            TaskCenter::spawn(
+                TaskKind::MetadataStore,
+                "metadata-store",
+                metadata_store.run(),
+            )?;
         }
 
         if config.common.allow_bootstrap {
@@ -619,6 +625,7 @@ fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfi
         common_opts.advertised_address.clone(),
         common_opts.roles,
         LogServerConfig::default(),
+        MetadataStoreConfig::default(),
     );
     initial_nodes_configuration.upsert_node(node_config);
     initial_nodes_configuration

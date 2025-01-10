@@ -88,6 +88,8 @@ pub struct NodeConfig {
     pub roles: EnumSet<Role>,
     #[serde(default)]
     pub log_server_config: LogServerConfig,
+    #[serde(default)]
+    pub metadata_store_config: MetadataStoreConfig,
 }
 
 impl NodeConfig {
@@ -97,6 +99,7 @@ impl NodeConfig {
         address: AdvertisedAddress,
         roles: EnumSet<Role>,
         log_server_config: LogServerConfig,
+        metadata_store_config: MetadataStoreConfig,
     ) -> Self {
         Self {
             name,
@@ -104,6 +107,7 @@ impl NodeConfig {
             address,
             roles,
             log_server_config,
+            metadata_store_config,
         }
     }
 
@@ -201,6 +205,17 @@ impl NodesConfiguration {
         match maybe {
             MaybeNode::Tombstone => StorageState::Disabled,
             MaybeNode::Node(found) => found.log_server_config.storage_state,
+        }
+    }
+
+    pub fn get_metadata_store_state(&self, node_id: &PlainNodeId) -> MetadataStoreState {
+        let maybe = self.nodes.get(node_id);
+        let Some(maybe) = maybe else {
+            return MetadataStoreState::Passive;
+        };
+        match maybe {
+            MaybeNode::Tombstone => MetadataStoreState::Passive,
+            MaybeNode::Node(found) => found.metadata_store_config.metadata_store_state,
         }
     }
 
@@ -322,9 +337,45 @@ impl StorageState {
     }
 }
 
+#[derive(
+    Clone,
+    Debug,
+    Copy,
+    Default,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    derive_more::IsVariant,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum MetadataStoreState {
+    /// The node is not yet a member of the metadata store but tries to join it. It is not safe to
+    /// decommission this node since the metadata store cluster might have already accepted it.
+    #[default]
+    Candidate,
+    /// The node is not considered as part of the metadata store cluster (yet). Node can be safely
+    /// decommissioned.
+    Passive,
+    /// The node is an active member of the metadata store cluster.
+    Active,
+    /// Node detected that some/all of its local storage has been deleted and it cannot be part of
+    /// the metadata store cluster because it might make contradicting promises.
+    DataLoss,
+}
+
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LogServerConfig {
     pub storage_state: StorageState,
+}
+
+#[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MetadataStoreConfig {
+    pub metadata_store_state: MetadataStoreState,
 }
 
 flexbuffers_storage_encode_decode!(NodesConfiguration);
@@ -347,6 +398,7 @@ mod tests {
             address.clone(),
             roles,
             LogServerConfig::default(),
+            MetadataStoreConfig::default(),
         );
         config.upsert_node(node.clone());
 
@@ -394,6 +446,7 @@ mod tests {
             address,
             roles,
             LogServerConfig::default(),
+            MetadataStoreConfig::default(),
         );
         config.upsert_node(node.clone());
 

@@ -13,7 +13,7 @@ use tracing::info;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{TaskCenter, TaskKind};
-use restate_metadata_store::local::LocalMetadataStoreService;
+use restate_metadata_store::MetadataStoreService;
 use restate_types::config;
 use restate_types::config::{MetadataStoreClientOptions, MetadataStoreOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
@@ -28,10 +28,11 @@ pub async fn start_metadata_store(
 ) -> anyhow::Result<MetadataStoreClient> {
     let mut server_builder = NetworkServerBuilder::default();
 
-    let service = LocalMetadataStoreService::create(
-        HealthStatus::default(),
+    let service = restate_metadata_store::create_metadata_store(
         opts,
         updateables_rocksdb_options,
+        HealthStatus::default(),
+        None,
         &mut server_builder,
     )
     .await?;
@@ -40,7 +41,7 @@ pub async fn start_metadata_store(
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
     metadata_store_client_options.metadata_store_client = config::MetadataStoreClient::Embedded {
-        address: AdvertisedAddress::Uds(uds),
+        addresses: vec![AdvertisedAddress::Uds(uds)],
     };
 
     let rpc_server_health_status = HealthStatus::default();

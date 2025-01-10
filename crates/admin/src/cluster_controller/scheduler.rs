@@ -613,7 +613,7 @@ mod tests {
     use restate_types::net::partition_processor_manager::{ControlProcessors, ProcessorCommand};
     use restate_types::net::{AdvertisedAddress, TargetName};
     use restate_types::nodes_config::{
-        LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
+        LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
     use restate_types::partition_table::{PartitionTable, ReplicationStrategy};
     use restate_types::time::MillisSinceEpoch;
@@ -706,6 +706,7 @@ mod tests {
                 AdvertisedAddress::Http(Uri::default()),
                 Role::Worker.into(),
                 LogServerConfig::default(),
+                MetadataStoreConfig::default(),
             );
             nodes_config.upsert_node(node_config);
         }

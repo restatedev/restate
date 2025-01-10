@@ -8,28 +8,42 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvc;
-use crate::grpc_svc::{DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest};
-use crate::local::grpc::pb_conversions::ConversionError;
-use crate::local::store::{Error, MetadataStoreRequest, RequestSender};
+use crate::grpc_svc::{
+    DeleteRequest, GetRequest, GetResponse, GetVersionResponse,
+    ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest,
+};
+use crate::{
+    MetadataStoreRequest, ProvisionError, ProvisionRequest, ProvisionSender, RequestError,
+    RequestSender,
+};
 use async_trait::async_trait;
+use restate_core::metadata_store::{serialize_value, Precondition};
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::storage::StorageCodec;
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status};
 
-/// Grpc svc handler for the [`LocalMetadataStore`].
+/// Grpc svc handler for the metadata store.
 #[derive(Debug)]
-pub struct LocalMetadataStoreHandler {
+pub struct MetadataStoreHandler {
     request_tx: RequestSender,
+    provision_tx: Option<ProvisionSender>,
 }
 
-impl LocalMetadataStoreHandler {
-    pub fn new(request_tx: RequestSender) -> Self {
-        Self { request_tx }
+impl MetadataStoreHandler {
+    pub fn new(request_tx: RequestSender, provision_tx: Option<ProvisionSender>) -> Self {
+        Self {
+            request_tx,
+            provision_tx,
+        }
     }
 }
 
 #[async_trait]
-impl MetadataStoreSvc for LocalMetadataStoreHandler {
+impl MetadataStoreSvc for MetadataStoreHandler {
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let (result_tx, result_rx) = oneshot::channel();
 
@@ -127,13 +141,82 @@ impl MetadataStoreSvc for LocalMetadataStoreHandler {
 
         Ok(Response::new(()))
     }
+
+    async fn provision(
+        &self,
+        request: Request<ProtoProvisionRequest>,
+    ) -> Result<Response<ProvisionResponse>, Status> {
+        if let Some(provision_tx) = self.provision_tx.as_ref() {
+            let (result_tx, result_rx) = oneshot::channel();
+
+            let mut request = request.into_inner();
+
+            let nodes_configuration = StorageCodec::decode(&mut request.nodes_configuration)
+                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+            provision_tx
+                .send(ProvisionRequest {
+                    nodes_configuration,
+                    result_tx,
+                })
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+
+            let newly_provisioned = result_rx
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+
+            Ok(Response::new(ProvisionResponse { newly_provisioned }))
+        } else {
+            // if there is no provision_tx configured, then the underlying metadata store does not
+            // need a provision step.
+            let mut request = request.into_inner();
+            let nodes_configuration: NodesConfiguration =
+                StorageCodec::decode(&mut request.nodes_configuration)
+                    .map_err(|err| Status::invalid_argument(err.to_string()))?;
+            let versioned_value = serialize_value(&nodes_configuration)
+                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+            let (result_tx, result_rx) = oneshot::channel();
+
+            self.request_tx
+                .send(MetadataStoreRequest::Put {
+                    key: NODES_CONFIG_KEY.clone(),
+                    value: versioned_value,
+                    precondition: Precondition::DoesNotExist,
+                    result_tx,
+                })
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+
+            let result = result_rx
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+
+            let newly_provisioned = match result {
+                Ok(()) => true,
+                Err(RequestError::FailedPrecondition(_)) => false,
+                Err(err) => Err(err)?,
+            };
+
+            Ok(Response::new(ProvisionResponse { newly_provisioned }))
+        }
+    }
 }
 
-impl From<Error> for Status {
-    fn from(err: Error) -> Self {
+impl From<RequestError> for Status {
+    fn from(err: RequestError) -> Self {
         match err {
-            Error::FailedPrecondition(msg) => Status::failed_precondition(msg),
+            RequestError::FailedPrecondition(err) => Status::failed_precondition(err.to_string()),
+            RequestError::Unavailable(err) => Status::unavailable(err.to_string()),
             err => Status::internal(err.to_string()),
+        }
+    }
+}
+
+impl From<ProvisionError> for Status {
+    fn from(err: ProvisionError) -> Self {
+        match err {
+            ProvisionError::Internal(err) => Status::internal(err.to_string()),
         }
     }
 }
