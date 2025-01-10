@@ -8,18 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Context;
+use bytes::{Bytes, BytesMut};
+use bytestring::ByteString;
+use etcd_client::{
+    Client, Compare, CompareOp, ConnectOptions, Error as EtcdError, GetOptions, KvClient, Txn,
+    TxnOp,
+};
+
+use restate_types::config::MetadataStoreClientOptions;
+use restate_types::errors::GenericError;
+
 use crate::metadata_store::{
     Precondition, ProvisionedMetadataStore, ReadError, Version, VersionedValue, WriteError,
 };
 use crate::network::net_util::CommonClientConnectionOptions;
-use anyhow::Context;
-use bytes::Bytes;
-use bytestring::ByteString;
-use etcd_client::{
-    Client, Compare, CompareOp, ConnectOptions, Error as EtcdError, GetOptions, KeyValue, KvClient,
-    Txn, TxnOp,
-};
-use restate_types::config::MetadataStoreClientOptions;
 
 impl From<EtcdError> for ReadError {
     fn from(value: EtcdError) -> Self {
@@ -41,39 +44,24 @@ impl From<EtcdError> for WriteError {
     }
 }
 
-trait ToVersion {
-    fn to_version(self) -> Result<Version, ReadError>;
+trait FromIntoVecU8: Sized {
+    fn to_vec(&self) -> Vec<u8>;
+    fn from_slice(v: &[u8]) -> Result<Self, GenericError>;
 }
 
-impl ToVersion for &KeyValue {
-    fn to_version(self) -> Result<Version, ReadError> {
-        //todo: version of the kv is reset to 1 if the key was deleted then recrated.
-        // this means that a key can change (by means of deletion and recreation) and will
-        // always have version 1!
-        //
-        // The only way to detect this is to also track the "mod revision" of the store as part
-        // of the VersionValue.
-        //
-        // The problem is that the restate Version is only u32 while both etcd version and mod version
-        // are both i64.
-        //
-        // Changing the Version to have a u64 value also delays the problem for later since it will be a while before
-        // mod_revision or version hit the u32::MAX but that's totally dependent on how frequent the changes are
-        //
-        // The correct solution is of course to make Version u128.
-        //
-        // What is implemented instead in current code is to use the lower 32bit of the Etcd version. We return an error
-        // if this value exceeds the u32::MAX.
-        // Objects will be deleted normally (it means version will reset) so it's up to the user of the store to make sure
-        // to use a tombstone instead of relying on actual delete (if needed).
-        //
-        // This is done instead of implementing the tombstone mechanism directly into the the Etcd store implementation because
-        // delete is not used right now, and also because the Etcd implementation is a temporary solution.
-        let version = Version::from(u32::try_from(self.version()).map_err(|e| {
-            ReadError::Internal(format!("[etcd] key version exceeds max u32: {e}"))
-        })?);
+impl FromIntoVecU8 for Version {
+    fn to_vec(&self) -> Vec<u8> {
+        Vec::from_iter(u32::from(*self).to_le_bytes())
+    }
 
-        Ok(version)
+    fn from_slice(v: &[u8]) -> Result<Self, GenericError> {
+        if v.len() != size_of::<u32>() {
+            return Err("Invalid length".into());
+        }
+
+        let mut buf: [u8; size_of::<u32>()] = [0; size_of::<u32>()];
+        buf.copy_from_slice(v);
+        Ok(u32::from_le_bytes(buf).into())
     }
 }
 
@@ -106,19 +94,62 @@ impl EtcdMetadataStore {
         &self,
         client: &mut KvClient,
         key: Bytes,
-        version: i64,
+        version: Option<Version>,
     ) -> Result<bool, WriteError> {
-        let txn = Txn::new()
-            .when(vec![Compare::version(
-                key.clone(),
-                CompareOp::Equal,
-                version,
-            )])
-            .and_then(vec![TxnOp::delete(key, None)]);
+        let version_key = Self::version_key(&key);
+
+        let when = match version {
+            None => {
+                vec![Compare::version(version_key.clone(), CompareOp::Equal, 0)]
+            }
+            Some(version) => {
+                vec![Compare::value(
+                    version_key.clone(),
+                    CompareOp::Equal,
+                    version.to_vec(),
+                )]
+            }
+        };
+
+        let txn = Txn::new().when(when).and_then(vec![
+            TxnOp::delete(key, None),
+            TxnOp::delete(version_key, None),
+        ]);
 
         let response = client.txn(txn).await?;
 
         Ok(response.succeeded())
+    }
+
+    async fn put_force(
+        &self,
+        client: &mut KvClient,
+        key: Bytes,
+        value: VersionedValue,
+    ) -> Result<(), WriteError> {
+        let version_key = Self::version_key(&key);
+
+        let txn = Txn::new().and_then(vec![
+            TxnOp::put(key, value.value, None),
+            TxnOp::put(version_key, value.version.to_vec(), None),
+        ]);
+
+        client.txn(txn).await?;
+
+        Ok(())
+    }
+
+    async fn delete_force(&self, client: &mut KvClient, key: Bytes) -> Result<(), WriteError> {
+        let version_key = Self::version_key(&key);
+
+        let txn = Txn::new().and_then(vec![
+            TxnOp::delete(key, None),
+            TxnOp::delete(version_key, None),
+        ]);
+
+        client.txn(txn).await?;
+
+        Ok(())
     }
 
     /// puts a key/value if and only if the current value in store
@@ -127,20 +158,40 @@ impl EtcdMetadataStore {
         &self,
         client: &mut KvClient,
         key: Bytes,
-        value: Bytes,
-        version: i64,
+        value: VersionedValue,
+        version: Option<Version>,
     ) -> Result<bool, WriteError> {
-        let txn = Txn::new()
-            .when(vec![Compare::version(
-                key.clone(),
-                CompareOp::Equal,
-                version,
-            )])
-            .and_then(vec![TxnOp::put(key, value, None)]);
+        let version_key = Self::version_key(&key);
+
+        let when = match version {
+            None => {
+                vec![Compare::version(version_key.clone(), CompareOp::Equal, 0)]
+            }
+            Some(version) => {
+                vec![Compare::value(
+                    version_key.clone(),
+                    CompareOp::Equal,
+                    version.to_vec(),
+                )]
+            }
+        };
+
+        let txn = Txn::new().when(when).and_then(vec![
+            TxnOp::put(key, value.value, None),
+            TxnOp::put(version_key, value.version.to_vec(), None),
+        ]);
 
         let response = client.txn(txn).await?;
 
         Ok(response.succeeded())
+    }
+
+    fn version_key(key: &Bytes) -> Bytes {
+        const KEY_SUFFIX: &[u8] = b"::version";
+        let mut version_key = BytesMut::with_capacity(key.len() + KEY_SUFFIX.len());
+        version_key.extend_from_slice(key);
+        version_key.extend_from_slice(KEY_SUFFIX);
+        version_key.into()
     }
 }
 
@@ -148,27 +199,45 @@ impl EtcdMetadataStore {
 impl ProvisionedMetadataStore for EtcdMetadataStore {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         let mut client = self.client.kv_client();
-        let mut response = client.get(key.into_bytes(), None).await?;
+        let key = key.into_bytes();
+        let version_key = Self::version_key(&key);
+        let options = GetOptions::new()
+            .with_range(version_key.clone())
+            .with_prefix();
 
-        // return first value because this is supposed to be an exact match
-        // not a scan
-        let kv = match response.take_kvs().into_iter().next() {
-            None => return Ok(None),
-            Some(kv) => kv,
-        };
+        let mut response = client.get(key.clone(), Some(options)).await?;
 
-        // please read todo! on implementation of .to_version()
-        let version = (&kv).to_version()?;
-        let (_, value) = kv.into_key_value();
+        let mut version = None;
+        let mut value = None;
+        for kv in response.take_kvs().into_iter() {
+            let (k, v) = kv.into_key_value();
+            if k == key {
+                value = Some(v);
+            } else if k == version_key {
+                version = Some(Version::from_slice(&v).map_err(ReadError::Codec)?);
+            }
 
-        Ok(Some(VersionedValue::new(version, value.into())))
+            if value.is_some() && version.is_some() {
+                break;
+            }
+        }
+
+        if value.is_none() || version.is_none() {
+            return Ok(None);
+        }
+
+        Ok(Some(VersionedValue::new(
+            version.unwrap(),
+            value.unwrap().into(),
+        )))
     }
 
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
         let mut client = self.client.kv_client();
-        let mut response = client
-            .get(key.into_bytes(), Some(GetOptions::new().with_keys_only()))
-            .await?;
+        let key = key.into_bytes();
+        let version_key = Self::version_key(&key);
+
+        let mut response = client.get(version_key, None).await?;
 
         // return first value because this suppose to be an exact match
         // not a scan
@@ -177,8 +246,7 @@ impl ProvisionedMetadataStore for EtcdMetadataStore {
             Some(kv) => kv,
         };
 
-        // please read todo! on implementation of .to_version()
-        let version = (&kv).to_version()?;
+        let version = Version::from_slice(kv.value()).map_err(ReadError::Codec)?;
 
         Ok(Some(version))
     }
@@ -191,12 +259,10 @@ impl ProvisionedMetadataStore for EtcdMetadataStore {
     ) -> Result<(), WriteError> {
         let mut client = self.client.kv_client();
         match precondition {
-            Precondition::None => {
-                client.put(key.into_bytes(), value.value, None).await?;
-            }
+            Precondition::None => self.put_force(&mut client, key.into_bytes(), value).await?,
             Precondition::DoesNotExist => {
                 if !self
-                    .put_if_version_matches(&mut client, key.into_bytes(), value.value, 0)
+                    .put_if_version_matches(&mut client, key.into_bytes(), value, None)
                     .await?
                 {
                     // pre condition failed.
@@ -207,12 +273,7 @@ impl ProvisionedMetadataStore for EtcdMetadataStore {
             }
             Precondition::MatchesVersion(version) => {
                 if !self
-                    .put_if_version_matches(
-                        &mut client,
-                        key.into_bytes(),
-                        value.value,
-                        u32::from(version) as i64,
-                    )
+                    .put_if_version_matches(&mut client, key.into_bytes(), value, Some(version))
                     .await?
                 {
                     return Err(WriteError::FailedPrecondition(
@@ -229,11 +290,11 @@ impl ProvisionedMetadataStore for EtcdMetadataStore {
         let mut client = self.client.kv_client();
         match precondition {
             Precondition::None => {
-                client.delete(key.into_bytes(), None).await?;
+                self.delete_force(&mut client, key.into_bytes()).await?;
             }
             Precondition::DoesNotExist => {
                 if !self
-                    .delete_if_version_matches(&mut client, key.into_bytes(), 0)
+                    .delete_if_version_matches(&mut client, key.into_bytes(), None)
                     .await?
                 {
                     // pre condition failed.
@@ -244,11 +305,7 @@ impl ProvisionedMetadataStore for EtcdMetadataStore {
             }
             Precondition::MatchesVersion(version) => {
                 if !self
-                    .delete_if_version_matches(
-                        &mut client,
-                        key.into_bytes(),
-                        u32::from(version) as i64,
-                    )
+                    .delete_if_version_matches(&mut client, key.into_bytes(), Some(version))
                     .await?
                 {
                     return Err(WriteError::FailedPrecondition(
@@ -259,5 +316,187 @@ impl ProvisionedMetadataStore for EtcdMetadataStore {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use bytes::Bytes;
+    use bytestring::ByteString;
+    use restate_types::{config::MetadataStoreClientOptions, Version};
+
+    use super::EtcdMetadataStore;
+    use crate::metadata_store::{MetadataStore, Precondition, VersionedValue, WriteError};
+
+    // todo(azmy): right now the test relies on a running etcd instance in the test environment.
+    // which is not available atm.
+    // this is why all tests below are [ignored] for now and should be enabled only if
+    // etcd is started in the test env, or when testing locally
+    const TEST_ADDRESS: [&str; 1] = ["127.0.0.1:32772"];
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_put_does_not_exist() {
+        let opts = MetadataStoreClientOptions::default();
+        let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
+
+        let key: ByteString = "put_does_not_exist".into();
+        // make sure key doesn't exist
+        client
+            .delete(key.clone(), Precondition::None)
+            .await
+            .unwrap();
+
+        let value = VersionedValue {
+            version: Version::MIN,
+            value: Bytes::new(),
+        };
+
+        client
+            .put(key.clone(), value, Precondition::DoesNotExist)
+            .await
+            .unwrap();
+
+        let result = client.get(key.clone()).await.unwrap();
+        assert!(matches!(result, Some(value) if value.version == Version::MIN));
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_put_with_version() {
+        let opts = MetadataStoreClientOptions::default();
+        let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
+
+        let key: ByteString = "put_with_version".into();
+        // make sure key doesn't exist
+        client
+            .delete(key.clone(), Precondition::None)
+            .await
+            .unwrap();
+
+        let value = VersionedValue {
+            version: 5.into(),
+            value: Bytes::new(),
+        };
+
+        client
+            .put(key.clone(), value, Precondition::DoesNotExist)
+            .await
+            .unwrap();
+
+        let result = client.get(key.clone()).await.unwrap();
+        assert!(result.is_some());
+        let value = result.unwrap();
+        assert_eq!(value.version, 5.into());
+
+        let value = VersionedValue {
+            version: 5.into(),
+            value: Bytes::new(),
+        };
+
+        let result = client
+            .put(key.clone(), value, Precondition::MatchesVersion(4.into()))
+            .await;
+
+        assert!(matches!(result, Err(WriteError::FailedPrecondition(_))));
+
+        let value = VersionedValue {
+            version: 6.into(),
+            value: Bytes::new(),
+        };
+
+        client
+            .put(key.clone(), value, Precondition::MatchesVersion(5.into()))
+            .await
+            .unwrap();
+
+        let result = client.get(key.clone()).await.unwrap();
+        assert!(result.is_some());
+        let value = result.unwrap();
+        assert_eq!(value.version, 6.into());
+
+        let version = client.get_version(key.clone()).await.unwrap();
+        assert!(matches!(version, Some(v) if v == Version::from(6)));
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_put_force() {
+        let opts = MetadataStoreClientOptions::default();
+        let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
+
+        let key: ByteString = "put_force".into();
+        // make sure key doesn't exist
+        client
+            .delete(key.clone(), Precondition::None)
+            .await
+            .unwrap();
+
+        let value = VersionedValue {
+            version: 3.into(),
+            value: Bytes::new(),
+        };
+
+        client
+            .put(key.clone(), value, Precondition::None)
+            .await
+            .unwrap();
+
+        let result = client.get(key.clone()).await.unwrap();
+        assert!(result.is_some());
+        let value = result.unwrap();
+        assert_eq!(value.version, 3.into());
+
+        let value = VersionedValue {
+            version: 5.into(),
+            value: Bytes::new(),
+        };
+
+        client
+            .put(key.clone(), value, Precondition::None)
+            .await
+            .unwrap();
+
+        let result = client.get(key.clone()).await.unwrap();
+        assert!(result.is_some());
+        let value = result.unwrap();
+        assert_eq!(value.version, 5.into());
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_delete() {
+        let opts = MetadataStoreClientOptions::default();
+        let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
+
+        let key: ByteString = "put_delete_me".into();
+        // make sure key doesn't exist
+        client
+            .delete(key.clone(), Precondition::None)
+            .await
+            .unwrap();
+
+        let value = VersionedValue {
+            version: Version::MIN,
+            value: Bytes::new(),
+        };
+
+        client
+            .put(key.clone(), value, Precondition::DoesNotExist)
+            .await
+            .unwrap();
+
+        let result = client.get(key.clone()).await.unwrap();
+        assert!(matches!(result, Some(value) if value.version == Version::MIN));
+
+        let result = client
+            .delete(key.clone(), Precondition::MatchesVersion(2.into()))
+            .await;
+        assert!(matches!(result, Err(WriteError::FailedPrecondition(_))));
+
+        let result = client
+            .delete(key.clone(), Precondition::MatchesVersion(Version::MIN))
+            .await;
+        assert!(result.is_ok());
     }
 }
