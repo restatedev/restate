@@ -12,18 +12,19 @@ use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvc;
 use crate::grpc_svc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse,
-    ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest,
+    ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest, StatusResponse,
 };
 use crate::{
-    MetadataStoreRequest, ProvisionError, ProvisionRequest, ProvisionSender, RequestError,
-    RequestSender,
+    MetadataStoreRequest, MetadataStoreSummary, ProvisionError, ProvisionRequest, ProvisionSender,
+    RequestError, RequestSender, StatusWatch,
 };
 use async_trait::async_trait;
 use restate_core::metadata_store::{serialize_value, Precondition};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
-use tokio::sync::oneshot;
+use std::ops::Deref;
+use tokio::sync::{oneshot, watch};
 use tonic::{Request, Response, Status};
 
 /// Grpc svc handler for the metadata store.
@@ -31,13 +32,19 @@ use tonic::{Request, Response, Status};
 pub struct MetadataStoreHandler {
     request_tx: RequestSender,
     provision_tx: Option<ProvisionSender>,
+    status_watch: Option<StatusWatch>,
 }
 
 impl MetadataStoreHandler {
-    pub fn new(request_tx: RequestSender, provision_tx: Option<ProvisionSender>) -> Self {
+    pub fn new(
+        request_tx: RequestSender,
+        provision_tx: Option<ProvisionSender>,
+        status_watch: Option<watch::Receiver<MetadataStoreSummary>>,
+    ) -> Self {
         Self {
             request_tx,
             provision_tx,
+            status_watch,
         }
     }
 }
@@ -199,6 +206,17 @@ impl MetadataStoreSvc for MetadataStoreHandler {
             };
 
             Ok(Response::new(ProvisionResponse { newly_provisioned }))
+        }
+    }
+
+    async fn status(&self, _request: Request<()>) -> Result<Response<StatusResponse>, Status> {
+        if let Some(status_watch) = &self.status_watch {
+            let response = StatusResponse::from(status_watch.borrow().deref().clone());
+            Ok(Response::new(response))
+        } else {
+            Err(Status::unimplemented(
+                "metadata store does not support reporting its status",
+            ))
         }
     }
 }

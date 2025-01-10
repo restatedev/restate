@@ -11,8 +11,8 @@
 pub mod client;
 pub mod handler;
 pub mod pb_conversions {
-    use crate::grpc_svc;
     use crate::grpc_svc::{GetResponse, GetVersionResponse, PreconditionKind};
+    use crate::{grpc_svc, MetadataStoreSummary};
     use restate_core::metadata_store::{Precondition, VersionedValue};
     use restate_types::Version;
 
@@ -121,6 +121,38 @@ pub mod pb_conversions {
                         .ok_or_else(|| ConversionError::missing_field("version"))?
                         .into(),
                 )),
+            }
+        }
+    }
+
+    impl From<MetadataStoreSummary> for grpc_svc::StatusResponse {
+        fn from(value: MetadataStoreSummary) -> Self {
+            match value {
+                MetadataStoreSummary::Starting => grpc_svc::StatusResponse {
+                    status: restate_types::protobuf::common::MetadataStoreStatus::StartingUp.into(),
+                    configuration: None,
+                    leader: None,
+                },
+                MetadataStoreSummary::Provisioning => grpc_svc::StatusResponse {
+                    status:
+                        restate_types::protobuf::common::MetadataStoreStatus::AwaitingProvisioning
+                            .into(),
+                    configuration: None,
+                    leader: None,
+                },
+                MetadataStoreSummary::Passive => grpc_svc::StatusResponse {
+                    status: restate_types::protobuf::common::MetadataStoreStatus::Passive.into(),
+                    configuration: None,
+                    leader: None,
+                },
+                MetadataStoreSummary::Active {
+                    configuration,
+                    leader,
+                } => grpc_svc::StatusResponse {
+                    status: restate_types::protobuf::common::MetadataStoreStatus::Active.into(),
+                    configuration: Some(grpc_svc::MetadataStoreConfiguration::from(configuration)),
+                    leader: leader.map(|leader| grpc_svc::MemberId::from(leader)),
+                },
             }
         }
     }

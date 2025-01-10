@@ -56,17 +56,15 @@ pub async fn create_client(
     Ok(client)
 }
 
-pub async fn create_store(
+pub(crate) async fn create_store(
     metadata_store_options: &MetadataStoreOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataStoreStatus>,
     server_builder: &mut NetworkServerBuilder,
 ) -> Result<MetadataStoreRunner<LocalMetadataStore>, RocksError> {
-    let store = LocalMetadataStore::create(metadata_store_options, rocksdb_options, health_status).await?;
-    Ok(MetadataStoreRunner::new(
-        store,
-        server_builder,
-    ))
+    let store =
+        LocalMetadataStore::create(metadata_store_options, rocksdb_options, health_status).await?;
+    Ok(MetadataStoreRunner::new(store, server_builder))
 }
 
 #[cfg(test)]

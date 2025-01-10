@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::omnipaxos::{BuildError, OmniPaxosConfiguration, StorageId};
-use crate::util;
+use crate::omnipaxos::{BuildError, OmniPaxosConfiguration};
+use crate::{util, StorageId};
 use bytes::{Buf, BytesMut};
 use flexbuffers::{DeserializationError, SerializationError};
 use omnipaxos::ballot_leader_election::Ballot;
