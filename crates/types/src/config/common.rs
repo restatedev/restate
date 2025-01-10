@@ -242,6 +242,12 @@ pub struct CommonOptions {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub initialization_timeout: humantime::Duration,
+
+    /// # Disable telemetry
+    ///
+    /// Restate uses Scarf to collect anonymous usage data to help us understand how the software is being used.
+    /// You can set this flag to true to disable this collection. It can also be set with the environment variable DO_NOT_TRACK=true.
+    pub disable_telemetry: bool,
 }
 
 impl CommonOptions {
@@ -382,6 +388,7 @@ impl Default for CommonOptions {
                 Some(Duration::from_secs(5)),
             ),
             initialization_timeout: Duration::from_secs(5 * 60).into(),
+            disable_telemetry: false,
         }
     }
 }
