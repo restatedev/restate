@@ -585,6 +585,7 @@ mod tests {
     use http::Uri;
     use rand::prelude::ThreadRng;
     use rand::Rng;
+    use restate_types::locality::NodeLocation;
     use std::collections::BTreeMap;
     use std::iter;
     use std::num::NonZero;
@@ -703,6 +704,7 @@ mod tests {
             let node_config = NodeConfig::new(
                 format!("{node_id}"),
                 *node_id,
+                NodeLocation::default(),
                 AdvertisedAddress::Http(Uri::default()),
                 Role::Worker.into(),
                 LogServerConfig::default(),

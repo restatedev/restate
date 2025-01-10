@@ -31,6 +31,7 @@ pub mod identifiers;
 pub mod invocation;
 pub mod journal;
 pub mod live;
+pub mod locality;
 pub mod logs;
 pub mod message;
 pub mod metadata_store;
