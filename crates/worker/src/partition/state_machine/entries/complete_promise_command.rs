@@ -71,6 +71,9 @@ where
                     state: PromiseState::NotCompleted(listeners),
                 }) => {
                     // Send response to listeners
+                    // TODO there's no point here to send an outbox message,
+                    //  because we have the guarantee the the listener has the same partition key, so we could just process the command now.
+                    //  Because we still miss the API for doing that, for now we use the outbox.
                     for listener in listeners {
                         ctx.handle_outgoing_message(OutboxMessage::ServiceResponse(
                             InvocationResponse {

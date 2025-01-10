@@ -27,7 +27,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
-use crate::journal_v2::Signal;
+use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 pub use opentelemetry::trace::TraceId;
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -484,6 +484,20 @@ impl From<&InvocationError> for ResponseResult {
     }
 }
 
+/// Representing a response to GetInvocationOutput for
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GetInvocationOutputResponse {
+    pub caller_id: InvocationId,
+    pub completion_id: CompletionId,
+    pub result: GetInvocationOutputResult,
+}
+
+impl WithInvocationId for GetInvocationOutputResponse {
+    fn invocation_id(&self) -> InvocationId {
+        self.caller_id
+    }
+}
+
 /// Definition of the sink where to send the result of a service invocation.
 #[derive(Debug, PartialEq, Eq, Clone, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ServiceInvocationResponseSink {
@@ -929,7 +943,9 @@ impl WithPartitionKey for InvocationQuery {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AttachInvocationRequest {
     pub invocation_query: InvocationQuery,
-    /// If the invocation is still in-flight when the command is processed, this command will block if this flag is true. Otherwise, the failure [crate::errors::NOT_READY_INVOCATION_ERROR] is sent instead as soon as the command is processed.
+    /// If the invocation is still in-flight when the command is processed,
+    /// this command will block if this flag is true.
+    /// Otherwise, the failure [crate::errors::NOT_READY_INVOCATION_ERROR] is sent instead as soon as the command is processed.
     #[serde(default = "restate_serde_util::default::bool::<true>")]
     pub block_on_inflight: bool,
     pub response_sink: ServiceInvocationResponseSink,

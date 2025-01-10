@@ -298,7 +298,7 @@ pub struct GetInvocationOutputCompletion {
     pub completion_id: CompletionId,
     pub result: GetInvocationOutputResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GetInvocationOutputResult {
     Void,
     Success(Bytes),

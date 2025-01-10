@@ -462,6 +462,21 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                 .await?;
                 Ok(())
             }
+            Command::NotifyGetInvocationOutputResponse(get_invocation_output_response) => {
+                entries::OnJournalEntryCommand::from_entry(
+                    get_invocation_output_response.caller_id,
+                    self.get_invocation_status(&get_invocation_output_response.caller_id)
+                        .await?,
+                    GetInvocationOutputCompletion {
+                        completion_id: get_invocation_output_response.completion_id,
+                        result: get_invocation_output_response.result,
+                    }
+                    .into(),
+                )
+                .apply(self)
+                .await?;
+                Ok(())
+            }
         }
     }
 
@@ -2935,7 +2950,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             + StateTable,
     {
         // We need this code until we remove Service Protocol <= V3, because of the InvocationResponse WAL command.
-        // When we get rid of this WAL command, we can just propose entries notifications in the WAL protocol.
+        // When we get rid of this WAL command, this code should handle just Call and AttachInvocation commands.
 
         let command = self
             .storage

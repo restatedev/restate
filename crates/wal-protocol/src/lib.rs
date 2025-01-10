@@ -16,8 +16,8 @@ use restate_core::{Metadata, ShutdownError};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationResponse, InvocationTermination, NotifySignalRequest,
-    PurgeInvocationRequest, ServiceInvocation,
+    AttachInvocationRequest, GetInvocationOutputResponse, InvocationResponse,
+    InvocationTermination, NotifySignalRequest, PurgeInvocationRequest, ServiceInvocation,
 };
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
@@ -159,8 +159,14 @@ pub enum Command {
     /// Schedule timer
     ScheduleTimer(TimerKeyValue),
     /// Another partition processor is reporting a response of an invocation we requested.
-    /// DEPRECATED: This should be sunset when Journal Table V1 is removed.
+    ///
+    /// KINDA DEPRECATED: When Journal Table V1 is removed, this command should be used only to reply to invocations.
+    /// Now it's abused for a bunch of other scenarios, like replying to get promise and get invocation output.
     InvocationResponse(InvocationResponse),
+
+    // -- New PP <-> PP commands using Journal V2
+    /// Notify Get invocation output
+    NotifyGetInvocationOutputResponse(GetInvocationOutputResponse),
     /// Notify a signal.
     NotifySignal(NotifySignalRequest),
 }
@@ -208,6 +214,7 @@ impl HasRecordKeys for Envelope {
             Command::ScheduleTimer(timer) => Keys::Single(timer.invocation_id().partition_key()),
             Command::InvocationResponse(response) => Keys::Single(response.partition_key()),
             Command::NotifySignal(sig) => Keys::Single(sig.partition_key()),
+            Command::NotifyGetInvocationOutputResponse(res) => Keys::Single(res.partition_key()),
         }
     }
 }
