@@ -139,7 +139,8 @@ pub mod v1 {
         };
         use crate::protobuf_types::v1::journal_entry::{completion_result, CompletionResult, Kind};
         use crate::protobuf_types::v1::outbox_message::{
-            OutboxCancel, OutboxKill, OutboxServiceInvocation, OutboxServiceInvocationResponse,
+            NotifySignal, OutboxCancel, OutboxKill, OutboxServiceInvocation,
+            OutboxServiceInvocationResponse,
         };
         use crate::protobuf_types::v1::service_invocation_response_sink::{
             Ingress, PartitionProcessor, ResponseSink,
@@ -166,9 +167,7 @@ pub mod v1 {
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::journal::raw::RawEntry;
-        use restate_types::journal_v2::{
-            EntryMetadata, NotificationId, NotificationType, SignalId,
-        };
+        use restate_types::journal_v2::{EntryMetadata, NotificationId, NotificationType};
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::storage::{
             StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
@@ -535,13 +534,13 @@ pub mod v1 {
                                 .chain(
                                     waiting_for_signal_indexes
                                         .into_iter()
-                                        .map(|s| SignalId::for_index(s.into()))
+                                        .map(|s| journal_v2::SignalId::for_index(s.into()))
                                         .map(NotificationId::for_signal),
                                 )
                                 .chain(
                                     waiting_for_signal_names
                                         .into_iter()
-                                        .map(|s| SignalId::for_name(s.into()))
+                                        .map(|s| journal_v2::SignalId::for_name(s.into()))
                                         .map(NotificationId::for_signal),
                                 )
                                 .collect(),
@@ -2885,8 +2884,8 @@ pub mod v1 {
                     EntryType::CompletePromiseCommand => {
                         journal_v2::EntryType::Command(journal_v2::CommandType::CompletePromise)
                     }
-                    EntryType::SendNotificationCommand => {
-                        journal_v2::EntryType::Command(journal_v2::CommandType::SendNotification)
+                    EntryType::SendSignalCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::SendSignal)
                     }
                     EntryType::AttachInvocationCommand => {
                         journal_v2::EntryType::Command(journal_v2::CommandType::AttachInvocation)
@@ -3003,8 +3002,8 @@ pub mod v1 {
                     journal_v2::EntryType::Command(journal_v2::CommandType::CompletePromise) => {
                         EntryType::CompletePromiseCommand
                     }
-                    journal_v2::EntryType::Command(journal_v2::CommandType::SendNotification) => {
-                        EntryType::SendNotificationCommand
+                    journal_v2::EntryType::Command(journal_v2::CommandType::SendSignal) => {
+                        EntryType::SendSignalCommand
                     }
                     journal_v2::EntryType::Command(journal_v2::CommandType::AttachInvocation) => {
                         EntryType::AttachInvocationCommand
@@ -3307,6 +3306,44 @@ pub mod v1 {
                             .ok_or(ConversionError::missing_field("response_sink"))??,
                         },
                     ),
+                    outbox_message::OutboxMessage::NotifySignal(NotifySignal {
+                        invocation_id,
+                        signal_id,
+                        result,
+                    }) => restate_storage_api::outbox_table::OutboxMessage::NotifySignal(
+                        restate_types::invocation::NotifySignalRequest {
+                            invocation_id: restate_types::identifiers::InvocationId::try_from(
+                                expect_or_fail!(invocation_id)?,
+                            )?,
+                            signal: journal_v2::Signal::new(
+                                match expect_or_fail!(signal_id)? {
+                                    outbox_message::notify_signal::SignalId::Idx(idx) => {
+                                        journal_v2::SignalId::Index(idx)
+                                    }
+                                    outbox_message::notify_signal::SignalId::Name(name) => {
+                                        journal_v2::SignalId::Name(name.into())
+                                    }
+                                },
+                                match expect_or_fail!(result)? {
+                                    outbox_message::notify_signal::Result::None(_) => {
+                                        journal_v2::SignalResult::Void
+                                    }
+                                    outbox_message::notify_signal::Result::Success(b) => {
+                                        journal_v2::SignalResult::Success(b)
+                                    }
+                                    outbox_message::notify_signal::Result::Failure(
+                                        outbox_message::notify_signal::Failure {
+                                            error_code,
+                                            message,
+                                        },
+                                    ) => journal_v2::SignalResult::Failure(journal_v2::Failure {
+                                        code: error_code.into(),
+                                        message: message.into(),
+                                    }),
+                                },
+                            ),
+                        },
+                    ),
                 };
 
                 Ok(result)
@@ -3379,6 +3416,37 @@ pub mod v1 {
                             response_sink: Some(Some(response_sink).into()),
                         },
                     ),
+                    restate_storage_api::outbox_table::OutboxMessage::NotifySignal(
+                        notify_signal,
+                    ) => {
+                        outbox_message::OutboxMessage::NotifySignal(outbox_message::NotifySignal {
+                            invocation_id: Some(InvocationId::from(notify_signal.invocation_id)),
+                            signal_id: Some(match notify_signal.signal.id {
+                                journal_v2::SignalId::Index(idx) => {
+                                    outbox_message::notify_signal::SignalId::Idx(idx)
+                                }
+                                journal_v2::SignalId::Name(name) => {
+                                    outbox_message::notify_signal::SignalId::Name(name.to_string())
+                                }
+                            }),
+                            result: Some(match notify_signal.signal.result {
+                                journal_v2::SignalResult::Void => {
+                                    outbox_message::notify_signal::Result::None(())
+                                }
+                                journal_v2::SignalResult::Success(b) => {
+                                    outbox_message::notify_signal::Result::Success(b)
+                                }
+                                journal_v2::SignalResult::Failure(f) => {
+                                    outbox_message::notify_signal::Result::Failure(
+                                        outbox_message::notify_signal::Failure {
+                                            error_code: f.code.into(),
+                                            message: f.message.into(),
+                                        },
+                                    )
+                                }
+                            }),
+                        })
+                    }
                 };
 
                 OutboxMessage {

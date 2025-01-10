@@ -15,6 +15,7 @@ use bytestring::ByteString;
 use futures_util::Stream;
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{JournalEntryId, PartitionKey, ServiceId};
+use restate_types::journal::{CompletionResult, EntryResult};
 use restate_types::journal_v2::{
     CompletePromiseValue, Failure, GetPromiseResult, PeekPromiseResult,
 };
@@ -54,6 +55,24 @@ impl From<CompletePromiseValue> for PromiseResult {
         match value {
             CompletePromiseValue::Success(b) => Self::Success(b),
             CompletePromiseValue::Failure(f) => Self::Failure(f.code, f.message),
+        }
+    }
+}
+
+impl From<PromiseResult> for CompletionResult {
+    fn from(value: PromiseResult) -> Self {
+        match value {
+            PromiseResult::Success(s) => CompletionResult::Success(s),
+            PromiseResult::Failure(code, message) => CompletionResult::Failure(code, message),
+        }
+    }
+}
+
+impl From<EntryResult> for PromiseResult {
+    fn from(value: EntryResult) -> Self {
+        match value {
+            EntryResult::Success(b) => Self::Success(b),
+            EntryResult::Failure(code, message) => Self::Failure(code, message),
         }
     }
 }

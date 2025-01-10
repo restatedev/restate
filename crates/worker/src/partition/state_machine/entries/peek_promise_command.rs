@@ -50,7 +50,7 @@ where
                 PeekPromiseResult::Void
             };
 
-        self.then_apply(PeekPromiseCompletion {
+        self.then_apply_completion(PeekPromiseCompletion {
             completion_id: self.entry.completion_id,
             result: peek_promise_result,
         });

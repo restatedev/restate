@@ -51,7 +51,7 @@ where
                 vec![]
             };
 
-        self.then_apply(GetLazyStateKeysCompletion {
+        self.then_apply_completion(GetLazyStateKeysCompletion {
             completion_id: self.entry.completion_id,
             state_keys,
         });

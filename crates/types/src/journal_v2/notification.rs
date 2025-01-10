@@ -125,6 +125,12 @@ impl fmt::Display for CompletionType {
     }
 }
 
+impl From<Completion> for Entry {
+    fn from(value: Completion) -> Self {
+        Entry::Notification(Notification::Completion(value))
+    }
+}
+
 // Little macro to reduce boilerplate for TryFromEntry and EntryMetadata.
 macro_rules! impl_completion_accessors {
     ($ty:ident -> []) => {

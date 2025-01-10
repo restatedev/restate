@@ -315,7 +315,7 @@ gen_message!(
     Call CompletionNotification noparse = 0x0C0C,
     OneWayCall Command allows_ack = 0x0C02,
 
-    SendNotification Command noparse allows_ack = 0x0C04,
+    SendSignal Command noparse allows_ack = 0x0C04,
 
     Run Command noparse allows_ack = 0x0C05,
     Run CompletionNotification noparse = 0x0C0D,

@@ -63,9 +63,9 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
-    InvocationTargetType, InvocationTermination, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SubmitNotificationSink,
-    TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
+    InvocationTargetType, InvocationTermination, NotifySignalRequest, ResponseResult,
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -449,6 +449,17 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             }
             Command::ScheduleTimer(timer) => {
                 self.register_timer(timer, Default::default()).await?;
+                Ok(())
+            }
+            Command::NotifySignal(notify_signal_request) => {
+                entries::OnJournalEntryCommand::from_entry(
+                    notify_signal_request.invocation_id,
+                    self.get_invocation_status(&notify_signal_request.invocation_id)
+                        .await?,
+                    notify_signal_request.signal.into(),
+                )
+                .apply(self)
+                .await?;
                 Ok(())
             }
         }
@@ -980,7 +991,8 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             + JournalTable
             + OutboxTable
             + journal_table_v2::JournalTable
-            + TimerTable,
+            + TimerTable
+            + PromiseTable,
     {
         match termination_flavor {
             TerminationFlavor::Kill => self.on_kill_invocation(invocation_id).await,
@@ -1057,6 +1069,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             + JournalTable
             + OutboxTable
             + journal_table_v2::JournalTable
+            + PromiseTable
             + TimerTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
@@ -1586,14 +1599,14 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                 let status = self.get_invocation_status(&invocation_id).await?;
                 if should_use_journal_table_v2(&status) {
                     // We just apply the journal entry
-                    entries::OnJournalEntryCommand {
+                    entries::OnJournalEntryCommand::from_entry(
                         invocation_id,
-                        invocation_status: status,
-                        entry: journal_v2::Entry::from(SleepCompletion {
+                        status,
+                        SleepCompletion {
                             completion_id: entry_index,
-                        })
-                        .encode::<ServiceProtocolV4Codec>(),
-                    }
+                        }
+                        .into(),
+                    )
                     .apply(self)
                     .await?;
                     return Ok(());
@@ -1758,11 +1771,11 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                 command_index_to_ack,
                 entry,
             } => {
-                entries::OnJournalEntryCommand {
-                    entry,
+                entries::OnJournalEntryCommand::from_raw_entry(
                     invocation_id,
                     invocation_status,
-                }
+                    entry,
+                )
                 .apply(self)
                 .await?;
                 if let Some(command_index_to_ack) = command_index_to_ack {
@@ -1948,7 +1961,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
         if completion_retention_time.is_zero() {
             self.do_free_invocation(invocation_id).await;
         }
-        self.do_drop_journal(invocation_id, journal_length).await;
+        self.do_drop_journal(invocation_id, journal_length).await?;
 
         // Consume inbox and move on
         self.consume_inbox(&invocation_target).await?;
@@ -2398,7 +2411,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                                     service_id,
                                     key,
                                     Promise {
-                                        state: PromiseState::Completed(completion),
+                                        state: PromiseState::Completed(completion.into()),
                                     },
                                 )
                                 .await;
@@ -2424,7 +2437,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                                     service_id,
                                     key,
                                     Promise {
-                                        state: PromiseState::Completed(completion),
+                                        state: PromiseState::Completed(completion.into()),
                                     },
                                 )
                                 .await;
@@ -2917,17 +2930,17 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             + InvocationStatusTable
             + TimerTable
             + FsmTable
-            + OutboxTable,
+            + OutboxTable
+            + PromiseTable
+            + StateTable,
     {
         // We need this code until we remove Service Protocol <= V3, because of the InvocationResponse WAL command.
         // When we get rid of this WAL command, we can just propose entries notifications in the WAL protocol.
 
-        let command = journal_table_v2::JournalTable::get_command_by_completion_id(
-            self.storage,
-            invocation_id,
-            completion.entry_index,
-        )
-        .await?;
+        let command = self
+            .storage
+            .get_command_by_completion_id(invocation_id, completion.entry_index)
+            .await?;
 
         if let Some(cmd) = command {
             let entry: journal_v2::Entry = match cmd.command_type() {
@@ -3021,13 +3034,9 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                 }
             };
 
-            entries::OnJournalEntryCommand {
-                invocation_id,
-                invocation_status: status,
-                entry: entry.encode::<ServiceProtocolV4Codec>(),
-            }
-            .apply(self)
-            .await?;
+            entries::OnJournalEntryCommand::from_entry(invocation_id, status, entry)
+                .apply(self)
+                .await?;
         } else {
             error!(
                 "Got an invocation response, but there is no corresponding command in the journal for completion index {}. This indicates storage corruption.",
@@ -3594,6 +3603,17 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                     invocation_query,
                 )
             }
+            OutboxMessage::NotifySignal(NotifySignalRequest {
+                invocation_id,
+                signal,
+            }) => {
+                debug_if_leader!(
+                    self.is_leader,
+                    restate.outbox.seq = seq_number,
+                    "Notifying signal to {invocation_id} with signal id {:?}",
+                    signal.id,
+                )
+            }
         };
 
         self.storage.put_outbox_message(seq_number, &message).await;
@@ -3767,7 +3787,11 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             .await;
     }
 
-    async fn do_drop_journal(&mut self, invocation_id: InvocationId, journal_length: EntryIndex)
+    async fn do_drop_journal(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    ) -> Result<(), Error>
     where
         S: JournalTable + journal_table_v2::JournalTable,
     {
@@ -3780,7 +3804,8 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
         // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
         JournalTable::delete_journal(self.storage, &invocation_id, journal_length).await;
         journal_table_v2::JournalTable::delete_journal(self.storage, invocation_id, journal_length)
-            .await;
+            .await?;
+        Ok(())
     }
 
     async fn do_truncate_outbox(&mut self, range: RangeInclusive<MessageIndex>) -> Result<(), Error>

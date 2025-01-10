@@ -10,7 +10,6 @@
 
 use crate::partition::state_machine::entries::OnJournalEntryCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::inbox_table::InboxTable;
 use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
@@ -47,13 +46,9 @@ where
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         match self.invocation_status {
             is @ InvocationStatus::Invoked(_) | is @ InvocationStatus::Suspended { .. } => {
-                OnJournalEntryCommand {
-                    invocation_id: self.invocation_id,
-                    invocation_status: is,
-                    entry: CANCEL_SIGNAL.encode::<ServiceProtocolV4Codec>(),
-                }
-                .apply(ctx)
-                .await?;
+                OnJournalEntryCommand::from_entry(self.invocation_id, is, CANCEL_SIGNAL.into())
+                    .apply(ctx)
+                    .await?;
             }
             InvocationStatus::Inboxed(inboxed) => {
                 ctx.terminate_inboxed_invocation(

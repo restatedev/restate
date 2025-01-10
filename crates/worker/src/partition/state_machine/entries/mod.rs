@@ -20,6 +20,7 @@ mod get_lazy_state_keys_command;
 mod get_promise_command;
 mod notification;
 mod peek_promise_command;
+mod send_signal_command;
 mod set_state_command;
 mod sleep_command;
 
@@ -38,6 +39,7 @@ use crate::partition::state_machine::entries::get_lazy_state_keys_command::Apply
 use crate::partition::state_machine::entries::get_promise_command::ApplyGetPromiseCommand;
 use crate::partition::state_machine::entries::notification::ApplyNotificationCommand;
 use crate::partition::state_machine::entries::peek_promise_command::ApplyPeekPromiseCommand;
+use crate::partition::state_machine::entries::send_signal_command::ApplySendSignalCommand;
 use crate::partition::state_machine::entries::set_state_command::ApplySetStateCommand;
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
 use crate::partition::state_machine::lifecycle::VerifyOrMigrateJournalTableToV2Command;
@@ -53,7 +55,9 @@ use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawEntry;
-use restate_types::journal_v2::{CommandType, Entry, EntryMetadata, EntryType};
+use restate_types::journal_v2::{
+    Command, CommandMetadata, Completion, Entry, EntryMetadata, EntryType,
+};
 use std::collections::VecDeque;
 use tracing::info;
 
@@ -61,6 +65,32 @@ pub(super) struct OnJournalEntryCommand {
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_status: InvocationStatus,
     pub(super) entry: RawEntry,
+}
+
+impl OnJournalEntryCommand {
+    pub(super) fn from_entry(
+        invocation_id: InvocationId,
+        invocation_status: InvocationStatus,
+        entry: Entry,
+    ) -> Self {
+        Self {
+            invocation_id,
+            invocation_status,
+            entry: entry.encode::<ServiceProtocolV4Codec>(),
+        }
+    }
+
+    pub(super) fn from_raw_entry(
+        invocation_id: InvocationId,
+        invocation_status: InvocationStatus,
+        entry: RawEntry,
+    ) -> Self {
+        Self {
+            invocation_id,
+            invocation_status,
+            entry,
+        }
+    }
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
@@ -101,151 +131,168 @@ where
         }
 
         let mut entries = VecDeque::from([self.entry]);
-        while let Some(mut entry) = entries.pop_front() {
+        while let Some(entry) = entries.pop_front() {
+            // We need this information to store the journal entry!
+            let mut related_completion_ids = vec![];
+
             // --- Process entry effect
             match entry.ty() {
-                EntryType::Command(CommandType::Input)
-                | EntryType::Command(CommandType::Output)
-                | EntryType::Command(CommandType::Run)
-                | EntryType::Command(CommandType::GetEagerState)
-                | EntryType::Command(CommandType::GetEagerStateKeys) => {
-                    // For these entries, we don't need to perform operations, we just need to store them
-                }
+                EntryType::Command(_) => {
+                    let cmd = entry.decode::<ServiceProtocolV4Codec, Command>()?;
+                    related_completion_ids = cmd.related_completion_ids();
+                    match cmd {
+                        Command::Input(_)
+                        | Command::Output(_)
+                        | Command::Run(_)
+                        | Command::GetEagerState(_)
+                        | Command::GetEagerStateKeys(_) => {
+                            // For these entries, we don't need to perform operations, we just need to store them
+                        }
 
-                EntryType::Command(CommandType::GetLazyState) => {
-                    ApplyGetLazyStateCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
-                EntryType::Command(CommandType::GetLazyStateKeys) => {
-                    ApplyGetLazyStateKeysCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &mut self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
-                EntryType::Command(CommandType::SetState) => {
-                    ApplySetStateCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &mut self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
-                EntryType::Command(CommandType::ClearState) => {
-                    ApplyClearStateCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &mut self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
-                EntryType::Command(CommandType::ClearAllState) => {
-                    ApplyClearAllStateCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &mut self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
+                        Command::GetLazyState(entry) => {
+                            ApplyGetLazyStateCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
+                        Command::SetState(entry) => {
+                            ApplySetStateCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &mut self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
+                        Command::ClearState(entry) => {
+                            ApplyClearStateCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &mut self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
+                        Command::ClearAllState(entry) => {
+                            ApplyClearAllStateCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &mut self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
+                        Command::GetLazyStateKeys(entry) => {
+                            ApplyGetLazyStateKeysCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &mut self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
 
-                EntryType::Command(CommandType::GetPromise) => {
-                    ApplyGetPromiseCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &mut self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
-                EntryType::Command(CommandType::PeekPromise) => {
-                    ApplyPeekPromiseCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &mut self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
-                EntryType::Command(CommandType::CompletePromise) => {
-                    ApplyCompletePromiseCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &mut self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
+                        Command::GetPromise(entry) => {
+                            ApplyGetPromiseCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &mut self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
+                        Command::PeekPromise(entry) => {
+                            ApplyPeekPromiseCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &mut self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
+                        Command::CompletePromise(entry) => {
+                            ApplyCompletePromiseCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &mut self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
 
-                EntryType::Command(CommandType::Sleep) => {
-                    ApplySleepCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
+                        Command::Sleep(entry) => {
+                            ApplySleepCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
 
-                EntryType::Command(CommandType::Call) => {
-                    ApplyCallCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
+                        Command::Call(entry) => {
+                            ApplyCallCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
+                        Command::OneWayCall(entry) => {
+                            ApplyOneWayCallCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
+                        Command::SendSignal(entry) => {
+                            ApplySendSignalCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
+                        Command::AttachInvocation(entry) => {
+                            ApplyAttachInvocationCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
+                        Command::GetInvocationOutput(entry) => {
+                            ApplyGetInvocationOutputCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
+                        }
                     }
-                    .apply(ctx)
-                    .await?;
-                }
-                EntryType::Command(CommandType::OneWayCall) => {
-                    ApplyOneWayCallCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
-
-                EntryType::Command(CommandType::AttachInvocation) => {
-                    ApplyAttachInvocationCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
-                }
-
-                EntryType::Command(CommandType::GetInvocationOutput) => {
-                    ApplyGetInvocationOutputCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &self.invocation_status,
-                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
-                        additional_entries_to_process: &mut entries,
-                    }
-                    .apply(ctx)
-                    .await?;
                 }
 
                 et @ EntryType::Notification(_) => {
@@ -254,7 +301,7 @@ where
                         invocation_status: &mut self.invocation_status,
                         entry: entry
                             .inner
-                            .try_as_notification_mut()
+                            .try_as_notification_ref()
                             .ok_or(Error::BadEntryVariant(et))?,
                     }
                     .apply(ctx)
@@ -267,7 +314,7 @@ where
                         invocation_status: &mut self.invocation_status,
                         entry: entry
                             .inner
-                            .try_as_event_mut()
+                            .try_as_event_ref()
                             .ok_or(Error::BadEntryVariant(EntryType::Event))?,
                     }
                     .apply(ctx)
@@ -291,8 +338,14 @@ where
             );
 
             // Store journal entry
-            JournalTable::put_journal_entry(ctx.storage, self.invocation_id, entry_index, &entry)
-                .await?;
+            JournalTable::put_journal_entry(
+                ctx.storage,
+                self.invocation_id,
+                entry_index,
+                &entry,
+                &related_completion_ids,
+            )
+            .await?;
 
             // Update journal length
             journal_meta.length += 1;
@@ -316,15 +369,12 @@ struct ApplyJournalCommandEffect<'e, CMD> {
     invocation_id: InvocationId,
     invocation_status: &'e InvocationStatus,
     entry: CMD,
-    additional_entries_to_process: &'e mut VecDeque<RawEntry>,
+    completions_to_process: &'e mut VecDeque<RawEntry>,
 }
 
 impl<'e, CMD> ApplyJournalCommandEffect<'e, CMD> {
-    fn then_apply_raw(&mut self, e: RawEntry) {
-        self.additional_entries_to_process.push_back(e);
-    }
-
-    fn then_apply(&mut self, e: impl Into<Entry>) {
-        self.then_apply_raw(e.into().encode::<ServiceProtocolV4Codec>())
+    fn then_apply_completion(&mut self, e: impl Into<Completion>) {
+        self.completions_to_process
+            .push_back(Entry::from(e.into()).encode::<ServiceProtocolV4Codec>())
     }
 }

@@ -37,7 +37,7 @@ where
             invocation_id_notification_idx: self.entry.invocation_id_completion_id,
             execution_time: None,
             result_notification_idx: Some(self.entry.result_completion_id),
-            additional_entries_to_process: self.additional_entries_to_process,
+            completions_to_process: self.completions_to_process,
         }
         .apply(ctx)
         .await
@@ -64,7 +64,7 @@ where
             invocation_id_notification_idx: self.entry.invocation_id_completion_id,
             execution_time,
             result_notification_idx: None,
-            additional_entries_to_process: self.additional_entries_to_process,
+            completions_to_process: self.completions_to_process,
         }
         .apply(ctx)
         .await
@@ -78,7 +78,7 @@ struct _ApplyCallCommand<'e> {
     invocation_id_notification_idx: CompletionId,
     execution_time: Option<MillisSinceEpoch>,
     result_notification_idx: Option<CompletionId>,
-    additional_entries_to_process: &'e mut VecDeque<RawEntry>,
+    completions_to_process: &'e mut VecDeque<RawEntry>,
 }
 
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
@@ -129,7 +129,7 @@ where
             .await?;
 
         // Notify the invocation id back
-        self.additional_entries_to_process.push_back(
+        self.completions_to_process.push_back(
             Entry::from(CallInvocationIdCompletion {
                 completion_id: self.invocation_id_notification_idx,
                 invocation_id,

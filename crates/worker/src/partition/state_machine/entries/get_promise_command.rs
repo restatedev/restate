@@ -44,7 +44,7 @@ where
                     state: PromiseState::Completed(result),
                 }) => {
                     // Result is already available
-                    self.then_apply(GetPromiseCompletion {
+                    self.then_apply_completion(GetPromiseCompletion {
                         completion_id: self.entry.completion_id,
                         result: result.into(),
                     });
@@ -86,7 +86,7 @@ where
                 "Trying to process entry {} for a target that has no promises",
                 self.entry.ty()
             );
-            self.then_apply(GetPromiseCompletion {
+            self.then_apply_completion(GetPromiseCompletion {
                 completion_id: self.entry.completion_id,
                 result: GetPromiseResult::Success(Bytes::new()),
             });

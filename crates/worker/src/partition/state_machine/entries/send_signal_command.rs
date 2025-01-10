@@ -12,29 +12,23 @@ use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::timer_table::TimerTable;
-use restate_types::invocation::{AttachInvocationRequest, ServiceInvocationResponseSink};
-use restate_types::journal_v2::GetInvocationOutputCommand;
+use restate_storage_api::state_table::StateTable;
+use restate_types::invocation::NotifySignalRequest;
+use restate_types::journal_v2::{SendSignalCommand, Signal};
 
-pub(super) type ApplyGetInvocationOutputCommand<'e> =
-    ApplyJournalCommandEffect<'e, GetInvocationOutputCommand>;
+pub(super) type ApplySendSignalCommand<'e> = ApplyJournalCommandEffect<'e, SendSignalCommand>;
 
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for ApplyGetInvocationOutputCommand<'e>
+    for ApplySendSignalCommand<'e>
 where
-    S: TimerTable + OutboxTable + FsmTable,
+    S: StateTable + OutboxTable + FsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        ctx.handle_outgoing_message(OutboxMessage::AttachInvocation(AttachInvocationRequest {
-            invocation_query: self.entry.target.into(),
-            block_on_inflight: false,
-            response_sink: ServiceInvocationResponseSink::partition_processor(
-                self.invocation_id,
-                self.entry.completion_id,
-            ),
+        ctx.handle_outgoing_message(OutboxMessage::NotifySignal(NotifySignalRequest {
+            invocation_id: self.entry.target_invocation_id,
+            signal: Signal::new(self.entry.signal_id, self.entry.result),
         }))
         .await?;
-
         Ok(())
     }
 }

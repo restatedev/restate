@@ -34,7 +34,7 @@ use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::identifiers::PartitionLeaderEpoch;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::Completion;
+use restate_types::journal::{Completion, EntryIndex};
 use restate_types::live::{Live, LiveLoad};
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::deployment::DeploymentResolver;
@@ -677,7 +677,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry_index: CommandIndex,
+        entry_index: EntryIndex,
         entry: EnrichedRawEntry,
         requires_ack: bool,
     ) {
@@ -918,7 +918,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry_indexes: HashSet<CommandIndex>,
+        entry_indexes: HashSet<EntryIndex>,
     ) {
         if let Some((sender, _, ism)) = self
             .invocation_state_machine_manager

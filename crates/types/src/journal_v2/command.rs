@@ -22,7 +22,12 @@ use enum_dispatch::enum_dispatch;
 use std::fmt;
 use std::time::Duration;
 
-#[enum_dispatch(EntryMetadata)]
+#[enum_dispatch]
+pub trait CommandMetadata {
+    fn related_completion_ids(&self) -> Vec<CompletionId>;
+}
+
+#[enum_dispatch(EntryMetadata, CommandMetadata)]
 #[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants)]
 #[strum_discriminants(vis(pub))]
 #[strum_discriminants(name(CommandType))]
@@ -43,7 +48,7 @@ pub enum Command {
     Sleep(SleepCommand),
     Call(CallCommand),
     OneWayCall(OneWayCallCommand),
-    SendNotification(SendNotificationCommand),
+    SendSignal(SendSignalCommand),
     Run(RunCommand),
     AttachInvocation(AttachInvocationCommand),
     GetInvocationOutput(GetInvocationOutputCommand),
@@ -58,6 +63,18 @@ impl Command {
 impl fmt::Display for CommandType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
+    }
+}
+
+impl TryFromEntry for Command {
+    fn try_from(entry: Entry) -> Result<Self, TryFromEntryError> {
+        match entry {
+            Entry::Command(cmd) => Ok(cmd),
+            e => Err(TryFromEntryError {
+                expected: EntryType::Command(CommandType::Input),
+                actual: e.ty(),
+            }),
+        }
     }
 }
 
@@ -93,13 +110,26 @@ macro_rules! impl_command_accessors {
         }
         impl_command_accessors!($ty -> [$($tail)*]);
     };
+    ($ty:ident -> [@no_completion $($tail:tt)*]) => {
+        impl CommandMetadata for paste::paste! { [< $ty Command >] } {
+            fn related_completion_ids(&self) -> Vec<CompletionId> {
+                vec![]
+            }
+        }
+        impl_command_accessors!($ty -> [$($tail)*]);
+    };
+    ($ty:ident -> [@result_completion $($tail:tt)*]) => {
+        impl CommandMetadata for paste::paste! { [< $ty Command >] } {
+            fn related_completion_ids(&self) -> Vec<CompletionId> {
+                vec![self.completion_id]
+            }
+        }
+        impl_command_accessors!($ty -> [$($tail)*]);
+    };
 
-    // Entrypoints of the macro
+    // Entrypoint of the macro
     ($ty:ident: [$($tokens:tt)*]) => {
         impl_command_accessors!($ty -> [$($tokens)*]);
-    };
-    ($ty:ident) => {
-        impl_command_accessors!($ty -> [@metadata @from_entry]);
     };
 }
 
@@ -111,7 +141,7 @@ pub struct InputCommand {
     pub payload: Bytes,
     pub name: ByteString,
 }
-impl_command_accessors!(Input);
+impl_command_accessors!(Input -> [@metadata @from_entry @no_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputCommand {
@@ -123,7 +153,7 @@ pub enum OutputResult {
     Success(Bytes),
     Failure(Failure),
 }
-impl_command_accessors!(Output);
+impl_command_accessors!(Output -> [@metadata @from_entry @no_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetLazyStateCommand {
@@ -131,7 +161,7 @@ pub struct GetLazyStateCommand {
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
-impl_command_accessors!(GetLazyState);
+impl_command_accessors!(GetLazyState -> [@metadata @from_entry @result_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetStateCommand {
@@ -139,27 +169,27 @@ pub struct SetStateCommand {
     pub value: Bytes,
     pub name: ByteString,
 }
-impl_command_accessors!(SetState);
+impl_command_accessors!(SetState -> [@metadata @from_entry @no_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClearStateCommand {
     pub key: ByteString,
     pub name: ByteString,
 }
-impl_command_accessors!(ClearState);
+impl_command_accessors!(ClearState -> [@metadata @from_entry @no_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClearAllStateCommand {
     pub name: ByteString,
 }
-impl_command_accessors!(ClearAllState);
+impl_command_accessors!(ClearAllState -> [@metadata @from_entry @no_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetLazyStateKeysCommand {
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
-impl_command_accessors!(GetLazyStateKeys);
+impl_command_accessors!(GetLazyStateKeys -> [@metadata @from_entry @result_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetEagerStateCommand {
@@ -167,14 +197,14 @@ pub struct GetEagerStateCommand {
     pub result: GetStateResult,
     pub name: ByteString,
 }
-impl_command_accessors!(GetEagerState);
+impl_command_accessors!(GetEagerState -> [@metadata @from_entry @no_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetEagerStateKeysCommand {
     pub state_keys: Vec<String>,
     pub name: ByteString,
 }
-impl_command_accessors!(GetEagerStateKeys);
+impl_command_accessors!(GetEagerStateKeys -> [@metadata @from_entry @no_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetPromiseCommand {
@@ -182,7 +212,7 @@ pub struct GetPromiseCommand {
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
-impl_command_accessors!(GetPromise);
+impl_command_accessors!(GetPromise -> [@metadata @from_entry @result_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeekPromiseCommand {
@@ -190,7 +220,7 @@ pub struct PeekPromiseCommand {
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
-impl_command_accessors!(PeekPromise);
+impl_command_accessors!(PeekPromise -> [@metadata @from_entry @result_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletePromiseCommand {
@@ -204,7 +234,7 @@ pub enum CompletePromiseValue {
     Success(Bytes),
     Failure(Failure),
 }
-impl_command_accessors!(CompletePromise);
+impl_command_accessors!(CompletePromise -> [@metadata @from_entry @result_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SleepCommand {
@@ -212,7 +242,7 @@ pub struct SleepCommand {
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
-impl_command_accessors!(Sleep);
+impl_command_accessors!(Sleep -> [@metadata @from_entry @result_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallRequest {
@@ -232,7 +262,12 @@ pub struct CallCommand {
     pub result_completion_id: CompletionId,
     pub name: ByteString,
 }
-impl_command_accessors!(Call);
+impl_command_accessors!(Call -> [@metadata @from_entry]);
+impl CommandMetadata for CallCommand {
+    fn related_completion_ids(&self) -> Vec<CompletionId> {
+        vec![self.invocation_id_completion_id, self.result_completion_id]
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OneWayCallCommand {
@@ -241,23 +276,28 @@ pub struct OneWayCallCommand {
     pub invocation_id_completion_id: CompletionId,
     pub name: ByteString,
 }
-impl_command_accessors!(OneWayCall);
+impl_command_accessors!(OneWayCall -> [@metadata @from_entry]);
+impl CommandMetadata for OneWayCallCommand {
+    fn related_completion_ids(&self) -> Vec<CompletionId> {
+        vec![self.invocation_id_completion_id]
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SendNotificationCommand {
+pub struct SendSignalCommand {
     pub target_invocation_id: InvocationId,
     pub signal_id: SignalId,
     pub result: SignalResult,
     pub name: ByteString,
 }
-impl_command_accessors!(SendNotification);
+impl_command_accessors!(SendSignal -> [@metadata @from_entry @no_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCommand {
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
-impl_command_accessors!(Run);
+impl_command_accessors!(Run -> [@metadata @from_entry @result_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttachInvocationTarget {
@@ -281,7 +321,7 @@ pub struct AttachInvocationCommand {
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
-impl_command_accessors!(AttachInvocation);
+impl_command_accessors!(AttachInvocation -> [@metadata @from_entry @result_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetInvocationOutputCommand {
@@ -289,4 +329,4 @@ pub struct GetInvocationOutputCommand {
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
-impl_command_accessors!(GetInvocationOutput);
+impl_command_accessors!(GetInvocationOutput -> [@metadata @from_entry @result_completion]);

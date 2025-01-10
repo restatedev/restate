@@ -686,14 +686,12 @@ where
                 self.handle_new_command(mh, RawCommand::new(CommandType::Run, cmd));
                 TerminalLoopState::Continue(())
             }
-            Message::SendNotificationCommand(cmd) => {
+            Message::SendSignalCommand(cmd) => {
                 // Verify the provided InvocationId is valid
-                let _: Entry = crate::shortcircuit!(RawCommand::new(
-                    CommandType::SendNotification,
-                    cmd.clone()
-                )
-                .decode::<ServiceProtocolV4Codec, _>());
-                self.handle_new_command(mh, RawCommand::new(CommandType::SendNotification, cmd));
+                let _: Entry =
+                    crate::shortcircuit!(RawCommand::new(CommandType::SendSignal, cmd.clone())
+                        .decode::<ServiceProtocolV4Codec, _>());
+                self.handle_new_command(mh, RawCommand::new(CommandType::SendSignal, cmd));
                 TerminalLoopState::Continue(())
             }
             Message::OneWayCallCommand(cmd) => {

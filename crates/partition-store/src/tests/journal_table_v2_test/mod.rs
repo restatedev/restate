@@ -21,10 +21,12 @@ use restate_storage_api::Transaction;
 use restate_test_util::let_assert;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
+use restate_types::journal_v2;
 use restate_types::journal_v2::raw::RawCommandSpecificMetadata;
 use restate_types::journal_v2::{
     CallCommand, CallRequest, CommandType, CompletionId, CompletionType, Entry, EntryMetadata,
-    EntryType, NotificationId, NotificationType, SleepCommand, SleepCompletion,
+    EntryType, EventType, NotificationId, NotificationType, OneWayCallCommand, SleepCommand,
+    SleepCompletion,
 };
 
 const MOCK_INVOCATION_ID_1: InvocationId =
@@ -62,6 +64,26 @@ fn mock_call_command(
         invocation_id_completion_id,
         name: Default::default(),
         result_completion_id,
+    })
+}
+
+fn mock_one_way_call_command(invocation_id_completion_id: CompletionId) -> Entry {
+    Entry::from(OneWayCallCommand {
+        request: CallRequest {
+            invocation_id: InvocationId::from_parts(789, InvocationUuid::from_u128(456)),
+            invocation_target: InvocationTarget::Service {
+                name: ByteString::from_static("MySvc"),
+                handler: ByteString::from_static("MyHandler"),
+            },
+            span_context: ServiceInvocationSpanContext::empty(),
+            parameter: Bytes::from_static(b"some payload"),
+            headers: vec![],
+            idempotency_key: Some(ByteString::from_static("my-idempotency-key")),
+            completion_retention_duration: Some(Duration::from_secs(10)),
+        },
+        invoke_time: 0.into(),
+        invocation_id_completion_id,
+        name: Default::default(),
     })
 }
 
@@ -124,7 +146,6 @@ async fn check_sleep_notification_index<T: JournalTable>(txn: &mut T) {
             .await
             .unwrap(),
         (0..5)
-            .into_iter()
             .map(|i| (NotificationId::for_completion(i), i + 5))
             .collect()
     );
@@ -227,13 +248,31 @@ async fn test_call_journal() {
     )
     .await
     .unwrap();
+    txn.put_journal_entry(
+        MOCK_INVOCATION_ID_1,
+        1,
+        &mock_one_way_call_command(2).encode::<ServiceProtocolV4Codec>(),
+        &[2],
+    )
+    .await
+    .unwrap();
 
     // Verify the journal is correct
-    let mut journal = txn.get_journal(MOCK_INVOCATION_ID_1, 1);
+    let mut journal = txn.get_journal(MOCK_INVOCATION_ID_1, 2);
+
+    // First entry is call
     let entry = journal.next().await.unwrap().unwrap().1;
     assert_eq!(entry.ty(), EntryType::Command(CommandType::Call));
     let cmd = entry.inner.try_as_command().unwrap();
     let_assert!(RawCommandSpecificMetadata::CallOrSend(_) = cmd.command_specific_metadata());
+
+    // Second entry is one way call
+    let entry = journal.next().await.unwrap().unwrap().1;
+    assert_eq!(entry.ty(), EntryType::Command(CommandType::OneWayCall));
+    let cmd = entry.inner.try_as_command().unwrap();
+    let_assert!(RawCommandSpecificMetadata::CallOrSend(_) = cmd.command_specific_metadata());
+
+    // No more entries
     assert!(journal.next().await.is_none());
     drop(journal);
 
@@ -248,6 +287,46 @@ async fn test_call_journal() {
             CommandType::Call
         );
     }
+    assert_eq!(
+        txn.get_command_by_completion_id(MOCK_INVOCATION_ID_1, 2)
+            .await
+            .unwrap()
+            .unwrap()
+            .command_type(),
+        CommandType::OneWayCall
+    );
+
+    txn.commit().await.expect("should not fail");
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_event() {
+    let mut rocksdb = storage_test_environment().await;
+
+    let mut txn = rocksdb.transaction();
+
+    let event = journal_v2::Event {
+        ty: EventType::Lifecycle,
+        metadata: [("abc".to_string(), ByteString::from_static("123"))].into(),
+    };
+
+    // Populate
+    txn.put_journal_entry(
+        MOCK_INVOCATION_ID_1,
+        0,
+        &Entry::Event(event.clone()).encode::<ServiceProtocolV4Codec>(),
+        &[],
+    )
+    .await
+    .unwrap();
+
+    // Verify the event is correct
+    let mut journal = txn.get_journal(MOCK_INVOCATION_ID_1, 1);
+    let entry = journal.next().await.unwrap().unwrap().1;
+    assert_eq!(entry.inner.try_as_event().unwrap(), event);
+
+    assert!(journal.next().await.is_none());
+    drop(journal);
 
     txn.commit().await.expect("should not fail");
 }

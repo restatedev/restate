@@ -469,7 +469,7 @@ message OneWayCallCommandMessage {
 // Completable: No
 // Fallible: Yes
 // Type: 0x0C00 + 4
-message SendNotificationCommandMessage {
+message SendSignalCommandMessage {
   string target_invocation_id = 1;
 
   oneof signal_id {

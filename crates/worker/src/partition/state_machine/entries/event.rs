@@ -18,7 +18,7 @@ use restate_types::journal_v2::Event;
 pub(super) struct ApplyEventCommand<'e> {
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_status: &'e mut InvocationStatus,
-    pub(super) entry: &'e mut Event,
+    pub(super) entry: &'e Event,
 }
 
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>

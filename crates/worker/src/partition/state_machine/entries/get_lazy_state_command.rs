@@ -44,7 +44,7 @@ where
                 GetStateResult::Void
             };
 
-        self.then_apply(GetLazyStateCompletion {
+        self.then_apply_completion(GetLazyStateCompletion {
             completion_id: self.entry.completion_id,
             result,
         });

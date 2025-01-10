@@ -18,8 +18,8 @@ use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId};
 use restate_types::invocation::Header;
 use restate_types::journal_v2::encoding::DecodingError;
 use restate_types::journal_v2::raw::{
-    RawCommand, RawCommandSpecificMetadata, RawEntry, RawEntryHeader, RawEntryInner,
-    RawNotification,
+    CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawEntryHeader,
+    RawEntryInner, RawNotification,
 };
 use restate_types::journal_v2::*;
 use std::fmt::Debug;
@@ -99,7 +99,9 @@ impl Encoder for ServiceProtocolV4Codec {
                         parameter,
                         headers,
                         idempotency_key,
-                        ..
+                        invocation_id,
+                        span_context,
+                        completion_retention_duration,
                     },
                 invocation_id_completion_id,
                 result_completion_id,
@@ -122,6 +124,14 @@ impl Encoder for ServiceProtocolV4Codec {
                 }
                 .encode_to_vec(),
             )
+            .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(
+                CallOrSendMetadata {
+                    invocation_id: *invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    span_context: span_context.clone(),
+                    completion_retention_duration: *completion_retention_duration,
+                },
+            ))
             .into(),
 
             Entry::Command(Command::OneWayCall(OneWayCallCommand {
@@ -131,7 +141,9 @@ impl Encoder for ServiceProtocolV4Codec {
                         parameter,
                         headers,
                         idempotency_key,
-                        ..
+                        invocation_id,
+                        span_context,
+                        completion_retention_duration,
                     },
                 invoke_time,
                 invocation_id_completion_id,
@@ -154,6 +166,14 @@ impl Encoder for ServiceProtocolV4Codec {
                 }
                 .encode_to_vec(),
             )
+            .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(
+                CallOrSendMetadata {
+                    invocation_id: *invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    span_context: span_context.clone(),
+                    completion_retention_duration: *completion_retention_duration,
+                },
+            ))
             .into(),
 
             Entry::Command(Command::GetLazyState(GetLazyStateCommand {
@@ -292,14 +312,14 @@ impl Encoder for ServiceProtocolV4Codec {
             )
             .into(),
 
-            Entry::Command(Command::SendNotification(SendNotificationCommand {
+            Entry::Command(Command::SendSignal(SendSignalCommand {
                 target_invocation_id,
                 signal_id,
                 result,
                 name,
             })) => RawCommand::new(
-                CommandType::SendNotification,
-                proto::SendNotificationCommandMessage {
+                CommandType::SendSignal,
+                proto::SendSignalCommandMessage {
                     target_invocation_id: target_invocation_id.to_string(),
                     entry_name: name.to_string(),
                     signal_id: Some(signal_id.clone().into()),
@@ -790,14 +810,14 @@ impl Decoder for ServiceProtocolV4Codec {
                     }
                     .into()
                 }
-                CommandType::SendNotification => {
-                    let proto::SendNotificationCommandMessage {
+                CommandType::SendSignal => {
+                    let proto::SendSignalCommandMessage {
                         target_invocation_id,
                         entry_name,
                         signal_id,
                         result,
-                    } = decode_or_bail!(cmd.serialized_content(), SendNotificationCommandMessage);
-                    SendNotificationCommand {
+                    } = decode_or_bail!(cmd.serialized_content(), SendSignalCommandMessage);
+                    SendSignalCommand {
                         target_invocation_id: to_invocation_id_or_bail!(target_invocation_id),
                         signal_id: get_or_bail!(signal_id).try_into()?,
                         name: entry_name.into(),
@@ -1140,7 +1160,7 @@ impl TryFrom<proto::complete_promise_command_message::Completion> for CompletePr
     }
 }
 
-impl From<SignalId> for proto::send_notification_command_message::SignalId {
+impl From<SignalId> for proto::send_signal_command_message::SignalId {
     fn from(value: SignalId) -> Self {
         match value {
             SignalId::Index(i) => Self::Idx(i),
@@ -1149,15 +1169,13 @@ impl From<SignalId> for proto::send_notification_command_message::SignalId {
     }
 }
 
-impl TryFrom<proto::send_notification_command_message::SignalId> for SignalId {
+impl TryFrom<proto::send_signal_command_message::SignalId> for SignalId {
     type Error = DecodingError;
 
-    fn try_from(
-        value: proto::send_notification_command_message::SignalId,
-    ) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::send_signal_command_message::SignalId) -> Result<Self, Self::Error> {
         Ok(match value {
-            proto::send_notification_command_message::SignalId::Idx(value) => Self::Index(value),
-            proto::send_notification_command_message::SignalId::Name(f) => Self::Name(f.into()),
+            proto::send_signal_command_message::SignalId::Idx(value) => Self::Index(value),
+            proto::send_signal_command_message::SignalId::Name(f) => Self::Name(f.into()),
         })
     }
 }
@@ -1173,7 +1191,7 @@ impl TryFrom<proto::signal_notification_message::SignalId> for SignalId {
     }
 }
 
-impl From<SignalResult> for proto::send_notification_command_message::Result {
+impl From<SignalResult> for proto::send_signal_command_message::Result {
     fn from(value: SignalResult) -> Self {
         match value {
             SignalResult::Void => Self::Void(proto::Void::default()),
@@ -1183,18 +1201,16 @@ impl From<SignalResult> for proto::send_notification_command_message::Result {
     }
 }
 
-impl TryFrom<proto::send_notification_command_message::Result> for SignalResult {
+impl TryFrom<proto::send_signal_command_message::Result> for SignalResult {
     type Error = DecodingError;
 
-    fn try_from(
-        value: proto::send_notification_command_message::Result,
-    ) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::send_signal_command_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
-            proto::send_notification_command_message::Result::Void(_) => Self::Void,
-            proto::send_notification_command_message::Result::Value(value) => {
+            proto::send_signal_command_message::Result::Void(_) => Self::Void,
+            proto::send_signal_command_message::Result::Value(value) => {
                 Self::Success(value.content)
             }
-            proto::send_notification_command_message::Result::Failure(f) => Self::Failure(f.into()),
+            proto::send_signal_command_message::Result::Failure(f) => Self::Failure(f.into()),
         })
     }
 }

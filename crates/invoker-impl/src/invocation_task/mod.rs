@@ -33,7 +33,7 @@ use restate_types::identifiers::{DeploymentId, InvocationId, PartitionLeaderEpoc
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::RawEntryCodecError;
-use restate_types::journal::EntryType;
+use restate_types::journal::{EntryIndex, EntryType};
 use restate_types::journal_v2;
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
@@ -134,7 +134,7 @@ pub(crate) enum InvocationTaskError {
         "got bad SuspensionMessage, suspending on journal indexes {0:?}, but journal length is {1}"
     )]
     #[code(restate_errors::RT0012)]
-    BadSuspensionMessage(HashSet<CommandIndex>, CommandIndex),
+    BadSuspensionMessage(HashSet<EntryIndex>, EntryIndex),
     #[error("malformed ProposeRunCompletion, missing result field")]
     #[code(restate_errors::RT0012)]
     MalformedProposeRunCompletion,
@@ -165,7 +165,7 @@ pub(crate) enum InvocationTaskError {
 
     #[error("cannot process incoming entry at index {0} of type {1}: {2}")]
     #[code(unknown)]
-    EntryEnrichment(CommandIndex, EntryType, #[source] InvocationError),
+    EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
     #[error("cannot process incoming command {0} of type {1}: {2}")]
     #[code(unknown)]
     CommandPrecondition(
@@ -284,7 +284,7 @@ pub(super) enum InvocationTaskOutputInner {
     PinnedDeployment(PinnedDeployment, /* has_changed: */ bool),
     ServerHeaderReceived(String),
     NewEntry {
-        entry_index: CommandIndex,
+        entry_index: EntryIndex,
         entry: EnrichedRawEntry,
         /// If true, the SDK requested to be notified when the entry is correctly stored.
         ///
@@ -307,7 +307,7 @@ pub(super) enum InvocationTaskOutputInner {
         notification: RawNotification,
     },
     Closed,
-    Suspended(HashSet<CommandIndex>),
+    Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
     Failed(InvocationTaskError),
 }
@@ -352,7 +352,7 @@ pub(super) struct InvocationTask<SR, JR, EE, DMR> {
 enum TerminalLoopState<T> {
     Continue(T),
     Closed,
-    Suspended(HashSet<CommandIndex>),
+    Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
     Failed(InvocationTaskError),
 }

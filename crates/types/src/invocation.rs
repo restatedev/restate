@@ -27,6 +27,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
+use crate::journal_v2::Signal;
 pub use opentelemetry::trace::TraceId;
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -937,6 +938,19 @@ pub struct AttachInvocationRequest {
 impl WithPartitionKey for AttachInvocationRequest {
     fn partition_key(&self) -> PartitionKey {
         self.invocation_query.partition_key()
+    }
+}
+
+/// Represents a request to notify a signal to an invocation
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NotifySignalRequest {
+    pub invocation_id: InvocationId,
+    pub signal: Signal,
+}
+
+impl WithInvocationId for NotifySignalRequest {
+    fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
     }
 }
 

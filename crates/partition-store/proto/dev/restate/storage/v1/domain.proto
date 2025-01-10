@@ -531,7 +531,7 @@ message Entry {
     SLEEP_COMMAND = 7;
     CALL_COMMAND = 5;
     ONE_WAY_CALL_COMMAND = 6;
-    SEND_NOTIFICATION_COMMAND = 17;
+    SEND_SIGNAL_COMMAND = 17;
     RUN_COMMAND = 4;
     ATTACH_INVOCATION_COMMAND = 18;
     GET_INVOCATION_OUTPUT_COMMAND = 19;
@@ -620,12 +620,31 @@ message OutboxMessage {
     ServiceInvocationResponseSink response_sink = 5;
   }
 
+  message NotifySignal {
+    message Failure {
+      uint32 error_code = 1;
+      string message = 2;
+    }
+
+    InvocationId invocation_id = 1;
+    oneof signal_id {
+      uint32 idx = 2;
+      string name = 3;
+    }
+    oneof result {
+      google.protobuf.Empty none = 4;
+      bytes success = 5;
+      Failure failure = 6;
+    }
+  }
+
   oneof outbox_message {
     OutboxServiceInvocation service_invocation_case = 1;
     OutboxServiceInvocationResponse service_invocation_response = 2;
     OutboxKill kill = 4;
     OutboxCancel cancel = 5;
     AttachInvocationRequest attach_invocation_request = 6;
+    NotifySignal notify_signal = 7;
   }
 
 }

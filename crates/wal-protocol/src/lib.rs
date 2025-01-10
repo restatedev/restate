@@ -16,8 +16,8 @@ use restate_core::{Metadata, ShutdownError};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationResponse, InvocationTermination, PurgeInvocationRequest,
-    ServiceInvocation,
+    AttachInvocationRequest, InvocationResponse, InvocationTermination, NotifySignalRequest,
+    PurgeInvocationRequest, ServiceInvocation,
 };
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
@@ -159,7 +159,10 @@ pub enum Command {
     /// Schedule timer
     ScheduleTimer(TimerKeyValue),
     /// Another partition processor is reporting a response of an invocation we requested.
+    /// DEPRECATED: This should be sunset when Journal Table V1 is removed.
     InvocationResponse(InvocationResponse),
+    /// Notify a signal.
+    NotifySignal(NotifySignalRequest),
 }
 
 impl Command {
@@ -204,6 +207,7 @@ impl HasRecordKeys for Envelope {
             Command::Timer(timer) => Keys::Single(timer.invocation_id().partition_key()),
             Command::ScheduleTimer(timer) => Keys::Single(timer.invocation_id().partition_key()),
             Command::InvocationResponse(response) => Keys::Single(response.partition_key()),
+            Command::NotifySignal(sig) => Keys::Single(sig.partition_key()),
         }
     }
 }
