@@ -52,7 +52,7 @@ use restate_types::nodes_config::{
 };
 use restate_types::partition_table::{PartitionTable, PartitionTableBuilder, ReplicationStrategy};
 use restate_types::protobuf::common::{
-    AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
+    AdminStatus, IngressStatus, LogServerStatus, NodeRpcStatus, NodeStatus,
     WorkerStatus,
 };
 use restate_types::storage::StorageEncode;
@@ -161,7 +161,7 @@ impl Node {
                         .clone()
                         .map(|config| &config.metadata_store.rocksdb)
                         .boxed(),
-                    health.metadata_server_status(),
+                    health.metadata_store_status(),
                     Some(metadata_writer),
                     &mut server_builder,
                 )
@@ -497,8 +497,8 @@ impl Node {
                     }
                     Role::MetadataStore => {
                         self.health
-                            .metadata_server_status()
-                            .wait_for_value(MetadataServerStatus::Ready)
+                            .metadata_store_status()
+                            .wait_for(|status| status.is_running())
                             .await;
                         trace!("Metadata role is reporting ready");
                     }

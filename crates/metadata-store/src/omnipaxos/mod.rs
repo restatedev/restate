@@ -21,7 +21,7 @@ use restate_rocksdb::RocksError;
 use restate_types::config::RocksDbOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::protobuf::common::MetadataServerStatus;
+use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::storage::{decode_from_flexbuffers, encode_as_flexbuffers};
 use restate_types::PlainNodeId;
 use std::collections::HashMap;
@@ -82,11 +82,11 @@ struct OmniPaxosConfiguration {
 
 pub(crate) async fn create_store(
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    health_status: HealthStatus<MetadataServerStatus>,
+    health_status: HealthStatus<MetadataStoreStatus>,
     metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> Result<MetadataStoreRunner<OmniPaxosMetadataStore>, BuildError> {
-    let store = OmniPaxosMetadataStore::create(rocksdb_options, metadata_writer).await?;
+    let store = OmniPaxosMetadataStore::create(rocksdb_options, metadata_writer, health_status).await?;
 
     server_builder.register_grpc_service(
         MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
@@ -98,7 +98,6 @@ pub(crate) async fn create_store(
 
     Ok(MetadataStoreRunner::new(
         store,
-        health_status,
         server_builder,
     ))
 }
