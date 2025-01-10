@@ -43,6 +43,15 @@ pub mod common {
             write!(f, "e{}", self.value)
         }
     }
+
+    impl MetadataStoreStatus {
+
+        /// Returns true if the metadata store is running which means that it has either taken
+        /// the active or passive role.
+        pub fn is_running(&self) -> bool {
+            matches!(self, MetadataStoreStatus::Active | MetadataStoreStatus::Passive)
+        }
+    }
 }
 
 pub mod cluster {

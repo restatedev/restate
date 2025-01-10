@@ -16,7 +16,7 @@ use restate_rocksdb::RocksError;
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::protobuf::common::MetadataServerStatus;
+use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::{
     config::{MetadataStoreClient as MetadataStoreClientConfig, MetadataStoreClientOptions},
     errors::GenericError,
@@ -59,13 +59,12 @@ pub async fn create_client(
 pub async fn create_store(
     metadata_store_options: &MetadataStoreOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    health_status: HealthStatus<MetadataServerStatus>,
+    health_status: HealthStatus<MetadataStoreStatus>,
     server_builder: &mut NetworkServerBuilder,
 ) -> Result<MetadataStoreRunner<LocalMetadataStore>, RocksError> {
-    let store = LocalMetadataStore::create(metadata_store_options, rocksdb_options).await?;
+    let store = LocalMetadataStore::create(metadata_store_options, rocksdb_options, health_status).await?;
     Ok(MetadataStoreRunner::new(
         store,
-        health_status,
         server_builder,
     ))
 }

@@ -52,7 +52,7 @@ message IdentResponse {
   restate.common.AdminStatus admin_status = 6;
   restate.common.WorkerStatus worker_status = 7;
   restate.common.LogServerStatus log_server_status = 8;
-  restate.common.MetadataServerStatus metadata_server_status = 9;
+  restate.common.MetadataStoreStatus metadata_server_status = 9;
   uint32 nodes_config_version = 10;
   uint32 logs_version = 11;
   uint32 schema_version = 12;

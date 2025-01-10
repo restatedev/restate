@@ -53,6 +53,8 @@ use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, instrument, trace, warn};
 use ulid::Ulid;
+use restate_types::health::HealthStatus;
+use restate_types::protobuf::common::MetadataStoreStatus;
 
 type OmniPaxos = omnipaxos::OmniPaxos<Request, RocksDbStorage<Request>>;
 
@@ -95,6 +97,7 @@ pub struct OmniPaxosMetadataStore {
     rocksdb_storage: RocksDbStorage<Request>,
     storage_id: StorageId,
     metadata_writer: Option<MetadataWriter>,
+    health_status: Option<HealthStatus<MetadataStoreStatus>>,
 
     request_tx: RequestSender,
     request_rx: RequestReceiver,
@@ -110,7 +113,10 @@ impl OmniPaxosMetadataStore {
     pub async fn create(
         rocks_db_options: BoxedLiveLoad<RocksDbOptions>,
         metadata_writer: Option<MetadataWriter>,
+        health_status: HealthStatus<MetadataStoreStatus>,
     ) -> Result<Self, BuildError> {
+        health_status.update(MetadataStoreStatus::StartingUp);
+
         let (request_tx, request_rx) = mpsc::channel(2);
         let (provision_tx, provision_rx) = mpsc::channel(1);
         let (join_cluster_tx, join_cluster_rx) = mpsc::channel(1);
@@ -142,6 +148,7 @@ impl OmniPaxosMetadataStore {
             rocksdb_storage,
             storage_id,
             metadata_writer,
+            health_status: Some(health_status),
             request_tx,
             request_rx,
             provision_tx,
@@ -169,22 +176,26 @@ impl OmniPaxosMetadataStore {
         JoinClusterHandle::new(self.join_cluster_tx.clone())
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
+        let health_status = self.health_status.take().expect("to be present");
 
-        tokio::select! {
+        let result = tokio::select! {
             _ = &mut shutdown => {
                 debug!("Shutting down OmniPaxosMetadataStore");
+                Ok(())
             },
-            result = self.run_inner() => {
-                result.context("OmniPaxosMetadataStore failed")?;
-            }
-        }
+            result = self.run_inner(&health_status) => {
+                result.map(|_| ()).context("OmniPaxosMetadataStore failed")
+            },
+        };
 
-        Ok(())
+        health_status.update(MetadataStoreStatus::Unknown);
+
+        result
     }
 
-    async fn run_inner(mut self) -> anyhow::Result<Never> {
+    async fn run_inner(mut self, health_status: &HealthStatus<MetadataStoreStatus>) -> anyhow::Result<Never> {
         if let Some(metadata_writer) = self.metadata_writer.as_mut() {
             // Try to read a persisted nodes configuration in order to learn about the addresses of our
             // potential peers and the metadata store states.
@@ -199,14 +210,17 @@ impl OmniPaxosMetadataStore {
             }
         }
 
+        health_status.update(MetadataStoreStatus::AwaitingProvisioning);
         let mut provisioned = self.await_provisioning().await?;
 
         loop {
             match provisioned {
                 Provisioned::Active(active) => {
+                    health_status.update(MetadataStoreStatus::Active);
                     provisioned = Provisioned::Passive(active.run().await?);
                 }
                 Provisioned::Passive(passive) => {
+                    health_status.update(MetadataStoreStatus::Passive);
                     provisioned = Provisioned::Active(passive.run().await?);
                 }
             }
@@ -1104,7 +1118,13 @@ impl Passive {
                     match join_configuration {
                         Ok(join_configuration) => {
                             OmniPaxosMetadataStore::prepare_storage(&mut rocksdb_storage, &join_configuration.omni_paxos_configuration, join_configuration.log_prefix)?;
-                            return Ok(Active::new(join_configuration.omni_paxos_configuration, connection_manager, rocksdb_storage, request_rx, join_cluster_rx, metadata_writer));
+                            return Ok(Active::new(
+                                join_configuration.omni_paxos_configuration,
+                                connection_manager,
+                                rocksdb_storage,
+                                request_rx,
+                                join_cluster_rx,
+                                metadata_writer));
                         },
                         Err(err) => {
                             debug!("Failed joining omni paxos cluster. Retrying. {err}");
