@@ -52,8 +52,7 @@ use restate_types::nodes_config::{
 };
 use restate_types::partition_table::{PartitionTable, PartitionTableBuilder, ReplicationStrategy};
 use restate_types::protobuf::common::{
-    AdminStatus, IngressStatus, LogServerStatus, NodeRpcStatus, NodeStatus,
-    WorkerStatus,
+    AdminStatus, IngressStatus, LogServerStatus, NodeRpcStatus, NodeStatus, WorkerStatus,
 };
 use restate_types::storage::StorageEncode;
 use restate_types::{GenerationalNodeId, Version, Versioned};

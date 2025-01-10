@@ -19,6 +19,7 @@ mod util;
 
 use crate::grpc::handler::MetadataStoreHandler;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
+use ::omnipaxos::util::NodeId;
 use assert2::let_assert;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
@@ -36,8 +37,9 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::{flexbuffers_storage_encode_decode, PlainNodeId, Version};
+use std::fmt::{Display, Formatter};
 use std::future::Future;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use ulid::Ulid;
 
 pub type BoxedMetadataStoreService = Box<dyn MetadataStoreService>;
@@ -47,6 +49,9 @@ pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
 
 pub type ProvisionSender = mpsc::Sender<ProvisionRequest>;
 pub type ProvisionReceiver = mpsc::Receiver<ProvisionRequest>;
+
+type StatusWatch = watch::Receiver<MetadataStoreSummary>;
+type StatusSender = watch::Sender<MetadataStoreSummary>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
@@ -151,18 +156,21 @@ pub struct ProvisionRequest {
     result_tx: oneshot::Sender<Result<bool, ProvisionError>>,
 }
 
-pub trait MetadataStoreBackend {
+trait MetadataStoreBackend {
     /// Create a request sender for this backend.
     fn request_sender(&self) -> RequestSender;
 
     /// Create a provision sender for this backend.
     fn provision_sender(&self) -> Option<ProvisionSender>;
 
+    /// Create a status watch for this backend.
+    fn status_watch(&self) -> Option<StatusWatch>;
+
     /// Run the metadata store backend
     fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static;
 }
 
-pub struct MetadataStoreRunner<S> {
+struct MetadataStoreRunner<S> {
     store: S,
 }
 
@@ -170,21 +178,17 @@ impl<S> MetadataStoreRunner<S>
 where
     S: MetadataStoreBackend,
 {
-    pub fn new(
-        store: S,
-        server_builder: &mut NetworkServerBuilder,
-    ) -> Self {
+    pub fn new(store: S, server_builder: &mut NetworkServerBuilder) -> Self {
         server_builder.register_grpc_service(
             MetadataStoreSvcServer::new(MetadataStoreHandler::new(
                 store.request_sender(),
                 store.provision_sender(),
+                store.status_watch(),
             )),
             grpc_svc::FILE_DESCRIPTOR_SET,
         );
 
-        Self {
-            store,
-        }
+        Self { store }
     }
 }
 
@@ -194,9 +198,7 @@ where
     S: MetadataStoreBackend + Send,
 {
     async fn run(self) -> anyhow::Result<()> {
-        let MetadataStoreRunner {
-            store,
-        } = self;
+        let MetadataStoreRunner { store } = self;
 
         store.run().await?;
 
@@ -482,4 +484,63 @@ impl JoinClusterHandle {
 
         response_rx.await.map_err(|_| ShutdownError)?
     }
+}
+
+/// Identifier to detect the loss of a disk.
+type StorageId = u64;
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    prost_dto::IntoProst,
+    prost_dto::FromProst,
+)]
+#[prost(target = "crate::grpc_svc::MemberId")]
+pub struct MemberId {
+    node_id: NodeId,
+    storage_id: StorageId,
+}
+
+impl MemberId {
+    fn new(node_id: NodeId, storage_id: StorageId) -> Self {
+        MemberId {
+            node_id,
+            storage_id,
+        }
+    }
+}
+
+impl Display for MemberId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let plain_node_id = PlainNodeId::new(
+            u32::try_from(self.node_id).expect("node ids should be derived from PlainNodeIds"),
+        );
+        write!(f, "{}:{:#x}", plain_node_id, self.storage_id)
+    }
+}
+
+/// Status summary of the metadata store.
+#[derive(Clone, Debug, Default)]
+enum MetadataStoreSummary {
+    #[default]
+    Starting,
+    Provisioning,
+    Passive,
+    Active {
+        leader: Option<MemberId>,
+        configuration: MetadataStoreConfiguration,
+    },
+}
+
+#[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
+#[prost(target = "crate::grpc_svc::MetadataStoreConfiguration")]
+struct MetadataStoreConfiguration {
+    id: u32,
+    members: Vec<MemberId>,
 }
