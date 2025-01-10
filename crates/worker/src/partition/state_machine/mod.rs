@@ -50,9 +50,10 @@ use restate_storage_api::timer_table::{Timer, TimerTable};
 use restate_storage_api::Result as StorageResult;
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::errors::{
-    InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR, ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
-    CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
-    NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    GenericError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
+    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
+    NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
+    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
@@ -80,7 +81,9 @@ use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{
-    CallCompletion, CommandType, EntryMetadata, NotificationId, SleepCompletion,
+    AttachInvocationCompletion, AttachInvocationResult, CallCompletion, CallResult, CommandType,
+    CompletionId, EntryMetadata, GetInvocationOutputCompletion, GetInvocationOutputResult,
+    GetPromiseCompletion, GetPromiseResult, NotificationId, SleepCompletion,
 };
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
@@ -142,10 +145,18 @@ pub enum Error {
     Storage(#[from] restate_storage_api::StorageError),
     #[error("expecting entry type {0:?}, but wasn't. This indicates data corruption.")]
     BadEntryVariant(journal_v2::EntryType),
+    #[error("error when trying to apply command effect for entry {0:?}. Reason: {1}")]
+    ApplyCommandEffect(journal_v2::EntryType, GenericError),
     #[error(transparent)]
     EntryEncoding(#[from] journal_v2::encoding::DecodingError),
     #[error("failed to deserialize entry: {0}")]
     EntryDecoding(#[from] journal_v2::raw::RawEntryError),
+    #[error("error when trying to apply invocation response with completion id {1}, the entry type {0} is not expected to be completed through InvocationResponse command")]
+    BadCommandTypeForInvocationResponse(journal_v2::CommandType, CompletionId),
+    #[error("error when trying to apply invocation response with completion id {0}, because no command was found for given completion id")]
+    MissingCommandForInvocationResponse(CompletionId),
+    #[error("error when trying to apply invocation response with completion id {1}, the entry type {0} doesn't expect variant {2}")]
+    BadCompletionVariantForInvocationResponse(journal_v2::CommandType, CompletionId, &'static str),
 }
 
 #[macro_export]
@@ -397,29 +408,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                 let status = self.get_invocation_status(&id).await?;
 
                 if should_use_journal_table_v2(&status) {
-                    // We just apply the journal entry
-                    entries::OnJournalEntryCommand {
-                        invocation_id: id,
-                        invocation_status: status,
-                        entry: journal_v2::Entry::from(
-                            CallCompletion {
-                                completion_id: completion.entry_index,
-                                result: match completion.result {
-                                    CompletionResult::Success(s) => journal_v2::CallResult::Success(s),
-                                    CompletionResult::Failure(c, m) => {
-                                        journal_v2::CallResult::Failure(journal_v2::Failure {
-                                            code: c,
-                                            message: m,
-                                        })
-                                    }
-                                    CompletionResult::Empty => {
-                                        panic!("In journal table v2, the InvocationResponse message MUST not be used to send empty, as invocations cannot reply with empty. Most likely there is a bug where this command is used to send awakeable results.")
-                                    }
-                                },
-                            }
-                        ).encode::<ServiceProtocolV4Codec>(),
-                    }
-                        .apply(self)
+                    self.handle_invocation_response_for_journal_v2(id, status, completion)
                         .await?;
                     return Ok(());
                 }
@@ -1122,7 +1111,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                             waiting_for_notifications
                                 .into_iter()
                                 .map(|n| match n {
-                                    NotificationId::CompletionIndex(idx) => idx,
+                                    NotificationId::CompletionId(idx) => idx,
                                     _ => panic!("When using Service Protocol <= 3, an invocation cannot be suspended on a named notification")
                                 }).collect()
 
@@ -2916,6 +2905,142 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
         )
     }
 
+    async fn handle_invocation_response_for_journal_v2(
+        &mut self,
+        invocation_id: InvocationId,
+        status: InvocationStatus,
+        completion: Completion,
+    ) -> Result<(), Error>
+    where
+        S: JournalTable
+            + journal_table_v2::JournalTable
+            + InvocationStatusTable
+            + TimerTable
+            + FsmTable
+            + OutboxTable,
+    {
+        // We need this code until we remove Service Protocol <= V3, because of the InvocationResponse WAL command.
+        // When we get rid of this WAL command, we can just propose entries notifications in the WAL protocol.
+
+        let command = journal_table_v2::JournalTable::get_command_by_completion_id(
+            self.storage,
+            invocation_id,
+            completion.entry_index,
+        )
+        .await?;
+
+        if let Some(cmd) = command {
+            let entry: journal_v2::Entry = match cmd.command_type() {
+                CommandType::GetPromise => GetPromiseCompletion {
+                    completion_id: completion.entry_index,
+                    result: match completion.result {
+                        CompletionResult::Success(s) => GetPromiseResult::Success(s),
+                        CompletionResult::Failure(code, message) => {
+                            GetPromiseResult::Failure(journal_v2::Failure { code, message })
+                        }
+                        CompletionResult::Empty => {
+                            return Err(Error::BadCompletionVariantForInvocationResponse(
+                                CommandType::GetPromise,
+                                completion.entry_index,
+                                "Empty",
+                            ))
+                        }
+                    },
+                }
+                .into(),
+                CommandType::Sleep => SleepCompletion {
+                    completion_id: completion.entry_index,
+                }
+                .into(),
+                CommandType::Call => CallCompletion {
+                    completion_id: completion.entry_index,
+                    result: match completion.result {
+                        CompletionResult::Success(s) => CallResult::Success(s),
+                        CompletionResult::Failure(code, message) => {
+                            CallResult::Failure(journal_v2::Failure { code, message })
+                        }
+                        CompletionResult::Empty => {
+                            return Err(Error::BadCompletionVariantForInvocationResponse(
+                                CommandType::Call,
+                                completion.entry_index,
+                                "Empty",
+                            ))
+                        }
+                    },
+                }
+                .into(),
+                CommandType::AttachInvocation => AttachInvocationCompletion {
+                    completion_id: completion.entry_index,
+                    result: match completion.result {
+                        CompletionResult::Success(s) => AttachInvocationResult::Success(s),
+                        CompletionResult::Failure(code, message) => {
+                            AttachInvocationResult::Failure(journal_v2::Failure { code, message })
+                        }
+                        CompletionResult::Empty => {
+                            return Err(Error::BadCompletionVariantForInvocationResponse(
+                                CommandType::AttachInvocation,
+                                completion.entry_index,
+                                "Empty",
+                            ))
+                        }
+                    },
+                }
+                .into(),
+                CommandType::GetInvocationOutput => {
+                    GetInvocationOutputCompletion {
+                        completion_id: completion.entry_index,
+                        result: match completion.result {
+                            CompletionResult::Success(s) => GetInvocationOutputResult::Success(s),
+                            failure @ CompletionResult::Failure(_, _)
+                                if failure
+                                    == CompletionResult::from(&NOT_READY_INVOCATION_ERROR) =>
+                            {
+                                // Corner case with old journal/state machine
+                                GetInvocationOutputResult::Void
+                            }
+                            CompletionResult::Failure(code, message) => {
+                                GetInvocationOutputResult::Failure(journal_v2::Failure {
+                                    code,
+                                    message,
+                                })
+                            }
+                            CompletionResult::Empty => GetInvocationOutputResult::Void,
+                        },
+                    }
+                    .into()
+                }
+                cmd_ty => {
+                    error!(
+                        "Got an invocation response, the command type {cmd_ty} is unexpected for completion index {}. This indicates storage corruption.",
+                        completion.entry_index
+                    );
+                    return Err(Error::BadCommandTypeForInvocationResponse(
+                        cmd_ty,
+                        completion.entry_index,
+                    ));
+                }
+            };
+
+            entries::OnJournalEntryCommand {
+                invocation_id,
+                invocation_status: status,
+                entry: entry.encode::<ServiceProtocolV4Codec>(),
+            }
+            .apply(self)
+            .await?;
+        } else {
+            error!(
+                "Got an invocation response, but there is no corresponding command in the journal for completion index {}. This indicates storage corruption.",
+                completion.entry_index
+            );
+            return Err(Error::MissingCommandForInvocationResponse(
+                completion.entry_index,
+            ));
+        }
+
+        Ok(())
+    }
+
     async fn handle_completion(
         &mut self,
         invocation_id: InvocationId,
@@ -2944,7 +3069,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                     &waiting_for_notifications
                         .into_iter()
                         .map(|n| match n {
-                            NotificationId::CompletionIndex(idx) => idx,
+                            NotificationId::CompletionId(idx) => idx,
                             _ => panic!("When using Service Protocol <= 3, an invocation cannot be suspended on a named notification")
                         }).collect()
                     ,
@@ -3338,7 +3463,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                     metadata,
                     waiting_for_notifications: waiting_for_completed_entries
                         .into_iter()
-                        .map(NotificationId::CompletionIndex)
+                        .map(NotificationId::CompletionId)
                         .collect(),
                 },
             )

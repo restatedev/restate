@@ -61,6 +61,10 @@ message SequenceNumber {
   uint64 sequence_number = 1;
 }
 
+message JournalEntryIndex {
+  uint32 entry_index = 1;
+}
+
 message JournalEntryId {
   uint64 partition_key = 1;
   bytes invocation_uuid = 2;
@@ -562,12 +566,6 @@ message Entry {
     uint32 signal_idx = 8;
     string signal_name = 9;
   }
-}
-
-message NotificationsIndex {
-  map<uint32, uint32> completion_idx_to_journal_idx = 1;
-  map<uint32, uint32> signal_idx_to_journal_idx = 2;
-  map<string, uint32> signal_name_to_journal_idx = 3;
 }
 
 message ResponseResult {

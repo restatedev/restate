@@ -10,16 +10,57 @@
 
 use super::Result;
 
+use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::Stream;
+use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{JournalEntryId, PartitionKey, ServiceId};
-use restate_types::journal::EntryResult;
+use restate_types::journal_v2::{
+    CompletePromiseValue, Failure, GetPromiseResult, PeekPromiseResult,
+};
 use std::future::Future;
 use std::ops::RangeInclusive;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromiseResult {
+    Success(Bytes),
+    Failure(InvocationErrorCode, ByteString),
+}
+
+impl From<PromiseResult> for GetPromiseResult {
+    fn from(value: PromiseResult) -> Self {
+        match value {
+            PromiseResult::Success(s) => GetPromiseResult::Success(s),
+            PromiseResult::Failure(code, message) => {
+                GetPromiseResult::Failure(Failure { code, message })
+            }
+        }
+    }
+}
+
+impl From<PromiseResult> for PeekPromiseResult {
+    fn from(value: PromiseResult) -> Self {
+        match value {
+            PromiseResult::Success(s) => PeekPromiseResult::Success(s),
+            PromiseResult::Failure(code, message) => {
+                PeekPromiseResult::Failure(Failure { code, message })
+            }
+        }
+    }
+}
+
+impl From<CompletePromiseValue> for PromiseResult {
+    fn from(value: CompletePromiseValue) -> Self {
+        match value {
+            CompletePromiseValue::Success(b) => Self::Success(b),
+            CompletePromiseValue::Failure(f) => Self::Failure(f.code, f.message),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PromiseState {
-    Completed(EntryResult),
+    Completed(PromiseResult),
     NotCompleted(
         // Journal entries listening for this promise to be completed
         Vec<JournalEntryId>,

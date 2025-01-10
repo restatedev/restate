@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::identifiers::{IdempotencyId, InvocationId, ServiceId};
-use crate::invocation::{Header, InvocationTarget, ServiceInvocationSpanContext};
+use crate::invocation::{Header, InvocationQuery, InvocationTarget, ServiceInvocationSpanContext};
 use crate::journal_v2::raw::{RawEntry, TryFromEntry, TryFromEntryError};
 use crate::journal_v2::{
     CompletionId, Encoder, Entry, EntryMetadata, EntryType, Failure, GetStateResult, SignalId,
@@ -21,10 +21,9 @@ use bytestring::ByteString;
 use enum_dispatch::enum_dispatch;
 use std::fmt;
 use std::time::Duration;
-use strum::EnumDiscriminants;
 
 #[enum_dispatch(EntryMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq, EnumDiscriminants)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants)]
 #[strum_discriminants(vis(pub))]
 #[strum_discriminants(name(CommandType))]
 #[strum_discriminants(derive(serde::Serialize, serde::Deserialize))]
@@ -265,6 +264,15 @@ pub enum AttachInvocationTarget {
     InvocationId(InvocationId),
     IdempotentRequest(IdempotencyId),
     Workflow(ServiceId),
+}
+impl From<AttachInvocationTarget> for InvocationQuery {
+    fn from(value: AttachInvocationTarget) -> Self {
+        match value {
+            AttachInvocationTarget::InvocationId(iid) => Self::Invocation(iid),
+            AttachInvocationTarget::IdempotentRequest(iid) => Self::IdempotencyId(iid),
+            AttachInvocationTarget::Workflow(wfid) => Self::Workflow(wfid),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

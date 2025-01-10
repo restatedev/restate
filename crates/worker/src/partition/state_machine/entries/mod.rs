@@ -8,17 +8,37 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod attach_invocation_command;
 mod call_commands;
+mod clear_all_state_command;
+mod clear_state_command;
+mod complete_promise_command;
 mod event;
+mod get_invocation_output_command;
+mod get_lazy_state_command;
+mod get_lazy_state_keys_command;
+mod get_promise_command;
 mod notification;
+mod peek_promise_command;
+mod set_state_command;
 mod sleep_command;
 
 use crate::debug_if_leader;
+use crate::partition::state_machine::entries::attach_invocation_command::ApplyAttachInvocationCommand;
 use crate::partition::state_machine::entries::call_commands::{
     ApplyCallCommand, ApplyOneWayCallCommand,
 };
+use crate::partition::state_machine::entries::clear_all_state_command::ApplyClearAllStateCommand;
+use crate::partition::state_machine::entries::clear_state_command::ApplyClearStateCommand;
+use crate::partition::state_machine::entries::complete_promise_command::ApplyCompletePromiseCommand;
 use crate::partition::state_machine::entries::event::ApplyEventCommand;
+use crate::partition::state_machine::entries::get_invocation_output_command::ApplyGetInvocationOutputCommand;
+use crate::partition::state_machine::entries::get_lazy_state_command::ApplyGetLazyStateCommand;
+use crate::partition::state_machine::entries::get_lazy_state_keys_command::ApplyGetLazyStateKeysCommand;
+use crate::partition::state_machine::entries::get_promise_command::ApplyGetPromiseCommand;
 use crate::partition::state_machine::entries::notification::ApplyNotificationCommand;
+use crate::partition::state_machine::entries::peek_promise_command::ApplyPeekPromiseCommand;
+use crate::partition::state_machine::entries::set_state_command::ApplySetStateCommand;
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
 use crate::partition::state_machine::lifecycle::VerifyOrMigrateJournalTableToV2Command;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
@@ -28,10 +48,12 @@ use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationS
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::JournalTable;
 use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::promise_table::PromiseTable;
+use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawEntry;
-use restate_types::journal_v2::{CommandType, EntryMetadata, EntryType};
+use restate_types::journal_v2::{CommandType, Entry, EntryMetadata, EntryType};
 use std::collections::VecDeque;
 use tracing::info;
 
@@ -49,7 +71,9 @@ where
         + InvocationStatusTable
         + TimerTable
         + FsmTable
-        + OutboxTable,
+        + OutboxTable
+        + PromiseTable
+        + StateTable,
 {
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         if !matches!(self.invocation_status, InvocationStatus::Invoked(_))
@@ -80,25 +104,111 @@ where
         while let Some(mut entry) = entries.pop_front() {
             // --- Process entry effect
             match entry.ty() {
-                EntryType::Command(CommandType::Input) => {
-                    // Nothing to do, just process it
+                EntryType::Command(CommandType::Input)
+                | EntryType::Command(CommandType::Output)
+                | EntryType::Command(CommandType::Run)
+                | EntryType::Command(CommandType::GetEagerState)
+                | EntryType::Command(CommandType::GetEagerStateKeys) => {
+                    // For these entries, we don't need to perform operations, we just need to store them
                 }
-                EntryType::Command(CommandType::Run) => {
-                    // Just store it
-                }
-                EntryType::Command(CommandType::Sleep) => {
-                    ApplySleepCommand {
+
+                EntryType::Command(CommandType::GetLazyState) => {
+                    ApplyGetLazyStateCommand {
                         invocation_id: self.invocation_id,
-                        invocation_status: &mut self.invocation_status,
+                        invocation_status: &self.invocation_status,
                         entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
                     }
                     .apply(ctx)
                     .await?;
                 }
+                EntryType::Command(CommandType::GetLazyStateKeys) => {
+                    ApplyGetLazyStateKeysCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: &mut self.invocation_status,
+                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
+                    }
+                    .apply(ctx)
+                    .await?;
+                }
+                EntryType::Command(CommandType::SetState) => {
+                    ApplySetStateCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: &mut self.invocation_status,
+                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
+                    }
+                    .apply(ctx)
+                    .await?;
+                }
+                EntryType::Command(CommandType::ClearState) => {
+                    ApplyClearStateCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: &mut self.invocation_status,
+                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
+                    }
+                    .apply(ctx)
+                    .await?;
+                }
+                EntryType::Command(CommandType::ClearAllState) => {
+                    ApplyClearAllStateCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: &mut self.invocation_status,
+                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
+                    }
+                    .apply(ctx)
+                    .await?;
+                }
+
+                EntryType::Command(CommandType::GetPromise) => {
+                    ApplyGetPromiseCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: &mut self.invocation_status,
+                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
+                    }
+                    .apply(ctx)
+                    .await?;
+                }
+                EntryType::Command(CommandType::PeekPromise) => {
+                    ApplyPeekPromiseCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: &mut self.invocation_status,
+                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
+                    }
+                    .apply(ctx)
+                    .await?;
+                }
+                EntryType::Command(CommandType::CompletePromise) => {
+                    ApplyCompletePromiseCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: &mut self.invocation_status,
+                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
+                    }
+                    .apply(ctx)
+                    .await?;
+                }
+
+                EntryType::Command(CommandType::Sleep) => {
+                    ApplySleepCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: &self.invocation_status,
+                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
+                    }
+                    .apply(ctx)
+                    .await?;
+                }
+
                 EntryType::Command(CommandType::Call) => {
                     ApplyCallCommand {
-                        caller_invocation_id: self.invocation_id,
-                        caller_invocation_status: &self.invocation_status,
+                        invocation_id: self.invocation_id,
+                        invocation_status: &self.invocation_status,
                         entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
                         additional_entries_to_process: &mut entries,
                     }
@@ -107,17 +217,37 @@ where
                 }
                 EntryType::Command(CommandType::OneWayCall) => {
                     ApplyOneWayCallCommand {
-                        caller_invocation_id: self.invocation_id,
-                        caller_invocation_status: &self.invocation_status,
+                        invocation_id: self.invocation_id,
+                        invocation_status: &self.invocation_status,
                         entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
                         additional_entries_to_process: &mut entries,
                     }
                     .apply(ctx)
                     .await?;
                 }
-                EntryType::Command(CommandType::Output) => {
-                    // Just store it, on End we send back the responses
+
+                EntryType::Command(CommandType::AttachInvocation) => {
+                    ApplyAttachInvocationCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: &self.invocation_status,
+                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
+                    }
+                    .apply(ctx)
+                    .await?;
                 }
+
+                EntryType::Command(CommandType::GetInvocationOutput) => {
+                    ApplyGetInvocationOutputCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: &self.invocation_status,
+                        entry: entry.decode::<ServiceProtocolV4Codec, _>()?,
+                        additional_entries_to_process: &mut entries,
+                    }
+                    .apply(ctx)
+                    .await?;
+                }
+
                 et @ EntryType::Notification(_) => {
                     ApplyNotificationCommand {
                         invocation_id: self.invocation_id,
@@ -130,6 +260,7 @@ where
                     .apply(ctx)
                     .await?;
                 }
+
                 EntryType::Event => {
                     ApplyEventCommand {
                         invocation_id: self.invocation_id,
@@ -142,7 +273,6 @@ where
                     .apply(ctx)
                     .await?;
                 }
-                _ => todo!("slinkydeveloper tomorrow i need to finish this!"),
             };
 
             // -- Append journal entry
@@ -179,5 +309,22 @@ where
             .await;
 
         Ok(())
+    }
+}
+
+struct ApplyJournalCommandEffect<'e, CMD> {
+    invocation_id: InvocationId,
+    invocation_status: &'e InvocationStatus,
+    entry: CMD,
+    additional_entries_to_process: &'e mut VecDeque<RawEntry>,
+}
+
+impl<'e, CMD> ApplyJournalCommandEffect<'e, CMD> {
+    fn then_apply_raw(&mut self, e: RawEntry) {
+        self.additional_entries_to_process.push_back(e);
+    }
+
+    fn then_apply(&mut self, e: impl Into<Entry>) {
+        self.then_apply_raw(e.into().encode::<ServiceProtocolV4Codec>())
     }
 }

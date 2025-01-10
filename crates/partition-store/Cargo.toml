@@ -51,6 +51,7 @@ restate-core = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
 restate-storage-api = { workspace = true, features = ["test-util"] }
 
 criterion = { workspace = true, features = ["async_tokio"] }

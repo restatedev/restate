@@ -6700,6 +6700,7 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-rocksdb",
+ "restate-service-protocol-v4",
  "restate-storage-api",
  "restate-test-util",
  "restate-types",

@@ -152,8 +152,8 @@ pub mod v1 {
             DedupSequenceNumber, Duration, EnrichedEntryHeader, Entry, EntryResult,
             EpochSequenceNumber, Header, IdempotencyId, IdempotencyMetadata, InboxEntry,
             InvocationId, InvocationResolutionResult, InvocationStatus, InvocationStatusV2,
-            InvocationTarget, InvocationV2Lite, JournalEntry, JournalEntryId, JournalMeta, KvPair,
-            NotificationsIndex, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
+            InvocationTarget, InvocationV2Lite, JournalEntry, JournalEntryId, JournalEntryIndex,
+            JournalMeta, KvPair, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
             ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext, SpanRelation,
             StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
         };
@@ -325,6 +325,48 @@ pub mod v1 {
                             error_code,
                             message,
                         }) => restate_types::journal::EntryResult::Failure(
+                            error_code.into(),
+                            ByteString::try_from(message).map_err(ConversionError::invalid_data)?,
+                        ),
+                    },
+                )
+            }
+        }
+
+        impl From<restate_storage_api::promise_table::PromiseResult> for EntryResult {
+            fn from(value: restate_storage_api::promise_table::PromiseResult) -> Self {
+                match value {
+                    restate_storage_api::promise_table::PromiseResult::Success(s) => EntryResult {
+                        result: Some(entry_result::Result::Value(s)),
+                    },
+                    restate_storage_api::promise_table::PromiseResult::Failure(code, message) => {
+                        EntryResult {
+                            result: Some(entry_result::Result::Failure(entry_result::Failure {
+                                error_code: code.into(),
+                                message: message.into_bytes(),
+                            })),
+                        }
+                    }
+                }
+            }
+        }
+
+        impl TryFrom<EntryResult> for restate_storage_api::promise_table::PromiseResult {
+            type Error = ConversionError;
+
+            fn try_from(value: EntryResult) -> Result<Self, ConversionError> {
+                Ok(
+                    match value
+                        .result
+                        .ok_or(ConversionError::missing_field("result"))?
+                    {
+                        entry_result::Result::Value(s) => {
+                            restate_storage_api::promise_table::PromiseResult::Success(s)
+                        }
+                        entry_result::Result::Failure(entry_result::Failure {
+                            error_code,
+                            message,
+                        }) => restate_storage_api::promise_table::PromiseResult::Failure(
                             error_code.into(),
                             ByteString::try_from(message).map_err(ConversionError::invalid_data)?,
                         ),
@@ -754,7 +796,7 @@ pub mod v1 {
                         let mut waiting_for_signal_names: Vec<String> = Default::default();
                         for id in waiting_for_notifications {
                             match id {
-                                journal_v2::NotificationId::CompletionIndex(c) => {
+                                journal_v2::NotificationId::CompletionId(c) => {
                                     waiting_for_completions.push(c);
                                 }
                                 journal_v2::NotificationId::SignalIndex(c) => {
@@ -1052,7 +1094,7 @@ pub mod v1 {
                         waiting_for_notifications
                             .into_iter()
                             .map(|notification_id| match notification_id {
-                                NotificationId::CompletionIndex(c) => c,
+                                NotificationId::CompletionId(c) => c,
                                 _ => {
                                     panic!("Unsupported waiting signals with old invocation status")
                                 }
@@ -3064,7 +3106,7 @@ pub mod v1 {
                                 .ok_or(ConversionError::missing_field("notification_id"))?
                             {
                                 entry::NotificationId::CompletionIdx(c) => {
-                                    journal_v2::NotificationId::CompletionIndex(c)
+                                    journal_v2::NotificationId::CompletionId(c)
                                 }
                                 entry::NotificationId::SignalIdx(c) => {
                                     journal_v2::NotificationId::SignalIndex(c)
@@ -3136,7 +3178,7 @@ pub mod v1 {
                     }
                     journal_v2::raw::RawEntryInner::Notification(notification) => {
                         notification_id = Some(match notification.id() {
-                            journal_v2::NotificationId::CompletionIndex(c) => {
+                            journal_v2::NotificationId::CompletionId(c) => {
                                 entry::NotificationId::CompletionIdx(c)
                             }
                             journal_v2::NotificationId::SignalIndex(c) => {
@@ -3167,57 +3209,6 @@ pub mod v1 {
                     append_time,
                     call_or_send_command_metadata,
                     notification_id,
-                }
-            }
-        }
-
-        impl TryFrom<NotificationsIndex> for crate::journal_table_v2::NotificationsIndex {
-            type Error = ConversionError;
-
-            fn try_from(
-                NotificationsIndex {
-                    completion_idx_to_journal_idx,
-                    signal_idx_to_journal_idx,
-                    signal_name_to_journal_idx,
-                }: NotificationsIndex,
-            ) -> Result<Self, Self::Error> {
-                Ok(Self(
-                    completion_idx_to_journal_idx
-                        .into_iter()
-                        .map(|(k, v)| (NotificationId::for_completion(k), v))
-                        .chain(signal_idx_to_journal_idx.into_iter().map(|(k, v)| {
-                            (NotificationId::for_signal(SignalId::for_index(k.into())), v)
-                        }))
-                        .chain(signal_name_to_journal_idx.into_iter().map(|(k, v)| {
-                            (NotificationId::for_signal(SignalId::for_name(k.into())), v)
-                        }))
-                        .collect(),
-                ))
-            }
-        }
-
-        impl From<crate::journal_table_v2::NotificationsIndex> for NotificationsIndex {
-            fn from(value: crate::journal_table_v2::NotificationsIndex) -> Self {
-                let mut completion_idx_to_journal_idx: HashMap<u32, u32> = Default::default();
-                let mut signal_idx_to_journal_idx: HashMap<u32, u32> = Default::default();
-                let mut signal_name_to_journal_idx: HashMap<String, u32> = Default::default();
-                for (id, index) in value.0 {
-                    match id {
-                        journal_v2::NotificationId::CompletionIndex(c) => {
-                            completion_idx_to_journal_idx.insert(c, index)
-                        }
-                        journal_v2::NotificationId::SignalIndex(c) => {
-                            signal_idx_to_journal_idx.insert(c, index)
-                        }
-                        journal_v2::NotificationId::SignalName(s) => {
-                            signal_name_to_journal_idx.insert(s.to_string(), index)
-                        }
-                    };
-                }
-                Self {
-                    completion_idx_to_journal_idx,
-                    signal_idx_to_journal_idx,
-                    signal_name_to_journal_idx,
                 }
             }
         }
@@ -3680,6 +3671,20 @@ pub mod v1 {
         impl From<SequenceNumber> for crate::fsm_table::SequenceNumber {
             fn from(value: SequenceNumber) -> Self {
                 Self::from(value.sequence_number)
+            }
+        }
+
+        impl From<crate::journal_table_v2::JournalEntryIndex> for JournalEntryIndex {
+            fn from(value: crate::journal_table_v2::JournalEntryIndex) -> Self {
+                Self {
+                    entry_index: value.into(),
+                }
+            }
+        }
+
+        impl From<JournalEntryIndex> for crate::journal_table_v2::JournalEntryIndex {
+            fn from(value: JournalEntryIndex) -> Self {
+                Self::from(value.entry_index)
             }
         }
     }

@@ -344,7 +344,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::GetLazyState,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::GetLazyStateCompletionNotificationMessage {
                     completion_id: *completion_id,
                     result: Some(result.clone().into()),
@@ -359,7 +359,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::GetLazyStateKeys,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::GetLazyStateKeysCompletionNotificationMessage {
                     completion_id: *completion_id,
                     state_keys: Some(proto::StateKeys {
@@ -380,7 +380,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::GetPromise,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::GetPromiseCompletionNotificationMessage {
                     completion_id: *completion_id,
                     result: Some(result.clone().into()),
@@ -395,7 +395,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::PeekPromise,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::PeekPromiseCompletionNotificationMessage {
                     completion_id: *completion_id,
                     result: Some(result.clone().into()),
@@ -410,7 +410,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::CompletePromise,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::CompletePromiseCompletionNotificationMessage {
                     completion_id: *completion_id,
                     result: Some(result.clone().into()),
@@ -423,7 +423,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 completion_id,
             }))) => RawNotification::new(
                 CompletionType::Sleep,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::SleepCompletionNotificationMessage {
                     completion_id: *completion_id,
                     void: Some(proto::Void::default()),
@@ -439,7 +439,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::CallInvocationId,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::CallInvocationIdCompletionNotificationMessage {
                     completion_id: *completion_id,
                     invocation_id: invocation_id.to_string(),
@@ -452,7 +452,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 result,
             }))) => RawNotification::new(
                 CompletionType::Call,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::CallCompletionNotificationMessage {
                     completion_id: *completion_id,
                     result: Some(result.clone().into()),
@@ -466,7 +466,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 result,
             }))) => RawNotification::new(
                 CompletionType::Run,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::RunCompletionNotificationMessage {
                     completion_id: *completion_id,
                     result: Some(result.clone().into()),
@@ -482,7 +482,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::AttachInvocation,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::AttachInvocationCompletionNotificationMessage {
                     completion_id: *completion_id,
                     result: Some(result.clone().into()),
@@ -497,7 +497,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::GetInvocationOutput,
-                NotificationId::CompletionIndex(*completion_id),
+                NotificationId::CompletionId(*completion_id),
                 proto::GetInvocationOutputCompletionNotificationMessage {
                     completion_id: *completion_id,
                     result: Some(result.clone().into()),

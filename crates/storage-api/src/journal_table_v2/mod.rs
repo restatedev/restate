@@ -11,8 +11,8 @@
 use crate::Result;
 use futures_util::Stream;
 use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
-use restate_types::journal_v2::raw::RawEntry;
-use restate_types::journal_v2::NotificationId;
+use restate_types::journal_v2::raw::{RawCommand, RawEntry};
+use restate_types::journal_v2::{CompletionId, NotificationId};
 use std::collections::HashMap;
 use std::future::Future;
 use std::ops::RangeInclusive;
@@ -21,13 +21,13 @@ pub trait ReadOnlyJournalTable {
     fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
-        journal_index: u32,
+        index: u32,
     ) -> impl Future<Output = Result<Option<RawEntry>>> + Send;
 
     fn get_journal(
         &mut self,
         invocation_id: InvocationId,
-        journal_length: EntryIndex,
+        length: EntryIndex,
     ) -> impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send;
 
     fn all_journals(
@@ -39,19 +39,27 @@ pub trait ReadOnlyJournalTable {
         &mut self,
         invocation_id: InvocationId,
     ) -> impl Future<Output = Result<HashMap<NotificationId, EntryIndex>>> + Send;
+
+    fn get_command_by_completion_id(
+        &mut self,
+        invocation_id: InvocationId,
+        notification_id: CompletionId,
+    ) -> impl Future<Output = Result<Option<RawCommand>>> + Send;
 }
 
 pub trait JournalTable: ReadOnlyJournalTable {
+    /// Related completion ids to this RawEntry, used to build the internal index
     fn put_journal_entry(
         &mut self,
         invocation_id: InvocationId,
-        journal_index: u32,
-        journal_entry: &RawEntry,
+        index: u32,
+        entry: &RawEntry,
+        related_completion_ids: &[CompletionId],
     ) -> impl Future<Output = Result<()>> + Send;
 
     fn delete_journal(
         &mut self,
         invocation_id: InvocationId,
-        journal_length: EntryIndex,
-    ) -> impl Future<Output = ()> + Send;
+        length: EntryIndex,
+    ) -> impl Future<Output = Result<()>> + Send;
 }

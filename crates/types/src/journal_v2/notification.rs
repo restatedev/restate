@@ -11,8 +11,7 @@
 use crate::identifiers::InvocationId;
 use crate::journal_v2::raw::{RawEntry, TryFromEntry, TryFromEntryError};
 use crate::journal_v2::{
-    CommandIndex, CompletionId, Encoder, Entry, EntryMetadata, EntryType, Failure, SignalIndex,
-    SignalName,
+    CompletionId, Encoder, Entry, EntryMetadata, EntryType, Failure, SignalIndex, SignalName,
 };
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
@@ -21,14 +20,14 @@ use std::fmt;
 /// See [`Notification`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum NotificationId {
-    CompletionIndex(CommandIndex),
+    CompletionId(CompletionId),
     SignalIndex(SignalIndex),
     SignalName(SignalName),
 }
 
 impl NotificationId {
     pub const fn for_completion(id: CompletionId) -> Self {
-        Self::CompletionIndex(id)
+        Self::CompletionId(id)
     }
 
     pub fn for_signal(signal_id: SignalId) -> Self {
@@ -50,7 +49,7 @@ impl fmt::Display for NotificationId {
         match self {
             NotificationId::SignalIndex(idx) => write!(f, "{idx}"),
             NotificationId::SignalName(name) => write!(f, "{name}"),
-            NotificationId::CompletionIndex(idx) => write!(f, "{idx}"),
+            NotificationId::CompletionId(idx) => write!(f, "{idx}"),
         }
     }
 }
@@ -166,7 +165,7 @@ macro_rules! impl_completion_accessors {
     ($ty:ident -> [@notification_metadata $($tail:tt)*]) => {
         impl NotificationMetadata for paste::paste! { [< $ty Completion >] } {
             fn id(&self) -> NotificationId {
-                NotificationId::CompletionIndex(self.completion_id)
+                NotificationId::CompletionId(self.completion_id)
             }
         }
         impl_completion_accessors!($ty -> [$($tail)*]);

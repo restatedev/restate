@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::FsmTable;
@@ -21,22 +22,17 @@ use restate_types::journal_v2::{CallInvocationIdCompletion, CompletionId, Entry}
 use restate_types::time::MillisSinceEpoch;
 use std::collections::VecDeque;
 
-pub(super) struct ApplyCallCommand<'e> {
-    pub(super) caller_invocation_id: InvocationId,
-    pub(super) caller_invocation_status: &'e InvocationStatus,
-    pub(super) entry: CallCommand,
-    pub(super) additional_entries_to_process: &'e mut VecDeque<RawEntry>,
-}
+pub(super) type ApplyCallCommand<'e> = ApplyJournalCommandEffect<'e, CallCommand>;
 
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for ApplyCallCommand<'e>
+    for ApplyJournalCommandEffect<'e, CallCommand>
 where
     S: OutboxTable + FsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         _ApplyCallCommand {
-            caller_invocation_id: self.caller_invocation_id,
-            caller_invocation_status: self.caller_invocation_status,
+            caller_invocation_id: self.invocation_id,
+            caller_invocation_status: self.invocation_status,
             request: self.entry.request,
             invocation_id_notification_idx: self.entry.invocation_id_completion_id,
             execution_time: None,
@@ -48,15 +44,10 @@ where
     }
 }
 
-pub(super) struct ApplyOneWayCallCommand<'e> {
-    pub(super) caller_invocation_id: InvocationId,
-    pub(super) caller_invocation_status: &'e InvocationStatus,
-    pub(super) entry: OneWayCallCommand,
-    pub(super) additional_entries_to_process: &'e mut VecDeque<RawEntry>,
-}
+pub(super) type ApplyOneWayCallCommand<'e> = ApplyJournalCommandEffect<'e, OneWayCallCommand>;
 
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for ApplyOneWayCallCommand<'e>
+    for ApplyJournalCommandEffect<'e, OneWayCallCommand>
 where
     S: OutboxTable + FsmTable,
 {
@@ -67,8 +58,8 @@ where
             Some(self.entry.invoke_time)
         };
         _ApplyCallCommand {
-            caller_invocation_id: self.caller_invocation_id,
-            caller_invocation_status: self.caller_invocation_status,
+            caller_invocation_id: self.invocation_id,
+            caller_invocation_status: self.invocation_status,
             request: self.entry.request,
             invocation_id_notification_idx: self.entry.invocation_id_completion_id,
             execution_time,
