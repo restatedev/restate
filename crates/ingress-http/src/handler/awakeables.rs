@@ -18,8 +18,9 @@ use http::{Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use http_body_util::Full;
 use restate_types::errors::{codes, InvocationError};
-use restate_types::identifiers::{AwakeableIdentifier, SignalIdentifier, WithInvocationId};
+use restate_types::identifiers::{AwakeableIdentifier, ExternalSignalIdentifier, WithInvocationId};
 use restate_types::invocation::{InvocationResponse, ResponseResult};
+use restate_types::journal_v2::{Signal, SignalResult};
 use std::str::FromStr;
 use tracing::{info, trace, warn};
 
@@ -64,14 +65,27 @@ where
         };
 
         // Try parse first as signal identifier
-        let res = if let Ok(signal_id) = SignalIdentifier::from_str(&awakeable_id) {
+        let res = if let Ok(signal_id) = ExternalSignalIdentifier::from_str(&awakeable_id) {
             info!(
                 restate.invocation.id = %signal_id.invocation_id(),
                 restate.signal.id = %signal_id,
                 "Processing awakeables request"
             );
 
-            self.dispatcher.send_signal(signal_id, result).await
+            let (invocation_id, signal_id) = signal_id.into_inner();
+
+            self.dispatcher
+                .send_signal(
+                    invocation_id,
+                    Signal::new(
+                        signal_id,
+                        match result {
+                            ResponseResult::Success(s) => SignalResult::Success(s),
+                            ResponseResult::Failure(f) => SignalResult::Failure(f.into()),
+                        },
+                    ),
+                )
+                .await
         } else {
             let awakeable_identifier = AwakeableIdentifier::from_str(&awakeable_id)
                 .map_err(|e| HandlerError::BadAwakeableId(awakeable_id, e))?;

@@ -52,7 +52,6 @@ use restate_types::invocation::{
     ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, SubmitNotificationSink,
     WorkflowHandlerType,
 };
-use restate_types::journal_v2::SignalId;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::net::partition_processor::{
@@ -662,23 +661,13 @@ where
                     )
                     .await;
             }
-            PartitionProcessorRpcRequestInner::AppendSignal(signal_id, response_result) => {
+            PartitionProcessorRpcRequestInner::AppendSignal(invocation_id, signal) => {
                 // Convert to InvokerEffect command for now.
-                // TODO(slinkydeveloper) we should model a proper signal command in future, that also works for built-in signals.
-
-                let (invocation_id, signal_index) = signal_id.into_inner();
-                let notification: journal_v2::Entry = journal_v2::Signal::new(
-                    SignalId::for_index(signal_index),
-                    match response_result {
-                        ResponseResult::Success(b) => journal_v2::SignalResult::Success(b),
-                        ResponseResult::Failure(f) => journal_v2::SignalResult::Failure(f.into()),
-                    },
-                )
-                .into();
-
+                let notification: journal_v2::Entry = signal.into();
                 self.leadership_state
                     .self_propose_and_respond_asynchronously(
                         invocation_id.partition_key(),
+                        // TODO(slinkydeveloper) perhaps we should model a proper signal command in the wal protocol?
                         Command::InvokerEffect(InvokerEffect {
                             invocation_id,
                             kind: InvokerEffectKind::JournalEntryV2 {

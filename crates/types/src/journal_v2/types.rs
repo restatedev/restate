@@ -13,7 +13,7 @@
 use crate::errors::{InvocationError, InvocationErrorCode};
 use bytestring::ByteString;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Failure {
     pub code: InvocationErrorCode,
     pub message: ByteString,

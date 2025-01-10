@@ -30,6 +30,7 @@ use crate::id_util::IdDecoder;
 use crate::id_util::IdEncoder;
 use crate::id_util::IdResourceType;
 use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
+use crate::journal_v2::SignalId;
 use crate::time::MillisSinceEpoch;
 
 /// Identifying the leader epoch of a partition processor
@@ -1038,12 +1039,12 @@ impl Display for AwakeableIdentifier {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignalIdentifier {
+pub struct ExternalSignalIdentifier {
     invocation_id: InvocationId,
     signal_index: u32,
 }
 
-impl ResourceId for SignalIdentifier {
+impl ResourceId for ExternalSignalIdentifier {
     const SIZE_IN_BYTES: usize = InvocationId::SIZE_IN_BYTES + size_of::<EntryIndex>();
     const RESOURCE_TYPE: IdResourceType = IdResourceType::Signal;
     const STRING_CAPACITY_HINT: usize = 0; /* Not needed since encoding is custom */
@@ -1060,7 +1061,7 @@ impl ResourceId for SignalIdentifier {
     }
 }
 
-impl SignalIdentifier {
+impl ExternalSignalIdentifier {
     pub fn new(invocation_id: InvocationId, signal_index: u32) -> Self {
         Self {
             invocation_id,
@@ -1068,12 +1069,12 @@ impl SignalIdentifier {
         }
     }
 
-    pub fn into_inner(self) -> (InvocationId, u32) {
-        (self.invocation_id, self.signal_index)
+    pub fn into_inner(self) -> (InvocationId, SignalId) {
+        (self.invocation_id, SignalId::for_index(self.signal_index))
     }
 }
 
-impl FromStr for SignalIdentifier {
+impl FromStr for ExternalSignalIdentifier {
     type Err = IdDecodeError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
@@ -1108,7 +1109,7 @@ impl FromStr for SignalIdentifier {
     }
 }
 
-impl Display for SignalIdentifier {
+impl Display for ExternalSignalIdentifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut encoder = IdEncoder::<Self>::new();
         self.push_contents_to_encoder(&mut encoder);
@@ -1116,7 +1117,7 @@ impl Display for SignalIdentifier {
     }
 }
 
-impl WithInvocationId for SignalIdentifier {
+impl WithInvocationId for ExternalSignalIdentifier {
     fn invocation_id(&self) -> InvocationId {
         self.invocation_id
     }
@@ -1353,17 +1354,17 @@ mod tests {
         let expected_invocation_id = InvocationId::mock_random();
         let expected_signal_index = 2_u32;
 
-        let input_str = SignalIdentifier {
+        let input_str = ExternalSignalIdentifier {
             invocation_id: expected_invocation_id,
             signal_index: expected_signal_index,
         }
         .to_string();
         dbg!(&input_str);
 
-        let actual = SignalIdentifier::from_str(&input_str).unwrap();
-        let (actual_invocation_id, actual_signal_index) = actual.into_inner();
+        let actual = ExternalSignalIdentifier::from_str(&input_str).unwrap();
+        let (actual_invocation_id, actual_signal_id) = actual.into_inner();
 
         assert_eq!(expected_invocation_id, actual_invocation_id);
-        assert_eq!(expected_signal_index, actual_signal_index);
+        assert_eq!(SignalId::for_index(expected_signal_index), actual_signal_id);
     }
 }

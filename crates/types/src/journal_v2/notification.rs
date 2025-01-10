@@ -313,7 +313,7 @@ pub const CANCEL_SIGNAL: Notification = Notification::Signal(Signal::new(
     SignalResult::Void,
 ));
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SignalId {
     Index(SignalIndex),
     Name(SignalName),
@@ -333,7 +333,7 @@ impl SignalId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Signal {
     pub id: SignalId,
     pub result: SignalResult,
@@ -375,7 +375,7 @@ impl From<Signal> for Entry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SignalResult {
     Void,
     Success(Bytes),
