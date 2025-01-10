@@ -9,18 +9,25 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
+#[cfg(any(test, feature = "test-util"))]
+use std::collections::HashSet;
 use std::fmt::Display;
+#[cfg(any(test, feature = "test-util"))]
+use std::hash::BuildHasher;
 use std::num::{NonZero, NonZeroU32};
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
 use anyhow::Context;
+use indexmap::IndexSet;
 use regex::Regex;
+use xxhash_rust::xxh3::Xxh3Builder;
 
+use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, PartitionKey};
 use crate::protobuf::cluster::ReplicationStrategy as ProtoReplicationStrategy;
-use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
+use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
 
 static REPLICATION_STRATEGY_FACTOR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?i)factor\(\s*(?<factor>\d+)\s*\)$").expect("is valid pattern")
@@ -128,6 +135,10 @@ impl PartitionTable {
     pub fn replication_strategy(&self) -> ReplicationStrategy {
         self.replication_strategy
     }
+
+    pub fn into_builder(self) -> PartitionTableBuilder {
+        self.into()
+    }
 }
 
 impl Versioned for PartitionTable {
@@ -166,14 +177,100 @@ impl FindPartition for PartitionTable {
     }
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    derive_more::Deref,
+    derive_more::DerefMut,
+    derive_more::From,
+    derive_more::AsRef,
+)]
+pub struct ReplicaGroup(IndexSet<PlainNodeId, Xxh3Builder>);
+
+impl ReplicaGroup {
+    pub fn iter(&self) -> impl Iterator<Item = (&PlainNodeId, RunMode)> {
+        self.0.iter().enumerate().map(|(index, id)| {
+            if index == 0 {
+                (id, RunMode::Leader)
+            } else {
+                (id, RunMode::Follower)
+            }
+        })
+    }
+
+    pub fn into_target_state(self) -> TargetPartitionReplicationState {
+        self.into()
+    }
+}
+
+impl FromIterator<PlainNodeId> for ReplicaGroup {
+    fn from_iter<T: IntoIterator<Item = PlainNodeId>>(iter: T) -> Self {
+        let inner = IndexSet::from_iter(iter);
+        Self(inner)
+    }
+}
+
+/// The target state of a partition.
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, derive_more::Deref,
+)]
+pub struct TargetPartitionReplicationState {
+    /// Node which is the designated leader
+    pub leader: Option<PlainNodeId>,
+    /// Set of nodes that should run a partition processor for this partition
+    #[deref]
+    pub node_set: IndexSet<PlainNodeId, Xxh3Builder>,
+}
+
+impl TargetPartitionReplicationState {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn contains_all<S: BuildHasher>(&self, set: &HashSet<PlainNodeId, S>) -> bool {
+        let set: IndexSet<PlainNodeId, Xxh3Builder> = IndexSet::from_iter(set.iter().cloned());
+
+        self.difference(&set).next().is_none()
+    }
+}
+
+impl From<ReplicaGroup> for TargetPartitionReplicationState {
+    fn from(value: ReplicaGroup) -> Self {
+        Self {
+            leader: value.first().cloned(),
+            node_set: value.0,
+        }
+    }
+}
+
+impl From<TargetPartitionReplicationState> for ReplicaGroup {
+    fn from(value: TargetPartitionReplicationState) -> Self {
+        let mut inner = IndexSet::default();
+        if let Some(leader) = value.leader {
+            inner.insert(leader);
+        }
+
+        inner.extend(value.node_set);
+
+        Self(inner)
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Partition {
     pub key_range: RangeInclusive<PartitionKey>,
+    #[serde(default)]
+    pub replica_group: ReplicaGroup,
 }
 
 impl Partition {
     pub fn new(key_range: RangeInclusive<PartitionKey>) -> Self {
-        Self { key_range }
+        Self {
+            key_range,
+            replica_group: ReplicaGroup::default(),
+        }
     }
 }
 
@@ -282,6 +379,22 @@ impl PartitionTableBuilder {
         }
     }
 
+    pub fn for_each<F>(&mut self, mut modify: F)
+    where
+        F: FnMut(&PartitionId, &mut TargetPartitionReplicationState),
+    {
+        for (partition_id, partition) in self.inner.partitions.iter_mut() {
+            let mut replica_group_builder = partition.replica_group.clone().into();
+            modify(partition_id, &mut replica_group_builder);
+            let replica_group = ReplicaGroup::from(replica_group_builder);
+
+            if partition.replica_group != replica_group {
+                self.modified = true;
+                partition.replica_group = replica_group;
+            }
+        }
+    }
+
     /// Builds the new [`PartitionTable`] with an incremented version.
     pub fn build(mut self) -> PartitionTable {
         self.inner.version = Version::MIN.max(self.inner.version.next());
@@ -295,6 +408,7 @@ impl PartitionTableBuilder {
 
         None
     }
+
     /// Builds the new [`PartitionTable`] with the same version.
     fn build_with_same_version(self) -> PartitionTable {
         self.inner
@@ -519,14 +633,14 @@ mod tests {
     use bytes::BytesMut;
     use test_log::test;
 
-    use super::ReplicationStrategy;
+    use super::{ReplicaGroup, ReplicationStrategy, TargetPartitionReplicationState};
     use crate::identifiers::{PartitionId, PartitionKey};
     use crate::partition_table::{
         EqualSizedPartitionPartitioner, FindPartition, Partition, PartitionTable,
         PartitionTableBuilder,
     };
     use crate::storage::StorageCodec;
-    use crate::{flexbuffers_storage_encode_decode, Version};
+    use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version};
 
     #[test]
     fn test_replication_strategy_parse() {
@@ -644,5 +758,31 @@ mod tests {
         assert!(partition_table.find_partition_id(1025).is_err());
 
         Ok(())
+    }
+
+    #[test]
+    fn target_replication_state() {
+        let replica_group = ReplicaGroup::from_iter([
+            PlainNodeId::from(1),
+            PlainNodeId::from(2),
+            PlainNodeId::from(3),
+        ]);
+
+        let mut target_state = TargetPartitionReplicationState::from(replica_group);
+
+        assert!(matches!(target_state.leader, Some(node_id) if node_id == PlainNodeId::from(1)));
+
+        target_state.leader = Some(PlainNodeId::from(3));
+
+        let new_replica_group: ReplicaGroup = target_state.into();
+
+        assert_eq!(
+            new_replica_group,
+            ReplicaGroup::from_iter([
+                PlainNodeId::from(3),
+                PlainNodeId::from(1),
+                PlainNodeId::from(2),
+            ])
+        );
     }
 }

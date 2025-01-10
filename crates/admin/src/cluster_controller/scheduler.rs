@@ -9,31 +9,28 @@
 // by the Apache License, Version 2.0.
 
 use rand::seq::IteratorRandom;
-use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
+use restate_types::live::Pinned;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use tracing::debug;
 use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_core::metadata_store::{
-    retry_on_network_error, MetadataStoreClient, Precondition, ReadError, ReadWriteError,
-    WriteError,
+    MetadataStoreClient, Precondition, ReadError, ReadWriteError, WriteError,
 };
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
-use restate_core::{Metadata, ShutdownError, SyncError, TaskCenter, TaskKind};
-use restate_types::cluster_controller::{
-    SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
-};
-use restate_types::config::Configuration;
+use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_types::identifiers::PartitionId;
-use restate_types::logs::metadata::Logs;
 use restate_types::logs::LogId;
-use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
+use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::{PartitionTable, ReplicationStrategy};
-use restate_types::{NodeId, PlainNodeId, Versioned};
+use restate_types::partition_table::{
+    Partition, PartitionTable, ReplicationStrategy, TargetPartitionReplicationState,
+};
+use restate_types::{NodeId, PlainNodeId, Version};
 
 use crate::cluster_controller::logs_controller;
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
@@ -50,24 +47,12 @@ pub enum Error {
     MetadataStoreWrite(#[from] WriteError),
     #[error("failed reading from metadata store: {0}")]
     MetadataStoreRead(#[from] ReadError),
+    #[error("failed read/write on metadata store: {0}")]
+    MetadataStoreReadWrite(#[from] ReadWriteError),
     #[error("failed syncing metadata: {0}")]
     Metadata(#[from] SyncError),
     #[error("system is shutting down")]
     Shutdown(#[from] ShutdownError),
-}
-
-enum UpdateOutcome<T> {
-    Written(T),
-    NewerVersionFound(T),
-}
-
-impl<T> UpdateOutcome<T> {
-    fn into_inner(self) -> T {
-        match self {
-            UpdateOutcome::Written(value) => value,
-            UpdateOutcome::NewerVersionFound(value) => value,
-        }
-    }
 }
 
 /// Placement hints for the [`Scheduler`]. The hints can specify which nodes should be chosen for
@@ -89,9 +74,8 @@ impl<T: PartitionProcessorPlacementHints> PartitionProcessorPlacementHints for &
 }
 
 pub struct Scheduler<T> {
-    scheduling_plan: SchedulingPlan,
-    last_updated_scheduling_plan: Instant,
     metadata_store_client: MetadataStoreClient,
+    metadata_writer: MetadataWriter,
     networking: Networking<T>,
 }
 
@@ -100,36 +84,20 @@ pub struct Scheduler<T> {
 /// store and then driving the observed cluster state to the target state (represented by the
 /// scheduling plan).
 impl<T: TransportConnect> Scheduler<T> {
-    pub async fn init(
-        configuration: &Configuration,
-        metadata_store_client: MetadataStoreClient,
-        networking: Networking<T>,
-    ) -> Result<Self, BuildError> {
-        let scheduling_plan = retry_on_network_error(
-            configuration.common.network_error_retry_policy.clone(),
-            || {
-                metadata_store_client
-                    .get_or_insert(SCHEDULING_PLAN_KEY.clone(), SchedulingPlan::default)
-            },
-        )
-        .await?;
-
-        Ok(Self {
-            scheduling_plan,
-            last_updated_scheduling_plan: Instant::now(),
-            metadata_store_client,
+    pub fn new(metadata_writer: MetadataWriter, networking: Networking<T>) -> Self {
+        Self {
+            metadata_store_client: metadata_writer.metadata_store_client().clone(),
+            metadata_writer,
             networking,
-        })
+        }
     }
 
     pub async fn on_observed_cluster_state(
         &mut self,
         observed_cluster_state: &ObservedClusterState,
-        replication_strategy: ReplicationStrategy,
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
-        // todo: Only update scheduling plan on observed cluster changes?
         let alive_workers = observed_cluster_state
             .alive_nodes
             .keys()
@@ -137,13 +105,9 @@ impl<T: TransportConnect> Scheduler<T> {
             .filter(|node_id| nodes_config.has_worker_role(node_id))
             .collect();
 
-        self.update_scheduling_plan(
-            &alive_workers,
-            replication_strategy,
-            nodes_config,
-            placement_hints,
-        )
-        .await?;
+        self.update_scheduling_plan(&alive_workers, nodes_config, placement_hints)
+            .await?;
+
         self.instruct_nodes(observed_cluster_state)?;
 
         Ok(())
@@ -153,303 +117,222 @@ impl<T: TransportConnect> Scheduler<T> {
         // nothing to do since we don't make time based scheduling decisions yet
     }
 
-    pub async fn on_logs_update(
-        &mut self,
-        logs: &Logs,
-        partition_table: &PartitionTable,
-    ) -> Result<(), Error> {
-        let mut builder = self.scheduling_plan.clone().into_builder();
-
-        loop {
-            // add partitions to the scheduling plan for which we have provisioned the logs
-            for (log_id, _) in logs.iter() {
-                let partition_id = (*log_id).into();
-
-                // add the partition to the scheduling plan if we aren't already scheduling it
-                if !builder.contains_partition(&partition_id) {
-                    // check whether the provisioned log is actually needed
-                    if let Some(partition) = partition_table.get_partition(&partition_id) {
-                        builder.insert_partition(
-                            partition_id,
-                            TargetPartitionState::new(partition.key_range.clone()),
-                        )
-                    }
-                }
-            }
-
-            if let Some(scheduling_plan) = builder.build_if_modified() {
-                let scheduling_plan = self.try_update_scheduling_plan(scheduling_plan).await?;
-                match scheduling_plan {
-                    UpdateOutcome::Written(scheduling_plan) => {
-                        self.assign_scheduling_plan(scheduling_plan);
-                        break;
-                    }
-                    UpdateOutcome::NewerVersionFound(scheduling_plan) => {
-                        self.assign_scheduling_plan(scheduling_plan);
-                        builder = self.scheduling_plan.clone().into_builder();
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-
-        Ok(())
-    }
-
     async fn update_scheduling_plan(
         &mut self,
         alive_workers: &HashSet<PlainNodeId>,
-        replication_strategy: ReplicationStrategy,
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
-        // todo temporary band-aid to ensure convergence of multiple schedulers. Remove once we
-        //  accept equivalent configurations and remove persisting of the SchedulingPlan
-        if self.last_updated_scheduling_plan.elapsed() > Duration::from_secs(10) {
-            let new_scheduling_plan = self.fetch_scheduling_plan().await?;
+        let logs = Metadata::with_current(|m| m.logs_ref());
+        let partition_table = Metadata::with_current(|m| m.partition_table_ref());
 
-            if new_scheduling_plan.version() > self.scheduling_plan.version() {
-                debug!(
-                    "Found a newer scheduling plan in the metadata store. Updating to version {}.",
-                    new_scheduling_plan.version()
-                );
-            }
-
-            self.assign_scheduling_plan(new_scheduling_plan);
+        if logs.num_logs() != partition_table.num_partitions() as usize {
+            // either the partition table or the logs are not fully initialized
+            // hence there is nothing we can do atm.
+            // we need to wait until both partitions and logs are created
+            return Ok(());
         }
 
-        let mut builder = self.scheduling_plan.clone().into_builder();
+        let version = partition_table.version();
 
-        self.ensure_replication(
-            &mut builder,
-            alive_workers,
-            replication_strategy,
-            nodes_config,
-            &placement_hints,
-        );
-        self.ensure_leadership(&mut builder, placement_hints);
+        // todo(azmy): avoid cloning the partition table every time by keeping
+        // the latest built always available as a field
+        let mut builder = partition_table.clone().into_builder();
+        let replication_strategy = builder.replication_strategy();
 
-        if let Some(scheduling_plan) = builder.build_if_modified() {
-            let scheduling_plan = self
-                .try_update_scheduling_plan(scheduling_plan)
-                .await?
-                .into_inner();
+        builder.for_each(|partition_id, target_state| {
+            self.ensure_replication(
+                partition_id,
+                target_state,
+                alive_workers,
+                replication_strategy,
+                nodes_config,
+                &placement_hints,
+            );
 
-            debug!("Updated scheduling plan: {scheduling_plan:?}");
-            self.assign_scheduling_plan(scheduling_plan);
+            self.ensure_leadership(partition_id, target_state, &placement_hints);
+        });
+
+        if let Some(partition_table) = builder.build_if_modified() {
+            debug!("Updated partition table placement: {partition_table:?}");
+            self.try_update_partition_table(version, partition_table)
+                .await?;
+
+            return Ok(());
         }
 
         Ok(())
     }
 
-    fn assign_scheduling_plan(&mut self, scheduling_plan: SchedulingPlan) {
-        self.scheduling_plan = scheduling_plan;
-        self.last_updated_scheduling_plan = Instant::now();
-    }
-
-    async fn try_update_scheduling_plan(
+    async fn try_update_partition_table(
         &self,
-        scheduling_plan: SchedulingPlan,
-    ) -> Result<UpdateOutcome<SchedulingPlan>, Error> {
+        version: Version,
+        partition_table: PartitionTable,
+    ) -> Result<(), Error> {
         match self
             .metadata_store_client
             .put(
-                SCHEDULING_PLAN_KEY.clone(),
-                &scheduling_plan,
-                Precondition::MatchesVersion(self.scheduling_plan.version()),
+                PARTITION_TABLE_KEY.clone(),
+                &partition_table,
+                Precondition::MatchesVersion(version),
             )
             .await
         {
-            Ok(_) => Ok(UpdateOutcome::Written(scheduling_plan)),
-            Err(err) => match err {
-                WriteError::FailedPrecondition(_) => {
-                    // There was a concurrent modification of the scheduling plan. Fetch the latest version.
-                    let scheduling_plan = self.fetch_scheduling_plan().await?;
-                    Ok(UpdateOutcome::NewerVersionFound(scheduling_plan))
-                }
-                err => Err(err.into()),
-            },
+            Ok(_) => {}
+            Err(WriteError::FailedPrecondition(msg)) => {
+                debug!("Partition table update failed due to: {msg}");
+            }
+            Err(err) => return Err(err.into()),
         }
+
+        self.metadata_writer
+            .update(Arc::new(partition_table))
+            .await?;
+        Ok(())
     }
 
-    async fn fetch_scheduling_plan(&self) -> Result<SchedulingPlan, ReadError> {
-        self.metadata_store_client
-            .get(SCHEDULING_PLAN_KEY.clone())
-            .await
-            .map(|scheduling_plan| scheduling_plan.expect("must be present"))
-    }
-
-    fn ensure_replication(
+    fn ensure_replication<H: PartitionProcessorPlacementHints>(
         &self,
-        scheduling_plan_builder: &mut SchedulingPlanBuilder,
+        partition_id: &PartitionId,
+        target_state: &mut TargetPartitionReplicationState,
         alive_workers: &HashSet<PlainNodeId>,
         replication_strategy: ReplicationStrategy,
         nodes_config: &NodesConfiguration,
-        placement_hints: impl PartitionProcessorPlacementHints,
+        placement_hints: &H,
     ) {
-        let partition_ids: Vec<_> = scheduling_plan_builder.partition_ids().cloned().collect();
-
         let mut rng = rand::thread_rng();
+        target_state
+            .node_set
+            .retain(|node_id| alive_workers.contains(node_id));
 
-        for partition_id in &partition_ids {
-            scheduling_plan_builder.modify_partition(partition_id, |target_state| {
-                let mut modified = false;
+        match replication_strategy {
+            ReplicationStrategy::OnAllNodes => {
+                // The extend will only add the new nodes that
+                // don't exist in the node set.
+                // the retain done above will make sure alive nodes in the set
+                // will keep there initial order.
+                target_state.node_set.extend(alive_workers.iter());
+            }
+            ReplicationStrategy::Factor(replication_factor) => {
+                let replication_factor =
+                    usize::try_from(replication_factor.get()).expect("u32 should fit into usize");
 
-                match replication_strategy {
-                    ReplicationStrategy::OnAllNodes => {
-                        if target_state.node_set != *alive_workers {
-                            target_state.node_set.clone_from(alive_workers);
-                            modified = true;
-                        }
-                    }
-                    ReplicationStrategy::Factor(replication_factor) => {
-                        // only retain alive nodes => remove dead ones
-                        target_state.node_set.retain(|node| {
-                            let result = alive_workers.contains(node);
-                            modified |= !result;
-                            result
+                if target_state.node_set.len() == replication_factor {
+                    return;
+                }
+
+                let preferred_worker_nodes = placement_hints
+                    .preferred_nodes(partition_id)
+                    .filter(|node_id| nodes_config.has_worker_role(node_id));
+                let preferred_leader =
+                    placement_hints
+                        .preferred_leader(partition_id)
+                        .and_then(|node_id| {
+                            if alive_workers.contains(&node_id) {
+                                Some(node_id)
+                            } else {
+                                None
+                            }
                         });
 
-                        let replication_factor = usize::try_from(replication_factor.get())
-                            .expect("u32 should fit into usize");
+                // if we are under replicated and have other alive nodes available
+                if target_state.node_set.len() < replication_factor
+                    && target_state.node_set.len() < alive_workers.len()
+                {
+                    if let Some(preferred_leader) = preferred_leader {
+                        target_state.node_set.insert(preferred_leader);
+                    }
 
-                        if target_state.node_set.len() == replication_factor {
-                            return modified;
-                        }
+                    // todo: Implement cleverer strategies
+                    // randomly choose from the preferred workers nodes first
+                    let new_nodes = preferred_worker_nodes
+                        .filter(|node_id| !target_state.node_set.contains(*node_id))
+                        .choose_multiple(
+                            &mut rng,
+                            replication_factor - target_state.node_set.len(),
+                        );
 
-                        let preferred_worker_nodes = placement_hints
-                            .preferred_nodes(partition_id)
-                            .filter(|node_id| nodes_config.has_worker_role(node_id));
-                        let preferred_leader = placement_hints
-                            .preferred_leader(partition_id)
-                            .and_then(|node_id| {
-                                if alive_workers.contains(&node_id) {
-                                    Some(node_id)
-                                } else {
-                                    None
-                                }
-                            });
+                    target_state.node_set.extend(new_nodes);
 
-                        // if we are under replicated and have other alive nodes available
-                        if target_state.node_set.len() < replication_factor
-                            && target_state.node_set.len() < alive_workers.len()
+                    if target_state.node_set.len() < replication_factor {
+                        // randomly choose from the remaining worker nodes
+                        let new_nodes = alive_workers
+                            .iter()
+                            .filter(|node| !target_state.node_set.contains(*node))
+                            .cloned()
+                            .choose_multiple(
+                                &mut rng,
+                                replication_factor - target_state.node_set.len(),
+                            );
+
+                        target_state.node_set.extend(new_nodes);
+                    }
+                } else if target_state.node_set.len() > replication_factor {
+                    let preferred_worker_nodes: HashSet<PlainNodeId> =
+                        preferred_worker_nodes.cloned().collect();
+
+                    // first remove the not preferred nodes
+                    for node_id in target_state
+                        .node_set
+                        .iter()
+                        .filter(|node_id| {
+                            !preferred_worker_nodes.contains(node_id)
+                                && Some(**node_id) != preferred_leader
+                        })
+                        .cloned()
+                        .choose_multiple(&mut rng, target_state.node_set.len() - replication_factor)
+                    {
+                        target_state.node_set.shift_remove(&node_id);
+                    }
+
+                    if target_state.node_set.len() > replication_factor {
+                        for node_id in target_state
+                            .node_set
+                            .iter()
+                            .filter(|node_id| Some(**node_id) != preferred_leader)
+                            .cloned()
+                            .choose_multiple(
+                                &mut rng,
+                                target_state.node_set.len() - replication_factor,
+                            )
                         {
-                            if let Some(preferred_leader) = preferred_leader {
-                                modified |= !target_state.node_set.contains(&preferred_leader);
-                                target_state.node_set.insert(preferred_leader);
-                            }
-
-                            // todo: Implement cleverer strategies
-                            // randomly choose from the preferred workers nodes first
-                            let new_nodes = preferred_worker_nodes
-                                .filter(|node_id| !target_state.node_set.contains(node_id))
-                                .choose_multiple(
-                                    &mut rng,
-                                    replication_factor - target_state.node_set.len(),
-                                );
-
-                            modified |= !new_nodes.is_empty();
-                            target_state.node_set.extend(new_nodes);
-
-                            if target_state.node_set.len() < replication_factor {
-                                // randomly choose from the remaining worker nodes
-                                let new_nodes = alive_workers
-                                    .iter()
-                                    .filter(|node| !target_state.node_set.contains(*node))
-                                    .cloned()
-                                    .choose_multiple(
-                                        &mut rng,
-                                        replication_factor - target_state.node_set.len(),
-                                    );
-
-                                modified |= !new_nodes.is_empty();
-                                target_state.node_set.extend(new_nodes);
-                            }
-                        } else if target_state.node_set.len() > replication_factor {
-                            let preferred_worker_nodes: HashSet<PlainNodeId> =
-                                preferred_worker_nodes.cloned().collect();
-
-                            // first remove the not preferred nodes
-                            for node_id in target_state
-                                .node_set
-                                .iter()
-                                .filter(|node_id| {
-                                    !preferred_worker_nodes.contains(node_id)
-                                        && Some(**node_id) != preferred_leader
-                                })
-                                .cloned()
-                                .choose_multiple(
-                                    &mut rng,
-                                    target_state.node_set.len() - replication_factor,
-                                )
-                            {
-                                target_state.node_set.remove(&node_id);
-                                modified = true;
-                            }
-
-                            if target_state.node_set.len() > replication_factor {
-                                for node_id in target_state
-                                    .node_set
-                                    .iter()
-                                    .filter(|node_id| Some(**node_id) != preferred_leader)
-                                    .cloned()
-                                    .choose_multiple(
-                                        &mut rng,
-                                        target_state.node_set.len() - replication_factor,
-                                    )
-                                {
-                                    target_state.node_set.remove(&node_id);
-                                    modified = true;
-                                }
-                            }
+                            target_state.node_set.shift_remove(&node_id);
                         }
                     }
                 }
+            }
+        }
 
-                // check if the leader is still part of the node set; if not, then clear leader field
-                if let Some(leader) = target_state.leader.as_ref() {
-                    if !target_state.node_set.contains(leader) {
-                        target_state.leader = None;
-                        modified = true;
-                    }
-                }
-
-                modified
-            })
+        // check if the leader is still part of the node set; if not, then clear leader field
+        if let Some(leader) = target_state.leader.as_ref() {
+            if !target_state.node_set.contains(leader) {
+                target_state.leader = None;
+            }
         }
     }
 
-    fn ensure_leadership(
+    fn ensure_leadership<H: PartitionProcessorPlacementHints>(
         &self,
-        scheduling_plan_builder: &mut SchedulingPlanBuilder,
-        placement_hints: impl PartitionProcessorPlacementHints,
+        partition_id: &PartitionId,
+        target_state: &mut TargetPartitionReplicationState,
+        placement_hints: &H,
     ) {
-        let partition_ids: Vec<_> = scheduling_plan_builder.partition_ids().cloned().collect();
-        for partition_id in partition_ids {
-            scheduling_plan_builder.modify_partition(&partition_id, |target_state| {
-                let preferred_leader = placement_hints.preferred_leader(&partition_id);
-                if target_state.leader.is_none() {
-                    target_state.leader =
-                        self.select_leader_from(&target_state.node_set, preferred_leader);
-                    // check whether we modified the leader
-                    return target_state.leader.is_some();
-                } else if preferred_leader.is_some_and(|preferred_leader| {
-                    Some(preferred_leader) != target_state.leader
-                        && target_state.node_set.contains(&preferred_leader)
-                }) {
-                    target_state.leader = preferred_leader;
-                    return true;
-                }
+        let preferred_leader = placement_hints.preferred_leader(partition_id);
 
-                false
-            })
+        if target_state.leader.is_none() {
+            target_state.leader = self.select_leader_from(target_state, preferred_leader);
+            // check whether we modified the leader
+        } else if preferred_leader.is_some_and(|preferred_leader| {
+            Some(preferred_leader) != target_state.leader
+                && target_state.node_set.contains(&preferred_leader)
+        }) {
+            target_state.leader = preferred_leader;
         }
     }
 
     fn select_leader_from(
         &self,
-        leader_candidates: &HashSet<PlainNodeId>,
+        leader_candidates: &TargetPartitionReplicationState,
         preferred_leader: Option<PlainNodeId>,
     ) -> Option<PlainNodeId> {
         // todo: Implement leader balancing between nodes
@@ -462,14 +345,14 @@ impl<T: TransportConnect> Scheduler<T> {
     }
 
     fn instruct_nodes(&self, observed_cluster_state: &ObservedClusterState) -> Result<(), Error> {
-        let mut partitions: BTreeSet<_> = self.scheduling_plan.partition_ids().cloned().collect();
-        partitions.extend(observed_cluster_state.partitions.keys().cloned());
+        let partition_table = Metadata::with_current(|m| m.partition_table_ref());
 
         let mut commands = BTreeMap::default();
 
-        for partition_id in &partitions {
+        for (partition_id, partition) in partition_table.partitions() {
             self.generate_instructions_for_partition(
                 partition_id,
+                partition,
                 observed_cluster_state,
                 &mut commands,
             );
@@ -509,10 +392,10 @@ impl<T: TransportConnect> Scheduler<T> {
     fn generate_instructions_for_partition(
         &self,
         partition_id: &PartitionId,
+        partition: &Partition,
         observed_cluster_state: &ObservedClusterState,
         commands: &mut BTreeMap<PlainNodeId, Vec<ControlProcessor>>,
     ) {
-        let target_state = self.scheduling_plan.get(partition_id);
         // todo: Avoid cloning of node_set if this becomes measurable
         let mut observed_state = observed_cluster_state
             .partitions
@@ -520,17 +403,18 @@ impl<T: TransportConnect> Scheduler<T> {
             .map(|state| state.partition_processors.clone())
             .unwrap_or_default();
 
-        if let Some(target_state) = target_state {
-            for (node_id, run_mode) in target_state.iter() {
-                if !observed_state
-                    .remove(&node_id)
-                    .is_some_and(|observed_run_mode| observed_run_mode == run_mode)
-                {
-                    commands.entry(node_id).or_default().push(ControlProcessor {
+        for (node_id, run_mode) in partition.replica_group.iter() {
+            if !observed_state
+                .remove(node_id)
+                .is_some_and(|observed_run_mode| observed_run_mode == run_mode)
+            {
+                commands
+                    .entry(*node_id)
+                    .or_default()
+                    .push(ControlProcessor {
                         partition_id: *partition_id,
                         command: ProcessorCommand::from(run_mode),
                     });
-                }
             }
         }
 
@@ -549,31 +433,25 @@ impl<T: TransportConnect> Scheduler<T> {
 
 /// Placement hints for the [`logs_controller::LogsController`] based on the current
 /// [`SchedulingPlan`].
-pub struct SchedulingPlanNodeSetSelectorHints<'a> {
-    scheduling_plan: Option<&'a SchedulingPlan>,
+pub struct PartitionTableNodeSetSelectorHints {
+    partition_table: Pinned<PartitionTable>,
 }
 
-impl<'a, T> From<&'a Scheduler<T>> for SchedulingPlanNodeSetSelectorHints<'a> {
-    fn from(value: &'a Scheduler<T>) -> Self {
+impl From<Pinned<PartitionTable>> for PartitionTableNodeSetSelectorHints {
+    fn from(value: Pinned<PartitionTable>) -> Self {
         Self {
-            scheduling_plan: Some(&value.scheduling_plan),
+            partition_table: value,
         }
     }
 }
 
-impl<'a> From<Option<&'a SchedulingPlan>> for SchedulingPlanNodeSetSelectorHints<'a> {
-    fn from(scheduling_plan: Option<&'a SchedulingPlan>) -> Self {
-        Self { scheduling_plan }
-    }
-}
-
-impl<'a> logs_controller::NodeSetSelectorHints for SchedulingPlanNodeSetSelectorHints<'a> {
+impl logs_controller::NodeSetSelectorHints for PartitionTableNodeSetSelectorHints {
     fn preferred_sequencer(&self, log_id: &LogId) -> Option<NodeId> {
         let partition_id = PartitionId::from(*log_id);
 
-        self.scheduling_plan
-            .and_then(|p| p.get(&partition_id))
-            .and_then(|target_state| target_state.leader.map(Into::into))
+        self.partition_table
+            .get_partition(&partition_id)
+            .and_then(|partition| partition.replica_group.first().cloned().map(NodeId::from))
     }
 }
 
@@ -585,6 +463,7 @@ mod tests {
     use http::Uri;
     use rand::prelude::ThreadRng;
     use rand::Rng;
+    use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
     use std::collections::BTreeMap;
     use std::iter;
     use std::num::NonZero;
@@ -603,19 +482,16 @@ mod tests {
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
-    use restate_types::cluster_controller::{
-        SchedulingPlan, SchedulingPlanBuilder, TargetPartitionState,
-    };
-    use restate_types::config::Configuration;
-    use restate_types::identifiers::{PartitionId, PartitionKey};
-    use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
+    use restate_types::identifiers::PartitionId;
     use restate_types::net::codec::WireDecode;
     use restate_types::net::partition_processor_manager::{ControlProcessors, ProcessorCommand};
     use restate_types::net::{AdvertisedAddress, TargetName};
     use restate_types::nodes_config::{
         LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
-    use restate_types::partition_table::{PartitionTable, ReplicationStrategy};
+    use restate_types::partition_table::{
+        PartitionTable, PartitionTableBuilder, ReplicationStrategy,
+    };
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -635,39 +511,32 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn empty_leadership_changes_dont_modify_plan() -> googletest::Result<()> {
+    async fn empty_leadership_changes_donot_modify_plan() -> googletest::Result<()> {
         let test_env = TestCoreEnv::create_with_single_node(0, 0).await;
         let metadata_store_client = test_env.metadata_store_client.clone();
+        let metadata_writer = test_env.metadata_writer.clone();
         let networking = test_env.networking.clone();
 
-        let initial_scheduling_plan = metadata_store_client
-            .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
-            .await
-            .expect("scheduling plan");
-        let mut scheduler = Scheduler::init(
-            Configuration::pinned().as_ref(),
-            metadata_store_client.clone(),
-            networking,
-        )
-        .await?;
+        let initial_partition_table = test_env.metadata.partition_table_ref();
+
+        let mut scheduler = Scheduler::new(metadata_writer, networking);
         let observed_cluster_state = ObservedClusterState::default();
 
-        let replication_strategy = ReplicationStrategy::OnAllNodes;
         scheduler
             .on_observed_cluster_state(
                 &observed_cluster_state,
-                replication_strategy,
                 &Metadata::with_current(|m| m.nodes_config_ref()),
                 NoPlacementHints,
             )
             .await?;
 
-        let scheduling_plan = metadata_store_client
-            .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+        let partition_table = metadata_store_client
+            .get::<PartitionTable>(PARTITION_TABLE_KEY.clone())
             .await
-            .expect("scheduling plan");
+            .expect("partition table")
+            .unwrap();
 
-        assert_eq!(initial_scheduling_plan, scheduling_plan);
+        assert_eq!(*initial_partition_table, partition_table);
 
         Ok(())
     }
@@ -739,25 +608,23 @@ mod tests {
             })
             .boxed();
 
-        let partition_table =
-            PartitionTable::with_equally_sized_partitions(Version::MIN, num_partitions);
-        let initial_scheduling_plan = SchedulingPlan::from(&partition_table);
+        let mut partition_table_builder =
+            PartitionTable::with_equally_sized_partitions(Version::MIN, num_partitions)
+                .into_builder();
+        partition_table_builder.set_replication_strategy(replication_strategy);
+        let partition_table = partition_table_builder.build();
+
         let metadata_store_client = builder.metadata_store_client.clone();
+        let metadata_writer = builder.metadata_writer.clone();
 
         let networking = builder.networking.clone();
 
         let _env = builder
             .set_nodes_config(nodes_config.clone())
             .set_partition_table(partition_table.clone())
-            .set_scheduling_plan(initial_scheduling_plan)
             .build()
             .await;
-        let mut scheduler = Scheduler::init(
-            Configuration::pinned().as_ref(),
-            metadata_store_client.clone(),
-            networking,
-        )
-        .await?;
+        let mut scheduler = Scheduler::new(metadata_writer, networking);
         let mut observed_cluster_state = ObservedClusterState::default();
 
         for _ in 0..num_scheduling_rounds {
@@ -767,7 +634,6 @@ mod tests {
             scheduler
                 .on_observed_cluster_state(
                     &observed_cluster_state,
-                    replication_strategy,
                     &Metadata::with_current(|m| m.nodes_config_ref()),
                     NoPlacementHints,
                 )
@@ -781,15 +647,15 @@ mod tests {
 
             let observed_cluster_state =
                 derive_observed_cluster_state(&cluster_state, control_messages);
-            let target_scheduling_plan = metadata_store_client
-                .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
+            let target_partition_table = metadata_store_client
+                .get::<PartitionTable>(PARTITION_TABLE_KEY.clone())
                 .await?
                 .expect("the scheduler should have created a scheduling plan");
 
             // assert that the effective scheduling plan aligns with the target scheduling plan
             assert_that!(
                 observed_cluster_state,
-                matches_scheduling_plan(&target_scheduling_plan)
+                matches_scheduling_plan(&target_partition_table)
             );
 
             let alive_nodes: HashSet<_> = cluster_state
@@ -797,16 +663,17 @@ mod tests {
                 .map(|node| node.generational_node_id.as_plain())
                 .collect();
 
-            for (_, target_state) in target_scheduling_plan.iter() {
+            for (_, partition) in target_partition_table.partitions() {
+                let target_state = partition.replica_group.clone().into_target_state();
                 // assert that the replication strategy was respected
                 match replication_strategy {
                     ReplicationStrategy::OnAllNodes => {
                         // assert that every partition has a leader which is part of the alive nodes set
+                        assert!(target_state.contains_all(&alive_nodes));
+
                         assert!(target_state
                             .leader
                             .is_some_and(|leader| alive_nodes.contains(&leader)));
-
-                        assert_eq!(target_state.node_set, alive_nodes);
                     }
                     ReplicationStrategy::Factor(replication_factor) => {
                         // assert that every partition has a leader which is part of the alive nodes set
@@ -831,53 +698,58 @@ mod tests {
 
     #[test(restate_core::test)]
     async fn handle_too_few_placed_partition_processors() -> googletest::Result<()> {
-        let mut scheduling_plan_builder = SchedulingPlanBuilder::default();
         let num_partition_processors = NonZero::new(2).expect("non-zero");
-        let mut target_partition_state = TargetPartitionState::new(0..=PartitionKey::MAX);
 
-        // add one too few nodes to the target state
-        target_partition_state.add_node(PlainNodeId::from(0), true);
+        let mut partition_table_builder =
+            PartitionTable::with_equally_sized_partitions(Version::MIN, 2).into_builder();
 
-        let partition_id = PartitionId::from(0);
-        scheduling_plan_builder.insert_partition(partition_id, target_partition_state);
+        partition_table_builder.for_each(|_, target_state| {
+            target_state.node_set.extend([PlainNodeId::from(0)]);
+        });
 
-        let scheduling_plan = run_ensure_replication_test(
-            scheduling_plan_builder,
+        let partition_table = run_ensure_replication_test(
+            partition_table_builder,
             ReplicationStrategy::Factor(num_partition_processors),
         )
         .await?;
-        let partition = scheduling_plan.get(&partition_id).expect("must be present");
+        let partition = partition_table
+            .get_partition(&PartitionId::from(0))
+            .expect("must be present");
 
         assert_eq!(
-            partition.node_set.len(),
+            partition.replica_group.len(),
             num_partition_processors.get() as usize
         );
+
         Ok(())
     }
 
     #[test(restate_core::test)]
     async fn handle_too_many_placed_partition_processors() -> googletest::Result<()> {
-        let mut scheduling_plan_builder = SchedulingPlanBuilder::default();
         let num_partition_processors = NonZero::new(2).expect("non-zero");
-        let mut target_partition_state = TargetPartitionState::new(0..=PartitionKey::MAX);
 
-        // add one too many nodes to the target state
-        target_partition_state.add_node(PlainNodeId::from(0), true);
-        target_partition_state.add_node(PlainNodeId::from(1), false);
-        target_partition_state.add_node(PlainNodeId::from(2), false);
+        let mut partition_table_builder =
+            PartitionTable::with_equally_sized_partitions(Version::MIN, 2).into_builder();
 
-        let partition_id = PartitionId::from(0);
-        scheduling_plan_builder.insert_partition(partition_id, target_partition_state);
+        partition_table_builder.for_each(|_, target_state| {
+            target_state.node_set.extend([
+                PlainNodeId::from(0),
+                PlainNodeId::from(1),
+                PlainNodeId::from(2),
+            ]);
+        });
 
-        let scheduling_plan = run_ensure_replication_test(
-            scheduling_plan_builder,
+        let partition_table = run_ensure_replication_test(
+            partition_table_builder,
             ReplicationStrategy::Factor(num_partition_processors),
         )
         .await?;
-        let partition = scheduling_plan.get(&partition_id).expect("must be present");
+        let partition = partition_table
+            .get_partition(&PartitionId::from(0))
+            .expect("must be present");
 
         assert_eq!(
-            partition.node_set.len(),
+            partition.replica_group.len(),
             num_partition_processors.get() as usize
         );
 
@@ -885,17 +757,12 @@ mod tests {
     }
 
     async fn run_ensure_replication_test(
-        mut scheduling_plan_builder: SchedulingPlanBuilder,
+        mut partition_table_builder: PartitionTableBuilder,
         replication_strategy: ReplicationStrategy,
-    ) -> googletest::Result<SchedulingPlan> {
+    ) -> googletest::Result<PartitionTable> {
         let env = TestCoreEnv::create_with_single_node(0, 0).await;
 
-        let scheduler = Scheduler::init(
-            &Configuration::pinned(),
-            env.metadata_store_client.clone(),
-            env.networking.clone(),
-        )
-        .await?;
+        let scheduler = Scheduler::new(env.metadata_writer.clone(), env.networking.clone());
         let alive_workers = vec![
             PlainNodeId::from(0),
             PlainNodeId::from(1),
@@ -908,41 +775,46 @@ mod tests {
             .build()
             .nodes_config;
 
-        scheduler.ensure_replication(
-            &mut scheduling_plan_builder,
-            &alive_workers,
-            replication_strategy,
-            &nodes_config,
-            NoPlacementHints,
-        );
+        partition_table_builder.for_each(|partition_id, target_state| {
+            scheduler.ensure_replication(
+                partition_id,
+                target_state,
+                &alive_workers,
+                replication_strategy,
+                &nodes_config,
+                &NoPlacementHints,
+            );
+        });
 
-        Ok(scheduling_plan_builder.build())
+        Ok(partition_table_builder.build())
     }
 
-    fn matches_scheduling_plan(scheduling_plan: &SchedulingPlan) -> SchedulingPlanMatcher<'_> {
-        SchedulingPlanMatcher { scheduling_plan }
+    fn matches_scheduling_plan(scheduling_plan: &PartitionTable) -> SchedulingPlanMatcher<'_> {
+        SchedulingPlanMatcher {
+            partition_table: scheduling_plan,
+        }
     }
 
     struct SchedulingPlanMatcher<'a> {
-        scheduling_plan: &'a SchedulingPlan,
+        partition_table: &'a PartitionTable,
     }
 
     impl<'a> Matcher for SchedulingPlanMatcher<'a> {
         type ActualT = ObservedClusterState;
 
         fn matches(&self, actual: &Self::ActualT) -> MatcherResult {
-            if actual.partitions.len() != self.scheduling_plan.partitions().len() {
+            if actual.partitions.len() != self.partition_table.num_partitions() as usize {
                 return MatcherResult::NoMatch;
             }
 
-            for (partition_id, target_state) in self.scheduling_plan.iter() {
+            for (partition_id, partition) in self.partition_table.partitions() {
                 if let Some(observed_state) = actual.partitions.get(partition_id) {
-                    if observed_state.partition_processors.len() != target_state.node_set.len() {
+                    if observed_state.partition_processors.len() != partition.replica_group.len() {
                         return MatcherResult::NoMatch;
                     }
 
-                    for (node_id, run_mode) in target_state.iter() {
-                        if observed_state.partition_processors.get(&node_id) != Some(&run_mode) {
+                    for (node_id, run_mode) in partition.replica_group.iter() {
+                        if observed_state.partition_processors.get(node_id) != Some(&run_mode) {
                             return MatcherResult::NoMatch;
                         }
                     }
@@ -959,13 +831,13 @@ mod tests {
                 MatcherResult::Match => {
                     format!(
                         "should reflect the scheduling plan {:?}",
-                        self.scheduling_plan
+                        self.partition_table
                     )
                 }
                 MatcherResult::NoMatch => {
                     format!(
                         "does not reflect the scheduling plan {:?}",
-                        self.scheduling_plan
+                        self.partition_table
                     )
                 }
             }

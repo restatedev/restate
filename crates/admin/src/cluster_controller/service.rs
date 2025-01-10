@@ -23,13 +23,10 @@ use tonic::codec::CompressionEncoding;
 use tracing::{debug, info};
 
 use restate_metadata_store::ReadModifyWriteError;
-use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
-};
+use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::partition_table::{
     self, PartitionTable, PartitionTableBuilder, ReplicationStrategy,
 };
@@ -62,7 +59,7 @@ use super::grpc_svc_handler::ClusterCtrlSvcHandler;
 use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use crate::cluster_controller::logs_controller::{self, NodeSetSelectorHints};
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler::SchedulingPlanNodeSetSelectorHints;
+use crate::cluster_controller::scheduler::PartitionTableNodeSetSelectorHints;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -326,7 +323,7 @@ impl<T: TransportConnect> Service<T> {
                 }
                 result = state.run() => {
                     let leader_event = result?;
-                    state.on_leader_event(leader_event).await?;
+                    state.on_leader_event(&self.observed_cluster_state, leader_event).await?;
                 }
                 _ = &mut shutdown => {
                     self.health_status.update(AdminStatus::Unknown);
@@ -489,7 +486,6 @@ impl<T: TransportConnect> Service<T> {
             extension,
             min_version,
             bifrost: self.bifrost.clone(),
-            metadata_writer: self.metadata_writer.clone(),
             observed_cluster_state: self.observed_cluster_state.clone(),
         };
 
@@ -636,7 +632,6 @@ struct SealAndExtendTask {
     min_version: Version,
     extension: Option<ChainExtension>,
     bifrost: Bifrost,
-    metadata_writer: MetadataWriter,
     observed_cluster_state: ObservedClusterState,
 }
 
@@ -712,20 +707,16 @@ impl SealAndExtendTask {
             ),
             #[cfg(feature = "replicated-loglet")]
             ProviderConfiguration::Replicated(config) => {
-                let schedule_plan = self
-                    .metadata_writer
-                    .metadata_store_client()
-                    .get::<SchedulingPlan>(SCHEDULING_PLAN_KEY.clone())
-                    .await?;
-
                 let loglet_params = logs_controller::build_new_replicated_loglet_configuration(
                     config,
                     loglet_id.next(),
                     &Metadata::with_current(|m| m.nodes_config_ref()),
                     &self.observed_cluster_state,
                     previous_params.as_ref(),
-                    SchedulingPlanNodeSetSelectorHints::from(schedule_plan.as_ref())
-                        .preferred_sequencer(&self.log_id),
+                    Metadata::with_current(|m| {
+                        PartitionTableNodeSetSelectorHints::from(m.partition_table_ref())
+                    })
+                    .preferred_sequencer(&self.log_id),
                 )
                 .ok_or_else(|| anyhow::anyhow!("Insufficient writeable nodes in the nodeset"))?;
 
