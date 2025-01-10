@@ -11,7 +11,7 @@
 use tokio::sync::watch;
 
 use crate::protobuf::common::{
-    AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
+    AdminStatus, IngressStatus, LogServerStatus, MetadataStoreStatus, NodeRpcStatus, NodeStatus,
     WorkerStatus,
 };
 use crate::Merge;
@@ -23,7 +23,7 @@ pub struct Health {
     worker_status: watch::Sender<WorkerStatus>,
     admin_status: watch::Sender<AdminStatus>,
     log_server_status: watch::Sender<LogServerStatus>,
-    metadata_server_status: watch::Sender<MetadataServerStatus>,
+    metadata_store_status: watch::Sender<MetadataStoreStatus>,
     ingress_status: watch::Sender<IngressStatus>,
     node_rpc_status: watch::Sender<NodeRpcStatus>,
 }
@@ -40,7 +40,7 @@ impl Health {
         let worker_status = watch::Sender::new(WorkerStatus::Unknown);
         let admin_status = watch::Sender::new(AdminStatus::Unknown);
         let log_server_status = watch::Sender::new(LogServerStatus::Unknown);
-        let metadata_server_status = watch::Sender::new(MetadataServerStatus::Unknown);
+        let metadata_store_status = watch::Sender::new(MetadataStoreStatus::Unknown);
         let ingress_status = watch::Sender::new(IngressStatus::Unknown);
         let node_rpc_status = watch::Sender::new(NodeRpcStatus::Unknown);
 
@@ -49,7 +49,7 @@ impl Health {
             worker_status,
             admin_status,
             log_server_status,
-            metadata_server_status,
+            metadata_store_status,
             ingress_status,
             node_rpc_status,
         }
@@ -71,8 +71,8 @@ impl Health {
         *self.log_server_status.borrow()
     }
 
-    pub fn current_metadata_server_status(&self) -> MetadataServerStatus {
-        *self.metadata_server_status.borrow()
+    pub fn current_metadata_store_status(&self) -> MetadataStoreStatus {
+        *self.metadata_store_status.borrow()
     }
 
     pub fn node_status(&self) -> HealthStatus<NodeStatus> {
@@ -95,8 +95,8 @@ impl Health {
         HealthStatus(self.ingress_status.clone())
     }
 
-    pub fn metadata_server_status(&self) -> HealthStatus<MetadataServerStatus> {
-        HealthStatus(self.metadata_server_status.clone())
+    pub fn metadata_store_status(&self) -> HealthStatus<MetadataStoreStatus> {
+        HealthStatus(self.metadata_store_status.clone())
     }
 
     pub fn node_rpc_status(&self) -> HealthStatus<NodeRpcStatus> {

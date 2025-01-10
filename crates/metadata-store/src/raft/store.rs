@@ -32,6 +32,8 @@ use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 use tracing_slog::TracingSlogDrain;
+use restate_types::health::HealthStatus;
+use restate_types::protobuf::common::MetadataStoreStatus;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -63,6 +65,7 @@ pub struct RaftMetadataStore {
     networking: Networking<Message>,
     raft_rx: mpsc::Receiver<Message>,
     tick_interval: time::Interval,
+    health_status: HealthStatus<MetadataStoreStatus>,
 
     kv_storage: KvMemoryStorage,
 
@@ -77,7 +80,9 @@ impl RaftMetadataStore {
         mut networking: Networking<Message>,
         raft_rx: mpsc::Receiver<Message>,
         metadata_writer: Option<MetadataWriter>,
+        health_status: HealthStatus<MetadataStoreStatus>,
     ) -> Result<Self, BuildError> {
+        health_status.update(MetadataStoreStatus::StartingUp);
         let (request_tx, request_rx) = mpsc::channel(2);
 
         let config = Config {
@@ -115,6 +120,7 @@ impl RaftMetadataStore {
             raft_rx,
             networking,
             tick_interval,
+            health_status,
             kv_storage: KvMemoryStorage::new(metadata_writer),
             request_rx,
             request_tx,
@@ -126,6 +132,8 @@ impl RaftMetadataStore {
     }
 
     pub async fn run(mut self) -> Result<(), Error> {
+        self.health_status.update(MetadataStoreStatus::Active);
+
         let mut cancellation = std::pin::pin!(cancellation_watcher());
 
         loop {
@@ -165,6 +173,8 @@ impl RaftMetadataStore {
 
             self.on_ready().await?;
         }
+
+        self.health_status.update(MetadataStoreStatus::Unknown);
 
         debug!("Stop running RaftMetadataStore.");
 

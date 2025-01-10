@@ -26,7 +26,7 @@ use restate_core::MetadataWriter;
 use restate_types::config::{RaftOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::protobuf::common::MetadataServerStatus;
+use restate_types::protobuf::common::MetadataStoreStatus;
 use std::sync::Arc;
 pub use store::RaftMetadataStore;
 use tokio::sync::mpsc;
@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 pub async fn create_store(
     raft_options: &RaftOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    health_status: HealthStatus<MetadataServerStatus>,
+    health_status: HealthStatus<MetadataStoreStatus>,
     metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> Result<MetadataStoreRunner<RaftMetadataStore>, BuildError> {
@@ -46,6 +46,7 @@ pub async fn create_store(
         Networking::new(connection_manager.clone()),
         router_rx,
         metadata_writer,
+        health_status,
     )
     .await?;
 
@@ -59,7 +60,6 @@ pub async fn create_store(
 
     Ok(MetadataStoreRunner::new(
         store,
-        health_status,
         server_builder,
     ))
 }

@@ -98,7 +98,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let node_status = self.health.current_node_status();
         let admin_status = self.health.current_admin_status();
         let worker_status = self.health.current_worker_status();
-        let metadata_server_status = self.health.current_metadata_server_status();
+        let metadata_server_status = self.health.current_metadata_store_status();
         let log_server_status = self.health.current_log_server_status();
         let age_s = self.task_center.age().as_secs();
         let metadata = Metadata::current();
