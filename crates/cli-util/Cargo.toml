@@ -25,9 +25,10 @@ comfy-table = { workspace = true }
 crossterm = { workspace = true }
 dialoguer = { workspace = true }
 dotenvy = { version = "0.15" }
-parking_lot = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 tracing-log = { version = "0.2.0" }
 tracing-subscriber = { workspace = true }
 unicode-width = { version = "0.1.11" }
+
+restate-core = { workspace = true }

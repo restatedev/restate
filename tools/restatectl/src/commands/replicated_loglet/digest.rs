@@ -34,7 +34,7 @@ use restate_types::Versioned;
 
 use crate::app::ConnectionInfo;
 use crate::commands::replicated_loglet::digest_util::DigestsHelper;
-use crate::util::grpc_connect;
+use crate::util::grpc_channel;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "get_digest")]
@@ -53,14 +53,7 @@ pub struct DigestOpts {
 }
 
 async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "cannot connect to node at {}",
-                connection.cluster_controller
-            )
-        })?;
+    let channel = grpc_channel(connection.cluster_controller.clone());
     let mut client = NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
     let req = GetMetadataRequest {
         kind: MetadataKind::Logs.into(),
@@ -105,11 +98,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
             continue;
         }
 
-        let Ok(channel) = grpc_connect(node.address.clone()).await else {
-            warn!("Failed to connect to node {} at {}", node_id, node.address);
-            continue;
-        };
-
+        let channel = grpc_channel(node.address.clone());
         let mut client =
             LogServerSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
