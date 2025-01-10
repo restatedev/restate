@@ -25,7 +25,7 @@ use restate_types::Versioned;
 
 use crate::app::ConnectionInfo;
 use crate::commands::log::{deserialize_replicated_log_params, render_loglet_params};
-use crate::util::grpc_connect;
+use crate::util::grpc_channel;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "ls")]
@@ -33,7 +33,7 @@ use crate::util::grpc_connect;
 pub struct ListLogsOpts {}
 
 pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone());
+    let channel = grpc_channel(connection.cluster_controller.clone());
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 

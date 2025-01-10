@@ -16,7 +16,7 @@ use restate_admin::cluster_controller::protobuf::CreatePartitionSnapshotRequest;
 use restate_cli_util::c_println;
 
 use crate::app::ConnectionInfo;
-use crate::util::grpc_connect;
+use crate::util::grpc_channel;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "create")]
@@ -31,7 +31,7 @@ async fn create_snapshot(
     connection: &ConnectionInfo,
     opts: &CreateSnapshotOpts,
 ) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone());
+    let channel = grpc_channel(connection.cluster_controller.clone());
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 

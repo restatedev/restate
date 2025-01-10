@@ -30,7 +30,7 @@ use restate_types::storage::StorageCodec;
 use restate_types::PlainNodeId;
 
 use crate::app::ConnectionInfo;
-use crate::util::grpc_connect;
+use crate::util::grpc_channel;
 
 // Default timeout for the [optional] GetIdent call made to all nodes
 const GET_IDENT_TIMEOUT_1S: Duration = Duration::from_secs(1);
@@ -46,7 +46,7 @@ pub struct ListNodesOpts {
 }
 
 pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone());
+    let channel = grpc_channel(connection.cluster_controller.clone());
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
@@ -146,7 +146,7 @@ async fn fetch_extra_info(
     for (node_id, node_config) in nodes_configuration.iter() {
         let address = node_config.address.clone();
         let get_ident = async move {
-            let channel = grpc_connect(address);
+            let channel = grpc_channel(address);
             let mut node_ctl_svc_client =
                 NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 

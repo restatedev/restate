@@ -18,7 +18,7 @@ use restate_admin::cluster_controller::protobuf::{
 use restate_cli_util::c_println;
 
 use crate::{
-    app::ConnectionInfo, commands::cluster::config::cluster_config_string, util::grpc_connect,
+    app::ConnectionInfo, commands::cluster::config::cluster_config_string, util::grpc_channel,
 };
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -26,7 +26,7 @@ use crate::{
 pub struct ConfigGetOpts {}
 
 async fn config_get(connection: &ConnectionInfo, _get_opts: &ConfigGetOpts) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone());
+    let channel = grpc_channel(connection.cluster_controller.clone());
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 

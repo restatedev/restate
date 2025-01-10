@@ -14,7 +14,7 @@ use restate_cli_util::CliContext;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_types::net::AdvertisedAddress;
 
-pub fn grpc_connect(address: AdvertisedAddress) -> Channel {
+pub fn grpc_channel(address: AdvertisedAddress) -> Channel {
     let ctx = CliContext::get();
     create_tonic_channel(address, &ctx.network)
 }
