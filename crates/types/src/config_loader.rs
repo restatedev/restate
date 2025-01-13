@@ -11,14 +11,15 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::config::Configuration;
 use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{
-    new_debouncer, DebounceEventResult, DebouncedEvent, Debouncer, NoCache,
+    new_debouncer, DebounceEventResult, DebouncedEvent, Debouncer, RecommendedCache,
 };
 use tracing::{error, info, warn};
+
+use crate::config::Configuration;
 
 #[derive(thiserror::Error, codederror::CodedError, Debug)]
 #[code(restate_errors::RT0002)]
@@ -157,7 +158,7 @@ impl ConfigLoader {
 
     fn handle_events(
         &self,
-        debouncer: &mut Debouncer<RecommendedWatcher, NoCache>,
+        debouncer: &mut Debouncer<RecommendedWatcher, RecommendedCache>,
         events: Vec<DebouncedEvent>,
     ) {
         let mut should_update = false;
