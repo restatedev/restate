@@ -28,7 +28,7 @@ use tonic::transport::Channel;
 use super::LogIdRange;
 use crate::app::ConnectionInfo;
 use crate::commands::log;
-use crate::util::grpc_connect;
+use crate::util::grpc_channel;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "describe_logs")]
@@ -71,14 +71,7 @@ async fn describe_logs(
     connection: &ConnectionInfo,
     opts: &DescribeLogIdOpts,
 ) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "cannot connect to cluster controller at {}",
-                connection.cluster_controller
-            )
-        })?;
+    let channel = grpc_channel(connection.cluster_controller.clone());
 
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);

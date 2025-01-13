@@ -10,8 +10,7 @@
 
 use crate::app::ConnectionInfo;
 use crate::commands::cluster::config::cluster_config_string;
-use crate::util::grpc_connect;
-use anyhow::Context;
+use crate::util::grpc_channel;
 use clap::Parser;
 use cling::{Collect, Run};
 use restate_cli_util::ui::console::confirm_or_exit;
@@ -61,9 +60,7 @@ async fn cluster_provision(
         .address
         .clone()
         .unwrap_or_else(|| connection_info.cluster_controller.clone());
-    let channel = grpc_connect(node_address.clone())
-        .await
-        .with_context(|| format!("cannot connect to node at {}", node_address))?;
+    let channel = grpc_channel(node_address.clone());
 
     let mut client = NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 

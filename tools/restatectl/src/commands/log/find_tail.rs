@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
 use cling::prelude::*;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::StyledTable;
@@ -19,7 +18,7 @@ use restate_admin::cluster_controller::protobuf::{FindTailRequest, TailState};
 use restate_cli_util::c_println;
 
 use crate::app::ConnectionInfo;
-use crate::util::grpc_connect;
+use crate::util::grpc_channel;
 
 use super::LogIdRange;
 
@@ -32,14 +31,7 @@ pub struct FindTailOpts {
 }
 
 async fn find_tail(connection: &ConnectionInfo, opts: &FindTailOpts) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "cannot connect to cluster controller at {}",
-                connection.cluster_controller
-            )
-        })?;
+    let channel = grpc_channel(connection.cluster_controller.clone());
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 

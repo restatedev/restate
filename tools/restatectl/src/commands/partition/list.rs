@@ -11,7 +11,6 @@
 use std::cmp::PartialOrd;
 use std::collections::{BTreeMap, HashMap};
 
-use anyhow::Context;
 use cling::prelude::*;
 use itertools::Itertools;
 use tonic::codec::CompressionEncoding;
@@ -33,7 +32,7 @@ use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 use crate::app::ConnectionInfo;
 use crate::commands::display_util::render_as_duration;
 use crate::commands::log::deserialize_replicated_log_params;
-use crate::util::grpc_connect;
+use crate::util::grpc_channel;
 
 #[derive(Run, Parser, Collect, Clone, Debug, Default)]
 #[cling(run = "list_partitions")]
@@ -72,14 +71,7 @@ pub async fn list_partitions(
     connection: &ConnectionInfo,
     opts: &ListPartitionsOpts,
 ) -> anyhow::Result<()> {
-    let channel = grpc_connect(connection.cluster_controller.clone())
-        .await
-        .with_context(|| {
-            format!(
-                "cannot connect to cluster controller at {}",
-                connection.cluster_controller
-            )
-        })?;
+    let channel = grpc_channel(connection.cluster_controller.clone());
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 

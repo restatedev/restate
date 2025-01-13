@@ -8,9 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use clap::{Args, ValueEnum};
 use clap_verbosity_flag::LogLevel;
 use cling::Collect;
+
+use restate_core::network::net_util::CommonClientConnectionOptions;
 
 const DEFAULT_CONNECT_TIMEOUT: u64 = 5_000;
 const DEFAULT_REQUEST_TIMEOUT: u64 = 13_000;
@@ -63,13 +67,35 @@ pub(crate) struct ConfirmMode {
 }
 
 #[derive(Args, Clone, Default)]
-pub(crate) struct NetworkOpts {
+pub struct NetworkOpts {
     /// Connection timeout for network calls, in milliseconds.
     #[arg(long, default_value_t = DEFAULT_CONNECT_TIMEOUT, global = true)]
     pub connect_timeout: u64,
     /// Overall request timeout for network calls, in milliseconds.
     #[arg(long, default_value_t = DEFAULT_REQUEST_TIMEOUT, global = true)]
     pub request_timeout: u64,
+}
+
+impl CommonClientConnectionOptions for NetworkOpts {
+    fn connect_timeout(&self) -> Duration {
+        Duration::from_millis(self.connect_timeout)
+    }
+
+    fn request_timeout(&self) -> Option<Duration> {
+        Some(Duration::from_millis(self.request_timeout))
+    }
+
+    fn keep_alive_interval(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+
+    fn keep_alive_timeout(&self) -> Duration {
+        Duration::from_millis(self.connect_timeout)
+    }
+
+    fn http2_adaptive_window(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Args, Collect, Clone, Default)]

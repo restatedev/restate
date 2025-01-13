@@ -30,34 +30,45 @@ use restate_types::net::{AdvertisedAddress, BindAddress};
 
 use crate::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 
-pub fn create_tonic_channel_from_advertised_address<T: CommonClientConnectionOptions>(
+pub fn create_tonic_channel<T: CommonClientConnectionOptions>(
     address: AdvertisedAddress,
     options: &T,
 ) -> Channel {
+    let endpoint = match &address {
+        AdvertisedAddress::Uds(_) => {
+            // dummy endpoint required to specify an uds connector, it is not used anywhere
+            Endpoint::try_from("http://127.0.0.1").expect("/ should be a valid Uri")
+        }
+        AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()),
+    };
+
+    let endpoint = apply_options(endpoint, options);
+
     match address {
         AdvertisedAddress::Uds(uds_path) => {
-            // dummy endpoint required to specify an uds connector, it is not used anywhere
-            Endpoint::try_from("http://127.0.0.1")
-                .expect("/ should be a valid Uri")
-                .http2_keep_alive_interval(options.keep_alive_interval())
-                .keep_alive_timeout(options.keep_alive_timeout())
-                .http2_adaptive_window(options.http2_adaptive_window())
-                .connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
-                    let uds_path = uds_path.clone();
-                    async move {
-                        Ok::<_, io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
-                    }
-                }))
+            endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
+                let uds_path = uds_path.clone();
+                async move {
+                    Ok::<_, io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
+                }
+            }))
         }
-        AdvertisedAddress::Http(uri) => Channel::builder(uri)
-            .connect_timeout(options.connect_timeout())
-            .http2_keep_alive_interval(options.keep_alive_interval())
-            .keep_alive_timeout(options.keep_alive_timeout())
-            .http2_adaptive_window(options.http2_adaptive_window())
-            // this true by default, but this is to guard against any change in defaults
-            .tcp_nodelay(true)
-            .connect_lazy(),
+        AdvertisedAddress::Http(_) => endpoint.connect_lazy()
     }
+}
+
+fn apply_options<T: CommonClientConnectionOptions>(endpoint: Endpoint, options: &T) -> Endpoint {
+    if let Some(request_timeout) = options.request_timeout() {
+        endpoint.timeout(request_timeout)
+    } else {
+        endpoint
+    }
+    .connect_timeout(options.connect_timeout())
+    .http2_keep_alive_interval(options.keep_alive_interval())
+    .keep_alive_timeout(options.keep_alive_timeout())
+    .http2_adaptive_window(options.http2_adaptive_window())
+    // this true by default, but this is to guard against any change in defaults
+    .tcp_nodelay(true)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -82,7 +93,12 @@ pub enum Error {
     Shutdown(#[from] ShutdownError),
 }
 
-#[instrument(level = "error", name = "server", skip_all, fields(server_name = %server_name, uds.path = tracing::field::Empty, net.host.addr = tracing::field::Empty, net.host.port = tracing::field::Empty))]
+#[instrument(
+    level = "error",
+    name = "server",
+    skip_all,
+    fields(server_name = %server_name, uds.path = tracing::field::Empty, net.host.addr = tracing::field::Empty, net.host.port = tracing::field::Empty)
+)]
 pub async fn run_hyper_server<S, B>(
     bind_address: &BindAddress,
     service: S,
@@ -249,6 +265,7 @@ where
 /// Helper trait to extract common client connection options from different configuration types.
 pub trait CommonClientConnectionOptions {
     fn connect_timeout(&self) -> Duration;
+    fn request_timeout(&self) -> Option<Duration>;
     fn keep_alive_interval(&self) -> Duration;
     fn keep_alive_timeout(&self) -> Duration;
     fn http2_adaptive_window(&self) -> bool;
@@ -257,6 +274,10 @@ pub trait CommonClientConnectionOptions {
 impl CommonClientConnectionOptions for NetworkingOptions {
     fn connect_timeout(&self) -> Duration {
         self.connect_timeout.into()
+    }
+
+    fn request_timeout(&self) -> Option<Duration> {
+        None
     }
 
     fn keep_alive_interval(&self) -> Duration {
@@ -275,6 +296,10 @@ impl CommonClientConnectionOptions for NetworkingOptions {
 impl CommonClientConnectionOptions for MetadataStoreClientOptions {
     fn connect_timeout(&self) -> Duration {
         self.metadata_store_connect_timeout.into()
+    }
+
+    fn request_timeout(&self) -> Option<Duration> {
+        None
     }
 
     fn keep_alive_interval(&self) -> Duration {

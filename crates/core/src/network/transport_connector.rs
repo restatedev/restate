@@ -23,7 +23,7 @@ use restate_types::GenerationalNodeId;
 
 use super::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use super::{NetworkError, ProtocolError};
-use crate::network::net_util::create_tonic_channel_from_advertised_address;
+use crate::network::net_util::create_tonic_channel;
 
 pub trait TransportConnect: Send + Sync + 'static {
     fn connect(
@@ -72,9 +72,7 @@ impl TransportConnect for GrpcConnector {
             None => self
                 .channel_cache
                 .entry(address.clone())
-                .or_insert_with(|| {
-                    create_tonic_channel_from_advertised_address(address, &self.networking_options)
-                })
+                .or_insert_with(|| create_tonic_channel(address, &self.networking_options))
                 .clone(),
         };
 

@@ -16,7 +16,7 @@ use tonic::{Code, Status};
 use restate_core::metadata_store::{
     Precondition, ProvisionedMetadataStore, ReadError, VersionedValue, WriteError,
 };
-use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
+use restate_core::network::net_util::create_tonic_channel;
 use restate_core::network::net_util::CommonClientConnectionOptions;
 use restate_types::net::AdvertisedAddress;
 use restate_types::Version;
@@ -36,7 +36,7 @@ impl LocalMetadataStoreClient {
         metadata_store_address: AdvertisedAddress,
         options: &T,
     ) -> Self {
-        let channel = create_tonic_channel_from_advertised_address(metadata_store_address, options);
+        let channel = create_tonic_channel(metadata_store_address, options);
 
         Self {
             svc_client: MetadataStoreSvcClient::new(channel),
