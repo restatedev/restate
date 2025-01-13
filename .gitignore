@@ -18,3 +18,4 @@
 # Tracing files
 **/*.trace
 **/flamegraph.svg
+.sl

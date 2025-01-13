@@ -7106,6 +7106,7 @@ dependencies = [
  "serde_with",
  "sha2",
  "smallvec",
+ "smartstring",
  "static_assertions",
  "strum",
  "syn 2.0.90",
