@@ -537,7 +537,8 @@ impl LogletConfiguration {
                 false
             }
             (x, y) => {
-                debug!(
+                // todo(pavel): do not commit
+                trace!(
                     "Changing bifrost provider from {} to {} is not supported at the moment. Ignoring reconfiguration request",
                     x.as_provider(), y.kind(),
                 );

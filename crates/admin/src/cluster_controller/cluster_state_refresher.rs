@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::watch;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{
@@ -125,6 +125,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             let mut join_set = tokio::task::JoinSet::new();
             for (_, node_config) in nodes_config.iter() {
                 let node_id = node_config.current_generation;
+                warn!("Sending GetNodeState request to {}", node_id);
                 let rpc_router = get_state_router.clone();
                 let network_sender = network_sender.clone();
                 join_set
