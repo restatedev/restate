@@ -135,6 +135,7 @@ hyper-rustls = { version = "0.27.2", default-features = false, features = [
     "logging",
 ] }
 hyper-util = { version = "0.1" }
+indexmap = "2.7"
 itertools = "0.13.0"
 jsonschema = "0.26.0"
 metrics = { version = "0.24" }

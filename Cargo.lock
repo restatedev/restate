@@ -7077,6 +7077,7 @@ dependencies = [
  "http 1.2.0",
  "http-serde",
  "humantime",
+ "indexmap 2.7.0",
  "itertools 0.13.0",
  "jsonptr",
  "moka",
