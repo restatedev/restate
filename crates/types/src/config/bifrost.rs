@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_with::{serde_as, DeserializeAs};
 
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
 use crate::logs::metadata::ProviderKind;
+use crate::replicated_loglet::ReplicationProperty;
 use crate::retries::RetryPolicy;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
@@ -261,6 +262,43 @@ pub struct ReplicatedLogletOptions {
     ///
     /// Value must be between 0 and 1. It will be clamped at `1.0`.
     pub readahead_trigger_ratio: f32,
+
+    /// # Default replication property
+    ///
+    /// Configures the default replication property to be used by the replicated loglet.
+    // Also allow to specify the replication property as non-zero u8 value to make it simpler to
+    // pass it in via an env variable.
+    #[serde_as(
+        as = "serde_with::PickFirst<(serde_with::DisplayFromStr, ReplicationPropertyFromNonZeroU8)>"
+    )]
+    // hide the configuration option from serialization if it is the default
+    #[serde(
+        default = "default_replication_property",
+        skip_serializing_if = "is_default_replication_property"
+    )]
+    // hide the configuration option by excluding it from the Json schema
+    #[cfg_attr(feature = "schemars", schemars(skip, with = "String"))]
+    pub default_replication_property: ReplicationProperty,
+}
+
+/// Helper struct to support deserializing the ReplicationProperty from a [`NonZeroU8`].
+struct ReplicationPropertyFromNonZeroU8;
+
+impl<'de> DeserializeAs<'de, ReplicationProperty> for ReplicationPropertyFromNonZeroU8 {
+    fn deserialize_as<D>(deserializer: D) -> Result<ReplicationProperty, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        NonZeroU8::deserialize(deserializer).map(ReplicationProperty::new)
+    }
+}
+
+fn default_replication_property() -> ReplicationProperty {
+    ReplicationProperty::new(NonZeroU8::new(1).expect("to be non-zero"))
+}
+
+fn is_default_replication_property(replication_property: &ReplicationProperty) -> bool {
+    replication_property == &ReplicationProperty::new(NonZeroU8::new(1).expect("to be non-zero"))
 }
 
 impl Default for ReplicatedLogletOptions {
@@ -283,6 +321,7 @@ impl Default for ReplicatedLogletOptions {
             ),
             readahead_records: NonZeroUsize::new(100).unwrap(),
             readahead_trigger_ratio: 0.5,
+            default_replication_property: default_replication_property(),
         }
     }
 }

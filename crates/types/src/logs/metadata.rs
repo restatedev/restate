@@ -219,9 +219,11 @@ impl ProviderConfiguration {
             ProviderKind::Local => ProviderConfiguration::Local,
             ProviderKind::Replicated => ProviderConfiguration::Replicated(ReplicatedLogletConfig {
                 nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
-                replication_property: ReplicationProperty::new(
-                    NonZeroU8::new(1).expect("1 is not zero"),
-                ),
+                replication_property: configuration
+                    .bifrost
+                    .replicated_loglet
+                    .default_replication_property
+                    .clone(),
             }),
         }
     }
