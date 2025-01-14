@@ -11,9 +11,11 @@
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionProcessorRpcRequestId};
+use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
+use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::CommandIndex;
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
 use restate_types::time::MillisSinceEpoch;
@@ -39,13 +41,17 @@ pub enum Action {
     DeleteTimer {
         timer_key: TimerKey,
     },
-    AckStoredEntry {
+    AckStoredCommand {
         invocation_id: InvocationId,
-        entry_index: EntryIndex,
+        command_index: CommandIndex,
     },
     ForwardCompletion {
         invocation_id: InvocationId,
         completion: Completion,
+    },
+    ForwardNotification {
+        invocation_id: InvocationId,
+        notification: RawNotification,
     },
     AbortInvocation {
         invocation_id: InvocationId,
