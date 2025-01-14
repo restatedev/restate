@@ -45,6 +45,7 @@ hostname = { workspace = true }
 http = { workspace = true }
 http-serde = { workspace = true }
 humantime = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 moka = { workspace = true, features = ["sync", "logging"] }
 notify = { version = "7.0.0" }
