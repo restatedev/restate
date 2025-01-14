@@ -39,6 +39,7 @@ derive_more = { workspace = true }
 downcast-rs = { workspace = true }
 dyn-clone = { version = "1.0" }
 enum-map = { workspace = true }
+enum_dispatch = "0.3.13"
 enumset = { workspace = true, features = ["serde"] }
 figment = { version = "0.10.8", features = ["env", "toml"] }
 flexbuffers = { workspace = true }
