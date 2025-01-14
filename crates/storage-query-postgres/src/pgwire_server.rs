@@ -32,30 +32,32 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-use crate::extended_query::NoopExtendedQueryHandler;
 use pgwire::api::auth::noop::NoopStartupHandler;
 use pgwire::api::copy::NoopCopyHandler;
 use pgwire::api::query::SimpleQueryHandler;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response};
-use pgwire::api::{ClientInfo, PgWireHandlerFactory, Type};
+use pgwire::api::{ClientInfo, NoopErrorHandler, PgWireServerHandlers, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use pgwire::tokio::process_socket;
+
+use crate::extended_query::NoopExtendedQueryHandler;
 use restate_core::{TaskCenter, TaskKind};
 use restate_storage_query_datafusion::context::QueryContext;
 
 pub(crate) struct HandlerFactory {
     processor: Arc<DfSessionService>,
     placeholder: Arc<NoopExtendedQueryHandler>,
-    authenticator: Arc<NoopStartupHandler>,
+    authenticator: Arc<NoAuthHandler>,
     copy_handler: Arc<NoopCopyHandler>,
 }
 
-impl PgWireHandlerFactory for HandlerFactory {
-    type StartupHandler = NoopStartupHandler;
+impl PgWireServerHandlers for HandlerFactory {
+    type StartupHandler = NoAuthHandler;
     type SimpleQueryHandler = DfSessionService;
     type ExtendedQueryHandler = NoopExtendedQueryHandler;
     type CopyHandler = NoopCopyHandler;
+    type ErrorHandler = NoopErrorHandler;
 
     fn simple_query_handler(&self) -> Arc<Self::SimpleQueryHandler> {
         self.processor.clone()
@@ -72,14 +74,22 @@ impl PgWireHandlerFactory for HandlerFactory {
     fn copy_handler(&self) -> Arc<Self::CopyHandler> {
         self.copy_handler.clone()
     }
+
+    fn error_handler(&self) -> Arc<Self::ErrorHandler> {
+        Arc::new(NoopErrorHandler)
+    }
 }
+
+pub(crate) struct NoAuthHandler {}
+
+impl NoopStartupHandler for NoAuthHandler {}
 
 impl HandlerFactory {
     pub fn new(ctx: QueryContext) -> Self {
         let processor = Arc::new(DfSessionService::new(ctx));
         // We have not implemented extended query in this server, use placeholder instead
         let placeholder = Arc::new(NoopExtendedQueryHandler::new());
-        let authenticator = Arc::new(NoopStartupHandler);
+        let authenticator = Arc::new(NoAuthHandler {});
         let copy_handler = Arc::new(NoopCopyHandler);
 
         Self {

@@ -16,11 +16,10 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
-restate-partition-store = {workspace = true }
-restate-storage-api = {workspace = true}
-restate-storage-query-datafusion = {workspace = true }
+restate-partition-store = { workspace = true }
+restate-storage-api = { workspace = true }
+restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true }
-
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -31,9 +30,9 @@ codederror = { workspace = true }
 datafusion = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
-paste = { workspace = true}
-pgwire = {version = "0.25", default-features = false, features = ["server-api-ring"]}
-prost = {workspace = true}
+paste = { workspace = true }
+pgwire = { version = "0.28.0", default-features = false, features = ["server-api-ring"] }
+prost = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
