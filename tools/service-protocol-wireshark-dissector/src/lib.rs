@@ -11,9 +11,7 @@
 use bytes::Bytes;
 use mlua::prelude::*;
 use mlua::{Table, Value};
-
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_service_protocol::message::{Decoder, MessageType, ProtocolMessage};
+use restate_service_protocol_v4::message_codec::{Decoder, MessageType};
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +30,7 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
     // We should store it somewhere, but right now wireshark doesn't support conversations in lua api
     // so we just keep it simple and assume all messages are self contained within the same http data frame
     // https://ask.wireshark.org/question/11650/lua-wireshark-dissector-combine-data-from-2-udp-packets
-    let mut dec = Decoder::new(ServiceProtocolVersion::V1, usize::MAX, None);
+    let mut dec = Decoder::new(ServiceProtocolVersion::V4, usize::MAX, None);
 
     // Convert the buffer and push it to the decoder
     let buf = match buf_lua {
@@ -49,35 +47,10 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
             "ty" => u16::from(header.message_type()),
             "ty_name" => format_message_type(header.message_type()),
             "len" => header.frame_length(),
-            "message" => match message {
-                ProtocolMessage::Start(m) => {
-                    format!("{:#?}", m)
-                }
-                ProtocolMessage::Completion(c) => {
-                    format!("{:#?}", c)
-                }
-                ProtocolMessage::Suspension(s) => {
-                    format!("{:#?}", s)
-                }
-                ProtocolMessage::EntryAck(a) => {
-                    format!("{:#?}", a)
-                }
-                ProtocolMessage::End(e) => {
-                    format!("{:?}", e)
-                }
-                ProtocolMessage::Error(e) => {
-                    format!("{:?}", e)
-                }
-                ProtocolMessage::UnparsedEntry(e) => {
-                    format!("{:#?}", e.deserialize_entry::<ProtobufRawEntryCodec>().map_err(LuaError::external)?)
-                }
-            }
+            "message" => message.proto_debug()
         );
 
         // Optional flags
-        if let Some(completed) = header.completed() {
-            set_table_values!(message_table, "completed" => completed);
-        }
         if let Some(requires_ack) = header.requires_ack() {
             set_table_values!(message_table, "requires_ack" => requires_ack);
         }
@@ -90,7 +63,7 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
 
 fn format_message_type(msg_type: MessageType) -> String {
     match msg_type {
-        mt @ MessageType::CustomEntry(_) => {
+        mt @ MessageType::Custom(_) => {
             format!("{:?}", mt)
         }
         mt => {
