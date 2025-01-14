@@ -17,6 +17,7 @@ use typify::{TypeSpace, TypeSpaceSettings};
 fn main() -> std::io::Result<()> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
+    // Old service-protocol
     prost_build::Config::new()
         .bytes(["."])
         .protoc_arg("--experimental_allow_proto3_optional")
@@ -24,16 +25,27 @@ fn main() -> std::io::Result<()> {
             "protocol.ServiceProtocolVersion",
             "#[derive(::serde::Serialize, ::serde::Deserialize)]",
         )
+        .compile_protos(
+            &["service-protocol/dev/restate/service/protocol.proto"],
+            &["service-protocol"],
+        )?;
+
+    // Version enums!
+    // TODO when removing the old service-protocol, include here the service-protocol enum too
+    prost_build::Config::new()
+        .bytes(["."])
+        .protoc_arg("--experimental_allow_proto3_optional")
         .enum_attribute(
             "discovery.ServiceDiscoveryProtocolVersion",
             "#[derive(::strum::EnumIter)]",
         )
         .compile_protos(
             &[
-                "service-protocol/dev/restate/service/protocol.proto",
-                "service-protocol/dev/restate/service/discovery.proto",
+                Path::new("../../service-protocol/dev/restate/service/discovery.proto")
+                    .canonicalize()
+                    .unwrap(),
             ],
-            &["service-protocol"],
+            &[Path::new("../../service-protocol").canonicalize().unwrap()],
         )?;
 
     // Common proto types for internal use

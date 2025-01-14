@@ -27,6 +27,8 @@ enum ServiceProtocolVersion {
   // * New entry to retrieve the invocation id: GetCallInvocationIdEntryMessage
   // * New field to set idempotency key for Call entries
   V3 = 3;
+  // Immutable journal
+  V4 = 4;
 }
 
 // --- Core frames ---
