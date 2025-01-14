@@ -759,7 +759,7 @@ impl SealAndExtendTask {
 mod tests {
     use super::Service;
 
-    use std::collections::{BTreeSet, HashMap};
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -767,7 +767,7 @@ mod tests {
     use googletest::assert_that;
     use googletest::matchers::eq;
     use test_log::test;
-    use tracing::{info, warn};
+    use tracing::{debug, info, warn};
 
     use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
     use restate_bifrost::providers::memory_loglet;
@@ -832,6 +832,7 @@ mod tests {
         Ok(())
     }
 
+    #[derive(Default)]
     struct MockNodeStateHandler {
         applied_lsn: Arc<AtomicU64>,
         persisted_lsn: Arc<AtomicU64>,
@@ -844,22 +845,18 @@ mod tests {
         type MessageType = GetNodeState;
 
         async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-            info!("Got {:?}", msg);
-
             let peer_id = msg.peer();
             if self.block_list.contains(&peer_id) {
-                warn!("Ignoring blocked peer: {}", peer_id);
+                warn!("Ignoring blocked destination: {}", peer_id);
                 return;
             }
 
-            let archived_lsn = self.archived_lsn.load(Ordering::Relaxed);
             let partition_processor_status = PartitionProcessorStatus {
                 last_applied_log_lsn: Some(Lsn::from(self.applied_lsn.load(Ordering::Relaxed))),
                 last_persisted_log_lsn: Some(Lsn::from(self.persisted_lsn.load(Ordering::Relaxed))),
-                last_archived_log_lsn: if archived_lsn == Lsn::INVALID.as_u64() {
-                    None
-                } else {
-                    Some(Lsn::from(archived_lsn))
+                last_archived_log_lsn: match self.archived_lsn.load(Ordering::Relaxed) {
+                    0 => None,
+                    n => Some(Lsn::from(n)),
                 },
                 ..PartitionProcessorStatus::new()
             };
@@ -869,61 +866,9 @@ mod tests {
                 partition_processor_state: Some(state),
             });
 
-            info!("Responding to {} with: {:?}", peer_id, &response);
-
             // We are not really sending something back to target, we just need to provide a known
             // node_id. The response will be sent to a handler running on the very same node.
-            response.send().await.expect("send should succeed");
-        }
-    }
-
-    struct MockNodeStateHandler2 {
-        node_state_generators:
-            HashMap<GenerationalNodeId, Box<dyn Fn() -> Arc<MockNodeState> + Send + Sync>>,
-    }
-
-    struct MockNodeState {
-        applied_lsn: AtomicU64,
-        persisted_lsn: AtomicU64,
-        archived_lsn: AtomicU64,
-    }
-
-    impl MessageHandler for MockNodeStateHandler2 {
-        type MessageType = GetNodeState;
-
-        async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-            info!("Got message {:?}", msg);
-
-            let dest_node_id = msg.peer();
-            let Some(generator) = self.node_state_generators.get(&dest_node_id) else {
-                warn!("No state generator for node id: {}", dest_node_id);
-                return;
-            };
-
-            let state = generator();
-            let archived_lsn = state.archived_lsn.load(Ordering::Relaxed);
-            let partition_processor_status = PartitionProcessorStatus {
-                last_applied_log_lsn: Some(Lsn::from(state.applied_lsn.load(Ordering::Relaxed))),
-                last_persisted_log_lsn: Some(Lsn::from(
-                    state.persisted_lsn.load(Ordering::Relaxed),
-                )),
-                last_archived_log_lsn: if archived_lsn == Lsn::INVALID.as_u64() {
-                    None
-                } else {
-                    Some(Lsn::from(archived_lsn))
-                },
-                ..PartitionProcessorStatus::new()
-            };
-
-            let state = [(PartitionId::MIN, partition_processor_status)].into();
-            let response = msg.to_rpc_response(NodeStateResponse {
-                partition_processor_state: Some(state),
-            });
-
-            info!("Responding to {} with: {:?}", dest_node_id, &response);
-
-            // We are not really sending something back to target, we just need to provide a known
-            // node_id. The response will be sent to a handler running on the very same node.
+            debug!("{} sending response: {:?}", peer_id, &response);
             response.send().await.expect("send should succeed");
         }
     }
@@ -1028,8 +973,6 @@ mod tests {
         })
         .await?;
 
-        // simulate a connection from node 2 so we can have a connection between the two
-        // nodes
         let node_2 = MockPeerConnection::connect(
             GenerationalNodeId::new(2, 2),
             node_env.metadata.nodes_config_version(),
@@ -1109,7 +1052,9 @@ mod tests {
                 block_list,
             };
 
-            builder.add_message_handler(get_node_state_handler)
+            builder
+                .add_message_handler(get_node_state_handler)
+                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
 
@@ -1124,6 +1069,84 @@ mod tests {
         );
         tokio::time::sleep(interval_duration * 10).await;
 
+        // no trimming should have happened because no nodes report archived_lsn
+        assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+
+        Ok(())
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn do_not_trim_by_persisted_lsn_if_snapshot_repository_configured() -> anyhow::Result<()>
+    {
+        const LOG_ID: LogId = LogId::new(0);
+        let interval_duration = Duration::from_secs(10);
+
+        let mut config: Configuration = Default::default();
+        config.admin.log_trim_threshold = 0;
+        config.admin.log_trim_interval = Some(interval_duration.into());
+        config.bifrost.default_provider = ProviderKind::InMemory;
+        config.worker.snapshots.destination = Some("a-repository-somewhere".to_string());
+
+        let lsn = AtomicU64::new(0);
+        let applied_persisted_lsn = Arc::new(lsn);
+
+        let (node_env, bifrost, cluster_state) = create_test_env(config, |builder| {
+            let get_node_state_handler = MockNodeStateHandler {
+                applied_lsn: applied_persisted_lsn.clone(),
+                persisted_lsn: applied_persisted_lsn.clone(),
+                archived_lsn: Arc::new(AtomicU64::new(0)), // unused in this test
+                block_list: Default::default(),
+            };
+
+            builder
+                .add_message_handler(get_node_state_handler)
+                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
+        })
+        .await?;
+
+        let get_node_2_state_handler = MockNodeStateHandler {
+            applied_lsn: applied_persisted_lsn.clone(),
+            persisted_lsn: applied_persisted_lsn.clone(),
+            archived_lsn: Arc::new(AtomicU64::new(0)), // unused in this test
+            block_list: Default::default(),
+        };
+        let node_2 = MockPeerConnection::connect(
+            GenerationalNodeId::new(2, 2),
+            node_env.metadata.nodes_config_version(),
+            node_env
+                .metadata
+                .nodes_config_ref()
+                .cluster_name()
+                .to_owned(),
+            node_env.networking.connection_manager(),
+            10,
+        )
+            .await?;
+        // let node2 receive messages and use the same message handler as node1
+        let (_node_2, _node2_reactor) =
+            node_2.process_with_message_handler(get_node_2_state_handler)?;
+
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
+        for i in 1..=20 {
+            let lsn = appender.append(format!("record{i}")).await?;
+            assert_eq!(Lsn::from(i), lsn);
+        }
+        applied_persisted_lsn.store(
+            bifrost.find_tail(LOG_ID).await?.offset().prev().as_u64(),
+            Ordering::Relaxed,
+        );
+
+        tokio::time::sleep(interval_duration * 2).await;
+        assert!(cluster_state
+            .current()
+            .nodes
+            .get(&PlainNodeId::new(1))
+            .is_some_and(|n| matches!(n, NodeState::Alive(_))));
+        assert!(cluster_state
+            .current()
+            .nodes
+            .get(&PlainNodeId::new(2))
+            .is_some_and(|n| matches!(n, NodeState::Alive(_))));
         // no trimming should have happened because no nodes report archived_lsn
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
@@ -1173,7 +1196,9 @@ mod tests {
                 block_list: [GenerationalNodeId::new(2, 2)].into(),
             };
 
-            builder.add_message_handler(get_node_state_handler)
+            builder
+                .add_message_handler(get_node_state_handler)
+                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
 
@@ -1186,7 +1211,7 @@ mod tests {
             bifrost.find_tail(LOG_ID).await?.offset().prev().as_u64(),
             Ordering::Relaxed,
         );
-        tokio::time::sleep(interval_duration * 10).await;
+        tokio::time::sleep(interval_duration * 2).await;
         assert!(cluster_state
             .current()
             .nodes
@@ -1200,7 +1225,7 @@ mod tests {
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
         archived_lsn.store(10, Ordering::Relaxed);
-        tokio::time::sleep(interval_duration * 10).await;
+        tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(10), bifrost.get_trim_point(LOG_ID).await?);
 
         Ok(())
@@ -1222,16 +1247,11 @@ mod tests {
             ..Default::default()
         };
 
-        let n1 = Arc::new(MockNodeState {
-            applied_lsn: AtomicU64::new(20),
-            persisted_lsn: AtomicU64::new(0),
-            archived_lsn: AtomicU64::new(15),
-        });
-        let n2 = Arc::new(MockNodeState {
-            applied_lsn: AtomicU64::new(10),
-            persisted_lsn: AtomicU64::new(0),
-            archived_lsn: AtomicU64::new(0),
-        });
+        let n2_applied_lsn = Arc::new(AtomicU64::new(10)); // initially less than N1's archived LSN
+        let n2_msg_handler = MockNodeStateHandler {
+            applied_lsn: n2_applied_lsn.clone(),
+            ..Default::default()
+        };
 
         let (node_env, bifrost, cluster_state) = create_test_env(config, |builder| {
             assert_eq!(
@@ -1239,30 +1259,17 @@ mod tests {
                 2,
                 "expect two nodes in config"
             );
-            let n1 = n1.clone();
-            // let n2 = n2.clone();
+            let n1_msg_handler = MockNodeStateHandler {
+                applied_lsn: Arc::new(AtomicU64::new(20)),
+                archived_lsn: Arc::new(AtomicU64::new(15)),
+                ..Default::default()
+            };
             builder
-                .add_message_handler(MockNodeStateHandler2 {
-                    node_state_generators: [
-                        (
-                            GenerationalNodeId::new(1, 1), // sender id
-                            Box::new(move || n1.clone())
-                                as Box<dyn Fn() -> Arc<MockNodeState> + Send + Sync>,
-                        ),
-                        // (
-                        //     GenerationalNodeId::new(2, 2),
-                        //     Box::new(move || n2.clone())
-                        //         as Box<dyn Fn() -> Arc<MockNodeState> + Send + Sync>,
-                        // ),
-                    ]
-                    .into(),
-                })
+                .add_message_handler(n1_msg_handler)
                 .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
 
-        // simulate a connection from node 2 so we can have a connection between the two
-        // nodes
         let node_2_conn = MockPeerConnection::connect(
             GenerationalNodeId::new(2, 2),
             node_env.metadata.nodes_config_version(),
@@ -1275,17 +1282,7 @@ mod tests {
             10,
         )
         .await?;
-
-        let n2_2 = n2.clone();
-        let (_node_2, _node2_reactor) =
-            node_2_conn.process_with_message_handler(MockNodeStateHandler2 {
-                node_state_generators: [(
-                    GenerationalNodeId::new(1, 1), // sender id
-                    Box::new(move || n2_2.clone())
-                        as Box<dyn Fn() -> Arc<MockNodeState> + Send + Sync>,
-                )]
-                .into(),
-            })?;
+        node_2_conn.process_with_message_handler(n2_msg_handler)?;
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
@@ -1304,7 +1301,7 @@ mod tests {
         ));
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        n2.applied_lsn.store(20, Ordering::Relaxed);
+        n2_applied_lsn.store(20, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(15), bifrost.get_trim_point(LOG_ID).await?);
 
