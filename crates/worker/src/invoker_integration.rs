@@ -17,9 +17,8 @@ use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 
-use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{AwakeableIdentifier, InvocationId};
 use restate_types::invocation::{
     InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType, SpanRelation,
 };
