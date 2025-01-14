@@ -49,10 +49,9 @@ use restate_types::identifiers::{
 use restate_types::invocation;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
-    ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, SubmitNotificationSink,
-    WorkflowHandlerType,
+    NotifySignalRequest, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
+    SubmitNotificationSink, WorkflowHandlerType,
 };
-use restate_types::journal::raw::RawEntryCodec;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::net::partition_processor::{
@@ -139,11 +138,11 @@ where
         }
     }
 
-    pub async fn build<Codec: RawEntryCodec + Default + Debug>(
+    pub async fn build(
         self,
         bifrost: Bifrost,
         mut partition_store: PartitionStore,
-    ) -> Result<PartitionProcessor<Codec, InvokerInputSender>, StorageError> {
+    ) -> Result<PartitionProcessor<InvokerInputSender>, StorageError> {
         let PartitionProcessorBuilder {
             partition_id,
             partition_key_range,
@@ -161,7 +160,7 @@ where
             ..
         } = self;
 
-        let state_machine = Self::create_state_machine::<Codec>(
+        let state_machine = Self::create_state_machine(
             &mut partition_store,
             partition_key_range.clone(),
             disable_idempotency_table,
@@ -205,15 +204,12 @@ where
         })
     }
 
-    async fn create_state_machine<Codec>(
+    async fn create_state_machine(
         partition_store: &mut PartitionStore,
         partition_key_range: RangeInclusive<PartitionKey>,
         disable_idempotency_table: bool,
         invocation_status_killed: bool,
-    ) -> Result<StateMachine<Codec>, StorageError>
-    where
-        Codec: RawEntryCodec + Default + Debug,
-    {
+    ) -> Result<StateMachine, StorageError> {
         let inbox_seq_number = partition_store.get_inbox_seq_number().await?;
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
@@ -238,11 +234,11 @@ where
     }
 }
 
-pub struct PartitionProcessor<Codec, InvokerSender> {
+pub struct PartitionProcessor<InvokerSender> {
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
     leadership_state: LeadershipState<InvokerSender>,
-    state_machine: StateMachine<Codec>,
+    state_machine: StateMachine,
     bifrost: Bifrost,
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
     rpc_rx: mpsc::Receiver<Incoming<PartitionProcessorRpcRequest>>,
@@ -268,9 +264,8 @@ pub enum ProcessorError {
 
 type LsnEnvelope = (Lsn, Arc<Envelope>);
 
-impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
+impl<InvokerSender> PartitionProcessor<InvokerSender>
 where
-    Codec: RawEntryCodec + Default + Debug,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
     #[instrument(
