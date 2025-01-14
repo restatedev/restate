@@ -664,6 +664,18 @@ where
                     )
                     .await;
             }
+            PartitionProcessorRpcRequestInner::AppendSignal(invocation_id, signal) => {
+                self.leadership_state
+                    .self_propose_and_respond_asynchronously(
+                        invocation_id.partition_key(),
+                        Command::NotifySignal(NotifySignalRequest {
+                            invocation_id,
+                            signal,
+                        }),
+                        response_tx,
+                    )
+                    .await;
+            }
         };
     }
 
