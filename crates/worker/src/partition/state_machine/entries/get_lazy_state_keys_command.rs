@@ -59,3 +59,55 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
+    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use googletest::matchers::contains;
+    use googletest::prelude::assert_that;
+    use restate_storage_api::state_table::StateTable;
+    use restate_storage_api::Transaction;
+    use restate_types::identifiers::ServiceId;
+    use restate_types::journal_v2::{GetLazyStateKeysCommand, GetLazyStateKeysCompletion};
+
+    #[restate_core::test]
+    async fn get_lazy_state_keys() {
+        let mut test_env = TestEnv::create().await;
+        let service_id = ServiceId::mock_random();
+        let invocation_id =
+            fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone())
+                .await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        // Mock some state
+        let mut txn = test_env.storage.transaction();
+        txn.put_user_state(&service_id, b"key1", b"value1").await;
+        txn.put_user_state(&service_id, b"key2", b"value2").await;
+        txn.commit().await.unwrap();
+
+        let completion_id = 1;
+        let actions = test_env
+            .apply(invoker_entry_effect(
+                invocation_id,
+                GetLazyStateKeysCommand {
+                    completion_id,
+                    name: Default::default(),
+                },
+            ))
+            .await;
+
+        // At this point we expect the completion to be forwarded to the invoker
+        assert_that!(
+            actions,
+            contains(matchers::actions::forward_notification(
+                invocation_id,
+                GetLazyStateKeysCompletion {
+                    completion_id,
+                    state_keys: vec!["key1".to_string(), "key2".to_string()]
+                }
+            ))
+        );
+        test_env.shutdown().await;
+    }
+}

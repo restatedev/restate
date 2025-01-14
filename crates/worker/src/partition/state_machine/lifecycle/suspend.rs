@@ -66,8 +66,12 @@ where
                 .into_invocation_metadata()
                 .expect("Must be present unless status is killed or invoked");
 
-            in_flight_invocation_metadata.timestamps.update();
+            trace!(
+                "Suspending invocation waiting for notifications {:?}",
+                self.waiting_for_notifications
+            );
 
+            in_flight_invocation_metadata.timestamps.update();
             invocation_status = InvocationStatus::Suspended {
                 metadata: in_flight_invocation_metadata,
                 waiting_for_notifications: self.waiting_for_notifications,
@@ -80,5 +84,135 @@ where
             .await;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::partition::state_machine::tests::fixtures::{
+        invoker_entry_effect, invoker_suspended,
+    };
+    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use crate::partition::state_machine::Action;
+    use googletest::prelude::{all, assert_that, contains, eq, pat};
+    use googletest::{elements_are, property};
+    use restate_types::journal_v2::{
+        CommandType, Entry, EntryMetadata, EntryType, NotificationId, SleepCommand, SleepCompletion,
+    };
+    use restate_types::time::MillisSinceEpoch;
+    use restate_wal_protocol::timer::TimerKeyValue;
+    use restate_wal_protocol::Command;
+    use std::time::{Duration, SystemTime};
+
+    #[restate_core::test]
+    async fn sleep_then_suspend_then_resume() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        let completion_id = 1;
+        let wake_up_time: MillisSinceEpoch = (SystemTime::now() + Duration::from_secs(60)).into();
+
+        let sleep_command = SleepCommand {
+            wake_up_time,
+            name: Default::default(),
+            completion_id,
+        };
+        let timer_key_value =
+            TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, completion_id);
+        let actions = test_env
+            .apply_multiple([
+                invoker_entry_effect(invocation_id, sleep_command.clone()),
+                invoker_suspended(
+                    invocation_id,
+                    [NotificationId::for_completion(completion_id)],
+                ),
+            ])
+            .await;
+        assert_that!(
+            actions,
+            contains(pat!(Action::RegisterTimer {
+                timer_value: eq(timer_key_value.clone())
+            }))
+        );
+
+        let actions = test_env.apply(Command::Timer(timer_key_value)).await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::invoke_for_id(invocation_id))
+        );
+
+        // Check journal
+        let sleep_completion = SleepCompletion { completion_id };
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 3).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(sleep_command),
+                matchers::entry_eq(sleep_completion),
+            ]
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn suspend_with_already_completed_notifications() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        let completion_id = 1;
+        let wake_up_time: MillisSinceEpoch = (SystemTime::now() + Duration::from_secs(60)).into();
+
+        let sleep_command = SleepCommand {
+            wake_up_time,
+            name: Default::default(),
+            completion_id,
+        };
+        let sleep_completion = SleepCompletion { completion_id };
+        let timer_key_value =
+            TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, completion_id);
+        let actions = test_env
+            .apply_multiple([
+                invoker_entry_effect(invocation_id, sleep_command.clone()),
+                Command::Timer(timer_key_value.clone()),
+            ])
+            .await;
+        assert_that!(
+            actions,
+            all![
+                contains(pat!(Action::RegisterTimer {
+                    timer_value: eq(timer_key_value)
+                })),
+                contains(matchers::actions::forward_notification(
+                    invocation_id,
+                    sleep_completion.clone()
+                ))
+            ]
+        );
+
+        let actions = test_env
+            .apply(invoker_suspended(
+                invocation_id,
+                [NotificationId::for_completion(completion_id)],
+            ))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::invoke_for_id(invocation_id))
+        );
+
+        // Check journal
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 3).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(sleep_command),
+                matchers::entry_eq(sleep_completion),
+            ]
+        );
+
+        test_env.shutdown().await;
     }
 }

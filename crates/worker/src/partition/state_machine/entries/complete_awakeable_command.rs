@@ -58,3 +58,89 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
+    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use bytes::Bytes;
+    use googletest::prelude::{assert_that, contains, eq};
+    use restate_types::identifiers::{AwakeableIdentifier, ExternalSignalIdentifier, InvocationId};
+    use restate_types::invocation::ResponseResult;
+    use restate_types::journal_v2::{
+        CompleteAwakeableCommand, CompleteAwakeableId, CompleteAwakeableResult, Signal, SignalId,
+        SignalResult,
+    };
+
+    #[restate_core::test]
+    async fn complete_old_awakeable() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        let callee_invocation_id = InvocationId::mock_random();
+        let callee_entry_index = 10;
+        let awakeable_identifier =
+            AwakeableIdentifier::new(callee_invocation_id, callee_entry_index);
+        let result_value = Bytes::from_static(b"success");
+
+        let actions = test_env
+            .apply(invoker_entry_effect(
+                invocation_id,
+                CompleteAwakeableCommand {
+                    id: CompleteAwakeableId::Old(awakeable_identifier),
+                    result: CompleteAwakeableResult::Success(result_value.clone()),
+                    name: Default::default(),
+                },
+            ))
+            .await;
+        assert_that!(
+            actions,
+            contains(
+                matchers::actions::invocation_response_to_partition_processor(
+                    callee_invocation_id,
+                    callee_entry_index,
+                    eq(ResponseResult::Success(result_value))
+                )
+            )
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn complete_new_awakeable() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        let callee_invocation_id = InvocationId::mock_random();
+        let callee_signal_index = 10;
+        let awakeable_identifier =
+            ExternalSignalIdentifier::new(callee_invocation_id, callee_signal_index);
+        let result_value = Bytes::from_static(b"success");
+
+        let actions = test_env
+            .apply(invoker_entry_effect(
+                invocation_id,
+                CompleteAwakeableCommand {
+                    id: CompleteAwakeableId::New(awakeable_identifier),
+                    result: CompleteAwakeableResult::Success(result_value.clone()),
+                    name: Default::default(),
+                },
+            ))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::notify_signal(
+                callee_invocation_id,
+                Signal::new(
+                    SignalId::for_index(callee_signal_index),
+                    SignalResult::Success(result_value)
+                )
+            ))
+        );
+
+        test_env.shutdown().await;
+    }
+}

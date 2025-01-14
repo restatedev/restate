@@ -61,3 +61,80 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use googletest::prelude::{assert_that, contains};
+    use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+    use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
+    use restate_types::invocation::NotifySignalRequest;
+    use restate_types::journal_v2::{Signal, SignalId, SignalResult};
+    use restate_wal_protocol::Command;
+
+    #[restate_core::test]
+    async fn notify_signal() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        // Send signal notification
+        let signal = Signal::new(SignalId::for_index(17), SignalResult::Void);
+        let actions = test_env
+            .apply(Command::NotifySignal(NotifySignalRequest {
+                invocation_id,
+                signal: signal.clone(),
+            }))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::forward_notification(
+                invocation_id,
+                signal.clone()
+            ))
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn notify_signal_received_before_pinned_deployment() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+
+        // Send signal notification before pinned deployment
+        let signal = Signal::new(SignalId::for_index(17), SignalResult::Void);
+        let actions = test_env
+            .apply(Command::NotifySignal(NotifySignalRequest {
+                invocation_id,
+                signal: signal.clone(),
+            }))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::forward_notification(
+                invocation_id,
+                signal.clone()
+            ))
+        );
+
+        // At this point the journal table v2 should be filled, and journal table v1 empty
+        let notification = test_env
+            .storage
+            .get_journal_entry(invocation_id, 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .inner
+            .try_as_notification()
+            .unwrap();
+        assert_eq!(
+            notification
+                .decode::<ServiceProtocolV4Codec, Signal>()
+                .unwrap(),
+            signal
+        );
+
+        test_env.shutdown().await;
+    }
+}

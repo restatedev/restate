@@ -11,10 +11,10 @@
 use super::*;
 
 mod delayed_send;
-mod fixtures;
+pub mod fixtures;
 mod idempotency;
 mod kill_cancel;
-mod matchers;
+pub mod matchers;
 mod workflow;
 
 use crate::partition::state_machine::tests::fixtures::{
@@ -68,10 +68,10 @@ use test_log::test;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 pub struct TestEnv {
-    state_machine: StateMachine,
+    pub state_machine: StateMachine,
     // TODO for the time being we use rocksdb storage because we have no mocks for storage interfaces.
     //  Perhaps we could make these tests faster by having those.
-    storage: PartitionStore,
+    pub storage: PartitionStore,
 }
 
 impl TestEnv {
@@ -175,6 +175,27 @@ impl TestEnv {
 
     pub fn storage(&mut self) -> &mut PartitionStore {
         &mut self.storage
+    }
+
+    pub async fn read_journal_to_vec(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    ) -> Vec<journal_v2::Entry> {
+        restate_storage_api::journal_table_v2::ReadOnlyJournalTable::get_journal(
+            self.storage(),
+            invocation_id,
+            journal_length,
+        )
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_or_else(|_| panic!("can read journal {invocation_id} of length {journal_length}"))
+        .into_iter()
+        .map(|(i, e)| {
+            e.decode::<ServiceProtocolV4Codec, _>()
+                .unwrap_or_else(|_| panic!("entry index {i} can be decoded"))
+        })
+        .collect()
     }
 }
 

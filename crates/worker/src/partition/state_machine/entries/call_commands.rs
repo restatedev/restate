@@ -52,7 +52,7 @@ where
     S: OutboxTable + FsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        let execution_time = if self.entry.invoke_time.as_u64() == 0 {
+        let execution_time = if self.entry.invoke_time == MillisSinceEpoch::UNIX_EPOCH {
             None
         } else {
             Some(self.entry.invoke_time)
@@ -120,7 +120,7 @@ where
             span_context: span_context.clone(),
             headers,
             execution_time: self.execution_time,
-            completion_retention_duration,
+            completion_retention_duration: Some(completion_retention_duration),
             idempotency_key,
             submit_notification_sink: None,
         };
@@ -138,5 +138,190 @@ where
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
+    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use crate::partition::state_machine::Action;
+    use bytes::Bytes;
+    use googletest::prelude::{all, assert_that, contains, eq, none, pat};
+    use googletest::{elements_are, property};
+    use restate_types::identifiers::{InvocationId, ServiceId};
+    use restate_types::invocation::{
+        Header, InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocationResponseSink,
+    };
+    use restate_types::journal_v2::{
+        CallCommand, CallCompletion, CallInvocationIdCompletion, CallRequest, CallResult,
+        CommandType, Entry, EntryMetadata, EntryType, OneWayCallCommand,
+    };
+    use restate_types::time::MillisSinceEpoch;
+    use restate_wal_protocol::Command;
+    use rstest::rstest;
+    use std::time::{Duration, SystemTime};
+
+    #[restate_core::test]
+    async fn call_with_headers() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        let invocation_id_completion_id = 1;
+        let result_completion_id = 2;
+        let callee_service_id = ServiceId::mock_random();
+        let callee_invocation_target =
+            InvocationTarget::mock_from_service_id(callee_service_id.clone());
+        let callee_invocation_id = InvocationId::mock_generate(&callee_invocation_target);
+        let success_result = Bytes::from_static(b"success");
+
+        let call_command = CallCommand {
+            request: CallRequest {
+                headers: vec![Header::new("foo", "bar")],
+                ..CallRequest::mock(callee_invocation_id, callee_invocation_target.clone())
+            },
+            invocation_id_completion_id,
+            result_completion_id,
+            name: Default::default(),
+        };
+        let actions = test_env
+            .apply_multiple([
+                invoker_entry_effect(invocation_id, call_command.clone()),
+                Command::InvocationResponse(InvocationResponse {
+                    id: invocation_id,
+                    entry_index: result_completion_id,
+                    result: ResponseResult::Success(success_result.clone()),
+                }),
+            ])
+            .await;
+
+        let call_invocation_id_completion = CallInvocationIdCompletion {
+            completion_id: invocation_id_completion_id,
+            invocation_id: callee_invocation_id,
+        };
+        let call_completion = CallCompletion {
+            completion_id: result_completion_id,
+            result: CallResult::Success(success_result),
+        };
+        assert_that!(
+            actions,
+            all![
+                contains(pat!(Action::NewOutboxMessage {
+                    message: pat!(
+                        restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(pat!(
+                            restate_types::invocation::ServiceInvocation {
+                                invocation_id: eq(callee_invocation_id),
+                                invocation_target: eq(callee_invocation_target),
+                                headers: eq(vec![Header::new("foo", "bar")]),
+                                response_sink: eq(Some(
+                                    ServiceInvocationResponseSink::partition_processor(
+                                        invocation_id,
+                                        result_completion_id
+                                    )
+                                ))
+                            }
+                        ))
+                    )
+                })),
+                contains(matchers::actions::forward_notification(
+                    invocation_id,
+                    call_invocation_id_completion.clone()
+                )),
+                contains(matchers::actions::forward_notification(
+                    invocation_id,
+                    call_completion.clone()
+                ))
+            ]
+        );
+
+        // Check journal
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 4).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(call_command),
+                matchers::entry_eq(call_invocation_id_completion),
+                matchers::entry_eq(call_completion),
+            ]
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    #[restate_core::test]
+    async fn one_way_call(#[case] add_invoke_time: bool) {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        let invocation_id_completion_id = 1;
+        let callee_service_id = ServiceId::mock_random();
+        let callee_invocation_target =
+            InvocationTarget::mock_from_service_id(callee_service_id.clone());
+        let callee_invocation_id = InvocationId::mock_generate(&callee_invocation_target);
+        let invoke_time = if add_invoke_time {
+            MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60))
+        } else {
+            MillisSinceEpoch::UNIX_EPOCH
+        };
+
+        let one_way_call_command = OneWayCallCommand {
+            request: CallRequest::mock(callee_invocation_id, callee_invocation_target.clone()),
+            invoke_time,
+            invocation_id_completion_id,
+            name: Default::default(),
+        };
+        let actions = test_env
+            .apply_multiple([invoker_entry_effect(
+                invocation_id,
+                one_way_call_command.clone(),
+            )])
+            .await;
+
+        let call_invocation_id_completion = CallInvocationIdCompletion {
+            completion_id: invocation_id_completion_id,
+            invocation_id: callee_invocation_id,
+        };
+        assert_that!(
+            actions,
+            all![
+                contains(pat!(Action::NewOutboxMessage {
+                    message: pat!(
+                        restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(pat!(
+                            restate_types::invocation::ServiceInvocation {
+                                invocation_id: eq(callee_invocation_id),
+                                invocation_target: eq(callee_invocation_target),
+                                execution_time: eq(if add_invoke_time {
+                                    Some(invoke_time)
+                                } else {
+                                    None
+                                }),
+                                response_sink: none()
+                            }
+                        ))
+                    )
+                })),
+                contains(matchers::actions::forward_notification(
+                    invocation_id,
+                    call_invocation_id_completion.clone()
+                ))
+            ]
+        );
+
+        // Check journal
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 3).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(one_way_call_command),
+                matchers::entry_eq(call_invocation_id_completion)
+            ]
+        );
+
+        test_env.shutdown().await;
     }
 }

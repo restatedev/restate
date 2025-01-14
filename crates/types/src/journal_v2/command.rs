@@ -255,7 +255,7 @@ pub struct CallRequest {
     pub parameter: Bytes,
     pub headers: Vec<Header>,
     pub idempotency_key: Option<ByteString>,
-    pub completion_retention_duration: Option<Duration>,
+    pub completion_retention_duration: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,6 +317,15 @@ impl From<AttachInvocationTarget> for InvocationQuery {
         }
     }
 }
+impl From<InvocationQuery> for AttachInvocationTarget {
+    fn from(value: InvocationQuery) -> Self {
+        match value {
+            InvocationQuery::Invocation(iid) => Self::InvocationId(iid),
+            InvocationQuery::IdempotencyId(iid) => Self::IdempotentRequest(iid),
+            InvocationQuery::Workflow(wfid) => Self::Workflow(wfid),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttachInvocationCommand {
@@ -360,4 +369,23 @@ impl fmt::Display for CompleteAwakeableId {
 pub enum CompleteAwakeableResult {
     Success(Bytes),
     Failure(Failure),
+}
+
+#[cfg(any(test, feature = "test-util"))]
+mod test_util {
+    use super::*;
+
+    impl CallRequest {
+        pub fn mock(invocation_id: InvocationId, invocation_target: InvocationTarget) -> Self {
+            Self {
+                invocation_id,
+                invocation_target,
+                span_context: Default::default(),
+                parameter: Default::default(),
+                headers: vec![],
+                idempotency_key: None,
+                completion_retention_duration: Default::default(),
+            }
+        }
+    }
 }

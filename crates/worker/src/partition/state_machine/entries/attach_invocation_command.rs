@@ -38,3 +38,99 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
+    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use crate::partition::state_machine::Action;
+    use bytes::Bytes;
+    use googletest::prelude::{all, assert_that, contains, eq, pat};
+    use googletest::{elements_are, property};
+    use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId};
+    use restate_types::invocation::{
+        InvocationQuery, InvocationResponse, ResponseResult, ServiceInvocationResponseSink,
+    };
+    use restate_types::journal_v2::{
+        AttachInvocationCommand, AttachInvocationCompletion, AttachInvocationResult,
+        AttachInvocationTarget, CommandType, Entry, EntryMetadata, EntryType,
+    };
+    use restate_wal_protocol::Command;
+    use rstest::rstest;
+
+    #[rstest]
+    #[restate_core::test]
+    async fn attach_invocation(
+        #[values(
+            AttachInvocationTarget::InvocationId(InvocationId::mock_random()),
+            AttachInvocationTarget::IdempotentRequest(IdempotencyId::mock_random()),
+            AttachInvocationTarget::Workflow(ServiceId::mock_random())
+        )]
+        target: AttachInvocationTarget,
+    ) {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        let completion_id = 1;
+        let success_result = Bytes::from_static(b"success");
+
+        let attach_invocation_command = AttachInvocationCommand {
+            target: target.clone(),
+            name: Default::default(),
+            completion_id,
+        };
+        let actions = test_env
+            .apply_multiple([
+                invoker_entry_effect(invocation_id, attach_invocation_command.clone()),
+                Command::InvocationResponse(InvocationResponse {
+                    id: invocation_id,
+                    entry_index: completion_id,
+                    result: ResponseResult::Success(success_result.clone()),
+                }),
+            ])
+            .await;
+
+        let attach_invocation_completion = AttachInvocationCompletion {
+            completion_id,
+            result: AttachInvocationResult::Success(success_result),
+        };
+        assert_that!(
+            actions,
+            all![
+                contains(pat!(Action::NewOutboxMessage {
+                    message: pat!(
+                        restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(pat!(
+                            restate_types::invocation::AttachInvocationRequest {
+                                invocation_query: eq(InvocationQuery::from(target)),
+                                block_on_inflight: eq(true),
+                                response_sink: eq(
+                                    ServiceInvocationResponseSink::partition_processor(
+                                        invocation_id,
+                                        completion_id
+                                    )
+                                )
+                            }
+                        ))
+                    )
+                })),
+                contains(matchers::actions::forward_notification(
+                    invocation_id,
+                    attach_invocation_completion.clone()
+                ))
+            ]
+        );
+
+        // Check journal
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 3).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(attach_invocation_command),
+                matchers::entry_eq(attach_invocation_completion),
+            ]
+        );
+
+        test_env.shutdown().await;
+    }
+}

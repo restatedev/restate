@@ -23,9 +23,18 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContex
     for ResumeInvocationCommand<'e>
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        let InvocationStatus::Suspended { metadata, .. } = self.invocation_status else {
-            // Nothing to do, we're not suspended
-            return Ok(());
+        let metadata = match self.invocation_status {
+            InvocationStatus::Suspended { metadata, .. } | InvocationStatus::Invoked(metadata) => {
+                metadata
+            }
+            InvocationStatus::Scheduled(_)
+            | InvocationStatus::Inboxed(_)
+            | InvocationStatus::Killed(_)
+            | InvocationStatus::Completed(_)
+            | InvocationStatus::Free => {
+                // Nothing to do here
+                return Ok(());
+            }
         };
 
         debug_if_leader!(

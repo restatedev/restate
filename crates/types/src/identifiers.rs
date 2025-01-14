@@ -1189,6 +1189,25 @@ mod mocks {
                 partition_key,
             }
         }
+
+        pub fn mock_random() -> Self {
+            Self::new(
+                Alphanumeric
+                    .sample_string(&mut rand::thread_rng(), 8)
+                    .into(),
+                Some(
+                    Alphanumeric
+                        .sample_string(&mut rand::thread_rng(), 16)
+                        .into(),
+                ),
+                Alphanumeric
+                    .sample_string(&mut rand::thread_rng(), 8)
+                    .into(),
+                Alphanumeric
+                    .sample_string(&mut rand::thread_rng(), 8)
+                    .into(),
+            )
+        }
     }
 }
 

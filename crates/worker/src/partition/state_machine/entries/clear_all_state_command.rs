@@ -56,3 +56,54 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
+    use crate::partition::state_machine::tests::{fixtures, TestEnv};
+    use bytes::Bytes;
+    use futures::StreamExt;
+    use googletest::matchers::empty;
+    use googletest::prelude::assert_that;
+    use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
+    use restate_storage_api::Transaction;
+    use restate_types::identifiers::ServiceId;
+    use restate_types::journal_v2::ClearAllStateCommand;
+
+    #[restate_core::test]
+    async fn clear_all_user_states() {
+        let mut test_env = TestEnv::create().await;
+        let service_id = ServiceId::new("MySvc", "my-key");
+
+        // Fill with some state the service K/V store
+        let mut txn = test_env.storage.transaction();
+        txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")
+            .await;
+        txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")
+            .await;
+        txn.commit().await.unwrap();
+
+        let invocation_id =
+            fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone())
+                .await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        test_env
+            .apply(invoker_entry_effect(
+                invocation_id,
+                ClearAllStateCommand {
+                    name: Default::default(),
+                },
+            ))
+            .await;
+
+        let states: Vec<restate_storage_api::Result<(Bytes, Bytes)>> = test_env
+            .storage
+            .get_all_user_states_for_service(&service_id)
+            .collect()
+            .await;
+        assert_that!(states, empty());
+
+        test_env.shutdown().await;
+    }
+}

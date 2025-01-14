@@ -17,6 +17,7 @@ use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::{InvocationTermination, TerminationFlavor};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{Completion, CompletionResult};
+use restate_types::journal_v2::Entry;
 
 pub mod storage {
     use super::*;
@@ -51,8 +52,10 @@ pub mod actions {
     use super::*;
 
     use crate::partition::state_machine::Action;
+    use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_types::identifiers::InvocationId;
     use restate_types::invocation::{InvocationTarget, ResponseResult};
+    use restate_types::journal_v2::{Notification, Signal};
 
     pub fn invoke_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
         pat!(Action::Invoke {
@@ -113,6 +116,22 @@ pub mod actions {
         })
     }
 
+    pub fn forward_notification(
+        invocation_id: InvocationId,
+        notif: impl Into<Notification>,
+    ) -> impl Matcher<ActualT = Action> {
+        let notification = notif
+            .into()
+            .encode::<ServiceProtocolV4Codec>()
+            .inner
+            .try_as_notification()
+            .unwrap();
+        pat!(Action::ForwardNotification {
+            invocation_id: eq(invocation_id),
+            notification: eq(notification),
+        })
+    }
+
     pub fn invocation_response_to_partition_processor(
         caller_invocation_id: InvocationId,
         caller_entry_index: EntryIndex,
@@ -126,6 +145,15 @@ pub mod actions {
             )
         })
     }
+
+    pub fn notify_signal(
+        caller_invocation_id: InvocationId,
+        signal: Signal,
+    ) -> impl Matcher<ActualT = Action> {
+        pat!(Action::NewOutboxMessage {
+            message: outbox::notify_signal(caller_invocation_id, signal)
+        })
+    }
 }
 
 pub mod outbox {
@@ -133,7 +161,8 @@ pub mod outbox {
 
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::identifiers::InvocationId;
-    use restate_types::invocation::{InvocationResponse, ResponseResult};
+    use restate_types::invocation::{InvocationResponse, NotifySignalRequest, ResponseResult};
+    use restate_types::journal_v2::Signal;
 
     pub fn invocation_response_to_partition_processor(
         caller_invocation_id: InvocationId,
@@ -146,6 +175,20 @@ pub mod outbox {
                     id: eq(caller_invocation_id),
                     entry_index: eq(caller_entry_index),
                     result: response_result_matcher
+                }
+            ))
+        )
+    }
+
+    pub fn notify_signal(
+        caller_invocation_id: InvocationId,
+        signal: Signal,
+    ) -> impl Matcher<ActualT = OutboxMessage> {
+        pat!(
+            restate_storage_api::outbox_table::OutboxMessage::NotifySignal(pat!(
+                NotifySignalRequest {
+                    invocation_id: eq(caller_invocation_id),
+                    signal: eq(signal),
                 }
             ))
         )
@@ -179,4 +222,8 @@ pub fn canceled_completion(entry_index: EntryIndex) -> impl Matcher<ActualT = Co
 pub fn completed_entry() -> impl Matcher<ActualT = EnrichedRawEntry> {
     predicate(|e: &EnrichedRawEntry| e.header().is_completed().unwrap_or(false))
         .with_description("completed entry", "uncompleted entry")
+}
+
+pub fn entry_eq(entry: impl Into<Entry>) -> impl Matcher<ActualT = Entry> {
+    eq(entry.into())
 }

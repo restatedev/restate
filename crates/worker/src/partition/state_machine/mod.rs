@@ -1322,7 +1322,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             + FsmTable
             + journal_table_v2::JournalTable,
     {
-        self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length)
+        self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
 
         if self
@@ -1367,7 +1367,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             + FsmTable
             + journal_table_v2::JournalTable,
     {
-        self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length)
+        self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
 
         // No need to go through the Killed state when we're suspended,
@@ -1386,33 +1386,58 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
         &mut self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
+        metadata: &InFlightInvocationMetadata,
     ) -> Result<(), Error>
     where
-        S: OutboxTable + FsmTable + ReadOnlyJournalTable,
+        S: OutboxTable + FsmTable + ReadOnlyJournalTable + journal_table_v2::ReadOnlyJournalTable,
     {
-        let invocation_ids_to_kill: Vec<InvocationId> = self
-            .storage
-            .get_journal(invocation_id, journal_length)
+        let invocation_ids_to_kill: Vec<InvocationId> = if metadata
+            .pinned_deployment
+            .as_ref()
+            .is_some_and(|pd| pd.service_protocol_version >= ServiceProtocolVersion::V4)
+        {
+            journal_table_v2::ReadOnlyJournalTable::get_journal(
+                self.storage,
+                *invocation_id,
+                journal_length,
+            )
             .try_filter_map(|(_, journal_entry)| async {
-                if let JournalEntry::Entry(enriched_entry) = journal_entry {
-                    let (h, _) = enriched_entry.into_inner();
-                    match h {
-                        // we only need to kill child invocations if they are not completed and the target was resolved
-                        EnrichedEntryHeader::Call {
-                            is_completed,
-                            enrichment_result: Some(enrichment_result),
-                        } if !is_completed => return Ok(Some(enrichment_result.invocation_id)),
-                        // we neither kill background calls nor delayed calls since we are considering them detached from this
-                        // call tree. In the future we want to support a mode which also kills these calls (causally related).
-                        // See https://github.com/restatedev/restate/issues/979
-                        _ => {}
+                if let Some(cmd) = journal_entry.inner.try_as_command() {
+                    if let journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                        call_or_send_metadata,
+                    ) = cmd.command_specific_metadata()
+                    {
+                        return Ok(Some(call_or_send_metadata.invocation_id));
                     }
                 }
 
                 Ok(None)
             })
             .try_collect()
-            .await?;
+            .await?
+        } else {
+            ReadOnlyJournalTable::get_journal(self.storage, invocation_id, journal_length)
+                .try_filter_map(|(_, journal_entry)| async {
+                    if let JournalEntry::Entry(enriched_entry) = journal_entry {
+                        let (h, _) = enriched_entry.into_inner();
+                        match h {
+                            // we only need to kill child invocations if they are not completed and the target was resolved
+                            EnrichedEntryHeader::Call {
+                                is_completed,
+                                enrichment_result: Some(enrichment_result),
+                            } if !is_completed => return Ok(Some(enrichment_result.invocation_id)),
+                            // we neither kill background calls nor delayed calls since we are considering them detached from this
+                            // call tree. In the future we want to support a mode which also kills these calls (causally related).
+                            // See https://github.com/restatedev/restate/issues/979
+                            _ => {}
+                        }
+                    }
+
+                    Ok(None)
+                })
+                .try_collect()
+                .await?
+        };
 
         for id in invocation_ids_to_kill {
             self.handle_outgoing_message(OutboxMessage::InvocationTermination(

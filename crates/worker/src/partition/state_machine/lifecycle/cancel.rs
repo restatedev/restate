@@ -95,3 +95,35 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use googletest::prelude::{assert_that, contains};
+    use restate_types::invocation::InvocationTermination;
+    use restate_types::journal_v2::CANCEL_SIGNAL;
+    use restate_wal_protocol::Command;
+
+    #[restate_core::test]
+    async fn cancel_invoked_invocation() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+
+        // Send signal notification
+        let actions = test_env
+            .apply(Command::TerminateInvocation(InvocationTermination::cancel(
+                invocation_id,
+            )))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::forward_notification(
+                invocation_id,
+                CANCEL_SIGNAL.clone()
+            ))
+        );
+
+        test_env.shutdown().await;
+    }
+}
