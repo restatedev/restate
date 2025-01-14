@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod grpc;
-mod grpc_svc;
+pub mod grpc_svc;
 mod kv_memory_storage;
 pub mod local;
 mod network;
@@ -521,7 +521,7 @@ impl Display for MemberId {
         let plain_node_id = PlainNodeId::new(
             u32::try_from(self.node_id).expect("node ids should be derived from PlainNodeIds"),
         );
-        write!(f, "{}:{:#x}", plain_node_id, self.storage_id)
+        write!(f, "{}:{:x}", plain_node_id, self.storage_id & 0x0ffff)
     }
 }
 
