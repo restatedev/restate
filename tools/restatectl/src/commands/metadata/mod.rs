@@ -22,6 +22,7 @@ use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 mod get;
 mod patch;
 mod put;
+mod status;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Metadata {
@@ -31,6 +32,8 @@ pub enum Metadata {
     Patch(patch::PatchValueOpts),
     /// Replace a single key's value from the metastore
     Put(put::PutValueOpts),
+    /// Get the status of the embedded Restate metadata store
+    Status(status::StatusOpts),
 }
 
 #[derive(Args, Clone, Debug)]
@@ -73,7 +76,7 @@ enum MetadataAccessMode {
     Direct,
 }
 
-#[derive(clap::ValueEnum, Clone, Default, Debug, strum::Display)]
+#[derive(clap::ValueEnum, Clone, Default, Debug, strum::Display, PartialEq)]
 #[strum(serialize_all = "kebab-case")]
 enum RemoteServiceType {
     #[default]

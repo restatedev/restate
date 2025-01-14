@@ -151,7 +151,7 @@ pub mod pb_conversions {
                 } => grpc_svc::StatusResponse {
                     status: restate_types::protobuf::common::MetadataStoreStatus::Active.into(),
                     configuration: Some(grpc_svc::MetadataStoreConfiguration::from(configuration)),
-                    leader: leader.map(|leader| grpc_svc::MemberId::from(leader)),
+                    leader: leader.map(grpc_svc::MemberId::from),
                 },
             }
         }

@@ -305,8 +305,10 @@ async fn start_metadata_store(
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
 ) -> anyhow::Result<MetadataStoreClient> {
     let mut server_builder = NetworkServerBuilder::default();
-    let store = LocalMetadataStore::create(opts, updateables_rocksdb_options).await?;
-    let service = MetadataStoreRunner::new(store, HealthStatus::default(), &mut server_builder);
+    let store =
+        LocalMetadataStore::create(opts, updateables_rocksdb_options, HealthStatus::default())
+            .await?;
+    let service = MetadataStoreRunner::new(store, &mut server_builder);
 
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
