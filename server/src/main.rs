@@ -35,6 +35,7 @@ use restate_types::config::{node_dir, Configuration};
 use restate_types::config_loader::ConfigLoaderBuilder;
 
 mod signal;
+mod telemetry;
 
 use restate_node::Node;
 #[cfg(not(target_env = "msvc"))]
@@ -211,6 +212,10 @@ fn main() {
                     .await
                     .expect("Error when trying to wipe the configured storage path");
             }
+
+            // Initialize telemetry
+            let telemetry = telemetry::Telemetry::create(&Configuration::pinned().common);
+            telemetry.start();
 
             let node = Node::create(Configuration::updateable()).await;
             if let Err(err) = node {

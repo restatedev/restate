@@ -92,6 +92,11 @@ impl ConfigLoader {
                 Env::raw()
                     .only(&["MEMORY_LIMIT"])
                     .map(|_| "rocksdb-total-memory-limit".into()),
+            )
+            .merge(
+                Env::raw()
+                    .only(&["DO_NOT_TRACK"])
+                    .map(|_| "disable-telemetry".into()),
             );
 
         if let Some(no_proxy) = Env::var("NO_PROXY") {
