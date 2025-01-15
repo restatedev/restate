@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
 use http::Uri;
 
 use restate_core::metadata_store::ReadModifyWriteError;
@@ -135,12 +137,15 @@ pub enum SubscriptionError {
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum DeploymentError {
-    #[error("existing deployment id is different from requested (requested = {requested}, existing = {existing})")]
-    #[code(restate_errors::META0004)]
-    IncorrectId {
-        requested: DeploymentId,
-        existing: DeploymentId,
-    },
+    #[error("an update deployment operation must provide an endpoint with the same services and handlers. The update tried to remove the services {0:?}")]
+    #[code(restate_errors::META0016)]
+    RemovedServices(Vec<String>),
+    #[error("multiple deployments ({0:?}) were found that reference the discovered endpoint. A deployment can only be force updated when it uniquely owns its endpoint. First delete one or more of the deployments")]
+    #[code(restate_errors::META0017)]
+    MultipleExistingDeployments(Vec<DeploymentId>),
+    #[error("an update deployment operation must provide an endpoint with the same services and handlers. The update tried to change the supported protocol versions from {0:?} to {1:?}")]
+    #[code(restate_errors::META0016)]
+    DifferentSupportedProtocolVersions(RangeInclusive<i32>, RangeInclusive<i32>),
 }
 
 impl From<ReadModifyWriteError<SchemaError>> for SchemaRegistryError {

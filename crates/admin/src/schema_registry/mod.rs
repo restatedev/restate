@@ -105,7 +105,7 @@ impl<V> SchemaRegistry<V> {
         apply_mode: ApplyMode,
     ) -> Result<(DeploymentId, Vec<ServiceMetadata>), SchemaRegistryError> {
         // The number of concurrent discovery calls is bound by the number of concurrent
-        // register_deployment calls. If it should become a problem that a user tries to register
+        // {register,update}_deployment calls. If it should become a problem that a user tries to register
         // the same endpoint too often, then we need to add a synchronization mechanism which
         // ensures that only a limited number of discover calls per endpoint are running.
         let discovered_metadata = self.service_discovery.discover(discover_endpoint).await?;
@@ -135,7 +135,6 @@ impl<V> SchemaRegistry<V> {
             // suppress logging output in case of a dry run
             let id = tracing::subscriber::with_default(NoSubscriber::new(), || {
                 updater.add_deployment(
-                    None,
                     deployment_metadata,
                     discovered_metadata.services,
                     force.force_enabled(),
@@ -162,7 +161,6 @@ impl<V> SchemaRegistry<V> {
                         );
 
                         new_deployment_id = Some(updater.add_deployment(
-                            None,
                             deployment_metadata.clone(),
                             discovered_metadata.services.clone(),
                             force.force_enabled(),
@@ -185,6 +183,87 @@ impl<V> SchemaRegistry<V> {
         };
 
         Ok((id, services))
+    }
+
+    pub async fn update_deployment(
+        &self,
+        deployment_id: DeploymentId,
+        discover_endpoint: DiscoverEndpoint,
+        apply_mode: ApplyMode,
+    ) -> Result<(Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
+        // The number of concurrent discovery calls is bound by the number of concurrent
+        // {register,update}_deployment calls. If it should become a problem that a user tries to register
+        // the same endpoint too often, then we need to add a synchronization mechanism which
+        // ensures that only a limited number of discover calls per endpoint are running.
+        let discovered_metadata = self.service_discovery.discover(discover_endpoint).await?;
+
+        let deployment_metadata = match discovered_metadata.endpoint {
+            DiscoveredEndpoint::Http(uri, http_version) => DeploymentMetadata::new_http(
+                uri.clone(),
+                discovered_metadata.protocol_type,
+                http_version,
+                DeliveryOptions::new(discovered_metadata.headers),
+                discovered_metadata.supported_protocol_versions,
+            ),
+            DiscoveredEndpoint::Lambda(arn, assume_role_arn) => DeploymentMetadata::new_lambda(
+                arn,
+                assume_role_arn,
+                DeliveryOptions::new(discovered_metadata.headers),
+                discovered_metadata.supported_protocol_versions,
+            ),
+        };
+
+        if !apply_mode.should_apply() {
+            let mut updater = SchemaUpdater::new(
+                Metadata::with_current(|m| m.schema()).deref().clone(),
+                self.experimental_feature_kafka_ingress_next,
+            );
+
+            // suppress logging output in case of a dry run
+            tracing::subscriber::with_default(NoSubscriber::new(), || {
+                updater.update_deployment(
+                    deployment_id,
+                    deployment_metadata,
+                    discovered_metadata.services,
+                )
+            })?;
+
+            let schema_information = updater.into_inner();
+            Ok(schema_information
+                .get_deployment_and_services(&deployment_id)
+                .expect("deployment was just added"))
+        } else {
+            let schema_information = self
+                .metadata_writer
+                .metadata_store_client()
+                .read_modify_write(
+                    SCHEMA_INFORMATION_KEY.clone(),
+                    |schema_information: Option<Schema>| {
+                        let mut updater = SchemaUpdater::new(
+                            schema_information.unwrap_or_default(),
+                            self.experimental_feature_kafka_ingress_next,
+                        );
+
+                        updater.update_deployment(
+                            deployment_id,
+                            deployment_metadata.clone(),
+                            discovered_metadata.services.clone(),
+                        )?;
+                        Ok(updater.into_inner())
+                    },
+                )
+                .await?;
+
+            let (deployment, services) = schema_information
+                .get_deployment_and_services(&deployment_id)
+                .expect("deployment was just updated");
+
+            self.metadata_writer
+                .update(Arc::new(schema_information))
+                .await?;
+
+            Ok((deployment, services))
+        }
     }
 
     pub async fn delete_deployment(

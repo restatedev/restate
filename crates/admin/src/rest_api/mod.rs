@@ -19,6 +19,7 @@ mod services;
 mod subscriptions;
 mod version;
 
+use axum_integration::put;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
 use restate_types::identifiers::PartitionKey;
@@ -48,6 +49,10 @@ where
         .route(
             "/deployments/:deployment",
             delete(openapi_handler!(deployments::delete_deployment)),
+        )
+        .route(
+            "/deployments/:deployment",
+            put(openapi_handler!(deployments::update_deployment)),
         )
         .route("/services", get(openapi_handler!(services::list_services)))
         .route(
