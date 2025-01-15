@@ -263,6 +263,16 @@ impl NodesConfiguration {
         })
     }
 
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (PlainNodeId, &'_ mut NodeConfig)> {
+        self.nodes.iter_mut().filter_map(|(k, v)| {
+            if let MaybeNode::Node(node) = v {
+                Some((*k, node))
+            } else {
+                None
+            }
+        })
+    }
+
     /// Returns the maximum known plain node id.
     pub fn max_plain_node_id(&self) -> Option<PlainNodeId> {
         self.nodes.keys().max().cloned()
@@ -377,14 +387,14 @@ impl StorageState {
 pub enum MetadataStoreState {
     /// The node is not yet a member of the metadata store but tries to join it. It is not safe to
     /// decommission this node since the metadata store cluster might have already accepted it.
-    #[default]
     Candidate,
     /// The node is not considered as part of the metadata store cluster (yet). Node can be safely
     /// decommissioned.
+    #[default]
     Passive,
-    /// The node is an active member of the metadata store cluster.
-    Active,
-    /// Node detected that some/all of its local storage has been deleted and it cannot be part of
+    /// The node is an active member of the metadata store cluster with the given configuration id.
+    Active(u32),
+    /// Node detected that some/all of its local storage has been deleted, and it cannot be part of
     /// the metadata store cluster because it might make contradicting promises.
     DataLoss,
 }

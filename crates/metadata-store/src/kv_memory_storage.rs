@@ -25,6 +25,7 @@ pub struct KvMemoryStorage {
     callbacks: HashMap<Ulid, Callback>,
     kv_entries: HashMap<ByteString, VersionedValue>,
     metadata_writer: Option<MetadataWriter>,
+    last_seen_nodes_configuration: Arc<NodesConfiguration>,
 }
 
 impl KvMemoryStorage {
@@ -33,6 +34,7 @@ impl KvMemoryStorage {
             metadata_writer,
             callbacks: HashMap::default(),
             kv_entries: HashMap::default(),
+            last_seen_nodes_configuration: Arc::default(),
         }
     }
 
@@ -44,6 +46,10 @@ impl KvMemoryStorage {
         for (_, callback) in self.callbacks.drain() {
             callback.fail(cause())
         }
+    }
+
+    pub fn last_seen_nodes_configuration(&self) -> &NodesConfiguration {
+        &self.last_seen_nodes_configuration
     }
 
     pub fn handle_request(&mut self, request: Request) {
@@ -125,21 +131,27 @@ impl KvMemoryStorage {
         // be to not support changing addresses. Changing addresses will also only be possible as
         // long as we maintain a quorum of running nodes. Otherwise, the nodes might not find each
         // other to form quorum.
-        if let Some(metadata_writer) = self.metadata_writer.as_mut() {
-            if key == NODES_CONFIG_KEY {
-                let mut data = self
-                    .kv_entries
-                    .get(&key)
-                    .expect("to be present")
-                    .value
-                    .as_ref();
-                match StorageCodec::decode::<NodesConfiguration, _>(&mut data) {
-                    Ok(nodes_configuration) => {
-                        metadata_writer.submit(Arc::new(nodes_configuration));
+        if key == NODES_CONFIG_KEY {
+            let mut data = self
+                .kv_entries
+                .get(&key)
+                .expect("to be present")
+                .value
+                .as_ref();
+            match StorageCodec::decode::<NodesConfiguration, _>(&mut data) {
+                Ok(nodes_configuration) => {
+                    assert!(
+                        self.last_seen_nodes_configuration.version()
+                            <= nodes_configuration.version()
+                    );
+                    self.last_seen_nodes_configuration = Arc::new(nodes_configuration);
+
+                    if let Some(metadata_writer) = self.metadata_writer.as_mut() {
+                        metadata_writer.submit(Arc::clone(&self.last_seen_nodes_configuration));
                     }
-                    Err(err) => {
-                        debug!("Failed deserializing NodesConfiguration: {err}");
-                    }
+                }
+                Err(err) => {
+                    debug!("Failed deserializing NodesConfiguration: {err}");
                 }
             }
         }

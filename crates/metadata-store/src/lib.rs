@@ -381,6 +381,13 @@ struct Request {
 flexbuffers_storage_encode_decode!(Request);
 
 impl Request {
+    pub fn new(kind: RequestKind) -> Self {
+        Request {
+            request_id: Ulid::new(),
+            kind,
+        }
+    }
+
     fn encode_to_vec(&self) -> Result<Vec<u8>, StorageEncodeError> {
         let mut buffer = BytesMut::new();
         // todo: Removing support for BufMut requires an extra copy from BytesMut to Vec :-(
