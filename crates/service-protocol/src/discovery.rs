@@ -410,6 +410,17 @@ impl ServiceDiscovery {
                     .into_parts();
 
                 if !parts.status.is_success() {
+                    let body_message = body
+                        .collect()
+                        .await
+                        .map(|b| {
+                            String::from_utf8_lossy(b.to_bytes().to_vec().as_slice()).to_string()
+                        })
+                        .unwrap_or_else(|err| format!("Failed to read body {}", err));
+                    warn!(
+                        "Bad status code '{}' when discovering deployment at address '{}'. Response : {:?}",
+                        parts.status, address, body_message
+                    );
                     return Err(DiscoveryError::BadStatusCode(parts));
                 }
 
