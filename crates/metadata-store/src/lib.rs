@@ -33,6 +33,7 @@ use restate_types::config::{MetadataStoreKind, MetadataStoreOptions, RocksDbOpti
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
@@ -422,14 +423,20 @@ enum RequestKind {
 type JoinClusterSender = mpsc::Sender<JoinClusterRequest>;
 type JoinClusterReceiver = mpsc::Receiver<JoinClusterRequest>;
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct KnownLeader {
+    node_id: PlainNodeId,
+    address: AdvertisedAddress,
+}
+
 #[derive(Debug, thiserror::Error)]
 enum JoinClusterError {
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
     #[error("cannot accept new members since I am not active.")]
-    NotActive,
+    NotActive(Option<KnownLeader>),
     #[error("cannot accept new members since I am not the leader.")]
-    NotLeader,
+    NotLeader(Option<KnownLeader>),
     #[error("invalid omni paxos configuration: {0}")]
     ConfigError(String),
     #[error("pending reconfiguration")]

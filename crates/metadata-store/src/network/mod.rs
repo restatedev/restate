@@ -17,4 +17,5 @@ pub use connection_manager::ConnectionManager;
 pub use grpc_svc::metadata_store_network_svc_server::MetadataStoreNetworkSvcServer;
 pub use grpc_svc::FILE_DESCRIPTOR_SET;
 pub use handler::MetadataStoreNetworkHandler;
+pub use handler::KNOWN_LEADER_KEY;
 pub use networking::{NetworkMessage, Networking};
