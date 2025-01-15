@@ -23,6 +23,7 @@ use restate_types::identifiers::{PartitionKey, ServiceId};
 use crate::context::{QueryContext, SelectPartitions};
 use crate::keyed_service_status::row::append_virtual_object_status_row;
 use crate::keyed_service_status::schema::SysKeyedServiceStatusBuilder;
+use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 const NAME: &str = "sys_keyed_service_status";
@@ -43,6 +44,9 @@ pub(crate) fn register_self(
         partition_selector,
         SysKeyedServiceStatusBuilder::schema(),
         ctx.create_distributed_scanner(NAME, local_scanner),
+        FirstMatchingPartitionKeyExtractor::default()
+            .with_service_key("service_key")
+            .with_invocation_id("invocation_id"),
     );
 
     ctx.register_partitioned_table(NAME, Arc::new(status_table))

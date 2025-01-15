@@ -13,6 +13,12 @@ use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use super::context::QueryContext;
+use crate::context::SelectPartitions;
+use crate::remote_query_scanner_client::RemoteScannerService;
+use crate::remote_query_scanner_manager::{
+    PartitionLocation, PartitionLocator, RemoteScannerManager,
+};
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -32,19 +38,13 @@ use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
     RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened,
 };
+use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::NodeId;
 use serde_json::Value;
-
-use super::context::QueryContext;
-use crate::context::SelectPartitions;
-use crate::remote_query_scanner_client::RemoteScannerService;
-use crate::remote_query_scanner_manager::{
-    PartitionLocation, PartitionLocator, RemoteScannerManager,
-};
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MockSchemas(
@@ -99,8 +99,11 @@ struct MockPartitionSelector;
 
 #[async_trait]
 impl SelectPartitions for MockPartitionSelector {
-    async fn get_live_partitions(&self) -> Result<Vec<PartitionId>, GenericError> {
-        Ok(vec![PartitionId::MIN])
+    async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError> {
+        let id = PartitionId::MIN;
+        let partition_range = 0..=PartitionKey::MAX;
+        let partition = Partition::new(partition_range);
+        Ok(vec![(id, partition)])
     }
 }
 

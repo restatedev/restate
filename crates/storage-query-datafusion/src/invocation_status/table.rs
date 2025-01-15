@@ -23,6 +23,7 @@ use restate_types::identifiers::{InvocationId, PartitionKey};
 use crate::context::{QueryContext, SelectPartitions};
 use crate::invocation_status::row::append_invocation_status_row;
 use crate::invocation_status::schema::SysInvocationStatusBuilder;
+use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
@@ -43,6 +44,9 @@ pub(crate) fn register_self(
         partition_selector,
         SysInvocationStatusBuilder::schema(),
         ctx.create_distributed_scanner(NAME, local_scanner),
+        FirstMatchingPartitionKeyExtractor::default()
+            .with_service_key("target_service_key")
+            .with_invocation_id("id"),
     );
     ctx.register_partitioned_table(NAME, Arc::new(status_table))
 }
