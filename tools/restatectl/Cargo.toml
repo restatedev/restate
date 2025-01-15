@@ -23,8 +23,7 @@ restate-core = { workspace = true }
 restate-log-server = { workspace = true, features = ["clients"] }
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-tracing-instrumentation = { workspace = true }
-restate-types = { workspace = true }
+restate-types = { workspace = true, features = ["clap"] }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
@@ -32,15 +31,12 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color"] }
-clap-verbosity-flag = { workspace = true }
 clap-stdin = "0.5.1"
 cling = { workspace = true }
 crossterm = { version = "0.27.0" }
 ctrlc = { version = "3.4" }
-derive_more = { workspace = true }
 diff = "0.1.13"
 futures-util = { workspace = true }
-hyper-util = { workspace = true }
 itertools = { workspace = true }
 json-patch = "2.0.0"
 prost-types = { workspace = true }
@@ -50,17 +46,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
 tempfile = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = { workspace = true }
-toml = { workspace = true }
 tonic = { workspace = true, features = ["transport", "prost"] }
-tonic-health = { workspace = true }
-tower = { workspace = true }
 tracing = { workspace = true }
-tracing-log = { version = "0.2" }
-tracing-subscriber = { workspace = true }
-url = { workspace = true }
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [build-dependencies]
