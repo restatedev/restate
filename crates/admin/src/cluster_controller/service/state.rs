@@ -387,8 +387,6 @@ enum TrimMode {
             BTreeMap<PartitionId, BTreeMap<GenerationalNodeId, PartitionProcessorStatus>>,
     },
     ArchivedLsn {
-        // cluster_state: Arc<ClusterState>,
-        // archived_lsns: BTreeMap<PartitionId, Lsn>,
         partition_statuses:
             BTreeMap<PartitionId, BTreeMap<GenerationalNodeId, PartitionProcessorStatus>>,
     },
@@ -438,11 +436,7 @@ impl TrimMode {
         match snapshots_repository_configured
             || Self::any_processors_report_archived_lsn(&cluster_state)
         {
-            true => TrimMode::ArchivedLsn {
-                // archived_lsns,
-                // cluster_state,
-                partition_statuses,
-            },
+            true => TrimMode::ArchivedLsn { partition_statuses },
             false => TrimMode::PersistedLsn {
                 cluster_state,
                 partition_statuses,
