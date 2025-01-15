@@ -23,7 +23,6 @@ use crate::{
 };
 use anyhow::{bail, Context};
 use arc_swap::ArcSwapOption;
-use bytes::Bytes;
 use futures::never::Never;
 use futures::TryFutureExt;
 use omnipaxos::storage::{Entry, NoSnapshot, StopSign};
@@ -63,8 +62,8 @@ type OmniPaxos = omnipaxos::OmniPaxos<Request, RocksDbStorage<Request>>;
 #[error("failed accessing storage: {0}")]
 pub struct StorageError(String);
 
-impl From<Box<dyn std::error::Error>> for StorageError {
-    fn from(value: Box<dyn std::error::Error>) -> Self {
+impl From<Box<dyn std::error::Error + Send + Sync>> for StorageError {
+    fn from(value: Box<dyn std::error::Error + Send + Sync>) -> Self {
         StorageError(value.to_string())
     }
 }
@@ -801,35 +800,35 @@ impl Active {
             .get_decided_idx();
 
         if self.last_applied_index < last_decided_index {
-            if let Some(decided_entries) = self
+            for (idx, decided_entry) in self
                 .omni_paxos
                 .as_ref()
                 .expect("to be present")
                 .read_decided_suffix(self.last_applied_index)
+                .into_iter()
+                .enumerate()
             {
-                for (idx, decided_entry) in decided_entries.into_iter().enumerate() {
-                    match decided_entry {
-                        LogEntry::Decided(request) => {
-                            self.kv_storage.handle_request(request);
-                        }
-                        LogEntry::Undecided(_) => {
-                            panic!("Unexpected undecided entry")
-                        }
-                        LogEntry::Trimmed(_) => {
-                            unimplemented!("We don't support trimming yet")
-                        }
-                        LogEntry::Snapshotted(_) => {
-                            unimplemented!("We don't support snapshots yet")
-                        }
-                        LogEntry::StopSign(ss, decided) => {
-                            assert!(decided, "we are handling only decided entries");
-                            assert_eq!(
-                                (idx + 1) + self.last_applied_index,
-                                last_decided_index,
-                                "StopSigns must be the last decided entries"
-                            );
-                            return self.handle_stop_sign(ss);
-                        }
+                match decided_entry {
+                    LogEntry::Decided(request) => {
+                        self.kv_storage.handle_request(request);
+                    }
+                    LogEntry::Undecided(_) => {
+                        panic!("Unexpected undecided entry")
+                    }
+                    LogEntry::Trimmed(_) => {
+                        unimplemented!("We don't support trimming yet")
+                    }
+                    LogEntry::Snapshotted(_) => {
+                        unimplemented!("We don't support snapshots yet")
+                    }
+                    LogEntry::StopSign(ss, decided) => {
+                        assert!(decided, "we are handling only decided entries");
+                        assert_eq!(
+                            (idx + 1) + self.last_applied_index,
+                            last_decided_index,
+                            "StopSigns must be the last decided entries"
+                        );
+                        return self.handle_stop_sign(ss);
                     }
                 }
             }
@@ -1039,35 +1038,31 @@ impl Active {
         .into();
         let log_entries = omni_paxos.read_decided_suffix(0);
 
-        let log_prefix = if let Some(log_entries) = log_entries {
-            let log_entries: Vec<_> = log_entries
-                .into_iter()
-                .flat_map(|entry| {
-                    match entry {
-                        LogEntry::Decided(request) => Some(request),
-                        LogEntry::Undecided(_) => {
-                            unreachable!("only reading decided suffix")
-                        }
-                        LogEntry::Trimmed(_) => {
-                            unreachable!("we don't support trimming yet")
-                        }
-                        LogEntry::Snapshotted(_) => {
-                            unreachable!("we don't support snapshotting yet")
-                        }
-                        // The stop sign should be the last entry and is not part of the actual
-                        // log entries. If it exists, then we have checked the membership against
-                        // the new cluster configuration. Therefore, we don't need to consider it.
-                        LogEntry::StopSign(_, _) => None,
+        let log_entries: Vec<_> = log_entries
+            .into_iter()
+            .flat_map(|entry| {
+                match entry {
+                    LogEntry::Decided(request) => Some(request),
+                    LogEntry::Undecided(_) => {
+                        unreachable!("only reading decided suffix")
                     }
-                })
-                .collect();
+                    LogEntry::Trimmed(_) => {
+                        unreachable!("we don't support trimming yet")
+                    }
+                    LogEntry::Snapshotted(_) => {
+                        unreachable!("we don't support snapshotting yet")
+                    }
+                    // The stop sign should be the last entry and is not part of the actual
+                    // log entries. If it exists, then we have checked the membership against
+                    // the new cluster configuration. Therefore, we don't need to consider it.
+                    LogEntry::StopSign(_, _) => None,
+                }
+            })
+            .collect();
 
-            flexbuffers::to_vec(&log_entries)
-                .expect("Requests to be serializable")
-                .into()
-        } else {
-            Bytes::new()
-        };
+        let log_prefix = flexbuffers::to_vec(&log_entries)
+            .expect("Requests to be serializable")
+            .into();
 
         JoinClusterResponse {
             log_prefix,
@@ -1290,9 +1285,11 @@ impl Passive {
         // will no longer work :-( If we shared the snapshot we still have the same problem once the
         // snapshot grows beyond 4 MB. Then we need a separate channel (e.g. object store) or
         // support for chunked transfer.
-        let log_prefix = flexbuffers::from_slice(response.log_prefix.as_ref())?;
+        let log_prefix = flexbuffers::from_slice(response.log_prefix.as_ref())
+            .context("failed deserializing log prefix")?;
         let omni_paxos_configuration =
-            flexbuffers::from_slice(response.metadata_store_config.as_ref())?;
+            flexbuffers::from_slice(response.metadata_store_config.as_ref())
+                .context("failed deserializing omni-paxos configuration")?;
 
         Ok(JoinConfiguration {
             log_prefix,
