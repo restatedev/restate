@@ -14,19 +14,20 @@ use std::pin::pin;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use restate_types::live::Pinned;
+use restate_types::net::metadata::MetadataKind;
+use restate_types::partition_table::PartitionTable;
 use tokio::sync::mpsc;
-use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace};
 use xxhash_rust::xxh3::Xxh3Builder;
 
-use restate_types::cluster_controller::SchedulingPlan;
-use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
-use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
-use restate_types::{NodeId, Version, Versioned};
+use restate_types::{NodeId, Version};
 
-use crate::metadata_store::MetadataStoreClient;
-use crate::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind};
+use crate::{
+    cancellation_watcher, Metadata, ShutdownError, TargetVersion, TaskCenter, TaskHandle, TaskId,
+    TaskKind,
+};
 
 pub type CommandSender = mpsc::Sender<Command>;
 pub type CommandReceiver = mpsc::Receiver<Command>;
@@ -118,16 +119,20 @@ struct PartitionToNodesRoutingTable {
 pub struct PartitionRoutingRefresher {
     sender: CommandSender,
     receiver: CommandReceiver,
-    metadata_store_client: MetadataStoreClient,
     inflight_refresh_task: Option<TaskHandle<()>>,
     inner: Arc<ArcSwap<PartitionToNodesRoutingTable>>,
 }
 
+impl Default for PartitionRoutingRefresher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PartitionRoutingRefresher {
-    pub fn new(metadata_store_client: MetadataStoreClient) -> Self {
+    fn new() -> Self {
         let (sender, receiver) = mpsc::channel(1);
         Self {
-            metadata_store_client,
             receiver,
             sender,
             inflight_refresh_task: None,
@@ -149,18 +154,17 @@ impl PartitionRoutingRefresher {
     async fn run(mut self) -> anyhow::Result<()> {
         debug!("Routing information refresher started");
 
-        let update_interval = Configuration::pinned()
-            .common
-            .metadata_update_interval
-            .into();
-        let mut update_interval = tokio::time::interval(update_interval);
-        update_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut cancel = pin!(cancellation_watcher());
+        let mut partition_table_watch =
+            Metadata::with_current(|m| m.watch(MetadataKind::PartitionTable));
 
         loop {
             tokio::select! {
                 _ = &mut cancel => {
                     debug!("Routing information refresher stopped");
+                    if let Some(task) = self.inflight_refresh_task.take() {
+                        task.abort();
+                    }
                     break;
                 }
                 Some(cmd) = self.receiver.recv() => {
@@ -170,9 +174,10 @@ impl PartitionRoutingRefresher {
                         }
                     }
                 }
-                _ = update_interval.tick() => {
+                _ = partition_table_watch.changed() => {
                     trace!("Refreshing routing information...");
-                    self.spawn_sync_routing_information_task();
+                    let routing = PartitionToNodesRoutingTable::from(Metadata::with_current(|m| m.partition_table_ref()));
+                    self.inner.store(Arc::new(routing));
                 }
             }
         }
@@ -185,14 +190,19 @@ impl PartitionRoutingRefresher {
             .as_ref()
             .is_some_and(|t| !t.is_finished())
         {
-            let partition_to_node_mappings = self.inner.clone();
-            let metadata_store_client = self.metadata_store_client.clone();
-
             let task = TaskCenter::spawn_unmanaged(
                 TaskKind::Disposable,
                 "refresh-routing-information",
-                sync_routing_information(partition_to_node_mappings, metadata_store_client),
+                async {
+                    if let Err(err) = Metadata::current()
+                        .sync(MetadataKind::PartitionTable, TargetVersion::Latest)
+                        .await
+                    {
+                        debug!("Failed to sync routing information: {err}");
+                    }
+                },
             );
+
             self.inflight_refresh_task = task.ok();
         } else {
             trace!("Skipping refresh as a refresh task is already in progress");
@@ -210,48 +220,20 @@ pub fn spawn_partition_routing_refresher(
     )
 }
 
-async fn sync_routing_information(
-    partition_to_node_mappings: Arc<ArcSwap<PartitionToNodesRoutingTable>>,
-    metadata_store_client: MetadataStoreClient,
-) {
-    let result: Result<Option<SchedulingPlan>, _> =
-        metadata_store_client.get(SCHEDULING_PLAN_KEY.clone()).await;
-
-    let Ok(scheduling_plan) = result else {
-        debug!(
-            "Failed to fetch scheduling plan from metadata store: {:?}",
-            result
-        );
-        return;
-    };
-
-    let scheduling_plan = match scheduling_plan {
-        Some(plan) => plan,
-        None => {
-            debug!("No scheduling plan found in metadata store, unable to refresh partition routing information");
-            return;
+impl From<Pinned<PartitionTable>> for PartitionToNodesRoutingTable {
+    fn from(value: Pinned<PartitionTable>) -> Self {
+        let mut inner = HashMap::<PartitionId, NodeId, Xxh3Builder>::default();
+        for (partition_id, partition) in value.partitions() {
+            if let Some(leader) = partition.placement.leader() {
+                inner.insert(*partition_id, (*leader).into());
+            }
         }
-    };
 
-    let current_mappings = partition_to_node_mappings.load();
-    if scheduling_plan.version() <= current_mappings.version {
-        return; // No need for update
-    }
-
-    let mut partition_nodes = HashMap::<PartitionId, NodeId, Xxh3Builder>::default();
-    for (partition_id, target_state) in scheduling_plan.iter() {
-        if let Some(leader) = target_state.leader {
-            partition_nodes.insert(*partition_id, leader.into());
+        Self {
+            version: value.version(),
+            inner,
         }
     }
-
-    let _ = partition_to_node_mappings.compare_and_swap(
-        current_mappings,
-        Arc::new(PartitionToNodesRoutingTable {
-            version: scheduling_plan.version(),
-            inner: partition_nodes,
-        }),
-    );
 }
 
 #[cfg(any(test, feature = "test-util"))]

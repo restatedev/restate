@@ -20,7 +20,6 @@ pub mod art;
 pub mod cluster;
 pub mod health;
 
-pub mod cluster_controller;
 pub mod config;
 pub mod config_loader;
 pub mod deployment;

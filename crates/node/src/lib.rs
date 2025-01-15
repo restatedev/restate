@@ -169,8 +169,7 @@ impl Node {
         let metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
-        let partition_routing_refresher =
-            PartitionRoutingRefresher::new(metadata_store_client.clone());
+        let partition_routing_refresher = PartitionRoutingRefresher::default();
 
         #[cfg(feature = "replicated-loglet")]
         let record_cache = RecordCache::new(
