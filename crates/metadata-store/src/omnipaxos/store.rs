@@ -335,6 +335,10 @@ impl OmniPaxosMetadataStore {
         // we assume that log_prefix is complete, this will change once we support snapshots
         rocksdb_storage.batch_set_configuration(omni_paxos_configuration)?;
         rocksdb_storage.batch_append_on_prefix(0, log_prefix)?;
+        // make sure we don't have a pending stop sign
+        rocksdb_storage.batch_delete_stopsign();
+        // make sure we start with a clean slate
+        rocksdb_storage.batch_set_decided_idx(0)?;
         rocksdb_storage.commit_batch()?;
 
         Ok(())
@@ -652,6 +656,32 @@ impl Active {
                     self.fail_join_callbacks(|| JoinClusterError::NotLeader);
                     return Err(err.into());
                 }
+            }
+
+            // check whether we have seen a higher configuration and have missed a possible reconfiguration
+            if self.omni_paxos.as_ref().is_some_and(|omni_paxos| {
+                omni_paxos.has_seen_higher_configuration() && omni_paxos.is_reconfigured().is_none()
+            }) {
+                debug!("Detected higher configuration. Stopping active metadata store node");
+                self.kv_storage
+                    .fail_callbacks(|| RequestError::Unavailable("stopping metadata store".into()));
+                self.fail_join_callbacks(|| JoinClusterError::NotLeader);
+
+                let rocksdb_storage = self
+                    .omni_paxos
+                    .take()
+                    .expect("must be present")
+                    .into_inner();
+
+                return Ok(Passive::new(
+                    rocksdb_storage,
+                    self.connection_manager,
+                    self.request_rx,
+                    self.join_cluster_rx,
+                    self.metadata_writer,
+                    self.own_member_id.storage_id,
+                    self.status_tx,
+                ));
             }
         }
     }
