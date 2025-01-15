@@ -44,7 +44,8 @@ pub struct MetadataCommonOpts {
         short,
         long = "addresses",
         default_values = &["http://127.0.0.1:5122"],
-        env = "RESTATE_METADATA_ADDRESSES"
+        env = "RESTATE_METADATA_ADDRESSES",
+        value_delimiter = ','
     )]
     addresses: Vec<String>,
 

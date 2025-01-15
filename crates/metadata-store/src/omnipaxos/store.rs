@@ -23,10 +23,11 @@ use crate::{
 };
 use anyhow::{bail, Context};
 use arc_swap::ArcSwapOption;
+use futures::future::{FusedFuture, OptionFuture};
 use futures::never::Never;
-use futures::TryFutureExt;
+use futures::{FutureExt, TryFutureExt};
 use omnipaxos::storage::{Entry, NoSnapshot, StopSign};
-use omnipaxos::util::{LogEntry, NodeId};
+use omnipaxos::util::{ConfigurationId, LogEntry, NodeId};
 use omnipaxos::{ClusterConfig, OmniPaxosConfig, ProposeErr, ServerConfig};
 use rand::seq::IteratorRandom;
 use rand::{random, thread_rng};
@@ -39,7 +40,7 @@ use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{
-    LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role,
+    LogServerConfig, MetadataStoreConfig, MetadataStoreState, NodeConfig, NodesConfiguration, Role,
 };
 use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::retries::RetryPolicy;
@@ -72,6 +73,8 @@ impl From<Box<dyn std::error::Error + Send + Sync>> for StorageError {
 enum DecidedEntriesError {
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    Codec(#[from] StorageEncodeError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -350,6 +353,8 @@ impl OmniPaxosMetadataStore {
     ) -> Result<(OmniPaxosConfiguration, NodesConfiguration), InvalidConfiguration> {
         let configuration = Configuration::pinned();
 
+        let configuration_id = 1;
+
         let restate_node_id = if let Some(node_config) =
             nodes_configuration.find_node_by_name(configuration.common.node_name())
         {
@@ -363,7 +368,15 @@ impl OmniPaxosMetadataStore {
                 }
             }
 
-            node_config.current_generation.as_plain()
+            let restate_node_id = node_config.current_generation.as_plain();
+
+            let mut node_config = node_config.clone();
+            node_config.metadata_store_config.metadata_store_state =
+                MetadataStoreState::Active(configuration_id);
+
+            nodes_configuration.upsert_node(node_config);
+
+            restate_node_id
         } else {
             // give precedence to the force node id
             let current_generation = configuration
@@ -377,13 +390,17 @@ impl OmniPaxosMetadataStore {
                         .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID)
                 });
 
+            let metadata_store_config = MetadataStoreConfig {
+                metadata_store_state: MetadataStoreState::Active(configuration_id),
+            };
+
             let node_config = NodeConfig::new(
                 configuration.common.node_name().to_owned(),
                 current_generation,
                 configuration.common.advertised_address.clone(),
                 configuration.common.roles,
                 LogServerConfig::default(),
-                MetadataStoreConfig::default(),
+                metadata_store_config,
             );
 
             nodes_configuration.upsert_node(node_config);
@@ -398,7 +415,7 @@ impl OmniPaxosMetadataStore {
         };
 
         let cluster_config = ClusterConfig {
-            configuration_id: 1,
+            configuration_id,
             nodes: vec![own_member_id.node_id],
             flexible_quorum: None,
         };
@@ -542,10 +559,6 @@ impl Active {
             rocksdb_storage,
         );
 
-        let is_leader = omni_paxos
-            .get_current_leader()
-            .is_some_and(|(node_id, _)| node_id == own_member_id.node_id);
-
         Active {
             omni_paxos: Some(omni_paxos),
             cluster_config,
@@ -554,7 +567,7 @@ impl Active {
             networking,
             msg_rx: router_rx,
             own_member_id,
-            is_leader,
+            is_leader: false,
             last_applied_index: 0,
             kv_storage: KvMemoryStorage::new(metadata_writer.clone()),
             request_rx,
@@ -586,6 +599,10 @@ impl Active {
         op_config
             .build(rocksdb_storage)
             .expect("omni paxos configuration is valid")
+    }
+
+    fn omni_paxos(&self) -> &OmniPaxos {
+        self.omni_paxos.as_ref().expect("to be present")
     }
 
     #[instrument(level = "info", skip_all, fields(member_id = %self.own_member_id))]
@@ -689,9 +706,7 @@ impl Active {
     fn update_status(&self) {
         self.status_tx.send_if_modified(|current_status| {
             let current_leader = self
-                .omni_paxos
-                .as_ref()
-                .expect("to be present")
+                .omni_paxos()
                 .get_current_leader()
                 .and_then(|(node_id, _)| {
                     self.members
@@ -760,9 +775,7 @@ impl Active {
     fn check_leadership(&mut self) {
         let previous_is_leader = self.is_leader;
         self.is_leader = self
-            .omni_paxos
-            .as_ref()
-            .expect("to be present")
+            .omni_paxos()
             .get_current_leader()
             .is_some_and(|(node_id, _)| node_id == self.own_member_id.node_id);
 
@@ -823,17 +836,11 @@ impl Active {
     }
 
     fn handle_decided_entries(&mut self) -> Result<DecidedEntriesResult, DecidedEntriesError> {
-        let last_decided_index = self
-            .omni_paxos
-            .as_ref()
-            .expect("to be present")
-            .get_decided_idx();
+        let last_decided_index = self.omni_paxos().get_decided_idx();
 
         if self.last_applied_index < last_decided_index {
             for (idx, decided_entry) in self
-                .omni_paxos
-                .as_ref()
-                .expect("to be present")
+                .omni_paxos()
                 .read_decided_suffix(self.last_applied_index)
                 .into_iter()
                 .enumerate()
@@ -877,43 +884,46 @@ impl Active {
 
         // remove the stop sign from the entries that are applied to the kv_storage because it is
         // virtual entry that is not part of the log
-        let last_decided_index = self
-            .omni_paxos
-            .as_ref()
-            .expect("to be present")
-            .get_decided_idx()
-            - 1;
+        let last_decided_index = self.omni_paxos().get_decided_idx() - 1;
         self.last_applied_index = last_decided_index;
 
         let metadata = Self::deserialize_omni_paxos_config_metadata(stop_sign.metadata.as_ref());
+        let new_members = metadata.members;
 
-        if Self::is_member(self.own_member_id, &metadata.members) {
-            debug!(configuration_id = %stop_sign.next_config.configuration_id, "Continue as part of new configuration: {:?}", stop_sign.next_config.nodes);
+        let mut rocksdb_storage = self.omni_paxos.take().expect("be present").into_inner();
 
-            let mut rocksdb_storage = self.omni_paxos.take().expect("be present").into_inner();
+        let new_nodes_configuration = self.update_membership_in_nodes_configuration(
+            stop_sign.next_config.configuration_id,
+            &new_members,
+        );
+        let request = self.put_new_nodes_configuration(&new_nodes_configuration)?;
 
-            let new_cluster_config = stop_sign.next_config.clone();
-            let omni_paxos_configuration = OmniPaxosConfiguration {
-                own_member_id: self.own_member_id,
-                cluster_config: stop_sign.next_config,
-                members: metadata.members,
-            };
+        let new_cluster_config = stop_sign.next_config;
+        let new_omni_paxos_configuration = OmniPaxosConfiguration {
+            own_member_id: self.own_member_id,
+            cluster_config: new_cluster_config.clone(),
+            members: new_members,
+        };
 
-            Self::reset_storage_for_new_configuration(
-                &mut rocksdb_storage,
-                &omni_paxos_configuration,
-                last_decided_index,
-            )?;
+        Self::reset_storage_for_new_configuration(
+            &mut rocksdb_storage,
+            &new_omni_paxos_configuration,
+            last_decided_index,
+            vec![request],
+        )?;
+
+        if Self::is_member(self.own_member_id, &new_omni_paxos_configuration.members) {
+            debug!(configuration_id = %new_cluster_config.configuration_id, "Continue as part of new configuration: {:?}", new_omni_paxos_configuration.cluster_config.nodes);
 
             let omni_paxos = Self::create_omni_paxos(
-                omni_paxos_configuration.own_member_id.node_id,
-                omni_paxos_configuration.cluster_config,
+                new_omni_paxos_configuration.own_member_id.node_id,
+                new_omni_paxos_configuration.cluster_config,
                 rocksdb_storage,
             );
 
             self.omni_paxos = Some(omni_paxos);
             self.cluster_config = new_cluster_config;
-            self.members = omni_paxos_configuration.members;
+            self.members = new_omni_paxos_configuration.members;
 
             self.answer_join_callbacks();
             self.check_leadership();
@@ -923,24 +933,54 @@ impl Active {
 
             Ok(DecidedEntriesResult::Continue)
         } else {
-            debug!(configuration_id = %stop_sign.next_config.configuration_id, "Stopping since I am no longer part of the new configuration.");
-
-            let mut rocksdb_storage = self.omni_paxos.take().expect("to be present").into_inner();
-
-            // remember the latest configuration we have seen for future checks
-            Self::reset_storage_for_new_configuration(
-                &mut rocksdb_storage,
-                &OmniPaxosConfiguration {
-                    own_member_id: self.own_member_id,
-                    cluster_config: stop_sign.next_config,
-                    members: metadata.members,
-                },
-                last_decided_index,
-            )?;
+            debug!(configuration_id = %new_cluster_config.configuration_id, "Stopping since I am no longer part of the new configuration.");
 
             // Node is no longer part of the configuration --> switch to passive.
             Ok(DecidedEntriesResult::Stop(rocksdb_storage))
         }
+    }
+
+    fn put_new_nodes_configuration(
+        &mut self,
+        new_nodes_configuration: &NodesConfiguration,
+    ) -> Result<Request, DecidedEntriesError> {
+        let request = Request::new(RequestKind::Put {
+            key: NODES_CONFIG_KEY.clone(),
+            value: serialize_value(new_nodes_configuration)?,
+            precondition: Precondition::MatchesVersion(
+                self.kv_storage.last_seen_nodes_configuration().version(),
+            ),
+        });
+        Ok(request)
+    }
+
+    fn update_membership_in_nodes_configuration(
+        &mut self,
+        configuration_id: ConfigurationId,
+        new_members: &HashMap<NodeId, StorageId>,
+    ) -> NodesConfiguration {
+        let mut new_nodes_configuration = self.kv_storage.last_seen_nodes_configuration().clone();
+
+        for (node_id, node_config) in new_nodes_configuration.iter_mut() {
+            let node_id = u64::from(u32::from(node_id));
+            if new_members.contains_key(&node_id) {
+                node_config.metadata_store_config.metadata_store_state =
+                    MetadataStoreState::Active(configuration_id);
+            } else if self.members.contains_key(&node_id)
+                || matches!(
+                    node_config.metadata_store_config.metadata_store_state,
+                    MetadataStoreState::Active(_)
+                )
+            {
+                // nodes that have been removed from the configuration are switched to passive
+                node_config.metadata_store_config.metadata_store_state =
+                    MetadataStoreState::Passive;
+            }
+            // Candidates stay candidates for the time being
+        }
+
+        new_nodes_configuration.increment_version();
+        new_nodes_configuration
     }
 
     fn deserialize_omni_paxos_config_metadata(
@@ -964,9 +1004,12 @@ impl Active {
         rocksdb_storage: &mut RocksDbStorage<Request>,
         omni_paxos_configuration: &OmniPaxosConfiguration,
         last_decided_index: usize,
+        log_prefix: Vec<Request>,
     ) -> Result<(), StorageError> {
         rocksdb_storage.batch_set_configuration(omni_paxos_configuration)?;
         rocksdb_storage.batch_set_decided_idx(last_decided_index)?;
+        // append some extra log entries that are part of the new configuration
+        rocksdb_storage.batch_append_on_prefix(last_decided_index, log_prefix)?;
         // delete stop sign and promise because we reset the storage for a new configuration
         rocksdb_storage.batch_delete_stopsign();
         rocksdb_storage.batch_delete_promise();
@@ -986,11 +1029,7 @@ impl Active {
             return;
         }
 
-        let is_reconfigured = self
-            .omni_paxos
-            .as_ref()
-            .expect("to be present")
-            .is_reconfigured();
+        let is_reconfigured = self.omni_paxos().is_reconfigured();
 
         let (current_cluster_config, current_members) = if let Some(stop_sign) = is_reconfigured {
             let metadata =
@@ -1008,7 +1047,7 @@ impl Active {
 
         if Self::is_member(joining_member_id, &current_members) {
             let response = Self::prepare_join_cluster_response(
-                self.omni_paxos.as_ref().expect("to be present"),
+                self.omni_paxos(),
                 joining_member_id,
                 &current_cluster_config,
                 current_members.into_owned(),
@@ -1122,7 +1161,7 @@ impl Active {
         for (member_id, response_tx) in pending_join_request {
             if Self::is_member(member_id, &self.members) {
                 let response = Self::prepare_join_cluster_response(
-                    self.omni_paxos.as_ref().expect("to be present"),
+                    self.omni_paxos(),
                     member_id,
                     &self.cluster_config,
                     self.members.clone(),
@@ -1219,8 +1258,13 @@ impl Passive {
         rocksdb_storage
             .set_nodes_configuration(&Metadata::with_current(|m| m.nodes_config_ref()))
             .map_err(StorageError::from)?;
-        // todo only try joining if MetadataStoreState::Candidate
-        let mut join_cluster = std::pin::pin!(Self::join_cluster(None, storage_id));
+
+        let mut join_cluster: std::pin::Pin<&mut OptionFuture<_>> = std::pin::pin!(None.into());
+
+        let mut nodes_config_watcher =
+            Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
+        nodes_config_watcher.mark_changed();
+        let my_node_name = Configuration::pinned().common.node_name().to_owned();
 
         loop {
             tokio::select! {
@@ -1234,7 +1278,8 @@ impl Passive {
                     // todo check whether we can answer the request if we were part of a previous configuration
                     let _ = request.response_tx.send(Err(JoinClusterError::NotActive));
                 }
-                join_configuration = &mut join_cluster => {
+                Some(join_configuration) = &mut join_cluster => {
+                    let join_configuration: Result<JoinConfiguration, _> = join_configuration;
                     match join_configuration {
                         Ok(join_configuration) => {
                             OmniPaxosMetadataStore::prepare_storage(&mut rocksdb_storage, &join_configuration.omni_paxos_configuration, join_configuration.log_prefix)?;
@@ -1249,11 +1294,22 @@ impl Passive {
                         },
                         Err(err) => {
                             debug!("Failed joining omni paxos cluster. Retrying. {err}");
-                            join_cluster.set(Self::join_cluster(join_retry_policy.next(), storage_id));
+                            join_cluster.set(Some(Self::join_cluster(join_retry_policy.next(), storage_id).fuse()).into());
                         }
                     }
                 }
-                // todo monitor NodesConfiguration changes to react to MetadataStoreState changes
+                _ = nodes_config_watcher.changed() => {
+                    let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+                    let node_config = nodes_config.find_node_by_name(&my_node_name).expect("I must have registered before");
+
+                    if matches!(node_config.metadata_store_config.metadata_store_state, MetadataStoreState::Active(_) | MetadataStoreState::Candidate) && join_cluster.is_terminated() {
+                        debug!("Node is part of the metadata store cluster. Trying to join the omni paxos cluster.");
+                        join_cluster.set(Some(Self::join_cluster(None, storage_id).fuse()).into());
+                    } else {
+                        debug!("Node is not part of the metadata store cluster. Waiting to become a candidate.");
+                        join_cluster.set(None.into());
+                    }
+                }
             }
         }
     }
@@ -1282,12 +1338,12 @@ impl Passive {
 
         // pick random active metadata store node
         let active_metadata_store_node = nodes_config.iter().filter_map(|(node, config)| {
-            if config.has_role(Role::MetadataStore) && node != my_node_id {
+            if config.has_role(Role::MetadataStore) && node != my_node_id && matches!(config.metadata_store_config.metadata_store_state, MetadataStoreState::Active(_)) {
                 Some(node)
             } else {
                 None
             }
-        }).choose(&mut thread_rng()).ok_or(anyhow::anyhow!("No other metadata store present in the cluster. This indicates a misconfiguration."))?;
+        }).choose(&mut thread_rng()).ok_or(anyhow::anyhow!("No other active metadata store present in the cluster. This indicates a misconfiguration."))?;
 
         debug!(
             "Trying to join metadata store cluster at node '{}'",
