@@ -451,19 +451,26 @@ where
     }
 
     fn get_entries(&self, from: usize, to: usize) -> StorageResult<Vec<T>> {
-        // Check if the log has entries up to the requested endpoint.
-        if to > self.next_log_key || from >= to {
-            return Ok(vec![]); // Do an early return
-        }
+        assert!(from <= to, "Invalid range: from > to");
 
         let mut iter = self.db.raw_iterator_cf(&self.get_log_cf_handle());
         let mut entries = Vec::with_capacity(to - from);
         iter.seek(from.to_be_bytes());
-        for _ in from..to {
+
+        for expected_idx in from..to {
+            let current_idx =
+                usize::from_be_bytes(iter.key().expect("key to be present").try_into()?);
+
+            if current_idx != expected_idx {
+                Err(format!("Missing log entry for index: {expected_idx}"))?;
+            }
+
             let mut entry_bytes = iter.value().ok_or(MissingBytesError)?;
             entries.push(Self::deserialize_entry(&mut entry_bytes)?);
+
             iter.next();
         }
+
         Ok(entries)
     }
 
