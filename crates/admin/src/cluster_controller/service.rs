@@ -1121,7 +1121,7 @@ mod tests {
             node_env.networking.connection_manager(),
             10,
         )
-            .await?;
+        .await?;
         // let node2 receive messages and use the same message handler as node1
         let (_node_2, _node2_reactor) =
             node_2.process_with_message_handler(get_node_2_state_handler)?;
