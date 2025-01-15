@@ -1048,14 +1048,14 @@ mod tests {
         archived: Option<Lsn>,
     }
 
-    impl Into<PartitionProcessorStatus> for ProcessorStatus {
-        fn into(self) -> PartitionProcessorStatus {
+    impl From<ProcessorStatus> for PartitionProcessorStatus {
+        fn from(val: ProcessorStatus) -> Self {
             PartitionProcessorStatus {
-                planned_mode: self.mode,
-                effective_mode: self.mode,
-                last_applied_log_lsn: self.applied,
-                last_persisted_log_lsn: self.persisted,
-                last_archived_log_lsn: self.archived,
+                planned_mode: val.mode,
+                effective_mode: val.mode,
+                last_applied_log_lsn: val.applied,
+                last_persisted_log_lsn: val.persisted,
+                last_archived_log_lsn: val.archived,
                 ..PartitionProcessorStatus::default()
             }
         }
