@@ -32,7 +32,7 @@ use crate::cluster_controller::logs_controller::{
     LogsBasedPartitionProcessorPlacementHints, LogsController,
 };
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler::{Scheduler, SchedulingPlanNodeSetSelectorHints};
+use crate::cluster_controller::scheduler::{PartitionTableNodeSetSelectorHints, Scheduler};
 use crate::cluster_controller::service::Service;
 
 pub enum ClusterControllerState<T> {
@@ -85,10 +85,18 @@ where
         Ok(())
     }
 
-    pub async fn on_leader_event(&mut self, leader_event: LeaderEvent) -> anyhow::Result<()> {
+    pub async fn on_leader_event(
+        &mut self,
+        observed_cluster_state: &ObservedClusterState,
+        leader_event: LeaderEvent,
+    ) -> anyhow::Result<()> {
         match self {
             ClusterControllerState::Follower => Ok(()),
-            ClusterControllerState::Leader(leader) => leader.on_leader_event(leader_event).await,
+            ClusterControllerState::Leader(leader) => {
+                leader
+                    .on_leader_event(observed_cluster_state, leader_event)
+                    .await
+            }
         }
     }
 
@@ -151,12 +159,7 @@ where
     async fn from_service(service: &Service<T>) -> anyhow::Result<Leader<T>> {
         let configuration = service.configuration.pinned();
 
-        let scheduler = Scheduler::init(
-            &configuration,
-            service.metadata_writer.metadata_store_client().clone(),
-            service.networking.clone(),
-        )
-        .await?;
+        let scheduler = Scheduler::new(service.metadata_writer.clone(), service.networking.clone());
 
         let logs_controller =
             LogsController::new(service.bifrost.clone(), service.metadata_writer.clone())?;
@@ -195,13 +198,14 @@ where
         self.logs_controller.on_observed_cluster_state_update(
             &nodes_config,
             observed_cluster_state,
-            SchedulingPlanNodeSetSelectorHints::from(&self.scheduler),
+            Metadata::with_current(|m| {
+                PartitionTableNodeSetSelectorHints::from(m.partition_table_ref())
+            }),
         )?;
 
         self.scheduler
             .on_observed_cluster_state(
                 observed_cluster_state,
-                Metadata::with_current(|m| m.partition_table_ref()).replication_strategy(),
                 &nodes_config,
                 LogsBasedPartitionProcessorPlacementHints::from(&self.logs_controller),
             )
@@ -229,7 +233,6 @@ where
                 }
                 Ok(_) = self.logs_watcher.changed() => {
                     return Ok(LeaderEvent::LogsUpdate);
-
                 }
                 Ok(_) = self.partition_table_watcher.changed() => {
                     return Ok(LeaderEvent::PartitionTableUpdate);
@@ -238,41 +241,60 @@ where
         }
     }
 
-    pub async fn on_leader_event(&mut self, leader_event: LeaderEvent) -> anyhow::Result<()> {
+    pub async fn on_leader_event(
+        &mut self,
+        observed_cluster_state: &ObservedClusterState,
+        leader_event: LeaderEvent,
+    ) -> anyhow::Result<()> {
         match leader_event {
             LeaderEvent::TrimLogs => {
                 self.trim_logs().await;
             }
             LeaderEvent::LogsUpdate => {
-                self.on_logs_update().await?;
+                self.on_logs_update(observed_cluster_state).await?;
             }
             LeaderEvent::PartitionTableUpdate => {
-                self.on_partition_table_update().await?;
+                self.on_partition_table_update(observed_cluster_state)
+                    .await?;
             }
         }
 
         Ok(())
     }
 
-    async fn on_logs_update(&mut self) -> anyhow::Result<()> {
+    async fn on_logs_update(
+        &mut self,
+        observed_cluster_state: &ObservedClusterState,
+    ) -> anyhow::Result<()> {
         self.logs_controller
             .on_logs_update(Metadata::with_current(|m| m.logs_ref()))?;
 
         self.scheduler
-            .on_logs_update(
-                &Metadata::with_current(|m| m.logs_ref()),
-                &Metadata::with_current(|m| m.partition_table_ref()),
+            .on_observed_cluster_state(
+                observed_cluster_state,
+                &Metadata::with_current(|m| m.nodes_config_ref()),
+                LogsBasedPartitionProcessorPlacementHints::from(&self.logs_controller),
             )
             .await?;
-
         Ok(())
     }
 
-    async fn on_partition_table_update(&mut self) -> anyhow::Result<()> {
+    async fn on_partition_table_update(
+        &mut self,
+        observed_cluster_state: &ObservedClusterState,
+    ) -> anyhow::Result<()> {
         let partition_table = Metadata::with_current(|m| m.partition_table_ref());
 
         self.logs_controller
             .on_partition_table_update(&partition_table);
+
+        self.scheduler
+            .on_observed_cluster_state(
+                observed_cluster_state,
+                &Metadata::with_current(|m| m.nodes_config_ref()),
+                LogsBasedPartitionProcessorPlacementHints::from(&self.logs_controller),
+            )
+            .await?;
 
         Ok(())
     }

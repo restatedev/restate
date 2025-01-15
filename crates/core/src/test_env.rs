@@ -14,11 +14,10 @@ use std::sync::Arc;
 
 use futures::Stream;
 
-use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::config::NetworkingOptions;
 use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
 use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
 };
 use restate_types::net::codec::{Targeted, WireDecode};
 use restate_types::net::metadata::MetadataKind;
@@ -47,7 +46,6 @@ pub struct TestCoreEnvBuilder<T> {
     pub provider_kind: ProviderKind,
     pub router_builder: MessageRouterBuilder,
     pub partition_table: PartitionTable,
-    pub scheduling_plan: SchedulingPlan,
     pub metadata_store_client: MetadataStoreClient,
 }
 
@@ -91,7 +89,6 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
         let router_builder = MessageRouterBuilder::default();
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 10);
-        let scheduling_plan = SchedulingPlan::from(&partition_table);
         TaskCenter::try_set_global_metadata(metadata.clone());
 
         // Use memory-loglet as a default if in test-mode
@@ -109,7 +106,6 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
             nodes_config,
             router_builder,
             partition_table,
-            scheduling_plan,
             metadata_store_client,
             provider_kind,
         }
@@ -122,11 +118,6 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
 
     pub fn set_partition_table(mut self, partition_table: PartitionTable) -> Self {
         self.partition_table = partition_table;
-        self
-    }
-
-    pub fn set_scheduling_plan(mut self, scheduling_plan: SchedulingPlan) -> Self {
-        self.scheduling_plan = scheduling_plan;
         self
     }
 
@@ -195,15 +186,6 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
             .await
             .expect("to store partition table in metadata store");
         self.metadata_writer.submit(Arc::new(self.partition_table));
-
-        self.metadata_store_client
-            .put(
-                SCHEDULING_PLAN_KEY.clone(),
-                &self.scheduling_plan,
-                Precondition::None,
-            )
-            .await
-            .expect("to store scheduling plan in metadata store");
 
         let _ = self
             .metadata
