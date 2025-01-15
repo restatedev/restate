@@ -11,17 +11,17 @@
 use crate::kv_memory_storage::KvMemoryStorage;
 use crate::network::grpc_svc::metadata_store_network_svc_client::MetadataStoreNetworkSvcClient;
 use crate::network::grpc_svc::JoinClusterRequest as ProtoJoinClusterRequest;
-use crate::network::{ConnectionManager, Networking};
+use crate::network::{ConnectionManager, Networking, KNOWN_LEADER_KEY};
 use crate::omnipaxos::storage::RocksDbStorage;
 use crate::omnipaxos::{BuildError, OmniPaxosConfiguration, OmniPaxosMessage};
 use crate::{
     JoinClusterError, JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest,
-    JoinClusterResponse, JoinClusterSender, MemberId, MetadataStoreBackend,
+    JoinClusterResponse, JoinClusterSender, KnownLeader, MemberId, MetadataStoreBackend,
     MetadataStoreConfiguration, MetadataStoreRequest, MetadataStoreSummary, ProvisionError,
     ProvisionReceiver, ProvisionSender, Request, RequestError, RequestKind, RequestReceiver,
     RequestSender, StatusSender, StatusWatch, StorageId,
 };
-use anyhow::{bail, Context};
+use anyhow::Context;
 use arc_swap::ArcSwapOption;
 use futures::future::{FusedFuture, OptionFuture};
 use futures::never::Never;
@@ -35,6 +35,7 @@ use restate_core::metadata_store::{serialize_value, Precondition};
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{cancellation_watcher, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_types::config::{Configuration, RocksDbOptions};
+use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -54,6 +55,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::MissedTickBehavior;
+use tonic::Status;
 use tracing::{debug, info, instrument, trace, warn};
 use ulid::Ulid;
 
@@ -266,7 +268,7 @@ impl OmniPaxosMetadataStore {
                             callback.fail(RequestError::Unavailable("Metadata store has not been provisioned yet.".into()))
                         },
                         Some(request) = self.join_cluster_rx.recv() => {
-                            let _ = request.response_tx.send(Err(JoinClusterError::NotActive));
+                            let _ = request.response_tx.send(Err(JoinClusterError::NotActive(None)));
                         },
                         Some(request) = provision_rx.recv() => {
                             match self.initialize_storage(request.nodes_configuration) {
@@ -654,7 +656,9 @@ impl Active {
                     self.kv_storage.fail_callbacks(|| {
                         RequestError::Unavailable("stopping metadata store".into())
                     });
-                    self.fail_join_callbacks(|| JoinClusterError::NotLeader);
+                    self.fail_join_callbacks(|| {
+                        JoinClusterError::NotLeader(Self::random_known_leader())
+                    });
 
                     return Ok(Passive::new(
                         rocksdb_storage,
@@ -670,7 +674,9 @@ impl Active {
                     self.kv_storage.fail_callbacks(|| {
                         RequestError::Unavailable("stopping metadata store".into())
                     });
-                    self.fail_join_callbacks(|| JoinClusterError::NotLeader);
+                    self.fail_join_callbacks(|| {
+                        JoinClusterError::NotLeader(Self::random_known_leader())
+                    });
                     return Err(err.into());
                 }
             }
@@ -682,7 +688,8 @@ impl Active {
                 debug!("Detected higher configuration. Stopping active metadata store node");
                 self.kv_storage
                     .fail_callbacks(|| RequestError::Unavailable("stopping metadata store".into()));
-                self.fail_join_callbacks(|| JoinClusterError::NotLeader);
+                let known_leader = self.known_leader();
+                self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
 
                 let rocksdb_storage = self
                     .omni_paxos
@@ -786,7 +793,8 @@ impl Active {
             // because we don't know whether the leader will start with the same log as we have.
             self.kv_storage
                 .fail_callbacks(|| RequestError::Unavailable("lost leadership".into()));
-            self.fail_join_callbacks(|| JoinClusterError::NotLeader);
+            let known_leader = self.known_leader();
+            self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
         } else if !previous_is_leader && self.is_leader {
             debug!(configuration_id = %self.cluster_config.configuration_id, "Won leadership");
         }
@@ -1025,7 +1033,7 @@ impl Active {
         trace!("Handle join request from node '{}'", joining_member_id);
 
         if !self.is_leader {
-            let _ = response_tx.send(Err(JoinClusterError::NotLeader));
+            let _ = response_tx.send(Err(JoinClusterError::NotLeader(self.known_leader())));
             return;
         }
 
@@ -1189,6 +1197,49 @@ impl Active {
             .get(&member_id.node_id)
             .is_some_and(|storage_id| *storage_id == member_id.storage_id)
     }
+
+    /// Returns the known leader from the omni-paxos instance or a random known leader from the
+    /// current nodes configuration.
+    fn known_leader(&self) -> Option<KnownLeader> {
+        let leader = self.omni_paxos().get_current_leader().map(|(node_id, _)| {
+            PlainNodeId::new(u32::try_from(node_id).expect("node id is derived from PlainNodeId"))
+        });
+
+        leader
+            .and_then(|leader| {
+                let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+                nodes_config
+                    .find_node_by_id(leader)
+                    .ok()
+                    .map(|node_config| KnownLeader {
+                        node_id: leader,
+                        address: node_config.address.clone(),
+                    })
+            })
+            .or_else(Self::random_known_leader)
+    }
+
+    /// Returns a random known leader from the current nodes configuration.
+    fn random_known_leader() -> Option<KnownLeader> {
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+
+        nodes_config
+            .iter()
+            .filter_map(|(node_id, node_config)| {
+                if let MetadataStoreState::Active(_) =
+                    node_config.metadata_store_config.metadata_store_state
+                {
+                    Some((node_id, node_config))
+                } else {
+                    None
+                }
+            })
+            .choose(&mut thread_rng())
+            .map(|(node_id, node_config)| KnownLeader {
+                node_id,
+                address: node_config.address.clone(),
+            })
+    }
 }
 
 enum DecidedEntriesResult {
@@ -1276,7 +1327,7 @@ impl Passive {
                 },
                 Some(request) = join_cluster_rx.recv() => {
                     // todo check whether we can answer the request if we were part of a previous configuration
-                    let _ = request.response_tx.send(Err(JoinClusterError::NotActive));
+                    let _ = request.response_tx.send(Err(JoinClusterError::NotActive(Active::random_known_leader())));
                 }
                 Some(join_configuration) = &mut join_cluster => {
                     let join_configuration: Result<JoinConfiguration, _> = join_configuration;
@@ -1294,7 +1345,17 @@ impl Passive {
                         },
                         Err(err) => {
                             debug!("Failed joining omni paxos cluster. Retrying. {err}");
-                            join_cluster.set(Some(Self::join_cluster(join_retry_policy.next(), storage_id).fuse()).into());
+
+                            match err {
+                               JoinError::Rpc(_, known_leader) => {
+                                    // if we have learned about a new leader, then try immediately rejoining
+                                    join_cluster.set(Some(Self::join_cluster(known_leader, None, storage_id).fuse()).into());
+                                }
+                                _ => {
+                                    join_cluster.set(Some(Self::join_cluster(None, join_retry_policy.next(), storage_id).fuse()).into());
+                                }
+                            }
+
                         }
                     }
                 }
@@ -1304,7 +1365,7 @@ impl Passive {
 
                     if matches!(node_config.metadata_store_config.metadata_store_state, MetadataStoreState::Active(_) | MetadataStoreState::Candidate) && join_cluster.is_terminated() {
                         debug!("Node is part of the metadata store cluster. Trying to join the omni paxos cluster.");
-                        join_cluster.set(Some(Self::join_cluster(None, storage_id).fuse()).into());
+                        join_cluster.set(Some(Self::join_cluster(None, None, storage_id).fuse()).into());
                     } else {
                         debug!("Node is not part of the metadata store cluster. Waiting to become a candidate.");
                         join_cluster.set(None.into());
@@ -1315,9 +1376,10 @@ impl Passive {
     }
 
     async fn join_cluster(
+        known_leader: Option<KnownLeader>,
         join_delay: Option<Duration>,
         storage_id: StorageId,
-    ) -> anyhow::Result<JoinConfiguration> {
+    ) -> Result<JoinConfiguration, JoinError> {
         if let Some(delay) = join_delay {
             time::sleep(delay).await
         }
@@ -1333,55 +1395,95 @@ impl Passive {
         {
             node_config.current_generation.as_plain()
         } else {
-            bail!("The node with name '{}' has not obtained a node id yet. W/o the node id, it cannot join the metadata store cluster.", Configuration::pinned().common.node_name());
+            return Err(JoinError::Other(format!("The node with name '{}' has not obtained a node id yet. W/o the node id, it cannot join the metadata store cluster.", Configuration::pinned().common.node_name()).into()));
         };
 
-        // pick random active metadata store node
-        let active_metadata_store_node = nodes_config.iter().filter_map(|(node, config)| {
-            if config.has_role(Role::MetadataStore) && node != my_node_id && matches!(config.metadata_store_config.metadata_store_state, MetadataStoreState::Active(_)) {
-                Some(node)
-            } else {
-                None
-            }
-        }).choose(&mut thread_rng()).ok_or(anyhow::anyhow!("No other active metadata store present in the cluster. This indicates a misconfiguration."))?;
+        let address = if let Some(known_leader) = known_leader {
+            debug!(
+                "Trying to join metadata store at node '{}'",
+                known_leader.node_id
+            );
+            known_leader.address
+        } else {
+            // pick random active metadata store node
+            let active_metadata_store_node = nodes_config.iter().filter_map(|(node, config)| {
+                if config.has_role(Role::MetadataStore) && node != my_node_id && matches!(config.metadata_store_config.metadata_store_state, MetadataStoreState::Active(_)) {
+                    Some(node)
+                } else {
+                    None
+                }
+            }).choose(&mut thread_rng()).ok_or(JoinError::Other("No other active metadata store present in the cluster. This indicates a misconfiguration.".into()))?;
 
-        debug!(
-            "Trying to join metadata store cluster at node '{}'",
-            active_metadata_store_node
-        );
+            debug!(
+                "Trying to join metadata store cluster at randomly chosen node '{}'",
+                active_metadata_store_node
+            );
 
-        let address = nodes_config
-            .find_node_by_id(active_metadata_store_node)
-            .expect("must be present")
-            .address
-            .clone();
+            nodes_config
+                .find_node_by_id(active_metadata_store_node)
+                .expect("must be present")
+                .address
+                .clone()
+        };
+
         let channel = create_tonic_channel(address, &Configuration::pinned().networking);
 
         let mut client = MetadataStoreNetworkSvcClient::new(channel);
 
-        let response = client
+        let response = match client
             .join_cluster(ProtoJoinClusterRequest {
                 node_id: u64::from(u32::from(my_node_id)),
                 storage_id,
             })
-            .await?
-            .into_inner();
+            .await
+        {
+            Ok(response) => response.into_inner(),
+            Err(status) => {
+                let known_leader = if let Some(value) = status.metadata().get(KNOWN_LEADER_KEY) {
+                    match value.to_str() {
+                        Ok(value) => match serde_json::from_str(value) {
+                            Ok(known_leader) => Some(known_leader),
+                            Err(err) => {
+                                debug!("failed parsing known leader from metadata: {err}");
+                                None
+                            }
+                        },
+                        Err(err) => {
+                            debug!("failed parsing known leader from metadata: {err}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                Err(JoinError::Rpc(status, known_leader))?
+            }
+        };
 
         // once the log grows beyond the configured grpc max message size (by default 4 MB) this
         // will no longer work :-( If we shared the snapshot we still have the same problem once the
         // snapshot grows beyond 4 MB. Then we need a separate channel (e.g. object store) or
         // support for chunked transfer.
         let log_prefix = flexbuffers::from_slice(response.log_prefix.as_ref())
-            .context("failed deserializing log prefix")?;
+            .map_err(|err| JoinError::Other(err.into()))?;
         let omni_paxos_configuration =
             flexbuffers::from_slice(response.metadata_store_config.as_ref())
-                .context("failed deserializing omni-paxos configuration")?;
+                .map_err(|err| JoinError::Other(err.into()))?;
 
         Ok(JoinConfiguration {
             log_prefix,
             omni_paxos_configuration,
         })
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum JoinError {
+    #[error("rpc failed: status: {}, message: {}", _0.code(), _0.message())]
+    Rpc(Status, Option<KnownLeader>),
+    #[error("other error: {0}")]
+    Other(GenericError),
 }
 
 #[derive(Clone, Debug)]

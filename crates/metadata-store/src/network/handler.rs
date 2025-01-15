@@ -21,6 +21,7 @@ use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
 
 pub const PEER_METADATA_KEY: &str = "x-restate-metadata-store-peer";
+pub const KNOWN_LEADER_KEY: &str = "x-restate-known-leader";
 
 #[derive(Debug)]
 pub struct MetadataStoreNetworkHandler<M> {
@@ -101,8 +102,36 @@ impl From<JoinClusterError> for Status {
     fn from(err: JoinClusterError) -> Self {
         match &err {
             JoinClusterError::Shutdown(_) => Status::aborted(err.to_string()),
-            JoinClusterError::NotActive => Status::failed_precondition(err.to_string()),
-            JoinClusterError::NotLeader => Status::unavailable(err.to_string()),
+            JoinClusterError::NotActive(known_leader) => {
+                let mut status = Status::failed_precondition(err.to_string());
+
+                if let Some(known_leader) = known_leader {
+                    status.metadata_mut().insert(
+                        KNOWN_LEADER_KEY,
+                        serde_json::to_string(known_leader)
+                            .expect("KnownLeader to be serializable")
+                            .parse()
+                            .expect("to be valid metadata"),
+                    );
+                }
+
+                status
+            }
+            JoinClusterError::NotLeader(known_leader) => {
+                let mut status = Status::unavailable(err.to_string());
+
+                if let Some(known_leader) = known_leader {
+                    status.metadata_mut().insert(
+                        KNOWN_LEADER_KEY,
+                        serde_json::to_string(known_leader)
+                            .expect("KnownLeader to be serializable")
+                            .parse()
+                            .expect("to be valid metadata"),
+                    );
+                }
+
+                status
+            }
             JoinClusterError::ConfigError(_) => Status::internal(err.to_string()),
             JoinClusterError::PendingReconfiguration => Status::unavailable(err.to_string()),
             JoinClusterError::ConcurrentRequest(_) => Status::aborted(err.to_string()),
