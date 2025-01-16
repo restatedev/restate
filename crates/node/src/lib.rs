@@ -139,6 +139,13 @@ impl Node {
         let mut server_builder = NetworkServerBuilder::default();
         let config = updateable_config.pinned();
 
+        let metadata_builder = MetadataBuilder::default();
+        let metadata = metadata_builder.to_metadata();
+        // We need to se the global metadata as soon as possible since the metadata store client's
+        // auto update functionality won't be started if the global metadata is not set.
+        let is_set = TaskCenter::try_set_global_metadata(metadata.clone());
+        debug_assert!(is_set, "Global metadata was already set");
+
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
         let metadata_store_client = restate_metadata_store::local::create_client(
@@ -146,8 +153,6 @@ impl Node {
         )
         .await
         .map_err(BuildError::MetadataStoreClient)?;
-        let metadata_builder = MetadataBuilder::default();
-        let metadata = metadata_builder.to_metadata();
         let metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
         let metadata_writer = metadata_manager.writer();
@@ -327,9 +332,6 @@ impl Node {
         let config = self.updateable_config.pinned();
 
         let metadata_writer = self.metadata_manager.writer();
-        let metadata = self.metadata_manager.metadata().clone();
-        let is_set = TaskCenter::try_set_global_metadata(metadata.clone());
-        debug_assert!(is_set, "Global metadata was already set");
 
         // Start metadata manager
         spawn_metadata_manager(self.metadata_manager)?;

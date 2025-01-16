@@ -16,14 +16,16 @@ use bytes::BytesMut;
 use bytestring::ByteString;
 use futures::FutureExt;
 use restate_core::cancellation_watcher;
-use restate_core::metadata_store::{Precondition, VersionedValue};
+use restate_core::metadata_store::{serialize_value, Precondition, VersionedValue};
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::{Configuration, MetadataStoreOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::nodes_config::{MetadataStoreState, NodesConfiguration};
 use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::Version;
@@ -31,7 +33,7 @@ use rocksdb::{BoundColumnFamily, WriteBatch, WriteOptions, DB};
 use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 const DB_NAME: &str = "local-metadata-store";
 const KV_PAIRS: &str = "kv_pairs";
@@ -117,6 +119,12 @@ impl LocalMetadataStore {
         debug!("Running LocalMetadataStore");
         self.health_status.update(MetadataStoreStatus::Active);
 
+        // Only needed if we resume from a Restate version that has not properly set the
+        // MetadataServerState to Active in the NodesConfiguration.
+        if let Err(err) = self.patch_metadata_server_state().await {
+            info!("Failed to patch MetadataServerState: {err}");
+        }
+
         loop {
             tokio::select! {
                 request = self.request_rx.recv() => {
@@ -132,6 +140,52 @@ impl LocalMetadataStore {
         self.health_status.update(MetadataStoreStatus::Unknown);
 
         debug!("Stopped LocalMetadataStore");
+    }
+
+    async fn patch_metadata_server_state(&mut self) -> anyhow::Result<()> {
+        let value = self.get(&NODES_CONFIG_KEY)?;
+
+        if value.is_none() {
+            // nothing to patch
+            return Ok(());
+        };
+
+        let value = value.unwrap();
+        let mut bytes = value.value.as_ref();
+
+        let mut nodes_configuration = StorageCodec::decode::<NodesConfiguration, _>(&mut bytes)?;
+
+        if let Some(node_config) =
+            nodes_configuration.find_node_by_name(Configuration::pinned().common.node_name())
+        {
+            if matches!(
+                node_config.metadata_store_config.metadata_store_state,
+                MetadataStoreState::Active(_)
+            ) {
+                // nothing to patch
+                return Ok(());
+            }
+
+            let mut new_node_config = node_config.clone();
+            new_node_config.metadata_store_config.metadata_store_state =
+                MetadataStoreState::Active(0);
+
+            nodes_configuration.upsert_node(new_node_config);
+            nodes_configuration.increment_version();
+
+            let new_nodes_configuration = serialize_value(&nodes_configuration)?;
+
+            self.put(
+                &NODES_CONFIG_KEY,
+                &new_nodes_configuration,
+                Precondition::MatchesVersion(value.version),
+            )
+            .await?;
+
+            info!("Successfully patched MetadataServerState in the NodesConfiguration.");
+        }
+
+        Ok(())
     }
 
     fn kv_cf_handle(&self) -> Arc<BoundColumnFamily> {

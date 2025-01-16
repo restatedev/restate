@@ -8,61 +8,70 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use arc_swap::ArcSwap;
+use crate::grpc::pb_conversions::ConversionError;
+use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
+use crate::grpc_svc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
 use async_trait::async_trait;
 use bytes::BytesMut;
 use bytestring::ByteString;
-use rand::seq::SliceRandom;
+use parking_lot::Mutex;
+use rand::prelude::IteratorRandom;
 use restate_core::metadata_store::{
     retry_on_network_error, MetadataStore, MetadataStoreClientError, Precondition, ProvisionError,
     ReadError, VersionedValue, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel;
-use restate_core::network::net_util::CommonClientConnectionOptions;
-use restate_types::config::Configuration;
+use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
+use restate_types::config::{Configuration, MetadataStoreClientOptions};
+use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
-use restate_types::nodes_config::{NodesConfiguration, Role};
+use restate_types::nodes_config::{MetadataStoreState, NodesConfiguration, Role};
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageCodec;
-use restate_types::Version;
+use restate_types::{PlainNodeId, Version};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tonic::transport::Channel;
 use tonic::{Code, Status};
-
-use crate::grpc::pb_conversions::ConversionError;
-use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
-use crate::grpc_svc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
+use tracing::debug;
 
 /// Client end to interact with the metadata store.
 #[derive(Debug, Clone)]
 pub struct GrpcMetadataStoreClient {
-    channels: Arc<Vec<Channel>>,
-    svc_client: Arc<ArcSwap<MetadataStoreSvcClient<Channel>>>,
+    channel_manager: ChannelManager,
+    svc_client: Arc<Mutex<Option<MetadataStoreSvcClient<Channel>>>>,
 }
 
 impl GrpcMetadataStoreClient {
-    pub fn new<T: CommonClientConnectionOptions>(
+    pub fn new(
         metadata_store_addresses: Vec<AdvertisedAddress>,
-        options: &T,
+        client_options: MetadataStoreClientOptions,
     ) -> Self {
-        assert!(
-            !metadata_store_addresses.is_empty(),
-            "At least one metadata store needs to be configured"
-        );
-        let channels: Vec<_> = metadata_store_addresses
-            .into_iter()
-            .map(|address| create_tonic_channel(address, options))
-            .collect();
-        let svc_client = MetadataStoreSvcClient::new(
-            channels
-                .first()
-                .expect("at least one address mus be configured")
-                .clone(),
-        );
+        let channel_manager = ChannelManager::new(metadata_store_addresses, client_options);
+        let svc_client = Arc::new(Mutex::new(
+            channel_manager
+                .choose_random()
+                .map(MetadataStoreSvcClient::new),
+        ));
+
+        if let Some(tc) = TaskCenter::try_with_current(|handle| handle.clone()) {
+            if let Some(metadata) = Metadata::try_with_current(|m| m.clone()) {
+                tc.spawn_child(
+                    TaskKind::Background,
+                    "update-metadata-store-channels",
+                    channel_manager.clone().run(metadata),
+                )
+                .expect("to spawn new tasks");
+            } else {
+                debug!("The GrpcMetadataStoreClient has been started w/o access to the Metadata. Therefore, it will not update the metadata store endpoints automatically.");
+            }
+        } else {
+            debug!("The GrpcMetadataStoreClient has been started outside of the TaskCenter. Therefore, it will not update the metadata store endpoints automatically.");
+        }
 
         Self {
-            channels: Arc::new(channels),
-            svc_client: Arc::new(ArcSwap::from_pointee(svc_client)),
+            channel_manager,
+            svc_client,
         }
     }
 
@@ -73,16 +82,25 @@ impl GrpcMetadataStoreClient {
             .clone()
     }
 
-    fn choose_different_endpoint(&self) {
+    fn choose_random_endpoint(&self) {
         // let's try another endpoint
-        let mut rng = rand::thread_rng();
-        let new_svc_client = MetadataStoreSvcClient::new(
-            self.channels
-                .choose(&mut rng)
-                .expect("at least one channel be present")
-                .clone(),
-        );
-        self.svc_client.store(Arc::new(new_svc_client))
+        *self.svc_client.lock() = self
+            .channel_manager
+            .choose_random()
+            .map(MetadataStoreSvcClient::new);
+    }
+
+    fn current_client(&self) -> Option<MetadataStoreSvcClient<Channel>> {
+        let mut svc_client_guard = self.svc_client.lock();
+
+        if svc_client_guard.is_none() {
+            *svc_client_guard = self
+                .channel_manager
+                .choose_random()
+                .map(MetadataStoreSvcClient::new);
+        }
+
+        svc_client_guard.clone()
     }
 }
 
@@ -92,7 +110,9 @@ impl MetadataStore for GrpcMetadataStoreClient {
         let retry_policy = Self::retry_policy();
 
         let response = retry_on_network_error(retry_policy, || async {
-            let mut client = self.svc_client.load().as_ref().clone();
+            let mut client = self.current_client().ok_or_else(|| {
+                ReadError::Internal("No metadata store address known.".to_string())
+            })?;
 
             let response = client
                 .get(GetRequest {
@@ -102,7 +122,7 @@ impl MetadataStore for GrpcMetadataStoreClient {
                 .map_err(map_status_to_read_error);
 
             if response.as_ref().is_err_and(|err| err.is_network_error()) {
-                self.choose_different_endpoint();
+                self.choose_random_endpoint();
             }
 
             response
@@ -119,7 +139,9 @@ impl MetadataStore for GrpcMetadataStoreClient {
         let retry_policy = Self::retry_policy();
 
         let response = retry_on_network_error(retry_policy, || async {
-            let mut client = self.svc_client.load().as_ref().clone();
+            let mut client = self.current_client().ok_or_else(|| {
+                ReadError::Internal("No metadata store address known.".to_string())
+            })?;
 
             let response = client
                 .get_version(GetRequest {
@@ -129,7 +151,7 @@ impl MetadataStore for GrpcMetadataStoreClient {
                 .map_err(map_status_to_read_error);
 
             if response.as_ref().is_err_and(|err| err.is_network_error()) {
-                self.choose_different_endpoint();
+                self.choose_random_endpoint();
             }
 
             response
@@ -148,7 +170,9 @@ impl MetadataStore for GrpcMetadataStoreClient {
         let retry_policy = Self::retry_policy();
 
         retry_on_network_error(retry_policy, || async {
-            let mut client = self.svc_client.load().as_ref().clone();
+            let mut client = self.current_client().ok_or_else(|| {
+                WriteError::Internal("No metadata store address known.".to_string())
+            })?;
 
             let response = client
                 .put(PutRequest {
@@ -160,7 +184,7 @@ impl MetadataStore for GrpcMetadataStoreClient {
                 .map_err(map_status_to_write_error);
 
             if response.as_ref().is_err_and(|err| err.is_network_error()) {
-                self.choose_different_endpoint();
+                self.choose_random_endpoint();
             }
 
             response
@@ -174,7 +198,9 @@ impl MetadataStore for GrpcMetadataStoreClient {
         let retry_policy = Self::retry_policy();
 
         retry_on_network_error(retry_policy, || async {
-            let mut client = self.svc_client.load().as_ref().clone();
+            let mut client = self.current_client().ok_or_else(|| {
+                WriteError::Internal("No metadata store address known.".to_string())
+            })?;
 
             let response = client
                 .delete(DeleteRequest {
@@ -185,7 +211,7 @@ impl MetadataStore for GrpcMetadataStoreClient {
                 .map_err(map_status_to_write_error);
 
             if response.as_ref().is_err_and(|err| err.is_network_error()) {
-                self.choose_different_endpoint();
+                self.choose_random_endpoint();
             }
 
             response
@@ -251,5 +277,145 @@ fn map_status_to_provision_error(status: Status) -> ProvisionError {
     match &status.code() {
         Code::Unavailable => ProvisionError::Network(status.into()),
         _ => ProvisionError::Internal(status.to_string()),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ChannelManager {
+    channels: Arc<Mutex<Channels>>,
+    client_options: MetadataStoreClientOptions,
+}
+
+impl ChannelManager {
+    fn new(
+        initial_addresses: Vec<AdvertisedAddress>,
+        client_options: MetadataStoreClientOptions,
+    ) -> Self {
+        let initial_channels: Vec<_> = initial_addresses
+            .into_iter()
+            .map(|address| create_tonic_channel(address, &client_options))
+            .collect();
+
+        ChannelManager {
+            channels: Arc::new(Mutex::new(Channels::new(initial_channels))),
+            client_options,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn register_address(&self, plain_node_id: PlainNodeId, address: AdvertisedAddress) -> Channel {
+        let channel = create_tonic_channel(address, &self.client_options);
+        self.channels
+            .lock()
+            .register(plain_node_id, channel.clone());
+        channel
+    }
+
+    fn choose_random(&self) -> Option<Channel> {
+        self.channels.lock().choose_random()
+    }
+
+    /// Watches the [`NodesConfiguration`] and updates the channels based on which nodes run the
+    /// metadata store role.
+    async fn run(self, metadata: Metadata) -> anyhow::Result<()> {
+        let mut nodes_config_watch = metadata.watch(MetadataKind::NodesConfiguration);
+        nodes_config_watch.mark_changed();
+        let mut shutdown = std::pin::pin!(cancellation_watcher());
+
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => {
+                    break;
+                }
+                _ = nodes_config_watch.changed() => {
+                    let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+                    self.update_channels(nodes_config.as_ref(), &metadata);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn update_channels(&self, nodes_configuration: &NodesConfiguration, metadata: &Metadata) {
+        let has_joined_cluster = metadata.my_node_id_opt().is_some();
+
+        let new_channels = nodes_configuration
+            .iter()
+            .filter_map(|(node_id, node_config)| {
+                // We only consider metadata store nodes that are active or candidates. Candidates are
+                // considered because we might not have seen the NodesConfiguration update.
+                if node_config.roles.contains(Role::MetadataStore)
+                    && matches!(
+                        node_config.metadata_store_config.metadata_store_state,
+                        MetadataStoreState::Active(_) | MetadataStoreState::Candidate
+                    )
+                {
+                    Some((
+                        node_id,
+                        create_tonic_channel(node_config.address.clone(), &self.client_options),
+                    ))
+                } else {
+                    None
+                }
+            });
+
+        let mut channels = self.channels.lock();
+
+        channels.update_channels(new_channels);
+
+        if has_joined_cluster && !channels.is_empty() {
+            // Only drop initial channels if we have found others. This is to handle the case where
+            // we are resuming from an older Restate version which didn't write the
+            // MetadataServerState properly.
+            channels.drop_initial_channels();
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Channels {
+    initial_channels: Vec<Channel>,
+    channels: HashMap<PlainNodeId, Channel>,
+}
+
+impl Channels {
+    fn new(initial_channels: Vec<Channel>) -> Self {
+        Channels {
+            initial_channels,
+            channels: HashMap::default(),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn register(&mut self, plain_node_id: PlainNodeId, channel: Channel) {
+        self.channels.insert(plain_node_id, channel);
+    }
+
+    fn choose_random(&self) -> Option<Channel> {
+        let mut rng = rand::thread_rng();
+        let chosen_channel = self
+            .channels
+            .values()
+            .chain(self.initial_channels.iter())
+            .choose(&mut rng)
+            .cloned();
+        chosen_channel
+    }
+
+    /// Returns true if there are no channels. It ignores the initial channels.
+    fn is_empty(&self) -> bool {
+        self.channels.is_empty()
+    }
+
+    fn drop_initial_channels(&mut self) {
+        if !self.initial_channels.is_empty() {
+            self.initial_channels = Vec::new();
+        }
+    }
+
+    fn update_channels(&mut self, new_channels: impl IntoIterator<Item = (PlainNodeId, Channel)>) {
+        self.channels.clear();
+        self.channels.extend(new_channels);
     }
 }

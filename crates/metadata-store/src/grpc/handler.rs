@@ -15,11 +15,12 @@ use crate::grpc_svc::{
     ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest, StatusResponse,
 };
 use crate::{
-    MetadataStoreRequest, MetadataStoreSummary, ProvisionError, ProvisionRequest, ProvisionSender,
-    RequestError, RequestSender, StatusWatch,
+    prepare_initial_nodes_configuration, MetadataStoreRequest, MetadataStoreSummary,
+    ProvisionError, ProvisionRequest, ProvisionSender, RequestError, RequestSender, StatusWatch,
 };
 use async_trait::async_trait;
 use restate_core::metadata_store::{serialize_value, Precondition};
+use restate_types::config::Configuration;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
@@ -178,9 +179,18 @@ impl MetadataStoreSvc for MetadataStoreHandler {
             // if there is no provision_tx configured, then the underlying metadata store does not
             // need a provision step.
             let mut request = request.into_inner();
-            let nodes_configuration: NodesConfiguration =
+            let mut nodes_configuration: NodesConfiguration =
                 StorageCodec::decode(&mut request.nodes_configuration)
                     .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+            // Make sure that the NodesConfiguration our node and has the right metadata store state set.
+            prepare_initial_nodes_configuration(
+                &Configuration::pinned(),
+                1,
+                &mut nodes_configuration,
+            )
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
             let versioned_value = serialize_value(&nodes_configuration)
                 .map_err(|err| Status::invalid_argument(err.to_string()))?;
             let (result_tx, result_rx) = oneshot::channel();
