@@ -229,6 +229,15 @@ impl NodesConfiguration {
         })
     }
 
+    /// Iterate over nodes with a given role
+    pub fn iter_role(&self, role: Role) -> impl Iterator<Item = (PlainNodeId, &'_ NodeConfig)> {
+        self.nodes.iter().filter_map(move |(k, v)| match v {
+            MaybeNode::Node(node) if node.has_role(role) => Some((*k, node)),
+            _ => None,
+        })
+    }
+
+    /// Iterate over all non-tombstone nodes
     pub fn iter(&self) -> impl Iterator<Item = (PlainNodeId, &'_ NodeConfig)> {
         self.nodes.iter().filter_map(|(k, v)| {
             if let MaybeNode::Node(node) = v {
@@ -295,7 +304,8 @@ pub enum StorageState {
     /// can write to: yes
     ReadWrite,
     /// Node detected that some/all of its local storage has been deleted and it cannot be used
-    /// as authoritative source for quorum-dependent queries.
+    /// as authoritative source for quorum-dependent queries. Some data might have permanently been
+    /// lost.
     ///
     /// should read from: yes (non-quorum reads)
     /// can write to: no
@@ -316,6 +326,14 @@ impl StorageState {
         match self {
             ReadOnly | ReadWrite | DataLoss => true,
             Provisioning | Disabled => false,
+        }
+    }
+
+    pub fn is_authoritative(&self) -> bool {
+        use StorageState::*;
+        match self {
+            Provisioning | Disabled | DataLoss => false,
+            ReadOnly | ReadWrite => true,
         }
     }
 
