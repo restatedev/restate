@@ -763,7 +763,7 @@ impl arrow_convert::field::ArrowField for RestateDateTime {
 }
 
 impl arrow_convert::deserialize::ArrowDeserialize for RestateDateTime {
-    type ArrayType = TimestampMillisecondArray;
+    type ArrayType = arrow::array::TimestampMillisecondArray;
 
     #[inline]
     fn arrow_deserialize(v: Option<i64>) -> Option<Self> {
@@ -771,42 +771,6 @@ impl arrow_convert::deserialize::ArrowDeserialize for RestateDateTime {
             arrow::datatypes::TimestampMillisecondType,
         >(v?)?;
         Some(RestateDateTime(Local.from_utc_datetime(&timestamp)))
-    }
-}
-
-// This newtype is necessary to implement ArrowArray, which is implemented for TimestampNanosecond but not TimestampMillisecond for some reason
-#[repr(transparent)]
-struct TimestampMillisecondArray(arrow::array::TimestampMillisecondArray);
-
-impl TimestampMillisecondArray {
-    fn from_ref(v: &arrow::array::TimestampMillisecondArray) -> &Self {
-        // SAFETY: transmuting a single-element newtype struct with repr(transparent) is safe
-        unsafe { std::mem::transmute(v) }
-    }
-}
-
-impl arrow_convert::deserialize::ArrowArray for TimestampMillisecondArray {
-    type BaseArrayType = arrow::array::TimestampMillisecondArray;
-    #[inline]
-    fn iter_from_array_ref(
-        b: &dyn Array,
-    ) -> <Self as arrow_convert::deserialize::ArrowArrayIterable>::Iter<'_> {
-        let b = b.as_any().downcast_ref::<Self::BaseArrayType>().unwrap();
-        <Self as arrow_convert::deserialize::ArrowArrayIterable>::iter(
-            TimestampMillisecondArray::from_ref(b),
-        )
-    }
-}
-
-impl arrow_convert::deserialize::ArrowArrayIterable for TimestampMillisecondArray {
-    type Item<'a> = Option<
-        <arrow::datatypes::TimestampMillisecondType as arrow::array::ArrowPrimitiveType>::Native,
-    >;
-
-    type Iter<'a> = arrow::array::PrimitiveIter<'a, arrow::datatypes::TimestampMillisecondType>;
-
-    fn iter(&self) -> Self::Iter<'_> {
-        IntoIterator::into_iter(&self.0)
     }
 }
 

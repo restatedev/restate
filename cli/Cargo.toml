@@ -25,7 +25,7 @@ restate-types = { workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 arrow = { version = "53.1.0", features = ["ipc", "prettyprint", "json"] }
-arrow_convert = { version = "0.7.2" }
+arrow_convert = {git = "https://github.com/jackkleeman/arrow-convert", rev = "9878358dd38cf4a2a6c8367541be3cd374fbb2c6"}
 axum = { workspace = true, default-features = false, features = ["http1", "http2", "query", "tokio"] }
 bytes = { workspace = true }
 base62 = { version = "2.0.2" }
