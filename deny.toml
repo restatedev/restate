@@ -171,6 +171,7 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/restatedev/rust-rocksdb.git",
     "https://github.com/apache/arrow-rs.git",
+    "https://github.com/jackkleeman/arrow-convert",
 ]
 
 [sources.allow-org]
