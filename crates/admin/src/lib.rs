@@ -10,6 +10,8 @@
 
 pub mod cluster_controller;
 mod error;
+#[cfg(feature = "metadata-api")]
+mod metadata_api;
 mod rest_api;
 mod schema_registry;
 pub mod service;

@@ -35,6 +35,8 @@ pub struct AdminService<V> {
     bifrost: Bifrost,
     schema_registry: SchemaRegistry<V>,
     query_context: Option<QueryContext>,
+    #[cfg(feature = "metadata-api")]
+    metadata_writer: MetadataWriter,
 }
 
 impl<V> AdminService<V>
@@ -51,6 +53,8 @@ where
     ) -> Self {
         Self {
             bifrost,
+            #[cfg(feature = "metadata-api")]
+            metadata_writer: metadata_writer.clone(),
             schema_registry: SchemaRegistry::new(
                 metadata_writer,
                 service_discovery,
@@ -77,6 +81,11 @@ where
                 axum::Router::new().merge(storage_query::create_router(query_state))
             })
             .unwrap_or_default();
+
+        #[cfg(feature = "metadata-api")]
+        let router = router.merge(crate::metadata_api::router(
+            self.metadata_writer.metadata_store_client(),
+        ));
 
         // Merge Web UI router
         #[cfg(feature = "serve-web-ui")]
