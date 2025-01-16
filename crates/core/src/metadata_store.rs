@@ -63,15 +63,18 @@ pub enum ProvisionError {
     Codec(GenericError),
     #[error("store error: {0}")]
     Store(GenericError),
+    #[error("provisioning is not supported: {0}")]
+    NotSupported(String),
 }
 
 impl MetadataStoreClientError for ProvisionError {
     fn is_network_error(&self) -> bool {
         match self {
             ProvisionError::Network(_) => true,
-            ProvisionError::Internal(_) | ProvisionError::Codec(_) | ProvisionError::Store(_) => {
-                false
-            }
+            ProvisionError::Internal(_)
+            | ProvisionError::Codec(_)
+            | ProvisionError::Store(_)
+            | ProvisionError::NotSupported(_) => false,
         }
     }
 }
