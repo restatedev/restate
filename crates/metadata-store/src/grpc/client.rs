@@ -13,10 +13,6 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use bytestring::ByteString;
 use rand::seq::SliceRandom;
-use std::sync::Arc;
-use tonic::transport::Channel;
-use tonic::{Code, Status};
-
 use restate_core::metadata_store::{
     retry_on_network_error, MetadataStore, MetadataStoreClientError, Precondition, ProvisionError,
     ReadError, VersionedValue, WriteError,
@@ -25,10 +21,13 @@ use restate_core::network::net_util::create_tonic_channel;
 use restate_core::network::net_util::CommonClientConnectionOptions;
 use restate_types::config::Configuration;
 use restate_types::net::AdvertisedAddress;
-use restate_types::nodes_config::NodesConfiguration;
+use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageCodec;
 use restate_types::Version;
+use std::sync::Arc;
+use tonic::transport::Channel;
+use tonic::{Code, Status};
 
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
@@ -200,33 +199,36 @@ impl MetadataStore for GrpcMetadataStoreClient {
         &self,
         nodes_configuration: &NodesConfiguration,
     ) -> Result<bool, ProvisionError> {
-        let retry_policy = Self::retry_policy();
+        // Only provision ourselves if we are the metadata store. Otherwise, we would have to
+        // consistently pick a single node to reach out to avoid provisioning multiple nodes in
+        // case of network errors.
 
-        retry_on_network_error(retry_policy, || async {
-            let mut client = self.svc_client.load().as_ref().clone();
+        // We can't assume that we have joined the cluster yet. That's why we read our roles
+        // from the configuration and not from the NodesConfiguration.
+        let config = Configuration::pinned();
 
-            let mut buffer = BytesMut::new();
-            StorageCodec::encode(nodes_configuration, &mut buffer)
-                .map_err(|err| ProvisionError::Codec(err.into()))?;
+        if !config.common.roles.contains(Role::MetadataStore) {
+            return Err(ProvisionError::NotSupported(format!("Node '{}' does not run the metadata store role. Try to provision a different node.", config.common.advertised_address)));
+        }
 
-            let response = client
-                .provision(ProvisionRequest {
-                    nodes_configuration: buffer.freeze(),
-                })
-                .await
-                .map_err(map_status_to_provision_error);
+        let mut client = MetadataStoreSvcClient::new(create_tonic_channel(
+            config.common.advertised_address.clone(),
+            &config.networking,
+        ));
 
-            if response.as_ref().is_err_and(|err| err.is_network_error()) {
-                // This is potentially dangerous because we might have provisioned before on a
-                // different node but delivering of the response failed.
-                // todo harden by choosing oneself if one runs the metadata store. If not, then pick
-                //  a single node to reach out to.
-                self.choose_different_endpoint();
-            }
+        let mut buffer = BytesMut::new();
+        StorageCodec::encode(nodes_configuration, &mut buffer)
+            .map_err(|err| ProvisionError::Codec(err.into()))?;
 
-            response.map(|response| response.into_inner().newly_provisioned)
-        })
-        .await
+        // no retry policy needed since we are connecting to ourselves.
+        let response = client
+            .provision(ProvisionRequest {
+                nodes_configuration: buffer.freeze(),
+            })
+            .await
+            .map_err(map_status_to_provision_error);
+
+        response.map(|response| response.into_inner().newly_provisioned)
     }
 }
 
