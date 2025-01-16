@@ -11,6 +11,7 @@
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
 use crate::grpc_svc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
+use crate::KnownLeader;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use bytestring::ByteString;
@@ -90,6 +91,13 @@ impl GrpcMetadataStoreClient {
             .map(MetadataStoreSvcClient::new);
     }
 
+    fn choose_known_leader(&self, known_leader: KnownLeader) {
+        let channel = self
+            .channel_manager
+            .register_address(known_leader.node_id, known_leader.address);
+        *self.svc_client.lock() = Some(MetadataStoreSvcClient::new(channel));
+    }
+
     fn current_client(&self) -> Option<MetadataStoreSvcClient<Channel>> {
         let mut svc_client_guard = self.svc_client.lock();
 
@@ -101,6 +109,27 @@ impl GrpcMetadataStoreClient {
         }
 
         svc_client_guard.clone()
+    }
+
+    fn handle_grpc_response<T, E>(
+        &self,
+        response: Result<T, Status>,
+        map_status: impl Fn(Status) -> E,
+    ) -> Result<T, E>
+    where
+        E: MetadataStoreClientError,
+    {
+        response.map_err(|status| {
+            let known_leader = KnownLeader::from_status(&status);
+            let err = map_status(status);
+
+            if let Some(known_leader) = known_leader {
+                self.choose_known_leader(known_leader);
+            } else if err.is_network_error() {
+                self.choose_random_endpoint();
+            }
+            err
+        })
     }
 }
 
@@ -114,18 +143,14 @@ impl MetadataStore for GrpcMetadataStoreClient {
                 ReadError::Internal("No metadata store address known.".to_string())
             })?;
 
-            let response = client
-                .get(GetRequest {
-                    key: key.clone().into(),
-                })
-                .await
-                .map_err(map_status_to_read_error);
-
-            if response.as_ref().is_err_and(|err| err.is_network_error()) {
-                self.choose_random_endpoint();
-            }
-
-            response
+            self.handle_grpc_response(
+                client
+                    .get(GetRequest {
+                        key: key.clone().into(),
+                    })
+                    .await,
+                map_status_to_read_error,
+            )
         })
         .await?;
 
@@ -143,18 +168,14 @@ impl MetadataStore for GrpcMetadataStoreClient {
                 ReadError::Internal("No metadata store address known.".to_string())
             })?;
 
-            let response = client
-                .get_version(GetRequest {
-                    key: key.clone().into(),
-                })
-                .await
-                .map_err(map_status_to_read_error);
-
-            if response.as_ref().is_err_and(|err| err.is_network_error()) {
-                self.choose_random_endpoint();
-            }
-
-            response
+            self.handle_grpc_response(
+                client
+                    .get_version(GetRequest {
+                        key: key.clone().into(),
+                    })
+                    .await,
+                map_status_to_read_error,
+            )
         })
         .await?;
 
@@ -174,20 +195,16 @@ impl MetadataStore for GrpcMetadataStoreClient {
                 WriteError::Internal("No metadata store address known.".to_string())
             })?;
 
-            let response = client
-                .put(PutRequest {
-                    key: key.clone().into(),
-                    value: Some(value.clone().into()),
-                    precondition: Some(precondition.clone().into()),
-                })
-                .await
-                .map_err(map_status_to_write_error);
-
-            if response.as_ref().is_err_and(|err| err.is_network_error()) {
-                self.choose_random_endpoint();
-            }
-
-            response
+            self.handle_grpc_response(
+                client
+                    .put(PutRequest {
+                        key: key.clone().into(),
+                        value: Some(value.clone().into()),
+                        precondition: Some(precondition.clone().into()),
+                    })
+                    .await,
+                map_status_to_write_error,
+            )
         })
         .await?;
 
@@ -202,19 +219,15 @@ impl MetadataStore for GrpcMetadataStoreClient {
                 WriteError::Internal("No metadata store address known.".to_string())
             })?;
 
-            let response = client
-                .delete(DeleteRequest {
-                    key: key.clone().into(),
-                    precondition: Some(precondition.clone().into()),
-                })
-                .await
-                .map_err(map_status_to_write_error);
-
-            if response.as_ref().is_err_and(|err| err.is_network_error()) {
-                self.choose_random_endpoint();
-            }
-
-            response
+            self.handle_grpc_response(
+                client
+                    .delete(DeleteRequest {
+                        key: key.clone().into(),
+                        precondition: Some(precondition.clone().into()),
+                    })
+                    .await,
+                map_status_to_write_error,
+            )
         })
         .await?;
 
@@ -302,7 +315,6 @@ impl ChannelManager {
         }
     }
 
-    #[allow(dead_code)]
     fn register_address(&self, plain_node_id: PlainNodeId, address: AdvertisedAddress) -> Channel {
         let channel = create_tonic_channel(address, &self.client_options);
         self.channels
@@ -344,7 +356,7 @@ impl ChannelManager {
             .iter()
             .filter_map(|(node_id, node_config)| {
                 // We only consider metadata store nodes that are active or candidates. Candidates are
-                // considered because we might not have seen the NodesConfiguration update.
+                // considered because we might not have seen the NodesConfiguration update yet.
                 if node_config.roles.contains(Role::MetadataStore)
                     && matches!(
                         node_config.metadata_store_config.metadata_store_state,
@@ -387,7 +399,6 @@ impl Channels {
         }
     }
 
-    #[allow(dead_code)]
     fn register(&mut self, plain_node_id: PlainNodeId, channel: Channel) {
         self.channels.insert(plain_node_id, channel);
     }

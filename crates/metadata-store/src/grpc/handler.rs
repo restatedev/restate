@@ -235,7 +235,15 @@ impl From<RequestError> for Status {
     fn from(err: RequestError) -> Self {
         match err {
             RequestError::FailedPrecondition(err) => Status::failed_precondition(err.to_string()),
-            RequestError::Unavailable(err) => Status::unavailable(err.to_string()),
+            RequestError::Unavailable(err, known_leader) => {
+                let mut status = Status::unavailable(err.to_string());
+
+                if let Some(known_leader) = known_leader {
+                    known_leader.add_to_status(&mut status);
+                }
+
+                status
+            }
             err => Status::internal(err.to_string()),
         }
     }
