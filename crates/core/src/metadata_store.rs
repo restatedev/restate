@@ -232,6 +232,10 @@ impl MetadataStoreClient {
         }
     }
 
+    pub fn inner(&self) -> Arc<dyn MetadataStore + Send + Sync> {
+        Arc::clone(&self.inner)
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn new_in_memory() -> Self {
         MetadataStoreClient::new(
