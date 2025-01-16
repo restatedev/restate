@@ -15,11 +15,12 @@ use crate::network::{ConnectionManager, Networking, KNOWN_LEADER_KEY};
 use crate::omnipaxos::storage::RocksDbStorage;
 use crate::omnipaxos::{BuildError, OmniPaxosConfiguration, OmniPaxosMessage};
 use crate::{
-    JoinClusterError, JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest,
-    JoinClusterResponse, JoinClusterSender, KnownLeader, MemberId, MetadataStoreBackend,
-    MetadataStoreConfiguration, MetadataStoreRequest, MetadataStoreSummary, ProvisionError,
-    ProvisionReceiver, ProvisionSender, Request, RequestError, RequestKind, RequestReceiver,
-    RequestSender, StatusSender, StatusWatch, StorageId,
+    prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError, JoinClusterHandle,
+    JoinClusterReceiver, JoinClusterRequest, JoinClusterResponse, JoinClusterSender, KnownLeader,
+    MemberId, MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest,
+    MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender, Request,
+    RequestError, RequestKind, RequestReceiver, RequestSender, StatusSender, StatusWatch,
+    StorageId,
 };
 use anyhow::Context;
 use arc_swap::ArcSwapOption;
@@ -40,13 +41,11 @@ use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::{
-    LogServerConfig, MetadataStoreConfig, MetadataStoreState, NodeConfig, NodesConfiguration, Role,
-};
+use restate_types::nodes_config::{MetadataStoreState, NodesConfiguration, Role};
 use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageEncodeError;
-use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+use restate_types::{PlainNodeId, Version};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::future::Future;
@@ -78,10 +77,6 @@ enum DecidedEntriesError {
     #[error(transparent)]
     Codec(#[from] StorageEncodeError),
 }
-
-#[derive(Debug, thiserror::Error)]
-#[error("invalid nodes configuration: {0}")]
-pub struct InvalidConfiguration(String);
 
 #[derive(Debug, thiserror::Error)]
 pub enum InitializeMetadataStoreError {
@@ -353,62 +348,14 @@ impl OmniPaxosMetadataStore {
         &self,
         mut nodes_configuration: NodesConfiguration,
     ) -> Result<(OmniPaxosConfiguration, NodesConfiguration), InvalidConfiguration> {
-        let configuration = Configuration::pinned();
-
         let configuration_id = 1;
 
-        let restate_node_id = if let Some(node_config) =
-            nodes_configuration.find_node_by_name(configuration.common.node_name())
-        {
-            if let Some(force_node_id) = configuration.common.force_node_id {
-                if force_node_id != node_config.current_generation.as_plain() {
-                    return Err(InvalidConfiguration(format!(
-                        "nodes configuration has wrong plain node id; expected: {}, actual: {}",
-                        force_node_id,
-                        node_config.current_generation.as_plain()
-                    )));
-                }
-            }
-
-            let restate_node_id = node_config.current_generation.as_plain();
-
-            let mut node_config = node_config.clone();
-            node_config.metadata_store_config.metadata_store_state =
-                MetadataStoreState::Active(configuration_id);
-
-            nodes_configuration.upsert_node(node_config);
-
-            restate_node_id
-        } else {
-            // give precedence to the force node id
-            let current_generation = configuration
-                .common
-                .force_node_id
-                .map(|node_id| node_id.with_generation(1))
-                .unwrap_or_else(|| {
-                    nodes_configuration
-                        .max_plain_node_id()
-                        .map(|node_id| node_id.next().with_generation(1))
-                        .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID)
-                });
-
-            let metadata_store_config = MetadataStoreConfig {
-                metadata_store_state: MetadataStoreState::Active(configuration_id),
-            };
-
-            let node_config = NodeConfig::new(
-                configuration.common.node_name().to_owned(),
-                current_generation,
-                configuration.common.advertised_address.clone(),
-                configuration.common.roles,
-                LogServerConfig::default(),
-                metadata_store_config,
-            );
-
-            nodes_configuration.upsert_node(node_config);
-
-            current_generation.as_plain()
-        };
+        let configuration = Configuration::pinned();
+        let restate_node_id = prepare_initial_nodes_configuration(
+            &configuration,
+            configuration_id,
+            &mut nodes_configuration,
+        )?;
 
         // set our own omni-paxos node id to be Restate's plain node id
         let own_member_id = MemberId {

@@ -6699,6 +6699,7 @@ dependencies = [
  "hyper 1.5.1",
  "hyper-util",
  "omnipaxos",
+ "parking_lot",
  "prost",
  "prost-dto",
  "prost-types",

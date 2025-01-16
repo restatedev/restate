@@ -344,7 +344,8 @@ async fn start_metadata_store(
         .wait_for_value(NodeRpcStatus::Ready)
         .await;
 
-    let grpc_client = GrpcMetadataStoreClient::new(addresses, &metadata_store_client_options);
+    let grpc_client =
+        GrpcMetadataStoreClient::new(addresses, metadata_store_client_options.clone());
     let client = MetadataStoreClient::new(
         grpc_client,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),

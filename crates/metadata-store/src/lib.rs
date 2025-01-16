@@ -29,15 +29,19 @@ pub use restate_core::metadata_store::{
 };
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
-use restate_types::config::{MetadataStoreKind, MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::{
+    Configuration, MetadataStoreKind, MetadataStoreOptions, RocksDbOptions,
+};
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::net::AdvertisedAddress;
-use restate_types::nodes_config::NodesConfiguration;
+use restate_types::nodes_config::{
+    LogServerConfig, MetadataStoreConfig, MetadataStoreState, NodeConfig, NodesConfiguration,
+};
 use restate_types::protobuf::common::MetadataStoreStatus;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
-use restate_types::{flexbuffers_storage_encode_decode, PlainNodeId, Version};
+use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId, PlainNodeId, Version};
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -96,6 +100,10 @@ pub enum ProvisionError {
     #[error("failed provisioning: {0}")]
     Internal(GenericError),
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("invalid nodes configuration: {0}")]
+pub struct InvalidConfiguration(String);
 
 #[async_trait::async_trait]
 pub trait MetadataStoreServiceBoxed {
@@ -557,4 +565,68 @@ enum MetadataStoreSummary {
 struct MetadataStoreConfiguration {
     id: u32,
     members: Vec<MemberId>,
+}
+
+/// Ensures that the initial nodes configuration contains the current node and has the right
+/// [`MetadataStoreState`] set.
+fn prepare_initial_nodes_configuration(
+    configuration: &Configuration,
+    configuration_id: u32,
+    nodes_configuration: &mut NodesConfiguration,
+) -> Result<PlainNodeId, InvalidConfiguration> {
+    let plain_node_id = if let Some(node_config) =
+        nodes_configuration.find_node_by_name(configuration.common.node_name())
+    {
+        if let Some(force_node_id) = configuration.common.force_node_id {
+            if force_node_id != node_config.current_generation.as_plain() {
+                return Err(InvalidConfiguration(format!(
+                    "nodes configuration has wrong plain node id; expected: {}, actual: {}",
+                    force_node_id,
+                    node_config.current_generation.as_plain()
+                )));
+            }
+        }
+
+        let restate_node_id = node_config.current_generation.as_plain();
+
+        let mut node_config = node_config.clone();
+        node_config.metadata_store_config.metadata_store_state =
+            MetadataStoreState::Active(configuration_id);
+
+        nodes_configuration.upsert_node(node_config);
+
+        restate_node_id
+    } else {
+        // give precedence to the force node id
+        let current_generation = configuration
+            .common
+            .force_node_id
+            .map(|node_id| node_id.with_generation(1))
+            .unwrap_or_else(|| {
+                nodes_configuration
+                    .max_plain_node_id()
+                    .map(|node_id| node_id.next().with_generation(1))
+                    .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID)
+            });
+
+        let metadata_store_config = MetadataStoreConfig {
+            metadata_store_state: MetadataStoreState::Active(configuration_id),
+        };
+
+        let node_config = NodeConfig::new(
+            configuration.common.node_name().to_owned(),
+            current_generation,
+            configuration.common.location().clone(),
+            configuration.common.advertised_address.clone(),
+            configuration.common.roles,
+            LogServerConfig::default(),
+            metadata_store_config,
+        );
+
+        nodes_configuration.upsert_node(node_config);
+
+        current_generation.as_plain()
+    };
+
+    Ok(plain_node_id)
 }

@@ -40,7 +40,7 @@ pub async fn create_client(
     let client = match metadata_store_client_options.metadata_store_client.clone() {
         MetadataStoreClientConfig::Embedded { addresses } => {
             let inner_client =
-                GrpcMetadataStoreClient::new(addresses, &metadata_store_client_options);
+                GrpcMetadataStoreClient::new(addresses, metadata_store_client_options);
             MetadataStoreClient::new(inner_client, backoff_policy)
         }
         MetadataStoreClientConfig::Etcd { addresses } => {
