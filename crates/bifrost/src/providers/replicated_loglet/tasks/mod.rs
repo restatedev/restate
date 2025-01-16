@@ -29,7 +29,7 @@ pub use trim::*;
 use restate_types::logs::LogletOffset;
 use restate_types::Merge;
 
-#[derive(Debug, Default, PartialEq, Eq, derive_more::Display)]
+#[derive(Debug, Clone, Hash, Default, PartialEq, Eq, derive_more::Display)]
 enum NodeTailStatus {
     #[default]
     #[display("Unknown")]

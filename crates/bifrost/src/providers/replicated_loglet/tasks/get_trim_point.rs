@@ -117,7 +117,7 @@ impl<'a> GetTrimPointTask<'a> {
             });
         }
 
-        let mut nodeset_checker = NodeSetChecker::<'_, Option<LogletOffset>>::new(
+        let mut nodeset_checker = NodeSetChecker::<Option<LogletOffset>>::new(
             &effective_nodeset,
             &networking.metadata().nodes_config_ref(),
             &self.my_params.replication,
