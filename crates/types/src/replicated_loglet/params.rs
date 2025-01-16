@@ -62,9 +62,9 @@ impl NodeSet {
         Self(HashSet::new())
     }
 
-    pub fn from_single(node: PlainNodeId) -> Self {
+    pub fn from_single(node: impl Into<PlainNodeId>) -> Self {
         let mut set = HashSet::new();
-        set.insert(node);
+        set.insert(node.into());
         Self(set)
     }
 

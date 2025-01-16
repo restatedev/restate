@@ -90,7 +90,7 @@ impl<'a> TrimTask<'a> {
             return Ok(());
         }
 
-        let mut nodeset_checker = NodeSetChecker::<'_, bool>::new(
+        let mut nodeset_checker = NodeSetChecker::<bool>::new(
             &effective_nodeset,
             &networking.metadata().nodes_config_ref(),
             &self.my_params.replication,

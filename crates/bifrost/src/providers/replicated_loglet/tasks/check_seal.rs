@@ -66,7 +66,7 @@ impl CheckSealTask {
             &networking.metadata().nodes_config_ref(),
         );
 
-        let mut nodeset_checker = NodeSetChecker::<'_, NodeTailStatus>::new(
+        let mut nodeset_checker = NodeSetChecker::<NodeTailStatus>::new(
             &effective_nodeset,
             &networking.metadata().nodes_config_ref(),
             &my_params.replication,
@@ -80,6 +80,7 @@ impl CheckSealTask {
             effective_nodeset = %effective_nodeset,
             "Checking seal status for loglet",
         );
+
         loop {
             if nodeset_checker
                 .check_fmajority(NodeTailStatus::is_known_unsealed)
