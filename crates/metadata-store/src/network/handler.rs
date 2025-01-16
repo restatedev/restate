@@ -21,7 +21,6 @@ use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
 
 pub const PEER_METADATA_KEY: &str = "x-restate-metadata-store-peer";
-pub const KNOWN_LEADER_KEY: &str = "x-restate-known-leader";
 
 #[derive(Debug)]
 pub struct MetadataStoreNetworkHandler<M> {
@@ -106,13 +105,7 @@ impl From<JoinClusterError> for Status {
                 let mut status = Status::failed_precondition(err.to_string());
 
                 if let Some(known_leader) = known_leader {
-                    status.metadata_mut().insert(
-                        KNOWN_LEADER_KEY,
-                        serde_json::to_string(known_leader)
-                            .expect("KnownLeader to be serializable")
-                            .parse()
-                            .expect("to be valid metadata"),
-                    );
+                    known_leader.add_to_status(&mut status);
                 }
 
                 status
@@ -121,13 +114,7 @@ impl From<JoinClusterError> for Status {
                 let mut status = Status::unavailable(err.to_string());
 
                 if let Some(known_leader) = known_leader {
-                    status.metadata_mut().insert(
-                        KNOWN_LEADER_KEY,
-                        serde_json::to_string(known_leader)
-                            .expect("KnownLeader to be serializable")
-                            .parse()
-                            .expect("to be valid metadata"),
-                    );
+                    known_leader.add_to_status(&mut status);
                 }
 
                 status

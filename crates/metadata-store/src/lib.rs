@@ -45,6 +45,7 @@ use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId, Plain
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 use tokio::sync::{mpsc, oneshot, watch};
+use tracing::debug;
 use ulid::Ulid;
 
 pub type BoxedMetadataStoreService = Box<dyn MetadataStoreService>;
@@ -58,12 +59,14 @@ pub type ProvisionReceiver = mpsc::Receiver<ProvisionRequest>;
 type StatusWatch = watch::Receiver<MetadataStoreSummary>;
 type StatusSender = watch::Sender<MetadataStoreSummary>;
 
+pub const KNOWN_LEADER_KEY: &str = "x-restate-known-leader";
+
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
     #[error("internal error: {0}")]
     Internal(GenericError),
     #[error("service currently unavailable: {0}")]
-    Unavailable(GenericError),
+    Unavailable(GenericError, Option<KnownLeader>),
     #[error("failed precondition: {0}")]
     FailedPrecondition(#[from] PreconditionViolation),
     #[error("invalid argument: {0}")]
@@ -431,12 +434,6 @@ enum RequestKind {
 type JoinClusterSender = mpsc::Sender<JoinClusterRequest>;
 type JoinClusterReceiver = mpsc::Receiver<JoinClusterRequest>;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct KnownLeader {
-    node_id: PlainNodeId,
-    address: AdvertisedAddress,
-}
-
 #[derive(Debug, thiserror::Error)]
 enum JoinClusterError {
     #[error(transparent)]
@@ -453,6 +450,44 @@ enum JoinClusterError {
     ConcurrentRequest(PlainNodeId),
     #[error("internal error: {0}")]
     Internal(String),
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct KnownLeader {
+    node_id: PlainNodeId,
+    address: AdvertisedAddress,
+}
+
+impl KnownLeader {
+    fn add_to_status(&self, status: &mut tonic::Status) {
+        status.metadata_mut().insert(
+            KNOWN_LEADER_KEY,
+            serde_json::to_string(self)
+                .expect("KnownLeader to be serializable")
+                .parse()
+                .expect("to be valid metadata"),
+        );
+    }
+
+    fn from_status(status: &tonic::Status) -> Option<KnownLeader> {
+        if let Some(value) = status.metadata().get(KNOWN_LEADER_KEY) {
+            match value.to_str() {
+                Ok(value) => match serde_json::from_str(value) {
+                    Ok(known_leader) => Some(known_leader),
+                    Err(err) => {
+                        debug!("failed parsing known leader from metadata: {err}");
+                        None
+                    }
+                },
+                Err(err) => {
+                    debug!("failed parsing known leader from metadata: {err}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
 }
 
 struct JoinClusterRequest {
