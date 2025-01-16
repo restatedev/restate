@@ -164,6 +164,22 @@ impl AdminClient {
         Ok(client)
     }
 
+    pub fn versioned_url(&self, path: impl IntoIterator<Item = impl AsRef<str>>) -> Url {
+        let mut url = self.base_url.clone();
+
+        {
+            let mut segments = url.path_segments_mut().expect("Bad url!");
+            segments.pop_if_empty();
+
+            match self.admin_api_version.as_path_segment() {
+                Some(version) => segments.push(version).extend(path),
+                None => segments.extend(path),
+            };
+        }
+
+        url
+    }
+
     fn choose_api_version(
         mut client: AdminClient,
         version_information: VersionInformation,
@@ -186,13 +202,10 @@ impl AdminClient {
             .request(method, path)
             .timeout(self.request_timeout);
 
-        let request_builder = match self.bearer_token.as_deref() {
+        match self.bearer_token.as_deref() {
             Some(token) => request_builder.bearer_auth(token),
             None => request_builder,
-        };
-
-        let (api_version_header, api_version) = self.admin_api_version.into();
-        request_builder.header(api_version_header, api_version)
+        }
     }
 
     /// Prepare a request builder that encodes the body as JSON.

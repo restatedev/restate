@@ -15,7 +15,7 @@ use std::task::{Context, Poll};
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use axum::{http, Json};
+use axum::{http, Extension, Json};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::StreamWriter;
@@ -59,12 +59,11 @@ pub struct QueryRequest {
 )]
 pub async fn query(
     State(state): State<Arc<QueryServiceState>>,
+    Extension(version): Extension<AdminApiVersion>,
     headers: HeaderMap,
     #[request_body(required = true)] Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, StorageQueryError> {
     let record_batch_stream = state.query_context.execute(&payload.query).await?;
-
-    let version = AdminApiVersion::from_headers(&headers);
 
     let record_batch_stream: SendableRecordBatchStream = match version {
         AdminApiVersion::V1 => Box::pin(ConvertRecordBatchStream::new(

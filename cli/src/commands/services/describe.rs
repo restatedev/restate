@@ -53,7 +53,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     table.add_kv_row("Deployment ID:", service.deployment_id);
 
     let deployment = client
-        .get_deployment(&service.deployment_id)
+        .get_deployment(&service.deployment_id.to_string())
         .await?
         .into_body()
         .await?;

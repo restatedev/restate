@@ -15,10 +15,11 @@ use crate::schema_registry::{ApplyMode, Force};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
-use axum::Json;
+use axum::{Extension, Json};
 use http::uri::Scheme;
 use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
+use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
@@ -43,6 +44,7 @@ use serde::Deserialize;
 )]
 pub async fn create_deployment<V>(
     State(state): State<AdminServiceState<V>>,
+    Extension(version): Extension<AdminApiVersion>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
     let (discover_endpoint, force, dry_run) = match payload {
@@ -128,7 +130,12 @@ pub async fn create_deployment<V>(
             header::LOCATION,
             format!("/deployments/{}", response_body.id),
         )],
-        Json(response_body),
+        Json(
+            restate_admin_rest_model::converters::convert_register_deployment_response(
+                version,
+                response_body,
+            ),
+        ),
     ))
 }
 
@@ -146,6 +153,7 @@ pub async fn create_deployment<V>(
 )]
 pub async fn get_deployment<V>(
     State(state): State<AdminServiceState<V>>,
+    Extension(version): Extension<AdminApiVersion>,
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
     let (deployment, services) = state
@@ -153,12 +161,17 @@ pub async fn get_deployment<V>(
         .get_deployment(deployment_id)
         .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
-    Ok(DetailedDeploymentResponse {
-        id: deployment.id,
-        deployment: deployment.metadata.into(),
-        services,
-    }
-    .into())
+    Ok(
+        restate_admin_rest_model::converters::convert_detailed_deployment_response(
+            version,
+            DetailedDeploymentResponse {
+                id: deployment.id,
+                deployment: deployment.metadata.into(),
+                services,
+            },
+        )
+        .into(),
+    )
 }
 
 /// List deployments

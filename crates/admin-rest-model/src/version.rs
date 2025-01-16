@@ -26,40 +26,16 @@ pub enum AdminApiVersion {
     V2 = 2,
 }
 
-impl From<AdminApiVersion> for (http::HeaderName, http::HeaderValue) {
-    fn from(value: AdminApiVersion) -> Self {
-        (
-            AdminApiVersion::HEADER_NAME,
-            http::HeaderValue::from(value.as_repr()),
-        )
-    }
-}
-
 impl AdminApiVersion {
-    const HEADER_NAME: http::HeaderName =
-        http::HeaderName::from_static("x-restate-admin-api-version");
-
     pub fn as_repr(&self) -> u16 {
         *self as u16
     }
 
-    pub fn from_headers(headers: &http::HeaderMap) -> Self {
-        let is_cli = matches!(headers.get(http::header::USER_AGENT), Some(value) if value.as_bytes().starts_with(b"restate-cli"));
-
-        match headers.get(Self::HEADER_NAME) {
-            Some(value) => match value.to_str() {
-                Ok(value) => match value.parse::<u16>() {
-                    Ok(value) => match Self::try_from(value) {
-                        Ok(value) => value,
-                        Err(_) => Self::Unknown,
-                    },
-                    Err(_) => Self::Unknown,
-                },
-                Err(_) => Self::Unknown,
-            },
-            // CLI didn't used to send the version header, but if we know its the CLI, then we can treat that as V1
-            None if is_cli => Self::V1,
-            None => Self::Unknown,
+    pub const fn as_path_segment(&self) -> Option<&str> {
+        match self {
+            AdminApiVersion::Unknown => None,
+            AdminApiVersion::V1 => Some("v1"),
+            AdminApiVersion::V2 => Some("v2"),
         }
     }
 

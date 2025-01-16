@@ -63,7 +63,7 @@ impl DataFusionHttpClient {
     fn prepare(&self) -> Result<reqwest::RequestBuilder, Error> {
         Ok(self
             .inner
-            .prepare(reqwest::Method::POST, self.inner.base_url.join("/query")?))
+            .prepare(reqwest::Method::POST, self.inner.versioned_url(["query"])))
     }
 
     pub async fn run_query(&self, query: String) -> Result<SqlResponse, Error> {
