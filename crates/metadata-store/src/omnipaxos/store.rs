@@ -11,7 +11,7 @@
 use crate::kv_memory_storage::KvMemoryStorage;
 use crate::network::grpc_svc::metadata_store_network_svc_client::MetadataStoreNetworkSvcClient;
 use crate::network::grpc_svc::JoinClusterRequest as ProtoJoinClusterRequest;
-use crate::network::{ConnectionManager, Networking, KNOWN_LEADER_KEY};
+use crate::network::{ConnectionManager, Networking};
 use crate::omnipaxos::storage::RocksDbStorage;
 use crate::omnipaxos::{BuildError, OmniPaxosConfiguration, OmniPaxosMessage};
 use crate::{
@@ -260,7 +260,7 @@ impl OmniPaxosMetadataStore {
                         Some(request) = self.request_rx.recv() => {
                             // fail incoming requests while we are waiting for the provision signal
                             let (callback, _) = request.split_request();
-                            callback.fail(RequestError::Unavailable("Metadata store has not been provisioned yet.".into()))
+                            callback.fail(RequestError::Unavailable("Metadata store has not been provisioned yet.".into(), None))
                         },
                         Some(request) = self.join_cluster_rx.recv() => {
                             let _ = request.response_tx.send(Err(JoinClusterError::NotActive(None)));
@@ -601,7 +601,10 @@ impl Active {
                 Ok(DecidedEntriesResult::Stop(rocksdb_storage)) => {
                     debug!("Stopping active metadata store node");
                     self.kv_storage.fail_callbacks(|| {
-                        RequestError::Unavailable("stopping metadata store".into())
+                        RequestError::Unavailable(
+                            "stopping metadata store".into(),
+                            Self::random_known_leader(),
+                        )
                     });
                     self.fail_join_callbacks(|| {
                         JoinClusterError::NotLeader(Self::random_known_leader())
@@ -619,7 +622,10 @@ impl Active {
                 }
                 Err(err) => {
                     self.kv_storage.fail_callbacks(|| {
-                        RequestError::Unavailable("stopping metadata store".into())
+                        RequestError::Unavailable(
+                            "stopping metadata store".into(),
+                            Self::random_known_leader(),
+                        )
                     });
                     self.fail_join_callbacks(|| {
                         JoinClusterError::NotLeader(Self::random_known_leader())
@@ -633,9 +639,13 @@ impl Active {
                 omni_paxos.has_seen_higher_configuration() && omni_paxos.is_reconfigured().is_none()
             }) {
                 debug!("Detected higher configuration. Stopping active metadata store node");
-                self.kv_storage
-                    .fail_callbacks(|| RequestError::Unavailable("stopping metadata store".into()));
                 let known_leader = self.known_leader();
+                self.kv_storage.fail_callbacks(|| {
+                    RequestError::Unavailable(
+                        "stopping metadata store".into(),
+                        known_leader.clone(),
+                    )
+                });
                 self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
 
                 let rocksdb_storage = self
@@ -735,12 +745,13 @@ impl Active {
 
         if previous_is_leader && !self.is_leader {
             debug!(configuration_id = %self.cluster_config.configuration_id, "Lost leadership");
+            let known_leader = self.known_leader();
 
             // we lost leadership :-( notify callers that their requests might not get committed
             // because we don't know whether the leader will start with the same log as we have.
-            self.kv_storage
-                .fail_callbacks(|| RequestError::Unavailable("lost leadership".into()));
-            let known_leader = self.known_leader();
+            self.kv_storage.fail_callbacks(|| {
+                RequestError::Unavailable("lost leadership".into(), known_leader.clone())
+            });
             self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
         } else if !previous_is_leader && self.is_leader {
             debug!(configuration_id = %self.cluster_config.configuration_id, "Won leadership");
@@ -752,7 +763,10 @@ impl Active {
         trace!("Handle metadata store request: {request:?}");
 
         if !self.is_leader {
-            callback.fail(RequestError::Unavailable("not leader".into()));
+            callback.fail(RequestError::Unavailable(
+                "not leader".into(),
+                self.known_leader(),
+            ));
             return;
         }
 
@@ -1270,6 +1284,7 @@ impl Passive {
                     let (callback, _) = request.split_request();
                     callback.fail(RequestError::Unavailable(
                         "Not being part of the metadata store cluster.".into(),
+                        Active::random_known_leader(),
                     ))
                 },
                 Some(request) = join_cluster_rx.recv() => {
@@ -1386,24 +1401,7 @@ impl Passive {
         {
             Ok(response) => response.into_inner(),
             Err(status) => {
-                let known_leader = if let Some(value) = status.metadata().get(KNOWN_LEADER_KEY) {
-                    match value.to_str() {
-                        Ok(value) => match serde_json::from_str(value) {
-                            Ok(known_leader) => Some(known_leader),
-                            Err(err) => {
-                                debug!("failed parsing known leader from metadata: {err}");
-                                None
-                            }
-                        },
-                        Err(err) => {
-                            debug!("failed parsing known leader from metadata: {err}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
+                let known_leader = KnownLeader::from_status(&status);
                 Err(JoinError::Rpc(status, known_leader))?
             }
         };
@@ -1443,7 +1441,7 @@ impl From<ProposeErr<Request>> for RequestError {
     fn from(err: ProposeErr<Request>) -> Self {
         match err {
             ProposeErr::PendingReconfigEntry(_) => {
-                RequestError::Unavailable("reconfiguration in progress".into())
+                RequestError::Internal("reconfiguration in progress".into())
             }
             ProposeErr::PendingReconfigConfig(_, _) => RequestError::Internal(
                 "cannot reconfigure while reconfiguration is in progress".into(),

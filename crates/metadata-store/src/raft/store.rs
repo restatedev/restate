@@ -315,7 +315,7 @@ impl RaftMetadataStore {
 impl From<raft::Error> for RequestError {
     fn from(value: raft::Error) -> Self {
         match value {
-            err @ raft::Error::ProposalDropped => RequestError::Unavailable(err.into()),
+            err @ raft::Error::ProposalDropped => RequestError::Unavailable(err.into(), None),
             err => RequestError::Internal(err.into()),
         }
     }
