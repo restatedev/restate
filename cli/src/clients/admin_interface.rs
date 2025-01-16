@@ -7,7 +7,6 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-use std::fmt::Display;
 
 use super::admin_client::Envelope;
 use super::AdminClient;
@@ -28,7 +27,7 @@ pub trait AdminClientInterface {
         modify_service_request: ModifyServiceRequest,
     ) -> reqwest::Result<Envelope<ServiceMetadata>>;
     async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentsResponse>>;
-    async fn get_deployment<D: Display>(
+    async fn get_deployment<D: AsRef<str>>(
         &self,
         id: D,
     ) -> reqwest::Result<Envelope<DetailedDeploymentResponse>>;
@@ -54,21 +53,17 @@ pub trait AdminClientInterface {
 
 impl AdminClientInterface for AdminClient {
     async fn health(&self) -> reqwest::Result<Envelope<()>> {
-        let url = self.base_url.join("/health").expect("Bad url!");
+        let url = self.versioned_url(["health"]);
         self.run(reqwest::Method::GET, url).await
     }
 
     async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>> {
-        let url = self.base_url.join("/services").expect("Bad url!");
+        let url = self.versioned_url(["services"]);
         self.run(reqwest::Method::GET, url).await
     }
 
     async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>> {
-        let url = self
-            .base_url
-            .join(&format!("/services/{name}"))
-            .expect("Bad url!");
-
+        let url = self.versioned_url(["services", name]);
         self.run(reqwest::Method::GET, url).await
     }
 
@@ -77,37 +72,26 @@ impl AdminClientInterface for AdminClient {
         name: &str,
         modify_service_request: ModifyServiceRequest,
     ) -> reqwest::Result<Envelope<ServiceMetadata>> {
-        let url = self
-            .base_url
-            .join(&format!("/services/{name}"))
-            .expect("Bad url!");
-
+        let url = self.versioned_url(["services", name]);
         self.run_with_body(reqwest::Method::PATCH, url, modify_service_request)
             .await
     }
 
     async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentsResponse>> {
-        let url = self.base_url.join("/deployments").expect("Bad url!");
+        let url = self.versioned_url(["deployments"]);
         self.run(reqwest::Method::GET, url).await
     }
 
-    async fn get_deployment<D: Display>(
+    async fn get_deployment<D: AsRef<str>>(
         &self,
         id: D,
     ) -> reqwest::Result<Envelope<DetailedDeploymentResponse>> {
-        let url = self
-            .base_url
-            .join(&format!("/deployments/{id}"))
-            .expect("Bad url!");
+        let url = self.versioned_url(["deployments", id.as_ref()]);
         self.run(reqwest::Method::GET, url).await
     }
 
     async fn remove_deployment(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>> {
-        let mut url = self
-            .base_url
-            .join(&format!("/deployments/{id}"))
-            .expect("Bad url!");
-
+        let mut url = self.versioned_url(["deployments", id]);
         url.set_query(Some(&format!("force={force}")));
 
         self.run(reqwest::Method::DELETE, url).await
@@ -117,27 +101,19 @@ impl AdminClientInterface for AdminClient {
         &self,
         body: RegisterDeploymentRequest,
     ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>> {
-        let url = self.base_url.join("/deployments").expect("Bad url!");
+        let url = self.versioned_url(["deployments"]);
         self.run_with_body(reqwest::Method::POST, url, body).await
     }
 
     async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
-        let mut url = self
-            .base_url
-            .join(&format!("/invocations/{id}"))
-            .expect("Bad url!");
-
+        let mut url = self.versioned_url(["invocations", id]);
         url.set_query(Some("mode=purge"));
 
         self.run(reqwest::Method::DELETE, url).await
     }
 
     async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>> {
-        let mut url = self
-            .base_url
-            .join(&format!("/invocations/{id}"))
-            .expect("Bad url!");
-
+        let mut url = self.versioned_url(["invocations", id]);
         url.set_query(Some(&format!(
             "mode={}",
             if kill { "kill" } else { "cancel" }
@@ -151,17 +127,12 @@ impl AdminClientInterface for AdminClient {
         service: &str,
         req: ModifyServiceStateRequest,
     ) -> reqwest::Result<Envelope<()>> {
-        let url = self
-            .base_url
-            .join(&format!("/services/{service}/state"))
-            .expect("Bad url!");
-
+        let url = self.versioned_url(["services", service, "state"]);
         self.run_with_body(reqwest::Method::POST, url, req).await
     }
 
     async fn version(&self) -> reqwest::Result<Envelope<VersionInformation>> {
-        let url = self.base_url.join("/version").expect("Bad url!");
-
+        let url = self.versioned_url(["version"]);
         self.run(reqwest::Method::GET, url).await
     }
 }

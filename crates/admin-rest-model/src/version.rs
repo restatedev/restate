@@ -23,11 +23,20 @@ use std::ops::RangeInclusive;
 pub enum AdminApiVersion {
     Unknown = 0,
     V1 = 1,
+    V2 = 2,
 }
 
 impl AdminApiVersion {
     pub fn as_repr(&self) -> u16 {
         *self as u16
+    }
+
+    pub const fn as_path_segment(&self) -> Option<&str> {
+        match self {
+            AdminApiVersion::Unknown => None,
+            AdminApiVersion::V1 => Some("v1"),
+            AdminApiVersion::V2 => Some("v2"),
+        }
     }
 
     pub fn choose_max_supported_version(

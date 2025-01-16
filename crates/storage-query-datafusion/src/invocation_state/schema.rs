@@ -30,7 +30,7 @@ define_table!(sys_invocation_state(
     retry_count: DataType::UInt64,
 
     /// Timestamp indicating the start of the most recent attempt of this invocation.
-    last_start_at: DataType::Date64,
+    last_start_at: TimestampMillisecond,
 
     // The deployment that was selected in the last invocation attempt. This is
     // guaranteed to be set unlike in `sys_status` table which require that the
@@ -44,7 +44,7 @@ define_table!(sys_invocation_state(
     last_attempt_server: DataType::LargeUtf8,
 
     /// Timestamp indicating the start of the next attempt of this invocation.
-    next_retry_at: DataType::Date64,
+    next_retry_at: TimestampMillisecond,
 
     /// An error message describing the most recent failed attempt of this invocation, if any.
     last_failure: DataType::LargeUtf8,

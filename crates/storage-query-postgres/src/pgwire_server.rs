@@ -8,13 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
 use anyhow::Context;
 use async_trait::async_trait;
 use datafusion::arrow::array::{
-    Array, BinaryArray, BooleanArray, Date32Array, Date64Array, LargeBinaryArray, LargeStringArray,
-    PrimitiveArray, StringArray,
+    Array, BinaryArray, BooleanArray, LargeBinaryArray, LargeStringArray, PrimitiveArray,
+    StringArray, TimestampMillisecondArray,
 };
-use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::datatypes::Float32Type;
 use datafusion::arrow::datatypes::Float64Type;
 use datafusion::arrow::datatypes::Int16Type;
@@ -23,12 +26,10 @@ use datafusion::arrow::datatypes::Int64Type;
 use datafusion::arrow::datatypes::Int8Type;
 use datafusion::arrow::datatypes::UInt32Type;
 use datafusion::arrow::datatypes::UInt64Type;
+use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::arrow::temporal_conversions::{date32_to_datetime, date64_to_datetime};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use futures::{stream, StreamExt};
-use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -164,7 +165,6 @@ fn into_pg_type(df_type: &DataType) -> PgWireResult<Type> {
         DataType::UInt64 => Type::INT8,
         DataType::Timestamp(_, _) => Type::TIMESTAMP,
         DataType::Time32(_) | DataType::Time64(_) => Type::TIME,
-        DataType::Date32 | DataType::Date64 => Type::VARCHAR,
         DataType::Binary => Type::BYTEA,
         DataType::LargeBinary => Type::BYTEA,
         DataType::Float32 => Type::FLOAT4,
@@ -251,26 +251,16 @@ fn get_bool_value(arr: &Arc<dyn Array>, idx: usize) -> bool {
         .value(idx)
 }
 
-fn get_date64_value(arr: &Arc<dyn Array>, idx: usize) -> String {
+fn get_timestamp_value(arr: &Arc<dyn Array>, idx: usize) -> SystemTime {
     let value = arr
         .as_any()
-        .downcast_ref::<Date64Array>()
+        .downcast_ref::<TimestampMillisecondArray>()
         .unwrap()
         .value(idx);
 
-    let dt = date64_to_datetime(value).unwrap();
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
-}
-
-fn get_date32_value(arr: &Arc<dyn Array>, idx: usize) -> String {
-    let value = arr
-        .as_any()
-        .downcast_ref::<Date32Array>()
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_millis(value as u64))
         .unwrap()
-        .value(idx);
-
-    let dt = date32_to_datetime(value).unwrap();
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 macro_rules! get_primitive_value {
@@ -340,8 +330,9 @@ fn encode_value(
         DataType::LargeUtf8 => encoder.encode_field(&get_large_utf8_value(arr, idx))?,
         DataType::Binary => encoder.encode_field(&get_binary_value(arr, idx))?,
         DataType::LargeBinary => encoder.encode_field(&get_large_binary_value(arr, idx))?,
-        DataType::Date64 => encoder.encode_field(&get_date64_value(arr, idx))?,
-        DataType::Date32 => encoder.encode_field(&get_date32_value(arr, idx))?,
+        DataType::Timestamp(TimeUnit::Millisecond, None) => {
+            encoder.encode_field(&get_timestamp_value(arr, idx))?
+        }
         _ => {
             return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
                 "ERROR".to_owned(),

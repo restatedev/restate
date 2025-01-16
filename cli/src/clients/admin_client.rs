@@ -27,8 +27,8 @@ use crate::clients::AdminClientInterface;
 use super::errors::ApiError;
 
 /// Min/max supported admin API versions
-pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
-pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
+pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
+pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -162,6 +162,22 @@ impl AdminClient {
 
         c_warn!("Could not verify the admin API version. Please make sure that your CLI is compatible with the Restate server '{}'.", client.base_url);
         Ok(client)
+    }
+
+    pub fn versioned_url(&self, path: impl IntoIterator<Item = impl AsRef<str>>) -> Url {
+        let mut url = self.base_url.clone();
+
+        {
+            let mut segments = url.path_segments_mut().expect("Bad url!");
+            segments.pop_if_empty();
+
+            match self.admin_api_version.as_path_segment() {
+                Some(version) => segments.push(version).extend(path),
+                None => segments.extend(path),
+            };
+        }
+
+        url
     }
 
     fn choose_api_version(

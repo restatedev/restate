@@ -44,7 +44,7 @@ define_table!(sys_journal(
     invoked_target: DataType::LargeUtf8,
 
     /// If this entry represents a sleep, indicates wakeup time.
-    sleep_wakeup_at: DataType::Date64,
+    sleep_wakeup_at: TimestampMillisecond,
 
     /// If this entry is a promise related entry (GetPromise, PeekPromise, CompletePromise), indicates the promise name.
     promise_name: DataType::LargeUtf8,

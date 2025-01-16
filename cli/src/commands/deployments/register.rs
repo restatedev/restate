@@ -219,7 +219,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     // Is this an existing deployment?
     let existing_deployment = match client
-        .get_deployment(&dry_run_result.id)
+        .get_deployment(&dry_run_result.id.to_string())
         .await?
         .into_body()
         .await

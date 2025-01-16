@@ -16,7 +16,7 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use arrow::array::{Array, ArrayAccessor, AsArray, StringArray};
-use arrow::datatypes::{ArrowTemporalType, Date64Type};
+use arrow::datatypes::ArrowTemporalType;
 use arrow::record_batch::RecordBatch;
 use arrow_convert::{ArrowDeserialize, ArrowField};
 use bytes::Bytes;
@@ -111,10 +111,17 @@ fn value_as_u64_opt(batch: &RecordBatch, col: usize, row: usize) -> Option<u64> 
 }
 
 fn value_as_dt_opt(batch: &RecordBatch, col: usize, row: usize) -> Option<chrono::DateTime<Local>> {
-    batch
-        .column(col)
-        .as_primitive::<arrow::datatypes::Date64Type>()
-        .value_as_local_datetime_opt(row)
+    let col = batch.column(col);
+    match col.data_type() {
+        arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => col
+            .as_primitive::<arrow::datatypes::TimestampMillisecondType>()
+            .value_as_local_datetime_opt(row),
+        // older versions of restate used Date64 instead of TimestampMillisecond
+        arrow::datatypes::DataType::Date64 => col
+            .as_primitive::<arrow::datatypes::Date64Type>()
+            .value_as_local_datetime_opt(row),
+        _ => panic!("Column is not a timestamp"),
+    }
 }
 
 #[derive(ValueEnum, Copy, Clone, Eq, Hash, PartialEq, Debug, Default)]
@@ -515,11 +522,7 @@ pub async fn get_service_status(
                     .column(2)
                     .as_primitive::<arrow::datatypes::Int64Type>()
                     .value(i);
-                let oldest_at = batch
-                    .column(3)
-                    .as_primitive::<arrow::datatypes::Date64Type>()
-                    .value_as_local_datetime_opt(i)
-                    .unwrap();
+                let oldest_at = value_as_dt_opt(&batch, 3, i).unwrap();
 
                 let oldest_invocation = batch.column(4).as_string::<i32>().value_string(i);
 
@@ -744,23 +747,30 @@ impl From<RestateDateTime> for DateTime<Local> {
     }
 }
 
+pub static TIMEZONE_UTC: std::sync::LazyLock<std::sync::Arc<str>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::from("+00:00"));
+
 impl arrow_convert::field::ArrowField for RestateDateTime {
     type Type = Self;
 
     #[inline]
     fn data_type() -> arrow::datatypes::DataType {
-        arrow::datatypes::DataType::Date64
+        arrow::datatypes::DataType::Timestamp(
+            arrow::datatypes::TimeUnit::Millisecond,
+            Some(TIMEZONE_UTC.clone()),
+        )
     }
 }
 
 impl arrow_convert::deserialize::ArrowDeserialize for RestateDateTime {
-    type ArrayType = arrow::array::Date64Array;
+    type ArrayType = arrow::array::TimestampMillisecondArray;
 
     #[inline]
     fn arrow_deserialize(v: Option<i64>) -> Option<Self> {
-        v.and_then(arrow::temporal_conversions::as_datetime::<Date64Type>)
-            .map(|naive| Local.from_utc_datetime(&naive))
-            .map(RestateDateTime)
+        let timestamp = arrow::temporal_conversions::as_datetime::<
+            arrow::datatypes::TimestampMillisecondType,
+        >(v?)?;
+        Some(RestateDateTime(Local.from_utc_datetime(&timestamp)))
     }
 }
 

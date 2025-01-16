@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use axum::error_handling::HandleErrorLayer;
 use http::StatusCode;
+use restate_admin_rest_model::version::AdminApiVersion;
 use restate_bifrost::Bifrost;
 use restate_types::config::AdminOptions;
 use restate_types::live::LiveLoad;
@@ -92,16 +93,28 @@ where
         let router = router.merge(crate::web_ui::web_ui_router());
 
         // Merge meta API router
-        let router = router.merge(rest_api::create_router(rest_state)).layer(
-            ServiceBuilder::new()
-                .layer(HandleErrorLayer::new(|_| async {
-                    StatusCode::TOO_MANY_REQUESTS
-                }))
-                .layer(tower::load_shed::LoadShedLayer::new())
-                .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-                    opts.concurrent_api_requests_limit(),
-                )),
-        );
+        let router = router.merge(rest_api::create_router(rest_state));
+
+        let router = axum::Router::new()
+            .merge(with_unknown_api_version_middleware(router.clone()))
+            .nest(
+                "/v1",
+                with_api_version_middleware(router.clone(), AdminApiVersion::V1),
+            )
+            .nest(
+                "/v2",
+                with_api_version_middleware(router, AdminApiVersion::V2),
+            )
+            .layer(
+                ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(|_| async {
+                        StatusCode::TOO_MANY_REQUESTS
+                    }))
+                    .layer(tower::load_shed::LoadShedLayer::new())
+                    .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
+                        opts.concurrent_api_requests_limit(),
+                    )),
+            );
 
         let service = hyper_util::service::TowerToHyperService::new(router.into_service());
 
@@ -115,4 +128,30 @@ where
         .await
         .map_err(Into::into)
     }
+}
+
+fn with_unknown_api_version_middleware(router: axum::Router) -> axum::Router {
+    router.layer(axum::middleware::from_fn(
+        move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+    let is_cli = matches!(request.headers().get(http::header::USER_AGENT), Some(value) if value.as_bytes().starts_with(b"restate-cli"));
+
+    if is_cli {
+        // If the CLI is using an unversioned API url, it must be be pre 1.2, so api version v1
+        request.extensions_mut().insert(AdminApiVersion::V1);
+    } else {
+        request.extensions_mut().insert(AdminApiVersion::Unknown);
+    }
+
+    next.run(request)
+
+    }))
+}
+
+fn with_api_version_middleware(router: axum::Router, version: AdminApiVersion) -> axum::Router {
+    router.layer(axum::middleware::from_fn(
+        move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+            request.extensions_mut().insert(version);
+            next.run(request)
+        },
+    ))
 }
