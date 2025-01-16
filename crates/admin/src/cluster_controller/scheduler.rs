@@ -537,7 +537,6 @@ mod tests {
     use http::Uri;
     use rand::prelude::ThreadRng;
     use rand::Rng;
-    use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
     use std::collections::BTreeMap;
     use std::iter;
     use std::num::NonZero;
@@ -557,6 +556,8 @@ mod tests {
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
     use restate_types::identifiers::PartitionId;
+    use restate_types::locality::NodeLocation;
+    use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
     use restate_types::net::codec::WireDecode;
     use restate_types::net::partition_processor_manager::{ControlProcessors, ProcessorCommand};
     use restate_types::net::{AdvertisedAddress, TargetName};
@@ -646,6 +647,7 @@ mod tests {
             let node_config = NodeConfig::new(
                 format!("{node_id}"),
                 *node_id,
+                NodeLocation::default(),
                 AdvertisedAddress::Http(Uri::default()),
                 Role::Worker.into(),
                 LogServerConfig::default(),

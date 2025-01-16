@@ -615,6 +615,7 @@ fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfi
             .force_node_id
             .map(|force_node_id| force_node_id.with_generation(1))
             .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID),
+        common_opts.location().clone(),
         common_opts.advertised_address.clone(),
         common_opts.roles,
         LogServerConfig::default(),

@@ -760,6 +760,7 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
+    use restate_types::locality::NodeLocation;
     use test_log::test;
     use tokio::sync::mpsc;
 
@@ -990,6 +991,7 @@ mod tests {
         let node_config = NodeConfig::new(
             "42".to_owned(),
             node_id,
+            NodeLocation::default(),
             AdvertisedAddress::Uds("foobar1".into()),
             Role::Worker.into(),
             LogServerConfig::default(),

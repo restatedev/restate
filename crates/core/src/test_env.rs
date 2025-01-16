@@ -15,6 +15,7 @@ use std::sync::Arc;
 use futures::Stream;
 
 use restate_types::config::NetworkingOptions;
+use restate_types::locality::NodeLocation;
 use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
@@ -250,6 +251,7 @@ pub fn create_mock_nodes_config(node_id: u32, generation: u32) -> NodesConfigura
     let my_node = NodeConfig::new(
         format!("MyNode-{node_id}"),
         node_id,
+        NodeLocation::default(),
         address,
         roles,
         LogServerConfig::default(),
