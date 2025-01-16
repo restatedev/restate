@@ -34,6 +34,7 @@ humantime = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 omnipaxos = { git = "https://github.com/tillrohrmann/omnipaxos", branch = "restate", features = ["macros", "logging", "serde"]}
+parking_lot = { workspace = true}
 prost = { workspace = true }
 prost-dto = { workspace = true }
 prost-types = { workspace = true }
