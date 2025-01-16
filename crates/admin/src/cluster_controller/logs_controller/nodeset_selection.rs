@@ -79,7 +79,7 @@ impl<'a> NodeSetSelector<'a> {
         rng: &mut R,
         preferred_nodes: &NodeSet,
     ) -> Result<NodeSet, NodeSelectionError> {
-        if replication_property.at_greatest_scope().0 != &LocationScope::Node {
+        if replication_property.greatest_defined_scope() > LocationScope::Node {
             // todo: add support for other location scopes
             unimplemented!("only node-scoped replication is currently supported");
         }

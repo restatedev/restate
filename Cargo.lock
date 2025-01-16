@@ -6118,6 +6118,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
+ "smartstring",
  "static_assertions",
  "tempfile",
  "test-log",

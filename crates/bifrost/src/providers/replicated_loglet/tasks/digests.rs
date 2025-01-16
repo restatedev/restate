@@ -207,7 +207,7 @@ impl Digests {
             self.spread_selector.replication_property(),
         );
         // record is already replicated on those nodes
-        replication_checker.set_attribute_on_each(known_copies, || true);
+        replication_checker.set_attribute_on_each(known_copies.iter().copied(), true);
 
         let payloads = vec![record].into();
 
@@ -306,7 +306,7 @@ impl Digests {
             nodes_config,
             self.spread_selector.replication_property(),
         );
-        checker.set_attribute_on_each(&self.known_nodes, || true);
+        checker.set_attribute_on_each(self.known_nodes.iter().copied(), true);
         checker.check_write_quorum(|known| *known)
     }
 
@@ -324,8 +324,7 @@ impl Digests {
         );
         // walk backwards
         while let Some((offset, nodes)) = range.next_back() {
-            checker.reset_with_default();
-            checker.set_attribute_on_each(nodes, || true);
+            checker.set_attribute_on_each(nodes.iter().copied(), true);
             if checker.check_write_quorum(|known| *known) {
                 // this offset is good, advance to the next one
                 self.update_start_offset(offset.next());
