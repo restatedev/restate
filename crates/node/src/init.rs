@@ -80,7 +80,9 @@ impl<'a> NodeInit<'a> {
         info!(
             roles = %my_node_config.roles,
             address = %my_node_config.address,
-            "My Node ID is {}", my_node_config.current_generation);
+            location = %my_node_config.location,
+            "My Node ID is {}", my_node_config.current_generation
+        );
 
         self.metadata_writer
             .update(Arc::new(nodes_configuration))
@@ -202,6 +204,33 @@ impl<'a> NodeInit<'a> {
                             node_config.name,
                             "node name must match"
                         );
+
+                        // do location changes according to the following truth table
+                        let current_location = &node_config.location;
+                        let new_location = common_opts.location();
+                        match (current_location.is_empty(), new_location.is_empty()) {
+                            (true, false) => {
+                                // relatively safe and an expected change for someone enabling locality for the first time.
+                                node_config.location = common_opts.location().clone();
+                            }
+                            (false, false) if current_location != new_location => {
+                                warn!(
+                                    "Node location has changed from '{current_location}' to '{new_location}'. \
+                                    This change can be dangerous if the cluster is configured with geo-aware replication, but we'll still apply it. \
+                                    You can reverted back on the next server restart.",
+                                );
+                                node_config.location = common_opts.location().clone();
+                            }
+                            (false, false) => { /* do nothing; location didn't change */ }
+                            (true, true) => { /* do nothing; both are empty */}
+                            (false, true) => {
+                                // leave current location as is, warn about it.
+                                warn!(
+                                    "Node location was '{current_location}' in previous configuration, but it's empty in the new one. \
+                                    Setting the location back to empty is not permitted, location will stay as '{current_location}'",
+                                );
+                            }
+                        }
 
                         if common_opts.force_node_id.is_some_and(|configured_node_id| {
                             configured_node_id != node_config.current_generation.as_plain()
