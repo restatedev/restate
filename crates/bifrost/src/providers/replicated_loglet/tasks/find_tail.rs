@@ -200,7 +200,7 @@ impl<T: TransportConnect> FindTailTask<T> {
 
             // We'll only refresh our view of the effective nodeset if we retry the find-tail
             // procedure.
-            let mut nodeset_checker = NodeSetChecker::<'_, NodeTailStatus>::new(
+            let mut nodeset_checker = NodeSetChecker::<NodeTailStatus>::new(
                 &effective_nodeset,
                 &self.networking.metadata().nodes_config_ref(),
                 &self.my_params.replication,

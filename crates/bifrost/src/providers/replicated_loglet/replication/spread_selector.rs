@@ -104,7 +104,7 @@ impl SpreadSelector {
         // validate that we can have write quorum with this spread
         let mut checker =
             NodeSetChecker::new(&self.nodeset, nodes_config, &self.replication_property);
-        checker.set_attribute_on_each(&selected, || true);
+        checker.set_attribute_on_each(selected.iter().copied(), true);
         if !checker.check_write_quorum(|attr| *attr) {
             return Err(SpreadSelectorError::InsufficientWriteableNodes);
         }
@@ -153,7 +153,7 @@ impl SpreadSelector {
         // validate that we can have write quorum with this spread
         let mut checker =
             NodeSetChecker::new(&self.nodeset, nodes_config, &self.replication_property);
-        checker.set_attribute_on_each(&selected, || true);
+        checker.set_attribute_on_each(selected.iter().copied(), true);
         if !checker.check_write_quorum(|attr| *attr) {
             return Err(SpreadSelectorError::InsufficientWriteableNodes);
         }
