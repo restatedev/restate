@@ -18,6 +18,8 @@ use anyhow::Context;
 use enum_map::Enum;
 use regex::Regex;
 
+use crate::locality::NodeLocationScope;
+
 static REPLICATION_PROPERTY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"^(?i)\{\s*(?<scopes>(?:node|zone|region)\s*:\s*\d+(?:\s*,\s*(?:node|zone|region)\s*:\s*\d+)*)\s*}$",
@@ -66,6 +68,27 @@ impl LocationScope {
     pub fn next_smaller_scope(self) -> Option<LocationScope> {
         let current = self.into_usize();
         (current != 0).then(|| LocationScope::from_usize(current - 1))
+    }
+}
+
+impl From<NodeLocationScope> for LocationScope {
+    fn from(scope: NodeLocationScope) -> Self {
+        match scope {
+            NodeLocationScope::Node => Self::Node,
+            NodeLocationScope::Zone => Self::Zone,
+            NodeLocationScope::Region => Self::Region,
+            NodeLocationScope::Root => panic!("Root is not a valid location scope"),
+        }
+    }
+}
+
+impl From<LocationScope> for NodeLocationScope {
+    fn from(scope: LocationScope) -> Self {
+        match scope {
+            LocationScope::Node => Self::Node,
+            LocationScope::Zone => Self::Zone,
+            LocationScope::Region => Self::Region,
+        }
     }
 }
 
@@ -119,6 +142,7 @@ impl ReplicationProperty {
         Ok(self)
     }
 
+    /// Total number of copies required to satisfy the replication property
     pub fn num_copies(&self) -> u8 {
         *self
             .0
@@ -127,20 +151,26 @@ impl ReplicationProperty {
             .1
     }
 
-    pub fn at_scope_or_greater(&self, scope: LocationScope) -> Option<(&LocationScope, &u8)> {
-        self.0.range(scope..).next()
+    /// How many copies are required at this location scope.
+    /// Returns None if no copies are defined at the given scope.
+    /// For instance {zone: 2, node: 3} replication will return None at region scope.
+    ///
+    /// Note that it's guaranteed to get a value for replication at node-level scope.
+    pub fn copies_at_scope(&self, scope: impl Into<LocationScope>) -> Option<u8> {
+        let scope = scope.into();
+        if scope == LocationScope::MIN {
+            Some(self.num_copies())
+        } else {
+            self.0.get(&scope).copied()
+        }
     }
 
-    pub fn at_smallest_scope(&self) -> (&LocationScope, &u8) {
-        self.0
-            .first_key_value()
-            .expect("must have at least one scope")
-    }
-
-    pub fn at_greatest_scope(&self) -> (&LocationScope, &u8) {
-        self.0
+    pub fn greatest_defined_scope(&self) -> LocationScope {
+        *self
+            .0
             .last_key_value()
             .expect("must have at least one scope")
+            .0
     }
 }
 
@@ -238,25 +268,26 @@ mod tests {
     fn test_replication_property() -> Result<()> {
         let mut r = ReplicationProperty::new(NonZeroU8::new(4).unwrap());
         assert_that!(r.num_copies(), eq(4));
-        assert_that!(r.at_greatest_scope(), eq((&LocationScope::Node, &4)));
-        assert_that!(
-            r.at_scope_or_greater(LocationScope::Node),
-            some(eq((&LocationScope::Node, &4)))
-        );
+        assert_that!(r.greatest_defined_scope(), eq(LocationScope::Node));
+
+        assert_that!(r.copies_at_scope(LocationScope::Node), some(eq(4)));
+        assert_that!(r.copies_at_scope(LocationScope::Zone), none());
+        assert_that!(r.copies_at_scope(LocationScope::Region), none());
 
         r.set_scope(LocationScope::Region, NonZeroU8::new(2).unwrap())?;
         assert_that!(r.num_copies(), eq(4));
-        assert_that!(
-            r.at_scope_or_greater(LocationScope::Zone),
-            some(eq((&LocationScope::Region, &2)))
-        );
+
+        assert_that!(r.copies_at_scope(LocationScope::Node), some(eq(4)));
+        assert_that!(r.copies_at_scope(LocationScope::Zone), none());
+        assert_that!(r.copies_at_scope(LocationScope::Region), some(eq(2)));
 
         r.set_scope(LocationScope::Zone, NonZeroU8::new(2).unwrap())?;
         assert_that!(r.num_copies(), eq(4));
-        assert_that!(
-            r.at_scope_or_greater(LocationScope::Zone),
-            some(eq((&LocationScope::Zone, &2)))
-        );
+
+        assert_that!(r.copies_at_scope(LocationScope::Node), some(eq(4)));
+        assert_that!(r.copies_at_scope(LocationScope::Zone), some(eq(2)));
+        assert_that!(r.copies_at_scope(LocationScope::Region), some(eq(2)));
+
         Ok(())
     }
 
@@ -275,6 +306,12 @@ mod tests {
             .unwrap();
         assert_that!(r, ok(eq(expected)));
 
+        let r: ReplicationProperty = "{zone: 2}".parse().unwrap();
+        assert_that!(r.num_copies(), eq(2));
+
+        assert_that!(r.copies_at_scope(LocationScope::Node), some(eq(2)));
+        assert_that!(r.copies_at_scope(LocationScope::Zone), some(eq(2)));
+        assert_that!(r.copies_at_scope(LocationScope::Region), none());
         Ok(())
     }
 }

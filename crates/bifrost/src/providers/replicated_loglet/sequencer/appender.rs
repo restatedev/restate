@@ -415,7 +415,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Eq, PartialEq, Hash, Clone)]
 struct NodeAttributes {
     committed: bool,
     sealed: bool,
