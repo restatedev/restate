@@ -48,7 +48,7 @@ use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfigurati
 use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::nodes_config::{
-    LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role,
+    LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
 };
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::protobuf::common::{
@@ -157,7 +157,7 @@ impl Node {
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
         let metadata_writer = metadata_manager.writer();
 
-        let metadata_store_role = if config.has_role(Role::MetadataStore) {
+        let metadata_store_role = if config.has_role(Role::MetadataServer) {
             Some(
                 restate_metadata_store::create_metadata_store(
                     &config.metadata_store,
@@ -165,7 +165,7 @@ impl Node {
                         .clone()
                         .map(|config| &config.metadata_store.rocksdb)
                         .boxed(),
-                    health.metadata_store_status(),
+                    health.metadata_server_status(),
                     Some(metadata_writer),
                     &mut server_builder,
                 )
@@ -496,9 +496,9 @@ impl Node {
                             .await;
                         trace!("Worker role is reporting ready");
                     }
-                    Role::MetadataStore => {
+                    Role::MetadataServer => {
                         self.health
-                            .metadata_store_status()
+                            .metadata_server_status()
                             .wait_for(|status| status.is_running())
                             .await;
                         trace!("Metadata role is reporting ready");
@@ -625,7 +625,7 @@ fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfi
         common_opts.advertised_address.clone(),
         common_opts.roles,
         LogServerConfig::default(),
-        MetadataStoreConfig::default(),
+        MetadataServerConfig::default(),
     );
     initial_nodes_configuration.upsert_node(node_config);
     initial_nodes_configuration

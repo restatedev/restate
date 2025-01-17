@@ -41,8 +41,8 @@ use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::{MetadataStoreState, NodesConfiguration, Role};
-use restate_types::protobuf::common::MetadataStoreStatus;
+use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
+use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageEncodeError;
 use restate_types::{PlainNodeId, Version};
@@ -97,7 +97,7 @@ pub struct OmniPaxosMetadataStore {
     rocksdb_storage: RocksDbStorage<Request>,
     storage_id: StorageId,
     metadata_writer: Option<MetadataWriter>,
-    health_status: Option<HealthStatus<MetadataStoreStatus>>,
+    health_status: Option<HealthStatus<MetadataServerStatus>>,
 
     request_tx: RequestSender,
     request_rx: RequestReceiver,
@@ -115,9 +115,9 @@ impl OmniPaxosMetadataStore {
     pub async fn create(
         rocks_db_options: BoxedLiveLoad<RocksDbOptions>,
         metadata_writer: Option<MetadataWriter>,
-        health_status: HealthStatus<MetadataStoreStatus>,
+        health_status: HealthStatus<MetadataServerStatus>,
     ) -> Result<Self, BuildError> {
-        health_status.update(MetadataStoreStatus::StartingUp);
+        health_status.update(MetadataServerStatus::StartingUp);
 
         let (request_tx, request_rx) = mpsc::channel(2);
         let (provision_tx, provision_rx) = mpsc::channel(1);
@@ -198,14 +198,14 @@ impl OmniPaxosMetadataStore {
             },
         };
 
-        health_status.update(MetadataStoreStatus::Unknown);
+        health_status.update(MetadataServerStatus::Unknown);
 
         result
     }
 
     async fn run_inner(
         mut self,
-        health_status: &HealthStatus<MetadataStoreStatus>,
+        health_status: &HealthStatus<MetadataServerStatus>,
     ) -> anyhow::Result<Never> {
         if let Some(metadata_writer) = self.metadata_writer.as_mut() {
             // Try to read a persisted nodes configuration in order to learn about the addresses of our
@@ -221,17 +221,17 @@ impl OmniPaxosMetadataStore {
             }
         }
 
-        health_status.update(MetadataStoreStatus::AwaitingProvisioning);
+        health_status.update(MetadataServerStatus::AwaitingProvisioning);
         let mut provisioned = self.await_provisioning().await?;
 
         loop {
             match provisioned {
                 Provisioned::Active(active) => {
-                    health_status.update(MetadataStoreStatus::Active);
+                    health_status.update(MetadataServerStatus::Active);
                     provisioned = Provisioned::Passive(active.run().await?);
                 }
                 Provisioned::Passive(passive) => {
-                    health_status.update(MetadataStoreStatus::Passive);
+                    health_status.update(MetadataServerStatus::Passive);
                     provisioned = Provisioned::Active(passive.run().await?);
                 }
             }
@@ -933,17 +933,17 @@ impl Active {
         for (node_id, node_config) in new_nodes_configuration.iter_mut() {
             let node_id = u64::from(u32::from(node_id));
             if new_members.contains_key(&node_id) {
-                node_config.metadata_store_config.metadata_store_state =
-                    MetadataStoreState::Active(configuration_id);
+                node_config.metadata_server_config.metadata_server_state =
+                    MetadataServerState::Active(configuration_id);
             } else if self.members.contains_key(&node_id)
                 || matches!(
-                    node_config.metadata_store_config.metadata_store_state,
-                    MetadataStoreState::Active(_)
+                    node_config.metadata_server_config.metadata_server_state,
+                    MetadataServerState::Active(_)
                 )
             {
                 // nodes that have been removed from the configuration are switched to passive
-                node_config.metadata_store_config.metadata_store_state =
-                    MetadataStoreState::Passive;
+                node_config.metadata_server_config.metadata_server_state =
+                    MetadataServerState::Passive;
             }
             // Candidates stay candidates for the time being
         }
@@ -1187,8 +1187,8 @@ impl Active {
         nodes_config
             .iter()
             .filter_map(|(node_id, node_config)| {
-                if let MetadataStoreState::Active(_) =
-                    node_config.metadata_store_config.metadata_store_state
+                if let MetadataServerState::Active(_) =
+                    node_config.metadata_server_config.metadata_server_state
                 {
                     Some((node_id, node_config))
                 } else {
@@ -1325,7 +1325,7 @@ impl Passive {
                     let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
                     let node_config = nodes_config.find_node_by_name(&my_node_name).expect("I must have registered before");
 
-                    if matches!(node_config.metadata_store_config.metadata_store_state, MetadataStoreState::Active(_) | MetadataStoreState::Candidate) && join_cluster.is_terminated() {
+                    if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Active(_) | MetadataServerState::Candidate) && join_cluster.is_terminated() {
                         debug!("Node is part of the metadata store cluster. Trying to join the omni paxos cluster.");
                         join_cluster.set(Some(Self::join_cluster(None, None, storage_id).fuse()).into());
                     } else {
@@ -1369,7 +1369,7 @@ impl Passive {
         } else {
             // pick random active metadata store node
             let active_metadata_store_node = nodes_config.iter().filter_map(|(node, config)| {
-                if config.has_role(Role::MetadataStore) && node != my_node_id && matches!(config.metadata_store_config.metadata_store_state, MetadataStoreState::Active(_)) {
+                if config.has_role(Role::MetadataServer) && node != my_node_id && matches!(config.metadata_server_config.metadata_server_state, MetadataServerState::Active(_)) {
                     Some(node)
                 } else {
                     None

@@ -786,7 +786,7 @@ mod tests {
     use restate_types::net::partition_processor_manager::ControlProcessors;
     use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{
-        LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role,
+        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
     };
     use restate_types::{GenerationalNodeId, Version};
 
@@ -1101,7 +1101,7 @@ mod tests {
             AdvertisedAddress::Uds("foobar".into()),
             Role::Worker.into(),
             LogServerConfig::default(),
-            MetadataStoreConfig::default(),
+            MetadataServerConfig::default(),
         ));
         nodes_config.upsert_node(NodeConfig::new(
             "node-2".to_owned(),
@@ -1110,7 +1110,7 @@ mod tests {
             AdvertisedAddress::Uds("bar".into()),
             Role::Worker.into(),
             LogServerConfig::default(),
-            MetadataStoreConfig::default(),
+            MetadataServerConfig::default(),
         ));
         let builder = modify_builder(builder.set_nodes_config(nodes_config));
 

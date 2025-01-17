@@ -89,7 +89,7 @@ message ProvisionResponse {
 }
 
 message StatusResponse {
-  restate.common.MetadataStoreStatus status = 1;
+  restate.common.MetadataServerStatus status = 1;
   optional MetadataStoreConfiguration configuration = 2;
   optional MemberId leader = 3;
 }

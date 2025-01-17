@@ -184,7 +184,7 @@ impl Node {
                 "metadata-node",
                 node_config,
                 binary_source.clone(),
-                enum_set!(Role::Admin | Role::MetadataStore),
+                enum_set!(Role::Admin | Role::MetadataServer),
             );
             let metadata_node_address = metadata_node.advertised_address().clone();
             *metadata_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {

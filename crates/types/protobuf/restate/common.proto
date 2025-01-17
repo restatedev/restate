@@ -121,12 +121,12 @@ enum LogServerStatus {
   LogServerStatus_STOPPING = 4;
 }
 
-enum MetadataStoreStatus {
-  MetadataStoreStatus_UNKNOWN = 0;
-  MetadataStoreStatus_STARTING_UP = 1;
-  MetadataStoreStatus_AWAITING_PROVISIONING = 2;
-  MetadataStoreStatus_ACTIVE = 3;
-  MetadataStoreStatus_PASSIVE = 4;
+enum MetadataServerStatus {
+  MetadataServerStatus_UNKNOWN = 0;
+  MetadataServerStatus_STARTING_UP = 1;
+  MetadataServerStatus_AWAITING_PROVISIONING = 2;
+  MetadataServerStatus_ACTIVE = 3;
+  MetadataServerStatus_PASSIVE = 4;
 }
 
 enum IngressStatus {

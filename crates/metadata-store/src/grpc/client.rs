@@ -26,7 +26,7 @@ use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
 use restate_types::config::{Configuration, MetadataStoreClientOptions};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
-use restate_types::nodes_config::{MetadataStoreState, NodesConfiguration, Role};
+use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};
@@ -246,8 +246,8 @@ impl MetadataStore for GrpcMetadataStoreClient {
         // from the configuration and not from the NodesConfiguration.
         let config = Configuration::pinned();
 
-        if !config.common.roles.contains(Role::MetadataStore) {
-            return Err(ProvisionError::NotSupported(format!("Node '{}' does not run the metadata store role. Try to provision a different node.", config.common.advertised_address)));
+        if !config.common.roles.contains(Role::MetadataServer) {
+            return Err(ProvisionError::NotSupported(format!("Node '{}' does not run the metadata-server role. Try to provision a different node.", config.common.advertised_address)));
         }
 
         let mut client = MetadataStoreSvcClient::new(create_tonic_channel(
@@ -357,10 +357,10 @@ impl ChannelManager {
             .filter_map(|(node_id, node_config)| {
                 // We only consider metadata store nodes that are active or candidates. Candidates are
                 // considered because we might not have seen the NodesConfiguration update yet.
-                if node_config.roles.contains(Role::MetadataStore)
+                if node_config.roles.contains(Role::MetadataServer)
                     && matches!(
-                        node_config.metadata_store_config.metadata_store_state,
-                        MetadataStoreState::Active(_) | MetadataStoreState::Candidate
+                        node_config.metadata_server_config.metadata_server_state,
+                        MetadataServerState::Active(_) | MetadataServerState::Candidate
                     )
                 {
                     Some((

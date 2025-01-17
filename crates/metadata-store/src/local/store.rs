@@ -25,8 +25,8 @@ use restate_types::config::{Configuration, MetadataStoreOptions, RocksDbOptions}
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::{MetadataStoreState, NodesConfiguration};
-use restate_types::protobuf::common::MetadataStoreStatus;
+use restate_types::nodes_config::{MetadataServerState, NodesConfiguration};
+use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::Version;
 use rocksdb::{BoundColumnFamily, WriteBatch, WriteOptions, DB};
@@ -48,7 +48,7 @@ pub struct LocalMetadataStore {
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     request_rx: RequestReceiver,
     buffer: BytesMut,
-    health_status: HealthStatus<MetadataStoreStatus>,
+    health_status: HealthStatus<MetadataServerStatus>,
 
     // for creating other senders
     request_tx: RequestSender,
@@ -58,9 +58,9 @@ impl LocalMetadataStore {
     pub async fn create(
         options: &MetadataStoreOptions,
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-        health_status: HealthStatus<MetadataStoreStatus>,
+        health_status: HealthStatus<MetadataServerStatus>,
     ) -> Result<Self, RocksError> {
-        health_status.update(MetadataStoreStatus::StartingUp);
+        health_status.update(MetadataServerStatus::StartingUp);
         let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
 
         let db_name = DbName::new(DB_NAME);
@@ -117,7 +117,7 @@ impl LocalMetadataStore {
 
     pub async fn run(mut self) {
         debug!("Running LocalMetadataStore");
-        self.health_status.update(MetadataStoreStatus::Active);
+        self.health_status.update(MetadataServerStatus::Active);
 
         // Only needed if we resume from a Restate version that has not properly set the
         // MetadataServerState to Active in the NodesConfiguration.
@@ -137,7 +137,7 @@ impl LocalMetadataStore {
             }
         }
 
-        self.health_status.update(MetadataStoreStatus::Unknown);
+        self.health_status.update(MetadataServerStatus::Unknown);
 
         debug!("Stopped LocalMetadataStore");
     }
@@ -159,16 +159,16 @@ impl LocalMetadataStore {
             nodes_configuration.find_node_by_name(Configuration::pinned().common.node_name())
         {
             if matches!(
-                node_config.metadata_store_config.metadata_store_state,
-                MetadataStoreState::Active(_)
+                node_config.metadata_server_config.metadata_server_state,
+                MetadataServerState::Active(_)
             ) {
                 // nothing to patch
                 return Ok(());
             }
 
             let mut new_node_config = node_config.clone();
-            new_node_config.metadata_store_config.metadata_store_state =
-                MetadataStoreState::Active(0);
+            new_node_config.metadata_server_config.metadata_server_state =
+                MetadataServerState::Active(0);
 
             nodes_configuration.upsert_node(new_node_config);
             nodes_configuration.increment_version();
