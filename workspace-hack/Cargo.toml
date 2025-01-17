@@ -199,7 +199,7 @@ serde_with = { version = "3", features = ["hex"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 stable_deref_trait = { version = "1" }
 strum = { version = "0.26", features = ["derive"] }
-syn-dff4ba8e3ae991db = { package = "syn", version = "1", features = ["extra-traits", "full", "visit"] }
+syn-dff4ba8e3ae991db = { package = "syn", version = "1", features = ["full"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
