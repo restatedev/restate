@@ -55,6 +55,15 @@ use crate::errors::GenericError;
 use crate::live::Live;
 use crate::nodes_config::Role;
 
+/// Overrides production profile
+pub static PRODUCTION_PROFILE_DEFAULTS: LazyLock<Configuration> = LazyLock::new(|| {
+    let mut default = Configuration::default();
+
+    default.common.allow_bootstrap = false;
+
+    default
+});
+
 #[cfg(any(test, feature = "test-util"))]
 enum TempOrPath {
     Temp(tempfile::TempDir),

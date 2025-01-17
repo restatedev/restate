@@ -31,7 +31,7 @@ use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
 use restate_types::art::render_restate_logo;
 use restate_types::config::CommonOptionCliOverride;
-use restate_types::config::{node_dir, Configuration};
+use restate_types::config::{node_dir, Configuration, PRODUCTION_PROFILE_DEFAULTS};
 use restate_types::config_loader::ConfigLoaderBuilder;
 
 mod signal;
@@ -73,6 +73,10 @@ struct RestateArguments {
     /// **WARNING** all the wiped data will be lost permanently!
     #[arg(value_enum, long = "wipe", hide = true)]
     wipe: Option<WipeMode>,
+
+    /// Use default production configuration profile.
+    #[clap(long)]
+    production: bool,
 
     #[clap(flatten)]
     opts_overrides: CommonOptionCliOverride,
@@ -123,7 +127,13 @@ fn main() {
         .map(|p| std::fs::canonicalize(p).expect("config-file path is valid"));
 
     // Initial configuration loading
-    let config_loader = ConfigLoaderBuilder::default()
+    let mut config_loader_builder = ConfigLoaderBuilder::default();
+
+    if cli_args.production {
+        config_loader_builder.custom_default((*PRODUCTION_PROFILE_DEFAULTS).clone());
+    }
+
+    let config_loader = config_loader_builder
         .load_env(true)
         .path(config_path.clone())
         .cli_override(cli_args.opts_overrides.clone())
