@@ -63,7 +63,7 @@ impl SealTask {
 
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        let mut nodeset_checker = NodeSetChecker::<'_, bool>::new(
+        let mut nodeset_checker = NodeSetChecker::<bool>::new(
             &effective_nodeset,
             &networking.metadata().nodes_config_ref(),
             &self.my_params.replication,
