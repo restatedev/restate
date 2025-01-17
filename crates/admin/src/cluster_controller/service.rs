@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use restate_metadata_store::ReadModifyWriteError;
 use restate_types::logs::metadata::{
@@ -307,9 +307,16 @@ impl<T: TransportConnect> Service<T> {
                 },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     self.observed_cluster_state.update(&cluster_state);
-                    state.update(&self).await?;
+                    // todo quarantine this cluster controller if errors re-occur too often so that
+                    //  another cluster controller can take over
+                    if let Err(err) = state.update(&self).await {
+                        warn!("Failed to update cluster state. This can impair the overall cluster operations: {:?}", err);
+                        continue;
+                    }
 
-                    state.on_observed_cluster_state(&self.observed_cluster_state).await?;
+                    if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state).await {
+                        warn!("Failed to handle observed cluster state. This can impair the overall cluster operations: {:?}", err);
+                    }
                 }
                 Some(cmd) = self.command_rx.recv() => {
                     // it is still safe to handle cluster commands as a follower
@@ -322,8 +329,17 @@ impl<T: TransportConnect> Service<T> {
                     state.reconfigure(configuration);
                 }
                 result = state.run() => {
-                    let leader_event = result?;
-                    state.on_leader_event(&self.observed_cluster_state, leader_event).await?;
+                    let leader_event = match result {
+                        Ok(leader_event) => leader_event,
+                        Err(err) => {
+                            warn!("Failed to run cluster controller operations. This can impair the overall cluster operations: {:?}", err);
+                            continue;
+                        }
+                    };
+
+                    if let Err(err) = state.on_leader_event(&self.observed_cluster_state, leader_event).await {
+                        warn!("Failed to handle leader event. This can impair the overall cluster operations: {:?}", err);
+                    }
                 }
                 _ = &mut shutdown => {
                     self.health_status.update(AdminStatus::Unknown);
