@@ -30,7 +30,7 @@ use crate::cluster_controller::logs_controller::nodeset_selection::{
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler;
 use restate_bifrost::{Bifrost, Error as BifrostError};
-use restate_core::metadata_store::{Precondition, ReadWriteError, WriteError};
+use restate_core::metadata_store::{Precondition, WriteError};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -54,8 +54,6 @@ const FALLBACK_MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
 pub enum LogsControllerError {
-    #[error("failed writing to the metadata store: {0}")]
-    MetadataStore(#[from] ReadWriteError),
     #[error("failed creating logs: {0}")]
     LogsBuilder(#[from] logs::builder::BuilderError),
     #[error("failed creating loglet params from loglet configuration: {0}")]
