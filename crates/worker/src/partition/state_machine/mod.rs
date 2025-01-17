@@ -56,7 +56,8 @@ use restate_types::errors::{
     WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
+    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, PartitionKey,
+    PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::identifiers::{
     IdempotencyId, JournalEntryId, WithInvocationId, WithPartitionKey,
@@ -83,7 +84,7 @@ use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{
     AttachInvocationCompletion, AttachInvocationResult, CallCompletion, CallResult, CommandType,
     CompletionId, EntryMetadata, GetInvocationOutputCompletion, GetInvocationOutputResult,
-    GetPromiseCompletion, GetPromiseResult, NotificationId, SleepCompletion,
+    GetPromiseCompletion, GetPromiseResult, NotificationId, Signal, SignalResult, SleepCompletion,
 };
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
@@ -99,6 +100,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
+use std::str::FromStr;
 use std::time::Instant;
 use tracing::{error, info};
 use utils::SpanExt;
@@ -2683,12 +2685,34 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
                         journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
 
-                self.handle_outgoing_message(OutboxMessage::from_awakeable_completion(
-                    *invocation_id,
-                    *entry_index,
-                    entry.result.into(),
-                ))
-                .await?;
+                // Check is this is old or new awakeable id
+                if AwakeableIdentifier::from_str(&entry.id).is_ok() {
+                    self.handle_outgoing_message(OutboxMessage::from_awakeable_completion(
+                        *invocation_id,
+                        *entry_index,
+                        entry.result.into(),
+                    ))
+                    .await?;
+                } else if let Ok(new_awk_id) = ExternalSignalIdentifier::from_str(&entry.id) {
+                    let (invocation_id, signal_id) = new_awk_id.into_inner();
+                    self.handle_outgoing_message(OutboxMessage::NotifySignal(
+                        NotifySignalRequest {
+                            invocation_id,
+                            signal: Signal::new(
+                                signal_id,
+                                match entry.result {
+                                    EntryResult::Success(s) => SignalResult::Success(s),
+                                    EntryResult::Failure(code, message) => {
+                                        SignalResult::Failure(journal_v2::Failure { code, message })
+                                    }
+                                },
+                            ),
+                        },
+                    ))
+                    .await?;
+                } else {
+                    warn!("Invalid awakeable identifier {}. The identifier doesn't start with `awk_1`, neither with `sign_1`", entry.id);
+                };
             }
             EnrichedEntryHeader::Run { .. } => {
                 let _span = instrumentation::info_invocation_span!(
