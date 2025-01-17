@@ -24,7 +24,7 @@ use restate_core::{cancellation_watcher, MetadataWriter};
 use restate_types::config::{Configuration, RaftOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::protobuf::common::MetadataStoreStatus;
+use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::StorageDecodeError;
 use slog::o;
 use std::future::Future;
@@ -65,7 +65,7 @@ pub struct RaftMetadataStore {
     networking: Networking<Message>,
     raft_rx: mpsc::Receiver<Message>,
     tick_interval: time::Interval,
-    health_status: HealthStatus<MetadataStoreStatus>,
+    health_status: HealthStatus<MetadataServerStatus>,
 
     kv_storage: KvMemoryStorage,
 
@@ -80,9 +80,9 @@ impl RaftMetadataStore {
         mut networking: Networking<Message>,
         raft_rx: mpsc::Receiver<Message>,
         metadata_writer: Option<MetadataWriter>,
-        health_status: HealthStatus<MetadataStoreStatus>,
+        health_status: HealthStatus<MetadataServerStatus>,
     ) -> Result<Self, BuildError> {
-        health_status.update(MetadataStoreStatus::StartingUp);
+        health_status.update(MetadataServerStatus::StartingUp);
         let (request_tx, request_rx) = mpsc::channel(2);
 
         let config = Config {
@@ -132,7 +132,7 @@ impl RaftMetadataStore {
     }
 
     pub async fn run(mut self) -> Result<(), Error> {
-        self.health_status.update(MetadataStoreStatus::Active);
+        self.health_status.update(MetadataServerStatus::Active);
 
         let mut cancellation = std::pin::pin!(cancellation_watcher());
 
@@ -174,7 +174,7 @@ impl RaftMetadataStore {
             self.on_ready().await?;
         }
 
-        self.health_status.update(MetadataStoreStatus::Unknown);
+        self.health_status.update(MetadataServerStatus::Unknown);
 
         debug!("Stop running RaftMetadataStore.");
 

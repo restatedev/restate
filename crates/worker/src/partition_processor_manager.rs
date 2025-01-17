@@ -980,7 +980,7 @@ mod tests {
     };
     use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{
-        LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role,
+        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
     };
     use restate_types::protobuf::node::Header;
     use restate_types::{GenerationalNodeId, Version};
@@ -1001,7 +1001,7 @@ mod tests {
             AdvertisedAddress::Uds("foobar1".into()),
             Role::Worker | Role::Admin,
             LogServerConfig::default(),
-            MetadataStoreConfig::default(),
+            MetadataServerConfig::default(),
         );
         nodes_config.upsert_node(node_config);
 

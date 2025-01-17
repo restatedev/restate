@@ -773,7 +773,7 @@ mod tests {
         MIN_SUPPORTED_PROTOCOL_VERSION,
     };
     use restate_types::nodes_config::{
-        LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfigError, NodesConfiguration,
+        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfigError, NodesConfiguration,
         Role,
     };
     use restate_types::protobuf::node::message::Body;
@@ -996,7 +996,7 @@ mod tests {
             AdvertisedAddress::Uds("foobar1".into()),
             Role::Worker.into(),
             LogServerConfig::default(),
-            MetadataStoreConfig::default(),
+            MetadataServerConfig::default(),
         );
         nodes_config.upsert_node(node_config);
 

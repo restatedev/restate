@@ -11,7 +11,7 @@
 use tokio::sync::watch;
 
 use crate::protobuf::common::{
-    AdminStatus, IngressStatus, LogServerStatus, MetadataStoreStatus, NodeRpcStatus, NodeStatus,
+    AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
     WorkerStatus,
 };
 use crate::Merge;
@@ -23,7 +23,7 @@ pub struct Health {
     worker_status: watch::Sender<WorkerStatus>,
     admin_status: watch::Sender<AdminStatus>,
     log_server_status: watch::Sender<LogServerStatus>,
-    metadata_store_status: watch::Sender<MetadataStoreStatus>,
+    metadata_store_status: watch::Sender<MetadataServerStatus>,
     ingress_status: watch::Sender<IngressStatus>,
     node_rpc_status: watch::Sender<NodeRpcStatus>,
 }
@@ -40,7 +40,7 @@ impl Health {
         let worker_status = watch::Sender::new(WorkerStatus::Unknown);
         let admin_status = watch::Sender::new(AdminStatus::Unknown);
         let log_server_status = watch::Sender::new(LogServerStatus::Unknown);
-        let metadata_store_status = watch::Sender::new(MetadataStoreStatus::Unknown);
+        let metadata_store_status = watch::Sender::new(MetadataServerStatus::Unknown);
         let ingress_status = watch::Sender::new(IngressStatus::Unknown);
         let node_rpc_status = watch::Sender::new(NodeRpcStatus::Unknown);
 
@@ -71,7 +71,7 @@ impl Health {
         *self.log_server_status.borrow()
     }
 
-    pub fn current_metadata_store_status(&self) -> MetadataStoreStatus {
+    pub fn current_metadata_store_status(&self) -> MetadataServerStatus {
         *self.metadata_store_status.borrow()
     }
 
@@ -95,7 +95,7 @@ impl Health {
         HealthStatus(self.ingress_status.clone())
     }
 
-    pub fn metadata_store_status(&self) -> HealthStatus<MetadataStoreStatus> {
+    pub fn metadata_server_status(&self) -> HealthStatus<MetadataServerStatus> {
         HealthStatus(self.metadata_store_status.clone())
     }
 

@@ -22,7 +22,7 @@ use restate_metadata_store::grpc_svc::metadata_store_svc_client::MetadataStoreSv
 use restate_metadata_store::MemberId;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{NodesConfiguration, Role};
-use restate_types::protobuf::common::MetadataStoreStatus;
+use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::StorageCodec;
 use std::collections::BTreeMap;
 use tonic::codec::CompressionEncoding;
@@ -50,7 +50,7 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
     let mut unreachable_nodes = BTreeMap::default();
 
     for (node_id, node_config) in nodes_configuration.iter() {
-        if node_config.roles.contains(Role::MetadataStore) {
+        if node_config.roles.contains(Role::MetadataServer) {
             let metadata_channel = grpc_channel(node_config.address.clone());
             let mut metadata_client = MetadataStoreSvcClient::new(metadata_channel)
                 .accept_compressed(CompressionEncoding::Gzip);
@@ -67,7 +67,7 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
 
             metadata_nodes_table.add_row(vec![
                 Cell::new(node_id),
-                render_metadata_store_status(status.status()),
+                render_metadata_server_status(status.status()),
                 Cell::new(
                     status
                         .configuration
@@ -119,12 +119,12 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn render_metadata_store_status(metadata_store_status: MetadataStoreStatus) -> Cell {
-    match metadata_store_status {
-        MetadataStoreStatus::Unknown => Cell::new("UNKNOWN").fg(Color::Red),
-        MetadataStoreStatus::StartingUp => Cell::new("Starting").fg(Color::Yellow),
-        MetadataStoreStatus::AwaitingProvisioning => Cell::new("Provisioning"),
-        MetadataStoreStatus::Active => Cell::new("Active").fg(Color::Green),
-        MetadataStoreStatus::Passive => Cell::new("Passive"),
+fn render_metadata_server_status(metadata_server_status: MetadataServerStatus) -> Cell {
+    match metadata_server_status {
+        MetadataServerStatus::Unknown => Cell::new("UNKNOWN").fg(Color::Red),
+        MetadataServerStatus::StartingUp => Cell::new("Starting").fg(Color::Yellow),
+        MetadataServerStatus::AwaitingProvisioning => Cell::new("Provisioning"),
+        MetadataServerStatus::Active => Cell::new("Active").fg(Color::Green),
+        MetadataServerStatus::Passive => Cell::new("Passive"),
     }
 }

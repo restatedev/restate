@@ -1282,7 +1282,7 @@ pub mod tests {
     };
     use restate_types::logs::LogletId;
     use restate_types::nodes_config::{
-        LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role, StorageState,
+        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
     use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
     use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
@@ -1416,7 +1416,7 @@ pub mod tests {
         pub fn with_dedicated_admin_node(self, id: u32) -> Self {
             self.with_nodes(
                 [id],
-                enum_set!(Role::Admin | Role::MetadataStore),
+                enum_set!(Role::Admin | Role::MetadataServer),
                 StorageState::Disabled,
             )
         }
@@ -1468,7 +1468,7 @@ pub mod tests {
             format!("https://node-{id}").parse().unwrap(),
             roles,
             LogServerConfig { storage_state },
-            MetadataStoreConfig::default(),
+            MetadataServerConfig::default(),
         )
     }
 

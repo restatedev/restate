@@ -129,19 +129,20 @@ pub mod pb_conversions {
         fn from(value: MetadataStoreSummary) -> Self {
             match value {
                 MetadataStoreSummary::Starting => grpc_svc::StatusResponse {
-                    status: restate_types::protobuf::common::MetadataStoreStatus::StartingUp.into(),
+                    status: restate_types::protobuf::common::MetadataServerStatus::StartingUp
+                        .into(),
                     configuration: None,
                     leader: None,
                 },
                 MetadataStoreSummary::Provisioning => grpc_svc::StatusResponse {
                     status:
-                        restate_types::protobuf::common::MetadataStoreStatus::AwaitingProvisioning
+                        restate_types::protobuf::common::MetadataServerStatus::AwaitingProvisioning
                             .into(),
                     configuration: None,
                     leader: None,
                 },
                 MetadataStoreSummary::Passive => grpc_svc::StatusResponse {
-                    status: restate_types::protobuf::common::MetadataStoreStatus::Passive.into(),
+                    status: restate_types::protobuf::common::MetadataServerStatus::Passive.into(),
                     configuration: None,
                     leader: None,
                 },
@@ -149,7 +150,7 @@ pub mod pb_conversions {
                     configuration,
                     leader,
                 } => grpc_svc::StatusResponse {
-                    status: restate_types::protobuf::common::MetadataStoreStatus::Active.into(),
+                    status: restate_types::protobuf::common::MetadataServerStatus::Active.into(),
                     configuration: Some(grpc_svc::MetadataStoreConfiguration::from(configuration)),
                     leader: leader.map(grpc_svc::MemberId::from),
                 },
