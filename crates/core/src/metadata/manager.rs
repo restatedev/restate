@@ -586,7 +586,7 @@ mod tests {
 
     use restate_test_util::assert_eq;
     use restate_types::net::AdvertisedAddress;
-    use restate_types::nodes_config::{LogServerConfig, MetadataStoreConfig, NodeConfig, Role};
+    use restate_types::nodes_config::{LogServerConfig, MetadataServerConfig, NodeConfig, Role};
     use restate_types::{GenerationalNodeId, Version};
 
     use crate::metadata::spawn_metadata_manager;
@@ -758,7 +758,7 @@ mod tests {
             address,
             roles,
             LogServerConfig::default(),
-            MetadataStoreConfig::default(),
+            MetadataServerConfig::default(),
         );
         nodes_config.upsert_node(my_node);
         nodes_config

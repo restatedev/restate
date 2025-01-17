@@ -24,7 +24,7 @@ use restate_types::net::codec::{Targeted, WireDecode};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{
-    LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role,
+    LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
 };
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::node::Message;
@@ -257,7 +257,7 @@ pub fn create_mock_nodes_config(node_id: u32, generation: u32) -> NodesConfigura
         address,
         roles,
         LogServerConfig::default(),
-        MetadataStoreConfig::default(),
+        MetadataServerConfig::default(),
     );
     nodes_config.upsert_node(my_node);
     nodes_config

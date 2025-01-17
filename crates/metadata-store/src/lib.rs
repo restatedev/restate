@@ -37,9 +37,9 @@ use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{
-    LogServerConfig, MetadataStoreConfig, MetadataStoreState, NodeConfig, NodesConfiguration,
+    LogServerConfig, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
 };
-use restate_types::protobuf::common::MetadataStoreStatus;
+use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId, PlainNodeId, Version};
 use std::fmt::{Display, Formatter};
@@ -221,7 +221,7 @@ where
 pub async fn create_metadata_store(
     metadata_store_options: &MetadataStoreOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    health_status: HealthStatus<MetadataStoreStatus>,
+    health_status: HealthStatus<MetadataServerStatus>,
     metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<BoxedMetadataStoreService> {
@@ -603,7 +603,7 @@ struct MetadataStoreConfiguration {
 }
 
 /// Ensures that the initial nodes configuration contains the current node and has the right
-/// [`MetadataStoreState`] set.
+/// [`MetadataServerState`] set.
 fn prepare_initial_nodes_configuration(
     configuration: &Configuration,
     configuration_id: u32,
@@ -625,8 +625,8 @@ fn prepare_initial_nodes_configuration(
         let restate_node_id = node_config.current_generation.as_plain();
 
         let mut node_config = node_config.clone();
-        node_config.metadata_store_config.metadata_store_state =
-            MetadataStoreState::Active(configuration_id);
+        node_config.metadata_server_config.metadata_server_state =
+            MetadataServerState::Active(configuration_id);
 
         nodes_configuration.upsert_node(node_config);
 
@@ -644,8 +644,8 @@ fn prepare_initial_nodes_configuration(
                     .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID)
             });
 
-        let metadata_store_config = MetadataStoreConfig {
-            metadata_store_state: MetadataStoreState::Active(configuration_id),
+        let metadata_server_config = MetadataServerConfig {
+            metadata_server_state: MetadataServerState::Active(configuration_id),
         };
 
         let node_config = NodeConfig::new(
@@ -655,7 +655,7 @@ fn prepare_initial_nodes_configuration(
             configuration.common.advertised_address.clone(),
             configuration.common.roles,
             LogServerConfig::default(),
-            metadata_store_config,
+            metadata_server_config,
         );
 
         nodes_configuration.upsert_node(node_config);

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_types::nodes_config::{
-    LogServerConfig, MetadataStoreConfig, NodeConfig, NodesConfiguration, Role, StorageState,
+    LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -25,7 +25,7 @@ pub fn generate_logserver_node(
         format!("unix:/tmp/my_socket-{id}").parse().unwrap(),
         Role::LogServer.into(),
         LogServerConfig { storage_state },
-        MetadataStoreConfig::default(),
+        MetadataServerConfig::default(),
     )
 }
 

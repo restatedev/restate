@@ -45,7 +45,12 @@ pub enum Role {
     /// Admin runs cluster controller and user-facing admin APIs
     Admin,
     /// Serves the metadata store
-    MetadataStore,
+    // For backwards-compatibility also accept the old name
+    #[serde(alias = "metadata-store")]
+    #[cfg_attr(feature = "clap", clap(alias = "metadata-store"))]
+    // todo switch to serializing as "metadata-server" in version 1.3
+    #[serde(rename(serialize = "metadata-store"))]
+    MetadataServer,
     /// [IN DEVELOPMENT] Serves a log server for replicated loglets
     LogServer,
     HttpIngress,
@@ -90,7 +95,7 @@ pub struct NodeConfig {
     #[serde(default)]
     pub location: NodeLocation,
     #[serde(default)]
-    pub metadata_store_config: MetadataStoreConfig,
+    pub metadata_server_config: MetadataServerConfig,
 }
 
 impl NodeConfig {
@@ -101,7 +106,7 @@ impl NodeConfig {
         address: AdvertisedAddress,
         roles: EnumSet<Role>,
         log_server_config: LogServerConfig,
-        metadata_store_config: MetadataStoreConfig,
+        metadata_server_config: MetadataServerConfig,
     ) -> Self {
         Self {
             name,
@@ -110,7 +115,7 @@ impl NodeConfig {
             roles,
             log_server_config,
             location,
-            metadata_store_config,
+            metadata_server_config,
         }
     }
 
@@ -211,14 +216,14 @@ impl NodesConfiguration {
         }
     }
 
-    pub fn get_metadata_store_state(&self, node_id: &PlainNodeId) -> MetadataStoreState {
+    pub fn get_metadata_server_state(&self, node_id: &PlainNodeId) -> MetadataServerState {
         let maybe = self.nodes.get(node_id);
         let Some(maybe) = maybe else {
-            return MetadataStoreState::Passive;
+            return MetadataServerState::Passive;
         };
         match maybe {
-            MaybeNode::Tombstone => MetadataStoreState::Passive,
-            MaybeNode::Node(found) => found.metadata_store_config.metadata_store_state,
+            MaybeNode::Tombstone => MetadataServerState::Passive,
+            MaybeNode::Node(found) => found.metadata_server_config.metadata_server_state,
         }
     }
 
@@ -384,17 +389,17 @@ impl StorageState {
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
-pub enum MetadataStoreState {
-    /// The node is not yet a member of the metadata store but tries to join it. It is not safe to
+pub enum MetadataServerState {
+    /// The server is not yet a member of the metadata store but tries to join it. It is not safe to
     /// decommission this node since the metadata store cluster might have already accepted it.
     Candidate,
-    /// The node is not considered as part of the metadata store cluster (yet). Node can be safely
+    /// The server is not considered as part of the metadata store cluster (yet). Node can be safely
     /// decommissioned.
     #[default]
     Passive,
-    /// The node is an active member of the metadata store cluster with the given configuration id.
+    /// The server is an active member of the metadata store cluster with the given configuration id.
     Active(u32),
-    /// Node detected that some/all of its local storage has been deleted, and it cannot be part of
+    /// Server detected that some/all of its local storage has been deleted, and it cannot be part of
     /// the metadata store cluster because it might make contradicting promises.
     DataLoss,
 }
@@ -405,8 +410,8 @@ pub struct LogServerConfig {
 }
 
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct MetadataStoreConfig {
-    pub metadata_store_state: MetadataStoreState,
+pub struct MetadataServerConfig {
+    pub metadata_server_state: MetadataServerState,
 }
 
 flexbuffers_storage_encode_decode!(NodesConfiguration);
@@ -430,7 +435,7 @@ mod tests {
             address.clone(),
             roles,
             LogServerConfig::default(),
-            MetadataStoreConfig::default(),
+            MetadataServerConfig::default(),
         );
         config.upsert_node(node.clone());
 
@@ -479,7 +484,7 @@ mod tests {
             address,
             roles,
             LogServerConfig::default(),
-            MetadataStoreConfig::default(),
+            MetadataServerConfig::default(),
         );
         config.upsert_node(node.clone());
 
