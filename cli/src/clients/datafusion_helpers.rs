@@ -15,116 +15,24 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 use anyhow::Result;
-use arrow::array::{Array, ArrayAccessor, AsArray, LargeStringArray};
-use arrow::datatypes::ArrowTemporalType;
-use arrow::record_batch::RecordBatch;
-use arrow_convert::{ArrowDeserialize, ArrowField};
 use bytes::Bytes;
-use chrono::{DateTime, Duration, Local, TimeZone};
+use chrono::{DateTime, Duration, Local};
 use clap::ValueEnum;
 
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::identifiers::DeploymentId;
 use restate_types::identifiers::{InvocationId, ServiceId};
 use restate_types::invocation::ServiceType;
+use serde::Deserialize;
+use serde_with::{serde_as, DeserializeAs};
 
 use super::DataFusionHttpClient;
 
 static JOURNAL_QUERY_LIMIT: usize = 100;
 
-trait OptionalArrowLocalDateTime {
-    fn value_as_local_datetime_opt(&self, index: usize) -> Option<chrono::DateTime<Local>>;
-}
-
-impl<T> OptionalArrowLocalDateTime for &arrow::array::PrimitiveArray<T>
-where
-    T: ArrowTemporalType,
-    i64: From<T::Native>,
-{
-    fn value_as_local_datetime_opt(&self, index: usize) -> Option<chrono::DateTime<Local>> {
-        if !self.is_null(index) {
-            self.value_as_datetime(index)
-                .map(|naive| Local.from_utc_datetime(&naive))
-        } else {
-            None
-        }
-    }
-}
-
-trait OptionalArrowValue
-where
-    Self: ArrayAccessor,
-{
-    fn value_opt(&self, index: usize) -> Option<<Self as ArrayAccessor>::Item> {
-        if !self.is_null(index) {
-            Some(self.value(index))
-        } else {
-            None
-        }
-    }
-}
-
-impl<T> OptionalArrowValue for T where T: ArrayAccessor {}
-
-trait OptionalArrowOwnedString
-where
-    Self: ArrayAccessor,
-{
-    fn value_string_opt(&self, index: usize) -> Option<String>;
-    fn value_string(&self, index: usize) -> String;
-}
-
-impl OptionalArrowOwnedString for &LargeStringArray {
-    fn value_string_opt(&self, index: usize) -> Option<String> {
-        if !self.is_null(index) {
-            Some(self.value(index).to_owned())
-        } else {
-            None
-        }
-    }
-
-    fn value_string(&self, index: usize) -> String {
-        self.value(index).to_owned()
-    }
-}
-
-fn value_as_string(batch: &RecordBatch, col: usize, row: usize) -> String {
-    batch.column(col).as_string::<i64>().value_string(row)
-}
-
-fn value_as_string_opt(batch: &RecordBatch, col: usize, row: usize) -> Option<String> {
-    batch.column(col).as_string::<i64>().value_string_opt(row)
-}
-
-fn value_as_i64(batch: &RecordBatch, col: usize, row: usize) -> i64 {
-    batch
-        .column(col)
-        .as_primitive::<arrow::datatypes::Int64Type>()
-        .value(row)
-}
-
-fn value_as_u64_opt(batch: &RecordBatch, col: usize, row: usize) -> Option<u64> {
-    batch
-        .column(col)
-        .as_primitive::<arrow::datatypes::UInt64Type>()
-        .value_opt(row)
-}
-
-fn value_as_dt_opt(batch: &RecordBatch, col: usize, row: usize) -> Option<chrono::DateTime<Local>> {
-    let col = batch.column(col);
-    match col.data_type() {
-        arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => col
-            .as_primitive::<arrow::datatypes::TimestampMillisecondType>()
-            .value_as_local_datetime_opt(row),
-        // older versions of restate used Date64 instead of TimestampMillisecond
-        arrow::datatypes::DataType::Date64 => col
-            .as_primitive::<arrow::datatypes::Date64Type>()
-            .value_as_local_datetime_opt(row),
-        _ => panic!("Column is not a timestamp"),
-    }
-}
-
-#[derive(ValueEnum, Copy, Clone, Eq, Hash, PartialEq, Debug, Default)]
+#[derive(
+    ValueEnum, Copy, Clone, Eq, Hash, PartialEq, Debug, Default, serde_with::DeserializeFromStr,
+)]
 pub enum InvocationState {
     #[default]
     #[clap(hide = true)]
@@ -140,7 +48,7 @@ pub enum InvocationState {
 }
 
 impl FromStr for InvocationState {
-    type Err = ();
+    type Err = std::convert::Infallible;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "pending" => Self::Pending,
@@ -260,20 +168,11 @@ impl Display for JournalEntryType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SimpleInvocation {
     pub id: String,
     pub target: String,
     pub status: InvocationState,
-}
-
-#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
-struct SimpleInvocationRowResult {
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    target: Option<String>,
-    status: String,
 }
 
 pub async fn find_active_invocations_simple(
@@ -281,16 +180,7 @@ pub async fn find_active_invocations_simple(
     filter: &str,
 ) -> Result<Vec<SimpleInvocation>> {
     let query = format!("SELECT id, target, status FROM sys_invocation WHERE {filter}");
-    let rows = client
-        .run_query_and_map_results::<SimpleInvocationRowResult>(query)
-        .await?
-        .map(|row| SimpleInvocation {
-            id: row.id.expect("id"),
-            target: row.target.expect("target"),
-            status: row.status.parse().expect("Unexpected status"),
-        })
-        .collect();
-    Ok(rows)
+    Ok(client.run_json_query::<SimpleInvocation>(query).await?)
 }
 
 #[derive(Debug, Clone)]
@@ -313,22 +203,26 @@ impl InvocationCompletion {
     }
 }
 
-#[derive(Debug, Clone)]
+#[serde_as]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Invocation {
     pub id: String,
     pub target: String,
+    #[serde_as(as = "DatafusionServiceType")]
     pub target_service_ty: ServiceType,
     pub created_at: chrono::DateTime<Local>,
     // None if invoked directly (e.g. ingress)
     pub invoked_by_id: Option<String>,
     pub invoked_by_target: Option<String>,
     pub status: InvocationState,
+    #[serde(skip)]
     pub completion: Option<InvocationCompletion>,
     pub trace_id: Option<String>,
     pub idempotency_key: Option<String>,
 
     // If it **requires** this deployment.
     pub pinned_deployment_id: Option<String>,
+    #[serde(skip)]
     pub pinned_deployment_exists: bool,
     // Last attempted deployment
     pub last_attempt_deployment_id: Option<String>,
@@ -365,6 +259,7 @@ pub async fn count_deployment_active_inv(
         .await?)
 }
 
+#[derive(Deserialize)]
 pub struct ServiceHandlerUsage {
     pub service: String,
     pub handler: String,
@@ -451,7 +346,7 @@ impl HandlerInfo {
     }
 }
 
-#[derive(Clone)]
+#[derive(Deserialize, Clone)]
 pub struct HandlerStateStats {
     pub num_invocations: i64,
     pub oldest_at: chrono::DateTime<Local>,
@@ -462,28 +357,26 @@ pub async fn count_deployment_active_inv_by_method(
     client: &DataFusionHttpClient,
     deployment_id: &DeploymentId,
 ) -> Result<Vec<ServiceHandlerUsage>> {
-    let mut output = vec![];
-
     let query = format!(
         "SELECT
-            target_service_name,
-            target_handler_name,
+            target_service_name as service,
+            target_handler_name as handler,
             COUNT(id) AS inv_count
             FROM sys_invocation_status
             WHERE pinned_deployment_id = '{deployment_id}'
             GROUP BY pinned_deployment_id, target_service_name, target_handler_name"
     );
 
-    for batch in client.run_query(query).await?.batches {
-        for i in 0..batch.num_rows() {
-            output.push(ServiceHandlerUsage {
-                service: value_as_string(&batch, 0, i),
-                handler: value_as_string(&batch, 1, i),
-                inv_count: value_as_i64(&batch, 2, i),
-            });
-        }
-    }
-    Ok(output)
+    Ok(client.run_json_query::<ServiceHandlerUsage>(query).await?)
+}
+
+#[derive(Deserialize)]
+struct ServiceStatusQueryResult {
+    target_service_name: String,
+    target_handler_name: String,
+    status: InvocationState,
+    #[serde(flatten)]
+    stats: HandlerStateStats,
 }
 
 pub async fn get_service_status(
@@ -504,35 +397,26 @@ pub async fn get_service_status(
     {
         let query = format!(
             "SELECT
-                target_service_name,
-                target_handler_name,
-                COUNT(id),
-                MIN(created_at),
-                FIRST_VALUE(id ORDER BY created_at ASC)
+                target_service_name as service,
+                target_handler_name as handler,
+                'pending' as status,
+                COUNT(id) as num_invocations,
+                MIN(created_at) as oldest_at,
+                FIRST_VALUE(id ORDER BY created_at ASC) as oldest_invocation
              FROM sys_invocation_status
              WHERE status == 'inboxed' AND target_service_name IN {query_filter}
              GROUP BY target_service_name, target_handler_name"
         );
-        let resp = client.run_query(query).await?;
-        for batch in resp.batches {
-            for i in 0..batch.num_rows() {
-                let service = batch.column(0).as_string::<i64>().value_string(i);
-                let handler = batch.column(1).as_string::<i64>().value_string(i);
-                let num_invocations = batch
-                    .column(2)
-                    .as_primitive::<arrow::datatypes::Int64Type>()
-                    .value(i);
-                let oldest_at = value_as_dt_opt(&batch, 3, i).unwrap();
-
-                let oldest_invocation = batch.column(4).as_string::<i64>().value_string(i);
-
-                let stats = HandlerStateStats {
-                    num_invocations,
-                    oldest_at,
-                    oldest_invocation,
-                };
-                status_map.set_handler_stats(&service, &handler, InvocationState::Pending, stats);
-            }
+        let rows = client
+            .run_json_query::<ServiceStatusQueryResult>(query)
+            .await?;
+        for row in rows {
+            status_map.set_handler_stats(
+                &row.target_service_name,
+                &row.target_handler_name,
+                row.status,
+                row.stats,
+            );
         }
     }
 
@@ -544,29 +428,24 @@ pub async fn get_service_status(
                 target_service_name,
                 target_handler_name,
                 status,
-                COUNT(id),
-                MIN(created_at),
-                FIRST_VALUE(id ORDER BY created_at ASC)
+                COUNT(id) as num_invocations,
+                MIN(created_at) as oldest_at,
+                FIRST_VALUE(id ORDER BY created_at ASC) as oldest_invocation
             FROM sys_invocation
             WHERE target_service_name IN {query_filter}
             GROUP BY target_service_name, target_handler_name, status
             ORDER BY target_handler_name"
         );
-        let resp = client.run_query(query).await?;
-        for batch in resp.batches {
-            for i in 0..batch.num_rows() {
-                let service = value_as_string(&batch, 0, i);
-                let handler = value_as_string(&batch, 1, i);
-                let status = value_as_string(&batch, 2, i);
-
-                let stats = HandlerStateStats {
-                    num_invocations: value_as_i64(&batch, 3, i),
-                    oldest_at: value_as_dt_opt(&batch, 4, i).unwrap(),
-                    oldest_invocation: value_as_string(&batch, 5, i),
-                };
-
-                status_map.set_handler_stats(&service, &handler, status.parse().unwrap(), stats);
-            }
+        let rows = client
+            .run_json_query::<ServiceStatusQueryResult>(query)
+            .await?;
+        for row in rows {
+            status_map.set_handler_stats(
+                &row.target_service_name,
+                &row.target_handler_name,
+                row.status,
+                row.stats,
+            );
         }
     }
 
@@ -579,7 +458,7 @@ pub struct ServiceHandlerLockedKeysMap {
     services: HashMap<String, HashMap<String, LockedKeyInfo>>,
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, Deserialize)]
 pub struct LockedKeyInfo {
     pub num_pending: i64,
     // Who is holding the lock
@@ -620,6 +499,16 @@ impl ServiceHandlerLockedKeysMap {
     }
 }
 
+#[derive(Deserialize)]
+struct LockedKeysQueryResult {
+    service_name: String,
+    service_key: String,
+    modified_at: Option<DateTime<Local>>,
+    last_start_at: Option<DateTime<Local>>,
+    #[serde(flatten)]
+    info: LockedKeyInfo,
+}
+
 pub async fn get_locked_keys_status(
     client: &DataFusionHttpClient,
     services_filter: impl IntoIterator<Item = impl AsRef<str>>,
@@ -641,25 +530,17 @@ pub async fn get_locked_keys_status(
             "SELECT
                 service_name,
                 service_key,
-                COUNT(id)
+                COUNT(id) as num_pending
              FROM sys_inbox
              WHERE service_name IN {query_filter}
              GROUP BY service_name, service_key
              ORDER BY COUNT(id) DESC"
         );
-        let resp = client.run_query(query).await?;
-        for batch in resp.batches {
-            for i in 0..batch.num_rows() {
-                let service = batch.column(0).as_string::<i64>().value(i);
-                let key = value_as_string(&batch, 1, i);
-                let num_pending = value_as_i64(&batch, 2, i);
-
-                let info = LockedKeyInfo {
-                    num_pending,
-                    ..LockedKeyInfo::default()
-                };
-                key_map.insert(service, key, info);
-            }
+        let rows = client
+            .run_json_query::<LockedKeysQueryResult>(query)
+            .await?;
+        for row in rows {
+            key_map.insert(&row.service_name, row.service_key, row.info);
         }
     }
 
@@ -668,160 +549,69 @@ pub async fn get_locked_keys_status(
         let query = format!(
             "
             SELECT
-                target_service_name,
-                target_service_key,
-                status,
-                first_value(id),
-                first_value(target_handler_name),
-                first_value(created_at),
-                first_value(modified_at),
-                first_value(pinned_deployment_id),
-                first_value(last_attempt_deployment_id),
-                first_value(last_failure),
-                first_value(next_retry_at),
-                first_value(last_start_at),
-                sum(retry_count)
+                target_service_name as service_name,
+                target_service_key as service_key,
+                status as invocation_status,
+                first_value(id) as invocation_holding_lock,
+                first_value(target_handler_name) as invocation_method_holding_lock,
+                first_value(created_at) as invocation_created_at,
+                first_value(modified_at) as modified_at,
+                first_value(pinned_deployment_id) as pinned_deployment_id,
+                first_value(last_attempt_deployment_id) as last_attempt_deployment_id,
+                first_value(last_failure) as last_failure_message,
+                first_value(next_retry_at) as next_retry_at,
+                first_value(last_start_at) as last_start_at,
+                0 as num_pending,
+                sum(retry_count) as num_retries
             FROM sys_invocation
             WHERE status != 'pending' AND target_service_name IN {query_filter}
             GROUP BY target_service_name, target_service_key, status"
         );
 
-        let resp = client.run_query(query).await?;
-        for batch in resp.batches {
-            for i in 0..batch.num_rows() {
-                let service = value_as_string(&batch, 0, i);
-                let key = value_as_string(&batch, 1, i);
-                let status = batch
-                    .column(2)
-                    .as_string::<i64>()
-                    .value(i)
-                    .parse()
-                    .expect("Unexpected status");
-                let id = value_as_string_opt(&batch, 3, i);
-                let handler = value_as_string_opt(&batch, 4, i);
-                let created_at = value_as_dt_opt(&batch, 5, i);
-                let modified_at = value_as_dt_opt(&batch, 6, i);
-                let pinned_deployment_id = value_as_string_opt(&batch, 7, i);
-                let last_attempt_eps = batch.column(8).as_string::<i64>();
-                let last_failure_message = value_as_string_opt(&batch, 9, i);
-                let next_retry_at = value_as_dt_opt(&batch, 10, i);
-                let last_start = value_as_dt_opt(&batch, 11, i);
-                let num_retries = value_as_u64_opt(&batch, 12, i);
+        let rows = client
+            .run_json_query::<LockedKeysQueryResult>(query)
+            .await?;
+        for row in rows {
+            let info = key_map.locked_key_info_mut(&row.service_name, &row.service_key);
 
-                let info = key_map.locked_key_info_mut(&service, &key);
+            info.invocation_status = row.info.invocation_status;
+            info.invocation_holding_lock = row.info.invocation_holding_lock;
+            info.invocation_method_holding_lock = row.info.invocation_method_holding_lock;
+            info.invocation_created_at = row.info.invocation_created_at;
 
-                info.invocation_status = Some(status);
-                info.invocation_holding_lock = id;
-                info.invocation_method_holding_lock = handler;
-                info.invocation_created_at = created_at;
-
-                // Running duration
-                if status == InvocationState::Running {
-                    info.invocation_attempt_duration =
-                        last_start.map(|last_start| Local::now().signed_duration_since(last_start));
-                }
-
-                // State duration
-                info.invocation_state_duration = modified_at
-                    .map(|last_modified| Local::now().signed_duration_since(last_modified));
-
-                // Retries
-                info.num_retries = num_retries;
-                info.next_retry_at = next_retry_at;
-                info.pinned_deployment_id = pinned_deployment_id;
-                info.last_failure_message = last_failure_message;
-                info.last_attempt_deployment_id = last_attempt_eps.value_string_opt(i);
+            // Running duration
+            if row.info.invocation_status == Some(InvocationState::Running) {
+                info.invocation_attempt_duration = row
+                    .last_start_at
+                    .map(|last_start| Local::now().signed_duration_since(last_start));
             }
+
+            // State duration
+            info.invocation_state_duration = row
+                .modified_at
+                .map(|last_modified| Local::now().signed_duration_since(last_modified));
+
+            // Retries
+            info.num_retries = row.info.num_retries;
+            info.next_retry_at = row.info.next_retry_at;
+            info.pinned_deployment_id = row.info.pinned_deployment_id;
+            info.last_failure_message = row.info.last_failure_message;
+            info.last_attempt_deployment_id = row.info.last_attempt_deployment_id;
         }
     }
 
     Ok(key_map)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RestateDateTime(DateTime<Local>);
-
-impl From<RestateDateTime> for DateTime<Local> {
-    fn from(value: RestateDateTime) -> Self {
-        value.0
-    }
-}
-
-pub static TIMEZONE_UTC: std::sync::LazyLock<std::sync::Arc<str>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::from("+00:00"));
-
-impl arrow_convert::field::ArrowField for RestateDateTime {
-    type Type = Self;
-
-    #[inline]
-    fn data_type() -> arrow::datatypes::DataType {
-        arrow::datatypes::DataType::Timestamp(
-            arrow::datatypes::TimeUnit::Millisecond,
-            Some(TIMEZONE_UTC.clone()),
-        )
-    }
-}
-
-impl arrow_convert::deserialize::ArrowDeserialize for RestateDateTime {
-    type ArrayType = arrow::array::TimestampMillisecondArray;
-
-    #[inline]
-    fn arrow_deserialize(v: Option<i64>) -> Option<Self> {
-        let timestamp = arrow::temporal_conversions::as_datetime::<
-            arrow::datatypes::TimestampMillisecondType,
-        >(v?)?;
-        Some(RestateDateTime(Local.from_utc_datetime(&timestamp)))
-    }
-}
-
-// enable Vec<RestateDateTime>
-arrow_convert::arrow_enable_vec_for_type!(RestateDateTime);
-
-#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
-struct InvocationRowResult {
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    target: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    target_service_ty: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    idempotency_key: Option<String>,
-    #[arrow_field(type = "arrow_convert::field::LargeString")]
-    status: String,
-    created_at: Option<RestateDateTime>,
-    modified_at: Option<RestateDateTime>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    pinned_deployment_id: Option<String>,
-    retry_count: Option<u64>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    last_failure: Option<String>,
-    last_failure_related_entry_index: Option<u64>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    last_failure_related_entry_name: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    last_failure_related_entry_type: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    last_attempt_deployment_id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    last_attempt_server: Option<String>,
-    next_retry_at: Option<RestateDateTime>,
-    last_start_at: Option<RestateDateTime>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    invoked_by_id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    invoked_by_target: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    comp_latest_deployment: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
+#[derive(Deserialize)]
+struct InvocationQueryResult {
+    last_start_at: Option<DateTime<Local>>,
     known_deployment_id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    trace_id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     completion_result: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     completion_failure: Option<String>,
-    full_count: i64,
+    #[serde(flatten)]
+    invocation: Invocation,
+    full_count: usize,
 }
 
 pub async fn find_active_invocations(
@@ -865,13 +655,13 @@ pub async fn find_active_invocations(
             {select_idempotency_key},
             inv.status,
             inv.created_at,
-            inv.modified_at,
+            inv.modified_at as state_modified_at,
             inv.pinned_deployment_id,
-            inv.retry_count,
-            inv.last_failure,
-            inv.last_failure_related_entry_index,
-            inv.last_failure_related_entry_name,
-            inv.last_failure_related_entry_type,
+            inv.retry_count as num_retries,
+            inv.last_failure as last_failure_message,
+            inv.last_failure_related_entry_index as last_failure_entry_index,
+            inv.last_failure_related_entry_name as last_failure_entry_name,
+            inv.last_failure_related_entry_type as last_failure_entry_ty,
             inv.last_attempt_deployment_id,
             inv.last_attempt_server,
             inv.next_retry_at,
@@ -893,55 +683,35 @@ pub async fn find_active_invocations(
         LIMIT {limit}"
     );
     let rows = client
-        .run_query_and_map_results::<InvocationRowResult>(query)
+        .run_json_query::<InvocationQueryResult>(query)
         .await?;
     for row in rows {
-        let status = row.status.parse().expect("Unexpected status");
-
         // Running duration
-        let last_start: Option<DateTime<Local>> = row.last_start_at.map(Into::into);
-        let current_attempt_duration = if status == InvocationState::Running {
-            last_start.map(|last_start| Local::now().signed_duration_since(last_start))
+        let current_attempt_duration = if row.invocation.status == InvocationState::Running {
+            row.last_start_at
+                .map(|last_start| Local::now().signed_duration_since(last_start))
         } else {
             None
         };
 
-        let last_attempt_started_at = if status == InvocationState::BackingOff {
-            last_start
+        let last_attempt_started_at = if row.invocation.status == InvocationState::BackingOff {
+            row.last_start_at
         } else {
             None
         };
 
         active.push(Invocation {
-            id: row.id.expect("id"),
-            target: row.target.expect("target"),
-            target_service_ty: parse_service_type(&row.target_service_ty.expect("target")),
-            status,
-            created_at: row.created_at.expect("created_at").into(),
-            invoked_by_id: row.invoked_by_id,
-            invoked_by_target: row.invoked_by_target,
-            state_modified_at: row.modified_at.map(Into::into),
-            num_retries: row.retry_count,
-            next_retry_at: row.next_retry_at.map(Into::into),
-            pinned_deployment_id: row.pinned_deployment_id,
-            pinned_deployment_exists: row.known_deployment_id.is_some(),
-            last_failure_message: row.last_failure,
-            last_failure_entry_index: row.last_failure_related_entry_index,
-            last_failure_entry_name: row.last_failure_related_entry_name,
-            last_attempt_deployment_id: row.last_attempt_deployment_id,
-            last_attempt_server: row.last_attempt_server,
-            trace_id: row.trace_id,
             current_attempt_duration,
             last_attempt_started_at,
-            last_failure_entry_ty: row.last_failure_related_entry_type,
+            pinned_deployment_exists: row.known_deployment_id.is_some(),
             completion: InvocationCompletion::from_sql(
                 row.completion_result,
                 row.completion_failure,
             ),
-            idempotency_key: row.idempotency_key,
+            ..row.invocation
         });
 
-        full_count = row.full_count as usize;
+        full_count = row.full_count;
     }
     Ok((active, full_count))
 }
@@ -963,13 +733,42 @@ pub async fn get_service_invocations(
     .0)
 }
 
-#[allow(dead_code)]
-fn parse_service_type(s: &str) -> ServiceType {
-    match s {
-        "service" => ServiceType::Service,
-        "virtual_object" => ServiceType::VirtualObject,
-        "workflow" => ServiceType::Workflow,
-        _ => panic!("Unexpected instance type"),
+#[derive(serde_with::DeserializeFromStr)]
+enum DatafusionServiceType {
+    Service,
+    VirtualObject,
+    Workflow,
+}
+
+impl From<DatafusionServiceType> for ServiceType {
+    fn from(value: DatafusionServiceType) -> Self {
+        match value {
+            DatafusionServiceType::Service => Self::Service,
+            DatafusionServiceType::VirtualObject => Self::VirtualObject,
+            DatafusionServiceType::Workflow => Self::Workflow,
+        }
+    }
+}
+
+impl<'de> DeserializeAs<'de, ServiceType> for DatafusionServiceType {
+    fn deserialize_as<D>(deserializer: D) -> std::result::Result<ServiceType, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(DatafusionServiceType::deserialize(deserializer)?.into())
+    }
+}
+
+impl FromStr for DatafusionServiceType {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s {
+            "service" => Self::Service,
+            "virtual_object" => Self::VirtualObject,
+            "workflow" => Self::Workflow,
+            _ => return Err("Unexpected instance type".into()),
+        })
     }
 }
 
@@ -989,20 +788,16 @@ pub async fn get_invocation(
     .pop())
 }
 
-#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
-struct JournalRowResult {
-    index: Option<u32>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    entry_type: Option<String>,
-    completed: Option<bool>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct JournalQueryResult {
+    index: u32,
+    entry_type: String,
+    #[serde(default)]
+    completed: bool,
     invoked_id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     invoked_target: Option<String>,
-    sleep_wakeup_at: Option<RestateDateTime>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
+    sleep_wakeup_at: Option<DateTime<Local>>,
     name: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     promise_name: Option<String>,
 }
 
@@ -1041,11 +836,11 @@ pub async fn get_invocation_journal(
     let my_invocation_id: InvocationId = invocation_id.parse().expect("Invocation ID is not valid");
 
     let mut journal: Vec<_> = client
-        .run_query_and_map_results::<JournalRowResult>(query)
+        .run_json_query::<JournalQueryResult>(query)
         .await?
+        .into_iter()
         .map(|row| {
-            let index = row.index.expect("index");
-            let entry_type = match row.entry_type.expect("entry_type").as_str() {
+            let entry_type = match row.entry_type.as_str() {
                 "Sleep" => JournalEntryType::Sleep {
                     wakeup_at: row.sleep_wakeup_at.map(Into::into),
                 },
@@ -1057,9 +852,10 @@ pub async fn get_invocation_journal(
                     invocation_id: row.invoked_id,
                     invoked_target: row.invoked_target,
                 }),
-                "Awakeable" => {
-                    JournalEntryType::Awakeable(AwakeableIdentifier::new(my_invocation_id, index))
-                }
+                "Awakeable" => JournalEntryType::Awakeable(AwakeableIdentifier::new(
+                    my_invocation_id,
+                    row.index,
+                )),
                 "GetState" => JournalEntryType::GetState,
                 "SetState" => JournalEntryType::SetState,
                 "ClearState" => JournalEntryType::ClearState,
@@ -1069,9 +865,9 @@ pub async fn get_invocation_journal(
             };
 
             JournalEntry {
-                seq: index,
+                seq: row.index,
                 entry_type,
-                completed: row.completed.unwrap_or_default(),
+                completed: row.completed,
                 name: row.name,
             }
         })
@@ -1082,16 +878,14 @@ pub async fn get_invocation_journal(
     Ok(journal)
 }
 
-#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct StateKeysQueryResult {
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    service_name: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    service_key: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
-    key: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeBinary>")]
-    value: Option<Vec<u8>>,
+    service_name: String,
+    service_key: String,
+    key: String,
+    #[serde_as(as = "serde_with::hex::Hex")]
+    value: Vec<u8>,
 }
 
 pub(crate) async fn get_state_keys(
@@ -1105,20 +899,15 @@ pub(crate) async fn get_state_keys(
         format!("service_name = '{service}'")
     };
     let sql = format!("SELECT service_name, service_key, key, value FROM state WHERE {filter}");
-    let query_result_iter = client
-        .run_query_and_map_results::<StateKeysQueryResult>(sql)
-        .await?;
+    let query_result_iter = client.run_json_query::<StateKeysQueryResult>(sql).await?;
 
     #[allow(clippy::mutable_key_type)]
     let mut user_state: HashMap<ServiceId, HashMap<String, Bytes>> = HashMap::new();
     for row in query_result_iter {
         user_state
-            .entry(ServiceId::new(
-                row.service_name.expect("service_name"),
-                row.service_key.expect("service_key"),
-            ))
+            .entry(ServiceId::new(row.service_name, row.service_key))
             .or_default()
-            .insert(row.key.expect("key"), Bytes::from(row.value.expect("key")));
+            .insert(row.key, Bytes::from(row.value));
     }
     Ok(user_state)
 }

@@ -14,29 +14,28 @@ use super::errors::ApiError;
 
 use crate::cli_env::CliEnv;
 use crate::clients::AdminClient;
-use arrow::array::{AsArray, StructArray};
-use arrow::datatypes::{ArrowPrimitiveType, Int64Type, SchemaRef};
+use arrow::array::AsArray;
+use arrow::datatypes::{Int64Type, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
-use arrow_convert::deserialize::{arrow_array_deserialize_iterator, ArrowDeserialize};
-use arrow_convert::field::ArrowField;
 use bytes::Buf;
 use itertools::Itertools;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info};
+use url::Url;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
 pub enum Error {
     Api(#[from] Box<ApiError>),
+    #[error("The CLI is not compatible with the Restate server '{0}', which lacks JSON /query support. Please update the CLI to match the Restate server version '{1}'.")]
+    JSONSupport(Url, String),
     #[error("(Protocol error) {0}")]
     Serialization(#[from] serde_json::Error),
     Network(#[from] reqwest::Error),
     Arrow(#[from] ArrowError),
-    #[error("Mapping from query '{0}': {1}")]
-    Mapping(String, #[source] ArrowError),
     UrlParse(#[from] url::ParseError),
 }
 
@@ -66,8 +65,55 @@ impl DataFusionHttpClient {
             .prepare(reqwest::Method::POST, self.inner.versioned_url(["query"])))
     }
 
-    pub async fn run_query(&self, query: String) -> Result<SqlResponse, Error> {
-        debug!("Sending request sql query '{}'", query);
+    pub async fn run_json_query<T: serde::de::DeserializeOwned>(
+        &self,
+        query: String,
+    ) -> Result<Vec<T>, Error> {
+        debug!("Sending request sql query with json output '{}'", query);
+        let resp = self
+            .prepare()?
+            .header(http::header::ACCEPT, "application/json")
+            .json(&SqlQueryRequest { query })
+            .send()
+            .await?;
+
+        let http_status_code = resp.status();
+        let url = resp.url().clone();
+        if !resp.status().is_success() {
+            let body = resp.text().await?;
+            info!("Response from {} ({})", url, http_status_code);
+            info!("  {}", body);
+            // Wrap the error into ApiError
+            return Err(Error::Api(Box::new(ApiError {
+                http_status_code,
+                url,
+                body: serde_json::from_str(&body)?,
+            })));
+        }
+
+        match resp.headers().get(http::header::CONTENT_TYPE) {
+            Some(header) if header.eq("application/json") => {}
+            _ => {
+                return Err(Error::JSONSupport(
+                    self.inner.base_url.clone(),
+                    self.inner
+                        .restate_server_version
+                        .clone()
+                        .unwrap_or_else(|| "unknown".into()),
+                ));
+            }
+        }
+
+        // We read the entire payload first in-memory to simplify the logic, however,
+        // if this ever becomes a problem, we can use bytes_stream() (requires
+        // reqwest's stream feature) and stitch that with the stream reader.
+        let payload = resp.bytes().await?.reader();
+
+        Ok(serde_json::from_reader::<_, JsonResponse<T>>(payload)?.rows)
+    }
+
+    pub async fn run_arrow_query(&self, query: String) -> Result<SqlResponse, Error> {
+        debug!("Sending request sql query with arrow output '{}'", query);
         let resp = self
             .prepare()?
             .json(&SqlQueryRequest { query })
@@ -103,35 +149,14 @@ impl DataFusionHttpClient {
         Ok(SqlResponse { schema, batches })
     }
 
-    pub async fn run_query_and_map_results<T: ArrowDeserialize + ArrowField<Type = T> + 'static>(
-        &self,
-        query: String,
-    ) -> Result<impl Iterator<Item = T>, Error> {
-        let sql_response = self.run_query(query.clone()).await?;
-        let mut results = Vec::new();
-        for batch in sql_response.batches {
-            let n = batch.num_rows();
-            if n == 0 {
-                continue;
-            }
-            results.reserve(n);
-
-            // Map results using arrow_convert
-            for row in arrow_array_deserialize_iterator::<T>(&StructArray::from(batch))
-                .map_err(|e| Error::Mapping(query.clone(), e))?
-            {
-                results.push(row);
-            }
-        }
-        Ok(results.into_iter())
-    }
-
     pub async fn run_count_agg_query(&self, query: String) -> Result<i64, Error> {
-        let resp = self.run_query(query).await?;
+        let resp = self.run_arrow_query(query).await?;
 
-        Ok(get_column_as::<Int64Type>(&resp.batches, 0)
+        Ok(resp
+            .batches
             .first()
-            .map(|v| **v)
+            .and_then(|batch| batch.column(0).as_primitive::<Int64Type>().values().first())
+            .cloned()
             .unwrap_or(0))
     }
 
@@ -152,24 +177,6 @@ impl DataFusionHttpClient {
     }
 }
 
-fn get_column_as<T>(
-    batches: &[RecordBatch],
-    column_index: usize,
-) -> Vec<&<T as ArrowPrimitiveType>::Native>
-where
-    T: ArrowPrimitiveType,
-{
-    let mut output = vec![];
-    for batch in batches {
-        let col = batch.column(column_index);
-        assert_eq!(col.data_type(), &T::DATA_TYPE);
-
-        let l = col.as_primitive::<T>();
-        output.extend(l.values());
-    }
-    output
-}
-
 #[derive(Serialize, Debug, Clone)]
 pub struct SqlQueryRequest {
     pub query: String,
@@ -178,6 +185,11 @@ pub struct SqlQueryRequest {
 pub struct SqlResponse {
     pub schema: SchemaRef,
     pub batches: Vec<RecordBatch>,
+}
+
+#[derive(Deserialize)]
+pub struct JsonResponse<T> {
+    pub rows: Vec<T>,
 }
 
 // Ensure that client is Send + Sync. Compiler will fail if it's not.

@@ -27,7 +27,8 @@ use crate::clients::AdminClientInterface;
 use super::errors::ApiError;
 
 /// Min/max supported admin API versions
-pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
+// we can support *some* v1 clusters (those that have json /query, which was introduced in 1.1.4)
+pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
 pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
 
 #[derive(Error, Debug)]
@@ -112,6 +113,7 @@ pub struct AdminClient {
     pub(crate) bearer_token: Option<String>,
     pub(crate) request_timeout: Duration,
     pub(crate) admin_api_version: AdminApiVersion,
+    pub(crate) restate_server_version: Option<String>,
 }
 
 impl AdminClient {
@@ -136,6 +138,7 @@ impl AdminClient {
             bearer_token,
             request_timeout: CliContext::get().request_timeout(),
             admin_api_version: AdminApiVersion::Unknown,
+            restate_server_version: None,
         };
 
         if let Ok(envelope) = client.version().await {
@@ -171,9 +174,11 @@ impl AdminClient {
             let mut segments = url.path_segments_mut().expect("Bad url!");
             segments.pop_if_empty();
 
-            match self.admin_api_version.as_path_segment() {
-                Some(version) => segments.push(version).extend(path),
-                None => segments.extend(path),
+            match self.admin_api_version {
+                AdminApiVersion::Unknown => segments.extend(path),
+                // v1 clusters didn't support versioned urls
+                AdminApiVersion::V1 => segments.extend(path),
+                AdminApiVersion::V2 => segments.push("v2").extend(path),
             };
         }
 
@@ -188,6 +193,7 @@ impl AdminClient {
             MIN_ADMIN_API_VERSION..=MAX_ADMIN_API_VERSION,
             version_information.min_admin_api_version..=version_information.max_admin_api_version,
         ) {
+            client.restate_server_version = Some(version_information.version);
             client.admin_api_version = admin_api_version;
             Ok(client)
         } else {

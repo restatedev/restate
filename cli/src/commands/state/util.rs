@@ -14,27 +14,30 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context};
-use arrow_convert::{ArrowDeserialize, ArrowField};
 use base64::alphabet::URL_SAFE;
 use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
 use comfy_table::{Cell, Table};
 use itertools::Itertools;
 use restate_cli_util::c_warn;
+use serde::Deserialize;
 use serde_json::Value;
 
 use restate_admin_rest_model::services::ModifyServiceStateRequest;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::invocation::ServiceType;
 use restate_types::state_mut::StateMutationVersion;
+use serde_with::serde_as;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, MetasClientError};
 
-#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct StateEntriesQueryResult {
-    key: Option<String>,
-    value: Option<Vec<u8>>,
+    key: String,
+    #[serde_as(as = "serde_with::hex::Hex")]
+    value: Vec<u8>,
 }
 
 pub(crate) async fn get_current_state(
@@ -67,14 +70,14 @@ pub(crate) async fn get_current_state(
         "select key, value from state where service_name = '{service}' and service_key = '{key}' ;"
     );
     let query_result_iter = sql_client
-        .run_query_and_map_results::<StateEntriesQueryResult>(sql)
+        .run_json_query::<StateEntriesQueryResult>(sql)
         .await?;
     //
     // 2. convert the state to a map from str keys -> byte values.
     //
     let mut user_state = HashMap::new();
     for row in query_result_iter {
-        user_state.insert(row.key.expect("key"), row.value.expect("value").into());
+        user_state.insert(row.key, row.value.into());
     }
     Ok(user_state)
 }
