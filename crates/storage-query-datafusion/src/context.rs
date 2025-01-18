@@ -73,7 +73,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             sis.last_failure_related_entry_name,
             sis.last_failure_related_entry_type,
 
-            CASE
+            arrow_cast(CASE
                 WHEN ss.status = 'inboxed' THEN 'pending'
                 WHEN ss.status = 'scheduled' THEN 'scheduled'
                 WHEN ss.status = 'completed' THEN 'completed'
@@ -81,7 +81,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
                 WHEN sis.in_flight THEN 'running'
                 WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
                 ELSE 'ready'
-            END AS status,
+            END, 'LargeUtf8') AS status,
             ss.completion_result,
             ss.completion_failure
         FROM sys_invocation_status ss

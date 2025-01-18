@@ -15,7 +15,7 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 use anyhow::Result;
-use arrow::array::{Array, ArrayAccessor, AsArray, StringArray};
+use arrow::array::{Array, ArrayAccessor, AsArray, LargeStringArray};
 use arrow::datatypes::ArrowTemporalType;
 use arrow::record_batch::RecordBatch;
 use arrow_convert::{ArrowDeserialize, ArrowField};
@@ -74,7 +74,7 @@ where
     fn value_string(&self, index: usize) -> String;
 }
 
-impl OptionalArrowOwnedString for &StringArray {
+impl OptionalArrowOwnedString for &LargeStringArray {
     fn value_string_opt(&self, index: usize) -> Option<String> {
         if !self.is_null(index) {
             Some(self.value(index).to_owned())
@@ -89,11 +89,11 @@ impl OptionalArrowOwnedString for &StringArray {
 }
 
 fn value_as_string(batch: &RecordBatch, col: usize, row: usize) -> String {
-    batch.column(col).as_string::<i32>().value_string(row)
+    batch.column(col).as_string::<i64>().value_string(row)
 }
 
 fn value_as_string_opt(batch: &RecordBatch, col: usize, row: usize) -> Option<String> {
-    batch.column(col).as_string::<i32>().value_string_opt(row)
+    batch.column(col).as_string::<i64>().value_string_opt(row)
 }
 
 fn value_as_i64(batch: &RecordBatch, col: usize, row: usize) -> i64 {
@@ -516,15 +516,15 @@ pub async fn get_service_status(
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
             for i in 0..batch.num_rows() {
-                let service = batch.column(0).as_string::<i32>().value_string(i);
-                let handler = batch.column(1).as_string::<i32>().value_string(i);
+                let service = batch.column(0).as_string::<i64>().value_string(i);
+                let handler = batch.column(1).as_string::<i64>().value_string(i);
                 let num_invocations = batch
                     .column(2)
                     .as_primitive::<arrow::datatypes::Int64Type>()
                     .value(i);
                 let oldest_at = value_as_dt_opt(&batch, 3, i).unwrap();
 
-                let oldest_invocation = batch.column(4).as_string::<i32>().value_string(i);
+                let oldest_invocation = batch.column(4).as_string::<i64>().value_string(i);
 
                 let stats = HandlerStateStats {
                     num_invocations,
@@ -650,7 +650,7 @@ pub async fn get_locked_keys_status(
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
             for i in 0..batch.num_rows() {
-                let service = batch.column(0).as_string::<i32>().value(i);
+                let service = batch.column(0).as_string::<i64>().value(i);
                 let key = value_as_string(&batch, 1, i);
                 let num_pending = value_as_i64(&batch, 2, i);
 
@@ -693,7 +693,7 @@ pub async fn get_locked_keys_status(
                 let key = value_as_string(&batch, 1, i);
                 let status = batch
                     .column(2)
-                    .as_string::<i32>()
+                    .as_string::<i64>()
                     .value(i)
                     .parse()
                     .expect("Unexpected status");
@@ -702,7 +702,7 @@ pub async fn get_locked_keys_status(
                 let created_at = value_as_dt_opt(&batch, 5, i);
                 let modified_at = value_as_dt_opt(&batch, 6, i);
                 let pinned_deployment_id = value_as_string_opt(&batch, 7, i);
-                let last_attempt_eps = batch.column(8).as_string::<i32>();
+                let last_attempt_eps = batch.column(8).as_string::<i64>();
                 let last_failure_message = value_as_string_opt(&batch, 9, i);
                 let next_retry_at = value_as_dt_opt(&batch, 10, i);
                 let last_start = value_as_dt_opt(&batch, 11, i);
@@ -787,6 +787,7 @@ struct InvocationRowResult {
     target_service_ty: Option<String>,
     #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     idempotency_key: Option<String>,
+    #[arrow_field(type = "arrow_convert::field::LargeString")]
     status: String,
     created_at: Option<RestateDateTime>,
     modified_at: Option<RestateDateTime>,
