@@ -11,49 +11,32 @@
 mod storage;
 mod store;
 
-use crate::network::{
-    ConnectionManager, MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, NetworkMessage,
-    Networking,
-};
+use crate::network::{MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, NetworkMessage};
 use crate::raft::store::BuildError;
-use crate::{network, MetadataStoreRunner};
+use crate::{network, MemberId, MetadataStoreRunner};
 use anyhow::Context;
-use arc_swap::ArcSwapOption;
 use bytes::{Buf, BufMut};
 use protobuf::Message as ProtobufMessage;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::MetadataWriter;
-use restate_types::config::{RaftOptions, RocksDbOptions};
+use restate_types::config::RocksDbOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
-use std::sync::Arc;
 pub use store::RaftMetadataStore;
-use tokio::sync::mpsc;
 
 pub(crate) async fn create_store(
-    raft_options: &RaftOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataServerStatus>,
     metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> Result<MetadataStoreRunner<RaftMetadataStore>, BuildError> {
-    let (router_tx, router_rx) = mpsc::channel(128);
-    let connection_manager = ConnectionManager::new(raft_options.id.get(), router_tx);
-    let store = RaftMetadataStore::create(
-        raft_options,
-        rocksdb_options,
-        Networking::new(connection_manager.clone()),
-        router_rx,
-        metadata_writer,
-        health_status,
-    )
-    .await?;
+    let store = RaftMetadataStore::create(rocksdb_options, metadata_writer, health_status).await?;
 
     server_builder.register_grpc_service(
         MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
-            Arc::new(ArcSwapOption::from_pointee(connection_manager)),
-            None,
+            store.connection_manager(),
+            Some(store.join_cluster_handle()),
         )),
         network::FILE_DESCRIPTOR_SET,
     );
@@ -76,4 +59,9 @@ impl NetworkMessage for raft::prelude::Message {
         ProtobufMessage::parse_from_reader(&mut buffer.reader())
             .context("failed deserializing message")
     }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct RaftConfiguration {
+    own_member_id: MemberId,
 }

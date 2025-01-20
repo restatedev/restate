@@ -40,6 +40,7 @@ prost-dto = { workspace = true }
 prost-types = { workspace = true }
 protobuf = "2.28.0"
 raft = { version = "0.7.0" }
+raft-proto = { version= "0.7.0" }
 rand = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }

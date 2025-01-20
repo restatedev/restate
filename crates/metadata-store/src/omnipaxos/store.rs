@@ -351,7 +351,7 @@ impl OmniPaxosMetadataStore {
         let configuration_id = 1;
 
         let configuration = Configuration::pinned();
-        let restate_node_id = prepare_initial_nodes_configuration(
+        let node_id = prepare_initial_nodes_configuration(
             &configuration,
             configuration_id,
             &mut nodes_configuration,
@@ -359,13 +359,13 @@ impl OmniPaxosMetadataStore {
 
         // set our own omni-paxos node id to be Restate's plain node id
         let own_member_id = MemberId {
-            node_id: u64::from(u32::from(restate_node_id)),
+            node_id,
             storage_id: self.storage_id,
         };
 
         let cluster_config = ClusterConfig {
             configuration_id,
-            nodes: vec![own_member_id.node_id],
+            nodes: vec![to_node_id(own_member_id.node_id)],
             flexible_quorum: None,
         };
 
@@ -442,7 +442,7 @@ enum Provisioned {
 struct Active {
     omni_paxos: Option<OmniPaxos>,
     cluster_config: ClusterConfig,
-    members: HashMap<NodeId, StorageId>,
+    members: HashMap<PlainNodeId, StorageId>,
 
     connection_manager: Arc<ArcSwapOption<ConnectionManager<OmniPaxosMessage>>>,
     networking: Networking<OmniPaxosMessage>,
@@ -481,11 +481,12 @@ impl Active {
         let members = omni_paxos_configuration.members;
 
         let (router_tx, router_rx) = mpsc::channel(128);
-        let new_connection_manager = ConnectionManager::new(own_member_id.node_id, router_tx);
+        let new_connection_manager =
+            ConnectionManager::new(to_node_id(own_member_id.node_id), router_tx);
         let mut networking = Networking::new(new_connection_manager.clone());
 
         networking.register_address(
-            own_member_id.node_id,
+            to_node_id(own_member_id.node_id),
             Configuration::pinned().common.advertised_address.clone(),
         );
 
@@ -503,7 +504,7 @@ impl Active {
         connection_manager.store(Some(Arc::new(new_connection_manager)));
 
         let omni_paxos = Self::create_omni_paxos(
-            own_member_id.node_id,
+            to_node_id(own_member_id.node_id),
             cluster_config.clone(),
             rocksdb_storage,
         );
@@ -673,6 +674,7 @@ impl Active {
                 .omni_paxos()
                 .get_current_leader()
                 .and_then(|(node_id, _)| {
+                    let node_id = to_plain_node_id(node_id);
                     self.members
                         .get(&node_id)
                         .map(|storage_id| MemberId::new(node_id, *storage_id))
@@ -741,7 +743,7 @@ impl Active {
         self.is_leader = self
             .omni_paxos()
             .get_current_leader()
-            .is_some_and(|(node_id, _)| node_id == self.own_member_id.node_id);
+            .is_some_and(|(node_id, _)| to_plain_node_id(node_id) == self.own_member_id.node_id);
 
         if previous_is_leader && !self.is_leader {
             debug!(configuration_id = %self.cluster_config.configuration_id, "Lost leadership");
@@ -885,7 +887,7 @@ impl Active {
             debug!(configuration_id = %new_cluster_config.configuration_id, "Continue as part of new configuration: {:?}", new_omni_paxos_configuration.cluster_config.nodes);
 
             let omni_paxos = Self::create_omni_paxos(
-                new_omni_paxos_configuration.own_member_id.node_id,
+                to_node_id(new_omni_paxos_configuration.own_member_id.node_id),
                 new_omni_paxos_configuration.cluster_config,
                 rocksdb_storage,
             );
@@ -926,12 +928,11 @@ impl Active {
     fn update_membership_in_nodes_configuration(
         &mut self,
         configuration_id: ConfigurationId,
-        new_members: &HashMap<NodeId, StorageId>,
+        new_members: &HashMap<PlainNodeId, StorageId>,
     ) -> NodesConfiguration {
         let mut new_nodes_configuration = self.kv_storage.last_seen_nodes_configuration().clone();
 
         for (node_id, node_config) in new_nodes_configuration.iter_mut() {
-            let node_id = u64::from(u32::from(node_id));
             if new_members.contains_key(&node_id) {
                 node_config.metadata_server_config.metadata_server_state =
                     MetadataServerState::Active(configuration_id);
@@ -989,7 +990,8 @@ impl Active {
 
     fn handle_join_request(&mut self, join_cluster_request: JoinClusterRequest) {
         let (response_tx, joining_node_id, joining_storage_id) = join_cluster_request.into_inner();
-        let joining_member_id = MemberId::new(joining_node_id, joining_storage_id);
+        let joining_member_id =
+            MemberId::new(to_plain_node_id(joining_node_id), joining_storage_id);
 
         trace!("Handle join request from node '{}'", joining_member_id);
 
@@ -1065,7 +1067,7 @@ impl Active {
         omni_paxos: &OmniPaxos,
         member_id: MemberId,
         current_cluster_config: &ClusterConfig,
-        members: HashMap<NodeId, StorageId>,
+        members: HashMap<PlainNodeId, StorageId>,
     ) -> JoinClusterResponse {
         let metadata_store_config = flexbuffers::to_vec(&OmniPaxosConfiguration {
             own_member_id: member_id,
@@ -1117,11 +1119,8 @@ impl Active {
             .pending_join_requests
             .insert(member_id, reconfiguration_callback)
         {
-            let _ = previous_callback.send(Err(JoinClusterError::ConcurrentRequest(
-                PlainNodeId::from(
-                    u32::try_from(member_id.node_id).expect("node id is derived from PlainNodeId"),
-                ),
-            )));
+            let _ =
+                previous_callback.send(Err(JoinClusterError::ConcurrentRequest(member_id.node_id)));
         }
     }
 
@@ -1153,7 +1152,7 @@ impl Active {
     }
 
     /// Checks whether the given node id with its storage id is part of the current set of members
-    fn is_member(member_id: MemberId, members: &HashMap<NodeId, StorageId>) -> bool {
+    fn is_member(member_id: MemberId, members: &HashMap<PlainNodeId, StorageId>) -> bool {
         members
             .get(&member_id.node_id)
             .is_some_and(|storage_id| *storage_id == member_id.storage_id)
@@ -1475,5 +1474,13 @@ impl MetadataStoreBackend for OmniPaxosMetadataStore {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct OmniPaxosConfigMetadata {
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    members: HashMap<NodeId, StorageId>,
+    members: HashMap<PlainNodeId, StorageId>,
+}
+
+fn to_plain_node_id(node_id: NodeId) -> PlainNodeId {
+    PlainNodeId::from(u32::try_from(node_id).expect("node id is derived from PlainNodeId"))
+}
+
+fn to_node_id(plain_node_id: PlainNodeId) -> NodeId {
+    u64::from(u32::from(plain_node_id))
 }
