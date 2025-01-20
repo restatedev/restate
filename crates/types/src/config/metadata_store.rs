@@ -8,8 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +18,6 @@ use restate_serde_util::NonZeroByteCount;
 use tracing::warn;
 
 use super::{data_dir, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
-use crate::net::AdvertisedAddress;
 
 /// # Metadata store options
 #[serde_as]
@@ -73,7 +71,7 @@ pub struct MetadataStoreOptions {
 pub enum MetadataStoreKind {
     #[default]
     Local,
-    Raft(RaftOptions),
+    Raft,
     Omnipaxos,
 }
 
@@ -129,15 +127,4 @@ impl Default for MetadataStoreOptions {
             kind: MetadataStoreKind::default(),
         }
     }
-}
-
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct RaftOptions {
-    pub id: NonZeroU64,
-    #[cfg_attr(feature = "schemars", schemars(with = "Vec<(u64, String)>"))]
-    #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    pub peers: HashMap<NonZeroU64, AdvertisedAddress>,
 }

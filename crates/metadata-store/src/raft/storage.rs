@@ -8,7 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::util;
+use crate::raft::RaftConfiguration;
+use crate::{util, StorageId};
+use bytes::{BufMut, BytesMut};
+use flexbuffers::{DeserializationError, SerializationError};
 use protobuf::{Message, ProtobufError};
 use raft::eraftpb::{ConfState, Entry, Snapshot};
 use raft::prelude::HardState;
@@ -18,8 +21,11 @@ use restate_rocksdb::{
     RocksError,
 };
 use restate_types::config::{data_dir, MetadataStoreOptions, RocksDbOptions};
+use restate_types::errors::GenericError;
 use restate_types::live::BoxedLiveLoad;
-use rocksdb::{BoundColumnFamily, ReadOptions, WriteBatch, WriteOptions, DB};
+use restate_types::nodes_config::NodesConfiguration;
+use rocksdb::{BoundColumnFamily, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions, DB};
+use std::array::TryFromSliceError;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::{error, mem};
@@ -32,6 +38,9 @@ const FIRST_RAFT_INDEX: u64 = 1;
 const RAFT_ENTRY_DISCRIMINATOR: u8 = 0x01;
 const HARD_STATE_DISCRIMINATOR: u8 = 0x02;
 const CONF_STATE_DISCRIMINATOR: u8 = 0x03;
+const STORAGE_ID: u8 = 0x04;
+const RAFT_CONFIGURATION: u8 = 0x05;
+const NODES_CONFIGURATION: u8 = 0x06;
 
 const RAFT_ENTRY_KEY_LENGTH: usize = 9;
 
@@ -47,12 +56,16 @@ pub enum Error {
     RocksDb(#[from] RocksError),
     #[error("failed reading/writing from/to raw RocksDb: {0}")]
     RocksDbRaw(#[from] rocksdb::Error),
-    #[error("failed encoding value: {0}")]
-    Encode(#[from] ProtobufError),
+    #[error("failed encoding protobuf value: {0}")]
+    EncodeProto(#[from] ProtobufError),
     #[error("index '{index}' is out of bounds; last index is '{last_index}'")]
     IndexOutOfBounds { index: u64, last_index: u64 },
     #[error("raft log has been compacted; first index is {0}")]
     Compacted(u64),
+    #[error("failed decoding value: {0}")]
+    Decode(GenericError),
+    #[error("failed encoding value: {0}")]
+    Encode(GenericError),
 }
 
 /// Map our internal error type to [`raft::Error`] to fit the [`Storage`] trait definition.
@@ -61,8 +74,10 @@ impl From<Error> for raft::Error {
         match value {
             err @ Error::RocksDb(_)
             | err @ Error::RocksDbRaw(_)
-            | err @ Error::IndexOutOfBounds { .. } => storage_error(err),
-            Error::Encode(err) => raft::Error::CodecError(err),
+            | err @ Error::IndexOutOfBounds { .. }
+            | err @ Error::Decode(_)
+            | err @ Error::Encode(_) => storage_error(err),
+            Error::EncodeProto(err) => raft::Error::CodecError(err),
             Error::Compacted(_) => raft::Error::Store(StorageError::Compacted),
         }
     }
@@ -73,7 +88,7 @@ pub struct RocksDbStorage {
     rocksdb: Arc<RocksDb>,
 
     last_index: u64,
-    buffer: Vec<u8>,
+    buffer: BytesMut,
 }
 
 impl RocksDbStorage {
@@ -108,7 +123,7 @@ impl RocksDbStorage {
             db,
             rocksdb,
             last_index,
-            buffer: Vec::with_capacity(1024),
+            buffer: BytesMut::with_capacity(1024),
         })
     }
 }
@@ -175,14 +190,31 @@ impl RocksDbStorage {
         self.put_value(key, conf_state).await
     }
 
+    pub async fn store_storage_id(&mut self, storage_id: StorageId) -> Result<(), Error> {
+        let key = Self::storage_id_key();
+        self.put_bytes(key, storage_id.to_le_bytes()).await
+    }
+
+    pub fn get_storage_id(&self) -> Result<Option<StorageId>, Error> {
+        if let Some(bytes) = self.get_bytes(Self::storage_id_key())? {
+            Ok(Some(StorageId::from_le_bytes(
+                bytes
+                    .as_ref()
+                    .try_into()
+                    .map_err(|err: TryFromSliceError| Error::Decode(err.into()))?,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn get_entry(&self, idx: u64) -> Result<Option<Entry>, Error> {
         let key = Self::raft_entry_key(idx);
         self.get_value(key)
     }
 
     fn get_value<T: Message + Default>(&self, key: impl AsRef<[u8]>) -> Result<Option<T>, Error> {
-        let cf = self.get_cf_handle();
-        let bytes = self.db.get_pinned_cf(&cf, key)?;
+        let bytes = self.get_bytes(key)?;
 
         if let Some(bytes) = bytes {
             let mut value = T::default();
@@ -199,7 +231,7 @@ impl RocksDbStorage {
         value: T,
     ) -> Result<(), Error> {
         self.buffer.clear();
-        value.write_to_vec(&mut self.buffer)?;
+        value.write_to_writer(&mut (&mut self.buffer).writer())?;
 
         let cf = self.get_cf_handle();
         let mut write_batch = WriteBatch::default();
@@ -207,6 +239,32 @@ impl RocksDbStorage {
         self.rocksdb
             .write_batch(
                 "put_value",
+                Priority::High,
+                IoMode::Default,
+                self.write_options(),
+                write_batch,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    fn get_bytes(&self, key: impl AsRef<[u8]>) -> Result<Option<DBPinnableSlice>, Error> {
+        let cf = self.get_cf_handle();
+        self.db.get_pinned_cf(&cf, key).map_err(Into::into)
+    }
+
+    async fn put_bytes(
+        &mut self,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Result<(), Error> {
+        let cf = self.get_cf_handle();
+
+        let mut write_batch = WriteBatch::default();
+        write_batch.put_cf(&cf, key.as_ref(), value.as_ref());
+        self.rocksdb
+            .write_batch(
+                "put_bytes",
                 Priority::High,
                 IoMode::Default,
                 self.write_options(),
@@ -229,7 +287,7 @@ impl RocksDbStorage {
                 let key = Self::raft_entry_key(entry.index);
 
                 buffer.clear();
-                entry.write_to_vec(&mut buffer)?;
+                entry.write_to_writer(&mut (&mut buffer).writer())?;
 
                 write_batch.put_cf(&cf, key, &buffer);
                 last_index = entry.index;
@@ -273,6 +331,18 @@ impl RocksDbStorage {
         [CONF_STATE_DISCRIMINATOR]
     }
 
+    fn storage_id_key() -> [u8; 1] {
+        [STORAGE_ID]
+    }
+
+    fn raft_configuration_key() -> [u8; 1] {
+        [RAFT_CONFIGURATION]
+    }
+
+    fn nodes_configuration_key() -> [u8; 1] {
+        [NODES_CONFIGURATION]
+    }
+
     fn check_index(&self, idx: u64) -> Result<(), Error> {
         if idx < self.first_index() {
             return Err(Error::Compacted(self.first_index()));
@@ -293,7 +363,8 @@ impl RocksDbStorage {
             return Err(Error::Compacted(self.first_index()));
         }
 
-        if high > self.last_index() + 1 {
+        // high is exclusive
+        if high - 1 > self.last_index() {
             return Err(Error::IndexOutOfBounds {
                 index: high,
                 last_index: self.last_index(),
@@ -313,6 +384,60 @@ impl RocksDbStorage {
 
     pub fn apply_snapshot(&mut self, _snapshot: Snapshot) -> Result<(), Error> {
         unimplemented!("snapshots are currently not supported");
+    }
+
+    pub async fn store_raft_configuration(
+        &mut self,
+        raft_configuration: &RaftConfiguration,
+    ) -> Result<(), Error> {
+        self.put_bytes(
+            Self::raft_configuration_key(),
+            &Self::serialize_value(raft_configuration).map_err(|err| Error::Encode(err.into()))?,
+        )
+        .await
+    }
+
+    pub fn get_raft_configuration(&self) -> Result<Option<RaftConfiguration>, Error> {
+        if let Some(bytes) = self.get_bytes(Self::raft_configuration_key())? {
+            Ok(Some(
+                Self::deserialize_value(bytes).map_err(|err| Error::Decode(err.into()))?,
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn store_nodes_configuration(
+        &mut self,
+        nodes_configuration: &NodesConfiguration,
+    ) -> Result<(), Error> {
+        self.put_bytes(
+            Self::nodes_configuration_key(),
+            &Self::serialize_value(nodes_configuration).map_err(|err| Error::Encode(err.into()))?,
+        )
+        .await
+    }
+
+    pub fn get_nodes_configuration(&self) -> Result<Option<NodesConfiguration>, Error> {
+        if let Some(bytes) = self.get_bytes(Self::nodes_configuration_key())? {
+            Ok(Some(
+                Self::deserialize_value(bytes).map_err(|err| Error::Decode(err.into()))?,
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn serialize_value<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, SerializationError> {
+        // todo replace with something more efficient
+        flexbuffers::to_vec(value)
+    }
+
+    fn deserialize_value<T: for<'a> serde::Deserialize<'a>>(
+        buf: impl AsRef<[u8]>,
+    ) -> Result<T, DeserializationError> {
+        // todo replace with something more efficient
+        flexbuffers::from_slice(buf.as_ref())
     }
 }
 

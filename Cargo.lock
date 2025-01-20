@@ -6705,6 +6705,7 @@ dependencies = [
  "prost-types",
  "protobuf",
  "raft",
+ "raft-proto",
  "rand",
  "restate-core",
  "restate-rocksdb",

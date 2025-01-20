@@ -13,7 +13,6 @@ use crate::omnipaxos::store::OmniPaxosMetadataStore;
 use crate::{network, MemberId, MetadataStoreRunner, Request, StorageId};
 use bytes::{Buf, BufMut};
 use omnipaxos::messages::Message;
-use omnipaxos::util::NodeId;
 use omnipaxos::ClusterConfig;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
@@ -23,6 +22,7 @@ use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{decode_from_flexbuffers, encode_as_flexbuffers};
+use restate_types::PlainNodeId;
 use std::collections::HashMap;
 
 mod storage;
@@ -48,7 +48,7 @@ struct OmniPaxosConfiguration {
     own_member_id: MemberId,
     cluster_config: ClusterConfig,
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    members: HashMap<NodeId, StorageId>,
+    members: HashMap<PlainNodeId, StorageId>,
 }
 
 pub(crate) async fn create_store(

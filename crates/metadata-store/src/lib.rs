@@ -19,7 +19,6 @@ mod util;
 
 use crate::grpc::handler::MetadataStoreHandler;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
-use ::omnipaxos::util::NodeId;
 use assert2::let_assert;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
@@ -235,8 +234,7 @@ pub async fn create_metadata_store(
         .await
         .map_err(anyhow::Error::from)
         .map(|store| store.boxed()),
-        MetadataStoreKind::Raft(ref raft_options) => raft::create_store(
-            raft_options,
+        MetadataStoreKind::Raft => raft::create_store(
             rocksdb_options,
             health_status,
             metadata_writer,
@@ -560,12 +558,12 @@ type StorageId = u64;
 )]
 #[prost(target = "crate::grpc_svc::MemberId")]
 pub struct MemberId {
-    node_id: NodeId,
+    node_id: PlainNodeId,
     storage_id: StorageId,
 }
 
 impl MemberId {
-    fn new(node_id: NodeId, storage_id: StorageId) -> Self {
+    fn new(node_id: PlainNodeId, storage_id: StorageId) -> Self {
         MemberId {
             node_id,
             storage_id,
@@ -575,10 +573,7 @@ impl MemberId {
 
 impl Display for MemberId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let plain_node_id = PlainNodeId::new(
-            u32::try_from(self.node_id).expect("node ids should be derived from PlainNodeIds"),
-        );
-        write!(f, "{}:{:x}", plain_node_id, self.storage_id & 0x0ffff)
+        write!(f, "{}:{:x}", self.node_id, self.storage_id & 0x0ffff)
     }
 }
 
