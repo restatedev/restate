@@ -15,6 +15,7 @@ use crate::journal_v2::{
 };
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
+use serde::Serialize;
 use std::fmt;
 
 /// See [`Notification`].
@@ -80,7 +81,7 @@ pub trait NotificationMetadata {
 }
 
 #[enum_dispatch(NotificationMetadata, EntryMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Notification {
     Completion(Completion),
     Signal(Signal),
@@ -101,7 +102,7 @@ impl Notification {
 }
 
 #[enum_dispatch(NotificationMetadata, EntryMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants, Serialize)]
 #[strum_discriminants(vis(pub))]
 #[strum_discriminants(name(CompletionType))]
 #[strum_discriminants(derive(serde::Serialize, serde::Deserialize))]
@@ -188,43 +189,43 @@ macro_rules! impl_completion_accessors {
 
 // --- Actual implementation of individual notifications
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GetLazyStateCompletion {
     pub completion_id: CompletionId,
     pub result: GetStateResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum GetStateResult {
     Void,
     Success(Bytes),
 }
 impl_completion_accessors!(GetLazyState);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GetLazyStateKeysCompletion {
     pub completion_id: CompletionId,
     pub state_keys: Vec<String>,
 }
 impl_completion_accessors!(GetLazyStateKeys);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GetPromiseCompletion {
     pub completion_id: CompletionId,
     pub result: GetPromiseResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum GetPromiseResult {
     Success(Bytes),
     Failure(Failure),
 }
 impl_completion_accessors!(GetPromise);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PeekPromiseCompletion {
     pub completion_id: CompletionId,
     pub result: PeekPromiseResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum PeekPromiseResult {
     Void,
     Success(Bytes),
@@ -232,68 +233,68 @@ pub enum PeekPromiseResult {
 }
 impl_completion_accessors!(PeekPromise);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CompletePromiseCompletion {
     pub completion_id: CompletionId,
     pub result: CompletePromiseResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum CompletePromiseResult {
     Void,
     Failure(Failure),
 }
 impl_completion_accessors!(CompletePromise);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SleepCompletion {
     pub completion_id: CompletionId,
 }
 impl_completion_accessors!(Sleep);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CallInvocationIdCompletion {
     pub completion_id: CompletionId,
     pub invocation_id: InvocationId,
 }
 impl_completion_accessors!(CallInvocationId);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CallCompletion {
     pub completion_id: CompletionId,
     pub result: CallResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum CallResult {
     Success(Bytes),
     Failure(Failure),
 }
 impl_completion_accessors!(Call);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RunCompletion {
     pub completion_id: CompletionId,
     pub result: RunResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum RunResult {
     Success(Bytes),
     Failure(Failure),
 }
 impl_completion_accessors!(Run);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AttachInvocationCompletion {
     pub completion_id: CompletionId,
     pub result: AttachInvocationResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum AttachInvocationResult {
     Success(Bytes),
     Failure(Failure),
 }
 impl_completion_accessors!(AttachInvocation);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GetInvocationOutputCompletion {
     pub completion_id: CompletionId,
     pub result: GetInvocationOutputResult,

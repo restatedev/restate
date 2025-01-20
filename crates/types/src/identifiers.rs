@@ -959,7 +959,7 @@ ulid_backed_id!(Subscription @with_resource_id);
 ulid_backed_id!(PartitionProcessorRpcRequest);
 ulid_backed_id!(Snapshot @with_resource_id);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AwakeableIdentifier {
     invocation_id: InvocationId,
     entry_index: EntryIndex,

@@ -28,6 +28,7 @@
 
 use bytestring::ByteString;
 use enum_dispatch::enum_dispatch;
+use serde::Serialize;
 use std::fmt;
 
 pub mod command;
@@ -53,7 +54,7 @@ pub type SignalName = ByteString;
 
 // -- Entry metadata
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum EntryType {
     Command(CommandType),
     Notification(NotificationType),
@@ -78,7 +79,7 @@ pub trait EntryMetadata {
 
 /// Root enum representing a decoded entry.
 #[enum_dispatch(EntryMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Entry {
     Command(Command),
     Notification(Notification),

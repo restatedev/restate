@@ -7243,6 +7243,7 @@ dependencies = [
  "restate-partition-store",
  "restate-rocksdb",
  "restate-service-protocol",
+ "restate-service-protocol-v4",
  "restate-storage-api",
  "restate-types",
  "schemars",
