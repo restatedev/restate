@@ -9,15 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::Deref;
 use std::sync::Arc;
 
 use futures::future::OptionFuture;
 use itertools::Itertools;
-use tokio::sync::watch;
-use tokio::time;
-use tokio::time::{Interval, MissedTickBehavior};
-use tracing::{debug, info, instrument, warn};
-
 use restate_bifrost::Bifrost;
 use restate_core::network::TransportConnect;
 use restate_core::{my_node_id, Metadata};
@@ -29,6 +25,10 @@ use restate_types::identifiers::PartitionId;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+use tokio::sync::watch;
+use tokio::time;
+use tokio::time::{Interval, MissedTickBehavior};
+use tracing::{info, instrument, trace, warn};
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
 use crate::cluster_controller::logs_controller::{
@@ -307,12 +307,19 @@ where
         level = "debug",
         skip(self),
         fields(
-            partition_table_version = ?self.partition_table_watcher,
-            logs_metadata_version = ?self.cluster_state_watcher.current().logs_metadata_version
+            partition_table_version = %self.partition_table_watcher.borrow().deref(),
+            logs_metadata_version = tracing::field::Empty,
         ),
     )]
     async fn trim_logs(&self) {
         let cluster_state = self.cluster_state_watcher.current();
+        if tracing::level_enabled!(tracing::Level::DEBUG) {
+            tracing::Span::current().record(
+                "logs_metadata_version",
+                tracing::field::display(cluster_state.logs_metadata_version),
+            );
+        }
+
         let current_trim_points = match get_current_trim_points(&cluster_state, &self.bifrost).await
         {
             Ok(trim_points) => trim_points,
@@ -322,21 +329,17 @@ where
             }
         };
 
-        let new_trim_points = TrimMode::from(self.snapshots_repository_configured, cluster_state)
-            .safe_trim_points(&current_trim_points, Some(self.log_trim_threshold));
-        debug!(?new_trim_points, "Safe trim points");
+        let new_trim_points = TrimMode::from(self.snapshots_repository_configured, &cluster_state)
+            .calculate_safe_trim_points(&current_trim_points, Some(self.log_trim_threshold));
+        trace!(?new_trim_points, "Calculated safe log trim points");
 
         for (log_id, (trim_point, partition_id)) in new_trim_points {
-            info!(
-                %partition_id,
-                "Trimming log {log_id} records ..='{trim_point}'"
-            );
             let result = self.bifrost.admin().trim(log_id, trim_point).await;
 
             if let Err(err) = result {
                 warn!(
                     %partition_id,
-                    "Failed to trim log {log_id}. This can lead to increased log server disk usage: {err}"
+                    "Failed to trim log {log_id}. This can lead to increased disk usage: {err}"
                 );
             }
         }
@@ -347,16 +350,10 @@ async fn get_current_trim_points(
     cluster_state: &ClusterState,
     bifrost: &Bifrost,
 ) -> Result<HashMap<LogId, Lsn>, restate_bifrost::Error> {
-    let partition_ids: Vec<PartitionId> = cluster_state
-        .nodes
-        .values()
-        .filter_map(|node_state| match node_state {
-            NodeState::Alive(alive_node) => Some(alive_node),
-            _ => None,
-        })
+    let partition_ids = cluster_state
+        .alive_nodes()
         .flat_map(|node| node.partitions.keys())
-        .cloned()
-        .collect();
+        .copied();
 
     let mut trim_points = HashMap::new();
     for partition in partition_ids {
@@ -382,65 +379,46 @@ fn log_trim_options(options: &AdminOptions) -> (Option<Interval>, Lsn) {
 
 enum TrimMode {
     PersistedLsn {
-        cluster_state: Arc<ClusterState>,
-        partition_statuses:
+        partition_status:
             BTreeMap<PartitionId, BTreeMap<GenerationalNodeId, PartitionProcessorStatus>>,
+        blocking_nodes: BTreeSet<PlainNodeId>,
     },
     ArchivedLsn {
-        partition_statuses:
+        partition_status:
             BTreeMap<PartitionId, BTreeMap<GenerationalNodeId, PartitionProcessorStatus>>,
     },
 }
 
 impl TrimMode {
-    fn from(snapshots_repository_configured: bool, cluster_state: Arc<ClusterState>) -> TrimMode {
-        let mut archived_lsns: BTreeMap<PartitionId, Lsn> = BTreeMap::new();
-        let mut suspect_or_dead_nodes: BTreeSet<PlainNodeId> = BTreeSet::new();
-
-        let mut partition_statuses: BTreeMap<
+    fn from(snapshots_repository_configured: bool, cluster_state: &Arc<ClusterState>) -> TrimMode {
+        let mut partition_status: BTreeMap<
             PartitionId,
             BTreeMap<GenerationalNodeId, PartitionProcessorStatus>,
         > = BTreeMap::new();
 
-        for (node_id, node_state) in cluster_state.nodes.iter() {
-            match node_state {
-                NodeState::Alive(AliveNode {
-                    generational_node_id,
-                    partitions,
-                    ..
-                }) => {
-                    for (partition_id, partition_processor_status) in partitions.iter() {
-                        let reported_archived_lsn = &partition_processor_status
-                            .last_archived_log_lsn
-                            .unwrap_or(Lsn::INVALID);
-
-                        archived_lsns
-                            .entry(*partition_id)
-                            .and_modify(|stored| {
-                                *stored = *(stored as &Lsn).max(reported_archived_lsn)
-                            })
-                            .or_insert(*reported_archived_lsn);
-
-                        partition_statuses
-                            .entry(*partition_id)
-                            .or_default()
-                            .insert(*generational_node_id, partition_processor_status.clone());
-                    }
-                }
-                NodeState::Dead(_) | NodeState::Suspect(_) => {
-                    suspect_or_dead_nodes.insert(*node_id);
-                }
+        for node in cluster_state.alive_nodes() {
+            let AliveNode {
+                generational_node_id,
+                partitions,
+                ..
+            } = node;
+            for (partition_id, partition_processor_status) in partitions.iter() {
+                partition_status
+                    .entry(*partition_id)
+                    .or_default()
+                    .insert(*generational_node_id, partition_processor_status.clone());
             }
         }
 
-        match snapshots_repository_configured
-            || Self::any_processors_report_archived_lsn(&cluster_state)
+        if snapshots_repository_configured
+            || Self::any_processors_report_archived_lsn(cluster_state)
         {
-            true => TrimMode::ArchivedLsn { partition_statuses },
-            false => TrimMode::PersistedLsn {
-                cluster_state,
-                partition_statuses,
-            },
+            TrimMode::ArchivedLsn { partition_status }
+        } else {
+            TrimMode::PersistedLsn {
+                partition_status,
+                blocking_nodes: cluster_state.dead_or_suspect_nodes().copied().collect(),
+            }
         }
     }
 
@@ -454,15 +432,16 @@ impl TrimMode {
     /// as archived LSNs are reported for all partitions, trimming can continue even in the presence of
     /// some dead nodes. This is because we assume that if those nodes are only temporarily down, they
     /// can fast-forward state from the snapshot repository when they return into service.
-    fn safe_trim_points(
+    fn calculate_safe_trim_points(
         &self,
         current_trim_points: &HashMap<LogId, Lsn>,
         threshold: Option<Lsn>,
     ) -> BTreeMap<LogId, (Lsn, PartitionId)> {
         let mut safe_trim_points = BTreeMap::new();
 
-        if self.is_trimming_suspended() {
+        if let Some(blocking_nodes) = self.get_trim_blockers() {
             warn!(
+                ?blocking_nodes,
                 "Log trimming is suspended until we can determine the processor state on all known cluster nodes. \
                 This may result in increased log usage. Prune permanently decommissioned nodes and/or enable partition \
                 snapshotting to unblock trimming."
@@ -471,8 +450,10 @@ impl TrimMode {
         }
 
         match self {
-            TrimMode::ArchivedLsn { partition_statuses } => {
-                for (partition_id, processor_status) in partition_statuses.iter() {
+            TrimMode::ArchivedLsn {
+                partition_status,
+            } => {
+                for (partition_id, processor_status) in partition_status.iter() {
                     let log_id = LogId::from(*partition_id);
 
                     // We allow trimming of archived partitions even in the presence of dead/suspect nodes; such
@@ -482,7 +463,7 @@ impl TrimMode {
                     // that a slow applier may hold off trimming indefinitely.
                     let min_applied_lsn = processor_status
                         .values()
-                        .map(|s| s.last_applied_log_lsn.unwrap_or(Lsn::INVALID))
+                        .filter_map(|s| s.last_applied_log_lsn)
                         .min()
                         .unwrap_or(Lsn::INVALID);
 
@@ -491,7 +472,7 @@ impl TrimMode {
                     // safe to take the max reported archived LSN across the board as the safe trim level.
                     let archived_lsn = processor_status
                         .values()
-                        .map(|s| s.last_archived_log_lsn.unwrap_or(Lsn::INVALID))
+                        .filter_map(|s| s.last_archived_log_lsn)
                         .max()
                         .unwrap_or(Lsn::INVALID);
 
@@ -500,9 +481,11 @@ impl TrimMode {
 
                     if archived_lsn >= current_trim_point + threshold.unwrap_or(Lsn::from(1)) {
                         if archived_lsn <= min_applied_lsn {
-                            debug!(
+                            trace!(
                                 ?partition_id,
-                                "Safe trim point for log {}: {:?}", log_id, archived_lsn
+                                "Safe trim point for log {}: {:?}",
+                                log_id,
+                                archived_lsn
                             );
                             safe_trim_points.insert(log_id, (archived_lsn, *partition_id));
                         } else {
@@ -512,15 +495,15 @@ impl TrimMode {
                 }
             }
             TrimMode::PersistedLsn {
-                partition_statuses, ..
+                partition_status,
+                ..
             } => {
                 // If no partitions are reporting archived LSN, we fall back to using the
                 // min(persisted LSN) across the board as the safe trim point. Note that at this
                 // point we know that there are no known dead nodes, so it's safe to take the min of
                 // persisted LSNs reported by all the partition processors as the safe trim point.
-                for (partition_id, processor_status) in partition_statuses.iter() {
+                for (partition_id, processor_status) in partition_status.iter() {
                     let log_id = LogId::from(*partition_id);
-
                     let min_persisted_lsn = processor_status
                         .values()
                         .map(|s| s.last_persisted_log_lsn.unwrap_or(Lsn::INVALID))
@@ -531,9 +514,11 @@ impl TrimMode {
                         *current_trim_points.get(&log_id).unwrap_or(&Lsn::INVALID);
 
                     if min_persisted_lsn >= current_trim_point + threshold.unwrap_or(Lsn::from(1)) {
-                        debug!(
+                        trace!(
                             ?partition_id,
-                            "Safe trim point for log {}: {:?}", log_id, min_persisted_lsn
+                            "Safe trim point for log {}: {:?}",
+                            log_id,
+                            min_persisted_lsn
                         );
                         safe_trim_points.insert(log_id, (min_persisted_lsn, *partition_id));
                     }
@@ -562,13 +547,19 @@ impl TrimMode {
             })
     }
 
-    fn is_trimming_suspended(&self) -> bool {
+    fn get_trim_blockers(&self) -> Option<&BTreeSet<PlainNodeId>> {
         match self {
-            TrimMode::PersistedLsn { cluster_state, .. } => cluster_state
-                .nodes
-                .values()
-                .any(|node_state| matches!(node_state, NodeState::Suspect(_) | NodeState::Dead(_))),
-            TrimMode::ArchivedLsn { .. } => false,
+            TrimMode::PersistedLsn {
+                blocking_nodes: dead_nodes,
+                ..
+            } => {
+                if dead_nodes.is_empty() {
+                    None
+                } else {
+                    Some(dead_nodes)
+                }
+            }
+            TrimMode::ArchivedLsn { .. } => None,
         }
     }
 }
@@ -618,8 +609,8 @@ mod tests {
         let mut current_trim_points = HashMap::new();
         current_trim_points.insert(LogId::from(p1), Lsn::INVALID);
 
-        let trim_mode = TrimMode::from(false, cluster_state);
-        let trim_points = trim_mode.safe_trim_points(&current_trim_points, None);
+        let trim_mode = TrimMode::from(false, &cluster_state);
+        let trim_points = trim_mode.calculate_safe_trim_points(&current_trim_points, None);
 
         assert!(matches!(trim_mode, TrimMode::PersistedLsn { .. }));
         assert_eq!(
@@ -724,8 +715,8 @@ mod tests {
         current_trim_points.insert(LogId::from(p2), Lsn::INVALID);
         current_trim_points.insert(LogId::from(p3), Lsn::INVALID);
 
-        let trim_mode = TrimMode::from(false, cluster_state);
-        let trim_points = trim_mode.safe_trim_points(&current_trim_points, None);
+        let trim_mode = TrimMode::from(false, &cluster_state);
+        let trim_points = trim_mode.calculate_safe_trim_points(&current_trim_points, None);
 
         assert!(matches!(trim_mode, TrimMode::PersistedLsn { .. }));
         assert_eq!(
@@ -751,8 +742,8 @@ mod tests {
             .into(),
         });
 
-        let trim_mode = TrimMode::from(false, cluster_state.clone());
-        let trim_points = trim_mode.safe_trim_points(&current_trim_points, None);
+        let trim_mode = TrimMode::from(false, &cluster_state);
+        let trim_points = trim_mode.calculate_safe_trim_points(&current_trim_points, None);
 
         assert!(matches!(trim_mode, TrimMode::PersistedLsn { .. }));
         assert_eq!(
@@ -768,8 +759,8 @@ mod tests {
             ..*cluster_state
         });
 
-        let trim_mode = TrimMode::from(false, cluster_state.clone());
-        let trim_points = trim_mode.safe_trim_points(&current_trim_points, None);
+        let trim_mode = TrimMode::from(false, &cluster_state);
+        let trim_points = trim_mode.calculate_safe_trim_points(&current_trim_points, None);
 
         assert!(matches!(trim_mode, TrimMode::PersistedLsn { .. }));
         assert_eq!(
@@ -788,8 +779,8 @@ mod tests {
             ..*cluster_state
         });
 
-        let trim_mode = TrimMode::from(false, cluster_state);
-        let trim_points = trim_mode.safe_trim_points(&current_trim_points, None);
+        let trim_mode = TrimMode::from(false, &cluster_state);
+        let trim_points = trim_mode.calculate_safe_trim_points(&current_trim_points, None);
 
         assert!(matches!(trim_mode, TrimMode::PersistedLsn { .. }));
         assert_eq!(
@@ -918,8 +909,8 @@ mod tests {
         ]
         .into();
 
-        let trim_mode = TrimMode::from(false, cluster_state.clone());
-        let trim_points = trim_mode.safe_trim_points(&current_trim_points, None);
+        let trim_mode = TrimMode::from(false, &cluster_state);
+        let trim_points = trim_mode.calculate_safe_trim_points(&current_trim_points, None);
 
         assert_eq!(
             trim_points,
@@ -943,8 +934,8 @@ mod tests {
             ..*cluster_state
         });
 
-        let trim_mode = TrimMode::from(false, cluster_state);
-        let trim_points = trim_mode.safe_trim_points(&current_trim_points, None);
+        let trim_mode = TrimMode::from(false, &cluster_state);
+        let trim_points = trim_mode.calculate_safe_trim_points(&current_trim_points, None);
 
         assert_eq!(
             trim_points,
@@ -984,18 +975,18 @@ mod tests {
         });
 
         let current_trim_points = [(LogId::from(p1), Lsn::from(81))].into();
-        let trim_mode = TrimMode::from(false, cluster_state.clone());
+        let trim_mode = TrimMode::from(false, &cluster_state);
 
         assert!(matches!(trim_mode, TrimMode::PersistedLsn { .. }));
         assert_eq!(
-            trim_mode.safe_trim_points(&current_trim_points, Some(Lsn::from(20))),
+            trim_mode.calculate_safe_trim_points(&current_trim_points, Some(Lsn::from(20))),
             BTreeMap::new(),
             "No trim when the threshold since the existing trim point is not cleared"
         );
 
         let current_trim_points = [(LogId::from(p1), Lsn::from(80))].into();
         assert_eq!(
-            trim_mode.safe_trim_points(&current_trim_points, Some(Lsn::from(20))),
+            trim_mode.calculate_safe_trim_points(&current_trim_points, Some(Lsn::from(20))),
             [(LogId::from(p1), (Lsn::new(100), p1))].into(),
             "Trim to the persisted LSN only when the threshold since the existing trim point is cleared"
         );
@@ -1017,19 +1008,19 @@ mod tests {
             nodes: [(n1.as_plain(), alive_node(n1, n1_partitions))].into(),
             ..*cluster_state
         });
-        let trim_mode = TrimMode::from(true, cluster_state);
+        let trim_mode = TrimMode::from(true, &cluster_state);
         let current_trim_points = [(LogId::from(p1), Lsn::from(71))].into();
 
         assert!(matches!(trim_mode, TrimMode::ArchivedLsn { .. }));
         assert_eq!(
-            trim_mode.safe_trim_points(&current_trim_points, Some(Lsn::from(20))),
+            trim_mode.calculate_safe_trim_points(&current_trim_points, Some(Lsn::from(20))),
             BTreeMap::new(),
             "No trim when the threshold since the existing trim point is not cleared"
         );
 
         let current_trim_points = [(LogId::from(p1), Lsn::from(70))].into();
         assert_eq!(
-            trim_mode.safe_trim_points(&current_trim_points, Some(Lsn::from(20))),
+            trim_mode.calculate_safe_trim_points(&current_trim_points, Some(Lsn::from(20))),
             [(LogId::from(p1), (Lsn::new(90), p1))].into(),
             "Trim to the archived LSN only when the threshold since the existing trim point is cleared"
         );

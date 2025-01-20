@@ -42,7 +42,8 @@ impl ObservedClusterState {
         self.update_partitions(cluster_state);
     }
 
-    /// Update observed cluster state with given [`ClusterState`].
+    /// Update observed cluster state with given [`ClusterState`]
+    ///
     /// Nodes in [`NodeState::Suspect`] state are treated as [`NodeState::Alive`].
     /// This means that their `last known` state will not be cleared
     /// until they are marked as dead in [`ClusterState`].
