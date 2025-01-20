@@ -18,7 +18,6 @@ use crate::{GenerationalNodeId, PlainNodeId};
 use itertools::Itertools;
 use rand::seq::SliceRandom;
 use serde_with::DisplayFromStr;
-use xxhash_rust::xxh3::Xxh3Builder;
 
 /// Configuration parameters of a replicated loglet segment
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -123,7 +122,7 @@ impl NodeSet {
     }
 
     /// Creates a new nodeset that excludes the nodes not in the provided set
-    pub fn new_excluding(&self, excluded_node_ids: &HashSet<PlainNodeId, Xxh3Builder>) -> NodeSet {
+    pub fn new_excluding(&self, excluded_node_ids: &HashSet<PlainNodeId>) -> NodeSet {
         NodeSet::from(
             self.iter()
                 .copied()

@@ -10,8 +10,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use xxhash_rust::xxh3::Xxh3Builder;
-
 use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
 use restate_types::identifiers::PartitionId;
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
@@ -20,10 +18,10 @@ use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 /// information and the target scheduling plan to instruct nodes to start/stop partition processors.
 #[derive(Debug, Default, Clone)]
 pub struct ObservedClusterState {
-    pub partitions: HashMap<PartitionId, ObservedPartitionState, Xxh3Builder>,
-    pub alive_nodes: HashMap<PlainNodeId, GenerationalNodeId, Xxh3Builder>,
-    pub dead_nodes: HashSet<PlainNodeId, Xxh3Builder>,
-    pub nodes_to_partitions: HashMap<PlainNodeId, HashSet<PartitionId, Xxh3Builder>, Xxh3Builder>,
+    pub partitions: HashMap<PartitionId, ObservedPartitionState>,
+    pub alive_nodes: HashMap<PlainNodeId, GenerationalNodeId>,
+    pub dead_nodes: HashSet<PlainNodeId>,
+    pub nodes_to_partitions: HashMap<PlainNodeId, HashSet<PartitionId>>,
 }
 
 impl ObservedClusterState {
@@ -115,7 +113,7 @@ impl ObservedClusterState {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ObservedPartitionState {
-    pub partition_processors: HashMap<PlainNodeId, RunMode, Xxh3Builder>,
+    pub partition_processors: HashMap<PlainNodeId, RunMode>,
 }
 
 impl ObservedPartitionState {
