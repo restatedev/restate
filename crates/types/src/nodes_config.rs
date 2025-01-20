@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
-use xxhash_rust::xxh3::Xxh3Builder;
+use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use crate::locality::NodeLocation;
 use crate::net::AdvertisedAddress;
@@ -58,8 +58,8 @@ pub struct NodesConfiguration {
     cluster_name: String,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    nodes: HashMap<PlainNodeId, MaybeNode, Xxh3Builder>,
-    name_lookup: HashMap<String, PlainNodeId, Xxh3Builder>,
+    nodes: HashMap<PlainNodeId, MaybeNode>,
+    name_lookup: HashMap<String, PlainNodeId, Xxh3DefaultBuilder>,
 }
 
 impl Default for NodesConfiguration {

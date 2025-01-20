@@ -8,12 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use rand::seq::IteratorRandom;
-use restate_types::live::Pinned;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
+
+use rand::seq::IteratorRandom;
 use tracing::debug;
-use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_core::metadata_store::{Precondition, ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
@@ -22,6 +21,7 @@ use restate_core::{
     TargetVersion, TaskCenter, TaskHandle, TaskKind,
 };
 use restate_types::identifiers::PartitionId;
+use restate_types::live::Pinned;
 use restate_types::logs::LogId;
 use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
 use restate_types::net::partition_processor_manager::{
@@ -35,8 +35,6 @@ use restate_types::{NodeId, PlainNodeId, Version};
 
 use crate::cluster_controller::logs_controller;
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-
-type HashSet<T> = std::collections::HashSet<T, Xxh3Builder>;
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading scheduling plan from metadata store: {0}")]

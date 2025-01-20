@@ -14,7 +14,6 @@ use std::sync::{Arc, OnceLock};
 use chrono::Utc;
 use tokio::sync::watch;
 use tokio::sync::Mutex as AsyncMutex;
-use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_bifrost::loglet::util::TailOffsetWatch;
 use restate_bifrost::loglet::OperationError;
@@ -64,7 +63,7 @@ impl LogStoreMarker {
 /// Caches loglet state in memory
 #[derive(Default, Clone)]
 pub struct LogletStateMap {
-    inner: Arc<AsyncMutex<HashMap<LogletId, LogletState, Xxh3Builder>>>,
+    inner: Arc<AsyncMutex<HashMap<LogletId, LogletState>>>,
 }
 
 impl LogletStateMap {

@@ -74,7 +74,7 @@ impl RocksDbLogStore {
 
         let data_dir = options.data_dir();
 
-        let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), data_dir, db_options(options))
+        let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), data_dir, db_options())
             .add_cf_pattern(
                 CfExactPattern::new(DATA_CF),
                 cf_data_options(options.rocksdb_memory_budget()),
@@ -133,14 +133,15 @@ impl RocksDbLogStore {
     }
 }
 
-fn db_options(options: &LocalLogletOptions) -> rocksdb::Options {
+fn db_options() -> rocksdb::Options {
     let mut opts = rocksdb::Options::default();
 
-    // enable atomic flushes to not persist inconsistent data in case WAL
-    // is disabled
-    if options.rocksdb.rocksdb_disable_wal() {
-        opts.set_atomic_flush(true);
-    }
+    // Enable atomic flushes.
+    // If WAL is disabled, this ensure we do not persist inconsistent data.
+    // If WAL is enabled, this ensures that flushing either cf flushes both.
+    // This is valuable because otherwise the metadata cf will flush rarely, and that would keep the WAL around
+    // until shutdown, full of data cf bytes that have already been flushed, wasting disk space.
+    opts.set_atomic_flush(true);
 
     // This is Rocksdb's default, it's added here for clarity.
     //

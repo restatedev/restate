@@ -20,7 +20,6 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use smallvec::SmallVec;
-use xxhash_rust::xxh3::Xxh3Builder;
 
 use super::builder::LogsBuilder;
 use super::LogletId;
@@ -73,8 +72,7 @@ pub struct LogletRef<P> {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct LookupIndex {
-    pub(super) replicated_loglets:
-        HashMap<LogletId, LogletRef<ReplicatedLogletParams>, Xxh3Builder>,
+    pub(super) replicated_loglets: HashMap<LogletId, LogletRef<ReplicatedLogletParams>>,
 }
 
 impl LookupIndex {
@@ -297,7 +295,7 @@ pub struct LogsConfiguration {
 #[serde(try_from = "LogsSerde", into = "LogsSerde")]
 pub struct Logs {
     pub(super) version: Version,
-    pub(super) logs: HashMap<LogId, Chain, Xxh3Builder>,
+    pub(super) logs: HashMap<LogId, Chain>,
     pub(super) lookup_index: LookupIndex,
     pub(super) config: LogsConfiguration,
 }
@@ -327,7 +325,7 @@ impl TryFrom<LogsSerde> for Logs {
     type Error = anyhow::Error;
 
     fn try_from(value: LogsSerde) -> Result<Self, Self::Error> {
-        let mut logs = HashMap::with_capacity_and_hasher(value.logs.len(), Xxh3Builder::new());
+        let mut logs = HashMap::with_capacity(value.logs.len());
         let mut lookup_index = LookupIndex::default();
 
         let mut config = value.config;
