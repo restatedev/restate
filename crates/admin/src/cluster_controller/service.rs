@@ -1299,7 +1299,7 @@ mod tests {
             cluster_state.current().nodes.get(&PlainNodeId::new(2)),
             Some(NodeState::Alive(_))
         ));
-        assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+        assert_eq!(Lsn::from(15), bifrost.get_trim_point(LOG_ID).await?);
 
         n2_applied_lsn.store(20, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;

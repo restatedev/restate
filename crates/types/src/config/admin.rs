@@ -53,11 +53,9 @@ pub struct AdminOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub log_trim_interval: Option<humantime::Duration>,
 
-    /// # Log trim threshold
+    /// # Log trim threshold (Deprecated)
     ///
-    /// Minimum number of trimmable log entries. The cluster controller will only trim a log if it
-    /// can remove equal or more entries than this threshold. This prevents too many small trim
-    /// operations.
+    /// This configuration option is deprecated and ignored in Restate >= 1.2.
     pub log_trim_threshold: u64,
 
     /// # Log Tail Update interval
