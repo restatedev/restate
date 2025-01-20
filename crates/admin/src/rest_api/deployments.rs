@@ -128,7 +128,7 @@ pub async fn create_deployment<V>(
         StatusCode::CREATED,
         [(
             header::LOCATION,
-            format!("/deployments/{}", response_body.id),
+            format!("deployments/{}", response_body.id),
         )],
         Json(
             restate_admin_rest_model::converters::convert_register_deployment_response(

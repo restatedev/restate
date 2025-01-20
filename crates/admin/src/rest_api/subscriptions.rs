@@ -52,7 +52,7 @@ pub async fn create_subscription<V: SubscriptionValidator>(
         StatusCode::CREATED,
         [(
             http::header::LOCATION,
-            format!("/subscriptions/{}", subscription.id()),
+            format!("subscriptions/{}", subscription.id()),
         )],
         Json(SubscriptionResponse::from(subscription)),
     ))
