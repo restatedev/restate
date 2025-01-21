@@ -97,7 +97,7 @@ async fn cluster_provision(
         cluster_config_string(&cluster_configuration_to_provision)?
     );
 
-    if let Some(default_provider) = &cluster_configuration_to_provision.default_provider {
+    if let Some(default_provider) = &cluster_configuration_to_provision.bifrost_provider {
         let default_provider = ProviderConfiguration::try_from(default_provider.clone())?;
 
         match default_provider {
@@ -116,7 +116,7 @@ async fn cluster_provision(
         dry_run: false,
         num_partitions: Some(cluster_configuration_to_provision.num_partitions),
         placement_strategy: cluster_configuration_to_provision.replication_strategy,
-        log_provider: cluster_configuration_to_provision.default_provider,
+        log_provider: cluster_configuration_to_provision.bifrost_provider,
     };
 
     match client.provision_cluster(request).await {

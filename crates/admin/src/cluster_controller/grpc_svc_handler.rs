@@ -300,7 +300,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             cluster_configuration: Some(ClusterConfiguration {
                 num_partitions: u32::from(partition_table.num_partitions()),
                 replication_strategy: Some(partition_table.replication_strategy().into()),
-                default_provider: Some(logs.configuration().default_provider.clone().into()),
+                bifrost_provider: Some(logs.configuration().default_provider.clone().into()),
             }),
         };
 
@@ -328,7 +328,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                         Status::invalid_argument(format!("invalid replication_strategy: {err}"))
                     })?,
                 request
-                    .default_provider
+                    .bifrost_provider
                     .ok_or_else(|| {
                         Status::invalid_argument("default_provider is a required field")
                     })?
