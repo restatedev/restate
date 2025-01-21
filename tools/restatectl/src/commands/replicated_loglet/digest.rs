@@ -28,7 +28,7 @@ use restate_types::logs::metadata::Logs;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::log_server::RecordStatus;
 use restate_types::nodes_config::{NodesConfiguration, Role};
-use restate_types::replicated_loglet::EffectiveNodeSet;
+use restate_types::replicated_loglet::LogNodeSetExt;
 use restate_types::storage::StorageCodec;
 use restate_types::Versioned;
 
@@ -76,7 +76,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
     c_println!("Nodes Configuration ({})", nodes_config.version());
     c_println!();
 
-    let nodeset = EffectiveNodeSet::new(&loglet_ref.params.nodeset, &nodes_config);
+    let nodeset = loglet_ref.params.nodeset.to_effective(&nodes_config);
     c_println!("Loglet Id: {}", opts.loglet_id);
     c_println!("Nodeset: {nodeset}");
     c_println!("Replication: {}", loglet_ref.params.replication);

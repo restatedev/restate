@@ -62,7 +62,7 @@ impl<'a> NodeSetSelector<'a> {
     ) -> bool {
         let writable_nodeset = WritableNodeSet::from(self.nodes_config);
         let alive_nodeset = writable_nodeset.alive(self.cluster_state);
-        let current_alive = alive_nodeset.intersect(nodeset);
+        let current_alive: NodeSet = alive_nodeset.intersect(nodeset).collect();
 
         let nodeset_size = nodeset_size_range(replication_property, writable_nodeset.len());
 
@@ -109,17 +109,14 @@ impl<'a> NodeSetSelector<'a> {
         }
 
         let mut nodes = preferred_nodes
-            .iter()
-            .copied()
-            .filter(|node_id| alive_nodeset.contains(node_id))
+            .intersect(&alive_nodeset)
             .choose_multiple(rng, nodeset_size.target_size);
 
         if nodes.len() < nodeset_size.target_size {
             let remaining = nodeset_size.target_size - nodes.len();
             nodes.extend(
                 alive_nodeset
-                    .iter()
-                    .filter(|node_id| !preferred_nodes.contains(node_id))
+                    .difference(preferred_nodes)
                     .choose_multiple(rng, remaining),
             );
         }
@@ -143,12 +140,10 @@ impl<'a> NodeSetSelector<'a> {
             let remaining = nodeset_size.fault_tolerant_size - nodes.len();
 
             let extension = writable_nodeset
-                .iter()
-                .filter(|node_id| !alive_nodeset.contains(node_id))
-                .cloned()
+                .difference(&alive_nodeset)
                 .sorted_by(|l, r| {
                     // sorting nodes by "preferred" nodes. Preferred nodes comes first.
-                    match (preferred_nodes.contains(l), preferred_nodes.contains(r)) {
+                    match (preferred_nodes.contains(*l), preferred_nodes.contains(*r)) {
                         (true, true) | (false, false) => Ordering::Equal,
                         (true, false) => Ordering::Less,
                         (false, true) => Ordering::Greater,

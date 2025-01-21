@@ -14,7 +14,7 @@ use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{cancellation_watcher, ShutdownError};
 use restate_types::net::log_server::GetLogletInfo;
-use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
+use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
 use super::{FindTailOnNode, NodeTailStatus};
 use crate::loglet::util::TailOffsetWatch;
@@ -61,10 +61,9 @@ impl CheckSealTask {
         // todo: If effective nodeset is empty, should we consider that the loglet is implicitly
         // sealed?
 
-        let effective_nodeset = EffectiveNodeSet::new(
-            &my_params.nodeset,
-            &networking.metadata().nodes_config_ref(),
-        );
+        let effective_nodeset = my_params
+            .nodeset
+            .to_effective(&networking.metadata().nodes_config_ref());
 
         let mut nodeset_checker = NodeSetChecker::<NodeTailStatus>::new(
             &effective_nodeset,
