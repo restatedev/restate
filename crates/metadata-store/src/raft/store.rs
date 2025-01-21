@@ -372,9 +372,7 @@ impl RaftMetadataStore {
             storage_id: self.storage_id,
         };
 
-        Ok(RaftConfiguration {
-            my_member_id,
-        })
+        Ok(RaftConfiguration { my_member_id })
     }
 
     fn become_passive(self) -> Passive {
@@ -497,7 +495,7 @@ impl Active {
         connection_manager.store(Some(Arc::new(new_connection_manager)));
 
         // todo properly configure Raft instance
-        let config = Config {
+        let mut config = Config {
             id: to_raft_id(my_member_id.node_id),
             ..Default::default()
         };
@@ -508,6 +506,8 @@ impl Active {
         let mut kv_storage = KvMemoryStorage::new(metadata_writer.clone());
 
         if let Ok(snapshot) = storage.snapshot(0, to_raft_id(my_member_id.node_id)) {
+            config.applied = snapshot.get_metadata().get_index();
+
             if !snapshot.get_data().is_empty() {
                 let mut data = snapshot.get_data();
                 kv_storage.restore(&mut data)?;
