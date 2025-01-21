@@ -12,7 +12,6 @@ use moka::{
     policy::EvictionPolicy,
     sync::{Cache, CacheBuilder},
 };
-use xxhash_rust::xxh3::Xxh3Builder;
 
 use super::{LogletId, LogletOffset, Record, SequenceNumber};
 
@@ -25,7 +24,7 @@ type RecordKey = (LogletId, LogletOffset);
 /// RemoteSequencers
 #[derive(Clone)]
 pub struct RecordCache {
-    inner: Option<Cache<RecordKey, Record, Xxh3Builder>>,
+    inner: Option<Cache<RecordKey, Record>>,
 }
 
 impl RecordCache {
@@ -43,7 +42,7 @@ impl RecordCache {
                     })
                     .max_capacity(memory_budget_bytes.try_into().unwrap_or(u64::MAX))
                     .eviction_policy(EvictionPolicy::lru())
-                    .build_with_hasher(Xxh3Builder::default()),
+                    .build(),
             )
         } else {
             None

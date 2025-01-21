@@ -19,7 +19,7 @@ use std::sync::LazyLock;
 use anyhow::Context;
 use indexmap::IndexSet;
 use regex::Regex;
-use xxhash_rust::xxh3::{self, Xxh3Builder};
+use xxhash_rust::xxh3::Xxh3;
 
 use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, PartitionKey};
@@ -184,7 +184,7 @@ impl FindPartition for PartitionTable {
     derive_more::From,
     derive_more::AsRef,
 )]
-pub struct PartitionPlacement(IndexSet<PlainNodeId, Xxh3Builder>);
+pub struct PartitionPlacement(IndexSet<PlainNodeId>);
 
 impl PartitionPlacement {
     pub fn iter(&self) -> impl Iterator<Item = (&PlainNodeId, RunMode)> {
@@ -244,7 +244,7 @@ impl PartitionPlacement {
     }
 
     fn hashed(&self) -> u64 {
-        let mut state = xxh3::Xxh3::new();
+        let mut state = Xxh3::new();
         self.hash(&mut state);
         state.finish()
     }
