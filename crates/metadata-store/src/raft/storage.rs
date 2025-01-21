@@ -162,6 +162,10 @@ impl RocksDbStorage {
         write_opts
     }
 
+    pub fn txn(&mut self) -> Transaction {
+        Transaction::new(self)
+    }
+
     pub fn get_hard_state(&self) -> Result<HardState, Error> {
         let key = Self::hard_state_key();
         self.get_value(key)
@@ -304,10 +308,6 @@ impl RocksDbStorage {
             .map_err(Into::into)
     }
 
-    pub fn txn(&mut self) -> Transaction {
-        Transaction::new(self)
-    }
-
     pub async fn store_raft_configuration(
         &mut self,
         raft_configuration: &RaftConfiguration,
@@ -407,6 +407,7 @@ impl RocksDbStorage {
     // ------------------------------
     // Utils
     // ------------------------------
+
     fn find_indices(db: &DB) -> (u64, u64) {
         let cf = db.cf_handle(RAFT_CF).expect("RAFT_CF exists");
         let start = Self::raft_entry_key(0);
@@ -592,7 +593,7 @@ impl Storage for RocksDbStorage {
     }
 
     fn snapshot(&self, request_index: u64, _to: u64) -> raft::Result<Snapshot> {
-        debug!("snapshot request for index {}", request_index);
+        debug!("request snapshot for index {}", request_index);
         let snapshot = self.get_snapshot()?;
         if snapshot.get_metadata().get_index() >= request_index {
             return Ok(snapshot);

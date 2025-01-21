@@ -196,6 +196,7 @@ impl KvMemoryStorage {
     }
 
     pub fn restore<B: Buf>(&mut self, bytes: &mut B) -> Result<(), DeserializationError> {
+        debug!("Restore from snapshot");
         let kv_snapshot: KvSnapshot = flexbuffers::from_slice(bytes.chunk())?;
 
         self.kv_entries = kv_snapshot.kv_entries;
@@ -206,6 +207,8 @@ impl KvMemoryStorage {
     }
 
     pub fn snapshot(&self, buffer: &mut BytesMut) -> Result<(), SerializationError> {
+        debug!("Create snapshot");
+
         // todo avoid cloning of kv entries
         let snapshot = KvSnapshot {
             kv_entries: self.kv_entries.clone(),

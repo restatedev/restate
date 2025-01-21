@@ -58,7 +58,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
 
@@ -246,7 +246,7 @@ impl RaftMetadataStore {
         let mut provision_rx = self.provision_rx.take().expect("must be present");
 
         let result = if let Some(configuration) = self.storage.get_raft_configuration()? {
-            debug!(member_id = %configuration.own_member_id, "Found existing metadata store configuration. Starting as active.");
+            debug!(member_id = %configuration.my_member_id, "Found existing metadata store configuration.");
             Provisioned::Active(self.become_active(configuration)?)
         } else {
             let mut nodes_config_watcher =
@@ -255,9 +255,10 @@ impl RaftMetadataStore {
             if *nodes_config_watcher.borrow_and_update() > Version::INVALID {
                 // The metadata store must have been provisioned if there exists a
                 // NodesConfiguration. So let's move on.
-                debug!("Detected a valid NodesConfiguration. This indicates that the metadata store cluster has been provisioned. Starting as passive.");
+                debug!("Detected a valid NodesConfiguration. This indicates that the metadata store cluster has been provisioned.");
                 Provisioned::Passive(self.become_passive())
             } else {
+                info!("Cluster has not been provisioned, yet. Awaiting the provision signal.");
                 loop {
                     tokio::select! {
                         Some(request) = self.request_rx.recv() => {
@@ -272,7 +273,7 @@ impl RaftMetadataStore {
                             match self.initialize_storage(request.nodes_configuration).await {
                                 Ok(raft_configuration) => {
                                     let _ = request.result_tx.send(Ok(true));
-                                    debug!(member_id = %raft_configuration.own_member_id, "Successfully provisioned the metadata store. Starting as active.");
+                                    debug!(member_id = %raft_configuration.my_member_id, "Successfully provisioned the metadata store.");
                                     break Provisioned::Active(self.become_active(raft_configuration)?);
                                 },
                                 Err(err) => {
@@ -285,7 +286,7 @@ impl RaftMetadataStore {
                             if *nodes_config_watcher.borrow_and_update() > Version::INVALID {
                                 // The metadata store must have been provisioned if there exists a
                                 // NodesConfiguration. So let's move on.
-                                debug!("Detected a valid NodesConfiguration. This indicates that the metadata store cluster has been provisioned. Starting as passive.");
+                                debug!("Detected a valid NodesConfiguration. This indicates that the metadata store cluster has been provisioned.");
                                 break Provisioned::Passive(self.become_passive())
                             }
                         }
@@ -317,7 +318,7 @@ impl RaftMetadataStore {
         debug!("Initialize storage with nodes configuration: {nodes_configuration:?}");
 
         let initial_conf_state = ConfState::from((
-            vec![to_raft_id(raft_configuration.own_member_id.node_id)],
+            vec![to_raft_id(raft_configuration.my_member_id.node_id)],
             vec![],
         ));
 
@@ -366,12 +367,14 @@ impl RaftMetadataStore {
         let node_id = prepare_initial_nodes_configuration(&configuration, 0, nodes_configuration)?;
 
         // set our own raft node id to be Restate's plain node id
-        let own_member_id = MemberId {
+        let my_member_id = MemberId {
             node_id,
             storage_id: self.storage_id,
         };
 
-        Ok(RaftConfiguration { own_member_id })
+        Ok(RaftConfiguration {
+            my_member_id,
+        })
     }
 
     fn become_passive(self) -> Passive {
@@ -420,15 +423,6 @@ impl RaftMetadataStore {
     }
 }
 
-impl From<raft::Error> for RequestError {
-    fn from(value: raft::Error) -> Self {
-        match value {
-            err @ raft::Error::ProposalDropped => RequestError::Unavailable(err.into(), None),
-            err => RequestError::Internal(err.into()),
-        }
-    }
-}
-
 impl MetadataStoreBackend for RaftMetadataStore {
     fn request_sender(&self) -> RequestSender {
         self.request_sender()
@@ -447,33 +441,34 @@ impl MetadataStoreBackend for RaftMetadataStore {
     }
 }
 
+/// States of a provisioned metadata store. The metadata store can be either active or passive.
 enum Provisioned {
+    /// Being an active member of the metadata store cluster
     Active(Active),
+    /// Not being a member of the metadata store cluster
     Passive(Passive),
 }
 
 #[allow(dead_code)]
 struct Active {
     _logger: slog::Logger,
-    own_member_id: MemberId,
+
     raw_node: RawNode<RocksDbStorage>,
     networking: Networking<Message>,
     raft_rx: mpsc::Receiver<Message>,
-    kv_storage: KvMemoryStorage,
 
+    my_member_id: MemberId,
+    kv_storage: KvMemoryStorage,
     is_leader: bool,
+    pending_join_requests:
+        HashMap<MemberId, oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>>,
 
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
+    metadata_writer: Option<MetadataWriter>,
 
     request_rx: RequestReceiver,
     join_cluster_rx: JoinClusterReceiver,
-
-    metadata_writer: Option<MetadataWriter>,
-
     status_tx: StatusSender,
-
-    pending_join_requests:
-        HashMap<MemberId, oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>>,
 }
 
 impl Active {
@@ -486,15 +481,15 @@ impl Active {
         metadata_writer: Option<MetadataWriter>,
         status_tx: StatusSender,
     ) -> Result<Self, Error> {
-        let own_member_id = raft_configuration.own_member_id;
+        let my_member_id = raft_configuration.my_member_id;
 
         let (raft_tx, raft_rx) = mpsc::channel(128);
         let new_connection_manager =
-            ConnectionManager::new(to_raft_id(own_member_id.node_id), raft_tx);
+            ConnectionManager::new(to_raft_id(my_member_id.node_id), raft_tx);
         let mut networking = Networking::new(new_connection_manager.clone());
 
         networking.register_address(
-            to_raft_id(own_member_id.node_id),
+            to_raft_id(my_member_id.node_id),
             Configuration::pinned().common.advertised_address.clone(),
         );
 
@@ -503,7 +498,7 @@ impl Active {
 
         // todo properly configure Raft instance
         let config = Config {
-            id: to_raft_id(own_member_id.node_id),
+            id: to_raft_id(my_member_id.node_id),
             ..Default::default()
         };
 
@@ -512,7 +507,7 @@ impl Active {
 
         let mut kv_storage = KvMemoryStorage::new(metadata_writer.clone());
 
-        if let Ok(snapshot) = storage.snapshot(0, to_raft_id(own_member_id.node_id)) {
+        if let Ok(snapshot) = storage.snapshot(0, to_raft_id(my_member_id.node_id)) {
             if !snapshot.get_data().is_empty() {
                 let mut data = snapshot.get_data();
                 kv_storage.restore(&mut data)?;
@@ -524,7 +519,7 @@ impl Active {
         Ok(Active {
             _logger: logger,
             is_leader: false,
-            own_member_id,
+            my_member_id,
             raw_node,
             connection_manager,
             networking,
@@ -538,7 +533,7 @@ impl Active {
         })
     }
 
-    #[instrument(level = "info", skip_all, fields(member_id = %self.own_member_id))]
+    #[instrument(level = "info", skip_all, fields(member_id = %self.my_member_id))]
     pub async fn run(mut self) -> Result<Passive, Error> {
         debug!("Run as active metadata store node");
         self.update_status();
@@ -584,7 +579,7 @@ impl Active {
         self.is_leader = self.raw_node.raft.leader_id == self.raw_node.raft.id;
 
         if previous_is_leader && !self.is_leader {
-            debug!("Lost leadership");
+            debug!("Lost metadata store leadership");
             let known_leader = self.known_leader();
 
             // todo we might fail some of the request too eagerly here because the answer might be
@@ -597,7 +592,7 @@ impl Active {
             });
             self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
         } else if !previous_is_leader && self.is_leader {
-            debug!("Won leadership");
+            debug!("Won metadata store leadership");
         }
     }
 
@@ -622,7 +617,7 @@ impl Active {
                     .map_err(RequestError::from)
             })
         {
-            info!("Failed processing request: {err:?}");
+            info!("Failed handling request: {err:?}");
             callback.fail(err)
         } else {
             self.kv_storage.register_callback(callback);
@@ -673,7 +668,10 @@ impl Active {
 
             let _ = response_tx.send(Err(response));
         } else {
-            debug!("Triggered reconfiguration of metadata store cluster");
+            info!(
+                "Triggered reconfiguration of metadata store cluster to add node '{}'",
+                joining_member_id
+            );
             self.register_join_callback(joining_member_id, response_tx);
         }
     }
@@ -728,7 +726,7 @@ impl Active {
 
         // update the commit index if it changed
         if let Some(_commit) = light_ready.commit_index() {
-            // update commit index in cached hard_state; no need to persist it though
+            // todo update commit index in cached hard_state once we cache it; no need to persist it though
         }
 
         // send outgoing messages
@@ -827,6 +825,10 @@ impl Active {
         const TRIM_THRESHOLD: u64 = 1000;
         let applied_index = self.raw_node.raft.raft_log.applied();
         if applied_index.saturating_sub(self.raw_node.store().get_first_index()) >= TRIM_THRESHOLD {
+            debug!(
+                "Trimming Raft log: [{}, {applied_index}]",
+                self.raw_node.store().get_first_index()
+            );
             self.create_snapshot(
                 applied_index,
                 self.raw_node.raft.raft_log.term(applied_index)?,
@@ -842,6 +844,7 @@ impl Active {
         if let Some(index) = self.raw_node.mut_store().requested_snapshot() {
             let applied_index = self.raw_node.raft.raft_log.applied;
             if index <= applied_index {
+                debug!("Creating requested snapshot for index '{index}'.");
                 self.create_snapshot(
                     applied_index,
                     self.raw_node.raft.raft_log.term(applied_index)?,
@@ -892,6 +895,12 @@ impl Active {
         }
 
         new_nodes_configuration.increment_version();
+
+        debug!(
+            "Update membership after reconfiguration in NodesConfiguration '{}'",
+            new_nodes_configuration.version()
+        );
+
         let versioned_value = serialize_value(&new_nodes_configuration)
             .expect("should be able to serialize NodesConfiguration");
         self.kv_storage
@@ -942,6 +951,10 @@ impl Active {
     }
 
     fn update_node_addresses(&mut self, nodes_configuration: &NodesConfiguration) {
+        trace!(
+            "Update node addresses in networking based on NodesConfiguration '{}'",
+            nodes_configuration.version()
+        );
         for node_id in self.raw_node.raft.prs().conf().voters().ids().iter() {
             if let Ok(node_config) = nodes_configuration.find_node_by_id(PlainNodeId::from(
                 u32::try_from(node_id).expect("node id is derived from PlainNodeId"),
@@ -1035,7 +1048,7 @@ impl Active {
     /// current nodes configuration.
     fn known_leader(&self) -> Option<KnownLeader> {
         if self.raw_node.raft.leader_id == INVALID_ID {
-            return None;
+            return Self::random_known_leader();
         }
 
         let leader = to_plain_node_id(self.raw_node.raft.leader_id);
@@ -1108,6 +1121,7 @@ impl Passive {
         }
     }
 
+    #[instrument(level = "info", skip_all, fields(member_id = tracing::field::Empty))]
     async fn run(self) -> Result<Active, Error> {
         debug!("Run as passive metadata store node.");
 
@@ -1132,6 +1146,8 @@ impl Passive {
         )
         .into_iter();
 
+        // Persist latest NodesConfiguration so that we know about the MetadataServerState at least
+        // as of now when restarting.
         storage
             .store_nodes_configuration(&Metadata::with_current(|m| m.nodes_config_ref()))
             .await?;
@@ -1142,6 +1158,7 @@ impl Passive {
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
         nodes_config_watcher.mark_changed();
         let my_node_name = Configuration::pinned().common.node_name().to_owned();
+        let mut my_node_id = None;
 
         loop {
             tokio::select! {
@@ -1156,9 +1173,11 @@ impl Passive {
                     let _ = request.response_tx.send(Err(JoinClusterError::NotActive(Active::random_known_leader())));
                 }
                 Some(join_result) = &mut join_cluster => {
-                    let raft_configuration: Result<RaftConfiguration, _> = join_result;
-                    match raft_configuration {
-                        Ok(raft_configuration) => {
+                    match join_result {
+                        Ok(()) => {
+                            let raft_configuration = RaftConfiguration {
+                                my_member_id: MemberId::new(my_node_id.expect("must be set before"), storage_id),
+                            };
                             storage.store_raft_configuration(&raft_configuration).await?;
 
                             return Active::create(
@@ -1176,10 +1195,10 @@ impl Passive {
                             match err {
                                JoinError::Rpc(_, known_leader) => {
                                     // if we have learned about a new leader, then try immediately rejoining
-                                    join_cluster.set(Some(Self::join_cluster(known_leader, None, storage_id).fuse()).into());
+                                    join_cluster.set(Some(Self::join_cluster(known_leader, None, my_node_id.expect("must be set before"), storage_id).fuse()).into());
                                 }
                                 _ => {
-                                    join_cluster.set(Some(Self::join_cluster(None, join_retry_policy.next(), storage_id).fuse()).into());
+                                    join_cluster.set(Some(Self::join_cluster(None, join_retry_policy.next(), my_node_id.expect("must be set before"), storage_id).fuse()).into());
                                 }
                             }
 
@@ -1188,14 +1207,21 @@ impl Passive {
                 }
                 _ = nodes_config_watcher.changed() => {
                     let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
-                    let node_config = nodes_config.find_node_by_name(&my_node_name).expect("I must have registered before");
+                    if let Some(node_config) = nodes_config.find_node_by_name(&my_node_name) {
+                        if my_node_id.is_none() {
+                            my_node_id = Some(node_config.current_generation.as_plain());
+                            Span::current().record("member_id", MemberId::new(my_node_id.unwrap(), self.storage_id).to_string());
+                        }
 
-                    if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Active(_) | MetadataServerState::Candidate) && join_cluster.is_terminated() {
-                        debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
-                        join_cluster.set(Some(Self::join_cluster(None, None, storage_id).fuse()).into());
+                        if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Active(_) | MetadataServerState::Candidate) && join_cluster.is_terminated() {
+                            debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
+                            join_cluster.set(Some(Self::join_cluster(None, None, my_node_id.unwrap(), storage_id).fuse()).into());
+                        } else {
+                            debug!("Node is not part of the metadata store cluster. Waiting to become a candidate.");
+                            join_cluster.set(None.into());
+                        }
                     } else {
-                        debug!("Node is not part of the metadata store cluster. Waiting to become a candidate.");
-                        join_cluster.set(None.into());
+                        trace!("Node '{}' has not joined the cluster yet :-(", my_node_name);
                     }
                 }
             }
@@ -1205,25 +1231,14 @@ impl Passive {
     async fn join_cluster(
         known_leader: Option<KnownLeader>,
         join_delay: Option<Duration>,
+        my_node_id: PlainNodeId,
         storage_id: StorageId,
-    ) -> Result<RaftConfiguration, JoinError> {
+    ) -> Result<(), JoinError> {
         if let Some(delay) = join_delay {
             time::sleep(delay).await
         }
 
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
-
-        // We cannot assume that we have already joined the cluster and obtained our generational node id.
-        // That's why we need to retrieve the plain node id based on our name from the latest known
-        // NodesConfiguration. If the node has no assigned plain node id, then it first needs to obtain
-        // it by following the regular join path before it can join the metadata store cluster.
-        let my_node_id = if let Some(node_config) =
-            nodes_config.find_node_by_name(Configuration::pinned().common.node_name())
-        {
-            node_config.current_generation.as_plain()
-        } else {
-            return Err(JoinError::Other(format!("The node with name '{}' has not obtained a node id yet. W/o the node id, it cannot join the metadata store cluster.", Configuration::pinned().common.node_name()).into()));
-        };
 
         let address = if let Some(known_leader) = known_leader {
             debug!(
@@ -1257,8 +1272,6 @@ impl Passive {
 
         let mut client = MetadataStoreNetworkSvcClient::new(channel);
 
-        let own_member_id = MemberId::new(my_node_id, storage_id);
-
         let _response = match client
             .join_cluster(crate::network::grpc_svc::JoinClusterRequest {
                 node_id: u32::from(my_node_id),
@@ -1273,7 +1286,16 @@ impl Passive {
             }
         };
 
-        Ok(RaftConfiguration { own_member_id })
+        Ok(())
+    }
+}
+
+impl From<raft::Error> for RequestError {
+    fn from(value: raft::Error) -> Self {
+        match value {
+            err @ raft::Error::ProposalDropped => RequestError::Unavailable(err.into(), None),
+            err => RequestError::Internal(err.into()),
+        }
     }
 }
 

@@ -63,5 +63,5 @@ impl NetworkMessage for raft::prelude::Message {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct RaftConfiguration {
-    own_member_id: MemberId,
+    my_member_id: MemberId,
 }
