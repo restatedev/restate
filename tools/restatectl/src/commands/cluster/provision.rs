@@ -19,7 +19,6 @@ use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest;
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind, ReplicatedLogletConfig};
 use restate_types::net::AdvertisedAddress;
-use restate_types::partition_table::ReplicationStrategy;
 use restate_types::replicated_loglet::ReplicationProperty;
 use std::num::NonZeroU16;
 use tonic::codec::CompressionEncoding;
@@ -36,10 +35,11 @@ pub struct ProvisionOpts {
     #[clap(long)]
     num_partitions: Option<NonZeroU16>,
 
-    /// Replication strategy. Possible values
-    /// are `on-all-nodes` or `factor(n)`
+    /// Optional partition placement strategy. By default replicates
+    /// partitions on all nodes. Accepts replication property
+    /// string as a value
     #[clap(long)]
-    replication_strategy: Option<ReplicationStrategy>,
+    partition_placement_strategy: Option<ReplicationProperty>,
 
     /// Default log provider kind
     #[clap(long)]
@@ -72,7 +72,10 @@ async fn cluster_provision(
     let request = ProvisionClusterRequest {
         dry_run: true,
         num_partitions: provision_opts.num_partitions.map(|n| u32::from(n.get())),
-        placement_strategy: provision_opts.replication_strategy.map(Into::into),
+        partition_placement_strategy: provision_opts
+            .partition_placement_strategy
+            .clone()
+            .map(Into::into),
         log_provider: log_provider.map(Into::into),
     };
 
@@ -115,7 +118,8 @@ async fn cluster_provision(
     let request = ProvisionClusterRequest {
         dry_run: false,
         num_partitions: Some(cluster_configuration_to_provision.num_partitions),
-        placement_strategy: cluster_configuration_to_provision.replication_strategy,
+        partition_placement_strategy: cluster_configuration_to_provision
+            .partition_placement_strategy,
         log_provider: cluster_configuration_to_provision.bifrost_provider,
     };
 

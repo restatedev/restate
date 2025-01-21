@@ -46,6 +46,7 @@ pub mod common {
 }
 
 pub mod cluster {
+
     include!(concat!(env!("OUT_DIR"), "/restate.cluster.rs"));
 
     impl std::fmt::Display for RunMode {
@@ -56,6 +57,22 @@ pub mod cluster {
                 RunMode::Follower => "Follower",
             };
             write!(f, "{o}")
+        }
+    }
+
+    impl From<crate::replicated_loglet::ReplicationProperty> for ReplicationProperty {
+        fn from(value: crate::replicated_loglet::ReplicationProperty) -> Self {
+            ReplicationProperty {
+                replication_property: value.to_string(),
+            }
+        }
+    }
+
+    impl TryFrom<ReplicationProperty> for crate::replicated_loglet::ReplicationProperty {
+        type Error = anyhow::Error;
+
+        fn try_from(value: ReplicationProperty) -> Result<Self, Self::Error> {
+            value.replication_property.parse()
         }
     }
 }

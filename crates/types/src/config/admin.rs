@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition_table::ReplicationStrategy;
+use crate::replicated_loglet::ReplicationProperty;
 
 use super::QueryEngineOptions;
 use serde::{Deserialize, Serialize};
@@ -68,11 +68,13 @@ pub struct AdminOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub log_tail_update_interval: humantime::Duration,
 
-    /// # Default replication strategy
+    /// # Default partition placement strategy
     ///
-    /// The default replication strategy to be used by the cluster controller to schedule partition
+    /// The default partition placement strategy to be used by the cluster controller to place partition
     /// processors.
-    pub default_replication_strategy: ReplicationStrategy,
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub default_placement_strategy: Option<ReplicationProperty>,
 
     #[cfg(any(test, feature = "test-util"))]
     pub disable_cluster_controller: bool,
@@ -111,7 +113,7 @@ impl Default for AdminOptions {
             // try to trim the log every hour
             log_trim_interval: Some(Duration::from_secs(60 * 60).into()),
             log_trim_threshold: 1000,
-            default_replication_strategy: ReplicationStrategy::OnAllNodes,
+            default_placement_strategy: None,
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             log_tail_update_interval: Duration::from_secs(5 * 60).into(),

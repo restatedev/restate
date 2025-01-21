@@ -21,7 +21,6 @@ use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
 use restate_cli_util::{c_println, c_warn};
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
-use restate_types::partition_table::ReplicationStrategy;
 use restate_types::replicated_loglet::ReplicationProperty;
 
 use crate::commands::cluster::config::cluster_config_string;
@@ -31,16 +30,17 @@ use crate::{app::ConnectionInfo, util::grpc_channel};
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "config_set")]
 pub struct ConfigSetOpts {
-    /// Replication strategy. Possible values
-    /// are `on-all-nodes` or `factor(n)`
+    /// Partition placement strategy. If not set places
+    /// partitions replicas on all nodes.
+    /// Accepts `replication property` as a value.
     #[clap(long)]
-    replication_strategy: Option<ReplicationStrategy>,
+    partition_placement_strategy: Option<ReplicationProperty>,
 
     /// Bifrost provider kind.
     #[clap(long)]
     bifrost_provider: Option<ProviderKind>,
 
-    /// Replication property
+    /// Replication property for `replicated` bifrost provider.
     #[clap(long, required_if_eq("bifrost_provider", "replicated"))]
     replication_property: Option<ReplicationProperty>,
 }
@@ -60,9 +60,10 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
 
     let current_config_string = cluster_config_string(&current)?;
 
-    if let Some(replication_strategy) = set_opts.replication_strategy {
-        current.replication_strategy = Some(replication_strategy.into());
-    }
+    current.partition_placement_strategy = set_opts
+        .partition_placement_strategy
+        .clone()
+        .map(Into::into);
 
     if let Some(provider) = set_opts.bifrost_provider {
         let default_provider =

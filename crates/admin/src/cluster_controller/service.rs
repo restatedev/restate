@@ -27,10 +27,8 @@ use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
-use restate_types::partition_table::{
-    self, PartitionTable, PartitionTableBuilder, ReplicationStrategy,
-};
-use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::partition_table::{self, PartitionTable, PartitionTableBuilder};
+use restate_types::replicated_loglet::{ReplicatedLogletParams, ReplicationProperty};
 
 use restate_bifrost::{Bifrost, SealedSegment};
 use restate_core::network::rpc_router::RpcRouter;
@@ -172,7 +170,7 @@ enum ClusterControllerCommand {
         response_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
     },
     UpdateClusterConfiguration {
-        replication_strategy: ReplicationStrategy,
+        placement_strategy: Option<ReplicationProperty>,
         default_provider: ProviderConfiguration,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
     },
@@ -237,7 +235,7 @@ impl ClusterControllerHandle {
 
     pub async fn update_cluster_configuration(
         &self,
-        replication_strategy: ReplicationStrategy,
+        placement_strategy: Option<ReplicationProperty>,
         default_provider: ProviderConfiguration,
     ) -> Result<anyhow::Result<()>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
@@ -245,7 +243,7 @@ impl ClusterControllerHandle {
         let _ = self
             .tx
             .send(ClusterControllerCommand::UpdateClusterConfiguration {
-                replication_strategy,
+                placement_strategy,
                 default_provider,
                 response_tx,
             })
@@ -389,7 +387,7 @@ impl<T: TransportConnect> Service<T> {
 
     async fn update_cluster_configuration(
         &self,
-        replication_strategy: ReplicationStrategy,
+        placement_strategy: Option<ReplicationProperty>,
         default_provider: ProviderConfiguration,
     ) -> anyhow::Result<()> {
         let logs = self
@@ -446,8 +444,8 @@ impl<T: TransportConnect> Service<T> {
 
                     let mut builder: PartitionTableBuilder = partition_table.into();
 
-                    if builder.replication_strategy() != replication_strategy {
-                        builder.set_replication_strategy(replication_strategy);
+                    if builder.placement_strategy() != &placement_strategy {
+                        builder.set_placement_strategy(placement_strategy.clone());
                     }
 
                     builder
@@ -522,7 +520,7 @@ impl<T: TransportConnect> Service<T> {
                     .await;
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
-                replication_strategy,
+                placement_strategy: replication_strategy,
                 default_provider,
                 response_tx,
             } => {

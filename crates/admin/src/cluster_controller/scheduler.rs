@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeMap, HashSet};
-use std::sync::Arc;
-
 use rand::seq::IteratorRandom;
+use restate_types::replicated_loglet::{LocationScope, ReplicationProperty};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use tracing::debug;
+use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_core::metadata_store::{Precondition, ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
@@ -28,13 +29,13 @@ use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::{
-    Partition, PartitionPlacement, PartitionTable, ReplicationStrategy,
-};
+use restate_types::partition_table::{Partition, PartitionPlacement, PartitionTable};
 use restate_types::{NodeId, PlainNodeId, Version};
 
 use crate::cluster_controller::logs_controller;
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+
+type HashSet<T> = std::collections::HashSet<T, Xxh3Builder>;
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading scheduling plan from metadata store: {0}")]
@@ -137,7 +138,7 @@ impl<T: TransportConnect> Scheduler<T> {
         // todo(azmy): avoid cloning the partition table every time by keeping
         // the latest built always available as a field
         let mut builder = partition_table.clone().into_builder();
-        let replication_strategy = builder.replication_strategy();
+        let replication_strategy = builder.placement_strategy().clone();
 
         builder.for_each(|partition_id, placement| {
             let mut target_state = TargetPartitionPlacementState::new(placement);
@@ -145,7 +146,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 partition_id,
                 &mut target_state,
                 alive_workers,
-                replication_strategy,
+                replication_strategy.clone(),
                 nodes_config,
                 &placement_hints,
             );
@@ -232,7 +233,7 @@ impl<T: TransportConnect> Scheduler<T> {
         partition_id: &PartitionId,
         target_state: &mut TargetPartitionPlacementState,
         alive_workers: &HashSet<PlainNodeId>,
-        replication_strategy: ReplicationStrategy,
+        placement_strategy: Option<ReplicationProperty>,
         nodes_config: &NodesConfiguration,
         placement_hints: &H,
     ) {
@@ -241,17 +242,22 @@ impl<T: TransportConnect> Scheduler<T> {
             .node_set
             .retain(|node_id| alive_workers.contains(node_id));
 
-        match replication_strategy {
-            ReplicationStrategy::OnAllNodes => {
+        match placement_strategy {
+            None => {
                 // The extend will only add the new nodes that
                 // don't exist in the node set.
                 // the retain done above will make sure alive nodes in the set
                 // will keep there initial order.
                 target_state.node_set.extend(alive_workers.iter().cloned());
             }
-            ReplicationStrategy::Factor(replication_factor) => {
-                let replication_factor =
-                    usize::try_from(replication_factor.get()).expect("u32 should fit into usize");
+            Some(replication_factor) => {
+                assert_eq!(
+                    replication_factor.greatest_defined_scope(),
+                    LocationScope::Node,
+                    "Location aware partition replication is not supported yet"
+                );
+
+                let replication_factor = usize::from(replication_factor.num_copies());
 
                 if target_state.node_set.len() == replication_factor {
                     return;
@@ -535,6 +541,7 @@ mod tests {
     use http::Uri;
     use rand::prelude::ThreadRng;
     use rand::Rng;
+    use restate_types::replicated_loglet::ReplicationProperty;
     use std::collections::BTreeMap;
     use std::iter;
     use std::num::NonZero;
@@ -563,7 +570,7 @@ mod tests {
         LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
     use restate_types::partition_table::{
-        PartitionPlacement, PartitionTable, PartitionTableBuilder, ReplicationStrategy,
+        PartitionPlacement, PartitionTable, PartitionTableBuilder,
     };
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
@@ -616,21 +623,21 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn schedule_partitions_with_replication_factor() -> googletest::Result<()> {
-        schedule_partitions(ReplicationStrategy::Factor(
+        schedule_partitions(Some(ReplicationProperty::new(
             NonZero::new(3).expect("non-zero"),
-        ))
+        )))
         .await?;
         Ok(())
     }
 
     #[test(restate_core::test(start_paused = true))]
     async fn schedule_partitions_with_all_nodes_replication() -> googletest::Result<()> {
-        schedule_partitions(ReplicationStrategy::OnAllNodes).await?;
+        schedule_partitions(None).await?;
         Ok(())
     }
 
     async fn schedule_partitions(
-        replication_strategy: ReplicationStrategy,
+        placement_strategy: Option<ReplicationProperty>,
     ) -> googletest::Result<()> {
         let num_partitions = 64;
         let num_nodes = 5;
@@ -685,7 +692,8 @@ mod tests {
         let mut partition_table_builder =
             PartitionTable::with_equally_sized_partitions(Version::MIN, num_partitions)
                 .into_builder();
-        partition_table_builder.set_replication_strategy(replication_strategy);
+        partition_table_builder.set_placement_strategy(placement_strategy.clone());
+
         let partition_table = partition_table_builder.build();
 
         let metadata_store_client = builder.metadata_store_client.clone();
@@ -740,8 +748,8 @@ mod tests {
             for (_, partition) in target_partition_table.partitions_mut() {
                 let target_state = TargetPartitionPlacementState::new(&mut partition.placement);
                 // assert that the replication strategy was respected
-                match replication_strategy {
-                    ReplicationStrategy::OnAllNodes => {
+                match &placement_strategy {
+                    None => {
                         // assert that every partition has a leader which is part of the alive nodes set
                         assert!(target_state.contains_all(&alive_nodes));
 
@@ -749,7 +757,7 @@ mod tests {
                             .leader
                             .is_some_and(|leader| alive_nodes.contains(&leader)));
                     }
-                    ReplicationStrategy::Factor(replication_factor) => {
+                    Some(replication_property) => {
                         // assert that every partition has a leader which is part of the alive nodes set
                         assert!(target_state
                             .leader
@@ -757,10 +765,9 @@ mod tests {
 
                         assert_eq!(
                             target_state.node_set.len(),
-                            alive_nodes.len().min(
-                                usize::try_from(replication_factor.get())
-                                    .expect("u32 fits into usize")
-                            )
+                            alive_nodes
+                                .len()
+                                .min(usize::from(replication_property.num_copies()))
                         );
                     }
                 }
@@ -783,7 +790,7 @@ mod tests {
 
         let partition_table = run_ensure_replication_test(
             partition_table_builder,
-            ReplicationStrategy::Factor(num_partition_processors),
+            Some(ReplicationProperty::new(num_partition_processors)),
         )
         .await?;
         let partition = partition_table
@@ -815,7 +822,7 @@ mod tests {
 
         let partition_table = run_ensure_replication_test(
             partition_table_builder,
-            ReplicationStrategy::Factor(num_partition_processors),
+            Some(ReplicationProperty::new(num_partition_processors)),
         )
         .await?;
         let partition = partition_table
@@ -832,7 +839,7 @@ mod tests {
 
     async fn run_ensure_replication_test(
         mut partition_table_builder: PartitionTableBuilder,
-        replication_strategy: ReplicationStrategy,
+        placement_strategy: Option<ReplicationProperty>,
     ) -> googletest::Result<PartitionTable> {
         let env = TestCoreEnv::create_with_single_node(0, 0).await;
 
@@ -856,7 +863,7 @@ mod tests {
                 partition_id,
                 &mut target_state,
                 &alive_workers,
-                replication_strategy,
+                placement_strategy.clone(),
                 &nodes_config,
                 &NoPlacementHints,
             );

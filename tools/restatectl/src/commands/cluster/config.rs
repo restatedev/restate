@@ -16,8 +16,7 @@ use std::fmt::{self, Display, Write};
 use cling::prelude::*;
 
 use restate_types::{
-    logs::metadata::ProviderConfiguration, partition_table::ReplicationStrategy,
-    protobuf::cluster::ClusterConfiguration,
+    logs::metadata::ProviderConfiguration, protobuf::cluster::ClusterConfiguration,
 };
 
 #[derive(Run, Subcommand, Clone)]
@@ -38,10 +37,13 @@ pub fn cluster_config_string(config: &ClusterConfiguration) -> anyhow::Result<St
         "Number of partitions",
         config.num_partitions,
     )?;
-    let strategy: ReplicationStrategy =
-        config.replication_strategy.unwrap_or_default().try_into()?;
+    let strategy: &str = config
+        .partition_placement_strategy
+        .as_ref()
+        .map(|p| p.replication_property.as_str())
+        .unwrap_or("*");
 
-    write_leaf(&mut w, 1, false, "Bifrost replication strategy", strategy)?;
+    write_leaf(&mut w, 1, false, "Partition placement strategy", strategy)?;
 
     let provider: ProviderConfiguration = config
         .bifrost_provider

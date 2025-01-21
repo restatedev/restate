@@ -18,7 +18,7 @@ use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest as ProtoProvisionClusterRequest;
 use restate_types::logs::metadata::ProviderConfiguration;
-use restate_types::partition_table::ReplicationStrategy;
+use restate_types::protobuf::cluster::ReplicationProperty;
 use restate_types::retries::RetryPolicy;
 use restate_types::{
     config::{Configuration, MetadataStoreClient},
@@ -759,7 +759,7 @@ impl StartedNode {
     pub async fn provision_cluster(
         &self,
         num_partitions: Option<NonZeroU16>,
-        placement_strategy: Option<ReplicationStrategy>,
+        partition_placement_strategy: Option<ReplicationProperty>,
         log_provider: Option<ProviderConfiguration>,
     ) -> anyhow::Result<bool> {
         let channel = create_tonic_channel(
@@ -770,7 +770,7 @@ impl StartedNode {
         let request = ProtoProvisionClusterRequest {
             dry_run: false,
             num_partitions: num_partitions.map(|num| u32::from(num.get())),
-            placement_strategy: placement_strategy.map(Into::into),
+            partition_placement_strategy: partition_placement_strategy.map(Into::into),
             log_provider: log_provider.map(|log_provider| log_provider.into()),
         };
 
