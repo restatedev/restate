@@ -8,7 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{Callback, PreconditionViolation, Request, RequestError, RequestKind};
+use crate::{
+    Callback, PreconditionViolation, ReadOnlyRequest, ReadOnlyRequestKind, RequestError,
+    RequestKind, WriteRequest,
+};
 use bytes::{Buf, BytesMut};
 use bytestring::ByteString;
 use flexbuffers::{DeserializationError, SerializationError};
@@ -24,6 +27,7 @@ use tracing::{debug, trace};
 use ulid::Ulid;
 
 pub struct KvMemoryStorage {
+    read_only_requests: HashMap<Ulid, ReadOnlyRequest>,
     callbacks: HashMap<Ulid, Callback>,
     kv_entries: HashMap<ByteString, VersionedValue>,
     metadata_writer: Option<MetadataWriter>,
@@ -34,9 +38,21 @@ impl KvMemoryStorage {
     pub fn new(metadata_writer: Option<MetadataWriter>) -> Self {
         KvMemoryStorage {
             metadata_writer,
+            read_only_requests: HashMap::default(),
             callbacks: HashMap::default(),
             kv_entries: HashMap::default(),
             last_seen_nodes_configuration: Arc::default(),
+        }
+    }
+
+    pub fn register_read_only_request(&mut self, read_only_request: ReadOnlyRequest) {
+        self.read_only_requests
+            .insert(read_only_request.request_id, read_only_request);
+    }
+
+    pub fn fail_read_only_requests<F: Fn() -> RequestError>(&mut self, cause: F) {
+        for (_, read_only_request) in self.read_only_requests.drain() {
+            read_only_request.fail(cause())
         }
     }
 
@@ -50,25 +66,18 @@ impl KvMemoryStorage {
         }
     }
 
+    pub fn fail_pending_requests<F: Fn() -> RequestError>(&mut self, cause: F) {
+        self.fail_read_only_requests(&cause);
+        self.fail_callbacks(cause);
+    }
+
     pub fn last_seen_nodes_configuration(&self) -> &NodesConfiguration {
         &self.last_seen_nodes_configuration
     }
 
-    pub fn handle_request(&mut self, request: Request) {
+    pub fn handle_request(&mut self, request: WriteRequest) {
         trace!("Handle request: {request:?}");
         match request.kind {
-            RequestKind::Get { key } => {
-                let result = self.get(key);
-                if let Some(callback) = self.callbacks.remove(&request.request_id) {
-                    callback.complete_get(result);
-                }
-            }
-            RequestKind::GetVersion { key } => {
-                let result = self.get_version(key);
-                if let Some(callback) = self.callbacks.remove(&request.request_id) {
-                    callback.complete_get_version(result);
-                }
-            }
             RequestKind::Put {
                 key,
                 value,
@@ -85,6 +94,25 @@ impl KvMemoryStorage {
                     callback.complete_delete(result.map_err(Into::into));
                 }
             }
+        }
+    }
+
+    pub fn handle_read_only_request(&mut self, request_id: Ulid) {
+        if let Some(read_only_request) = self.read_only_requests.remove(&request_id) {
+            match read_only_request.kind {
+                ReadOnlyRequestKind::Get { key, result_tx } => {
+                    let result = self.get(key);
+                    // err if caller has gone
+                    let _ = result_tx.send(Ok(result));
+                }
+                ReadOnlyRequestKind::GetVersion { key, result_tx } => {
+                    let result = self.get_version(key);
+                    // err if caller has gone
+                    let _ = result_tx.send(Ok(result));
+                }
+            }
+        } else {
+            debug!("Read-only request not found: {request_id}");
         }
     }
 

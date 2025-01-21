@@ -252,51 +252,80 @@ pub async fn create_metadata_store(
     }
 }
 impl MetadataStoreRequest {
-    fn split_request(self) -> (Callback, Request) {
-        let (request_kind, callback_kind) = match self {
-            MetadataStoreRequest::Get { key, result_tx } => {
-                (RequestKind::Get { key }, CallbackKind::Get { result_tx })
+    fn into_request(self) -> Request {
+        let request_id = Ulid::new();
+
+        match self {
+            MetadataStoreRequest::Get { key, result_tx } => Request::ReadOnly(ReadOnlyRequest {
+                request_id,
+                kind: ReadOnlyRequestKind::Get { key, result_tx },
+            }),
+            MetadataStoreRequest::GetVersion { key, result_tx } => {
+                Request::ReadOnly(ReadOnlyRequest {
+                    request_id,
+                    kind: ReadOnlyRequestKind::GetVersion { key, result_tx },
+                })
             }
-            MetadataStoreRequest::GetVersion { key, result_tx } => (
-                RequestKind::GetVersion { key },
-                CallbackKind::GetVersion { result_tx },
-            ),
             MetadataStoreRequest::Put {
                 key,
                 value,
                 precondition,
                 result_tx,
-            } => (
-                RequestKind::Put {
-                    key,
-                    value,
-                    precondition,
-                },
-                CallbackKind::Put { result_tx },
-            ),
+            } => {
+                let request = WriteRequest {
+                    request_id,
+                    kind: RequestKind::Put {
+                        key,
+                        value,
+                        precondition,
+                    },
+                };
+                let callback = Callback {
+                    request_id,
+                    kind: CallbackKind::Put { result_tx },
+                };
+
+                Request::Write { callback, request }
+            }
             MetadataStoreRequest::Delete {
                 key,
                 precondition,
                 result_tx,
-            } => (
-                RequestKind::Delete { key, precondition },
-                CallbackKind::Delete { result_tx },
-            ),
-        };
+            } => {
+                let request = WriteRequest {
+                    request_id,
+                    kind: RequestKind::Delete { key, precondition },
+                };
+                let callback = Callback {
+                    request_id,
+                    kind: CallbackKind::Delete { result_tx },
+                };
+                Request::Write { request, callback }
+            }
+        }
+    }
+}
 
-        let request_id = Ulid::new();
+#[derive(derive_more::Debug)]
+enum Request {
+    ReadOnly(ReadOnlyRequest),
+    Write {
+        #[debug(skip)]
+        callback: Callback,
+        request: WriteRequest,
+    },
+}
 
-        let callback = Callback {
-            request_id,
-            kind: callback_kind,
-        };
-
-        let request = Request {
-            request_id,
-            kind: request_kind,
-        };
-
-        (callback, request)
+impl Request {
+    fn fail(self, err: impl Into<RequestError>) {
+        match self {
+            Request::ReadOnly(read_only_request) => {
+                read_only_request.fail(err);
+            }
+            Request::Write { callback, .. } => {
+                callback.fail(err);
+            }
+        }
     }
 }
 
@@ -308,14 +337,6 @@ struct Callback {
 impl Callback {
     fn fail(self, err: impl Into<RequestError>) {
         match self.kind {
-            CallbackKind::Get { result_tx } => {
-                // err only if the oneshot receiver has gone away
-                let _ = result_tx.send(Err(err.into()));
-            }
-            CallbackKind::GetVersion { result_tx } => {
-                // err only if the oneshot receiver has gone away
-                let _ = result_tx.send(Err(err.into()));
-            }
             CallbackKind::Put { result_tx } => {
                 // err only if the oneshot receiver has gone away
                 let _ = result_tx.send(Err(err.into()));
@@ -325,24 +346,6 @@ impl Callback {
                 let _ = result_tx.send(Err(err.into()));
             }
         };
-    }
-
-    fn complete_get(self, result: Option<VersionedValue>) {
-        let_assert!(
-            CallbackKind::Get { result_tx } = self.kind,
-            "expected 'Get' callback"
-        );
-        // err if caller has gone
-        let _ = result_tx.send(Ok(result));
-    }
-
-    fn complete_get_version(self, result: Option<Version>) {
-        let_assert!(
-            CallbackKind::GetVersion { result_tx } = self.kind,
-            "expected 'GetVersion' callback"
-        );
-        // err if caller has gone
-        let _ = result_tx.send(Ok(result));
     }
 
     fn complete_put(self, result: Result<(), RequestError>) {
@@ -365,12 +368,6 @@ impl Callback {
 }
 
 enum CallbackKind {
-    Get {
-        result_tx: oneshot::Sender<Result<Option<VersionedValue>, RequestError>>,
-    },
-    GetVersion {
-        result_tx: oneshot::Sender<Result<Option<Version>, RequestError>>,
-    },
     Put {
         result_tx: oneshot::Sender<Result<(), RequestError>>,
     },
@@ -380,16 +377,16 @@ enum CallbackKind {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct Request {
+struct WriteRequest {
     request_id: Ulid,
     kind: RequestKind,
 }
 
-flexbuffers_storage_encode_decode!(Request);
+flexbuffers_storage_encode_decode!(WriteRequest);
 
-impl Request {
+impl WriteRequest {
     pub fn new(kind: RequestKind) -> Self {
-        Request {
+        WriteRequest {
             request_id: Ulid::new(),
             kind,
         }
@@ -403,18 +400,12 @@ impl Request {
     }
 
     fn decode_from_bytes(mut bytes: Bytes) -> Result<Self, StorageDecodeError> {
-        StorageCodec::decode::<Request, _>(&mut bytes)
+        StorageCodec::decode::<WriteRequest, _>(&mut bytes)
     }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 enum RequestKind {
-    Get {
-        key: ByteString,
-    },
-    GetVersion {
-        key: ByteString,
-    },
     Put {
         key: ByteString,
         value: VersionedValue,
@@ -423,6 +414,41 @@ enum RequestKind {
     Delete {
         key: ByteString,
         precondition: Precondition,
+    },
+}
+
+#[derive(Debug)]
+struct ReadOnlyRequest {
+    request_id: Ulid,
+    kind: ReadOnlyRequestKind,
+}
+
+impl ReadOnlyRequest {
+    fn fail(self, err: impl Into<RequestError>) {
+        match self.kind {
+            ReadOnlyRequestKind::Get { result_tx, .. } => {
+                // err only if the oneshot receiver has gone away
+                let _ = result_tx.send(Err(err.into()));
+            }
+            ReadOnlyRequestKind::GetVersion { result_tx, .. } => {
+                // err only if the oneshot receiver has gone away
+                let _ = result_tx.send(Err(err.into()));
+            }
+        };
+    }
+}
+
+#[derive(derive_more::Debug)]
+enum ReadOnlyRequestKind {
+    Get {
+        key: ByteString,
+        #[debug(skip)]
+        result_tx: oneshot::Sender<Result<Option<VersionedValue>, RequestError>>,
+    },
+    GetVersion {
+        key: ByteString,
+        #[debug(skip)]
+        result_tx: oneshot::Sender<Result<Option<Version>, RequestError>>,
     },
 }
 

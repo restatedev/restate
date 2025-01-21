@@ -18,7 +18,7 @@ use crate::{
     JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, JoinError, KnownLeader, MemberId,
     MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest, MetadataStoreSummary,
     ProvisionError, ProvisionReceiver, ProvisionSender, Request, RequestError, RequestKind,
-    RequestReceiver, RequestSender, StatusSender, StatusWatch, StorageId,
+    RequestReceiver, RequestSender, StatusSender, StatusWatch, StorageId, WriteRequest,
 };
 use arc_swap::ArcSwapOption;
 use bytes::BytesMut;
@@ -29,7 +29,9 @@ use futures::FutureExt;
 use futures::TryFutureExt;
 use protobuf::{Message as ProtobufMessage, ProtobufError};
 use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
-use raft::{Config, Error as RaftError, RawNode, SnapshotStatus, Storage, INVALID_ID};
+use raft::{
+    Config, Error as RaftError, RawNode, ReadOnlyOption, SnapshotStatus, Storage, INVALID_ID,
+};
 use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
 use raft_proto::ConfChangeI;
 use rand::prelude::IteratorRandom;
@@ -40,6 +42,7 @@ use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind,
 };
 use restate_types::config::{Configuration, RocksDbOptions};
+use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -47,10 +50,9 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::retries::RetryPolicy;
-use restate_types::storage::StorageDecodeError;
 use restate_types::{PlainNodeId, Version};
 use slog::o;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,6 +61,7 @@ use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_slog::TracingSlogDrain;
+use ulid::Ulid;
 
 const RAFT_INITIAL_LOG_TERM: u64 = 1;
 const RAFT_INITIAL_LOG_INDEX: u64 = 1;
@@ -80,7 +83,7 @@ pub enum Error {
     #[error("failed running raft: {0}")]
     Raft(#[from] raft::Error),
     #[error("failed deserializing raft serialized requests: {0}")]
-    DecodeRequest(StorageDecodeError),
+    DecodeRequest(GenericError),
     #[error("failed deserializing conf change: {0}")]
     DecodeConfChange(ProtobufError),
     #[error("failed applying conf change: {0}")]
@@ -259,8 +262,8 @@ impl RaftMetadataStore {
                     tokio::select! {
                         Some(request) = self.request_rx.recv() => {
                             // fail incoming requests while we are waiting for the provision signal
-                            let (callback, _) = request.split_request();
-                            callback.fail(RequestError::Unavailable("Metadata store has not been provisioned yet.".into(), None))
+                            let request = request.into_request();
+                            request.fail(RequestError::Unavailable("Metadata store has not been provisioned yet.".into(), None))
                         },
                         Some(request) = self.join_cluster_rx.recv() => {
                             let _ = request.response_tx.send(Err(JoinClusterError::NotActive(None)));
@@ -329,7 +332,7 @@ impl RaftMetadataStore {
 
         let value = serialize_value(&nodes_configuration)?;
 
-        let request_data = Request::new(RequestKind::Put {
+        let request_data = WriteRequest::new(RequestKind::Put {
             precondition: Precondition::None,
             key: NODES_CONFIG_KEY.clone(),
             value,
@@ -454,6 +457,7 @@ struct Active {
     kv_storage: KvMemoryStorage,
     is_leader: bool,
     pending_join_requests: HashMap<MemberId, oneshot::Sender<Result<(), JoinClusterError>>>,
+    read_index_to_request_id: VecDeque<(u64, Ulid)>,
 
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
     metadata_writer: Option<MetadataWriter>,
@@ -491,6 +495,7 @@ impl Active {
         // todo properly configure Raft instance
         let mut config = Config {
             id: to_raft_id(my_member_id.node_id),
+            read_only_option: ReadOnlyOption::Safe,
             ..Default::default()
         };
 
@@ -526,6 +531,7 @@ impl Active {
             metadata_writer,
             status_tx,
             pending_join_requests: HashMap::default(),
+            read_index_to_request_id: VecDeque::default(),
         })
     }
 
@@ -589,40 +595,51 @@ impl Active {
             //  (term, index).
             // we lost leadership :-( notify callers that their requests might not get committed
             // because we don't know whether the leader will start with the same log as we have.
-            self.kv_storage.fail_callbacks(|| {
+            self.kv_storage.fail_pending_requests(|| {
                 RequestError::Unavailable("lost leadership".into(), known_leader.clone())
             });
             self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
+            self.read_index_to_request_id.clear();
         } else if !previous_is_leader && self.is_leader {
             debug!("Won metadata store leadership");
         }
     }
 
     fn handle_request(&mut self, request: MetadataStoreRequest) {
-        let (callback, request) = request.split_request();
+        let request = request.into_request();
         trace!("Handle metadata store request: {request:?}");
 
         if !self.is_leader {
-            callback.fail(RequestError::Unavailable(
+            request.fail(RequestError::Unavailable(
                 "not leader".into(),
                 self.known_leader(),
             ));
             return;
         }
 
-        if let Err(err) = request
-            .encode_to_vec()
-            .map_err(Into::into)
-            .and_then(|request| {
-                self.raw_node
-                    .propose(vec![], request)
-                    .map_err(RequestError::from)
-            })
-        {
-            info!("Failed handling request: {err:?}");
-            callback.fail(err)
-        } else {
-            self.kv_storage.register_callback(callback);
+        match request {
+            Request::ReadOnly(read_only_request) => {
+                let read_ctx = read_only_request.request_id.to_bytes().to_vec();
+                self.raw_node.read_index(read_ctx);
+                self.kv_storage
+                    .register_read_only_request(read_only_request);
+            }
+            Request::Write { request, callback } => {
+                if let Err(err) = request
+                    .encode_to_vec()
+                    .map_err(Into::into)
+                    .and_then(|request| {
+                        self.raw_node
+                            .propose(vec![], request)
+                            .map_err(RequestError::from)
+                    })
+                {
+                    info!("Failed handling request: {err:?}");
+                    callback.fail(err)
+                } else {
+                    self.kv_storage.register_callback(callback);
+                }
+            }
         }
     }
 
@@ -698,6 +715,9 @@ impl Active {
                 .await?
         }
 
+        // handle read states
+        self.handle_read_states(ready.take_read_states()).await?;
+
         // then handle committed entries
         self.handle_committed_entries(ready.take_committed_entries())
             .await?;
@@ -739,6 +759,9 @@ impl Active {
 
         self.raw_node.advance_apply();
 
+        // after we have applied new entries, check whether we can fulfill some read-only requests
+        self.handle_read_only_requests();
+
         self.try_trim_log().await?;
         self.check_requested_snapshot().await?;
 
@@ -771,6 +794,39 @@ impl Active {
         }
     }
 
+    async fn handle_read_states(&mut self, read_states: Vec<raft::ReadState>) -> Result<(), Error> {
+        for read_state in read_states {
+            let request_id =
+                Ulid::from_bytes(read_state.request_ctx.try_into().map_err(|_err| {
+                    Error::DecodeRequest("could not deserialize Ulid from read request ctx".into())
+                })?);
+
+            if read_state.index <= self.raw_node.raft.raft_log.applied {
+                self.kv_storage.handle_read_only_request(request_id);
+            } else {
+                self.read_index_to_request_id
+                    .push_back((read_state.index, request_id));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_read_only_requests(&mut self) {
+        let applied_index = self.raw_node.raft.raft_log.applied;
+        while self
+            .read_index_to_request_id
+            .front()
+            .is_some_and(|(index, _)| *index <= applied_index)
+        {
+            let (_, request_id) = self
+                .read_index_to_request_id
+                .pop_front()
+                .expect("to be present");
+            self.kv_storage.handle_read_only_request(request_id);
+        }
+    }
+
     async fn handle_committed_entries(
         &mut self,
         committed_entries: Vec<Entry>,
@@ -793,7 +849,8 @@ impl Active {
     }
 
     fn handle_normal_entry(&mut self, entry: Entry) -> Result<(), Error> {
-        let request = Request::decode_from_bytes(entry.data).map_err(Error::DecodeRequest)?;
+        let request = WriteRequest::decode_from_bytes(entry.data)
+            .map_err(|err| Error::DecodeRequest(err.into()))?;
         self.kv_storage.handle_request(request);
 
         Ok(())
@@ -1175,8 +1232,8 @@ impl Passive {
         loop {
             tokio::select! {
                 Some(request) = request_rx.recv() => {
-                    let (callback, _) = request.split_request();
-                    callback.fail(RequestError::Unavailable(
+                    let request = request.into_request();
+                    request.fail(RequestError::Unavailable(
                         "Not being part of the metadata store cluster.".into(),
                         Active::random_known_leader(),
                     ))
