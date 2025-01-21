@@ -79,8 +79,8 @@ pub enum BuildError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("failed appending entries: {0}")]
-    Append(#[from] raft::Error),
+    #[error("failed running raft: {0}")]
+    Raft(#[from] raft::Error),
     #[error("failed deserializing raft serialized requests: {0}")]
     DecodeRequest(StorageDecodeError),
     #[error("failed deserializing conf change: {0}")]
@@ -274,7 +274,9 @@ impl RaftMetadataStore {
                                 Ok(raft_configuration) => {
                                     let _ = request.result_tx.send(Ok(true));
                                     debug!(member_id = %raft_configuration.my_member_id, "Successfully provisioned the metadata store.");
-                                    break Provisioned::Active(self.become_active(raft_configuration)?);
+                                    let mut active = self.become_active(raft_configuration)?;
+                                    active.campaign_immediately()?;
+                                    break Provisioned::Active(active);
                                 },
                                 Err(err) => {
                                     warn!("Failed to provision the metadata store: {err}");
@@ -514,6 +516,8 @@ impl Active {
             }
         }
 
+        config.validate()?;
+
         let raw_node = RawNode::new(&config, storage, &logger)?;
 
         Ok(Active {
@@ -531,6 +535,12 @@ impl Active {
             status_tx,
             pending_join_requests: HashMap::default(),
         })
+    }
+
+    /// Sets the Raft node up to start right away with a leader election.
+    pub fn campaign_immediately(&mut self) -> Result<(), Error> {
+        self.raw_node.campaign()?;
+        Ok(())
     }
 
     #[instrument(level = "info", skip_all, fields(member_id = %self.my_member_id))]
