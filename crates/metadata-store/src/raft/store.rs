@@ -307,6 +307,11 @@ impl RaftMetadataStore {
         &mut self,
         mut nodes_configuration: NodesConfiguration,
     ) -> anyhow::Result<RaftConfiguration> {
+        assert!(
+            self.storage.is_empty()?,
+            "storage must be empty to get initialized"
+        );
+
         let raft_configuration = self.derive_initial_configuration(&mut nodes_configuration)?;
 
         debug!("Initialize storage with nodes configuration: {nodes_configuration:?}");
@@ -335,7 +340,6 @@ impl RaftMetadataStore {
         }
         .encode_to_vec()?;
 
-        // todo assert that self.storage is empty
         let entry = Entry {
             data: request_data.into(),
             term: RAFT_INITIAL_LOG_TERM,

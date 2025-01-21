@@ -139,6 +139,17 @@ impl RocksDbStorage {
 }
 
 impl RocksDbStorage {
+    pub fn is_empty(&self) -> Result<bool, Error> {
+        let is_empty = self.get_raft_configuration()?.is_none()
+            && self.get_snapshot()?.is_empty()
+            && self.get_hard_state()? == HardState::default()
+            && self.get_conf_state()? == ConfState::default()
+            && self.get_first_index() == 1
+            && self.get_last_index() == 0;
+
+        Ok(is_empty)
+    }
+
     pub fn requested_snapshot(&self) -> Option<u64> {
         *self.requested_snapshot.borrow()
     }
