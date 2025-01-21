@@ -15,7 +15,6 @@ use std::hash::{Hash, Hasher};
 
 use itertools::Itertools;
 use tracing::warn;
-use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_types::locality::{NodeLocation, NodeLocationScope};
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
@@ -119,12 +118,12 @@ pub struct NodeSetChecker<Attr> {
     // this could also be Box<[(PlainNodeId, LocationScopeState<Attr>)]> but btreemap is nicer to
     // use.
     scopes: BTreeMap<NodeLocationScope, LocationScopeState<Attr>>,
-    node_to_attr: HashMap<PlainNodeId, Attr, Xxh3Builder>,
+    node_to_attr: HashMap<PlainNodeId, Attr>,
     /// Mapping between node-id and its log-server storage state. Note that we keep all nodes even
     /// unreadable ones here because they might become readable after a nodes configuration
     /// refresh. That said. Node-ids that have been deleted in nodes-configuration will not appear
     /// here.
-    node_to_storage_state: HashMap<PlainNodeId, StorageState, Xxh3Builder>,
+    node_to_storage_state: HashMap<PlainNodeId, StorageState>,
 }
 
 impl<Attr: Eq + Hash + Clone + std::fmt::Debug> NodeSetChecker<Attr> {
@@ -149,8 +148,8 @@ impl<Attr: Eq + Hash + Clone + std::fmt::Debug> NodeSetChecker<Attr> {
         // we must have at least node-level replication defined
         assert!(!scopes.is_empty());
 
-        let storage_states = HashMap::with_capacity_and_hasher(nodeset.len(), Xxh3Builder::new());
-        let node_attribute = HashMap::with_capacity_and_hasher(nodeset.len(), Xxh3Builder::new());
+        let storage_states = HashMap::with_capacity(nodeset.len());
+        let node_attribute = HashMap::with_capacity(nodeset.len());
 
         let mut checker = Self {
             scopes,
@@ -494,10 +493,7 @@ impl<Attr: Eq + Hash + Clone + std::fmt::Debug> NodeSetChecker<Attr> {
             // domain into the replication_fds.
             // it's cheaper to do this check vs. always attempting to lookup+insert
             if counters_num_readable_nodes == 1 {
-                let replicate_fds = scope_state
-                    .replication_fds
-                    .entry(attr.clone())
-                    .or_insert_with(|| HashSet::with_hasher(Xxh3Builder::new()));
+                let replicate_fds = scope_state.replication_fds.entry(attr.clone()).or_default();
                 replicate_fds.insert(fd.clone());
             }
 
@@ -655,14 +651,14 @@ impl<Attr> HashPtr<Attr> {
 #[derive(Debug)]
 struct LocationScopeState<Attr> {
     /// domains at that scope
-    failure_domains: HashMap<SmartString, Box<FailureDomainState<Attr>>, Xxh3Builder>,
+    failure_domains: HashMap<SmartString, Box<FailureDomainState<Attr>>>,
     /// maps between node-id to the domain it belongs to for fast lookups
-    node_to_fd: HashMap<PlainNodeId, HashPtr<Attr>, Xxh3Builder>,
+    node_to_fd: HashMap<PlainNodeId, HashPtr<Attr>>,
     /// replication factor at that scope
     replication_factor: u8,
     /// For each Attribute, set of the domains at that scope that have at least one node with the
     /// attribute. Those are the failure domains considered for replication/write-quorum.
-    replication_fds: HashMap<Attr, HashSet<HashPtr<Attr>, Xxh3Builder>>,
+    replication_fds: HashMap<Attr, HashSet<HashPtr<Attr>>>,
 }
 
 impl<Attr: Eq + Hash + Clone + std::fmt::Debug> LocationScopeState<Attr> {
@@ -674,8 +670,7 @@ impl<Attr: Eq + Hash + Clone + std::fmt::Debug> LocationScopeState<Attr> {
         // For each attribute, merge the set of FailureDomainState that have at least one node
         // with the attribute here. We stop merging immediately after the set's size reaches
         // the replication target.
-        let mut matches =
-            HashSet::with_capacity_and_hasher(self.failure_domains.len(), Xxh3Builder::new());
+        let mut matches = HashSet::with_capacity(self.failure_domains.len());
         for (attribute, domains) in self.replication_fds.iter() {
             if predicate(attribute) {
                 for domain in domains {

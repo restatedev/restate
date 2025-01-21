@@ -22,7 +22,6 @@ use rand::thread_rng;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, trace_span, Instrument};
-use xxhash_rust::xxh3::Xxh3Builder;
 
 use crate::cluster_controller::logs_controller::nodeset_selection::{
     NodeSelectionError, NodeSetSelector,
@@ -631,7 +630,7 @@ enum Event {
 /// complexity of handling multiple in-flight logs writes, the controller waits until the
 /// in-flight write completes or a newer log is detected.
 struct LogsControllerInner {
-    logs_state: HashMap<LogId, LogState, Xxh3Builder>,
+    logs_state: HashMap<LogId, LogState>,
     logs_write_in_progress: Option<Version>,
 
     // We are storing the logs explicitly (not relying on Metadata::current()) because we need a fixed
@@ -645,7 +644,7 @@ impl LogsControllerInner {
         current_logs: Arc<Logs>,
         retry_policy: RetryPolicy,
     ) -> Result<Self, LogsControllerError> {
-        let mut logs_state = HashMap::with_hasher(Xxh3Builder::default());
+        let mut logs_state = HashMap::with_capacity(current_logs.num_logs());
         Self::update_logs_state(&mut logs_state, current_logs.as_ref())?;
 
         Ok(Self {
@@ -854,7 +853,7 @@ impl LogsControllerInner {
     }
 
     fn update_logs_state(
-        logs_state: &mut HashMap<LogId, LogState, Xxh3Builder>,
+        logs_state: &mut HashMap<LogId, LogState>,
         logs: &Logs,
     ) -> Result<(), LogsControllerError> {
         for (log_id, chain) in logs.iter() {
