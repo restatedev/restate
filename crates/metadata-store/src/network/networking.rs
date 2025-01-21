@@ -32,9 +32,20 @@ pub enum TrySendError<T> {
     #[error("connecting to peer")]
     Connecting(T),
     #[error("unknown peer: {0}")]
-    UnknownPeer(u64),
+    UnknownPeer(u64, T),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
+}
+
+impl<T> TrySendError<T> {
+    pub fn into_message(self) -> Option<T> {
+        match self {
+            TrySendError::Send(message) => Some(message),
+            TrySendError::Connecting(message) => Some(message),
+            TrySendError::UnknownPeer(_, message) => Some(message),
+            TrySendError::Shutdown(_) => None,
+        }
+    }
 }
 
 #[derive(derive_more::Debug)]
@@ -121,7 +132,7 @@ where
             );
             return Err(TrySendError::Connecting(message));
         } else {
-            return Err(TrySendError::UnknownPeer(target));
+            return Err(TrySendError::UnknownPeer(target, message));
         }
 
         Ok(())

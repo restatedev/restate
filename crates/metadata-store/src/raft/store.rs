@@ -30,7 +30,7 @@ use futures::FutureExt;
 use futures::TryFutureExt;
 use protobuf::{Message as ProtobufMessage, ProtobufError};
 use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
-use raft::{Config, Error as RaftError, RawNode, Storage, INVALID_ID};
+use raft::{Config, Error as RaftError, RawNode, SnapshotStatus, Storage, INVALID_ID};
 use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
 use raft_proto::ConfChangeI;
 use rand::prelude::IteratorRandom;
@@ -760,8 +760,26 @@ impl Active {
 
     fn send_messages(&mut self, messages: Vec<Message>) {
         for message in messages {
+            let snapshot_target = if message.has_snapshot() {
+                Some(message.to)
+            } else {
+                None
+            };
+
             if let Err(err) = self.networking.try_send(message) {
                 trace!("failed sending message: {err}");
+
+                if let Some(message) = err.into_message() {
+                    if message.has_snapshot() {
+                        self.raw_node
+                            .report_snapshot(message.to, SnapshotStatus::Failure);
+                    } else {
+                        self.raw_node.report_unreachable(message.to);
+                    }
+                }
+            } else if let Some(snapshot_target) = snapshot_target {
+                self.raw_node
+                    .report_snapshot(snapshot_target, SnapshotStatus::Finish);
             }
         }
     }
