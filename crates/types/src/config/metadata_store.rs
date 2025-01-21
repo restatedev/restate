@@ -71,6 +71,7 @@ pub struct MetadataStoreOptions {
 pub enum MetadataStoreKind {
     #[default]
     Local,
+    #[serde(alias = "embedded")]
     Raft,
 }
 
