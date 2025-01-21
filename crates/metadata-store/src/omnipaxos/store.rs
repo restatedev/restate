@@ -16,8 +16,8 @@ use crate::omnipaxos::storage::RocksDbStorage;
 use crate::omnipaxos::{BuildError, OmniPaxosConfiguration, OmniPaxosMessage};
 use crate::{
     prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError, JoinClusterHandle,
-    JoinClusterReceiver, JoinClusterRequest, JoinClusterResponse, JoinClusterSender, KnownLeader,
-    MemberId, MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest,
+    JoinClusterReceiver, JoinClusterRequest, JoinClusterResponse, JoinClusterSender, JoinError,
+    KnownLeader, MemberId, MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest,
     MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender, Request,
     RequestError, RequestKind, RequestReceiver, RequestSender, StatusSender, StatusWatch,
     StorageId,
@@ -36,7 +36,6 @@ use restate_core::metadata_store::{serialize_value, Precondition};
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{cancellation_watcher, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_types::config::{Configuration, RocksDbOptions};
-use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -54,7 +53,6 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::MissedTickBehavior;
-use tonic::Status;
 use tracing::{debug, info, instrument, trace, warn};
 use ulid::Ulid;
 
@@ -991,7 +989,7 @@ impl Active {
     fn handle_join_request(&mut self, join_cluster_request: JoinClusterRequest) {
         let (response_tx, joining_node_id, joining_storage_id) = join_cluster_request.into_inner();
         let joining_member_id =
-            MemberId::new(to_plain_node_id(joining_node_id), joining_storage_id);
+            MemberId::new(PlainNodeId::from(joining_node_id), joining_storage_id);
 
         trace!("Handle join request from node '{}'", joining_member_id);
 
@@ -1028,7 +1026,7 @@ impl Active {
         } else {
             let mut new_cluster_config = self.cluster_config.clone();
             new_cluster_config.configuration_id += 1;
-            new_cluster_config.nodes.push(joining_node_id);
+            new_cluster_config.nodes.push(u64::from(joining_node_id));
             let mut new_members = current_members.into_owned();
             new_members.insert(joining_member_id.node_id, joining_member_id.storage_id);
 
@@ -1393,7 +1391,7 @@ impl Passive {
 
         let response = match client
             .join_cluster(ProtoJoinClusterRequest {
-                node_id: u64::from(u32::from(my_node_id)),
+                node_id: u32::from(my_node_id),
                 storage_id,
             })
             .await
@@ -1420,14 +1418,6 @@ impl Passive {
             omni_paxos_configuration,
         })
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-enum JoinError {
-    #[error("rpc failed: status: {}, message: {}", _0.code(), _0.message())]
-    Rpc(Status, Option<KnownLeader>),
-    #[error("other error: {0}")]
-    Other(GenericError),
 }
 
 #[derive(Clone, Debug)]

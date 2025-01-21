@@ -267,6 +267,10 @@ impl MetadataStore for GrpcMetadataStoreClient {
             .await
             .map_err(map_status_to_provision_error);
 
+        if response.is_ok() {
+            *self.svc_client.lock() = Some(client);
+        }
+
         response.map(|response| response.into_inner().newly_provisioned)
     }
 }

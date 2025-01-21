@@ -9,26 +9,34 @@
 // by the Apache License, Version 2.0.
 
 use crate::kv_memory_storage::KvMemoryStorage;
+use crate::network::grpc_svc::metadata_store_network_svc_client::MetadataStoreNetworkSvcClient;
 use crate::network::{ConnectionManager, Networking};
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{storage, RaftConfiguration};
 use crate::{
     prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError, JoinClusterHandle,
-    JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, KnownLeader, MemberId,
-    MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest, MetadataStoreSummary,
-    ProvisionError, ProvisionReceiver, ProvisionSender, Request, RequestError, RequestKind,
-    RequestReceiver, RequestSender, StatusSender, StatusWatch, StorageId,
+    JoinClusterReceiver, JoinClusterRequest, JoinClusterResponse, JoinClusterSender, JoinError,
+    KnownLeader, MemberId, MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest,
+    MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender, Request,
+    RequestError, RequestKind, RequestReceiver, RequestSender, StatusSender, StatusWatch,
+    StorageId,
 };
 use arc_swap::ArcSwapOption;
+use bytes::{Bytes, BytesMut};
+use flexbuffers::{DeserializationError, SerializationError};
+use futures::future::{FusedFuture, OptionFuture};
 use futures::never::Never;
+use futures::FutureExt;
 use futures::TryFutureExt;
 use protobuf::{Message as ProtobufMessage, ProtobufError};
 use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
-use raft::{Config, RawNode, INVALID_ID};
+use raft::{Config, Error as RaftError, RawNode, Storage, INVALID_ID};
+use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
 use raft_proto::ConfChangeI;
 use rand::prelude::IteratorRandom;
 use rand::{random, thread_rng};
 use restate_core::metadata_store::{serialize_value, Precondition};
+use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind,
 };
@@ -37,20 +45,25 @@ use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::{MetadataServerState, NodesConfiguration};
+use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
 use restate_types::protobuf::common::MetadataServerStatus;
+use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageDecodeError;
 use restate_types::{PlainNodeId, Version};
 use slog::o;
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, instrument, trace, warn};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
+
+const RAFT_INITIAL_LOG_TERM: u64 = 1;
+const RAFT_INITIAL_LOG_INDEX: u64 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -71,11 +84,15 @@ pub enum Error {
     #[error("failed deserializing raft serialized requests: {0}")]
     DecodeRequest(StorageDecodeError),
     #[error("failed deserializing conf change: {0}")]
-    DecodeConf(ProtobufError),
+    DecodeConfChange(ProtobufError),
     #[error("failed applying conf change: {0}")]
     ApplyConfChange(raft::Error),
     #[error("failed reading/writing from/to storage: {0}")]
     Storage(#[from] storage::Error),
+    #[error("failed restoring the snapshot: {0}")]
+    RestoreSnapshot(#[from] DeserializationError),
+    #[error("failed creating snapshot: {0}")]
+    CreateSnapshot(#[from] SerializationError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }
@@ -294,6 +311,20 @@ impl RaftMetadataStore {
 
         debug!("Initialize storage with nodes configuration: {nodes_configuration:?}");
 
+        let initial_conf_state = ConfState::from((
+            vec![to_raft_id(raft_configuration.own_member_id.node_id)],
+            vec![],
+        ));
+
+        // initialize storage with an initial snapshot so that newly started nodes will fetch it
+        // first to start with the same initial conf state.
+        let mut snapshot = Snapshot::new();
+        snapshot.mut_metadata().term = RAFT_INITIAL_LOG_TERM;
+        snapshot.mut_metadata().index = RAFT_INITIAL_LOG_INDEX;
+        snapshot.mut_metadata().set_conf_state(initial_conf_state);
+
+        self.storage.apply_snapshot(snapshot).await?;
+
         let value = serialize_value(&nodes_configuration)?;
 
         let request_data = Request {
@@ -309,19 +340,13 @@ impl RaftMetadataStore {
         // todo assert that self.storage is empty
         let entry = Entry {
             data: request_data.into(),
-            term: 0,
-            index: 1,
+            term: RAFT_INITIAL_LOG_TERM,
+            index: RAFT_INITIAL_LOG_INDEX + 1,
             ..Entry::default()
         };
 
         // todo atomically commit? otherwise we might leave partial state behind
         self.storage.append(&vec![entry]).await?;
-        self.storage
-            .store_conf_state(ConfState::from((
-                vec![to_raft_id(raft_configuration.own_member_id.node_id)],
-                vec![],
-            )))
-            .await?;
         self.storage
             .store_raft_configuration(&raft_configuration)
             .await?;
@@ -445,6 +470,9 @@ struct Active {
     metadata_writer: Option<MetadataWriter>,
 
     status_tx: StatusSender,
+
+    pending_join_requests:
+        HashMap<MemberId, oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>>,
 }
 
 impl Active {
@@ -481,6 +509,15 @@ impl Active {
         let drain = TracingSlogDrain;
         let logger = slog::Logger::root(drain, o!());
 
+        let mut kv_storage = KvMemoryStorage::new(metadata_writer.clone());
+
+        if let Ok(snapshot) = storage.snapshot(0, to_raft_id(own_member_id.node_id)) {
+            if !snapshot.get_data().is_empty() {
+                let mut data = snapshot.get_data();
+                kv_storage.restore(&mut data)?;
+            }
+        }
+
         let raw_node = RawNode::new(&config, storage, &logger)?;
 
         Ok(Active {
@@ -491,11 +528,12 @@ impl Active {
             connection_manager,
             networking,
             raft_rx,
-            kv_storage: KvMemoryStorage::new(metadata_writer.clone()),
+            kv_storage,
             request_rx,
             join_cluster_rx,
             metadata_writer,
             status_tx,
+            pending_join_requests: HashMap::default(),
         })
     }
 
@@ -556,8 +594,7 @@ impl Active {
             self.kv_storage.fail_callbacks(|| {
                 RequestError::Unavailable("lost leadership".into(), known_leader.clone())
             });
-            // todo reintroduce once we support joining a cluster
-            // self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
+            self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
         } else if !previous_is_leader && self.is_leader {
             debug!("Won leadership");
         }
@@ -594,11 +631,50 @@ impl Active {
     fn handle_join_request(&mut self, join_cluster_request: JoinClusterRequest) {
         let (response_tx, joining_node_id, joining_storage_id) = join_cluster_request.into_inner();
         let joining_member_id =
-            MemberId::new(to_plain_node_id(joining_node_id), joining_storage_id);
+            MemberId::new(PlainNodeId::from(joining_node_id), joining_storage_id);
 
         trace!("Handle join request from node '{}'", joining_member_id);
 
-        let _ = response_tx.send(Err(JoinClusterError::Internal("not supported".to_owned())));
+        if !self.is_leader {
+            let _ = response_tx.send(Err(JoinClusterError::NotLeader(self.known_leader())));
+            return;
+        }
+
+        if self.raw_node.raft.has_pending_conf() {
+            let _ = response_tx.send(Err(JoinClusterError::PendingReconfiguration));
+            return;
+        }
+
+        if self.is_member(joining_member_id) {
+            // todo update join cluster response once we no longer need to send the log prefix and
+            //  metadata store config
+            let _ = response_tx.send(Ok(JoinClusterResponse {
+                log_prefix: Bytes::new(),
+                metadata_store_config: Bytes::new(),
+            }));
+            return;
+        }
+
+        // It's possible to batch multiple new joining nodes into a single conf change if we want.
+        // This will, however, require joint consensus.
+        let mut conf_change_single = ConfChangeSingle::new();
+        conf_change_single.change_type = ConfChangeType::AddNode;
+        conf_change_single.node_id = to_raft_id(joining_member_id.node_id);
+
+        let mut conf_change = ConfChangeV2::new();
+        conf_change.set_changes(vec![conf_change_single].into());
+
+        if let Err(err) = self.raw_node.propose_conf_change(Vec::new(), conf_change) {
+            let response = match err {
+                RaftError::ProposalDropped => JoinClusterError::ProposalDropped,
+                err => JoinClusterError::Internal(err.to_string()),
+            };
+
+            let _ = response_tx.send(Err(response));
+        } else {
+            debug!("Triggered reconfiguration of metadata store cluster");
+            self.register_join_callback(joining_member_id, response_tx);
+        }
     }
 
     async fn on_ready(&mut self) -> Result<(), Error> {
@@ -615,13 +691,15 @@ impl Active {
 
         // apply snapshot if one was sent
         if !ready.snapshot().is_empty() {
-            if let Err(err) = self
-                .raw_node
+            if !ready.snapshot().get_data().is_empty() {
+                let mut data = ready.snapshot().get_data();
+                self.kv_storage.restore(&mut data)?;
+            }
+
+            self.raw_node
                 .mut_store()
                 .apply_snapshot(ready.snapshot().clone())
-            {
-                warn!("failed applying snapshot: {err}");
-            }
+                .await?
         }
 
         // then handle committed entries
@@ -671,7 +749,7 @@ impl Active {
     fn send_messages(&mut self, messages: Vec<Message>) {
         for message in messages {
             if let Err(err) = self.networking.try_send(message) {
-                debug!("failed sending message: {err}");
+                trace!("failed sending message: {err}");
             }
         }
     }
@@ -688,8 +766,9 @@ impl Active {
 
             match entry.get_entry_type() {
                 EntryType::EntryNormal => self.handle_normal_entry(entry)?,
-                EntryType::EntryConfChange => self.handle_conf_change(entry).await?,
-                EntryType::EntryConfChangeV2 => self.handle_conf_change_v2(entry).await?,
+                EntryType::EntryConfChange | EntryType::EntryConfChangeV2 => {
+                    self.handle_conf_change(entry).await?
+                }
             }
         }
 
@@ -704,25 +783,124 @@ impl Active {
     }
 
     async fn handle_conf_change(&mut self, entry: Entry) -> Result<(), Error> {
-        let mut cc = ConfChange::default();
-        cc.merge_from_bytes(&entry.data)
-            .map_err(Error::DecodeConf)?;
-        self.handle_conf_change_inner(&cc).await
-    }
+        let cc_v2 = match entry.entry_type {
+            EntryType::EntryNormal => {
+                panic!("normal entries should be handled by handle_normal_entry")
+            }
+            EntryType::EntryConfChange => {
+                let mut cc = ConfChange::default();
+                cc.merge_from_bytes(&entry.data)
+                    .map_err(Error::DecodeConfChange)?;
+                cc.into_v2()
+            }
+            EntryType::EntryConfChangeV2 => {
+                let mut cc = ConfChangeV2::default();
+                cc.merge_from_bytes(&entry.data)
+                    .map_err(Error::DecodeConfChange)?;
+                cc
+            }
+        };
 
-    async fn handle_conf_change_v2(&mut self, entry: Entry) -> Result<(), Error> {
-        let mut cc = ConfChangeV2::default();
-        cc.merge_from_bytes(&entry.data)
-            .map_err(Error::DecodeConf)?;
-        self.handle_conf_change_inner(&cc).await
-    }
-
-    async fn handle_conf_change_inner(&mut self, cc: &impl ConfChangeI) -> Result<(), Error> {
-        let _cs = self
-            .raw_node
-            .apply_conf_change(cc)
+        self.raw_node
+            .apply_conf_change(&cc_v2)
             .map_err(Error::ApplyConfChange)?;
+
+        self.update_membership_in_nodes_configuration();
+
+        self.create_snapshot(entry.index, entry.term).await?;
+
+        self.answer_join_callbacks();
+        self.update_leadership();
+        self.update_node_addresses(&Metadata::with_current(|m| m.nodes_config_ref()));
+        self.update_status();
+
         Ok(())
+    }
+
+    async fn create_snapshot(&mut self, index: u64, term: u64) -> Result<(), Error> {
+        let mut data = BytesMut::new();
+        self.kv_storage.snapshot(&mut data)?;
+
+        let mut snapshot = Snapshot::new();
+        let mut metadata = SnapshotMetadata::new();
+        metadata.set_index(index);
+        metadata.set_term(term);
+        metadata.set_conf_state(self.raw_node.raft.prs().conf().to_conf_state());
+        snapshot.set_data(data.freeze());
+        snapshot.set_metadata(metadata);
+
+        self.raw_node.mut_store().apply_snapshot(snapshot).await?;
+
+        Ok(())
+    }
+
+    fn update_membership_in_nodes_configuration(&mut self) {
+        let mut new_nodes_configuration = self.kv_storage.last_seen_nodes_configuration().clone();
+        let previous_version = new_nodes_configuration.version();
+
+        for (node_id, node_config) in new_nodes_configuration.iter_mut() {
+            if self.is_member_plain_node_id(node_id) {
+                node_config.metadata_server_config.metadata_server_state =
+                    MetadataServerState::Active(0);
+            } else if matches!(
+                node_config.metadata_server_config.metadata_server_state,
+                MetadataServerState::Active(_)
+            ) {
+                // active nodes that have been removed from the configuration are switched to passive
+                node_config.metadata_server_config.metadata_server_state =
+                    MetadataServerState::Passive;
+            }
+            // Candidates stay candidates for the time being
+        }
+
+        new_nodes_configuration.increment_version();
+        let versioned_value = serialize_value(&new_nodes_configuration)
+            .expect("should be able to serialize NodesConfiguration");
+        self.kv_storage
+            .put(
+                NODES_CONFIG_KEY.clone(),
+                versioned_value,
+                Precondition::MatchesVersion(previous_version),
+            )
+            .expect("should be able to update NodesConfiguration with new members");
+    }
+
+    fn register_join_callback(
+        &mut self,
+        member_id: MemberId,
+        reconfiguration_callback: oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>,
+    ) {
+        if let Some(previous_callback) = self
+            .pending_join_requests
+            .insert(member_id, reconfiguration_callback)
+        {
+            let _ =
+                previous_callback.send(Err(JoinClusterError::ConcurrentRequest(member_id.node_id)));
+        }
+    }
+
+    fn fail_join_callbacks(&mut self, cause: impl Fn() -> JoinClusterError) {
+        for (_, response_tx) in self.pending_join_requests.drain() {
+            let _ = response_tx.send(Err(cause()));
+        }
+    }
+
+    fn answer_join_callbacks(&mut self) {
+        let pending_join_request: Vec<_> = self.pending_join_requests.drain().collect();
+        for (member_id, response_tx) in pending_join_request {
+            if self.is_member(member_id) {
+                let _ = response_tx.send(Ok(JoinClusterResponse {
+                    log_prefix: Bytes::new(),
+                    metadata_store_config: Bytes::new(),
+                }));
+            } else {
+                // latest reconfiguration didn't include this node, fail it so that caller can retry
+                let _ = response_tx.send(Err(JoinClusterError::Internal(format!(
+                    "failed to include node '{}' in new configuration",
+                    member_id
+                ))));
+            }
+        }
     }
 
     fn update_node_addresses(&mut self, nodes_configuration: &NodesConfiguration) {
@@ -739,10 +917,14 @@ impl Active {
     fn update_status(&self) {
         self.status_tx.send_if_modified(|current_status| {
             // todo fix member id to contain correct storage id
-            let current_leader = Some(MemberId::new(
-                to_plain_node_id(self.raw_node.raft.leader_id),
-                0,
-            ));
+            let current_leader = if self.raw_node.raft.leader_id == INVALID_ID {
+                None
+            } else {
+                Some(MemberId::new(
+                    to_plain_node_id(self.raw_node.raft.leader_id),
+                    0,
+                ))
+            };
 
             if let MetadataStoreSummary::Active {
                 leader,
@@ -789,6 +971,26 @@ impl Active {
             .map(|id| MemberId::new(to_plain_node_id(id), 0))
             .collect();
         members
+    }
+
+    fn is_member(&self, member_id: MemberId) -> bool {
+        // todo check for storage id too
+        self.raw_node
+            .raft
+            .prs()
+            .conf()
+            .voters()
+            .contains(to_raft_id(member_id.node_id))
+    }
+
+    fn is_member_plain_node_id(&self, node_id: PlainNodeId) -> bool {
+        // todo check for storage id too
+        self.raw_node
+            .raft
+            .prs()
+            .conf()
+            .voters()
+            .contains(to_raft_id(node_id))
     }
 
     /// Returns the known leader from the Raft instance or a random known leader from the
@@ -869,7 +1071,171 @@ impl Passive {
     }
 
     async fn run(self) -> Result<Active, Error> {
-        futures::future::pending().await
+        debug!("Run as passive metadata store node.");
+
+        let Passive {
+            connection_manager,
+            mut storage,
+            mut request_rx,
+            mut join_cluster_rx,
+            metadata_writer,
+            storage_id,
+            status_tx,
+        } = self;
+
+        let _ = status_tx.send(MetadataStoreSummary::Passive);
+
+        // todo make configurable
+        let mut join_retry_policy = RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.0,
+            None,
+            Some(Duration::from_secs(5)),
+        )
+        .into_iter();
+
+        storage
+            .store_nodes_configuration(&Metadata::with_current(|m| m.nodes_config_ref()))
+            .await?;
+
+        let mut join_cluster: std::pin::Pin<&mut OptionFuture<_>> = std::pin::pin!(None.into());
+
+        let mut nodes_config_watcher =
+            Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
+        nodes_config_watcher.mark_changed();
+        let my_node_name = Configuration::pinned().common.node_name().to_owned();
+
+        loop {
+            tokio::select! {
+                Some(request) = request_rx.recv() => {
+                    let (callback, _) = request.split_request();
+                    callback.fail(RequestError::Unavailable(
+                        "Not being part of the metadata store cluster.".into(),
+                        Active::random_known_leader(),
+                    ))
+                },
+                Some(request) = join_cluster_rx.recv() => {
+                    let _ = request.response_tx.send(Err(JoinClusterError::NotActive(Active::random_known_leader())));
+                }
+                Some(join_result) = &mut join_cluster => {
+                    let raft_configuration: Result<RaftConfiguration, _> = join_result;
+                    match raft_configuration {
+                        Ok(raft_configuration) => {
+                            storage.store_raft_configuration(&raft_configuration).await?;
+
+                            return Active::create(
+                                raft_configuration,
+                                connection_manager,
+                                storage,
+                                request_rx,
+                                join_cluster_rx,
+                                metadata_writer,
+                                status_tx);
+                        },
+                        Err(err) => {
+                            debug!("Failed joining raft cluster. Retrying. {err}");
+
+                            match err {
+                               JoinError::Rpc(_, known_leader) => {
+                                    // if we have learned about a new leader, then try immediately rejoining
+                                    join_cluster.set(Some(Self::join_cluster(known_leader, None, storage_id).fuse()).into());
+                                }
+                                _ => {
+                                    join_cluster.set(Some(Self::join_cluster(None, join_retry_policy.next(), storage_id).fuse()).into());
+                                }
+                            }
+
+                        }
+                    }
+                }
+                _ = nodes_config_watcher.changed() => {
+                    let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+                    let node_config = nodes_config.find_node_by_name(&my_node_name).expect("I must have registered before");
+
+                    if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Active(_) | MetadataServerState::Candidate) && join_cluster.is_terminated() {
+                        debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
+                        join_cluster.set(Some(Self::join_cluster(None, None, storage_id).fuse()).into());
+                    } else {
+                        debug!("Node is not part of the metadata store cluster. Waiting to become a candidate.");
+                        join_cluster.set(None.into());
+                    }
+                }
+            }
+        }
+    }
+
+    async fn join_cluster(
+        known_leader: Option<KnownLeader>,
+        join_delay: Option<Duration>,
+        storage_id: StorageId,
+    ) -> Result<RaftConfiguration, JoinError> {
+        if let Some(delay) = join_delay {
+            time::sleep(delay).await
+        }
+
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+
+        // We cannot assume that we have already joined the cluster and obtained our generational node id.
+        // That's why we need to retrieve the plain node id based on our name from the latest known
+        // NodesConfiguration. If the node has no assigned plain node id, then it first needs to obtain
+        // it by following the regular join path before it can join the metadata store cluster.
+        let my_node_id = if let Some(node_config) =
+            nodes_config.find_node_by_name(Configuration::pinned().common.node_name())
+        {
+            node_config.current_generation.as_plain()
+        } else {
+            return Err(JoinError::Other(format!("The node with name '{}' has not obtained a node id yet. W/o the node id, it cannot join the metadata store cluster.", Configuration::pinned().common.node_name()).into()));
+        };
+
+        let address = if let Some(known_leader) = known_leader {
+            debug!(
+                "Trying to join metadata store at node '{}'",
+                known_leader.node_id
+            );
+            known_leader.address
+        } else {
+            // pick random active metadata store node
+            let active_metadata_store_node = nodes_config.iter().filter_map(|(node, config)| {
+                if config.has_role(Role::MetadataServer) && node != my_node_id && matches!(config.metadata_server_config.metadata_server_state, MetadataServerState::Active(_)) {
+                    Some(node)
+                } else {
+                    None
+                }
+            }).choose(&mut thread_rng()).ok_or(JoinError::Other("No other active metadata store present in the cluster. This indicates a misconfiguration.".into()))?;
+
+            debug!(
+                "Trying to join metadata store cluster at randomly chosen node '{}'",
+                active_metadata_store_node
+            );
+
+            nodes_config
+                .find_node_by_id(active_metadata_store_node)
+                .expect("must be present")
+                .address
+                .clone()
+        };
+
+        let channel = create_tonic_channel(address, &Configuration::pinned().networking);
+
+        let mut client = MetadataStoreNetworkSvcClient::new(channel);
+
+        let own_member_id = MemberId::new(my_node_id, storage_id);
+
+        let _response = match client
+            .join_cluster(crate::network::grpc_svc::JoinClusterRequest {
+                node_id: u32::from(my_node_id),
+                storage_id,
+            })
+            .await
+        {
+            Ok(response) => response.into_inner(),
+            Err(status) => {
+                let known_leader = KnownLeader::from_status(&status);
+                Err(JoinError::Rpc(status, known_leader))?
+            }
+        };
+
+        Ok(RaftConfiguration { own_member_id })
     }
 }
 

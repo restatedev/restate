@@ -44,6 +44,7 @@ use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId, Plain
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 use tokio::sync::{mpsc, oneshot, watch};
+use tonic::Status;
 use tracing::debug;
 use ulid::Ulid;
 
@@ -106,6 +107,14 @@ pub enum ProvisionError {
 #[derive(Debug, thiserror::Error)]
 #[error("invalid nodes configuration: {0}")]
 pub struct InvalidConfiguration(String);
+
+#[derive(Debug, thiserror::Error)]
+enum JoinError {
+    #[error("rpc failed: status: {}, message: {}", _0.code(), _0.message())]
+    Rpc(Status, Option<KnownLeader>),
+    #[error("other error: {0}")]
+    Other(GenericError),
+}
 
 #[async_trait::async_trait]
 pub trait MetadataStoreServiceBoxed {
@@ -440,7 +449,7 @@ enum JoinClusterError {
     NotActive(Option<KnownLeader>),
     #[error("cannot accept new members since I am not the leader.")]
     NotLeader(Option<KnownLeader>),
-    #[error("invalid omni paxos configuration: {0}")]
+    #[error("invalid configuration: {0}")]
     ConfigError(String),
     #[error("pending reconfiguration")]
     PendingReconfiguration,
@@ -448,6 +457,8 @@ enum JoinClusterError {
     ConcurrentRequest(PlainNodeId),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("join request was dropped")]
+    ProposalDropped,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -489,7 +500,7 @@ impl KnownLeader {
 }
 
 struct JoinClusterRequest {
-    node_id: u64,
+    node_id: u32,
     storage_id: u64,
     response_tx: oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>,
 }
@@ -499,7 +510,7 @@ impl JoinClusterRequest {
         self,
     ) -> (
         oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>,
-        u64,
+        u32,
         u64,
     ) {
         (self.response_tx, self.node_id, self.storage_id)
@@ -523,7 +534,7 @@ impl JoinClusterHandle {
 
     pub async fn join_cluster(
         &self,
-        node_id: u64,
+        node_id: u32,
         storage_id: u64,
     ) -> Result<JoinClusterResponse, JoinClusterError> {
         let (response_tx, response_rx) = oneshot::channel();

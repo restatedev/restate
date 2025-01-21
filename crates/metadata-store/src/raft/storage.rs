@@ -29,6 +29,7 @@ use std::array::TryFromSliceError;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::{error, mem};
+use tracing::debug;
 
 const DB_NAME: &str = "raft-metadata-store";
 const RAFT_CF: &str = "raft";
@@ -41,6 +42,7 @@ const CONF_STATE_DISCRIMINATOR: u8 = 0x03;
 const STORAGE_ID: u8 = 0x04;
 const RAFT_CONFIGURATION: u8 = 0x05;
 const NODES_CONFIGURATION: u8 = 0x06;
+const SNAPSHOT: u8 = 0x07;
 
 const RAFT_ENTRY_KEY_LENGTH: usize = 9;
 
@@ -87,7 +89,9 @@ pub struct RocksDbStorage {
     db: Arc<DB>,
     rocksdb: Arc<RocksDb>,
 
+    first_index: u64,
     last_index: u64,
+
     buffer: BytesMut,
 }
 
@@ -117,11 +121,12 @@ impl RocksDbStorage {
             .get_db(db_name)
             .expect("raft metadata store db is open");
 
-        let last_index = Self::find_last_index(&db);
+        let (first_index, last_index) = Self::find_indices(&db);
 
         Ok(Self {
             db,
             rocksdb,
+            first_index,
             last_index,
             buffer: BytesMut::with_capacity(1024),
         })
@@ -137,7 +142,7 @@ impl RocksDbStorage {
         write_opts
     }
 
-    fn find_last_index(db: &DB) -> u64 {
+    fn find_indices(db: &DB) -> (u64, u64) {
         let cf = db.cf_handle(RAFT_CF).expect("RAFT_CF exists");
         let start = Self::raft_entry_key(0);
         let end = Self::raft_entry_key(u64::MAX);
@@ -147,25 +152,49 @@ impl RocksDbStorage {
         options.set_iterate_range(start..end);
         let mut iterator = db.raw_iterator_cf_opt(&cf, options);
 
-        iterator.seek_to_last();
+        iterator.seek_to_first();
 
         if iterator.valid() {
             let key_bytes = iterator.key().expect("key should be present");
-            assert_eq!(
-                key_bytes.len(),
-                RAFT_ENTRY_KEY_LENGTH,
-                "raft entry keys must consist of '{}' bytes",
-                RAFT_ENTRY_KEY_LENGTH
-            );
-            u64::from_be_bytes(
-                key_bytes[1..(1 + size_of::<u64>())]
-                    .try_into()
-                    .expect("buffer should be long enough"),
-            )
+            let first_index = Self::log_index_from_key(key_bytes);
+
+            iterator.seek_to_last();
+
+            assert!(iterator.valid(), "iterator should be valid");
+            let key_bytes = iterator.key().expect("key should be present");
+            let last_index = Self::log_index_from_key(key_bytes);
+
+            (first_index, last_index)
         } else {
-            // the first valid raft index starts at 1, so 0 means there are no replicated raft entries
-            0
+            let snapshot_bytes = db
+                .get_pinned_cf(&cf, Self::snapshot_key())
+                .expect("snapshot key should be readable");
+            if let Some(snapshot_bytes) = snapshot_bytes {
+                let snapshot = Snapshot::parse_from_bytes(snapshot_bytes.as_ref())
+                    .expect("snapshot should be deserializable");
+                let last_index = snapshot.get_metadata().get_index();
+                let first_index = snapshot.get_metadata().get_index() + 1;
+
+                (first_index, last_index)
+            } else {
+                // the first valid raft index starts at 1, so 0 means there are no replicated raft entries
+                (FIRST_RAFT_INDEX, 0)
+            }
         }
+    }
+
+    fn log_index_from_key(key_bytes: &[u8]) -> u64 {
+        assert_eq!(
+            key_bytes.len(),
+            RAFT_ENTRY_KEY_LENGTH,
+            "raft entry keys must consist of '{}' bytes",
+            RAFT_ENTRY_KEY_LENGTH
+        );
+        u64::from_be_bytes(
+            key_bytes[1..(1 + size_of::<u64>())]
+                .try_into()
+                .expect("buffer should be long enough"),
+        )
     }
 
     pub fn get_hard_state(&self) -> Result<HardState, Error> {
@@ -232,20 +261,27 @@ impl RocksDbStorage {
     ) -> Result<(), Error> {
         self.buffer.clear();
         value.write_to_writer(&mut (&mut self.buffer).writer())?;
-
-        let cf = self.get_cf_handle();
         let mut write_batch = WriteBatch::default();
-        write_batch.put_cf(&cf, key.as_ref(), &self.buffer);
-        self.rocksdb
-            .write_batch(
-                "put_value",
-                Priority::High,
-                IoMode::Default,
-                self.write_options(),
-                write_batch,
-            )
-            .await
-            .map_err(Into::into)
+        {
+            let cf = self.get_cf_handle();
+            write_batch.put_cf(&cf, key.as_ref(), &self.buffer);
+        }
+        self.commit_write_batch(write_batch).await
+    }
+
+    async fn put_value_ref<T: Message>(
+        &mut self,
+        key: impl AsRef<[u8]>,
+        value: &T,
+    ) -> Result<(), Error> {
+        self.buffer.clear();
+        value.write_to_writer(&mut (&mut self.buffer).writer())?;
+        let mut write_batch = WriteBatch::default();
+        {
+            let cf = self.get_cf_handle();
+            write_batch.put_cf(&cf, key.as_ref(), &self.buffer);
+        }
+        self.commit_write_batch(write_batch).await
     }
 
     fn get_bytes(&self, key: impl AsRef<[u8]>) -> Result<Option<DBPinnableSlice>, Error> {
@@ -258,20 +294,12 @@ impl RocksDbStorage {
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> Result<(), Error> {
-        let cf = self.get_cf_handle();
-
         let mut write_batch = WriteBatch::default();
-        write_batch.put_cf(&cf, key.as_ref(), value.as_ref());
-        self.rocksdb
-            .write_batch(
-                "put_bytes",
-                Priority::High,
-                IoMode::Default,
-                self.write_options(),
-                write_batch,
-            )
-            .await
-            .map_err(Into::into)
+        {
+            let cf = self.get_cf_handle();
+            write_batch.put_cf(&cf, key.as_ref(), value.as_ref());
+        }
+        self.commit_write_batch(write_batch).await
     }
 
     pub async fn append(&mut self, entries: &Vec<Entry>) -> Result<(), Error> {
@@ -294,17 +322,7 @@ impl RocksDbStorage {
             }
         }
 
-        let result = self
-            .rocksdb
-            .write_batch(
-                "append",
-                Priority::High,
-                IoMode::Default,
-                self.write_options(),
-                write_batch,
-            )
-            .await
-            .map_err(Into::into);
+        let result = self.commit_write_batch(write_batch).await;
 
         self.buffer = buffer;
         self.last_index = last_index;
@@ -343,6 +361,10 @@ impl RocksDbStorage {
         [NODES_CONFIGURATION]
     }
 
+    fn snapshot_key() -> [u8; 1] {
+        [SNAPSHOT]
+    }
+
     fn check_index(&self, idx: u64) -> Result<(), Error> {
         if idx < self.first_index() {
             return Err(Error::Compacted(self.first_index()));
@@ -356,6 +378,7 @@ impl RocksDbStorage {
         Ok(())
     }
 
+    /// Check if the range is valid and within the bounds of the raft log. `High` is exclusive.
     fn check_range(&self, low: u64, high: u64) -> Result<(), Error> {
         assert!(low < high, "Low '{low}' must be smaller than high '{high}'");
 
@@ -379,11 +402,67 @@ impl RocksDbStorage {
     }
 
     fn first_index(&self) -> u64 {
-        FIRST_RAFT_INDEX
+        self.first_index
     }
 
-    pub fn apply_snapshot(&mut self, _snapshot: Snapshot) -> Result<(), Error> {
-        unimplemented!("snapshots are currently not supported");
+    pub async fn apply_snapshot(&mut self, snapshot: Snapshot) -> Result<(), Error> {
+        let metadata = snapshot.get_metadata();
+        if metadata.get_index() < self.first_index() {
+            // snapshot is outdated; ignore it
+            return Ok(());
+        }
+
+        // todo store atomically
+        let mut hard_state = self.get_hard_state()?;
+        hard_state.set_term(hard_state.get_term().max(metadata.get_term()));
+        hard_state.set_commit(hard_state.get_commit().max(metadata.get_index()));
+        self.store_conf_state(metadata.get_conf_state().clone())
+            .await?;
+        self.store_hard_state(hard_state).await?;
+        self.store_snapshot(&snapshot).await?;
+
+        // trim all entries up to the snapshot index
+        self.trim(metadata.get_index()).await?;
+
+        Ok(())
+    }
+
+    /// The `trim_point` is inclusive.
+    pub async fn trim(&mut self, trim_point: u64) -> Result<(), Error> {
+        if trim_point < self.first_index() {
+            return Ok(());
+        }
+
+        let mut write_batch = WriteBatch::default();
+
+        let effective_trim_point = std::cmp::min(trim_point, self.last_index());
+
+        {
+            let cf = self.get_cf_handle();
+            for index in self.first_index()..=effective_trim_point {
+                write_batch.delete_cf(&cf, Self::raft_entry_key(index));
+            }
+        }
+
+        self.commit_write_batch(write_batch).await?;
+
+        self.first_index = trim_point + 1;
+        self.last_index = self.last_index.max(trim_point);
+
+        Ok(())
+    }
+
+    pub async fn commit_write_batch(&mut self, write_batch: WriteBatch) -> Result<(), Error> {
+        self.rocksdb
+            .write_batch(
+                "commit_write_batch",
+                Priority::High,
+                IoMode::Default,
+                self.write_options(),
+                write_batch,
+            )
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn store_raft_configuration(
@@ -426,6 +505,15 @@ impl RocksDbStorage {
         } else {
             Ok(None)
         }
+    }
+
+    pub fn get_snapshot(&self) -> Result<Snapshot, Error> {
+        self.get_value(Self::snapshot_key())
+            .map(|snapshot| snapshot.unwrap_or_default())
+    }
+
+    pub async fn store_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
+        self.put_value_ref(Self::snapshot_key(), snapshot).await
     }
 
     fn serialize_value<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, SerializationError> {
@@ -509,9 +597,16 @@ impl Storage for RocksDbStorage {
     }
 
     fn term(&self, idx: u64) -> raft::Result<u64> {
-        // todo handle first_index - 1 once truncation is supported
-        if idx == 0 {
-            return Ok(0);
+        let first_index = self.first_index();
+
+        if idx < first_index {
+            let snapshot = self.get_snapshot()?;
+
+            if snapshot.get_metadata().get_index() == idx {
+                return Ok(snapshot.get_metadata().get_term());
+            } else {
+                Err(Error::Compacted(idx))?;
+            }
         }
 
         self.check_index(idx)?;
@@ -528,7 +623,13 @@ impl Storage for RocksDbStorage {
         Ok(self.last_index())
     }
 
-    fn snapshot(&self, _request_index: u64, _to: u64) -> raft::Result<Snapshot> {
+    fn snapshot(&self, request_index: u64, _to: u64) -> raft::Result<Snapshot> {
+        debug!("snapshot request for index {}", request_index);
+        let snapshot = self.get_snapshot()?;
+        if snapshot.get_metadata().get_index() >= request_index {
+            return Ok(snapshot);
+        }
+
         // time is relative as some clever people figured out
         Err(raft::Error::Store(
             StorageError::SnapshotTemporarilyUnavailable,
