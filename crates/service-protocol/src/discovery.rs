@@ -145,8 +145,8 @@ pub enum DiscoveryError {
     Decode(#[source] serde_json::Error, Bytes),
 
     // Network related retryable errors
-    #[error("bad status code '{}'. Response headers: {:?}", .0.status, .0.headers)]
-    BadStatusCode(http::response::Parts),
+    #[error("bad status code '{}'. Response headers: {:?}. Body: {}", .0.status, .0.headers, .1)]
+    BadStatusCode(http::response::Parts, Cow<'static, str>),
     #[error(transparent)]
     Client(#[from] ServiceClientError),
     #[error("cannot read body: {0}")]
@@ -162,7 +162,7 @@ impl CodedError for DiscoveryError {
         match self {
             DiscoveryError::BadResponse(_) => Some(&META0013),
             DiscoveryError::Decode(_, _) => None,
-            DiscoveryError::BadStatusCode(_) => Some(&META0003),
+            DiscoveryError::BadStatusCode(_, _) => Some(&META0003),
             // special code for possible http1.1 errors
             DiscoveryError::Client(ServiceClientError::Http(
                 restate_service_client::HttpError::PossibleHTTP11Only(_),
@@ -180,7 +180,7 @@ impl DiscoveryError {
     /// retrying can succeed.
     pub fn is_retryable(&self) -> bool {
         match self {
-            DiscoveryError::BadStatusCode(parts) => matches!(
+            DiscoveryError::BadStatusCode(parts, _) => matches!(
                 parts.status,
                 StatusCode::REQUEST_TIMEOUT
                     | StatusCode::TOO_MANY_REQUESTS
@@ -421,7 +421,7 @@ impl ServiceDiscovery {
                         "Bad status code '{}' when discovering deployment at address '{}'. Response : {:?}",
                         parts.status, address, body_message
                     );
-                    return Err(DiscoveryError::BadStatusCode(parts));
+                    return Err(DiscoveryError::BadStatusCode(parts, body_message.into()));
                 }
 
                 Ok((
