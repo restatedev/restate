@@ -743,6 +743,8 @@ impl Active {
 
         self.raw_node.advance_apply();
 
+        self.try_trim_log().await?;
+
         Ok(())
     }
 
@@ -817,6 +819,22 @@ impl Active {
         Ok(())
     }
 
+    /// Checks whether it's time to snapshot the state machine and trim the Raft log.
+    async fn try_trim_log(&mut self) -> Result<(), Error> {
+        // todo make configurable
+        const TRIM_THRESHOLD: u64 = 1000;
+        let applied_index = self.raw_node.raft.raft_log.applied();
+        if applied_index.saturating_sub(self.raw_node.store().get_first_index()) >= TRIM_THRESHOLD {
+            self.create_snapshot(
+                applied_index,
+                self.raw_node.raft.raft_log.term(applied_index)?,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
     async fn create_snapshot(&mut self, index: u64, term: u64) -> Result<(), Error> {
         let mut data = BytesMut::new();
         self.kv_storage.snapshot(&mut data)?;
@@ -828,6 +846,8 @@ impl Active {
         metadata.set_conf_state(self.raw_node.raft.prs().conf().to_conf_state());
         snapshot.set_data(data.freeze());
         snapshot.set_metadata(metadata);
+
+        debug!(%index, %term, "Created snapshot: '{}' bytes", snapshot.get_data().len());
 
         self.raw_node.mut_store().apply_snapshot(snapshot).await?;
 

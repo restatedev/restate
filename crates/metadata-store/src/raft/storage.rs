@@ -366,12 +366,12 @@ impl RocksDbStorage {
     }
 
     fn check_index(&self, idx: u64) -> Result<(), Error> {
-        if idx < self.first_index() {
-            return Err(Error::Compacted(self.first_index()));
-        } else if idx > self.last_index() {
+        if idx < self.get_first_index() {
+            return Err(Error::Compacted(self.get_first_index()));
+        } else if idx > self.get_last_index() {
             return Err(Error::IndexOutOfBounds {
                 index: idx,
-                last_index: self.last_index(),
+                last_index: self.get_last_index(),
             });
         }
 
@@ -382,32 +382,32 @@ impl RocksDbStorage {
     fn check_range(&self, low: u64, high: u64) -> Result<(), Error> {
         assert!(low < high, "Low '{low}' must be smaller than high '{high}'");
 
-        if low < self.first_index() {
-            return Err(Error::Compacted(self.first_index()));
+        if low < self.get_first_index() {
+            return Err(Error::Compacted(self.get_first_index()));
         }
 
         // high is exclusive
-        if high - 1 > self.last_index() {
+        if high - 1 > self.get_last_index() {
             return Err(Error::IndexOutOfBounds {
                 index: high,
-                last_index: self.last_index(),
+                last_index: self.get_last_index(),
             });
         }
 
         Ok(())
     }
 
-    fn last_index(&self) -> u64 {
+    pub fn get_last_index(&self) -> u64 {
         self.last_index
     }
 
-    fn first_index(&self) -> u64 {
+    pub fn get_first_index(&self) -> u64 {
         self.first_index
     }
 
     pub async fn apply_snapshot(&mut self, snapshot: Snapshot) -> Result<(), Error> {
         let metadata = snapshot.get_metadata();
-        if metadata.get_index() < self.first_index() {
+        if metadata.get_index() < self.get_first_index() {
             // snapshot is outdated; ignore it
             return Ok(());
         }
@@ -429,17 +429,17 @@ impl RocksDbStorage {
 
     /// The `trim_point` is inclusive.
     pub async fn trim(&mut self, trim_point: u64) -> Result<(), Error> {
-        if trim_point < self.first_index() {
+        if trim_point < self.get_first_index() {
             return Ok(());
         }
 
         let mut write_batch = WriteBatch::default();
 
-        let effective_trim_point = std::cmp::min(trim_point, self.last_index());
+        let effective_trim_point = std::cmp::min(trim_point, self.get_last_index());
 
         {
             let cf = self.get_cf_handle();
-            for index in self.first_index()..=effective_trim_point {
+            for index in self.get_first_index()..=effective_trim_point {
                 write_batch.delete_cf(&cf, Self::raft_entry_key(index));
             }
         }
@@ -597,7 +597,7 @@ impl Storage for RocksDbStorage {
     }
 
     fn term(&self, idx: u64) -> raft::Result<u64> {
-        let first_index = self.first_index();
+        let first_index = self.get_first_index();
 
         if idx < first_index {
             let snapshot = self.get_snapshot()?;
@@ -616,11 +616,11 @@ impl Storage for RocksDbStorage {
     }
 
     fn first_index(&self) -> raft::Result<u64> {
-        Ok(self.first_index())
+        Ok(self.get_first_index())
     }
 
     fn last_index(&self) -> raft::Result<u64> {
-        Ok(self.last_index())
+        Ok(self.get_last_index())
     }
 
     fn snapshot(&self, request_index: u64, _to: u64) -> raft::Result<Snapshot> {
