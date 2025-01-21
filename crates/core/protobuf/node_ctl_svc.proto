@@ -32,7 +32,7 @@ message ProvisionClusterRequest {
   // if unset then the configured cluster placement strategy will be used
   optional restate.cluster.ReplicationStrategy placement_strategy = 3;
   // if unset then the configured cluster default log provider will be used
-  optional restate.cluster.DefaultProvider log_provider = 4;
+  optional restate.cluster.BifrostProvider log_provider = 4;
 }
 
 message ProvisionClusterResponse {

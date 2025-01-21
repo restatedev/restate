@@ -79,7 +79,7 @@ message PartitionProcessorStatus {
 
 message ReplicatedProviderConfig { string replication_property = 1; }
 
-message DefaultProvider {
+message BifrostProvider {
   string provider = 1;
   // only required if provider = "replicated"
   optional ReplicatedProviderConfig replicated_config = 2;
@@ -100,5 +100,5 @@ message ReplicationStrategy {
 message ClusterConfiguration {
   uint32 num_partitions = 1;
   ReplicationStrategy replication_strategy = 2;
-  DefaultProvider default_provider = 3;
+  BifrostProvider bifrost_provider = 3;
 }

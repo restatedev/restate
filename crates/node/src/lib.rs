@@ -547,7 +547,7 @@ pub struct ClusterConfiguration {
     #[prost(required)]
     pub replication_strategy: ReplicationStrategy,
     #[prost(required)]
-    pub default_provider: ProviderConfiguration,
+    pub bifrost_provider: ProviderConfiguration,
 }
 
 fn num_partitions_to_u32(num_partitions: NonZeroU16) -> u32 {
@@ -559,7 +559,7 @@ impl ClusterConfiguration {
         ClusterConfiguration {
             num_partitions: configuration.common.bootstrap_num_partitions,
             replication_strategy: ReplicationStrategy::default(),
-            default_provider: ProviderConfiguration::from_configuration(configuration),
+            bifrost_provider: ProviderConfiguration::from_configuration(configuration),
         }
     }
 }
@@ -637,7 +637,7 @@ fn generate_initial_metadata(
     let initial_partition_table = initial_partition_table_builder.build();
 
     let initial_logs = Logs::with_logs_configuration(LogsConfiguration::from(
-        cluster_configuration.default_provider.clone(),
+        cluster_configuration.bifrost_provider.clone(),
     ));
 
     let initial_nodes_configuration = create_initial_nodes_configuration(common_opts);
