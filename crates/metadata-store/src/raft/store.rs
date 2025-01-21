@@ -323,8 +323,6 @@ impl RaftMetadataStore {
         snapshot.mut_metadata().index = RAFT_INITIAL_LOG_INDEX;
         snapshot.mut_metadata().set_conf_state(initial_conf_state);
 
-        self.storage.apply_snapshot(snapshot).await?;
-
         let value = serialize_value(&nodes_configuration)?;
 
         let request_data = Request {
@@ -345,14 +343,13 @@ impl RaftMetadataStore {
             ..Entry::default()
         };
 
-        // todo atomically commit? otherwise we might leave partial state behind
-        self.storage.append(&vec![entry]).await?;
-        self.storage
-            .store_raft_configuration(&raft_configuration)
-            .await?;
-        self.storage
-            .store_nodes_configuration(&nodes_configuration)
-            .await?;
+        let mut txn = self.storage.txn();
+        // it's important to first apply the snapshot so that the initial entry has the right index
+        txn.apply_snapshot(&snapshot)?;
+        txn.append(&vec![entry])?;
+        txn.store_raft_configuration(&raft_configuration)?;
+        txn.store_nodes_configuration(&nodes_configuration)?;
+        txn.commit().await?;
 
         Ok(raft_configuration)
     }
@@ -698,7 +695,7 @@ impl Active {
 
             self.raw_node
                 .mut_store()
-                .apply_snapshot(ready.snapshot().clone())
+                .apply_snapshot(ready.snapshot())
                 .await?
         }
 
@@ -849,7 +846,7 @@ impl Active {
 
         debug!(%index, %term, "Created snapshot: '{}' bytes", snapshot.get_data().len());
 
-        self.raw_node.mut_store().apply_snapshot(snapshot).await?;
+        self.raw_node.mut_store().apply_snapshot(&snapshot).await?;
 
         Ok(())
     }
