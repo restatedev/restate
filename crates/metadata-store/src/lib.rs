@@ -8,17 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod grpc;
-pub mod grpc_svc;
-mod kv_memory_storage;
+pub mod grpc;
 pub mod local;
 mod network;
-pub mod omnipaxos;
 pub mod raft;
 mod util;
 
 use crate::grpc::handler::MetadataStoreHandler;
-use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
+use crate::grpc::metadata_store_svc_server::MetadataStoreSvcServer;
 use assert2::let_assert;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
@@ -205,7 +202,7 @@ where
                 store.provision_sender(),
                 store.status_watch(),
             )),
-            grpc_svc::FILE_DESCRIPTOR_SET,
+            grpc::FILE_DESCRIPTOR_SET,
         );
 
         Self { store }
@@ -244,15 +241,6 @@ pub async fn create_metadata_store(
         .map_err(anyhow::Error::from)
         .map(|store| store.boxed()),
         MetadataStoreKind::Raft => raft::create_store(
-            rocksdb_options,
-            health_status,
-            metadata_writer,
-            server_builder,
-        )
-        .await
-        .map_err(anyhow::Error::from)
-        .map(|store| store.boxed()),
-        MetadataStoreKind::Omnipaxos => omnipaxos::create_store(
             rocksdb_options,
             health_status,
             metadata_writer,
@@ -449,8 +437,6 @@ enum JoinClusterError {
     NotActive(Option<KnownLeader>),
     #[error("cannot accept new members since I am not the leader.")]
     NotLeader(Option<KnownLeader>),
-    #[error("invalid configuration: {0}")]
-    ConfigError(String),
     #[error("pending reconfiguration")]
     PendingReconfiguration,
     #[error("received a concurrent join request for node id '{0}'")]
@@ -502,24 +488,13 @@ impl KnownLeader {
 struct JoinClusterRequest {
     node_id: u32,
     storage_id: u64,
-    response_tx: oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>,
+    response_tx: oneshot::Sender<Result<(), JoinClusterError>>,
 }
 
 impl JoinClusterRequest {
-    fn into_inner(
-        self,
-    ) -> (
-        oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>,
-        u32,
-        u64,
-    ) {
+    fn into_inner(self) -> (oneshot::Sender<Result<(), JoinClusterError>>, u32, u64) {
         (self.response_tx, self.node_id, self.storage_id)
     }
-}
-
-struct JoinClusterResponse {
-    log_prefix: Bytes,
-    metadata_store_config: Bytes,
 }
 
 #[derive(Debug)]
@@ -536,7 +511,7 @@ impl JoinClusterHandle {
         &self,
         node_id: u32,
         storage_id: u64,
-    ) -> Result<JoinClusterResponse, JoinClusterError> {
+    ) -> Result<(), JoinClusterError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.join_cluster_tx
@@ -567,7 +542,7 @@ type StorageId = u64;
     prost_dto::IntoProst,
     prost_dto::FromProst,
 )]
-#[prost(target = "crate::grpc_svc::MemberId")]
+#[prost(target = "crate::grpc::MemberId")]
 pub struct MemberId {
     node_id: PlainNodeId,
     storage_id: StorageId,
@@ -602,7 +577,7 @@ enum MetadataStoreSummary {
 }
 
 #[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
-#[prost(target = "crate::grpc_svc::MetadataStoreConfiguration")]
+#[prost(target = "crate::grpc::MetadataStoreConfiguration")]
 struct MetadataStoreConfiguration {
     id: u32,
     members: Vec<MemberId>,

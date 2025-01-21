@@ -9,10 +9,14 @@
 // by the Apache License, Version 2.0.
 
 pub mod client;
-pub mod handler;
+pub(crate) mod handler;
+
+tonic::include_proto!("restate.metadata_store_svc");
+pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("metadata_store_svc");
+
 pub mod pb_conversions {
-    use crate::grpc_svc::{GetResponse, GetVersionResponse, PreconditionKind};
-    use crate::{grpc_svc, MetadataStoreSummary};
+    use crate::grpc::{GetResponse, GetVersionResponse, PreconditionKind};
+    use crate::{grpc, MetadataStoreSummary};
     use restate_core::metadata_store::{Precondition, VersionedValue};
     use restate_types::Version;
 
@@ -46,10 +50,10 @@ pub mod pb_conversions {
         }
     }
 
-    impl TryFrom<grpc_svc::VersionedValue> for VersionedValue {
+    impl TryFrom<grpc::VersionedValue> for VersionedValue {
         type Error = ConversionError;
 
-        fn try_from(value: grpc_svc::VersionedValue) -> Result<Self, Self::Error> {
+        fn try_from(value: grpc::VersionedValue) -> Result<Self, Self::Error> {
             let version = value
                 .version
                 .ok_or_else(|| ConversionError::missing_field("version"))?;
@@ -63,41 +67,41 @@ pub mod pb_conversions {
         }
     }
 
-    impl From<VersionedValue> for grpc_svc::VersionedValue {
+    impl From<VersionedValue> for grpc::VersionedValue {
         fn from(value: VersionedValue) -> Self {
-            grpc_svc::VersionedValue {
+            grpc::VersionedValue {
                 version: Some(value.version.into()),
                 bytes: value.value,
             }
         }
     }
 
-    impl From<grpc_svc::Version> for Version {
-        fn from(value: grpc_svc::Version) -> Self {
+    impl From<grpc::Version> for Version {
+        fn from(value: grpc::Version) -> Self {
             Version::from(value.value)
         }
     }
 
-    impl From<Version> for grpc_svc::Version {
+    impl From<Version> for grpc::Version {
         fn from(value: Version) -> Self {
-            grpc_svc::Version {
+            grpc::Version {
                 value: value.into(),
             }
         }
     }
 
-    impl From<Precondition> for grpc_svc::Precondition {
+    impl From<Precondition> for grpc::Precondition {
         fn from(value: Precondition) -> Self {
             match value {
-                Precondition::None => grpc_svc::Precondition {
+                Precondition::None => grpc::Precondition {
                     kind: PreconditionKind::None.into(),
                     version: None,
                 },
-                Precondition::DoesNotExist => grpc_svc::Precondition {
+                Precondition::DoesNotExist => grpc::Precondition {
                     kind: PreconditionKind::DoesNotExist.into(),
                     version: None,
                 },
-                Precondition::MatchesVersion(version) => grpc_svc::Precondition {
+                Precondition::MatchesVersion(version) => grpc::Precondition {
                     kind: PreconditionKind::MatchesVersion.into(),
                     version: Some(version.into()),
                 },
@@ -105,10 +109,10 @@ pub mod pb_conversions {
         }
     }
 
-    impl TryFrom<grpc_svc::Precondition> for Precondition {
+    impl TryFrom<grpc::Precondition> for Precondition {
         type Error = ConversionError;
 
-        fn try_from(value: grpc_svc::Precondition) -> Result<Self, Self::Error> {
+        fn try_from(value: grpc::Precondition) -> Result<Self, Self::Error> {
             match value.kind() {
                 PreconditionKind::Unknown => {
                     Err(ConversionError::invalid_data("unknown precondition kind"))
@@ -125,23 +129,23 @@ pub mod pb_conversions {
         }
     }
 
-    impl From<MetadataStoreSummary> for grpc_svc::StatusResponse {
+    impl From<MetadataStoreSummary> for grpc::StatusResponse {
         fn from(value: MetadataStoreSummary) -> Self {
             match value {
-                MetadataStoreSummary::Starting => grpc_svc::StatusResponse {
+                MetadataStoreSummary::Starting => grpc::StatusResponse {
                     status: restate_types::protobuf::common::MetadataServerStatus::StartingUp
                         .into(),
                     configuration: None,
                     leader: None,
                 },
-                MetadataStoreSummary::Provisioning => grpc_svc::StatusResponse {
+                MetadataStoreSummary::Provisioning => grpc::StatusResponse {
                     status:
                         restate_types::protobuf::common::MetadataServerStatus::AwaitingProvisioning
                             .into(),
                     configuration: None,
                     leader: None,
                 },
-                MetadataStoreSummary::Passive => grpc_svc::StatusResponse {
+                MetadataStoreSummary::Passive => grpc::StatusResponse {
                     status: restate_types::protobuf::common::MetadataServerStatus::Passive.into(),
                     configuration: None,
                     leader: None,
@@ -149,10 +153,10 @@ pub mod pb_conversions {
                 MetadataStoreSummary::Active {
                     configuration,
                     leader,
-                } => grpc_svc::StatusResponse {
+                } => grpc::StatusResponse {
                     status: restate_types::protobuf::common::MetadataServerStatus::Active.into(),
-                    configuration: Some(grpc_svc::MetadataStoreConfiguration::from(configuration)),
-                    leader: leader.map(grpc_svc::MemberId::from),
+                    configuration: Some(grpc::MetadataStoreConfiguration::from(configuration)),
+                    leader: leader.map(grpc::MemberId::from),
                 },
             }
         }

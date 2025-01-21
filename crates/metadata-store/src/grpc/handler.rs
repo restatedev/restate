@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::grpc::metadata_store_svc_server::MetadataStoreSvc;
 use crate::grpc::pb_conversions::ConversionError;
-use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvc;
-use crate::grpc_svc::{
+use crate::grpc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse,
     ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest, StatusResponse,
 };

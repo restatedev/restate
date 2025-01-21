@@ -8,21 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::kv_memory_storage::KvMemoryStorage;
 use crate::network::grpc_svc::metadata_store_network_svc_client::MetadataStoreNetworkSvcClient;
 use crate::network::{ConnectionManager, Networking};
+use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{storage, RaftConfiguration};
 use crate::{
     prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError, JoinClusterHandle,
-    JoinClusterReceiver, JoinClusterRequest, JoinClusterResponse, JoinClusterSender, JoinError,
-    KnownLeader, MemberId, MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest,
-    MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender, Request,
-    RequestError, RequestKind, RequestReceiver, RequestSender, StatusSender, StatusWatch,
-    StorageId,
+    JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, JoinError, KnownLeader, MemberId,
+    MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest, MetadataStoreSummary,
+    ProvisionError, ProvisionReceiver, ProvisionSender, Request, RequestError, RequestKind,
+    RequestReceiver, RequestSender, StatusSender, StatusWatch, StorageId,
 };
 use arc_swap::ArcSwapOption;
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use flexbuffers::{DeserializationError, SerializationError};
 use futures::future::{FusedFuture, OptionFuture};
 use futures::never::Never;
@@ -60,7 +59,6 @@ use tokio::time;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_slog::TracingSlogDrain;
-use ulid::Ulid;
 
 const RAFT_INITIAL_LOG_TERM: u64 = 1;
 const RAFT_INITIAL_LOG_INDEX: u64 = 1;
@@ -178,9 +176,7 @@ impl RaftMetadataStore {
     }
 
     pub(crate) fn join_cluster_handle(&self) -> JoinClusterHandle {
-        JoinClusterHandle {
-            join_cluster_tx: self.join_cluster_tx.clone(),
-        }
+        JoinClusterHandle::new(self.join_cluster_tx.clone())
     }
 
     pub(crate) fn status_watch(&self) -> StatusWatch {
@@ -333,14 +329,11 @@ impl RaftMetadataStore {
 
         let value = serialize_value(&nodes_configuration)?;
 
-        let request_data = Request {
-            request_id: Ulid::new(),
-            kind: RequestKind::Put {
-                precondition: Precondition::None,
-                key: NODES_CONFIG_KEY.clone(),
-                value,
-            },
-        }
+        let request_data = Request::new(RequestKind::Put {
+            precondition: Precondition::None,
+            key: NODES_CONFIG_KEY.clone(),
+            value,
+        })
         .encode_to_vec()?;
 
         let entry = Entry {
@@ -460,8 +453,7 @@ struct Active {
     my_member_id: MemberId,
     kv_storage: KvMemoryStorage,
     is_leader: bool,
-    pending_join_requests:
-        HashMap<MemberId, oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>>,
+    pending_join_requests: HashMap<MemberId, oneshot::Sender<Result<(), JoinClusterError>>>,
 
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
     metadata_writer: Option<MetadataWriter>,
@@ -652,12 +644,7 @@ impl Active {
         }
 
         if self.is_member(joining_member_id) {
-            // todo update join cluster response once we no longer need to send the log prefix and
-            //  metadata store config
-            let _ = response_tx.send(Ok(JoinClusterResponse {
-                log_prefix: Bytes::new(),
-                metadata_store_config: Bytes::new(),
-            }));
+            let _ = response_tx.send(Ok(()));
             return;
         }
 
@@ -943,7 +930,7 @@ impl Active {
     fn register_join_callback(
         &mut self,
         member_id: MemberId,
-        reconfiguration_callback: oneshot::Sender<Result<JoinClusterResponse, JoinClusterError>>,
+        reconfiguration_callback: oneshot::Sender<Result<(), JoinClusterError>>,
     ) {
         if let Some(previous_callback) = self
             .pending_join_requests
@@ -964,10 +951,7 @@ impl Active {
         let pending_join_request: Vec<_> = self.pending_join_requests.drain().collect();
         for (member_id, response_tx) in pending_join_request {
             if self.is_member(member_id) {
-                let _ = response_tx.send(Ok(JoinClusterResponse {
-                    log_prefix: Bytes::new(),
-                    metadata_store_config: Bytes::new(),
-                }));
+                let _ = response_tx.send(Ok(()));
             } else {
                 // latest reconfiguration didn't include this node, fail it so that caller can retry
                 let _ = response_tx.send(Err(JoinClusterError::Internal(format!(
@@ -1300,18 +1284,15 @@ impl Passive {
 
         let mut client = MetadataStoreNetworkSvcClient::new(channel);
 
-        let _response = match client
+        if let Err(status) = client
             .join_cluster(crate::network::grpc_svc::JoinClusterRequest {
                 node_id: u32::from(my_node_id),
                 storage_id,
             })
             .await
         {
-            Ok(response) => response.into_inner(),
-            Err(status) => {
-                let known_leader = KnownLeader::from_status(&status);
-                Err(JoinError::Rpc(status, known_leader))?
-            }
+            let known_leader = KnownLeader::from_status(&status);
+            Err(JoinError::Rpc(status, known_leader))?
         };
 
         Ok(())

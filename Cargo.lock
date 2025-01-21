@@ -4855,27 +4855,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "omnipaxos"
-version = "0.2.2"
-source = "git+https://github.com/tillrohrmann/omnipaxos?branch=restate#8d9bf38838af1a6b14bcb76c8825f9ab8eac719e"
-dependencies = [
- "omnipaxos_macros",
- "serde",
- "thiserror 2.0.6",
- "tracing",
- "xxhash-rust",
-]
-
-[[package]]
-name = "omnipaxos_macros"
-version = "0.1.3"
-source = "git+https://github.com/tillrohrmann/omnipaxos?branch=restate#8d9bf38838af1a6b14bcb76c8825f9ab8eac719e"
-dependencies = [
- "quote",
- "syn 2.0.90",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6688,21 +6667,14 @@ dependencies = [
  "async-trait",
  "bytes",
  "bytestring",
- "codederror",
- "derive_builder",
  "derive_more",
  "flexbuffers",
  "futures",
  "googletest",
  "http 1.2.0",
- "humantime",
- "hyper 1.5.1",
- "hyper-util",
- "omnipaxos",
  "parking_lot",
  "prost",
  "prost-dto",
- "prost-types",
  "protobuf",
  "raft",
  "raft-proto",
@@ -6716,7 +6688,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "slog",
- "static_assertions",
  "tempfile",
  "test-log",
  "thiserror 2.0.6",

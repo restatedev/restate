@@ -10,7 +10,7 @@
 
 use crate::network::connection_manager::ConnectionError;
 use crate::network::grpc_svc::metadata_store_network_svc_server::MetadataStoreNetworkSvc;
-use crate::network::grpc_svc::{JoinClusterRequest, JoinClusterResponse};
+use crate::network::grpc_svc::JoinClusterRequest;
 use crate::network::{grpc_svc, ConnectionManager, NetworkMessage};
 use crate::{JoinClusterError, JoinClusterHandle};
 use arc_swap::access::Access;
@@ -78,17 +78,14 @@ where
     async fn join_cluster(
         &self,
         request: Request<JoinClusterRequest>,
-    ) -> Result<Response<JoinClusterResponse>, Status> {
+    ) -> Result<Response<()>, Status> {
         if let Some(join_handle) = self.join_cluster_handle.as_ref() {
             let request = request.into_inner();
-            let join_result = join_handle
+            join_handle
                 .join_cluster(request.node_id, request.storage_id)
                 .await?;
 
-            Ok(Response::new(JoinClusterResponse {
-                metadata_store_config: join_result.metadata_store_config,
-                log_prefix: join_result.log_prefix,
-            }))
+            Ok(Response::new(()))
         } else {
             Err(Status::unimplemented(
                 "The metadata store does not support joining of other nodes",
@@ -119,7 +116,6 @@ impl From<JoinClusterError> for Status {
 
                 status
             }
-            JoinClusterError::ConfigError(_) => Status::internal(err.to_string()),
             JoinClusterError::PendingReconfiguration => Status::unavailable(err.to_string()),
             JoinClusterError::ConcurrentRequest(_) => Status::aborted(err.to_string()),
             JoinClusterError::Internal(_) => Status::internal(err.to_string()),

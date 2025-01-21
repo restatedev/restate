@@ -18,7 +18,7 @@ service MetadataStoreNetworkSvc {
   rpc ConnectTo(stream NetworkMessage) returns (stream NetworkMessage);
 
   // Try to join an existing metadata store cluster
-  rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
+  rpc JoinCluster(JoinClusterRequest) returns (google.protobuf.Empty);
 }
 
 message NetworkMessage {
@@ -28,10 +28,5 @@ message NetworkMessage {
 message JoinClusterRequest {
   uint32 node_id = 1;
   uint64 storage_id = 2;
-}
-
-message JoinClusterResponse {
-  bytes metadata_store_config = 1;
-  bytes log_prefix = 2;
 }
 

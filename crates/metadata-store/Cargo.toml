@@ -14,7 +14,6 @@ test-util = []
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
-codederror = { workspace = true }
 restate-core = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
@@ -25,19 +24,13 @@ assert2 = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-derive_builder = { workspace = true }
 derive_more = { workspace = true }
 flexbuffers = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
-humantime = { workspace = true }
-hyper = { workspace = true }
-hyper-util = { workspace = true }
-omnipaxos = { git = "https://github.com/tillrohrmann/omnipaxos", branch = "restate", features = ["macros", "logging", "serde"]}
 parking_lot = { workspace = true}
 prost = { workspace = true }
 prost-dto = { workspace = true }
-prost-types = { workspace = true }
 protobuf = "2.28.0"
 raft = { version = "0.7.0" }
 raft-proto = { version= "0.7.0" }
@@ -48,7 +41,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 slog = { version = "2.7.0" }
-static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

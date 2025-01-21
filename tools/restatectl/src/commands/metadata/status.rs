@@ -18,7 +18,7 @@ use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::GetMetadataRequest;
-use restate_metadata_store::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
+use restate_metadata_store::grpc::metadata_store_svc_client::MetadataStoreSvcClient;
 use restate_metadata_store::MemberId;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{NodesConfiguration, Role};

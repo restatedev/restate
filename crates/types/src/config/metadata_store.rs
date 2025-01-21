@@ -72,7 +72,6 @@ pub enum MetadataStoreKind {
     #[default]
     Local,
     Raft,
-    Omnipaxos,
 }
 
 impl MetadataStoreOptions {
