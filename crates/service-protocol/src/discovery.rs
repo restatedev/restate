@@ -162,7 +162,7 @@ impl CodedError for DiscoveryError {
         match self {
             DiscoveryError::BadResponse(_) => Some(&META0013),
             DiscoveryError::Decode(_, _) => None,
-            DiscoveryError::BadStatusCode(_, _) => Some(&META0003),
+            DiscoveryError::BadStatusCode(_, _, _) => Some(&META0003),
             // special code for possible http1.1 errors
             DiscoveryError::Client(ServiceClientError::Http(
                 restate_service_client::HttpError::PossibleHTTP11Only(_),
@@ -180,8 +180,8 @@ impl DiscoveryError {
     /// retrying can succeed.
     pub fn is_retryable(&self) -> bool {
         match self {
-            DiscoveryError::BadStatusCode(parts, _) => matches!(
-                parts.status,
+            DiscoveryError::BadStatusCode(status, _, _) => matches!(
+                *status,
                 StatusCode::REQUEST_TIMEOUT
                     | StatusCode::TOO_MANY_REQUESTS
                     | StatusCode::INTERNAL_SERVER_ERROR
@@ -417,7 +417,11 @@ impl ServiceDiscovery {
                             String::from_utf8_lossy(b.to_bytes().to_vec().as_slice()).to_string()
                         })
                         .unwrap_or_else(|err| format!("Failed to read body {}", err));
-                    return Err(DiscoveryError::BadStatusCode(parts, body_message.into()));
+                    return Err(DiscoveryError::BadStatusCode(
+                        parts.status,
+                        parts.headers,
+                        body_message.into(),
+                    ));
                 }
 
                 Ok((
