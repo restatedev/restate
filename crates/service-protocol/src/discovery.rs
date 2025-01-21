@@ -145,8 +145,8 @@ pub enum DiscoveryError {
     Decode(#[source] serde_json::Error, Bytes),
 
     // Network related retryable errors
-    #[error("bad status code '{}'. Response headers: {:?}. Body: {}", .0.status, .0.headers, .1)]
-    BadStatusCode(http::response::Parts, Cow<'static, str>),
+    #[error("bad status code '{0}'. Response headers: {1:?}. Body: {2}")]
+    BadStatusCode(StatusCode, HeaderMap, Cow<'static, str>),
     #[error(transparent)]
     Client(#[from] ServiceClientError),
     #[error("cannot read body: {0}")]
