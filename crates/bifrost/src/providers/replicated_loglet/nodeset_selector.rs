@@ -15,7 +15,6 @@ use rand::prelude::IteratorRandom;
 use rand::Rng;
 use tracing::trace;
 
-use restate_types::logs::metadata::NodeSetSelectionStrategy;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::{LocationScope, NodeSet, ReplicationProperty};
 use restate_types::NodeId;
@@ -59,15 +58,13 @@ impl<'a> NodeSetSelector<'a> {
     pub fn can_improve(
         &self,
         nodeset: &NodeSet,
-        strategy: NodeSetSelectionStrategy,
         replication_property: &ReplicationProperty,
     ) -> bool {
         let writable_nodeset = WritableNodeSet::from(self.nodes_config);
         let alive_nodeset = writable_nodeset.alive(self.cluster_state);
         let current_alive = alive_nodeset.intersect(nodeset);
 
-        let nodeset_size =
-            nodeset_size_range(&strategy, replication_property, writable_nodeset.len());
+        let nodeset_size = nodeset_size_range(replication_property, writable_nodeset.len());
 
         if current_alive.len() == nodeset_size.target_size {
             return false;
@@ -84,7 +81,6 @@ impl<'a> NodeSetSelector<'a> {
     /// requirements of the supplied selection strategy and replication, or an explicit error.
     pub fn select<R: Rng + ?Sized>(
         &self,
-        strategy: NodeSetSelectionStrategy,
         replication_property: &ReplicationProperty,
         rng: &mut R,
         preferred_nodes: &NodeSet,
@@ -98,8 +94,7 @@ impl<'a> NodeSetSelector<'a> {
         // Only consider alive, writable storage nodes.
         let alive_nodeset = writable_nodeset.alive(self.cluster_state);
 
-        let nodeset_size =
-            nodeset_size_range(&strategy, replication_property, writable_nodeset.len());
+        let nodeset_size = nodeset_size_range(replication_property, writable_nodeset.len());
 
         if writable_nodeset.len() < nodeset_size.fault_tolerant_size {
             trace!(
@@ -113,69 +108,64 @@ impl<'a> NodeSetSelector<'a> {
             return Err(NodeSelectionError::InsufficientWriteableNodes);
         }
 
-        let nodeset = match strategy {
-            NodeSetSelectionStrategy::StrictFaultTolerantGreedy => {
-                let mut nodes = preferred_nodes
+        let mut nodes = preferred_nodes
+            .iter()
+            .copied()
+            .filter(|node_id| alive_nodeset.contains(node_id))
+            .choose_multiple(rng, nodeset_size.target_size);
+
+        if nodes.len() < nodeset_size.target_size {
+            let remaining = nodeset_size.target_size - nodes.len();
+            nodes.extend(
+                alive_nodeset
                     .iter()
-                    .copied()
-                    .filter(|node_id| alive_nodeset.contains(node_id))
-                    .choose_multiple(rng, nodeset_size.target_size);
+                    .filter(|node_id| !preferred_nodes.contains(node_id))
+                    .choose_multiple(rng, remaining),
+            );
+        }
 
-                if nodes.len() < nodeset_size.target_size {
-                    let remaining = nodeset_size.target_size - nodes.len();
-                    nodes.extend(
-                        alive_nodeset
-                            .iter()
-                            .filter(|node_id| !preferred_nodes.contains(node_id))
-                            .choose_multiple(rng, remaining),
-                    );
-                }
-
-                if nodes.len() < nodeset_size.minimum_size {
-                    trace!(
+        if nodes.len() < nodeset_size.minimum_size {
+            trace!(
                         "Failed to place replicated loglet: insufficient alive nodes to meet minimum size requirement {} < {}",
                         nodes.len(),
                         nodeset_size.minimum_size,
                     );
 
-                    return Err(NodeSelectionError::InsufficientWriteableNodes);
-                }
+            return Err(NodeSelectionError::InsufficientWriteableNodes);
+        }
 
-                // last possibility is if the selected nodeset is still
-                // smaller than fault tolerant size we try to extend from the full nodeset
-                // which includes possibly dead nodes
-                if nodes.len() < nodeset_size.fault_tolerant_size {
-                    // greedy approach: Every other node that is not
-                    // already in the set.
-                    let remaining = nodeset_size.fault_tolerant_size - nodes.len();
+        // last possibility is if the selected nodeset is still
+        // smaller than fault tolerant size we try to extend from the full nodeset
+        // which includes possibly dead nodes
+        if nodes.len() < nodeset_size.fault_tolerant_size {
+            // greedy approach: Every other node that is not
+            // already in the set.
+            let remaining = nodeset_size.fault_tolerant_size - nodes.len();
 
-                    let extension = writable_nodeset
-                        .iter()
-                        .filter(|node_id| !alive_nodeset.contains(node_id))
-                        .cloned()
-                        .sorted_by(|l, r| {
-                            // sorting nodes by "preferred" nodes. Preferred nodes comes first.
-                            match (preferred_nodes.contains(l), preferred_nodes.contains(r)) {
-                                (true, true) | (false, false) => Ordering::Equal,
-                                (true, false) => Ordering::Less,
-                                (false, true) => Ordering::Greater,
-                            }
-                        })
-                        .take(remaining);
+            let extension = writable_nodeset
+                .iter()
+                .filter(|node_id| !alive_nodeset.contains(node_id))
+                .cloned()
+                .sorted_by(|l, r| {
+                    // sorting nodes by "preferred" nodes. Preferred nodes comes first.
+                    match (preferred_nodes.contains(l), preferred_nodes.contains(r)) {
+                        (true, true) | (false, false) => Ordering::Equal,
+                        (true, false) => Ordering::Less,
+                        (false, true) => Ordering::Greater,
+                    }
+                })
+                .take(remaining);
 
-                    nodes.extend(extension);
-                }
+            nodes.extend(extension);
+        }
 
-                let nodes_len = nodes.len();
-                let nodeset = NodeSet::from_iter(nodes);
-                assert_eq!(
-                    nodeset.len(),
-                    nodes_len,
-                    "We have accidentally chosen duplicate candidates during nodeset selection"
-                );
-                nodeset
-            }
-        };
+        let nodes_len = nodes.len();
+        let nodeset = NodeSet::from_iter(nodes);
+        assert_eq!(
+            nodeset.len(),
+            nodes_len,
+            "We have accidentally chosen duplicate candidates during nodeset selection"
+        );
 
         // even with all possible dead node we still can't reach the fault tolerant
         // nodeset size. This means there are not enough nodes in the cluster
@@ -210,7 +200,6 @@ struct NodeSetSizeRange {
 }
 
 fn nodeset_size_range(
-    strategy: &NodeSetSelectionStrategy,
     replication_property: &ReplicationProperty,
     writable_nodes_size: usize,
 ) -> NodeSetSizeRange {
@@ -230,15 +219,11 @@ fn nodeset_size_range(
         "The calculated minimum nodeset size can not be less than the replication factor"
     );
 
-    let (fault_tolerant_size, nodeset_target_size) = match strategy {
-        // writable_nodes_size includes any writable node (log-server) dead or alive.
-        // in the greedy strategy we take the max(fault_tolerant, writable_nodes_size) as
-        // our target size
-        NodeSetSelectionStrategy::StrictFaultTolerantGreedy => (
-            fault_tolerant_size,
-            max(fault_tolerant_size, writable_nodes_size),
-        ),
-    };
+    // writable_nodes_size includes any writable node (log-server) dead or alive.
+    // in the greedy strategy we take the max(fault_tolerant, writable_nodes_size) as
+    // our target size
+
+    let nodeset_target_size = max(fault_tolerant_size, writable_nodes_size);
 
     NodeSetSizeRange {
         minimum_size: min_copies.into(),

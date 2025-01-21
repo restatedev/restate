@@ -20,9 +20,7 @@ use restate_local_cluster_runner::{
     node::{BinarySource, Node},
 };
 use restate_types::config::MetadataStoreClient;
-use restate_types::logs::metadata::{
-    NodeSetSelectionStrategy, ProviderConfiguration, ReplicatedLogletConfig,
-};
+use restate_types::logs::metadata::{ProviderConfiguration, ReplicatedLogletConfig};
 use restate_types::replicated_loglet::ReplicationProperty;
 use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
 use test_log::test;
@@ -155,7 +153,6 @@ async fn replicated_loglet() -> googletest::Result<()> {
 
     let replicated_loglet_config = ReplicatedLogletConfig {
         replication_property: ReplicationProperty::new(NonZeroU8::new(2).expect("to be non-zero")),
-        nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
     };
 
     cluster.nodes[0]

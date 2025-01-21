@@ -223,7 +223,6 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
         let mut rng = rand::thread_rng();
 
         let replication = defaults.replication_property.clone();
-        let strategy = defaults.nodeset_selection_strategy;
 
         // if the last loglet in the chain is of the same provider kind, we can use this to
         // influence the nodeset selector.
@@ -245,7 +244,6 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
 
         let selection = NodeSetSelector::new(&nodes_config, &ObservedClusterState).select(
-            strategy,
             &replication,
             &mut rng,
             &preferred_nodes,

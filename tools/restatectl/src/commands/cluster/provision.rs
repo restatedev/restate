@@ -17,9 +17,7 @@ use restate_cli_util::ui::console::confirm_or_exit;
 use restate_cli_util::{c_error, c_println, c_warn};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest;
-use restate_types::logs::metadata::{
-    NodeSetSelectionStrategy, ProviderConfiguration, ProviderKind, ReplicatedLogletConfig,
-};
+use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind, ReplicatedLogletConfig};
 use restate_types::net::AdvertisedAddress;
 use restate_types::partition_table::ReplicationStrategy;
 use restate_types::replicated_loglet::ReplicationProperty;
@@ -150,7 +148,6 @@ pub fn extract_default_provider(
         ProviderKind::Replicated => {
             let config = ReplicatedLogletConfig {
                 replication_property: replication_property.clone().expect("is required"),
-                nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
             };
             ProviderConfiguration::Replicated(config)
         }

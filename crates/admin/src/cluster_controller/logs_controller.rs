@@ -36,8 +36,8 @@ use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;
 use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{
-    Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, NodeSetSelectionStrategy,
-    ProviderConfiguration, ProviderKind, ReplicatedLogletConfig, SegmentIndex,
+    Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, ProviderConfiguration,
+    ProviderKind, ReplicatedLogletConfig, SegmentIndex,
 };
 use restate_types::logs::{LogId, LogletId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
@@ -352,7 +352,6 @@ pub fn build_new_replicated_loglet_configuration(
     let mut rng = thread_rng();
 
     let replication = replicated_loglet_config.replication_property.clone();
-    let strategy = replicated_loglet_config.nodeset_selection_strategy;
 
     let preferred_nodes = previous_params
         .map(|p| p.nodeset.clone())
@@ -369,7 +368,6 @@ pub fn build_new_replicated_loglet_configuration(
         })?;
 
     let selection = NodeSetSelector::new(nodes_config, observed_cluster_state).select(
-        strategy,
         &replication,
         &mut rng,
         &preferred_nodes,
@@ -449,11 +447,8 @@ impl LogletConfiguration {
                 }
 
                 let nodeset_improvement_possible =
-                    NodeSetSelector::new(nodes_config, observed_cluster_state).can_improve(
-                        &params.nodeset,
-                        NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
-                        &config.replication_property,
-                    );
+                    NodeSetSelector::new(nodes_config, observed_cluster_state)
+                        .can_improve(&params.nodeset, &config.replication_property);
 
                 if nodeset_improvement_possible {
                     debug!(
@@ -1279,7 +1274,7 @@ pub mod tests {
     use enumset::{enum_set, EnumSet};
     use restate_types::locality::NodeLocation;
     use restate_types::logs::metadata::{
-        LogsConfiguration, NodeSetSelectionStrategy, ProviderConfiguration, ReplicatedLogletConfig,
+        LogsConfiguration, ProviderConfiguration, ReplicatedLogletConfig,
     };
     use restate_types::logs::LogletId;
     use restate_types::nodes_config::{
@@ -1456,7 +1451,6 @@ pub mod tests {
                 replication_property: ReplicationProperty::new(
                     NonZeroU8::new(replication_factor).expect("must be non zero"),
                 ),
-                nodeset_selection_strategy: NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
             }),
         }
     }
