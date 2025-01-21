@@ -44,7 +44,7 @@ pub fn cluster_config_string(config: &ClusterConfiguration) -> anyhow::Result<St
     write_leaf(&mut w, 1, false, "Bifrost replication strategy", strategy)?;
 
     let provider: ProviderConfiguration = config
-        .default_provider
+        .bifrost_provider
         .clone()
         .unwrap_or_default()
         .try_into()?;
