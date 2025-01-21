@@ -578,11 +578,6 @@ async fn provision_cluster_metadata(
     let (initial_nodes_configuration, initial_partition_table, initial_logs) =
         generate_initial_metadata(common_opts, cluster_configuration);
 
-    let result = retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
-        metadata_store_client.provision(&initial_nodes_configuration)
-    })
-    .await?;
-
     retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
         write_initial_value_dont_fail_if_it_exists(
             metadata_store_client,
@@ -602,6 +597,12 @@ async fn provision_cluster_metadata(
     })
     .await
     .context("failed provisioning the initial logs")?;
+
+    let result = retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
+        metadata_store_client.provision(&initial_nodes_configuration)
+    })
+    .await
+    .context("failed provisioning the initial nodes configuration")?;
 
     Ok(result)
 }
