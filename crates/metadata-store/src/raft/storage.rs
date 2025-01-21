@@ -26,6 +26,7 @@ use restate_types::live::BoxedLiveLoad;
 use restate_types::nodes_config::NodesConfiguration;
 use rocksdb::{BoundColumnFamily, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions, DB};
 use std::array::TryFromSliceError;
+use std::cell::RefCell;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::{error, mem};
@@ -92,6 +93,9 @@ pub struct RocksDbStorage {
     first_index: u64,
     last_index: u64,
 
+    // contains some value if a newer snapshot is requested
+    requested_snapshot: RefCell<Option<u64>>,
+
     buffer: BytesMut,
 }
 
@@ -128,12 +132,17 @@ impl RocksDbStorage {
             rocksdb,
             first_index,
             last_index,
+            requested_snapshot: RefCell::default(),
             buffer: BytesMut::with_capacity(1024),
         })
     }
 }
 
 impl RocksDbStorage {
+    pub fn requested_snapshot(&self) -> Option<u64> {
+        *self.requested_snapshot.borrow()
+    }
+
     fn write_options(&self) -> WriteOptions {
         let mut write_opts = WriteOptions::default();
         write_opts.disable_wal(false);
@@ -578,7 +587,10 @@ impl Storage for RocksDbStorage {
             return Ok(snapshot);
         }
 
-        // time is relative as some clever people figured out
+        if request_index > self.requested_snapshot.borrow().unwrap_or_default() {
+            *self.requested_snapshot.borrow_mut() = Some(request_index);
+        }
+
         Err(raft::Error::Store(
             StorageError::SnapshotTemporarilyUnavailable,
         ))
@@ -591,6 +603,7 @@ pub struct Transaction<'a> {
     write_batch: WriteBatch,
     first_index: u64,
     last_index: u64,
+    snapshot_index: Option<u64>,
 }
 
 impl<'a> Transaction<'a> {
@@ -602,6 +615,7 @@ impl<'a> Transaction<'a> {
             write_batch: WriteBatch::default(),
             first_index,
             last_index,
+            snapshot_index: None,
         }
     }
 
@@ -633,6 +647,11 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
+        if snapshot.get_metadata().get_index() < self.first_index {
+            // snapshot is outdated; ignore it
+            return Ok(());
+        }
+
         let metadata = snapshot.get_metadata();
         let snapshot_index = metadata.get_index();
 
@@ -645,6 +664,8 @@ impl<'a> Transaction<'a> {
         self.store_snapshot(snapshot)?;
         // trim all entries up to the snapshot index
         self.trim(snapshot_index);
+
+        self.snapshot_index = Some(snapshot_index);
 
         Ok(())
     }
@@ -717,6 +738,17 @@ impl<'a> Transaction<'a> {
         }
         self.storage.first_index = self.first_index;
         self.storage.last_index = self.last_index;
+
+        if let Some(snapshot_index) = self.snapshot_index {
+            if self
+                .storage
+                .requested_snapshot
+                .borrow()
+                .is_some_and(|requested_snapshot| requested_snapshot <= snapshot_index)
+            {
+                *self.storage.requested_snapshot.get_mut() = None;
+            }
+        }
 
         Ok(())
     }

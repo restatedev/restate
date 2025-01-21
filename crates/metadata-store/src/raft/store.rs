@@ -741,6 +741,7 @@ impl Active {
         self.raw_node.advance_apply();
 
         self.try_trim_log().await?;
+        self.check_requested_snapshot().await?;
 
         Ok(())
     }
@@ -827,6 +828,22 @@ impl Active {
                 self.raw_node.raft.raft_log.term(applied_index)?,
             )
             .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Checks whether Raft requested a newer snapshot.
+    async fn check_requested_snapshot(&mut self) -> Result<(), Error> {
+        if let Some(index) = self.raw_node.mut_store().requested_snapshot() {
+            let applied_index = self.raw_node.raft.raft_log.applied;
+            if index <= applied_index {
+                self.create_snapshot(
+                    applied_index,
+                    self.raw_node.raft.raft_log.term(applied_index)?,
+                )
+                .await?;
+            }
         }
 
         Ok(())
