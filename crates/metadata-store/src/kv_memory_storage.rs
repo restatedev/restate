@@ -9,7 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use crate::{Callback, PreconditionViolation, Request, RequestError, RequestKind};
+use bytes::{Buf, BytesMut};
 use bytestring::ByteString;
+use flexbuffers::{DeserializationError, SerializationError};
 use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_core::MetadataWriter;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -132,31 +134,34 @@ impl KvMemoryStorage {
         // long as we maintain a quorum of running nodes. Otherwise, the nodes might not find each
         // other to form quorum.
         if key == NODES_CONFIG_KEY {
-            let mut data = self
-                .kv_entries
-                .get(&key)
-                .expect("to be present")
-                .value
-                .as_ref();
-            match StorageCodec::decode::<NodesConfiguration, _>(&mut data) {
-                Ok(nodes_configuration) => {
-                    assert!(
-                        self.last_seen_nodes_configuration.version()
-                            <= nodes_configuration.version()
-                    );
-                    self.last_seen_nodes_configuration = Arc::new(nodes_configuration);
-
-                    if let Some(metadata_writer) = self.metadata_writer.as_mut() {
-                        metadata_writer.submit(Arc::clone(&self.last_seen_nodes_configuration));
-                    }
-                }
-                Err(err) => {
-                    debug!("Failed deserializing NodesConfiguration: {err}");
-                }
-            }
+            self.update_last_seen_nodes_configuration();
         }
 
         Ok(())
+    }
+
+    fn update_last_seen_nodes_configuration(&mut self) {
+        let mut data = self
+            .kv_entries
+            .get(&NODES_CONFIG_KEY)
+            .expect("to be present")
+            .value
+            .as_ref();
+        match StorageCodec::decode::<NodesConfiguration, _>(&mut data) {
+            Ok(nodes_configuration) => {
+                assert!(
+                    self.last_seen_nodes_configuration.version() <= nodes_configuration.version()
+                );
+                self.last_seen_nodes_configuration = Arc::new(nodes_configuration);
+
+                if let Some(metadata_writer) = self.metadata_writer.as_mut() {
+                    metadata_writer.submit(Arc::clone(&self.last_seen_nodes_configuration));
+                }
+            }
+            Err(err) => {
+                debug!("Failed deserializing NodesConfiguration: {err}");
+            }
+        }
     }
 
     pub fn delete(
@@ -189,4 +194,34 @@ impl KvMemoryStorage {
 
         Ok(())
     }
+
+    pub fn restore<B: Buf>(&mut self, bytes: &mut B) -> Result<(), DeserializationError> {
+        let kv_snapshot: KvSnapshot = flexbuffers::from_slice(bytes.chunk())?;
+
+        self.kv_entries = kv_snapshot.kv_entries;
+
+        self.update_last_seen_nodes_configuration();
+
+        Ok(())
+    }
+
+    pub fn snapshot(&self, buffer: &mut BytesMut) -> Result<(), SerializationError> {
+        // todo avoid cloning of kv entries
+        let snapshot = KvSnapshot {
+            kv_entries: self.kv_entries.clone(),
+        };
+
+        // todo more efficient serialization
+        let bytes = flexbuffers::to_vec(snapshot)?;
+        buffer.extend(bytes);
+
+        Ok(())
+    }
+}
+
+#[serde_with::serde_as]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct KvSnapshot {
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    kv_entries: HashMap<ByteString, VersionedValue>,
 }
