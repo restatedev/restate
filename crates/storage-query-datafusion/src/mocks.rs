@@ -102,7 +102,7 @@ impl SelectPartitions for MockPartitionSelector {
     async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError> {
         let id = PartitionId::MIN;
         let partition_range = 0..=PartitionKey::MAX;
-        let partition = Partition::new(partition_range);
+        let partition = Partition::new(id, partition_range);
         Ok(vec![(id, partition)])
     }
 }

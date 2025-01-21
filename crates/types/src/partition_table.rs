@@ -23,12 +23,18 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, PartitionKey};
+use crate::logs::LogId;
 use crate::protobuf::cluster::ReplicationStrategy as ProtoReplicationStrategy;
 use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
 
 static REPLICATION_STRATEGY_FACTOR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?i)factor\(\s*(?<factor>\d+)\s*\)$").expect("is valid pattern")
 });
+
+const DB_NAME: &str = "db";
+const PARTITION_CF_PREFIX: &str = "data-";
+
+type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot find partition for partition key '{0}'")]
@@ -85,7 +91,7 @@ impl PartitionTable {
 
         for (partition_id, partition_key_range) in partitioner {
             builder
-                .add_partition(partition_id, Partition::new(partition_key_range))
+                .add_partition(Partition::new(partition_id, partition_key_range))
                 .expect("partitions should not overlap");
         }
 
@@ -271,19 +277,60 @@ impl PartialEq for PartitionPlacement {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DbName(SmartString);
+
+impl Default for DbName {
+    fn default() -> Self {
+        DbName(DB_NAME.into())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct CfName(SmartString);
+
+impl CfName {
+    pub fn for_partition(partition_id: PartitionId) -> Self {
+        Self(format!("{PARTITION_CF_PREFIX}{partition_id}").into())
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Partition {
+    pub partition_id: PartitionId,
     pub key_range: RangeInclusive<PartitionKey>,
     #[serde(default)]
     pub placement: PartitionPlacement,
+    log_id: Option<LogId>,
+    db_name: Option<DbName>,
+    cf_name: Option<CfName>,
 }
 
 impl Partition {
-    pub fn new(key_range: RangeInclusive<PartitionKey>) -> Self {
+    pub fn new(partition_id: PartitionId, key_range: RangeInclusive<PartitionKey>) -> Self {
         Self {
+            partition_id,
             key_range,
             placement: PartitionPlacement::default(),
+            log_id: None,
+            db_name: None,
+            cf_name: None,
         }
+    }
+
+    pub fn log_id(&self) -> LogId {
+        self.log_id
+            .unwrap_or_else(|| LogId::from(self.partition_id))
+    }
+
+    pub fn db_name(&self) -> DbName {
+        self.db_name.clone().unwrap_or_default()
+    }
+
+    pub fn cf_name(&self) -> CfName {
+        self.cf_name
+            .clone()
+            .unwrap_or_else(|| CfName::for_partition(self.partition_id))
     }
 }
 
@@ -323,7 +370,7 @@ impl PartitionTableBuilder {
         let partitioner = EqualSizedPartitionPartitioner::new(number_partitions);
 
         for (partition_id, partition_key_range) in partitioner {
-            self.add_partition(partition_id, Partition::new(partition_key_range))?
+            self.add_partition(Partition::new(partition_id, partition_key_range))?
         }
 
         Ok(())
@@ -346,13 +393,9 @@ impl PartitionTableBuilder {
 
     /// Adds a new partition to the partition table. The newly added partition must exist and must
     /// not intersect with any other partition. Otherwise, this operation fails.
-    pub fn add_partition(
-        &mut self,
-        partition_id: PartitionId,
-        partition: Partition,
-    ) -> Result<(), BuilderError> {
-        if self.inner.partitions.contains_key(&partition_id) {
-            return Err(BuilderError::Duplicate(partition_id));
+    pub fn add_partition(&mut self, partition: Partition) -> Result<(), BuilderError> {
+        if self.inner.partitions.contains_key(&partition.partition_id) {
+            return Err(BuilderError::Duplicate(partition.partition_id));
         }
 
         if self.inner.partitions.len() > usize::from(*PartitionId::MAX) {
@@ -377,6 +420,7 @@ impl PartitionTableBuilder {
             return Err(BuilderError::Overlap(*partition_id));
         }
 
+        let partition_id = partition.partition_id;
         self.inner.partitions.insert(partition_id, partition);
         self.inner.partition_key_index.insert(end, partition_id);
         self.modified = true;
@@ -435,6 +479,17 @@ impl From<PartitionTable> for PartitionTableBuilder {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct PartitionShadow {
+    pub log_id: Option<LogId>,
+    pub key_range: RangeInclusive<PartitionKey>,
+    #[serde(default)]
+    pub db_name: Option<DbName>,
+    pub cf_name: Option<CfName>,
+    #[serde(default)]
+    pub placement: PartitionPlacement,
+}
+
 /// Serialization helper which handles the deserialization of the current and older
 /// [`PartitionTable`] versions.
 #[serde_with::serde_as]
@@ -447,7 +502,7 @@ struct PartitionTableShadow {
     // partitions field is used by the PartitionTable introduced in v1.1 of Restate.
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "Option<serde_with::Seq<(_, _)>>")]
-    partitions: Option<BTreeMap<PartitionId, Partition>>,
+    partitions: Option<BTreeMap<PartitionId, PartitionShadow>>,
     replication_strategy: Option<ReplicationStrategy>,
 }
 
@@ -457,7 +512,23 @@ impl From<PartitionTable> for PartitionTableShadow {
         Self {
             version: value.version,
             num_partitions,
-            partitions: Some(value.partitions),
+            partitions: Some(
+                value
+                    .partitions
+                    .into_iter()
+                    .map(|(partition_id, partition)| {
+                        let partition_shadow = PartitionShadow {
+                            log_id: partition.log_id,
+                            key_range: partition.key_range,
+                            cf_name: partition.cf_name,
+                            db_name: partition.db_name,
+                            placement: partition.placement,
+                        };
+
+                        (partition_id, partition_shadow)
+                    })
+                    .collect(),
+            ),
             replication_strategy: Some(value.replication_strategy),
         }
     }
@@ -473,8 +544,17 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
 
         match value.partitions {
             Some(partitions) => {
-                for (partition_id, partition) in partitions {
-                    builder.add_partition(partition_id, partition)?;
+                for (partition_id, partition_shadow) in partitions {
+                    let partition = Partition {
+                        partition_id,
+                        log_id: partition_shadow.log_id,
+                        key_range: partition_shadow.key_range,
+                        placement: partition_shadow.placement,
+                        db_name: partition_shadow.db_name,
+                        cf_name: partition_shadow.cf_name,
+                    };
+
+                    builder.add_partition(partition)?;
                 }
             }
             None => {
@@ -760,8 +840,8 @@ mod tests {
     #[test]
     fn detect_holes_in_partition_table() -> googletest::Result<()> {
         let mut builder = PartitionTableBuilder::new(Version::INVALID);
-        builder.add_partition(PartitionId::from(0), Partition::new(0..=1024))?;
-        builder.add_partition(PartitionId::from(1), Partition::new(2048..=4096))?;
+        builder.add_partition(Partition::new(PartitionId::from(0), 0..=1024))?;
+        builder.add_partition(Partition::new(PartitionId::from(1), 2048..=4096))?;
 
         let partition_table = builder.build();
 
