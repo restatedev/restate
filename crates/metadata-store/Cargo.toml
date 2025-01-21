@@ -32,8 +32,10 @@ parking_lot = { workspace = true}
 prost = { workspace = true }
 prost-dto = { workspace = true }
 protobuf = "2.28.0"
-raft = { version = "0.7.0" }
-raft-proto = { version= "0.7.0" }
+# Tikv is using the same version of raft and raft-proto. The released 0.7.0 is 2 years old and master contains a few
+# improvements.
+raft = { git = "https://github.com/tikv/raft-rs", rev = "2fbeee5b89b22c392da39435b79be9896acedd1d" }
+raft-proto = { git = "https://github.com/tikv/raft-rs", rev = "2fbeee5b89b22c392da39435b79be9896acedd1d" }
 rand = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }

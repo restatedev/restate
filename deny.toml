@@ -169,9 +169,9 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
-    "https://github.com/restatedev/rust-rocksdb.git",
     "https://github.com/apache/arrow-rs.git",
     "https://github.com/jackkleeman/arrow-convert",
+    "https://github.com/tikv/raft-rs.git",
 ]
 
 [sources.allow-org]
