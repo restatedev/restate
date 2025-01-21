@@ -36,7 +36,7 @@ pub struct ConfigSetOpts {
     #[clap(long)]
     replication_strategy: Option<ReplicationStrategy>,
 
-    /// Default provider kind
+    /// Bifrost provider kind.
     #[clap(long)]
     bifrost_provider: Option<ProviderKind>,
 
@@ -77,7 +77,7 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
             }
         }
 
-        current.default_provider = Some(default_provider.into());
+        current.bifrost_provider = Some(default_provider.into());
     }
 
     let updated_config_string = cluster_config_string(&current)?;

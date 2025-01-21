@@ -84,7 +84,7 @@ impl NodeCtlSvcHandler {
             .map(ReplicationStrategy::try_from)
             .transpose()?
             .unwrap_or_default();
-        let default_provider = request
+        let bifrost_provider = request
             .log_provider
             .map(ProviderConfiguration::try_from)
             .unwrap_or_else(|| Ok(ProviderConfiguration::from_configuration(config)))?;
@@ -92,7 +92,7 @@ impl NodeCtlSvcHandler {
         Ok(ClusterConfiguration {
             num_partitions,
             replication_strategy,
-            default_provider,
+            bifrost_provider,
         })
     }
 }

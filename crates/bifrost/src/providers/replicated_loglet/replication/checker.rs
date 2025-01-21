@@ -157,7 +157,7 @@ impl<Attr: Eq + Hash + Clone + std::fmt::Debug> NodeSetChecker<Attr> {
             node_to_storage_state: storage_states,
         };
 
-        for node_id in nodeset {
+        for node_id in nodeset.iter() {
             if let Ok(config) = nodes_config.find_node_by_id(*node_id) {
                 checker.add_node(
                     *node_id,

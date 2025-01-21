@@ -145,8 +145,8 @@ pub enum DiscoveryError {
     Decode(#[source] serde_json::Error, Bytes),
 
     // Network related retryable errors
-    #[error("bad status code '{}'. Response headers: {:?}", .0.status, .0.headers)]
-    BadStatusCode(http::response::Parts),
+    #[error("bad status code '{0}'. Response headers: {1:?}. Body: {2}")]
+    BadStatusCode(StatusCode, HeaderMap, Cow<'static, str>),
     #[error(transparent)]
     Client(#[from] ServiceClientError),
     #[error("cannot read body: {0}")]
@@ -162,7 +162,7 @@ impl CodedError for DiscoveryError {
         match self {
             DiscoveryError::BadResponse(_) => Some(&META0013),
             DiscoveryError::Decode(_, _) => None,
-            DiscoveryError::BadStatusCode(_) => Some(&META0003),
+            DiscoveryError::BadStatusCode(_, _, _) => Some(&META0003),
             // special code for possible http1.1 errors
             DiscoveryError::Client(ServiceClientError::Http(
                 restate_service_client::HttpError::PossibleHTTP11Only(_),
@@ -180,8 +180,8 @@ impl DiscoveryError {
     /// retrying can succeed.
     pub fn is_retryable(&self) -> bool {
         match self {
-            DiscoveryError::BadStatusCode(parts) => matches!(
-                parts.status,
+            DiscoveryError::BadStatusCode(status, _, _) => matches!(
+                *status,
                 StatusCode::REQUEST_TIMEOUT
                     | StatusCode::TOO_MANY_REQUESTS
                     | StatusCode::INTERNAL_SERVER_ERROR
@@ -410,7 +410,18 @@ impl ServiceDiscovery {
                     .into_parts();
 
                 if !parts.status.is_success() {
-                    return Err(DiscoveryError::BadStatusCode(parts));
+                    let body_message = body
+                        .collect()
+                        .await
+                        .map(|b| {
+                            String::from_utf8_lossy(b.to_bytes().to_vec().as_slice()).to_string()
+                        })
+                        .unwrap_or_else(|err| format!("Failed to read body {}", err));
+                    return Err(DiscoveryError::BadStatusCode(
+                        parts.status,
+                        parts.headers,
+                        body_message.into(),
+                    ));
                 }
 
                 Ok((

@@ -77,19 +77,9 @@ message PartitionProcessorStatus {
   optional restate.common.Lsn target_tail_lsn = 11;
 }
 
-enum NodeSetSelectionStrategyKind {
-  NodeSetSelectionStrategyKind_UNKNOWN = 0;
-  StrictFaultTolerantGreedy = 1;
-}
+message ReplicatedProviderConfig { string replication_property = 1; }
 
-message NodeSetSelectionStrategy { NodeSetSelectionStrategyKind kind = 1; }
-
-message ReplicatedProviderConfig {
-  string replication_property = 1;
-  NodeSetSelectionStrategy nodeset_selection_strategy = 2;
-}
-
-message DefaultProvider {
+message BifrostProvider {
   string provider = 1;
   // only required if provider = "replicated"
   optional ReplicatedProviderConfig replicated_config = 2;
@@ -110,5 +100,5 @@ message ReplicationStrategy {
 message ClusterConfiguration {
   uint32 num_partitions = 1;
   ReplicationStrategy replication_strategy = 2;
-  DefaultProvider default_provider = 3;
+  BifrostProvider bifrost_provider = 3;
 }

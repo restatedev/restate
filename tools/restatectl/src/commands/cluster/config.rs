@@ -44,7 +44,7 @@ pub fn cluster_config_string(config: &ClusterConfiguration) -> anyhow::Result<St
     write_leaf(&mut w, 1, false, "Bifrost replication strategy", strategy)?;
 
     let provider: ProviderConfiguration = config
-        .default_provider
+        .bifrost_provider
         .clone()
         .unwrap_or_default()
         .try_into()?;
@@ -71,13 +71,6 @@ fn write_default_provider<W: fmt::Write>(
         ProviderConfiguration::Replicated(config) => {
             write_leaf(w, depth, true, title, "replicated")?;
             let depth = depth + 1;
-            write_leaf(
-                w,
-                depth,
-                false,
-                "Node set selection strategy",
-                config.nodeset_selection_strategy,
-            )?;
             write_leaf(
                 w,
                 depth,

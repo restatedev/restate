@@ -16,11 +16,12 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use codederror::CodedError;
+use futures::never::Never;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use restate_metadata_store::ReadModifyWriteError;
 use restate_types::logs::metadata::{
@@ -283,9 +284,9 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
-    pub async fn run(mut self) -> anyhow::Result<()> {
-        let mut config_watcher = Configuration::watcher();
-        let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
+    pub async fn run(self) -> anyhow::Result<()> {
+        let health_status = self.health_status.clone();
+        health_status.update(AdminStatus::Ready);
 
         TaskCenter::spawn_child(
             TaskKind::SystemService,
@@ -293,11 +294,22 @@ impl<T: TransportConnect> Service<T> {
             sync_cluster_controller_metadata(),
         )?;
 
-        let mut shutdown = std::pin::pin!(cancellation_watcher());
+        tokio::select! {
+            _ = self.run_inner() => {
+                unreachable!("Cluster controller service has terminated unexpectedly.");
+            }
+            _ = cancellation_watcher() => {
+                health_status.update(AdminStatus::Unknown);
+                Ok(())
+            }
+        }
+    }
+
+    async fn run_inner(mut self) -> Never {
+        let mut config_watcher = Configuration::watcher();
+        let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
 
         let mut state: ClusterControllerState<T> = ClusterControllerState::Follower;
-
-        self.health_status.update(AdminStatus::Ready);
 
         loop {
             tokio::select! {
@@ -307,9 +319,16 @@ impl<T: TransportConnect> Service<T> {
                 },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     self.observed_cluster_state.update(&cluster_state);
-                    state.update(&self).await?;
+                    // todo quarantine this cluster controller if errors re-occur too often so that
+                    //  another cluster controller can take over
+                    if let Err(err) = state.update(&self).await {
+                        warn!("Failed to update cluster state. This can impair the overall cluster operations: {}", err);
+                        continue;
+                    }
 
-                    state.on_observed_cluster_state(&self.observed_cluster_state).await?;
+                    if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state).await {
+                        warn!("Failed to handle observed cluster state. This can impair the overall cluster operations: {}", err);
+                    }
                 }
                 Some(cmd) = self.command_rx.recv() => {
                     // it is still safe to handle cluster commands as a follower
@@ -322,12 +341,17 @@ impl<T: TransportConnect> Service<T> {
                     state.reconfigure(configuration);
                 }
                 result = state.run() => {
-                    let leader_event = result?;
-                    state.on_leader_event(&self.observed_cluster_state, leader_event).await?;
-                }
-                _ = &mut shutdown => {
-                    self.health_status.update(AdminStatus::Unknown);
-                    return Ok(());
+                    let leader_event = match result {
+                        Ok(leader_event) => leader_event,
+                        Err(err) => {
+                            warn!("Failed to run cluster controller operations. This can impair the overall cluster operations: {}", err);
+                            continue;
+                        }
+                    };
+
+                    if let Err(err) = state.on_leader_event(&self.observed_cluster_state, leader_event).await {
+                        warn!("Failed to handle leader event. This can impair the overall cluster operations: {}", err);
+                    }
                 }
             }
         }

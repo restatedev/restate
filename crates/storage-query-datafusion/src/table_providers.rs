@@ -70,7 +70,7 @@ fn filter_partitions(
         .find_map(|(partition_id, partition)| {
             if partition.key_range.contains(&partition_key) {
                 let new_range = partition_key..=partition_key;
-                let new_partition = Partition::new(new_range);
+                let new_partition = Partition::new(partition_id, new_range);
                 Some((partition_id, new_partition))
             } else {
                 None

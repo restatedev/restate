@@ -9,11 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{hash_map, BTreeMap, HashMap, HashSet};
-use std::fmt::Display;
 use std::num::NonZeroU8;
 use std::str::FromStr;
 
-use anyhow::Context;
 use bytestring::ByteString;
 use enum_map::Enum;
 use rand::RngCore;
@@ -25,9 +23,6 @@ use super::builder::LogsBuilder;
 use super::LogletId;
 use crate::config::Configuration;
 use crate::logs::{LogId, Lsn, SequenceNumber};
-use crate::protobuf::cluster::{
-    NodeSetSelectionStrategy as ProtoNodeSetSelectionStrategy, NodeSetSelectionStrategyKind,
-};
 use crate::replicated_loglet::{ReplicatedLogletParams, ReplicationProperty};
 use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 
@@ -117,79 +112,6 @@ impl LookupIndex {
     }
 }
 
-/// Node set selection strategy for picking cluster members to host replicated logs. Note that this
-/// concerns loglet replication configuration across storage servers during log bootstrap or cluster
-/// reconfiguration, for example when expanding capacity.
-///
-/// It is expected that the Bifrost data plane will deal with short-term server unavailability.
-/// Therefore, we can afford to aim high with our nodeset selections and optimise for maximum
-/// possible fault tolerance. It is the data plane's responsibility to achieve availability within
-/// this nodeset during periods of individual node downtime.
-///
-/// Finally, nodeset selection is orthogonal to log sequencer placement.
-#[derive(Debug, Clone, PartialEq, Eq, Copy, Default, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
-#[serde(rename_all = "kebab-case")]
-pub enum NodeSetSelectionStrategy {
-    /// Selects an optimal nodeset size based on the replication factor. The nodeset size is at
-    /// least `2f+1`, where `f` is the number of tolerable failures.
-    ///
-    /// It's calculated by working backwards from a replication factor of `f+1`. If there are
-    /// more nodes available in the cluster, the strategy will use them.
-    ///
-    /// This strategy will never suggest a nodeset smaller than `2f+1`, thus ensuring that there is
-    /// always plenty of fault tolerance built into the loglet. This is a safe default choice.
-    ///
-    /// Example: For a replication factor of (2) `F=f+1=2`, `f` will equal to 1, and hence
-    /// the node set size will be `2f+1 => 3`.
-    ///
-    /// For an `F=3` (and hence `f=2`), then `2f+1` => 5 nodes
-    #[default]
-    StrictFaultTolerantGreedy,
-}
-
-impl Display for NodeSetSelectionStrategy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::StrictFaultTolerantGreedy => write!(f, "strict-fault-tolerant-greedy"),
-        }
-    }
-}
-
-impl FromStr for NodeSetSelectionStrategy {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "strict-fault-tolerant-greedy" => Ok(Self::StrictFaultTolerantGreedy),
-            _ => Err("Unknown node set selection strategy"),
-        }
-    }
-}
-
-impl From<NodeSetSelectionStrategy> for ProtoNodeSetSelectionStrategy {
-    fn from(value: NodeSetSelectionStrategy) -> Self {
-        match value {
-            NodeSetSelectionStrategy::StrictFaultTolerantGreedy => Self {
-                kind: NodeSetSelectionStrategyKind::StrictFaultTolerantGreedy.into(),
-            },
-        }
-    }
-}
-
-impl TryFrom<ProtoNodeSetSelectionStrategy> for NodeSetSelectionStrategy {
-    type Error = anyhow::Error;
-
-    fn try_from(value: ProtoNodeSetSelectionStrategy) -> Result<Self, Self::Error> {
-        if value.kind == i32::from(NodeSetSelectionStrategyKind::StrictFaultTolerantGreedy) {
-            Ok(Self::StrictFaultTolerantGreedy)
-        } else {
-            anyhow::bail!("Unknown nodeset selection strategy kind")
-        }
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderConfiguration {
@@ -216,7 +138,6 @@ impl ProviderConfiguration {
             ProviderKind::InMemory => ProviderConfiguration::InMemory,
             ProviderKind::Local => ProviderConfiguration::Local,
             ProviderKind::Replicated => ProviderConfiguration::Replicated(ReplicatedLogletConfig {
-                nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
                 replication_property: configuration
                     .bifrost
                     .replicated_loglet
@@ -227,11 +148,11 @@ impl ProviderConfiguration {
     }
 }
 
-impl From<ProviderConfiguration> for crate::protobuf::cluster::DefaultProvider {
+impl From<ProviderConfiguration> for crate::protobuf::cluster::BifrostProvider {
     fn from(value: ProviderConfiguration) -> Self {
         use crate::protobuf::cluster;
 
-        let mut result = crate::protobuf::cluster::DefaultProvider::default();
+        let mut result = crate::protobuf::cluster::BifrostProvider::default();
 
         match value {
             ProviderConfiguration::Local => result.provider = ProviderKind::Local.to_string(),
@@ -241,7 +162,6 @@ impl From<ProviderConfiguration> for crate::protobuf::cluster::DefaultProvider {
                 result.provider = ProviderKind::Replicated.to_string();
                 result.replicated_config = Some(cluster::ReplicatedProviderConfig {
                     replication_property: config.replication_property.to_string(),
-                    nodeset_selection_strategy: Some(config.nodeset_selection_strategy.into()),
                 })
             }
         };
@@ -250,9 +170,9 @@ impl From<ProviderConfiguration> for crate::protobuf::cluster::DefaultProvider {
     }
 }
 
-impl TryFrom<crate::protobuf::cluster::DefaultProvider> for ProviderConfiguration {
+impl TryFrom<crate::protobuf::cluster::BifrostProvider> for ProviderConfiguration {
     type Error = anyhow::Error;
-    fn try_from(value: crate::protobuf::cluster::DefaultProvider) -> Result<Self, Self::Error> {
+    fn try_from(value: crate::protobuf::cluster::BifrostProvider) -> Result<Self, Self::Error> {
         let provider_kind: ProviderKind = value.provider.parse()?;
 
         match provider_kind {
@@ -266,10 +186,6 @@ impl TryFrom<crate::protobuf::cluster::DefaultProvider> for ProviderConfiguratio
 
                 Ok(Self::Replicated(ReplicatedLogletConfig {
                     replication_property: config.replication_property.parse()?,
-                    nodeset_selection_strategy: config
-                        .nodeset_selection_strategy
-                        .context("NodeSet selection strategy is required")?
-                        .try_into()?,
                 }))
             }
         }
@@ -279,7 +195,6 @@ impl TryFrom<crate::protobuf::cluster::DefaultProvider> for ProviderConfiguratio
 #[serde_as]
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ReplicatedLogletConfig {
-    pub nodeset_selection_strategy: NodeSetSelectionStrategy,
     #[serde_as(as = "DisplayFromStr")]
     pub replication_property: ReplicationProperty,
 }
@@ -343,7 +258,6 @@ impl TryFrom<LogsSerde> for Logs {
                         config = Some(LogsConfiguration {
                             default_provider: ProviderConfiguration::Replicated(
                                 ReplicatedLogletConfig {
-                                    nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
                                     replication_property: ReplicationProperty::new(
                                         NonZeroU8::new(2).expect("2 is not 0"),
                                     ),
