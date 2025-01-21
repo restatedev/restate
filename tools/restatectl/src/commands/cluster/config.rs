@@ -74,13 +74,6 @@ fn write_default_provider<W: fmt::Write>(
             write_leaf(
                 w,
                 depth,
-                false,
-                "Node set selection strategy",
-                config.nodeset_selection_strategy,
-            )?;
-            write_leaf(
-                w,
-                depth,
                 true,
                 "Replication property",
                 config.replication_property.to_string(),
