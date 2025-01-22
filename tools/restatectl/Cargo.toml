@@ -28,6 +28,7 @@ restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
+bytesize = { workspace = true }
 bytestring = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color"] }

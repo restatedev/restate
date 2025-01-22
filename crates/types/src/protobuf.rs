@@ -45,12 +45,12 @@ pub mod common {
     }
 
     impl MetadataServerStatus {
-        /// Returns true if the metadata store is running which means that it has either taken
-        /// the active or passive role.
+        /// Returns true if the metadata store is running which means that it is either a member or
+        /// a standby node.
         pub fn is_running(&self) -> bool {
             matches!(
                 self,
-                MetadataServerStatus::Active | MetadataServerStatus::Passive
+                MetadataServerStatus::Member | MetadataServerStatus::Standby
             )
         }
     }

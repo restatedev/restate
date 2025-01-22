@@ -125,8 +125,8 @@ enum MetadataServerStatus {
   MetadataServerStatus_UNKNOWN = 0;
   MetadataServerStatus_STARTING_UP = 1;
   MetadataServerStatus_AWAITING_PROVISIONING = 2;
-  MetadataServerStatus_ACTIVE = 3;
-  MetadataServerStatus_PASSIVE = 4;
+  MetadataServerStatus_MEMBER = 3;
+  MetadataServerStatus_STANDBY = 4;
 }
 
 enum IngressStatus {

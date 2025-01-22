@@ -219,15 +219,15 @@ impl NodesConfiguration {
     pub fn get_metadata_server_state(&self, node_id: &PlainNodeId) -> MetadataServerState {
         let maybe = self.nodes.get(node_id);
         let Some(maybe) = maybe else {
-            return MetadataServerState::Outsider;
+            return MetadataServerState::Standby;
         };
         match maybe {
-            MaybeNode::Tombstone => MetadataServerState::Outsider,
+            MaybeNode::Tombstone => MetadataServerState::Standby,
             MaybeNode::Node(found) => {
                 if found.roles.contains(Role::MetadataServer) {
                     found.metadata_server_config.metadata_server_state
                 } else {
-                    MetadataServerState::Outsider
+                    MetadataServerState::Standby
                 }
             }
         }
@@ -398,7 +398,7 @@ impl StorageState {
 pub enum MetadataServerState {
     /// The server is not considered as part of the metadata store cluster. Node can be safely
     /// decommissioned.
-    Outsider,
+    Standby,
     /// The server is an active member of the metadata store cluster.
     #[default]
     Member,
