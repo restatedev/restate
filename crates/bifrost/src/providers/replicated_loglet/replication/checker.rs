@@ -1283,6 +1283,12 @@ mod tests {
             NodeSetChecker::new(&nodeset, &nodes_config, &replication);
 
         // marked every possible node
+        // region1
+        //      .az1  [N1(DL), N2(DL), N3(DL)]
+        //      .az2  [N4(x), N5(DL), N6(x)]
+        // region2
+        //      .az1  [N7(x), N8(x), N9(x)]
+        // -         [N10(x)] N11 - in Provisioning
         checker.set_attribute_on_each([4, 6, 7, 8, 9, 10], true);
         assert_that!(
             checker.check_fmajority(|attr| *attr),
