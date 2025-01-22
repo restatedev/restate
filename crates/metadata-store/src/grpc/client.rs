@@ -359,12 +359,11 @@ impl ChannelManager {
         let new_channels = nodes_configuration
             .iter()
             .filter_map(|(node_id, node_config)| {
-                // We only consider metadata store nodes that are active or candidates. Candidates are
-                // considered because we might not have seen the NodesConfiguration update yet.
+                // We only consider metadata store members.
                 if node_config.roles.contains(Role::MetadataServer)
                     && matches!(
                         node_config.metadata_server_config.metadata_server_state,
-                        MetadataServerState::Active(_) | MetadataServerState::Candidate
+                        MetadataServerState::Member
                     )
                 {
                     Some((

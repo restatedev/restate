@@ -471,6 +471,12 @@ enum JoinClusterError {
     Internal(String),
     #[error("join request was dropped")]
     ProposalDropped,
+    #[error("unknown node '{0}'")]
+    UnknownNode(PlainNodeId),
+    #[error("node '{0}' does not have the 'metadata-server' role")]
+    InvalidRole(PlainNodeId),
+    #[error("node '{0}' is an outsider")]
+    Outsider(PlainNodeId),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -613,7 +619,6 @@ struct MetadataStoreConfiguration {
 /// [`MetadataServerState`] set.
 fn prepare_initial_nodes_configuration(
     configuration: &Configuration,
-    configuration_id: u32,
     nodes_configuration: &mut NodesConfiguration,
 ) -> Result<PlainNodeId, InvalidConfiguration> {
     let plain_node_id = if let Some(node_config) =
@@ -632,8 +637,7 @@ fn prepare_initial_nodes_configuration(
         let restate_node_id = node_config.current_generation.as_plain();
 
         let mut node_config = node_config.clone();
-        node_config.metadata_server_config.metadata_server_state =
-            MetadataServerState::Active(configuration_id);
+        node_config.metadata_server_config.metadata_server_state = MetadataServerState::Member;
 
         nodes_configuration.upsert_node(node_config);
 
@@ -652,7 +656,7 @@ fn prepare_initial_nodes_configuration(
             });
 
         let metadata_server_config = MetadataServerConfig {
-            metadata_server_state: MetadataServerState::Active(configuration_id),
+            metadata_server_state: MetadataServerState::Member,
         };
 
         let node_config = NodeConfig::new(

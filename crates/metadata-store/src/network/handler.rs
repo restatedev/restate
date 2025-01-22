@@ -118,8 +118,12 @@ impl From<JoinClusterError> for Status {
             }
             JoinClusterError::PendingReconfiguration => Status::unavailable(err.to_string()),
             JoinClusterError::ConcurrentRequest(_) => Status::aborted(err.to_string()),
-            JoinClusterError::Internal(_) => Status::internal(err.to_string()),
-            JoinClusterError::ProposalDropped => Status::internal(err.to_string()),
+            JoinClusterError::Internal(_) | JoinClusterError::ProposalDropped => {
+                Status::internal(err.to_string())
+            }
+            JoinClusterError::UnknownNode(_)
+            | JoinClusterError::InvalidRole(_)
+            | JoinClusterError::Outsider(_) => Status::invalid_argument(err.to_string()),
         }
     }
 }

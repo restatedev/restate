@@ -184,12 +184,8 @@ impl MetadataStoreSvc for MetadataStoreHandler {
                     .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
             // Make sure that the NodesConfiguration our node and has the right metadata store state set.
-            prepare_initial_nodes_configuration(
-                &Configuration::pinned(),
-                1,
-                &mut nodes_configuration,
-            )
-            .map_err(|err| Status::invalid_argument(err.to_string()))?;
+            prepare_initial_nodes_configuration(&Configuration::pinned(), &mut nodes_configuration)
+                .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
             let versioned_value = serialize_value(&nodes_configuration)
                 .map_err(|err| Status::invalid_argument(err.to_string()))?;

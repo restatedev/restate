@@ -160,7 +160,7 @@ impl LocalMetadataStore {
         {
             if matches!(
                 node_config.metadata_server_config.metadata_server_state,
-                MetadataServerState::Active(_)
+                MetadataServerState::Member
             ) {
                 // nothing to patch
                 return Ok(());
@@ -168,7 +168,7 @@ impl LocalMetadataStore {
 
             let mut new_node_config = node_config.clone();
             new_node_config.metadata_server_config.metadata_server_state =
-                MetadataServerState::Active(0);
+                MetadataServerState::Member;
 
             nodes_configuration.upsert_node(new_node_config);
             nodes_configuration.increment_version();

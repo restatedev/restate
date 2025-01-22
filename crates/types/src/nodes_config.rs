@@ -219,11 +219,17 @@ impl NodesConfiguration {
     pub fn get_metadata_server_state(&self, node_id: &PlainNodeId) -> MetadataServerState {
         let maybe = self.nodes.get(node_id);
         let Some(maybe) = maybe else {
-            return MetadataServerState::Passive;
+            return MetadataServerState::Outsider;
         };
         match maybe {
-            MaybeNode::Tombstone => MetadataServerState::Passive,
-            MaybeNode::Node(found) => found.metadata_server_config.metadata_server_state,
+            MaybeNode::Tombstone => MetadataServerState::Outsider,
+            MaybeNode::Node(found) => {
+                if found.roles.contains(Role::MetadataServer) {
+                    found.metadata_server_config.metadata_server_state
+                } else {
+                    MetadataServerState::Outsider
+                }
+            }
         }
     }
 
@@ -390,18 +396,12 @@ impl StorageState {
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum MetadataServerState {
-    /// The server is not yet a member of the metadata store but tries to join it. It is not safe to
-    /// decommission this node since the metadata store cluster might have already accepted it.
-    Candidate,
-    /// The server is not considered as part of the metadata store cluster (yet). Node can be safely
+    /// The server is not considered as part of the metadata store cluster. Node can be safely
     /// decommissioned.
     #[default]
-    Passive,
-    /// The server is an active member of the metadata store cluster with the given configuration id.
-    Active(u32),
-    /// Server detected that some/all of its local storage has been deleted, and it cannot be part of
-    /// the metadata store cluster because it might make contradicting promises.
-    DataLoss,
+    Outsider,
+    /// The server is an active member of the metadata store cluster.
+    Member,
 }
 
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]

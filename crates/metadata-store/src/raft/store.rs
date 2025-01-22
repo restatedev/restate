@@ -362,7 +362,7 @@ impl RaftMetadataStore {
         nodes_configuration: &mut NodesConfiguration,
     ) -> Result<RaftConfiguration, InvalidConfiguration> {
         let configuration = Configuration::pinned();
-        let node_id = prepare_initial_nodes_configuration(&configuration, 0, nodes_configuration)?;
+        let node_id = prepare_initial_nodes_configuration(&configuration, nodes_configuration)?;
 
         // set our own raft node id to be Restate's plain node id
         let my_member_id = MemberId {
@@ -650,6 +650,8 @@ impl Active {
 
         trace!("Handle join request from node '{}'", joining_member_id);
 
+        // sanity checks
+
         if !self.is_leader {
             let _ = response_tx.send(Err(JoinClusterError::NotLeader(self.known_leader())));
             return;
@@ -662,6 +664,32 @@ impl Active {
 
         if self.is_member(joining_member_id) {
             let _ = response_tx.send(Ok(()));
+            return;
+        }
+
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+
+        let Ok(joining_node_config) = nodes_config.find_node_by_id(joining_member_id.node_id)
+        else {
+            let _ = response_tx.send(Err(JoinClusterError::UnknownNode(
+                joining_member_id.node_id,
+            )));
+            return;
+        };
+
+        if !joining_node_config.has_role(Role::MetadataServer) {
+            let _ = response_tx.send(Err(JoinClusterError::InvalidRole(
+                joining_member_id.node_id,
+            )));
+            return;
+        }
+
+        if joining_node_config
+            .metadata_server_config
+            .metadata_server_state
+            == MetadataServerState::Outsider
+        {
+            let _ = response_tx.send(Err(JoinClusterError::Outsider(joining_member_id.node_id)));
             return;
         }
 
@@ -952,18 +980,10 @@ impl Active {
         let previous_version = new_nodes_configuration.version();
 
         for (node_id, node_config) in new_nodes_configuration.iter_mut() {
-            if self.is_member_plain_node_id(node_id) {
+            if !self.is_member_plain_node_id(node_id) {
                 node_config.metadata_server_config.metadata_server_state =
-                    MetadataServerState::Active(0);
-            } else if matches!(
-                node_config.metadata_server_config.metadata_server_state,
-                MetadataServerState::Active(_)
-            ) {
-                // active nodes that have been removed from the configuration are switched to passive
-                node_config.metadata_server_config.metadata_server_state =
-                    MetadataServerState::Passive;
+                    MetadataServerState::Outsider;
             }
-            // Candidates stay candidates for the time being
         }
 
         new_nodes_configuration.increment_version();
@@ -1117,7 +1137,7 @@ impl Active {
     /// current nodes configuration.
     fn known_leader(&self) -> Option<KnownLeader> {
         if self.raw_node.raft.leader_id == INVALID_ID {
-            return Self::random_known_leader();
+            return Self::random_member();
         }
 
         let leader = to_plain_node_id(self.raw_node.raft.leader_id);
@@ -1130,18 +1150,18 @@ impl Active {
                 node_id: leader,
                 address: node_config.address.clone(),
             })
-            .or_else(Self::random_known_leader)
+            .or_else(Self::random_member)
     }
 
-    /// Returns a random known leader from the current nodes configuration.
-    fn random_known_leader() -> Option<KnownLeader> {
+    /// Returns a random metadata store member from the current nodes configuration.
+    fn random_member() -> Option<KnownLeader> {
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
 
         nodes_config
             .iter()
             .filter_map(|(node_id, node_config)| {
-                if let MetadataServerState::Active(_) =
-                    node_config.metadata_server_config.metadata_server_state
+                if node_config.metadata_server_config.metadata_server_state
+                    == MetadataServerState::Member
                 {
                     Some((node_id, node_config))
                 } else {
@@ -1235,11 +1255,11 @@ impl Passive {
                     let request = request.into_request();
                     request.fail(RequestError::Unavailable(
                         "Not being part of the metadata store cluster.".into(),
-                        Active::random_known_leader(),
+                        Active::random_member(),
                     ))
                 },
                 Some(request) = join_cluster_rx.recv() => {
-                    let _ = request.response_tx.send(Err(JoinClusterError::NotActive(Active::random_known_leader())));
+                    let _ = request.response_tx.send(Err(JoinClusterError::NotActive(Active::random_member())));
                 }
                 Some(join_result) = &mut join_cluster => {
                     match join_result {
@@ -1282,7 +1302,7 @@ impl Passive {
                             Span::current().record("member_id", MemberId::new(my_node_id.unwrap(), self.storage_id).to_string());
                         }
 
-                        if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Active(_) | MetadataServerState::Candidate) && join_cluster.is_terminated() {
+                        if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) && join_cluster.is_terminated() {
                             debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
                             join_cluster.set(Some(Self::join_cluster(None, None, my_node_id.unwrap(), storage_id).fuse()).into());
                         } else {
@@ -1316,9 +1336,9 @@ impl Passive {
             );
             known_leader.address
         } else {
-            // pick random active metadata store node
+            // pick random metadata store member node
             let active_metadata_store_node = nodes_config.iter().filter_map(|(node, config)| {
-                if config.has_role(Role::MetadataServer) && node != my_node_id && matches!(config.metadata_server_config.metadata_server_state, MetadataServerState::Active(_)) {
+                if config.has_role(Role::MetadataServer) && node != my_node_id && matches!(config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
                     Some(node)
                 } else {
                     None
