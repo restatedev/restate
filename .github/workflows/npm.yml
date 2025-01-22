@@ -3,10 +3,13 @@ name: Publish npm binary packages
 on:
   workflow_call:
     inputs:
-      version:
-        description: 'version to label npm packages'
+      # comes from cargo-dist workflow call
+      plan:
         required: true
         type: string
+
+env:
+  PLAN: ${{ inputs.plan }}
 
 jobs:
   publish-npm-binaries:
@@ -16,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        app_name:
+          - restate-cli
+          - restate-server
         build:
           - target: aarch64-apple-darwin
             node_arch: arm64
@@ -29,6 +35,7 @@ jobs:
           - target: aarch64-unknown-linux-musl
             node_arch: arm64
             node_os: linux
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,56 +43,60 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "18.x"
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
 
-      - name: Download binary build from in-progress workflow
+      - name: "Download GitHub Artifacts"
         uses: actions/download-artifact@v4
         with:
-          name: restate.${{ matrix.build.target }}.tar.gz
+          pattern: artifacts-*
+          merge-multiple: true
 
       - name: Extract binaries
-        run: tar -xvzf restate.${{ matrix.build.target }}.tar.gz
+        run: tar -xvzf ${{ matrix.app_name }}-${{ matrix.build.target }}.tar.xz
 
       - name: Publish to NPM
         shell: bash
         run: |
+          bin="$(echo "$PLAN" | jq -r '.artifacts["${{ matrix.app_name }}-${{ matrix.build.target }}.tar.xz"].assets[] | select(.kind == "executable").name')
+
           cd npm
-          for bin in restate restate-server
-          do
-            export node_os="${{ matrix.build.node_os }}"
-            export node_os
-            node_arch="${{ matrix.build.node_arch }}"
-            export node_arch
-            # set the version
-            node_version="${{ inputs.version }}"
-            node_version="${node_version#v}"
-            export node_version
-            # set the package name
-            export node_pkg="${bin}-${node_os}-${node_arch}"
-            if npm view "@restatedev/${node_pkg}@${node_version}"
-            then
-              continue
-            fi
-            # create the package directory
-            mkdir -p "${node_pkg}/bin"
-            # generate package.json from the template
-            envsubst < package.json.tmpl > "${node_pkg}/package.json"
-            # copy the binary into the package
-            cp "../${bin}" "${node_pkg}/bin"
-            cp ../NOTICE "${node_pkg}"
-            cp ../LICENSE "${node_pkg}"
-            cp ../README.md "${node_pkg}"
-            # publish the package
-            pushd "${node_pkg}"
-            npm publish --access public
-            popd
-          done
+          node_os="${{ matrix.build.node_os }}"
+          export node_os
+          node_arch="${{ matrix.build.node_arch }}"
+          export node_arch
+          # set the version
+          node_version=$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.app_name }}").app_version')"
+          export node_version
+          # set the package name
+          export node_pkg="${bin}-${node_os}-${node_arch}"
+          if npm view "@restatedev/${node_pkg}@${node_version}"
+          then
+            continue
+          fi
+          # create the package directory
+          mkdir -p "${node_pkg}/bin"
+          # generate package.json from the template
+          envsubst < package.json.tmpl > "${node_pkg}/package.json"
+          # copy the binary into the package
+          cp "../${bin}" "${node_pkg}/bin"
+          cp ../NOTICE "${node_pkg}"
+          cp ../LICENSE "${node_pkg}"
+          cp ../README.md "${node_pkg}"
+          # publish the package
+          pushd "${node_pkg}"
+          npm publish --access public
+          popd
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-npm-base:
     needs: publish-npm-binaries
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app_name:
+          - restate-cli
+          - restate-server
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,34 +104,32 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "18.x"
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
 
       - name: Publish to npm
         shell: bash
         run: |
-          node_version="${{ inputs.version }}"
-          node_version="${node_version#v}"
+          node_version=$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.app_name }}").app_version')"
+          bin="$(echo "$PLAN" | jq -r '.artifacts["${{ matrix.package.artifact }}-${{ matrix.build.target }}.tar.xz"].assets[] | select(.kind == "executable").name')
+
           cd npm
-          for bin in restate restate-server
+          if npm view "@restatedev/${bin}@${node_version}"
+          then
+            continue
+          fi
+          pushd "${bin}"
+          sed -i "s/\"version\": \".*\",/\"version\": \"${node_version}\",/" package.json
+          for os in linux darwin
           do
-            if npm view "@restatedev/${bin}@${node_version}"
-            then
-              continue
-            fi
-            pushd "${bin}"
-            sed -i "s/\"version\": \".*\",/\"version\": \"${node_version}\",/" package.json
-            for os in linux darwin
+            for arch in x64 arm64
             do
-              for arch in x64 arm64
-              do
-                sed -i "s|\"@restatedev/${bin}-${os}-${arch}\": \".*\"|\"@restatedev/${bin}-${os}-${arch}\": \"${node_version}\"|" package.json
-              done
+              sed -i "s|\"@restatedev/${bin}-${os}-${arch}\": \".*\"|\"@restatedev/${bin}-${os}-${arch}\": \"${node_version}\"|" package.json
             done
-            curl https://raw.githubusercontent.com/restatedev/restate/main/README.md -o README.md
-            npm install
-            npm run build
-            npm publish --access public
-            popd
           done
+          curl https://raw.githubusercontent.com/restatedev/restate/main/README.md -o README.md
+          npm install
+          npm run build
+          npm publish --access public
+          popd
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -3,11 +3,16 @@ name = "restate-server"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description.workspace = true
+description = "Restate Server"
 build = "build.rs"
+
+[package.metadata.dist]
+dist = true
 
 [features]
 default = ["replicated-loglet"]

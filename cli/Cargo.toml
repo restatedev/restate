@@ -2,13 +2,19 @@
 name = "restate-cli"
 version = { workspace = true }
 authors = { workspace = true }
-description = { workspace = true }
+description = "Restate CLI"
 edition = { workspace = true }
 license = { workspace = true }
 rust-version = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
 publish = false
 default-run = "restate"
 build = "build.rs"
+
+[package.metadata.dist]
+dist = true
+formula = "restate"
 
 [features]
 default = ["cloud"]
