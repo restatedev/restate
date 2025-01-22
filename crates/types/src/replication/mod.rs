@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod nodeset;
+mod nodeset;
+mod replication_property;
 
-pub use nodeset::NodeSet;
+pub use nodeset::*;
+pub use replication_property::*;
