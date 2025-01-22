@@ -431,9 +431,9 @@ impl StorageState {
 pub enum MetadataServerState {
     /// The server is not considered as part of the metadata store cluster. Node can be safely
     /// decommissioned.
-    #[default]
     Outsider,
     /// The server is an active member of the metadata store cluster.
+    #[default]
     Member,
     /// The server is in the process of leaving the metadata store cluster. Right now, it is still
     /// considered a member of the cluster.
