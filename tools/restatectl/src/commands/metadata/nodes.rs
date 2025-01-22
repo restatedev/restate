@@ -14,6 +14,7 @@ use anyhow::{anyhow, bail};
 use clap::{Parser, Subcommand};
 use cling::{Collect, Run};
 use restate_cli_util::c_println;
+use restate_core::metadata_store::MetadataStoreClient;
 use restate_metadata_store::local::create_client;
 use restate_types::config::MetadataStoreClientOptions;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -50,37 +51,7 @@ async fn add_node(
     add_node_opts: &AddNodeOpts,
     connection_info: &ConnectionInfo,
 ) -> anyhow::Result<()> {
-    let nodes_configuration =
-        retrieve_nodes_configuration_from_node(connection_info.cluster_controller.clone()).await?;
-
-    let metadata_servers: Vec<_> = nodes_configuration
-        .iter()
-        .filter_map(|(_, node_config)| {
-            if node_config.has_role(Role::MetadataServer)
-                && node_config.metadata_server_config.metadata_server_state
-                    == MetadataServerState::Member
-            {
-                Some(node_config.address.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if metadata_servers.is_empty() {
-        bail!("No metadata servers found in the cluster. Did you configure the embedded metadata store?");
-    }
-
-    let metadata_client_options = MetadataStoreClientOptions {
-        metadata_store_client: restate_types::config::MetadataStoreClient::Embedded {
-            addresses: metadata_servers,
-        },
-        ..Default::default()
-    };
-
-    let metadata_client = create_client(metadata_client_options)
-        .await
-        .map_err(|err| anyhow!("Failed creating metadata store client: {err}"))?;
+    let metadata_client = create_metadata_store_client(connection_info).await?;
 
     let nodes_configuration = metadata_client
         .read_modify_write(
@@ -128,6 +99,98 @@ async fn add_node(
     Ok(())
 }
 
-async fn remove_node() -> anyhow::Result<()> {
-    unimplemented!("Removing a node is not yet implemented");
+async fn remove_node(
+    remove_node_opts: &RemoveNodeOpts,
+    connection_info: &ConnectionInfo,
+) -> anyhow::Result<()> {
+    let metadata_client = create_metadata_store_client(connection_info).await?;
+
+    let nodes_configuration = metadata_client
+        .read_modify_write(
+            NODES_CONFIG_KEY.clone(),
+            |nodes_configuration: Option<NodesConfiguration>| {
+                let Some(mut nodes_configuration) = nodes_configuration else {
+                    bail!("The Restate cluster seems to be not provisioned yet.");
+                };
+
+                let Ok(node_config) = nodes_configuration.find_node_by_id_mut(remove_node_opts.id)
+                else {
+                    bail!(
+                        "Node '{}' not found in the nodes configuration",
+                        remove_node_opts.id
+                    );
+                };
+
+                if !node_config.has_role(Role::MetadataServer) {
+                    bail!("Node '{}' is not a metadata server", remove_node_opts.id);
+                }
+
+                match node_config.metadata_server_config.metadata_server_state {
+                    MetadataServerState::Outsider => {
+                        bail!(
+                            "Node '{}' is not a member of the metadata store cluster",
+                            remove_node_opts.id
+                        );
+                    }
+                    MetadataServerState::Member => {}
+                    MetadataServerState::Leaving => {
+                        bail!(
+                            "Node '{}' is already leaving the metadata store cluster",
+                            remove_node_opts.id
+                        );
+                    }
+                }
+
+                node_config.metadata_server_config.metadata_server_state =
+                    MetadataServerState::Leaving;
+                nodes_configuration.increment_version();
+                Ok(nodes_configuration)
+            },
+        )
+        .await?;
+
+    c_println!(
+        "Removed node '{}' from the metadata store cluster in nodes configuration '{}'",
+        remove_node_opts.id,
+        nodes_configuration.version()
+    );
+
+    Ok(())
+}
+
+async fn create_metadata_store_client(
+    connection_info: &ConnectionInfo,
+) -> anyhow::Result<MetadataStoreClient> {
+    let nodes_configuration =
+        retrieve_nodes_configuration_from_node(connection_info.cluster_controller.clone()).await?;
+
+    let metadata_servers: Vec<_> = nodes_configuration
+        .iter()
+        .filter_map(|(_, node_config)| {
+            if node_config.has_role(Role::MetadataServer)
+                && node_config.metadata_server_config.metadata_server_state
+                    == MetadataServerState::Member
+            {
+                Some(node_config.address.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if metadata_servers.is_empty() {
+        bail!("No metadata servers found in the cluster. Did you configure the embedded metadata store?");
+    }
+
+    let metadata_client_options = MetadataStoreClientOptions {
+        metadata_store_client: restate_types::config::MetadataStoreClient::Embedded {
+            addresses: metadata_servers,
+        },
+        ..Default::default()
+    };
+
+    let metadata_client = create_client(metadata_client_options)
+        .await
+        .map_err(|err| anyhow!("Failed creating metadata store client: {err}"))?;
+    Ok(metadata_client)
 }

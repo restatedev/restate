@@ -251,6 +251,15 @@ impl RocksDbStorage {
         self.commit_write_batch(write_batch).await
     }
 
+    async fn delete(&mut self, key: impl AsRef<[u8]>) -> Result<(), Error> {
+        let mut write_batch = WriteBatch::default();
+        {
+            let cf = self.get_cf_handle();
+            write_batch.delete_cf(&cf, key.as_ref());
+        }
+        self.commit_write_batch(write_batch).await
+    }
+
     pub async fn append(&mut self, entries: &Vec<Entry>) -> Result<(), Error> {
         let mut write_batch = WriteBatch::default();
         let mut buffer = mem::take(&mut self.buffer);
@@ -317,6 +326,10 @@ impl RocksDbStorage {
             &Self::serialize_value(raft_configuration).map_err(|err| Error::Encode(err.into()))?,
         )
         .await
+    }
+
+    pub async fn delete_raft_configuration(&mut self) -> Result<(), Error> {
+        self.delete(Self::raft_configuration_key()).await
     }
 
     pub fn get_raft_configuration(&self) -> Result<Option<RaftConfiguration>, Error> {

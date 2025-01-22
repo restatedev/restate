@@ -435,6 +435,9 @@ pub enum MetadataServerState {
     Outsider,
     /// The server is an active member of the metadata store cluster.
     Member,
+    /// The server is in the process of leaving the metadata store cluster. Right now, it is still
+    /// considered a member of the cluster.
+    Leaving,
 }
 
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
