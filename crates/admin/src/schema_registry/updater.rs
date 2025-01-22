@@ -32,7 +32,7 @@ use restate_types::schema::subscriptions::{
 use restate_types::schema::Schema;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Responsible for updating the provided [`Schema`] with new
 /// schema information. It makes sure that the version of schema information
@@ -68,89 +68,86 @@ impl SchemaUpdater {
 
     pub fn add_deployment(
         &mut self,
-        requested_deployment_id: Option<DeploymentId>,
         deployment_metadata: DeploymentMetadata,
         services: Vec<endpoint_manifest::Service>,
         force: bool,
     ) -> Result<DeploymentId, SchemaError> {
-        let deployment_id: Option<DeploymentId>;
-
         let proposed_services: HashMap<_, _> = services
             .into_iter()
             .map(|c| ServiceName::try_from(c.name.to_string()).map(|name| (name, c)))
             .collect::<Result<HashMap<_, _>, _>>()?;
 
-        // Did we find an existing deployment with same id or with a conflicting endpoint url?
-        let found_existing_deployment = requested_deployment_id
-            .and_then(|id| self.schema_information.find_existing_deployment_by_id(&id))
-            .or_else(|| {
-                self.schema_information
-                    .find_existing_deployment_by_endpoint(&deployment_metadata.ty)
-            });
+        // Did we find an existing deployment with a conflicting endpoint url?
+        let mut existing_deployments = self
+            .schema_information
+            .find_existing_deployments_by_endpoint(&deployment_metadata.ty);
 
         let mut services_to_remove = Vec::default();
 
-        if let Some((existing_deployment_id, existing_deployment)) = found_existing_deployment {
-            if requested_deployment_id.is_some_and(|dp| &dp != existing_deployment_id) {
-                // The deployment id is different from the existing one, we don't accept that even
-                // if force is used. It means that the user intended to update another deployment.
-                return Err(SchemaError::Deployment(DeploymentError::IncorrectId {
-                    requested: requested_deployment_id.expect("must be set"),
-                    existing: *existing_deployment_id,
-                }));
-            }
-
+        let deployment_id = if let Some((existing_deployment_id, existing_deployment)) =
+            existing_deployments.next()
+        {
             if force {
-                deployment_id = Some(*existing_deployment_id);
+                // Even under force we will only accept exactly one existing deployment with this endpoint
+                if let Some((another_existing_deployment_id, _)) = existing_deployments.next() {
+                    let mut existing_deployment_ids =
+                        vec![*existing_deployment_id, *another_existing_deployment_id];
+                    existing_deployment_ids
+                        .extend(existing_deployments.map(|(deployment_id, _)| *deployment_id));
+
+                    return Err(SchemaError::Deployment(
+                        DeploymentError::MultipleExistingDeployments(existing_deployment_ids),
+                    ));
+                }
 
                 for service in &existing_deployment.services {
                     // If a service is not available anymore in the new deployment, we need to remove it
                     if !proposed_services.contains_key(&service.name) {
                         warn!(
                             restate.deployment.id = %existing_deployment_id,
-                            restate.deployment.address = %deployment_metadata.address_display(),
+                            restate.deployment.address = %existing_deployment.metadata.address_display(),
                             "Going to remove service {} due to a forced deployment update",
                             service.name
                         );
                         services_to_remove.push(service.name.clone());
                     }
                 }
+
+                *existing_deployment_id
             } else {
                 return Err(SchemaError::Override(format!(
                     "deployment with id '{existing_deployment_id}'"
                 )));
             }
         } else {
-            // New deployment. Use the supplied deployment_id if passed, otherwise, generate one.
-            deployment_id = requested_deployment_id.or_else(|| Some(DeploymentId::new()));
-        }
-
-        // We must have a deployment id by now, either a new or existing one.
-        let deployment_id = deployment_id.unwrap();
+            DeploymentId::new()
+        };
 
         let mut services_to_add = HashMap::with_capacity(proposed_services.len());
 
         // Compute service schemas
         for (service_name, service) in proposed_services {
             let service_type = ServiceType::from(service.ty);
-            let handlers = DiscoveredHandlerMetadata::compute_handlers(
-                service
-                    .handlers
-                    .into_iter()
-                    .map(|h| {
-                        DiscoveredHandlerMetadata::from_schema(
-                            service_name.as_ref(),
-                            service_type,
-                            h,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
 
             // For the time being when updating we overwrite existing data
             let service_schema = if let Some(existing_service) =
                 self.schema_information.services.get(service_name.as_ref())
             {
+                let handlers = DiscoveredHandlerMetadata::compute_handlers(
+                    service
+                        .handlers
+                        .into_iter()
+                        .map(|h| {
+                            DiscoveredHandlerMetadata::from_schema(
+                                service_name.as_ref(),
+                                service_type,
+                                h,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    existing_service.location.public,
+                );
+
                 let removed_handlers: Vec<String> = existing_service
                     .handlers
                     .keys()
@@ -209,7 +206,20 @@ impl SchemaUpdater {
             } else {
                 ServiceSchemas {
                     revision: 1,
-                    handlers,
+                    handlers: DiscoveredHandlerMetadata::compute_handlers(
+                        service
+                            .handlers
+                            .into_iter()
+                            .map(|h| {
+                                DiscoveredHandlerMetadata::from_schema(
+                                    service_name.as_ref(),
+                                    service_type,
+                                    h,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                        true,
+                    ),
                     ty: service_type,
                     location: ServiceLocation {
                         latest_deployment: deployment_id,
@@ -231,6 +241,8 @@ impl SchemaUpdater {
 
             services_to_add.insert(service_name, service_schema);
         }
+
+        drop(existing_deployments);
 
         for service_to_remove in services_to_remove {
             self.schema_information.services.remove(&service_to_remove);
@@ -258,6 +270,197 @@ impl SchemaUpdater {
         self.modified = true;
 
         Ok(deployment_id)
+    }
+
+    pub fn update_deployment(
+        &mut self,
+        deployment_id: DeploymentId,
+        deployment_metadata: DeploymentMetadata,
+        services: Vec<endpoint_manifest::Service>,
+    ) -> Result<(), SchemaError> {
+        let proposed_services: HashMap<_, _> = services
+            .into_iter()
+            .map(|c| ServiceName::try_from(c.name.to_string()).map(|name| (name, c)))
+            .collect::<Result<HashMap<_, _>, _>>()?;
+
+        // Look for an existing deployment with this ID
+        let Some((_, existing_deployment)) = self
+            .schema_information
+            .find_existing_deployment_by_id(&deployment_id)
+        else {
+            return Err(SchemaError::NotFound(format!(
+                "deployment with id '{deployment_id}'"
+            )));
+        };
+
+        if existing_deployment.metadata.supported_protocol_versions
+            != deployment_metadata.supported_protocol_versions
+        {
+            return Err(SchemaError::Deployment(
+                DeploymentError::DifferentSupportedProtocolVersions(
+                    existing_deployment
+                        .metadata
+                        .supported_protocol_versions
+                        .clone(),
+                    deployment_metadata.supported_protocol_versions.clone(),
+                ),
+            ));
+        };
+
+        let mut services_to_remove = Vec::default();
+
+        for service in &existing_deployment.services {
+            if !proposed_services.contains_key(&service.name) {
+                services_to_remove.push(service.name.clone());
+            }
+        }
+
+        if !services_to_remove.is_empty() {
+            // we don't allow removing services as part of update deployment
+            return Err(SchemaError::Deployment(DeploymentError::RemovedServices(
+                services_to_remove,
+            )));
+        }
+
+        let mut services_to_add = HashMap::with_capacity(proposed_services.len());
+
+        // Compute service schemas
+        for (service_name, service) in proposed_services {
+            let service_type = ServiceType::from(service.ty);
+            let service_schema = if let Some(existing_service) =
+                self.schema_information.services.get(service_name.as_ref())
+            {
+                let handlers = DiscoveredHandlerMetadata::compute_handlers(
+                    service
+                        .handlers
+                        .into_iter()
+                        .map(|h| {
+                            DiscoveredHandlerMetadata::from_schema(
+                                service_name.as_ref(),
+                                service_type,
+                                h,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    existing_service.location.public,
+                );
+
+                let removed_handlers: Vec<String> = existing_service
+                    .handlers
+                    .keys()
+                    .filter(|name| !handlers.contains_key(*name))
+                    .map(|name| name.to_string())
+                    .collect();
+
+                if !removed_handlers.is_empty() {
+                    return Err(SchemaError::Service(ServiceError::RemovedHandlers(
+                        service_name,
+                        removed_handlers,
+                    )));
+                }
+
+                if existing_service.ty != service_type {
+                    return Err(SchemaError::Service(ServiceError::DifferentType(
+                        service_name,
+                    )));
+                }
+
+                let mut service_schemas = existing_service.clone();
+                service_schemas.revision = existing_service.revision.wrapping_add(1);
+                service_schemas.ty = service_type;
+                service_schemas.handlers = handlers;
+                service_schemas.location.latest_deployment = deployment_id;
+                service_schemas.service_openapi_cache = Default::default();
+                service_schemas.documentation = service.documentation;
+                service_schemas.metadata = service.metadata;
+
+                service_schemas
+            } else {
+                ServiceSchemas {
+                    revision: 1,
+                    handlers: DiscoveredHandlerMetadata::compute_handlers(
+                        service
+                            .handlers
+                            .into_iter()
+                            .map(|h| {
+                                DiscoveredHandlerMetadata::from_schema(
+                                    service_name.as_ref(),
+                                    service_type,
+                                    h,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                        true,
+                    ),
+                    ty: service_type,
+                    location: ServiceLocation {
+                        latest_deployment: deployment_id,
+                        public: true,
+                    },
+                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
+                    workflow_completion_retention: if service_type == ServiceType::Workflow {
+                        Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+                    } else {
+                        None
+                    },
+                    inactivity_timeout: None,
+                    abort_timeout: None,
+                    service_openapi_cache: Default::default(),
+                    documentation: service.documentation,
+                    metadata: service.metadata,
+                }
+            };
+
+            services_to_add.insert(service_name, service_schema);
+        }
+
+        let services_metadata = services_to_add
+            .into_iter()
+            .map(|(name, schema)| {
+                let metadata = schema.as_service_metadata(name.clone().into_inner());
+                match self.schema_information.services.get(name.as_ref()) {
+                    Some(ServiceSchemas {
+                        location: ServiceLocation { latest_deployment, .. },
+                        ..
+                    }) if latest_deployment == &deployment_id => {
+                        // This deployment is the latest for this service, so we should update the service schema
+                        info!(
+                            rpc.service = %name,
+                            "Overwriting existing service schemas"
+                        );
+                        self.schema_information
+                            .services
+                            .insert(name.into_inner(), schema);
+                    },
+                    Some(_) => {
+                        debug!(
+                            rpc.service = %name,
+                            "Keeping existing service schema as this update operation affected a draining deployment"
+                        );
+                    },
+                    None => {
+                        // we have a new service, it deserves a schema as normal
+                        self.schema_information
+                            .services
+                            .insert(name.into_inner(), schema);
+                    }
+                }
+
+                metadata
+            })
+            .collect();
+
+        self.schema_information.deployments.insert(
+            deployment_id,
+            DeploymentSchemas {
+                services: services_metadata,
+                metadata: deployment_metadata,
+            },
+        );
+
+        self.modified = true;
+
+        Ok(())
     }
 
     pub fn remove_deployment(&mut self, deployment_id: DeploymentId) {
@@ -652,6 +855,7 @@ impl DiscoveredHandlerMetadata {
 
     fn compute_handlers(
         handlers: Vec<DiscoveredHandlerMetadata>,
+        public: bool,
     ) -> HashMap<String, HandlerSchemas> {
         handlers
             .into_iter()
@@ -660,7 +864,7 @@ impl DiscoveredHandlerMetadata {
                     handler.name,
                     HandlerSchemas {
                         target_meta: InvocationTargetMetadata {
-                            public: true,
+                            public,
                             idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
                             completion_retention: if handler.ty
                                 == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
@@ -686,7 +890,8 @@ impl DiscoveredHandlerMetadata {
 mod tests {
     use super::*;
 
-    use restate_test_util::{assert, assert_eq, let_assert};
+    use http::HeaderName;
+    use restate_test_util::{assert, assert_eq};
     use restate_types::schema::deployment::{Deployment, DeploymentResolver};
     use restate_types::schema::service::ServiceMetadataResolver;
 
@@ -753,24 +958,16 @@ mod tests {
         let initial_version = schema_information.version();
         let mut updater = SchemaUpdater::new(schema_information, false);
 
-        let deployment = Deployment::mock();
-        let deployment_id = updater
-            .add_deployment(
-                Some(deployment.id),
-                deployment.metadata.clone(),
-                vec![greeter_service()],
-                false,
-            )
+        let mut deployment = Deployment::mock();
+        deployment.id = updater
+            .add_deployment(deployment.metadata.clone(), vec![greeter_service()], false)
             .unwrap();
-
-        // Ensure we are using the pre-determined id
-        assert_eq!(deployment.id, deployment_id);
 
         let schema = updater.into_inner();
 
         assert!(initial_version < schema.version());
         schema.assert_service_revision(GREETER_SERVICE_NAME, 1);
-        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id);
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
         schema.assert_service_handler(GREETER_SERVICE_NAME, "greet");
     }
 
@@ -778,13 +975,12 @@ mod tests {
     fn register_new_deployment_add_unregistered_service() {
         let mut updater = SchemaUpdater::default();
 
-        let deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
-        let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
+        let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+        let mut deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
         // Register first deployment
-        updater
+        deployment_1.id = updater
             .add_deployment(
-                Some(deployment_1.id),
                 deployment_1.metadata.clone(),
                 vec![greeter_service()],
                 false,
@@ -799,9 +995,8 @@ mod tests {
             .is_none());
 
         updater = SchemaUpdater::new(schemas, false);
-        updater
+        deployment_2.id = updater
             .add_deployment(
-                Some(deployment_2.id),
                 deployment_2.metadata.clone(),
                 vec![greeter_service(), another_greeter_service()],
                 false,
@@ -819,18 +1014,19 @@ mod tests {
     #[test]
     fn force_deploy_private_service() -> Result<(), SchemaError> {
         let mut updater = SchemaUpdater::default();
-        let deployment = Deployment::mock();
+        let mut deployment = Deployment::mock();
 
-        updater.add_deployment(
-            Some(deployment.id),
-            deployment.metadata.clone(),
-            vec![greeter_service()],
-            false,
-        )?;
+        deployment.id =
+            updater.add_deployment(deployment.metadata.clone(), vec![greeter_service()], false)?;
 
         let schemas = updater.into_inner();
 
         assert!(schemas.assert_service(GREETER_SERVICE_NAME).public);
+        assert!(
+            schemas
+                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .public
+        );
 
         let version_before_modification = schemas.version();
         updater = SchemaUpdater::new(schemas, false);
@@ -842,17 +1038,23 @@ mod tests {
 
         assert!(version_before_modification < schemas.version());
         assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
+        assert!(
+            !schemas
+                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .public
+        );
 
         updater = SchemaUpdater::new(schemas, false);
-        updater.add_deployment(
-            Some(deployment.id),
-            deployment.metadata.clone(),
-            vec![greeter_service()],
-            true,
-        )?;
+        deployment.id =
+            updater.add_deployment(deployment.metadata.clone(), vec![greeter_service()], true)?;
 
         let schemas = updater.into_inner();
         assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
+        assert!(
+            !schemas
+                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .public
+        );
 
         Ok(())
     }
@@ -867,12 +1069,11 @@ mod tests {
         fn register_new_deployment_fails_changing_instance_type() {
             let mut updater = SchemaUpdater::default();
 
-            let deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+            let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
             let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
-            updater
+            deployment_1.id = updater
                 .add_deployment(
-                    Some(deployment_1.id),
                     deployment_1.metadata.clone(),
                     vec![greeter_service()],
                     false,
@@ -883,7 +1084,6 @@ mod tests {
             schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
 
             let compute_result = SchemaUpdater::new(schemas, false).add_deployment(
-                Some(deployment_2.id),
                 deployment_2.metadata,
                 vec![greeter_virtual_object()],
                 false,
@@ -899,10 +1099,9 @@ mod tests {
     fn override_existing_deployment_removing_a_service() {
         let mut updater = SchemaUpdater::default();
 
-        let deployment = Deployment::mock();
-        updater
+        let mut deployment = Deployment::mock();
+        deployment.id = updater
             .add_deployment(
-                Some(deployment.id),
                 deployment.metadata.clone(),
                 vec![greeter_service(), another_greeter_service()],
                 false,
@@ -914,14 +1113,12 @@ mod tests {
         schemas.assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment.id);
 
         updater = SchemaUpdater::new(schemas, false);
-        updater
-            .add_deployment(
-                Some(deployment.id),
-                deployment.metadata.clone(),
-                vec![greeter_service()],
-                true,
-            )
-            .unwrap();
+        assert_eq!(
+            updater
+                .add_deployment(deployment.metadata.clone(), vec![greeter_service()], true,)
+                .unwrap(),
+            deployment.id
+        );
 
         let schemas = updater.into_inner();
 
@@ -935,18 +1132,12 @@ mod tests {
     fn cannot_override_existing_deployment_endpoint_conflict() {
         let mut updater = SchemaUpdater::default();
 
-        let deployment = Deployment::mock();
-        updater
-            .add_deployment(
-                Some(deployment.id),
-                deployment.metadata.clone(),
-                vec![greeter_service()],
-                false,
-            )
+        let mut deployment = Deployment::mock();
+        deployment.id = updater
+            .add_deployment(deployment.metadata.clone(), vec![greeter_service()], false)
             .unwrap();
 
         assert!(let SchemaError::Override(_) = updater.add_deployment(
-            Some(deployment.id),
             deployment.metadata,
             vec![greeter_service()],
             false).unwrap_err()
@@ -954,57 +1145,21 @@ mod tests {
     }
 
     #[test]
-    fn cannot_override_existing_deployment_existing_id_mismatch() {
-        let mut updater = SchemaUpdater::default();
-
-        let deployment = Deployment::mock();
-        updater
-            .add_deployment(
-                Some(deployment.id),
-                deployment.metadata.clone(),
-                vec![greeter_service()],
-                false,
-            )
-            .unwrap();
-
-        let new_id = DeploymentId::new();
-
-        let rejection = updater
-            .add_deployment(
-                Some(new_id),
-                deployment.metadata,
-                vec![greeter_service()],
-                false,
-            )
-            .unwrap_err();
-        let_assert!(
-            SchemaError::Deployment(DeploymentError::IncorrectId {
-                requested,
-                existing
-            }) = rejection
-        );
-        assert_eq!(new_id, requested);
-        assert_eq!(deployment.id, existing);
-    }
-
-    #[test]
     fn register_two_deployments_then_remove_first() {
         let mut updater = SchemaUpdater::default();
 
-        let deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
-        let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
+        let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+        let mut deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
-        updater
+        deployment_1.id = updater
             .add_deployment(
-                Some(deployment_1.id),
                 deployment_1.metadata.clone(),
                 vec![greeter_service(), another_greeter_service()],
                 false,
             )
             .unwrap();
-        updater
+        deployment_2.id = updater
             .add_deployment(
-                Some(deployment_2.id),
                 deployment_2.metadata.clone(),
                 vec![greeter_service()],
                 false,
@@ -1085,28 +1240,18 @@ mod tests {
         fn reject_removing_existing_methods() {
             let mut updater = SchemaUpdater::default();
 
-            let deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+            let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
             let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
-            updater
-                .add_deployment(
-                    Some(deployment_1.id),
-                    deployment_1.metadata,
-                    vec![greeter_v1_service()],
-                    false,
-                )
+            deployment_1.id = updater
+                .add_deployment(deployment_1.metadata, vec![greeter_v1_service()], false)
                 .unwrap();
             let schemas = updater.into_inner();
             schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
 
             updater = SchemaUpdater::new(schemas, false);
             let rejection = updater
-                .add_deployment(
-                    Some(deployment_2.id),
-                    deployment_2.metadata,
-                    vec![greeter_v2_service()],
-                    false,
-                )
+                .add_deployment(deployment_2.metadata, vec![greeter_v2_service()], false)
                 .unwrap_err();
 
             let schemas = updater.into_inner();
@@ -1119,5 +1264,510 @@ mod tests {
             check!(service.as_ref() == GREETER_SERVICE_NAME);
             check!(missing_methods == &["doSomething"]);
         }
+    }
+
+    #[test]
+    fn update_latest_deployment() {
+        let mut updater = SchemaUpdater::default();
+
+        let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+
+        deployment_1.id = updater
+            .add_deployment(
+                deployment_1.metadata.clone(),
+                vec![greeter_virtual_object()],
+                false,
+            )
+            .unwrap();
+
+        assert!(let &SchemaError::NotFound(_) = updater.update_deployment(
+            DeploymentId::new(),
+            deployment_1.metadata.clone(),
+            vec![],
+        ).unwrap_err());
+
+        assert!(let &SchemaError::Deployment(
+            DeploymentError::RemovedServices(_)
+        ) = updater.update_deployment(
+            deployment_1.id,
+            deployment_1.metadata.clone(),
+            vec![],
+        ).unwrap_err());
+
+        {
+            let mut greeter_virtual_object = greeter_virtual_object();
+            greeter_virtual_object.ty = endpoint_manifest::ServiceType::Service;
+
+            assert!(let &SchemaError::Service(
+                ServiceError::DifferentType(_)
+            ) = updater.update_deployment(
+                deployment_1.id,
+                deployment_1.metadata.clone(),
+                vec![greeter_virtual_object],
+            ).unwrap_err());
+        }
+
+        assert!(let &SchemaError::Service(
+            ServiceError::RemovedHandlers(_, _)
+        ) = updater.update_deployment(
+            deployment_1.id,
+            deployment_1.metadata.clone(),
+            vec![endpoint_manifest::Service {
+                handlers: Default::default(),
+                ..greeter_virtual_object()
+            }],
+        ).unwrap_err());
+
+        deployment_1
+            .metadata
+            .delivery_options
+            .additional_headers
+            .insert(
+                HeaderName::from_static("foo"),
+                HeaderValue::from_static("bar"),
+            );
+
+        updater
+            .update_deployment(
+                deployment_1.id,
+                deployment_1.metadata.clone(),
+                vec![greeter_virtual_object()],
+            )
+            .unwrap();
+
+        let schemas = updater.into_inner();
+
+        schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
+        schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
+
+        let (_, updated_deployment) = schemas
+            .find_existing_deployment_by_id(&deployment_1.id)
+            .unwrap();
+
+        assert!(updated_deployment
+            .metadata
+            .delivery_options
+            .additional_headers
+            .contains_key(&HeaderName::from_static("foo")));
+    }
+
+    #[test]
+    fn update_draining_deployment() {
+        let mut updater = SchemaUpdater::default();
+
+        let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+        let mut deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
+
+        deployment_1.id = updater
+            .add_deployment(
+                deployment_1.metadata.clone(),
+                vec![greeter_service()],
+                false,
+            )
+            .unwrap();
+
+        deployment_2.id = updater
+            .add_deployment(
+                deployment_2.metadata.clone(),
+                vec![greeter_service(), another_greeter_service()],
+                false,
+            )
+            .unwrap();
+
+        deployment_1
+            .metadata
+            .delivery_options
+            .additional_headers
+            .insert(
+                HeaderName::from_static("foo"),
+                HeaderValue::from_static("bar"),
+            );
+
+        updater
+            .update_deployment(
+                deployment_1.id,
+                deployment_1.metadata.clone(),
+                vec![greeter_service()],
+            )
+            .unwrap();
+
+        let schemas = updater.into_inner();
+
+        schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
+        schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
+
+        let (_, updated_deployment) = schemas
+            .find_existing_deployment_by_id(&deployment_1.id)
+            .unwrap();
+
+        assert!(updated_deployment
+            .metadata
+            .delivery_options
+            .additional_headers
+            .contains_key(&HeaderName::from_static("foo")));
+    }
+
+    #[test]
+    fn update_deployment_same_uri() {
+        let mut updater = SchemaUpdater::default();
+
+        let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+        let mut deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
+
+        deployment_1.id = updater
+            .add_deployment(
+                deployment_1.metadata.clone(),
+                vec![greeter_service()],
+                false,
+            )
+            .unwrap();
+
+        // patching new invocations
+        deployment_2.id = updater
+            .add_deployment(
+                deployment_2.metadata.clone(),
+                vec![greeter_service()],
+                false,
+            )
+            .unwrap();
+
+        // oh, i have some old failing invocations, wish those were on the patched version too
+
+        deployment_1.metadata.ty = deployment_2.metadata.ty.clone();
+        updater
+            .update_deployment(
+                deployment_1.id,
+                deployment_1.metadata.clone(),
+                vec![greeter_service()],
+            )
+            .unwrap();
+
+        // there are now two deployment IDs pointing to :9081, so we shouldn't be able to force either of them
+        assert!(let &SchemaError::Deployment(
+            DeploymentError::MultipleExistingDeployments(_)
+        ) = updater.add_deployment(
+            deployment_1.metadata.clone(),
+            vec![greeter_service(), greeter_virtual_object()],
+            true,
+        ).unwrap_err());
+
+        assert!(let &SchemaError::Deployment(
+            DeploymentError::MultipleExistingDeployments(_)
+        ) = updater.add_deployment(
+            deployment_2.metadata.clone(),
+            vec![greeter_service(), greeter_virtual_object()],
+            true,
+        ).unwrap_err());
+
+        updater
+            .schema_information
+            .assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
+        updater
+            .schema_information
+            .assert_service_revision(GREETER_SERVICE_NAME, 2);
+
+        let (_, updated_deployment_1) = updater
+            .schema_information
+            .find_existing_deployment_by_id(&deployment_1.id)
+            .unwrap();
+
+        let (_, updated_deployment_2) = updater
+            .schema_information
+            .find_existing_deployment_by_id(&deployment_2.id)
+            .unwrap();
+
+        assert_eq!(
+            updated_deployment_1.metadata.ty,
+            updated_deployment_2.metadata.ty
+        );
+
+        // the failing invocations have drained so I can safely delete the original deployment
+        updater.remove_deployment(deployment_1.id);
+
+        assert_eq!(
+            deployment_2.id,
+            updater
+                .add_deployment(
+                    deployment_2.metadata.clone(),
+                    vec![greeter_service(), greeter_virtual_object()],
+                    true,
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn update_latest_deployment_add_handler() {
+        let mut updater = SchemaUpdater::default();
+
+        let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9081");
+
+        deployment_1.id = updater
+            .add_deployment(
+                deployment_1.metadata.clone(),
+                vec![greeter_service()],
+                false,
+            )
+            .unwrap();
+
+        let mut updated_greeter_service = greeter_service();
+        updated_greeter_service
+            .handlers
+            .push(endpoint_manifest::Handler {
+                documentation: None,
+                name: "greetAgain".parse().unwrap(),
+                ty: None,
+                input: None,
+                output: None,
+                metadata: Default::default(),
+            });
+
+        updater
+            .update_deployment(
+                deployment_1.id,
+                deployment_1.metadata.clone(),
+                vec![updated_greeter_service],
+            )
+            .unwrap();
+
+        updater
+            .schema_information
+            .assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
+        updater
+            .schema_information
+            .assert_service_revision(GREETER_SERVICE_NAME, 2);
+
+        let (_, updated_deployment_1) = updater
+            .schema_information
+            .find_existing_deployment_by_id(&deployment_1.id)
+            .unwrap();
+
+        assert_eq!(
+            updated_deployment_1
+                .services
+                .iter()
+                .find(|svc| svc.name == GREETER_SERVICE_NAME)
+                .unwrap()
+                .handlers
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn update_draining_deployment_add_handler() {
+        let mut updater = SchemaUpdater::default();
+
+        let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+        let mut deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
+
+        deployment_1.id = updater
+            .add_deployment(
+                deployment_1.metadata.clone(),
+                vec![greeter_service()],
+                false,
+            )
+            .unwrap();
+
+        deployment_2.id = updater
+            .add_deployment(
+                deployment_2.metadata.clone(),
+                vec![greeter_service()],
+                false,
+            )
+            .unwrap();
+
+        let mut updated_greeter_service = greeter_service();
+        updated_greeter_service
+            .handlers
+            .push(endpoint_manifest::Handler {
+                documentation: None,
+                name: "greetAgain".parse().unwrap(),
+                ty: None,
+                input: None,
+                output: None,
+                metadata: Default::default(),
+            });
+
+        updater
+            .update_deployment(
+                deployment_1.id,
+                deployment_1.metadata.clone(),
+                vec![updated_greeter_service],
+            )
+            .unwrap();
+
+        updater
+            .schema_information
+            .assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
+        updater
+            .schema_information
+            .assert_service_revision(GREETER_SERVICE_NAME, 2);
+
+        let (_, updated_deployment_1) = updater
+            .schema_information
+            .find_existing_deployment_by_id(&deployment_1.id)
+            .unwrap();
+
+        let (_, updated_deployment_2) = updater
+            .schema_information
+            .find_existing_deployment_by_id(&deployment_2.id)
+            .unwrap();
+
+        assert_eq!(
+            updated_deployment_1
+                .services
+                .iter()
+                .find(|svc| svc.name == GREETER_SERVICE_NAME)
+                .unwrap()
+                .handlers
+                .len(),
+            2
+        );
+
+        assert_eq!(
+            updated_deployment_2
+                .services
+                .iter()
+                .find(|svc| svc.name == GREETER_SERVICE_NAME)
+                .unwrap()
+                .handlers
+                .len(),
+            1
+        )
+    }
+
+    #[test]
+    fn update_latest_deployment_add_service() {
+        let mut updater = SchemaUpdater::default();
+
+        let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+
+        deployment_1.id = updater
+            .add_deployment(
+                deployment_1.metadata.clone(),
+                vec![greeter_service()],
+                false,
+            )
+            .unwrap();
+
+        updater
+            .update_deployment(
+                deployment_1.id,
+                deployment_1.metadata.clone(),
+                vec![greeter_service(), another_greeter_service()],
+            )
+            .unwrap();
+
+        updater
+            .schema_information
+            .assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
+        updater
+            .schema_information
+            .assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_1.id);
+        updater
+            .schema_information
+            .assert_service_revision(GREETER_SERVICE_NAME, 2);
+        updater
+            .schema_information
+            .assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
+    }
+
+    #[test]
+    fn update_draining_deployment_add_service() {
+        let mut updater = SchemaUpdater::default();
+
+        let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+        let mut deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
+
+        deployment_1.id = updater
+            .add_deployment(
+                deployment_1.metadata.clone(),
+                vec![greeter_service()],
+                false,
+            )
+            .unwrap();
+
+        deployment_2.id = updater
+            .add_deployment(
+                deployment_2.metadata.clone(),
+                vec![greeter_service()],
+                false,
+            )
+            .unwrap();
+
+        updater
+            .update_deployment(
+                deployment_1.id,
+                deployment_1.metadata.clone(),
+                vec![greeter_service(), another_greeter_service()],
+            )
+            .unwrap();
+
+        updater
+            .schema_information
+            .assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
+        updater
+            .schema_information
+            .assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_1.id);
+        updater
+            .schema_information
+            .assert_service_revision(GREETER_SERVICE_NAME, 2);
+        updater
+            .schema_information
+            .assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
+    }
+
+    #[test]
+    fn update_deployment_with_private_service() -> Result<(), SchemaError> {
+        let mut updater = SchemaUpdater::default();
+        let mut deployment = Deployment::mock();
+
+        deployment.id =
+            updater.add_deployment(deployment.metadata.clone(), vec![greeter_service()], false)?;
+
+        let schemas = updater.into_inner();
+
+        assert!(schemas.assert_service(GREETER_SERVICE_NAME).public);
+        assert!(
+            schemas
+                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .public
+        );
+
+        let version_before_modification = schemas.version();
+        updater = SchemaUpdater::new(schemas, false);
+        updater.modify_service(
+            GREETER_SERVICE_NAME.to_owned(),
+            vec![ModifyServiceChange::Public(false)],
+        )?;
+        let schemas = updater.into_inner();
+        let version_after_modification = schemas.version();
+
+        assert!(version_before_modification < version_after_modification);
+        assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
+        assert!(
+            !schemas
+                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .public
+        );
+
+        updater = SchemaUpdater::new(schemas, false);
+        updater.update_deployment(
+            deployment.id,
+            deployment.metadata.clone(),
+            vec![greeter_service()],
+        )?;
+
+        let schemas = updater.into_inner();
+        assert!(version_before_modification < schemas.version());
+        assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
+        assert!(
+            !schemas
+                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .public
+        );
+
+        Ok(())
     }
 }

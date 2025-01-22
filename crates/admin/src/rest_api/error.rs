@@ -8,9 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::schema_registry::error::{
-    DeploymentError, SchemaError, SchemaRegistryError, ServiceError,
-};
+use crate::schema_registry::error::{SchemaError, SchemaRegistryError, ServiceError};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -78,8 +76,7 @@ impl IntoResponse for MetaApiError {
                 SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
                 SchemaError::Override(_)
                 | SchemaError::Service(ServiceError::DifferentType { .. })
-                | SchemaError::Service(ServiceError::RemovedHandlers { .. })
-                | SchemaError::Deployment(DeploymentError::IncorrectId { .. }) => {
+                | SchemaError::Service(ServiceError::RemovedHandlers { .. }) => {
                     StatusCode::CONFLICT
                 }
                 SchemaError::Service(_) => StatusCode::BAD_REQUEST,

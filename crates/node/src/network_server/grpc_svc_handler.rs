@@ -31,7 +31,6 @@ use restate_types::config::Configuration;
 use restate_types::health::Health;
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::nodes_config::Role;
-use restate_types::partition_table::ReplicationStrategy;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::node::Message;
 use restate_types::storage::StorageCodec;
@@ -79,11 +78,7 @@ impl NodeCtlSvcHandler {
             })
             .transpose()?
             .unwrap_or(config.common.bootstrap_num_partitions);
-        let replication_strategy = request
-            .placement_strategy
-            .map(ReplicationStrategy::try_from)
-            .transpose()?
-            .unwrap_or_default();
+        let partition_replication = request.partition_replication.try_into()?;
         let bifrost_provider = request
             .log_provider
             .map(ProviderConfiguration::try_from)
@@ -91,7 +86,7 @@ impl NodeCtlSvcHandler {
 
         Ok(ClusterConfiguration {
             num_partitions,
-            replication_strategy,
+            partition_replication,
             bifrost_provider,
         })
     }
