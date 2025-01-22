@@ -29,7 +29,7 @@ use restate_types::logs::metadata::{
 };
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::partition_table::{
-    self, PartitionTable, PartitionTableBuilder, ReplicationStrategy,
+    self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
@@ -173,7 +173,7 @@ enum ClusterControllerCommand {
         response_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
     },
     UpdateClusterConfiguration {
-        replication_strategy: ReplicationStrategy,
+        partition_replication: PartitionReplication,
         default_provider: ProviderConfiguration,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
     },
@@ -238,7 +238,7 @@ impl ClusterControllerHandle {
 
     pub async fn update_cluster_configuration(
         &self,
-        replication_strategy: ReplicationStrategy,
+        partition_replication: PartitionReplication,
         default_provider: ProviderConfiguration,
     ) -> Result<anyhow::Result<()>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
@@ -246,7 +246,7 @@ impl ClusterControllerHandle {
         let _ = self
             .tx
             .send(ClusterControllerCommand::UpdateClusterConfiguration {
-                replication_strategy,
+                partition_replication,
                 default_provider,
                 response_tx,
             })
@@ -413,7 +413,7 @@ impl<T: TransportConnect> Service<T> {
 
     async fn update_cluster_configuration(
         &self,
-        replication_strategy: ReplicationStrategy,
+        partition_replication: PartitionReplication,
         default_provider: ProviderConfiguration,
     ) -> anyhow::Result<()> {
         let logs = self
@@ -470,8 +470,8 @@ impl<T: TransportConnect> Service<T> {
 
                     let mut builder: PartitionTableBuilder = partition_table.into();
 
-                    if builder.replication_strategy() != replication_strategy {
-                        builder.set_replication_strategy(replication_strategy);
+                    if builder.partition_replication() != &partition_replication {
+                        builder.set_partition_replication(partition_replication.clone());
                     }
 
                     builder
@@ -546,7 +546,7 @@ impl<T: TransportConnect> Service<T> {
                     .await;
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
-                replication_strategy,
+                partition_replication: replication_strategy,
                 default_provider,
                 response_tx,
             } => {

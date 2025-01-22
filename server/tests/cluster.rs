@@ -21,6 +21,7 @@ use restate_local_cluster_runner::{
 };
 use restate_types::config::MetadataStoreClient;
 use restate_types::logs::metadata::{ProviderConfiguration, ReplicatedLogletConfig};
+use restate_types::partition_table::PartitionReplication;
 use restate_types::replicated_loglet::ReplicationProperty;
 use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
 use test_log::test;
@@ -158,7 +159,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
     cluster.nodes[0]
         .provision_cluster(
             None,
-            None,
+            PartitionReplication::Everywhere,
             Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
         )
         .await

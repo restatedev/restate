@@ -46,6 +46,8 @@ pub mod common {
 }
 
 pub mod cluster {
+    use crate::partition_table::PartitionReplication;
+
     include!(concat!(env!("OUT_DIR"), "/restate.cluster.rs"));
 
     impl std::fmt::Display for RunMode {
@@ -56,6 +58,46 @@ pub mod cluster {
                 RunMode::Follower => "Follower",
             };
             write!(f, "{o}")
+        }
+    }
+
+    impl From<crate::replicated_loglet::ReplicationProperty> for ReplicationProperty {
+        fn from(value: crate::replicated_loglet::ReplicationProperty) -> Self {
+            ReplicationProperty {
+                replication_property: value.to_string(),
+            }
+        }
+    }
+
+    impl TryFrom<ReplicationProperty> for crate::replicated_loglet::ReplicationProperty {
+        type Error = anyhow::Error;
+
+        fn try_from(value: ReplicationProperty) -> Result<Self, Self::Error> {
+            value.replication_property.parse()
+        }
+    }
+
+    impl TryFrom<Option<ReplicationProperty>> for PartitionReplication {
+        type Error = anyhow::Error;
+
+        fn try_from(value: Option<ReplicationProperty>) -> Result<Self, Self::Error> {
+            Ok(value
+                .map(TryFrom::try_from)
+                .transpose()?
+                .map_or(PartitionReplication::Everywhere, |p| {
+                    PartitionReplication::Limit(p)
+                }))
+        }
+    }
+
+    impl From<PartitionReplication> for Option<ReplicationProperty> {
+        fn from(value: PartitionReplication) -> Self {
+            match value {
+                PartitionReplication::Everywhere => None,
+                PartitionReplication::Limit(replication_property) => {
+                    Some(replication_property.into())
+                }
+            }
         }
     }
 }

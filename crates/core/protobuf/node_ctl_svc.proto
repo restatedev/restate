@@ -22,15 +22,17 @@ service NodeCtlSvc {
   rpc GetMetadata(GetMetadataRequest) returns (GetMetadataResponse);
 
   // Provision the Restate cluster on this node.
-  rpc ProvisionCluster(ProvisionClusterRequest) returns (ProvisionClusterResponse);
+  rpc ProvisionCluster(ProvisionClusterRequest)
+      returns (ProvisionClusterResponse);
 }
 
 message ProvisionClusterRequest {
   bool dry_run = 1;
   // if unset then the configured cluster num partitions will be used
   optional uint32 num_partitions = 2;
-  // if unset then the configured cluster placement strategy will be used
-  optional restate.cluster.ReplicationStrategy placement_strategy = 3;
+  // if unset partition replication will default to `everywhere`. Otherwise
+  // it's limited to the provided replication property
+  optional restate.cluster.ReplicationProperty partition_replication = 3;
   // if unset then the configured cluster default log provider will be used
   optional restate.cluster.BifrostProvider log_provider = 4;
 }
@@ -60,8 +62,8 @@ message IdentResponse {
 }
 
 message GetMetadataRequest {
-  // If set, we'll first sync with metadata store to esnure we are returning the latest value.
-  // Otherwise, we'll return the local value on this node.
+  // If set, we'll first sync with metadata store to esnure we are returning the
+  // latest value. Otherwise, we'll return the local value on this node.
   bool sync = 1;
   restate.common.MetadataKind kind = 2;
 }
