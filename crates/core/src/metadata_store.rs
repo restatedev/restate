@@ -24,8 +24,7 @@ use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, Storage
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 use std::future::Future;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
@@ -530,17 +529,11 @@ where
     Fut: Future<Output = Result<T, E>>,
     E: MetadataStoreClientError + std::fmt::Display,
 {
-    let upsert_start = Instant::now();
-
     retry_policy
         .into()
         .retry_if(action, |err: &E| {
             if err.is_network_error() {
-                if upsert_start.elapsed() < Duration::from_secs(5) {
-                    trace!("could not connect to metadata store: {err}; retrying");
-                } else {
-                    info!("could not connect to metadata store: {err}; retrying");
-                }
+                trace!("could not connect to metadata store: {err}; retrying");
                 true
             } else {
                 false

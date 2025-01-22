@@ -156,7 +156,7 @@ impl<'a> NodeInit<'a> {
                     if join_start.elapsed() < Duration::from_secs(10) {
                         trace!("Failed joining the cluster: {err}; retrying");
                     } else if !printed_provision_message {
-                        info!("Still can't join the cluster, will retry. Did you forget to provision it?");
+                        info!("Can't join the cluster, yet. Did you forget to provision it? Still trying to join...");
                         printed_provision_message = true;
                     } else {
                         debug!("Failed joining cluster: {err}; retrying");
