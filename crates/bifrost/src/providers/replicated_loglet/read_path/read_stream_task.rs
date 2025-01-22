@@ -19,7 +19,9 @@ use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_types::config::Configuration;
 use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetRecords, LogServerRequestHeader, MaybeRecord};
-use restate_types::replicated_loglet::{EffectiveNodeSet, NodeSet, ReplicatedLogletParams};
+use restate_types::replicated_loglet::{
+    EffectiveNodeSet, LogNodeSetExt, NodeSet, ReplicatedLogletParams,
+};
 use restate_types::PlainNodeId;
 
 use crate::loglet::util::TailOffsetWatch;
@@ -304,7 +306,7 @@ impl ReadStreamTask {
 
             // Read from logservers
             let effective_nodeset =
-                EffectiveNodeSet::new(&self.my_params.nodeset, nodes_config.live_load());
+                EffectiveNodeSet::new(self.my_params.nodeset.clone(), nodes_config.live_load());
             // Order the nodeset such that our node is the first one to attempt
             let mut mutable_effective_nodeset = effective_nodeset.shuffle_for_reads(my_node_id);
 

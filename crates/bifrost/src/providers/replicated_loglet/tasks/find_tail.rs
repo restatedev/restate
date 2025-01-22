@@ -21,7 +21,7 @@ use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, LogletId, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail};
 use restate_types::net::replicated_loglet::{CommonRequestHeader, GetSequencerState};
-use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
+use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::PlainNodeId;
 
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
@@ -173,10 +173,10 @@ impl<T: TransportConnect> FindTailTask<T> {
         // Requests to individual log-servers are sent as scatter-gather. We keep retrying in
         // sub-tasks until we exhaust the retry policy.
         'find_tail: loop {
-            let effective_nodeset = EffectiveNodeSet::new(
-                &self.my_params.nodeset,
-                &self.networking.metadata().nodes_config_ref(),
-            );
+            let effective_nodeset = self
+                .my_params
+                .nodeset
+                .to_effective(&self.networking.metadata().nodes_config_ref());
 
             let mut inflight_info_requests = JoinSet::new();
             for node in effective_nodeset.iter() {

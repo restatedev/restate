@@ -17,3 +17,6 @@ pub use log_nodeset::*;
 pub use params::*;
 pub use replication_property::*;
 pub use spread::*;
+
+// re-export to avoid mass-refactoring
+pub use super::replication::NodeSet;

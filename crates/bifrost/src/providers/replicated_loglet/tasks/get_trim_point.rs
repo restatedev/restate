@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_core::TaskCenterFutureExt;
 use tokio::task::JoinSet;
 use tracing::trace;
 
 use restate_core::network::{Incoming, Networking, TransportConnect};
+use restate_core::TaskCenterFutureExt;
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, LogletInfo, Status};
-use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
+use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::OperationError;
@@ -72,10 +72,10 @@ impl<'a> GetTrimPointTask<'a> {
             return Ok(None);
         }
         // Use the entire nodeset except for StorageState::Disabled.
-        let effective_nodeset = EffectiveNodeSet::new(
-            &self.my_params.nodeset,
-            &networking.metadata().nodes_config_ref(),
-        );
+        let effective_nodeset = self
+            .my_params
+            .nodeset
+            .to_effective(&networking.metadata().nodes_config_ref());
 
         trace!(
             loglet_id = %self.my_params.loglet_id,
