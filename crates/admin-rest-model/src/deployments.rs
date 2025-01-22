@@ -320,3 +320,66 @@ pub struct DetailedDeploymentResponse {
     /// List of services exposed by this deployment.
     pub services: Vec<ServiceMetadata>,
 }
+
+// RegisterDeploymentRequest except without `force`
+#[serde_as]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum UpdateDeploymentRequest {
+    Http {
+        /// # Uri
+        ///
+        /// Uri to use to discover/invoke the http deployment.
+        #[serde_as(as = "serde_with::DisplayFromStr")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        uri: Uri,
+
+        /// # Additional headers
+        ///
+        /// Additional headers added to the discover/invoke requests to the deployment.
+        ///
+        additional_headers: Option<SerdeableHeaderHashMap>,
+
+        /// # Use http1.1
+        ///
+        /// If `true`, discovery will be attempted using a client that defaults to HTTP1.1
+        /// instead of a prior-knowledge HTTP2 client. HTTP2 may still be used for TLS servers
+        /// that advertise HTTP2 support via ALPN. HTTP1.1 deployments will only work in
+        /// request-response mode.
+        ///
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        use_http_11: bool,
+
+        /// # Dry-run mode
+        ///
+        /// If `true`, discovery will run but the deployment will not be registered.
+        /// This is useful to see the impact of a new deployment before registering it.
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        dry_run: bool,
+    },
+    Lambda {
+        /// # ARN
+        ///
+        /// ARN to use to discover/invoke the lambda deployment.
+        arn: String,
+
+        /// # Assume role ARN
+        ///
+        /// Optional ARN of a role to assume when invoking the addressed Lambda, to support role chaining
+        assume_role_arn: Option<String>,
+
+        /// # Additional headers
+        ///
+        /// Additional headers added to the discover/invoke requests to the deployment.
+        ///
+        additional_headers: Option<SerdeableHeaderHashMap>,
+
+        /// # Dry-run mode
+        ///
+        /// If `true`, discovery will run but the deployment will not be registered.
+        /// This is useful to see the impact of a new deployment before registering it.
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        dry_run: bool,
+    },
+}
