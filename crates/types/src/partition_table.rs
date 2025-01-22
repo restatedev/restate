@@ -17,14 +17,12 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 
 use anyhow::Context;
-use indexmap::IndexSet;
 use regex::Regex;
-use xxhash_rust::xxh3::Xxh3;
 
-use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, PartitionKey};
 use crate::logs::LogId;
 use crate::protobuf::cluster::ReplicationStrategy as ProtoReplicationStrategy;
+use crate::replication::NodeSet;
 use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
 
 static REPLICATION_STRATEGY_FACTOR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
@@ -189,82 +187,31 @@ impl FindPartition for PartitionTable {
     serde::Deserialize,
     derive_more::From,
     derive_more::AsRef,
+    derive_more::Deref,
+    derive_more::DerefMut,
 )]
-pub struct PartitionPlacement(IndexSet<PlainNodeId>);
+#[serde(transparent)]
+pub struct PartitionPlacement(NodeSet);
 
 impl PartitionPlacement {
-    pub fn iter(&self) -> impl Iterator<Item = (&PlainNodeId, RunMode)> {
-        self.0.iter().enumerate().map(|(index, id)| {
-            if index == 0 {
-                (id, RunMode::Leader)
-            } else {
-                (id, RunMode::Follower)
-            }
-        })
-    }
-
-    pub fn nodes(&self) -> impl Iterator<Item = &PlainNodeId> {
-        self.0.iter()
-    }
-
-    pub fn leader(&self) -> Option<&PlainNodeId> {
+    pub fn leader(&self) -> Option<PlainNodeId> {
         self.0.first()
     }
 
     pub fn set_leader(&mut self, node_id: PlainNodeId) {
-        self.0.insert_before(0, node_id);
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn retain<F>(&mut self, keep: F)
-    where
-        F: FnMut(&PlainNodeId) -> bool,
-    {
-        self.0.retain(keep);
-    }
-
-    pub fn extend<I>(&mut self, iter: I)
-    where
-        I: IntoIterator<Item = PlainNodeId>,
-    {
-        self.0.extend(iter);
-    }
-
-    pub fn insert(&mut self, node_id: PlainNodeId) {
-        self.0.insert(node_id);
-    }
-
-    pub fn remove(&mut self, node_id: &PlainNodeId) {
-        self.0.shift_remove(node_id);
-    }
-
-    pub fn contains(&self, node_id: &PlainNodeId) -> bool {
-        self.0.contains(node_id)
+        self.0.insert_at_first(node_id);
     }
 
     fn hashed(&self) -> u64 {
-        let mut state = Xxh3::new();
+        let mut state = ahash::AHasher::default();
         self.hash(&mut state);
         state.finish()
     }
 }
 
-impl Hash for PartitionPlacement {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.iter().for_each(|i| i.hash(state));
-    }
-}
-
 impl FromIterator<PlainNodeId> for PartitionPlacement {
     fn from_iter<T: IntoIterator<Item = PlainNodeId>>(iter: T) -> Self {
-        let inner = IndexSet::from_iter(iter);
+        let inner = NodeSet::from_iter(iter);
         Self(inner)
     }
 }
