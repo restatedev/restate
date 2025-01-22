@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::iter::FusedIterator;
 
 use ahash::AHasher;
@@ -60,6 +60,25 @@ impl NodeSet {
         self.0.len()
     }
 
+    pub(crate) fn insert_at_first(&mut self, node_id: PlainNodeId) {
+        self.0.insert_before(0, node_id);
+    }
+
+    /// First element in the set
+    pub fn first(&self) -> Option<PlainNodeId> {
+        self.0.first().copied()
+    }
+
+    /// Last element in the set
+    pub fn last(&self) -> Option<PlainNodeId> {
+        self.0.last().copied()
+    }
+
+    /// Get node at the given index
+    pub fn get(&self, index: usize) -> Option<PlainNodeId> {
+        self.0.get_index(index).copied()
+    }
+
     /// Return true if the node is in the nodeset
     pub fn contains(&self, node: impl Into<PlainNodeId>) -> bool {
         self.0.contains(&node.into())
@@ -97,9 +116,19 @@ impl NodeSet {
         self.0.pop()
     }
 
-    pub fn remove(&mut self, node: impl Into<PlainNodeId>) {
-        let node = node.into();
-        self.0.retain(|x| x != &node);
+    /// Remove a node if present (and returns true in case it exists) by shifting all elements
+    /// after its position to the left.
+    pub fn remove(&mut self, node: impl Into<PlainNodeId>) -> bool {
+        self.0.shift_remove(&node.into())
+    }
+
+    /// Scans through the nodeset and removes all nodes that satisfy the predicate while maintaing
+    /// the order of the remaining nodes.
+    pub fn retain<F>(&mut self, keep: F)
+    where
+        F: FnMut(&PlainNodeId) -> bool,
+    {
+        self.0.retain(keep);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -166,6 +195,12 @@ impl NodeSet {
         use rand::distributions::Standard;
         self.0
             .sort_by_cached_key(|_| rng.sample::<usize, Standard>(Standard));
+    }
+}
+
+impl Hash for NodeSet {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.iter().for_each(|i| i.hash(state));
     }
 }
 

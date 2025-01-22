@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+use itertools::Itertools;
 use rand::seq::IteratorRandom;
 use tracing::debug;
 
@@ -20,6 +21,7 @@ use restate_core::{
     cancellation_watcher, Metadata, MetadataKind, MetadataWriter, ShutdownError, SyncError,
     TargetVersion, TaskCenter, TaskHandle, TaskKind,
 };
+use restate_types::cluster::cluster_state::RunMode;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;
 use restate_types::logs::LogId;
@@ -282,7 +284,7 @@ impl<T: TransportConnect> Scheduler<T> {
                     // todo: Implement cleverer strategies
                     // randomly choose from the preferred workers nodes first
                     let new_nodes = preferred_worker_nodes
-                        .filter(|node_id| !target_state.node_set.contains(node_id))
+                        .filter(|node_id| !target_state.node_set.contains(**node_id))
                         .cloned()
                         .choose_multiple(
                             &mut rng,
@@ -295,7 +297,7 @@ impl<T: TransportConnect> Scheduler<T> {
                         // randomly choose from the remaining worker nodes
                         let new_nodes = alive_workers
                             .iter()
-                            .filter(|node| !target_state.node_set.contains(node))
+                            .filter(|node| !target_state.node_set.contains(**node))
                             .cloned()
                             .choose_multiple(
                                 &mut rng,
@@ -311,29 +313,29 @@ impl<T: TransportConnect> Scheduler<T> {
                     // first remove the not preferred nodes
                     for node_id in target_state
                         .node_set
-                        .nodes()
+                        .iter()
+                        .copied()
                         .filter(|node_id| {
                             !preferred_worker_nodes.contains(node_id)
-                                && Some(**node_id) != preferred_leader
+                                && Some(*node_id) != preferred_leader
                         })
-                        .cloned()
                         .choose_multiple(&mut rng, target_state.node_set.len() - replication_factor)
                     {
-                        target_state.node_set.remove(&node_id);
+                        target_state.node_set.remove(node_id);
                     }
 
                     if target_state.node_set.len() > replication_factor {
                         for node_id in target_state
                             .node_set
-                            .nodes()
+                            .iter()
                             .filter(|node_id| Some(**node_id) != preferred_leader)
-                            .cloned()
+                            .copied()
                             .choose_multiple(
                                 &mut rng,
                                 target_state.node_set.len() - replication_factor,
                             )
                         {
-                            target_state.node_set.remove(&node_id);
+                            target_state.node_set.remove(node_id);
                         }
                     }
                 }
@@ -342,7 +344,7 @@ impl<T: TransportConnect> Scheduler<T> {
 
         // check if the leader is still part of the node set; if not, then clear leader field
         if let Some(leader) = target_state.leader.as_ref() {
-            if !target_state.node_set.contains(leader) {
+            if !target_state.node_set.contains(*leader) {
                 target_state.leader = None;
             }
         }
@@ -359,7 +361,7 @@ impl<T: TransportConnect> Scheduler<T> {
         if target_state.leader.is_none() {
             target_state.leader = self.select_leader_from(target_state, preferred_leader);
         } else if preferred_leader
-            .is_some_and(|preferred_leader| target_state.node_set.contains(&preferred_leader))
+            .is_some_and(|preferred_leader| target_state.node_set.contains(preferred_leader))
         {
             target_state.leader = preferred_leader;
         }
@@ -372,10 +374,10 @@ impl<T: TransportConnect> Scheduler<T> {
     ) -> Option<PlainNodeId> {
         // todo: Implement leader balancing between nodes
         preferred_leader
-            .filter(|leader| leader_candidates.contains(leader))
+            .filter(|leader| leader_candidates.contains(*leader))
             .or_else(|| {
                 let mut rng = rand::thread_rng();
-                leader_candidates.node_set.nodes().choose(&mut rng).cloned()
+                leader_candidates.node_set.iter().choose(&mut rng).cloned()
             })
     }
 
@@ -438,7 +440,15 @@ impl<T: TransportConnect> Scheduler<T> {
             .map(|state| state.partition_processors.clone())
             .unwrap_or_default();
 
-        for (node_id, run_mode) in partition.placement.iter() {
+        for (position, node_id) in partition.placement.iter().with_position() {
+            let run_mode = if matches!(
+                position,
+                itertools::Position::First | itertools::Position::Only
+            ) {
+                RunMode::Leader
+            } else {
+                RunMode::Follower
+            };
             if !observed_state
                 .remove(node_id)
                 .is_some_and(|observed_run_mode| observed_run_mode == run_mode)
@@ -486,7 +496,7 @@ impl logs_controller::NodeSetSelectorHints for PartitionTableNodeSetSelectorHint
 
         self.partition_table
             .get_partition(&partition_id)
-            .and_then(|partition| partition.placement.leader().cloned().map(NodeId::from))
+            .and_then(|partition| partition.placement.leader().map(NodeId::from))
     }
 }
 
@@ -502,19 +512,14 @@ struct TargetPartitionPlacementState<'a> {
 impl<'a> TargetPartitionPlacementState<'a> {
     fn new(placement: &'a mut PartitionPlacement) -> Self {
         Self {
-            leader: placement.leader().cloned(),
+            leader: placement.leader(),
             node_set: placement,
         }
     }
 }
 
 impl<'a> TargetPartitionPlacementState<'a> {
-    #[cfg(test)]
-    pub fn contains_all(&self, set: &HashSet<PlainNodeId>) -> bool {
-        set.iter().all(|id| self.node_set.contains(id))
-    }
-
-    pub fn contains(&self, value: &PlainNodeId) -> bool {
+    pub fn contains(&self, value: PlainNodeId) -> bool {
         self.node_set.contains(value)
     }
 }
@@ -533,6 +538,7 @@ mod tests {
     use googletest::assert_that;
     use googletest::matcher::{Matcher, MatcherResult};
     use http::Uri;
+    use itertools::Itertools;
     use rand::prelude::ThreadRng;
     use rand::Rng;
     use std::collections::BTreeMap;
@@ -546,7 +552,7 @@ mod tests {
     use crate::cluster_controller::logs_controller::tests::MockNodes;
     use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
     use crate::cluster_controller::scheduler::{
-        HashSet, PartitionProcessorPlacementHints, Scheduler, TargetPartitionPlacementState,
+        PartitionProcessorPlacementHints, Scheduler, TargetPartitionPlacementState,
     };
     use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
     use restate_core::{Metadata, TestCoreEnv, TestCoreEnvBuilder};
@@ -565,6 +571,7 @@ mod tests {
     use restate_types::partition_table::{
         PartitionPlacement, PartitionTable, PartitionTableBuilder, ReplicationStrategy,
     };
+    use restate_types::replication::NodeSet;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -732,7 +739,7 @@ mod tests {
                 matches_partition_table(&target_partition_table)
             );
 
-            let alive_nodes: HashSet<_> = cluster_state
+            let alive_nodes: NodeSet = cluster_state
                 .alive_nodes()
                 .map(|node| node.generational_node_id.as_plain())
                 .collect();
@@ -743,17 +750,17 @@ mod tests {
                 match replication_strategy {
                     ReplicationStrategy::OnAllNodes => {
                         // assert that every partition has a leader which is part of the alive nodes set
-                        assert!(target_state.contains_all(&alive_nodes));
+                        assert!(target_state.node_set.is_subset(&alive_nodes));
 
                         assert!(target_state
                             .leader
-                            .is_some_and(|leader| alive_nodes.contains(&leader)));
+                            .is_some_and(|leader| alive_nodes.contains(leader)));
                     }
                     ReplicationStrategy::Factor(replication_factor) => {
                         // assert that every partition has a leader which is part of the alive nodes set
                         assert!(target_state
                             .leader
-                            .is_some_and(|leader| alive_nodes.contains(&leader)));
+                            .is_some_and(|leader| alive_nodes.contains(leader)));
 
                         assert_eq!(
                             target_state.node_set.len(),
@@ -887,7 +894,15 @@ mod tests {
                         return MatcherResult::NoMatch;
                     }
 
-                    for (node_id, run_mode) in partition.placement.iter() {
+                    for (position, node_id) in partition.placement.iter().with_position() {
+                        let run_mode = if matches!(
+                            position,
+                            itertools::Position::First | itertools::Position::Only
+                        ) {
+                            RunMode::Leader
+                        } else {
+                            RunMode::Follower
+                        };
                         if observed_state.partition_processors.get(node_id) != Some(&run_mode) {
                             return MatcherResult::NoMatch;
                         }

@@ -224,7 +224,7 @@ impl From<Pinned<PartitionTable>> for PartitionToNodesRoutingTable {
         let mut inner = HashMap::<PartitionId, NodeId>::default();
         for (partition_id, partition) in value.partitions() {
             if let Some(leader) = partition.placement.leader() {
-                inner.insert(*partition_id, (*leader).into());
+                inner.insert(*partition_id, leader.into());
             }
         }
 
