@@ -78,16 +78,16 @@ impl SpreadSelector {
         exclude_nodes: &NodeSet,
     ) -> Result<Spread, SpreadSelectorError> {
         // Get the list of non-empty nodes from the nodeset given the nodes configuration
-        let effective_nodeset = self.nodeset.to_effective(nodes_config);
-        let mut writeable_nodes: Vec<_> = effective_nodeset
-            .into_iter()
-            .filter(|node_id| !exclude_nodes.contains(node_id))
+        let mut writeable_nodes: NodeSet = self
+            .nodeset
+            .difference(exclude_nodes)
             .filter(|node_id| {
                 nodes_config
                     .get_log_server_storage_state(node_id)
                     .can_write_to()
             })
             .collect();
+
         if writeable_nodes.len() < self.replication_property.num_copies().into() {
             return Err(SpreadSelectorError::InsufficientWriteableNodes);
         }
@@ -127,10 +127,9 @@ impl SpreadSelector {
         exclude_nodes: &NodeSet,
     ) -> Result<Spread, SpreadSelectorError> {
         // Get the list of non-empty nodes from the nodeset given the nodes configuration
-        let effective_nodeset = self.nodeset.to_effective(nodes_config);
-        let mut writeable_nodes: Vec<_> = effective_nodeset
-            .into_iter()
-            .filter(|node_id| !exclude_nodes.contains(node_id))
+        let mut writeable_nodes: NodeSet = self
+            .nodeset
+            .difference(exclude_nodes)
             .filter(|node_id| {
                 nodes_config
                     .get_log_server_storage_state(node_id)
@@ -162,7 +161,7 @@ impl SpreadSelector {
         let selected: Vec<_> = selected
             .into_iter()
             // keep nodes that are not in existing_copies.
-            .filter(|n| !existing_copies.contains(n))
+            .filter(|n| !existing_copies.contains(*n))
             .collect();
 
         Ok(selected.into())
@@ -212,7 +211,7 @@ mod tests {
             replication,
         );
         let mut rng = rand::thread_rng();
-        let spread = selector.select(&mut rng, &nodes_config, &NodeSet::empty())?;
+        let spread = selector.select(&mut rng, &nodes_config, &NodeSet::default())?;
         assert_that!(spread, eq(Spread::from([1, 2, 3])));
 
         // Fixed selector ignores exclude nodes as long as sufficient nodes are passed down
@@ -234,7 +233,7 @@ mod tests {
         let nodeset: NodeSet = (1..=3).collect();
         let selector = SpreadSelector::new(nodeset, SelectorStrategy::Fixed(strategy), replication);
 
-        let spread = selector.select(&mut rng, &nodes_config, &NodeSet::empty());
+        let spread = selector.select(&mut rng, &nodes_config, &NodeSet::default());
         assert_that!(
             spread,
             err(pat!(SpreadSelectorError::InsufficientWriteableNodes))
@@ -251,7 +250,7 @@ mod tests {
 
         let selector = SpreadSelector::new(nodeset, SelectorStrategy::Flood, replication);
         let mut rng = rand::thread_rng();
-        let spread = selector.select(&mut rng, &nodes_config, &NodeSet::empty())?;
+        let spread = selector.select(&mut rng, &nodes_config, &NodeSet::default())?;
         let spread = spread.to_vec();
 
         assert_that!(

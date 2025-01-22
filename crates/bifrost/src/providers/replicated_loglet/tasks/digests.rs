@@ -182,7 +182,7 @@ impl Digests {
                 known_copies,
                 &mut thread_rng(),
                 &networking.metadata().nodes_config_ref(),
-                &NodeSet::empty(),
+                &NodeSet::new(),
             )
             // what do we do if we can't generate a spread? nodes are in data-loss or readonly, or
             // whatever state.

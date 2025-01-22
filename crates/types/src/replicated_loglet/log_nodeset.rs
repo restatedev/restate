@@ -20,6 +20,8 @@ pub trait LogNodeSetExt {
     fn all_disabled(&self, nodes_config: &NodesConfiguration) -> bool;
     /// Returns true if all nodes in the nodeset are provisioning
     fn all_provisioning(&self, nodes_config: &NodesConfiguration) -> bool;
+    /// Filters out nodes that are not part of the effective nodeset (empty nodes)
+    fn to_effective(&self, nodes_config: &NodesConfiguration) -> EffectiveNodeSet;
     /// Shuffles the nodes but puts our node-id at the end if it exists. In other words,
     /// `pop()` will return our node if it's in the nodeset.
     fn shuffle_for_reads(&self, my_node_id: impl Into<PlainNodeId>) -> Vec<PlainNodeId>;
@@ -44,6 +46,10 @@ impl LogNodeSetExt for NodeSet {
             })
     }
 
+    fn to_effective(&self, nodes_config: &NodesConfiguration) -> EffectiveNodeSet {
+        EffectiveNodeSet::new(self.clone(), nodes_config)
+    }
+
     fn shuffle_for_reads(&self, my_node_id: impl Into<PlainNodeId>) -> Vec<PlainNodeId> {
         let my_node_id = my_node_id.into();
         let mut new_nodeset: Vec<_> = self.iter().cloned().collect();
@@ -59,5 +65,33 @@ impl LogNodeSetExt for NodeSet {
         }
 
         new_nodeset
+    }
+}
+
+#[serde_with::serde_as]
+#[derive(
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    derive_more::AsRef,
+    derive_more::Deref,
+    derive_more::DerefMut,
+    derive_more::Display,
+    derive_more::Into,
+    derive_more::IntoIterator,
+)]
+pub struct EffectiveNodeSet(NodeSet);
+
+impl EffectiveNodeSet {
+    pub fn new(nodeset: NodeSet, nodes_config: &NodesConfiguration) -> Self {
+        Self(
+            nodeset
+                .into_iter()
+                .filter(|node_id| !nodes_config.get_log_server_storage_state(node_id).empty())
+                .collect(),
+        )
     }
 }

@@ -547,7 +547,7 @@ mod test {
 
         let params = ReplicatedLogletParams {
             loglet_id: 1.into(),
-            nodeset: NodeSet::empty(),
+            nodeset: NodeSet::default(),
             replication: ReplicationProperty::new(1.try_into().unwrap()),
             sequencer: GenerationalNodeId::new(1, 1),
         };
