@@ -38,6 +38,7 @@ pub enum NodeLocationScope {
     Region,
 
     // Special; Includes all lower-level scopes.
+    #[strum(disabled)]
     Root,
 }
 
