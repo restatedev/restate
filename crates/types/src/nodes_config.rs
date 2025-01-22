@@ -183,12 +183,45 @@ impl NodesConfiguration {
             MaybeNode::Node(found) => found,
         };
 
-        if node_id
+        if !Self::is_node_id_matching(node_id, found) {
+            return Err(NodesConfigError::GenerationMismatch {
+                expected: node_id,
+                found: found.current_generation.into(),
+            });
+        }
+
+        Ok(found)
+    }
+
+    fn is_node_id_matching(node_id: NodeId, found: &NodeConfig) -> bool {
+        !node_id
             .as_generational()
             .is_some_and(|requested_generational| {
                 requested_generational != found.current_generation
             })
-        {
+    }
+
+    /// Find a node by its ID. If called with a generational ID, the node config will only return
+    /// if the node has the same generation, otherwise, it returns
+    /// NodeConfigError::GenerationMismatch. If called with a plain node id (either PlainNodeId, or
+    /// NodeId::Plain) then it won't care about the generation and will only return based on the ID
+    /// match.
+    pub fn find_node_by_id_mut(
+        &mut self,
+        id: impl Into<NodeId>,
+    ) -> Result<&mut NodeConfig, NodesConfigError> {
+        let node_id: NodeId = id.into();
+        let maybe = self.nodes.get_mut(&node_id.id());
+        let Some(maybe) = maybe else {
+            return Err(NodesConfigError::UnknownNodeId(node_id));
+        };
+
+        let found = match maybe {
+            MaybeNode::Tombstone => return Err(NodesConfigError::Deleted(node_id)),
+            MaybeNode::Node(found) => found,
+        };
+
+        if !Self::is_node_id_matching(node_id, found) {
             return Err(NodesConfigError::GenerationMismatch {
                 expected: node_id,
                 found: found.current_generation.into(),

@@ -8,18 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::util::grpc_channel;
 use anyhow::Context;
 use cling::prelude::*;
-use std::path::PathBuf;
-use std::str::FromStr;
-
 use restate_core::metadata_store::MetadataStoreClient;
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_core::protobuf::node_ctl_svc::GetMetadataRequest;
 use restate_metadata_store::local::create_client;
 use restate_types::config::MetadataStoreClientOptions;
+use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::storage::StorageCodec;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
+use std::path::PathBuf;
+use std::str::FromStr;
+use tonic::codec::CompressionEncoding;
 
 mod get;
+mod nodes;
 mod patch;
 mod put;
 mod status;
@@ -34,6 +41,9 @@ pub enum Metadata {
     Put(put::PutValueOpts),
     /// Get the status of the embedded Restate metadata store
     Status(status::StatusOpts),
+    /// Manage nodes of the embedded metadata store
+    #[clap(subcommand)]
+    Nodes(nodes::Nodes),
 }
 
 #[derive(Args, Clone, Debug)]
@@ -134,4 +144,18 @@ pub async fn create_metadata_store_client(
     create_client(metadata_store_client_options)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create metadata store client: {}", e))
+}
+
+async fn retrieve_nodes_configuration_from_node(
+    node_address: AdvertisedAddress,
+) -> anyhow::Result<NodesConfiguration> {
+    let channel = grpc_channel(node_address);
+    let mut client = NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let req = GetMetadataRequest {
+        kind: MetadataKind::NodesConfiguration.into(),
+        sync: false,
+    };
+    let mut response = client.get_metadata(req).await?.into_inner();
+    let nodes_configuration = StorageCodec::decode::<NodesConfiguration, _>(&mut response.encoded)?;
+    Ok(nodes_configuration)
 }
