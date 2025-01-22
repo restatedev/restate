@@ -9,25 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
-use std::fmt::Display;
 use std::hash::{Hash, Hasher};
-use std::num::{NonZero, NonZeroU32};
 use std::ops::RangeInclusive;
-use std::str::FromStr;
-use std::sync::LazyLock;
 
-use anyhow::Context;
-use regex::Regex;
+use serde_with::{serde_as, DisplayFromStr};
 
 use crate::identifiers::{PartitionId, PartitionKey};
 use crate::logs::LogId;
-use crate::protobuf::cluster::ReplicationStrategy as ProtoReplicationStrategy;
+use crate::replicated_loglet::ReplicationProperty;
 use crate::replication::NodeSet;
 use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
-
-static REPLICATION_STRATEGY_FACTOR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?i)factor\(\s*(?<factor>\d+)\s*\)$").expect("is valid pattern")
-});
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -57,6 +48,20 @@ impl From<KeyRange> for RangeInclusive<PartitionKey> {
     }
 }
 
+/// Specified how partitions are replicated across the cluster.
+#[serde_as]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PartitionReplication {
+    #[default]
+    /// All partitions are replicated on all nodes in the cluster.
+    Everywhere,
+    /// Replication of partitions is limited to the specified replication property.
+    /// for example a replication property of `{node: 2}` will run
+    /// each partition on maximum of two nodes (one leader, and one follower)
+    Limit(#[serde_as(as = "DisplayFromStr")] ReplicationProperty),
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "PartitionTableShadow", into = "PartitionTableShadow")]
 pub struct PartitionTable {
@@ -68,7 +73,7 @@ pub struct PartitionTable {
     // are not visible from this index structure.
     partition_key_index: BTreeMap<PartitionKey, PartitionId>,
 
-    replication_strategy: ReplicationStrategy,
+    replication: PartitionReplication,
 }
 
 impl Default for PartitionTable {
@@ -77,7 +82,7 @@ impl Default for PartitionTable {
             version: Version::INVALID,
             partitions: BTreeMap::default(),
             partition_key_index: BTreeMap::default(),
-            replication_strategy: ReplicationStrategy::default(),
+            replication: PartitionReplication::default(),
         }
     }
 }
@@ -133,8 +138,8 @@ impl PartitionTable {
         self.partitions.contains_key(partition_id)
     }
 
-    pub fn replication_strategy(&self) -> ReplicationStrategy {
-        self.replication_strategy
+    pub fn partition_replication(&self) -> &PartitionReplication {
+        &self.replication
     }
 
     pub fn into_builder(self) -> PartitionTableBuilder {
@@ -327,15 +332,15 @@ impl PartitionTableBuilder {
         self.inner.num_partitions()
     }
 
-    pub fn set_replication_strategy(&mut self, replication_strategy: ReplicationStrategy) {
-        if self.inner.replication_strategy != replication_strategy {
-            self.inner.replication_strategy = replication_strategy;
+    pub fn set_partition_replication(&mut self, partition_replication: PartitionReplication) {
+        if self.inner.replication != partition_replication {
+            self.inner.replication = partition_replication;
             self.modified = true;
         }
     }
 
-    pub fn replication_strategy(&self) -> ReplicationStrategy {
-        self.inner.replication_strategy
+    pub fn partition_replication(&self) -> &PartitionReplication {
+        &self.inner.replication
     }
 
     /// Adds a new partition to the partition table. The newly added partition must exist and must
@@ -439,7 +444,7 @@ pub struct PartitionShadow {
 
 /// Serialization helper which handles the deserialization of the current and older
 /// [`PartitionTable`] versions.
-#[serde_with::serde_as]
+#[serde_as]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PartitionTableShadow {
     version: Version,
@@ -450,7 +455,8 @@ struct PartitionTableShadow {
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "Option<serde_with::Seq<(_, _)>>")]
     partitions: Option<BTreeMap<PartitionId, PartitionShadow>>,
-    replication_strategy: Option<ReplicationStrategy>,
+
+    replication: Option<PartitionReplication>,
 }
 
 impl From<PartitionTable> for PartitionTableShadow {
@@ -476,7 +482,7 @@ impl From<PartitionTable> for PartitionTableShadow {
                     })
                     .collect(),
             ),
-            replication_strategy: Some(value.replication_strategy),
+            replication: Some(value.replication),
         }
     }
 }
@@ -487,7 +493,7 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
     fn try_from(value: PartitionTableShadow) -> Result<Self, Self::Error> {
         let mut builder = PartitionTableBuilder::new(value.version);
         // replication strategy is unset if data has been written with version <= v1.1.3
-        builder.set_replication_strategy(value.replication_strategy.unwrap_or_default());
+        builder.set_partition_replication(value.replication.unwrap_or_default());
 
         match value.partitions {
             Some(partitions) => {
@@ -576,102 +582,12 @@ impl Iterator for EqualSizedPartitionPartitioner {
     }
 }
 
-/// Replication strategy for partition processors.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[serde(rename_all = "kebab-case")]
-pub enum ReplicationStrategy {
-    /// Schedule partition processor replicas on all available nodes
-    #[default]
-    OnAllNodes,
-    /// Schedule this number of partition processor replicas
-    Factor(NonZero<u32>),
-}
-
-impl TryFrom<ProtoReplicationStrategy> for ReplicationStrategy {
-    type Error = anyhow::Error;
-
-    fn try_from(value: ProtoReplicationStrategy) -> Result<Self, Self::Error> {
-        use crate::protobuf::cluster::ReplicationStrategyKind;
-
-        if value.kind == i32::from(ReplicationStrategyKind::OnAllNodes) {
-            Ok(Self::OnAllNodes)
-        } else if value.kind == i32::from(ReplicationStrategyKind::Factor) {
-            let factor = value.factor.ok_or_else(|| {
-                anyhow::anyhow!("factor is require with Factor replication strategy")
-            })?;
-
-            let factor =
-                NonZeroU32::new(factor).context("Replication strategy factor must be non zero")?;
-            Ok(Self::Factor(factor))
-        } else {
-            anyhow::bail!("Unknown replication strategy")
-        }
-    }
-}
-
-impl Display for ReplicationStrategy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::OnAllNodes => {
-                write!(f, "on-all-nodes")
-            }
-            Self::Factor(factor) => {
-                write!(f, "factor({})", factor)
-            }
-        }
-    }
-}
-
-impl FromStr for ReplicationStrategy {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "on-all-nodes" => Ok(Self::OnAllNodes),
-            "factor" => anyhow::bail!("Missing replication factor value. Should be 'factor(<f>)'."),
-            s => {
-                let Some(m) = REPLICATION_STRATEGY_FACTOR_PATTERN.captures(s) else {
-                    anyhow::bail!("Unknown replication strategy '{}'", s);
-                };
-
-                let factor: NonZeroU32 = m["factor"]
-                    .parse()
-                    .context("Invalid replication strategy factor")?;
-
-                Ok(Self::Factor(factor))
-            }
-        }
-    }
-}
-
-impl From<ReplicationStrategy> for ProtoReplicationStrategy {
-    fn from(value: ReplicationStrategy) -> Self {
-        use crate::protobuf::cluster::ReplicationStrategyKind;
-
-        let mut result = Self::default();
-        match value {
-            ReplicationStrategy::OnAllNodes => {
-                result.kind = ReplicationStrategyKind::OnAllNodes.into()
-            }
-            ReplicationStrategy::Factor(factor) => {
-                result.kind = ReplicationStrategyKind::Factor.into();
-                result.factor = Some(factor.get());
-            }
-        };
-
-        result
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU32;
-
     use bytes::BytesMut;
     use test_log::test;
 
-    use super::{PartitionPlacement, ReplicationStrategy};
+    use super::PartitionPlacement;
     use crate::identifiers::{PartitionId, PartitionKey};
     use crate::partition_table::{
         EqualSizedPartitionPartitioner, FindPartition, Partition, PartitionTable,
@@ -680,20 +596,6 @@ mod tests {
     use crate::storage::StorageCodec;
     use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version};
 
-    #[test]
-    fn test_replication_strategy_parse() {
-        let strategy: ReplicationStrategy = "on-all-nodes".parse().unwrap();
-        assert_eq!(ReplicationStrategy::OnAllNodes, strategy);
-
-        let strategy: ReplicationStrategy = "factor(10)".parse().unwrap();
-        assert_eq!(
-            ReplicationStrategy::Factor(NonZeroU32::new(10).expect("is non zero")),
-            strategy
-        );
-
-        let strategy: anyhow::Result<ReplicationStrategy> = "factor(0)".parse();
-        assert!(strategy.is_err());
-    }
     #[test]
     fn partitioner_produces_consecutive_ranges() {
         let partitioner = EqualSizedPartitionPartitioner::new(10);

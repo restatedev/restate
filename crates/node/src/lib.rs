@@ -47,7 +47,7 @@ use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfigurati
 use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
-use restate_types::partition_table::{PartitionTable, PartitionTableBuilder, ReplicationStrategy};
+use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
     WorkerStatus,
@@ -544,8 +544,7 @@ impl Node {
 pub struct ClusterConfiguration {
     #[into_prost(map = "num_partitions_to_u32")]
     pub num_partitions: NonZeroU16,
-    #[prost(required)]
-    pub replication_strategy: ReplicationStrategy,
+    pub partition_replication: PartitionReplication,
     #[prost(required)]
     pub bifrost_provider: ProviderConfiguration,
 }
@@ -558,7 +557,7 @@ impl ClusterConfiguration {
     pub fn from_configuration(configuration: &Configuration) -> Self {
         ClusterConfiguration {
             num_partitions: configuration.common.bootstrap_num_partitions,
-            replication_strategy: ReplicationStrategy::default(),
+            partition_replication: configuration.admin.default_partition_replication.clone(),
             bifrost_provider: ProviderConfiguration::from_configuration(configuration),
         }
     }
@@ -633,7 +632,7 @@ fn generate_initial_metadata(
         .with_equally_sized_partitions(cluster_configuration.num_partitions.get())
         .expect("Empty partition table should not have conflicts");
     initial_partition_table_builder
-        .set_replication_strategy(cluster_configuration.replication_strategy);
+        .set_partition_replication(cluster_configuration.partition_replication.clone());
     let initial_partition_table = initial_partition_table_builder.build();
 
     let initial_logs = Logs::with_logs_configuration(LogsConfiguration::from(

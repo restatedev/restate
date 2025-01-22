@@ -299,7 +299,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         let response = GetClusterConfigurationResponse {
             cluster_configuration: Some(ClusterConfiguration {
                 num_partitions: u32::from(partition_table.num_partitions()),
-                replication_strategy: Some(partition_table.replication_strategy().into()),
+                partition_replication: partition_table.partition_replication().clone().into(),
                 bifrost_provider: Some(logs.configuration().default_provider.clone().into()),
             }),
         };
@@ -318,15 +318,9 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
         self.controller_handle
             .update_cluster_configuration(
-                request
-                    .replication_strategy
-                    .ok_or_else(|| {
-                        Status::invalid_argument("replication_strategy is a required field")
-                    })?
-                    .try_into()
-                    .map_err(|err| {
-                        Status::invalid_argument(format!("invalid replication_strategy: {err}"))
-                    })?,
+                request.partition_replication.try_into().map_err(|err| {
+                    Status::invalid_argument(format!("invalid partition_replication: {err}"))
+                })?,
                 request
                     .bifrost_provider
                     .ok_or_else(|| {
