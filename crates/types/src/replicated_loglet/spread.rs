@@ -12,6 +12,8 @@ use std::fmt::Display;
 
 use crate::PlainNodeId;
 
+use super::NodeSet;
+
 #[derive(
     Debug,
     Clone,
@@ -48,6 +50,12 @@ impl From<Vec<PlainNodeId>> for Spread {
 impl From<Vec<u32>> for Spread {
     fn from(v: Vec<u32>) -> Self {
         Self(v.into_iter().map(PlainNodeId::from).collect())
+    }
+}
+
+impl From<NodeSet> for Spread {
+    fn from(v: NodeSet) -> Self {
+        Self(v.into_iter().collect())
     }
 }
 

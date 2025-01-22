@@ -39,6 +39,7 @@ pub mod nodes_config;
 pub mod partition_table;
 pub mod protobuf;
 pub mod replicated_loglet;
+pub mod replication;
 pub mod retries;
 pub mod schema;
 pub mod service_discovery;

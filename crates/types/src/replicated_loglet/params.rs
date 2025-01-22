@@ -10,14 +10,18 @@
 
 use std::collections::HashSet;
 use std::fmt::Display;
+use std::hash::BuildHasherDefault;
+
+use ahash::AHasher;
+use itertools::Itertools;
+use rand::seq::SliceRandom;
 
 use super::ReplicationProperty;
 use crate::logs::LogletId;
 use crate::nodes_config::NodesConfiguration;
 use crate::{GenerationalNodeId, PlainNodeId};
-use itertools::Itertools;
-use rand::seq::SliceRandom;
-use serde_with::DisplayFromStr;
+
+type IndexSet<T> = indexmap::IndexSet<T, BuildHasherDefault<AHasher>>;
 
 /// Configuration parameters of a replicated loglet segment
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -54,15 +58,15 @@ impl ReplicatedLogletParams {
     derive_more::IntoIterator,
     derive_more::From,
 )]
-pub struct NodeSet(#[serde_as(as = "HashSet<DisplayFromStr>")] HashSet<PlainNodeId>);
+pub struct NodeSet(IndexSet<PlainNodeId>);
 
 impl NodeSet {
     pub fn empty() -> Self {
-        Self(HashSet::new())
+        Self(IndexSet::default())
     }
 
     pub fn from_single(node: impl Into<PlainNodeId>) -> Self {
-        let mut set = HashSet::new();
+        let mut set = IndexSet::with_capacity_and_hasher(1, BuildHasherDefault::default());
         set.insert(node.into());
         Self(set)
     }
@@ -104,8 +108,8 @@ impl NodeSet {
         self.0.clear();
     }
 
-    pub fn remove(&mut self, node: &PlainNodeId) -> bool {
-        self.0.remove(node)
+    pub fn remove(&mut self, node: &PlainNodeId) {
+        self.0.retain(|x| x != node);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -123,20 +127,20 @@ impl NodeSet {
 
     /// Creates a new nodeset that excludes the nodes not in the provided set
     pub fn new_excluding(&self, excluded_node_ids: &HashSet<PlainNodeId>) -> NodeSet {
-        NodeSet::from(
+        Self(
             self.iter()
                 .copied()
                 .filter(|node_id| !excluded_node_ids.contains(node_id))
-                .collect::<HashSet<_>>(),
+                .collect::<IndexSet<_>>(),
         )
     }
 
     pub fn intersect(&self, intersect_node_ids: &NodeSet) -> NodeSet {
-        NodeSet::from(
+        NodeSet(
             self.iter()
                 .copied()
                 .filter(|node_id| intersect_node_ids.contains(node_id))
-                .collect::<HashSet<_>>(),
+                .collect::<IndexSet<_>>(),
         )
     }
 
@@ -166,7 +170,7 @@ impl NodeSet {
 impl<'a> IntoIterator for &'a NodeSet {
     type Item = &'a PlainNodeId;
 
-    type IntoIter = <&'a HashSet<PlainNodeId> as IntoIterator>::IntoIter;
+    type IntoIter = <&'a IndexSet<PlainNodeId> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
@@ -175,7 +179,7 @@ impl<'a> IntoIterator for &'a NodeSet {
 
 impl<const N: usize> From<[PlainNodeId; N]> for NodeSet {
     fn from(value: [PlainNodeId; N]) -> Self {
-        Self(From::from(value))
+        Self(IndexSet::from_iter(value))
     }
 }
 
@@ -199,7 +203,7 @@ impl From<NodeSet> for Box<[PlainNodeId]> {
 
 impl<A: Into<PlainNodeId>> FromIterator<A> for NodeSet {
     fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
-        Self(HashSet::from_iter(iter.into_iter().map(Into::into)))
+        Self(IndexSet::from_iter(iter.into_iter().map(Into::into)))
     }
 }
 

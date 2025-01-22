@@ -24,6 +24,7 @@ restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-utoipa = { workspace = true }
 
+ahash = {workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 base62 = { version = "2.0.2" }
