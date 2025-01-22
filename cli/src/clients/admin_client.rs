@@ -27,7 +27,7 @@ use crate::clients::AdminClientInterface;
 use super::errors::ApiError;
 
 /// Min/max supported admin API versions
-// we can support *some* v1 clusters (those that have json /query, which was introduced in 1.1.4)
+// when v1 is no longer needed, a lot of arrow deserialisation logic can be removed.
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
 pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
 

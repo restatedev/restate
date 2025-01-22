@@ -14,13 +14,16 @@ use super::errors::ApiError;
 
 use crate::cli_env::CliEnv;
 use crate::clients::AdminClient;
-use arrow::array::AsArray;
+use arrow::array::{AsArray, StructArray};
 use arrow::datatypes::{Int64Type, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
+use arrow_convert::deserialize::{arrow_array_deserialize_iterator, ArrowDeserialize};
+use arrow_convert::field::ArrowField;
 use bytes::Buf;
 use itertools::Itertools;
+use restate_admin_rest_model::version::AdminApiVersion;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info};
@@ -30,12 +33,14 @@ use url::Url;
 #[error(transparent)]
 pub enum Error {
     Api(#[from] Box<ApiError>),
-    #[error("The CLI is not compatible with the Restate server '{0}', which lacks JSON /query support. Please update the CLI to match the Restate server version '{1}'.")]
+    #[error("The Restate server '{0}' lacks JSON /query support. Please update the CLI to match the Restate server version '{1}'.")]
     JSONSupport(Url, String),
     #[error("(Protocol error) {0}")]
     Serialization(#[from] serde_json::Error),
     Network(#[from] reqwest::Error),
     Arrow(#[from] ArrowError),
+    #[error("Mapping from query '{0}': {1}")]
+    Mapping(String, #[source] ArrowError),
     UrlParse(#[from] url::ParseError),
 }
 
@@ -149,6 +154,31 @@ impl DataFusionHttpClient {
         Ok(SqlResponse { schema, batches })
     }
 
+    pub async fn run_arrow_query_and_map_results<
+        T: ArrowDeserialize + ArrowField<Type = T> + 'static,
+    >(
+        &self,
+        query: String,
+    ) -> Result<impl Iterator<Item = T>, Error> {
+        let sql_response = self.run_arrow_query(query.clone()).await?;
+        let mut results = Vec::new();
+        for batch in sql_response.batches {
+            let n = batch.num_rows();
+            if n == 0 {
+                continue;
+            }
+            results.reserve(n);
+
+            // Map results using arrow_convert
+            for row in arrow_array_deserialize_iterator::<T>(&StructArray::from(batch))
+                .map_err(|e| Error::Mapping(query.clone(), e))?
+            {
+                results.push(row);
+            }
+        }
+        Ok(results.into_iter())
+    }
+
     pub async fn run_count_agg_query(&self, query: String) -> Result<i64, Error> {
         let resp = self.run_arrow_query(query).await?;
 
@@ -174,6 +204,10 @@ impl DataFusionHttpClient {
             .await?;
 
         Ok(actual_count as usize == expected_count)
+    }
+
+    pub fn admin_api_version(&self) -> AdminApiVersion {
+        self.inner.admin_api_version
     }
 }
 
