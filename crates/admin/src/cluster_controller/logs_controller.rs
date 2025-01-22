@@ -622,7 +622,7 @@ enum Event {
 /// a different logs controller writes first, then we have to reset our internal state. To avoid the
 /// complexity of handling multiple in-flight logs writes, the controller waits until the
 /// in-flight write completes or a newer log is detected.
-struct LogsControllerInner {
+struct ControllerInner {
     logs_state: HashMap<LogId, LogState>,
     logs_write_in_progress: Option<Version>,
 
@@ -632,7 +632,7 @@ struct LogsControllerInner {
     retry_policy: RetryPolicy,
 }
 
-impl LogsControllerInner {
+impl ControllerInner {
     fn new(
         current_logs: Arc<Logs>,
         retry_policy: RetryPolicy,
@@ -928,16 +928,16 @@ pub struct LogTailUpdate {
 pub type LogsTailUpdates = HashMap<LogId, LogTailUpdate>;
 
 /// Runs the inner logs controller and processes the [`Effect`].
-pub struct LogsController {
+pub struct Controller {
     effects: Option<Vec<Effect>>,
-    inner: LogsControllerInner,
+    inner: ControllerInner,
     bifrost: Bifrost,
     metadata_writer: MetadataWriter,
     async_operations: JoinSet<Event>,
     find_logs_tail_semaphore: Arc<Semaphore>,
 }
 
-impl LogsController {
+impl Controller {
     pub fn new(
         bifrost: Bifrost,
         metadata_writer: MetadataWriter,
@@ -952,7 +952,7 @@ impl LogsController {
 
         let mut this = Self {
             effects: Some(Vec::new()),
-            inner: LogsControllerInner::new(
+            inner: ControllerInner::new(
                 Metadata::with_current(|m| m.logs_snapshot()),
                 retry_policy,
             )?,
@@ -1217,51 +1217,179 @@ impl LogsController {
 }
 
 /// Placement hints for the [`scheduler::Scheduler`] based on the logs configuration
+/// If logs controller is enabled, it uses the data of the logs controller to collect
+/// the preferred nodes and leader for a partition. Otherwise
+/// it uses the current known metadata instead.
 #[derive(derive_more::From)]
 pub struct LogsBasedPartitionProcessorPlacementHints<'a> {
     logs_controller: &'a LogsController,
 }
 
+impl<'a> LogsBasedPartitionProcessorPlacementHints<'a> {
+    fn preferred_nodes_from_logs(
+        &self,
+        partition_id: &PartitionId,
+    ) -> impl Iterator<Item = PlainNodeId> {
+        use itertools::Either;
+        let log_id = LogId::from(*partition_id);
+        let logs = Metadata::with_current(|m| m.logs_ref());
+        let Some(segment) = logs.chain(&log_id).map(|chain| chain.head()) else {
+            return Either::Right(iter::empty());
+        };
+
+        match segment.config.kind {
+            ProviderKind::InMemory | ProviderKind::Local => itertools::Either::Right(iter::empty()),
+            ProviderKind::Replicated => {
+                let Ok(params) =
+                    ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
+                else {
+                    return itertools::Either::Right(iter::empty());
+                };
+
+                Either::Left(params.nodeset.into_iter())
+            }
+        }
+    }
+
+    fn preferred_leader_from_logs(&self, partition_id: &PartitionId) -> Option<PlainNodeId> {
+        let log_id = LogId::from(*partition_id);
+        let logs = Metadata::with_current(|m| m.logs_ref());
+        let segment = logs.chain(&log_id).map(|chain| chain.head())?;
+
+        match segment.config.kind {
+            ProviderKind::InMemory | ProviderKind::Local => None,
+            ProviderKind::Replicated => {
+                let Ok(params) =
+                    ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
+                else {
+                    return None;
+                };
+
+                Some(params.sequencer.into())
+            }
+        }
+    }
+}
+
 impl<'a> scheduler::PartitionProcessorPlacementHints
     for LogsBasedPartitionProcessorPlacementHints<'a>
 {
-    fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = &PlainNodeId> {
-        let log_id = LogId::from(*partition_id);
+    fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = PlainNodeId> {
+        use itertools::Either;
 
-        self.logs_controller
-            .inner
-            .logs_state
-            .get(&log_id)
-            .and_then(|log_state| match log_state {
-                LogState::Available { configuration, .. } => configuration
-                    .as_ref()
-                    .map(|configuration| itertools::Either::Left(configuration.node_set_iter())),
-                LogState::Sealing { .. }
-                | LogState::Sealed { .. }
-                | LogState::Provisioning { .. } => None,
-            })
-            .unwrap_or_else(|| itertools::Either::Right(iter::empty()))
+        match self.logs_controller {
+            LogsController::Disabled => Either::Right(self.preferred_nodes_from_logs(partition_id)),
+            LogsController::Enabled(ref controller) => {
+                let log_id = LogId::from(*partition_id);
+                controller
+                    .inner
+                    .logs_state
+                    .get(&log_id)
+                    .and_then(|log_state| match log_state {
+                        LogState::Available { configuration, .. } => {
+                            configuration.as_ref().map(|configuration| {
+                                Either::Left(Either::Left(configuration.node_set_iter().cloned()))
+                            })
+                        }
+                        LogState::Sealing { .. }
+                        | LogState::Sealed { .. }
+                        | LogState::Provisioning { .. } => None,
+                    })
+                    .unwrap_or_else(|| Either::Left(Either::Right(iter::empty())))
+            }
+        }
     }
 
     fn preferred_leader(&self, partition_id: &PartitionId) -> Option<PlainNodeId> {
-        let log_id = LogId::from(*partition_id);
+        match self.logs_controller {
+            LogsController::Disabled => self.preferred_leader_from_logs(partition_id),
+            LogsController::Enabled(ref controller) => {
+                let log_id = LogId::from(*partition_id);
 
-        self.logs_controller
-            .inner
-            .logs_state
-            .get(&log_id)
-            .and_then(|log_state| match log_state {
-                LogState::Available { configuration, .. } => {
-                    configuration.as_ref().and_then(|configuration| {
-                        configuration
-                            .sequencer_node()
-                            .map(GenerationalNodeId::as_plain)
+                controller
+                    .inner
+                    .logs_state
+                    .get(&log_id)
+                    .and_then(|log_state| match log_state {
+                        LogState::Available { configuration, .. } => {
+                            configuration.as_ref().and_then(|configuration| {
+                                configuration
+                                    .sequencer_node()
+                                    .map(GenerationalNodeId::as_plain)
+                            })
+                        }
+                        LogState::Sealing { .. }
+                        | LogState::Sealed { .. }
+                        | LogState::Provisioning { .. } => None,
                     })
-                }
-                LogState::Sealing { .. }
-                | LogState::Sealed { .. }
-                | LogState::Provisioning { .. } => None,
-            })
+            }
+        }
+    }
+}
+
+pub enum LogsController {
+    Disabled,
+    Enabled(Controller),
+}
+
+impl LogsController {
+    pub fn disabled() -> LogsController {
+        Self::Disabled
+    }
+
+    pub fn enabled(
+        bifrost: Bifrost,
+        metadata_writer: MetadataWriter,
+    ) -> Result<LogsController, LogsControllerError> {
+        Ok(Self::Enabled(Controller::new(bifrost, metadata_writer)?))
+    }
+
+    pub fn on_observed_cluster_state_update(
+        &mut self,
+        nodes_config: &NodesConfiguration,
+        observed_cluster_state: &ObservedClusterState,
+        node_set_selector_hints: impl NodeSetSelectorHints,
+    ) -> Result<(), anyhow::Error> {
+        match self {
+            Self::Disabled => Ok(()),
+            Self::Enabled(ref mut controller) => controller.on_observed_cluster_state_update(
+                nodes_config,
+                observed_cluster_state,
+                node_set_selector_hints,
+            ),
+        }
+    }
+
+    pub fn find_logs_tail(&mut self) {
+        match self {
+            Self::Disabled => {}
+            Self::Enabled(ref mut controller) => {
+                controller.find_logs_tail();
+            }
+        }
+    }
+
+    pub async fn run_async_operations(&mut self) -> Result<Never> {
+        match self {
+            Self::Disabled => futures::future::pending().await,
+            Self::Enabled(ref mut controller) => controller.run_async_operations().await,
+        }
+    }
+
+    pub fn on_logs_update(&mut self, logs: Pinned<Logs>) -> Result<()> {
+        match self {
+            Self::Disabled => Ok(()),
+            Self::Enabled(ref mut controller) => controller.on_logs_update(logs),
+        }
+    }
+
+    pub fn on_partition_table_update(&mut self, partition_table: &PartitionTable) {
+        match self {
+            Self::Disabled => {}
+            Self::Enabled(ref mut controller) => {
+                controller.on_partition_table_update(partition_table)
+            }
+        }
     }
 }
 

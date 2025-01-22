@@ -77,6 +77,11 @@ pub struct AdminOptions {
 
     #[cfg(any(test, feature = "test-util"))]
     pub disable_cluster_controller: bool,
+
+    /// # Disable logs controller
+    ///
+    /// Default: false
+    pub disable_logs_controller: bool,
 }
 
 impl AdminOptions {
@@ -116,6 +121,7 @@ impl Default for AdminOptions {
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             log_tail_update_interval: Duration::from_secs(5 * 60).into(),
+            disable_logs_controller: false,
         }
     }
 }
