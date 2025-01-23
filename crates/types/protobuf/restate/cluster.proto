@@ -83,6 +83,10 @@ message BifrostProvider {
   string provider = 1;
   // only required if provider = "replicated"
   optional ReplicationProperty replication_property = 2;
+  // only required if provider = "replicated"
+  // The default target for new nodesets. 0 (default) auto-chooses a nodeset-size that
+  // balances read and write availability. It's a reasonable default for most cases.
+  uint32 target_nodeset_size = 3;
 }
 
 message ClusterConfiguration {
