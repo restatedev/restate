@@ -122,9 +122,7 @@ fn value_as_dt_opt(batch: &RecordBatch, col: usize, row: usize) -> Option<chrono
 
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 struct SimpleInvocationRowResult {
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     target: Option<String>,
     status: String,
 }
@@ -431,48 +429,31 @@ arrow_convert::arrow_enable_vec_for_type!(RestateDateTime);
 
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 struct InvocationRowResult {
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     target: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     target_service_ty: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     idempotency_key: Option<String>,
     status: String,
     created_at: Option<RestateDateTime>,
     modified_at: Option<RestateDateTime>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     pinned_deployment_id: Option<String>,
     retry_count: Option<u64>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     last_failure: Option<String>,
     last_failure_related_entry_index: Option<u64>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     last_failure_related_entry_name: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     last_failure_related_entry_type: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     last_attempt_deployment_id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     last_attempt_server: Option<String>,
     next_retry_at: Option<RestateDateTime>,
     last_start_at: Option<RestateDateTime>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     invoked_by_id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     invoked_by_target: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     comp_latest_deployment: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     known_deployment_id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     trace_id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     completion_result: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     completion_failure: Option<String>,
-    full_count: i64,
+    full_count: Option<i64>,
 }
 
 pub async fn find_active_invocations(
@@ -592,7 +573,7 @@ pub async fn find_active_invocations(
             idempotency_key: row.idempotency_key,
         });
 
-        full_count = row.full_count as usize;
+        full_count = row.full_count.expect("full_count") as usize;
     }
     Ok((active, full_count))
 }
@@ -643,17 +624,12 @@ pub async fn get_invocation(
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 struct JournalRowResult {
     index: Option<u32>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     entry_type: Option<String>,
     completed: Option<bool>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     invoked_id: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     invoked_target: Option<String>,
     sleep_wakeup_at: Option<RestateDateTime>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     name: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     promise_name: Option<String>,
 }
 
@@ -735,13 +711,9 @@ pub async fn get_invocation_journal(
 
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 pub struct StateKeysQueryResult {
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     service_name: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     service_key: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeString>")]
     key: Option<String>,
-    #[arrow_field(type = "Option<arrow_convert::field::LargeBinary>")]
     value: Option<Vec<u8>>,
 }
 
