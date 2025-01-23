@@ -12,6 +12,7 @@ use std::collections::{hash_map, BTreeMap, HashMap, HashSet};
 use std::num::NonZeroU8;
 use std::str::FromStr;
 
+use anyhow::Context;
 use bytestring::ByteString;
 use enum_map::Enum;
 use rand::RngCore;
@@ -138,6 +139,7 @@ impl ProviderConfiguration {
             ProviderKind::InMemory => ProviderConfiguration::InMemory,
             ProviderKind::Local => ProviderConfiguration::Local,
             ProviderKind::Replicated => ProviderConfiguration::Replicated(ReplicatedLogletConfig {
+                target_nodeset_size: configuration.bifrost.replicated_loglet.default_nodeset_size,
                 replication_property: configuration
                     .bifrost
                     .replicated_loglet
@@ -186,6 +188,12 @@ impl TryFrom<crate::protobuf::cluster::BifrostProvider> for ProviderConfiguratio
 
                 Ok(Self::Replicated(ReplicatedLogletConfig {
                     replication_property: config.replication_property.parse()?,
+                    target_nodeset_size: value
+                        .target_nodeset_size
+                        .try_into()
+                        // the error message helps the user learn about the logical maximum rather
+                        // than the type max limit.
+                        .context("target_nodeset_size is too big, please keep it under 128")?,
                 }))
             }
         }
@@ -197,6 +205,9 @@ impl TryFrom<crate::protobuf::cluster::BifrostProvider> for ProviderConfiguratio
 pub struct ReplicatedLogletConfig {
     #[serde_as(as = "DisplayFromStr")]
     pub replication_property: ReplicationProperty,
+    /// The default target for new nodesets. 0 (default) auto-chooses a nodeset-size that
+    /// balances read and write availability. It's a reasonable default for most cases.
+    pub target_nodeset_size: u16,
 }
 
 #[derive(
@@ -258,6 +269,7 @@ impl TryFrom<LogsSerde> for Logs {
                         config = Some(LogsConfiguration {
                             default_provider: ProviderConfiguration::Replicated(
                                 ReplicatedLogletConfig {
+                                    target_nodeset_size: 0,
                                     replication_property: ReplicationProperty::new(
                                         NonZeroU8::new(2).expect("2 is not 0"),
                                     ),

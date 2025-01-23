@@ -42,12 +42,17 @@ pub struct ProvisionOpts {
     partition_replication: Option<ReplicationProperty>,
 
     /// Default log provider kind
-    #[clap(long)]
+    #[clap(long, alias = "log-provider")]
     bifrost_provider: Option<ProviderKind>,
 
-    /// Replication property
+    /// Replication property of bifrost logs if using replicated as log provider
     #[clap(long, required_if_eq("bifrost_provider", "replicated"))]
-    replication_property: Option<ReplicationProperty>,
+    log_replication: Option<ReplicationProperty>,
+
+    /// The nodeset size used for replicated log, this is an advanced feature.
+    /// It's recommended to leave it unset (defaults to 0)
+    #[clap(long, required_if_eq("bifrost_provider", "replicated"))]
+    log_default_nodeset_size: Option<u16>,
 }
 
 async fn cluster_provision(
@@ -65,7 +70,8 @@ async fn cluster_provision(
     let log_provider = provision_opts.bifrost_provider.map(|bifrost_provider| {
         extract_default_provider(
             bifrost_provider,
-            provision_opts.replication_property.clone(),
+            provision_opts.log_replication.clone(),
+            provision_opts.log_default_nodeset_size.unwrap_or(0),
         )
     });
 
@@ -141,12 +147,14 @@ async fn cluster_provision(
 pub fn extract_default_provider(
     bifrost_provider: ProviderKind,
     replication_property: Option<ReplicationProperty>,
+    target_nodeset_size: u16,
 ) -> ProviderConfiguration {
     match bifrost_provider {
         ProviderKind::InMemory => ProviderConfiguration::InMemory,
         ProviderKind::Local => ProviderConfiguration::Local,
         ProviderKind::Replicated => {
             let config = ReplicatedLogletConfig {
+                target_nodeset_size,
                 replication_property: replication_property.clone().expect("is required"),
             };
             ProviderConfiguration::Replicated(config)
