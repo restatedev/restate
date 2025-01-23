@@ -9,7 +9,10 @@
 // by the Apache License, Version 2.0.
 
 mod nodeset;
+mod nodeset_selector;
 mod replication_property;
 
 pub use nodeset::*;
+pub use nodeset_selector::DomainAwareNodeSetSelector as NodeSetSelector;
+pub use nodeset_selector::{NodeSelectorError, NodeSetSelectorOptions};
 pub use replication_property::*;

@@ -51,6 +51,41 @@ impl ReplicationProperty {
         Self(map)
     }
 
+    /// Returns a list of all different replication factors with their largest scope.
+    /// The returned value is in the order of increasing replication factor. For instance,
+    /// for replication `{region:3, zone: 3, node:5}`, we should observe `[(region, 3), (node, 5)]`
+    /// since `zone` shares the same replication-factor as the bigger scope `region`.
+    ///
+    /// Another example: `{region: 3}` (or) `{region: 3, node: 3} will return [(region, 3)]
+    ///
+    /// Note that we allow `{region: 1, zone: 3}` as a replication property. It's allowed for
+    /// nodeset selectors, spread selectors, and any placement logic to interpret this as a signal
+    /// for locality preference. For instance, they might try and locate all copies on the
+    /// same region where the sequencer is (or partition) instead of spreading to three zones
+    /// across all available regions.
+    pub fn distinct_replication_factors(&self) -> Vec<(NodeLocationScope, u8)> {
+        let mut scope = NodeLocationScope::Root;
+        let mut res = Vec::new();
+        let mut prev_factor = 0;
+
+        while let Some(current_scope) = scope.next_smaller_scope() {
+            scope = current_scope;
+            match self.0.get(&current_scope) {
+                None => {
+                    continue;
+                }
+                Some(factor) if *factor == prev_factor => {
+                    continue;
+                }
+                Some(factor) => {
+                    prev_factor = *factor;
+                    res.push((current_scope, *factor));
+                }
+            }
+        }
+        res
+    }
+
     pub fn iter(&self) -> btree_map::Iter<'_, NodeLocationScope, u8> {
         self.0.iter()
     }
