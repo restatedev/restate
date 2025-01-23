@@ -252,29 +252,53 @@ impl RocksDbStorage {
     }
 
     pub async fn append(&mut self, entries: &Vec<Entry>) -> Result<(), Error> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        // sanity checks
+        assert!(
+            entries[0].index >= self.get_first_index(),
+            "Cannot overwrite compacted raft log entries, compacted: {}, append: {}",
+            self.get_first_index() - 1,
+            entries[0].index
+        );
+        assert!(
+            entries[0].index <= self.get_last_index() + 1,
+            "Cannot create holes in the raft log, last: {}, append: {}",
+            self.get_last_index(),
+            entries[0].index
+        );
+
+        let last_entry_index = entries.last().expect("to be present").index;
         let mut write_batch = WriteBatch::default();
         let mut buffer = mem::take(&mut self.buffer);
-        let mut last_index = self.last_index;
 
         {
             let cf = self.get_cf_handle();
 
+            let previous_last_index = self.get_last_index();
+
+            // delete all entries that are not being overwritten but have a higher index
+            for index in last_entry_index + 1..=previous_last_index {
+                let key = Self::raft_entry_key(index);
+                write_batch.delete_cf(&cf, key);
+            }
+
             for entry in entries {
-                assert_eq!(last_index + 1, entry.index, "Expect raft log w/o holes");
                 let key = Self::raft_entry_key(entry.index);
 
                 buffer.clear();
                 entry.write_to_writer(&mut (&mut buffer).writer())?;
 
                 write_batch.put_cf(&cf, key, &buffer);
-                last_index = entry.index;
             }
         }
 
         let result = self.commit_write_batch(write_batch).await;
 
         self.buffer = buffer;
-        self.last_index = last_index;
+        self.last_index = last_entry_index;
 
         result
     }
@@ -789,4 +813,255 @@ where
     E: Into<Box<dyn error::Error + Send + Sync>>,
 {
     raft::Error::Store(StorageError::Other(error.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::raft::storage::RocksDbStorage;
+    use googletest::IntoTestResult;
+    use raft::{Error as RaftError, GetEntriesContext, Storage, StorageError};
+    use raft_proto::eraftpb::{ConfState, Entry, Snapshot};
+    use restate_rocksdb::RocksDbManager;
+    use restate_types::config::{CommonOptions, MetadataStoreOptions, RocksDbOptions};
+    use restate_types::live::Constant;
+
+    #[test_log::test(restate_core::test)]
+    async fn initial_values() -> googletest::Result<()> {
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let storage = RocksDbStorage::create(
+            &MetadataStoreOptions::default(),
+            Constant::new(RocksDbOptions::default()).boxed(),
+        )
+        .await?;
+
+        assert_eq!(storage.get_last_index(), 0);
+        assert_eq!(storage.get_first_index(), 1);
+        assert_eq!(storage.get_snapshot()?, Snapshot::default());
+
+        Ok(())
+    }
+
+    #[test_log::test(restate_core::test)]
+    async fn append_entries() -> googletest::Result<()> {
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let mut storage = RocksDbStorage::create(
+            &MetadataStoreOptions::default(),
+            Constant::new(RocksDbOptions::default()).boxed(),
+        )
+        .await?;
+
+        let last_index = 10;
+        let entries = (1..=last_index)
+            .map(|index| Entry {
+                index,
+                term: 1,
+                data: index.to_be_bytes().to_vec().into(),
+                ..Entry::default()
+            })
+            .collect();
+
+        storage.append(&entries).await?;
+
+        assert_eq!(storage.get_last_index(), last_index);
+        assert_eq!(storage.get_first_index(), 1);
+
+        for index in 1..=last_index {
+            assert_eq!(
+                storage.get_entry(index)?.unwrap(),
+                entries[index as usize - 1]
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test_log::test(restate_core::test)]
+    async fn apply_snapshot() -> googletest::Result<()> {
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let mut storage = RocksDbStorage::create(
+            &MetadataStoreOptions::default(),
+            Constant::new(RocksDbOptions::default()).boxed(),
+        )
+        .await?;
+
+        let last_index = 10;
+        let snapshot_index = 5;
+        let entries = (1..=last_index)
+            .map(|index| Entry {
+                index,
+                term: index,
+                data: index.to_be_bytes().to_vec().into(),
+                ..Entry::default()
+            })
+            .collect();
+
+        storage.append(&entries).await?;
+
+        let mut conf_state = ConfState::default();
+        conf_state.set_voters(vec![1, 2, 3]);
+        let mut snapshot = Snapshot::default();
+        snapshot.mut_metadata().set_index(snapshot_index);
+        snapshot.mut_metadata().set_term(snapshot_index);
+        snapshot.mut_metadata().set_conf_state(conf_state.clone());
+        snapshot.set_data(vec![4, 5, 6].into());
+
+        storage.apply_snapshot(&snapshot).await?;
+
+        assert_eq!(storage.get_last_index(), last_index);
+        assert_eq!(storage.get_first_index(), snapshot_index + 1);
+        // check that we remember the term of the last compacted entry
+        assert_eq!(storage.term(snapshot_index)?, snapshot_index);
+        assert_eq!(storage.get_snapshot()?, snapshot);
+        assert_eq!(storage.get_conf_state()?, conf_state);
+        let hard_state = storage.get_hard_state()?;
+        assert_eq!(hard_state.get_commit(), snapshot_index);
+        assert_eq!(hard_state.get_term(), snapshot_index);
+
+        for index in (snapshot_index + 1)..=last_index {
+            assert_eq!(
+                storage.get_entry(index)?.unwrap(),
+                entries[index as usize - 1]
+            );
+        }
+
+        drop(storage);
+        // reset RocksDbManager to allow restarting the storage
+        RocksDbManager::get().reset().await.into_test_result()?;
+
+        // re-create storage to check that the information is persisted
+        let storage = RocksDbStorage::create(
+            &MetadataStoreOptions::default(),
+            Constant::new(RocksDbOptions::default()).boxed(),
+        )
+        .await?;
+
+        assert_eq!(storage.get_last_index(), last_index);
+        assert_eq!(storage.get_first_index(), snapshot_index + 1);
+        // check that we remember the term of the last compacted entry
+        assert_eq!(storage.term(snapshot_index)?, snapshot_index);
+        assert_eq!(storage.get_snapshot()?, snapshot);
+        assert_eq!(storage.get_conf_state()?, conf_state);
+        let hard_state = storage.get_hard_state()?;
+        assert_eq!(hard_state.get_commit(), snapshot_index);
+        assert_eq!(hard_state.get_term(), snapshot_index);
+
+        for index in (snapshot_index + 1)..=last_index {
+            assert_eq!(
+                storage.get_entry(index)?.unwrap(),
+                entries[index as usize - 1]
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test_log::test(restate_core::test)]
+    async fn trim() -> googletest::Result<()> {
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let mut storage = RocksDbStorage::create(
+            &MetadataStoreOptions::default(),
+            Constant::new(RocksDbOptions::default()).boxed(),
+        )
+        .await?;
+
+        let last_index = 10;
+        let entries = (1..=last_index)
+            .map(|index| Entry {
+                index,
+                term: index,
+                data: index.to_be_bytes().to_vec().into(),
+                ..Entry::default()
+            })
+            .collect();
+
+        storage.append(&entries).await?;
+
+        let trim_point = 5;
+        let mut txn = storage.txn();
+        txn.trim(trim_point);
+        txn.commit().await?;
+
+        assert_eq!(storage.get_first_index(), trim_point + 1);
+        assert_eq!(storage.get_last_index(), last_index);
+
+        let stored_entries = storage.entries(
+            trim_point + 1,
+            last_index + 1,
+            None,
+            GetEntriesContext::empty(false),
+        )?;
+
+        for (index, entry) in stored_entries.iter().enumerate() {
+            assert_eq!(entry, &entries[index + trim_point as usize]);
+        }
+
+        // trying to access entries which are out of bounds
+        assert_eq!(
+            storage.entries(
+                trim_point,
+                trim_point + 1,
+                None,
+                GetEntriesContext::empty(false)
+            ),
+            Err(RaftError::Store(StorageError::Compacted))
+        );
+        assert!(storage
+            .entries(
+                last_index + 1,
+                last_index + 2,
+                None,
+                GetEntriesContext::empty(false)
+            )
+            .is_err());
+
+        Ok(())
+    }
+
+    #[test_log::test(restate_core::test)]
+    async fn overwrite_entries() -> googletest::Result<()> {
+        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let mut storage = RocksDbStorage::create(
+            &MetadataStoreOptions::default(),
+            Constant::new(RocksDbOptions::default()).boxed(),
+        )
+        .await?;
+
+        let last_index = 10;
+        let entries = (1..=last_index)
+            .map(|index| Entry {
+                index,
+                term: index,
+                data: index.to_be_bytes().to_vec().into(),
+                ..Entry::default()
+            })
+            .collect();
+
+        storage.append(&entries).await?;
+
+        let new_last_index = 8;
+        let new_entries = (5..=new_last_index)
+            .map(|index| Entry {
+                index,
+                term: index + 1,
+                data: (index + 1).to_be_bytes().to_vec().into(),
+                ..Entry::default()
+            })
+            .collect();
+
+        storage.append(&new_entries).await?;
+
+        assert_eq!(storage.get_last_index(), new_last_index);
+        let stored_entries =
+            storage.entries(1, new_last_index + 1, None, GetEntriesContext::empty(false))?;
+
+        for index in 1..5 {
+            assert_eq!(stored_entries[index - 1], entries[index - 1]);
+        }
+
+        for index in 5..=(new_last_index as usize) {
+            assert_eq!(stored_entries[index - 1], new_entries[index - 5]);
+        }
+
+        Ok(())
+    }
 }
