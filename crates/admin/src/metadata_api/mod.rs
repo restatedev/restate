@@ -23,6 +23,7 @@ use axum::{
 };
 use bytestring::ByteString;
 use http::{header::ToStrError, HeaderMap, StatusCode};
+use tracing::trace;
 
 use restate_core::metadata_store::{MetadataStore, VersionedValue};
 use restate_metadata_store::{MetadataStoreClient, Precondition, ReadError, WriteError};
@@ -84,7 +85,7 @@ async fn delete_key(
     }
 
     // todo(azmy): implement both PreconditionHeader and VersionHeader
-    // as extractors after updating axium to version > 0.8
+    //  as extractors after updating axum to version > 0.8
     let precondition: IfMatch = headers
         .get(HEADER_IF_MATCH)
         .ok_or(IfMatchError::MissingPrecondition)?
@@ -106,7 +107,7 @@ async fn put_key(
     value: Bytes,
 ) -> Result<impl IntoResponse, StoreApiError> {
     // todo(azmy): implement both PreconditionHeader and VersionHeader
-    // as extractors after updating axium to version > 0.8
+    //  as extractors after updating axum to version > 0.8
     let key = key.into();
 
     if is_protected(&key) {
@@ -125,13 +126,27 @@ async fn put_key(
         .to_str()?
         .parse()?;
 
+    let version = version.into();
     let versioned = VersionedValue {
-        version: version.into(),
-        value,
+        version,
+        value: value.clone(),
     };
 
-    store.put(key, versioned, precondition.into()).await?;
-    Ok(())
+    let result = store
+        .put(key.clone(), versioned, precondition.clone().into())
+        .await;
+    trace!(
+        "Put key: {:?} @{} condition: {:?} value: {} -> result: {}",
+        key,
+        version,
+        precondition,
+        String::from_utf8_lossy(&value),
+        result
+            .as_ref()
+            .map(|_| "OK".to_owned())
+            .unwrap_or_else(|e| format!("ERROR: {}", e))
+    );
+    Ok(result?)
 }
 
 /// Gets a key from the metadata store
@@ -140,11 +155,20 @@ async fn get_key(
     State(store): State<MetadataStoreState>,
 ) -> Result<impl IntoResponse, StoreApiError> {
     let value = store
-        .get(key.into())
+        .get(key.clone().into())
         .await?
-        .ok_or(StoreApiError::NotFound)?;
+        .ok_or(StoreApiError::NotFound);
 
-    Ok(VersionedValueResponse::from(value))
+    match &value {
+        Ok(value) => trace!(
+            "Get key: {:?} -> value: {} @{}",
+            key,
+            String::from_utf8_lossy(&value.value),
+            value.version,
+        ),
+        Err(e) => trace!("Get key: {:?} -> ERROR: {:?}", key, e),
+    }
+    Ok(VersionedValueResponse::from(value?))
 }
 
 /// Gets a key version from the metadata store
@@ -235,6 +259,7 @@ enum IfMatchError {
     InvalidPrecondition,
 }
 
+#[derive(Debug, Clone)]
 struct IfMatch(Precondition);
 
 impl FromStr for IfMatch {
