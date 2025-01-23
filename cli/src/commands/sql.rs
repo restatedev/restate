@@ -60,7 +60,7 @@ pub async fn run_sql(State(env): State<CliEnv>, opts: &Sql) -> Result<()> {
 async fn run_query(env: &CliEnv, sql_opts: &Sql) -> Result<()> {
     let client = crate::clients::DataFusionHttpClient::new(env).await?;
     let start_time = Instant::now();
-    let resp = client.run_query(sql_opts.query.clone()).await?;
+    let resp = client.run_arrow_query(sql_opts.query.clone()).await?;
 
     let mut table = Table::new_styled();
     // add headers.

@@ -31,14 +31,6 @@ impl AdminApiVersion {
         *self as u16
     }
 
-    pub const fn as_path_segment(&self) -> Option<&str> {
-        match self {
-            AdminApiVersion::Unknown => None,
-            AdminApiVersion::V1 => Some("v1"),
-            AdminApiVersion::V2 => Some("v2"),
-        }
-    }
-
     pub fn choose_max_supported_version(
         client_versions: RangeInclusive<AdminApiVersion>,
         server_versions: RangeInclusive<u16>,
