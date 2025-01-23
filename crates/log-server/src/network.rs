@@ -18,7 +18,6 @@ use anyhow::Context;
 use futures::stream::FuturesUnordered;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, trace};
-use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_core::cancellation_watcher;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
@@ -36,7 +35,7 @@ use crate::metadata::LogletStateMap;
 
 const DEFAULT_WRITERS_CAPACITY: usize = 128;
 
-type LogletWorkerMap = HashMap<LogletId, LogletWorkerHandle, Xxh3Builder>;
+type LogletWorkerMap = HashMap<LogletId, LogletWorkerHandle>;
 
 pub struct RequestPump {
     _configuration: Live<Configuration>,
@@ -107,8 +106,7 @@ impl RequestPump {
 
         let mut shutdown = std::pin::pin!(cancellation_watcher());
 
-        let mut loglet_workers =
-            HashMap::with_capacity_and_hasher(DEFAULT_WRITERS_CAPACITY, Xxh3Builder::default());
+        let mut loglet_workers = HashMap::with_capacity(DEFAULT_WRITERS_CAPACITY);
 
         health_status.update(LogServerStatus::Ready);
 

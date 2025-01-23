@@ -19,7 +19,6 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::partition_table::PartitionTable;
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
-use xxhash_rust::xxh3::Xxh3Builder;
 
 use restate_types::identifiers::PartitionId;
 use restate_types::{NodeId, Version};
@@ -106,7 +105,7 @@ struct PartitionToNodesRoutingTable {
     version: Version,
     /// A mapping of partition IDs to node IDs that are believed to be authoritative for that
     /// serving requests for that partition.
-    inner: HashMap<PartitionId, NodeId, Xxh3Builder>,
+    inner: HashMap<PartitionId, NodeId>,
 }
 
 /// Task to refresh the routing information, periodically or on-demand. A single
@@ -222,10 +221,10 @@ pub fn spawn_partition_routing_refresher(
 
 impl From<Pinned<PartitionTable>> for PartitionToNodesRoutingTable {
     fn from(value: Pinned<PartitionTable>) -> Self {
-        let mut inner = HashMap::<PartitionId, NodeId, Xxh3Builder>::default();
+        let mut inner = HashMap::<PartitionId, NodeId>::default();
         for (partition_id, partition) in value.partitions() {
             if let Some(leader) = partition.placement.leader() {
-                inner.insert(*partition_id, (*leader).into());
+                inner.insert(*partition_id, leader.into());
             }
         }
 

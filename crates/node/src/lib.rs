@@ -36,8 +36,9 @@ use restate_core::{cancellation_watcher, Metadata, TaskKind};
 use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter};
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
-use restate_metadata_store::local::LocalMetadataStoreService;
-use restate_metadata_store::MetadataStoreClient;
+use restate_metadata_store::{
+    BoxedMetadataStoreService, MetadataStoreClient, MetadataStoreService,
+};
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::GenericError;
 use restate_types::health::Health;
@@ -46,11 +47,12 @@ use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfigurati
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
-use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
-use restate_types::partition_table::{PartitionTable, PartitionTableBuilder, ReplicationStrategy};
+use restate_types::nodes_config::{
+    LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
+};
+use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::protobuf::common::{
-    AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
-    WorkerStatus,
+    AdminStatus, IngressStatus, LogServerStatus, NodeRpcStatus, NodeStatus, WorkerStatus,
 };
 use restate_types::storage::StorageEncode;
 use restate_types::{GenerationalNodeId, Version, Versioned};
@@ -109,7 +111,7 @@ pub enum BuildError {
 
     #[error("building metadata store failed: {0}")]
     #[code(unknown)]
-    MetadataStore(#[from] restate_metadata_store::local::BuildError),
+    MetadataStore(#[from] anyhow::Error),
 }
 
 pub struct Node {
@@ -120,7 +122,7 @@ pub struct Node {
     partition_routing_refresher: PartitionRoutingRefresher,
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
-    metadata_store_role: Option<LocalMetadataStoreService>,
+    metadata_store_role: Option<BoxedMetadataStoreService>,
     base_role: BaseRole,
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole>,
@@ -137,17 +139,34 @@ impl Node {
         let mut server_builder = NetworkServerBuilder::default();
         let config = updateable_config.pinned();
 
+        let metadata_builder = MetadataBuilder::default();
+        let metadata = metadata_builder.to_metadata();
+        // We need to se the global metadata as soon as possible since the metadata store client's
+        // auto update functionality won't be started if the global metadata is not set.
+        let is_set = TaskCenter::try_set_global_metadata(metadata.clone());
+        debug_assert!(is_set, "Global metadata was already set");
+
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
-        let metadata_store_role = if config.has_role(Role::MetadataStore) {
+        let metadata_store_client = restate_metadata_store::local::create_client(
+            config.common.metadata_store_client.clone(),
+        )
+        .await
+        .map_err(BuildError::MetadataStoreClient)?;
+        let metadata_manager =
+            MetadataManager::new(metadata_builder, metadata_store_client.clone());
+        let metadata_writer = metadata_manager.writer();
+
+        let metadata_store_role = if config.has_role(Role::MetadataServer) {
             Some(
-                LocalMetadataStoreService::create(
-                    health.metadata_server_status(),
+                restate_metadata_store::create_metadata_store(
                     &config.metadata_store,
                     updateable_config
                         .clone()
                         .map(|config| &config.metadata_store.rocksdb)
                         .boxed(),
+                    health.metadata_server_status(),
+                    Some(metadata_writer),
                     &mut server_builder,
                 )
                 .await?,
@@ -156,18 +175,8 @@ impl Node {
             None
         };
 
-        let metadata_store_client = restate_metadata_store::local::create_client(
-            config.common.metadata_store_client.clone(),
-        )
-        .await
-        .map_err(BuildError::MetadataStoreClient)?;
-
         let mut router_builder = MessageRouterBuilder::default();
-        let metadata_builder = MetadataBuilder::default();
-        let metadata = metadata_builder.to_metadata();
-        let networking = Networking::new(metadata_builder.to_metadata(), config.networking.clone());
-        let metadata_manager =
-            MetadataManager::new(metadata_builder, metadata_store_client.clone());
+        let networking = Networking::new(metadata.clone(), config.networking.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
         let partition_routing_refresher = PartitionRoutingRefresher::default();
 
@@ -244,9 +253,9 @@ impl Node {
             && config.has_role(Role::HttpIngress)
             // todo remove once the safe fallback version supports the HttpIngress role
             || !config
-                .ingress
-                .experimental_feature_enable_separate_ingress_role
-                && config.has_role(Role::Worker)
+            .ingress
+            .experimental_feature_enable_separate_ingress_role
+            && config.has_role(Role::Worker)
         {
             Some(IngressRole::create(
                 updateable_config
@@ -323,9 +332,6 @@ impl Node {
         let config = self.updateable_config.pinned();
 
         let metadata_writer = self.metadata_manager.writer();
-        let metadata = self.metadata_manager.metadata().clone();
-        let is_set = TaskCenter::try_set_global_metadata(metadata.clone());
-        debug_assert!(is_set, "Global metadata was already set");
 
         // Start metadata manager
         spawn_metadata_manager(self.metadata_manager)?;
@@ -356,10 +362,11 @@ impl Node {
             .await;
 
         if let Some(metadata_store) = self.metadata_store_role {
-            TaskCenter::spawn(TaskKind::MetadataStore, "metadata-store", async move {
-                metadata_store.run().await?;
-                Ok(())
-            })?;
+            TaskCenter::spawn(
+                TaskKind::MetadataStore,
+                "metadata-store",
+                metadata_store.run(),
+            )?;
         }
 
         if config.common.allow_bootstrap {
@@ -489,10 +496,10 @@ impl Node {
                             .await;
                         trace!("Worker role is reporting ready");
                     }
-                    Role::MetadataStore => {
+                    Role::MetadataServer => {
                         self.health
                             .metadata_server_status()
-                            .wait_for_value(MetadataServerStatus::Ready)
+                            .wait_for(|status| status.is_running())
                             .await;
                         trace!("Metadata role is reporting ready");
                     }
@@ -544,10 +551,9 @@ impl Node {
 pub struct ClusterConfiguration {
     #[into_prost(map = "num_partitions_to_u32")]
     pub num_partitions: NonZeroU16,
+    pub partition_replication: PartitionReplication,
     #[prost(required)]
-    pub replication_strategy: ReplicationStrategy,
-    #[prost(required)]
-    pub default_provider: ProviderConfiguration,
+    pub bifrost_provider: ProviderConfiguration,
 }
 
 fn num_partitions_to_u32(num_partitions: NonZeroU16) -> u32 {
@@ -558,8 +564,8 @@ impl ClusterConfiguration {
     pub fn from_configuration(configuration: &Configuration) -> Self {
         ClusterConfiguration {
             num_partitions: configuration.common.bootstrap_num_partitions,
-            replication_strategy: ReplicationStrategy::default(),
-            default_provider: ProviderConfiguration::from_configuration(configuration),
+            partition_replication: configuration.admin.default_partition_replication.clone(),
+            bifrost_provider: ProviderConfiguration::from_configuration(configuration),
         }
     }
 }
@@ -619,6 +625,7 @@ fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfi
         common_opts.advertised_address.clone(),
         common_opts.roles,
         LogServerConfig::default(),
+        MetadataServerConfig::default(),
     );
     initial_nodes_configuration.upsert_node(node_config);
     initial_nodes_configuration
@@ -633,11 +640,11 @@ fn generate_initial_metadata(
         .with_equally_sized_partitions(cluster_configuration.num_partitions.get())
         .expect("Empty partition table should not have conflicts");
     initial_partition_table_builder
-        .set_replication_strategy(cluster_configuration.replication_strategy);
+        .set_partition_replication(cluster_configuration.partition_replication.clone());
     let initial_partition_table = initial_partition_table_builder.build();
 
     let initial_logs = Logs::with_logs_configuration(LogsConfiguration::from(
-        cluster_configuration.default_provider.clone(),
+        cluster_configuration.bifrost_provider.clone(),
     ));
 
     let initial_nodes_configuration = create_initial_nodes_configuration(common_opts);

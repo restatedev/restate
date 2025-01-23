@@ -36,15 +36,17 @@ ENV SCCACHE_DIR=/var/cache/sccache
 # Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
 ARG CARGO_PROFILE_RELEASE_DEBUG=false
 ARG RESTATE_FEATURES=''
-RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release --bin restate-server
+RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release --bins
 COPY . .
 # Mount the sccache directory as a cache to leverage sccache during build
 # Caching layer if nothing has changed
 # Use sccache during the main build
 RUN --mount=type=cache,target=/var/cache/sccache \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release --bin restate-server && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release --bins && \
     just notice-file && \
-    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server && \
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restatectl target/restatectl && \
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate target/restate
 
 FROM builder AS upload-false
 
@@ -64,5 +66,7 @@ COPY --from=builder /restate/LICENSE /LICENSE
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
 COPY --from=upload /restate/target/restate-server /usr/local/bin
+COPY --from=upload /restate/target/restatectl /usr/local/bin
+COPY --from=upload /restate/target/restate /usr/local/bin
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/restate-server"]

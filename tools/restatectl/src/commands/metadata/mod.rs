@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Context;
+use cling::prelude::*;
 use std::path::PathBuf;
 use std::str::FromStr;
-
-use cling::prelude::*;
 
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_metadata_store::local::create_client;
@@ -22,6 +22,7 @@ use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 mod get;
 mod patch;
 mod put;
+mod status;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Metadata {
@@ -31,19 +32,22 @@ pub enum Metadata {
     Patch(patch::PatchValueOpts),
     /// Replace a single key's value from the metastore
     Put(put::PutValueOpts),
+    /// Get the status of the embedded Restate metadata store
+    Status(status::StatusOpts),
 }
 
 #[derive(Args, Clone, Debug)]
 #[clap()]
 pub struct MetadataCommonOpts {
-    /// Metadata store server address; for Etcd addresses use comma-separated list
+    /// Metadata store server addresses
     #[arg(
         short,
-        long = "address",
-        default_value = "http://127.0.0.1:5122",
-        env = "RESTATE_METADATA_ADDRESS"
+        long = "addresses",
+        default_values = &["http://127.0.0.1:5122"],
+        env = "RESTATE_METADATA_ADDRESSES",
+        value_delimiter = ','
     )]
-    address: String,
+    addresses: Vec<String>,
 
     /// Metadata store access mode
     #[arg(long, default_value_t)]
@@ -73,7 +77,7 @@ enum MetadataAccessMode {
     Direct,
 }
 
-#[derive(clap::ValueEnum, Clone, Default, Debug, strum::Display)]
+#[derive(clap::ValueEnum, Clone, Default, Debug, strum::Display, PartialEq)]
 #[strum(serialize_all = "kebab-case")]
 enum RemoteServiceType {
     #[default]
@@ -109,15 +113,16 @@ pub async fn create_metadata_store_client(
 ) -> anyhow::Result<MetadataStoreClient> {
     let client = match opts.remote_service_type {
         RemoteServiceType::Restate => restate_types::config::MetadataStoreClient::Embedded {
-            address: AdvertisedAddress::from_str(opts.address.as_str())
-                .map_err(|e| anyhow::anyhow!("Failed to parse address: {}", e))?,
+            addresses: opts
+                .addresses
+                .iter()
+                .map(|address| {
+                    AdvertisedAddress::from_str(address).context("failed to parse address")
+                })
+                .collect::<Result<Vec<_>, _>>()?,
         },
         RemoteServiceType::Etcd => restate_types::config::MetadataStoreClient::Etcd {
-            addresses: opts
-                .address
-                .split(',')
-                .map(|s| s.to_string())
-                .collect::<Vec<String>>(),
+            addresses: opts.addresses.clone(),
         },
     };
 

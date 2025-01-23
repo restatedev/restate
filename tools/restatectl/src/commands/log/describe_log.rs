@@ -20,7 +20,7 @@ use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::logs::metadata::{Chain, Logs, ProviderKind, Segment, SegmentIndex};
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::storage::StorageCodec;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;

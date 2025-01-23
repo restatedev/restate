@@ -8,22 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod grpc;
-mod store;
-
-mod service;
-
+use crate::grpc::client::GrpcMetadataStoreClient;
 use restate_core::metadata_store::providers::create_object_store_based_meta_store;
 use restate_core::metadata_store::{providers::EtcdMetadataStore, MetadataStoreClient};
+use restate_core::network::NetworkServerBuilder;
+use restate_rocksdb::RocksError;
+use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::health::HealthStatus;
+use restate_types::live::BoxedLiveLoad;
+use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{
     config::{MetadataStoreClient as MetadataStoreClientConfig, MetadataStoreClientOptions},
     errors::GenericError,
 };
 
-use crate::local::grpc::client::LocalMetadataStoreClient;
-pub use service::{BuildError, Error, LocalMetadataStoreService};
+mod store;
 
-/// Creates a [`MetadataStoreClient`].
+use crate::MetadataStoreRunner;
+pub use store::LocalMetadataStore;
+
+/// Creates a [`MetadataStoreClient`] for the [`GrpcMetadataStoreClient`].
 pub async fn create_client(
     metadata_store_client_options: MetadataStoreClientOptions,
 ) -> Result<MetadataStoreClient, GenericError> {
@@ -34,9 +38,10 @@ pub async fn create_client(
     );
 
     let client = match metadata_store_client_options.metadata_store_client.clone() {
-        MetadataStoreClientConfig::Embedded { address } => {
-            let store = LocalMetadataStoreClient::new(address, &metadata_store_client_options);
-            MetadataStoreClient::new(store, backoff_policy)
+        MetadataStoreClientConfig::Embedded { addresses } => {
+            let inner_client =
+                GrpcMetadataStoreClient::new(addresses, metadata_store_client_options);
+            MetadataStoreClient::new(inner_client, backoff_policy)
         }
         MetadataStoreClientConfig::Etcd { addresses } => {
             let store = EtcdMetadataStore::new(addresses, &metadata_store_client_options).await?;
@@ -49,6 +54,17 @@ pub async fn create_client(
     };
 
     Ok(client)
+}
+
+pub(crate) async fn create_store(
+    metadata_store_options: &MetadataStoreOptions,
+    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    health_status: HealthStatus<MetadataServerStatus>,
+    server_builder: &mut NetworkServerBuilder,
+) -> Result<MetadataStoreRunner<LocalMetadataStore>, RocksError> {
+    let store =
+        LocalMetadataStore::create(metadata_store_options, rocksdb_options, health_status).await?;
+    Ok(MetadataStoreRunner::new(store, server_builder))
 }
 
 #[cfg(test)]

@@ -34,19 +34,23 @@ ENV SCCACHE_DIR=/var/cache/sccache
 # Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
 ARG CARGO_PROFILE_RELEASE_DEBUG=false
 ARG RESTATE_FEATURES=''
-RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --bin restate-server
+RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --bins
 COPY . .
 # Mount the sccache directory as a cache to leverage sccache during build
 # Caching layer if nothing has changed
 # Use sccache during the main build
 RUN --mount=type=cache,target=/var/cache/sccache \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --bin restate-server && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --bins && \
     just notice-file && \
-    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restate-server target/restate-server
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restate-server target/restate-server && \
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restatectl target/restatectl && \
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restate target/restate
 
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:bookworm-slim AS runtime
 COPY --from=builder /restate/target/restate-server /usr/local/bin
+COPY --from=builder /restate/target/restatectl /usr/local/bin
+COPY --from=builder /restate/target/restate /usr/local/bin
 COPY --from=builder /restate/NOTICE /NOTICE
 COPY --from=builder /restate/LICENSE /LICENSE
 # copy OS roots

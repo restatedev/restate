@@ -18,7 +18,7 @@ use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest as ProtoProvisionClusterRequest;
 use restate_types::logs::metadata::ProviderConfiguration;
-use restate_types::partition_table::ReplicationStrategy;
+use restate_types::partition_table::PartitionReplication;
 use restate_types::retries::RetryPolicy;
 use restate_types::{
     config::{Configuration, MetadataStoreClient},
@@ -184,11 +184,11 @@ impl Node {
                 "metadata-node",
                 node_config,
                 binary_source.clone(),
-                enum_set!(Role::Admin | Role::MetadataStore),
+                enum_set!(Role::Admin | Role::MetadataServer),
             );
             let metadata_node_address = metadata_node.advertised_address().clone();
             *metadata_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-                address: metadata_node_address.clone(),
+                addresses: vec![metadata_node_address.clone()],
             };
 
             nodes.push(metadata_node);
@@ -217,7 +217,7 @@ impl Node {
                 roles,
             );
             *node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-                address: metadata_node_address.clone(),
+                addresses: vec![metadata_node_address.clone()],
             };
             nodes.push(node);
         }
@@ -237,15 +237,17 @@ impl Node {
         let base_dir = base_dir.into();
 
         // ensure file paths are relative to the base dir
-        if let MetadataStoreClient::Embedded {
-            address: AdvertisedAddress::Uds(file),
-        } = &mut self
+        if let MetadataStoreClient::Embedded { addresses } = &mut self
             .base_config
             .common
             .metadata_store_client
             .metadata_store_client
         {
-            *file = base_dir.join(&*file)
+            for advertised_address in addresses {
+                if let AdvertisedAddress::Uds(file) = advertised_address {
+                    *file = base_dir.join(&*file)
+                }
+            }
         }
         if self.base_config.common.bind_address.is_none() {
             // Derive bind_address from advertised_address
@@ -759,7 +761,7 @@ impl StartedNode {
     pub async fn provision_cluster(
         &self,
         num_partitions: Option<NonZeroU16>,
-        placement_strategy: Option<ReplicationStrategy>,
+        partition_replication: PartitionReplication,
         log_provider: Option<ProviderConfiguration>,
     ) -> anyhow::Result<bool> {
         let channel = create_tonic_channel(
@@ -770,7 +772,7 @@ impl StartedNode {
         let request = ProtoProvisionClusterRequest {
             dry_run: false,
             num_partitions: num_partitions.map(|num| u32::from(num.get())),
-            placement_strategy: placement_strategy.map(Into::into),
+            partition_replication: partition_replication.into(),
             log_provider: log_provider.map(|log_provider| log_provider.into()),
         };
 

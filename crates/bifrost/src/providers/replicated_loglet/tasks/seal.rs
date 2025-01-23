@@ -17,7 +17,7 @@ use restate_core::{TaskCenter, TaskKind};
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
-use restate_types::replicated_loglet::{EffectiveNodeSet, NodeSet, ReplicatedLogletParams};
+use restate_types::replicated_loglet::{LogNodeSetExt, NodeSet, ReplicatedLogletParams};
 use restate_types::retries::RetryPolicy;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
@@ -56,10 +56,10 @@ impl SealTask {
         networking: Networking<T>,
     ) -> Result<LogletOffset, ReplicatedLogletError> {
         // Use the entire nodeset except for StorageState::Disabled.
-        let effective_nodeset = EffectiveNodeSet::new(
-            &self.my_params.nodeset,
-            &networking.metadata().nodes_config_ref(),
-        );
+        let effective_nodeset = self
+            .my_params
+            .nodeset
+            .to_effective(&networking.metadata().nodes_config_ref());
 
         let (tx, mut rx) = mpsc::unbounded_channel();
 

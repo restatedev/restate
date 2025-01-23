@@ -10,8 +10,9 @@
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
+import "restate/common.proto";
 
-package dev.restate.metadata_store_svc;
+package restate.metadata_store_svc;
 
 // Grpc service definition for a MetadataStore implementation.
 service MetadataStoreSvc {
@@ -26,6 +27,12 @@ service MetadataStoreSvc {
 
   // Deletes the given kv-pair
   rpc Delete(DeleteRequest) returns (google.protobuf.Empty);
+
+  // Provisions the metadata store with the given input
+  rpc Provision(ProvisionRequest) returns (ProvisionResponse);
+
+  // Returns the status of the metadata store svc
+  rpc Status(google.protobuf.Empty) returns (StatusResponse);
 }
 
 message GetRequest {
@@ -73,4 +80,26 @@ message Precondition {
   optional Version version = 2;
 }
 
+message ProvisionRequest {
+  bytes nodes_configuration = 1;
+}
 
+message ProvisionResponse {
+  bool newly_provisioned = 1;
+}
+
+message StatusResponse {
+  restate.common.MetadataServerStatus status = 1;
+  optional MetadataStoreConfiguration configuration = 2;
+  optional MemberId leader = 3;
+}
+
+message MetadataStoreConfiguration {
+  uint32 id = 1;
+  repeated MemberId members = 2;
+}
+
+message MemberId {
+  uint32 node_id = 1;
+  uint64 storage_id = 2;
+}

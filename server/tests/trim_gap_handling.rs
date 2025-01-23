@@ -1,4 +1,4 @@
-// Copyright (c) 2024 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -148,7 +148,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         enum_set!(Role::HttpIngress | Role::Worker),
     );
     *worker_3.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-        address: cluster.nodes[0].node_address().clone(),
+        addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     let mut trim_gap_encountered =
@@ -173,7 +173,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         enum_set!(Role::HttpIngress | Role::Worker),
     );
     *worker_3.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-        address: cluster.nodes[0].node_address().clone(),
+        addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     let ingress_url = format!(

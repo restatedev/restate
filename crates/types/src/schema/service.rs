@@ -125,7 +125,7 @@ pub struct ServiceMetadata {
 }
 
 // This type is used only for exposing the handler metadata, and not internally. See [ServiceAndHandlerType].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum HandlerMetadataType {
     Exclusive,
@@ -214,6 +214,21 @@ pub struct HandlerSchemas {
     pub metadata: HashMap<String, String>,
 }
 
+impl HandlerSchemas {
+    pub fn as_handler_metadata(&self, name: String) -> HandlerMetadata {
+        HandlerMetadata {
+            name,
+            ty: self.target_meta.target_ty.into(),
+            documentation: self.documentation.clone(),
+            metadata: self.metadata.clone(),
+            input_description: self.target_meta.input_rules.to_string(),
+            output_description: self.target_meta.output_rules.to_string(),
+            input_json_schema: self.target_meta.input_rules.json_schema(),
+            output_json_schema: self.target_meta.output_rules.json_schema(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServiceSchemas {
     pub revision: ServiceRevision,
@@ -241,16 +256,7 @@ impl ServiceSchemas {
             handlers: self
                 .handlers
                 .iter()
-                .map(|(h_name, h_schemas)| HandlerMetadata {
-                    name: h_name.clone(),
-                    ty: h_schemas.target_meta.target_ty.into(),
-                    documentation: h_schemas.documentation.clone(),
-                    metadata: h_schemas.metadata.clone(),
-                    input_description: h_schemas.target_meta.input_rules.to_string(),
-                    output_description: h_schemas.target_meta.output_rules.to_string(),
-                    input_json_schema: h_schemas.target_meta.input_rules.json_schema(),
-                    output_json_schema: h_schemas.target_meta.output_rules.json_schema(),
-                })
+                .map(|(h_name, h_schemas)| h_schemas.as_handler_metadata(h_name.clone()))
                 .collect(),
             ty: self.ty,
             documentation: self.documentation.clone(),

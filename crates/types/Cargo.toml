@@ -24,6 +24,7 @@ restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-utoipa = { workspace = true }
 
+ahash = {workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 base62 = { version = "2.0.2" }
@@ -67,7 +68,7 @@ serde_path_to_error = { version = "0.1" }
 serde_with = { workspace = true }
 sha2 = { workspace = true }
 smallvec = { workspace = true }
-smartstring = { workspace = true }
+smartstring = { workspace = true, features = ["serde"]}
 static_assertions = { workspace = true }
 strum = { workspace = true }
 sync_wrapper = { workspace = true }

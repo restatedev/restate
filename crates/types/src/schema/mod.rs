@@ -56,12 +56,12 @@ impl Schema {
         self.version = self.version.next();
     }
 
-    /// Find existing deployment that knows about a particular endpoint
-    pub fn find_existing_deployment_by_endpoint(
-        &self,
-        endpoint: &DeploymentType,
-    ) -> Option<(&DeploymentId, &DeploymentSchemas)> {
-        self.deployments.iter().find(|(_, schemas)| {
+    /// Find existing deployments that know about a particular endpoint
+    pub fn find_existing_deployments_by_endpoint<'a>(
+        &'a self,
+        endpoint: &'a DeploymentType,
+    ) -> impl Iterator<Item = (&'a DeploymentId, &'a DeploymentSchemas)> {
+        self.deployments.iter().filter(|(_, schemas)| {
             schemas.metadata.ty.protocol_type() == endpoint.protocol_type()
                 && schemas.metadata.ty.normalized_address() == endpoint.normalized_address()
         })
@@ -105,14 +105,18 @@ mod test_util {
     use super::service::ServiceMetadata;
     use super::service::ServiceMetadataResolver;
     use crate::identifiers::ServiceRevision;
-    use restate_test_util::{assert, assert_eq};
+    use invocation_target::InvocationTargetMetadata;
+    use restate_test_util::assert_eq;
 
     impl Schema {
         #[track_caller]
-        pub fn assert_service_handler(&self, service_name: &str, handler_name: &str) {
-            assert!(self
-                .resolve_latest_invocation_target(service_name, handler_name)
-                .is_some());
+        pub fn assert_service_handler(
+            &self,
+            service_name: &str,
+            handler_name: &str,
+        ) -> InvocationTargetMetadata {
+            self.resolve_latest_invocation_target(service_name, handler_name)
+                .unwrap()
         }
 
         #[track_caller]

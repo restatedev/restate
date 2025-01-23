@@ -128,7 +128,7 @@ pub async fn create_deployment<V>(
         StatusCode::CREATED,
         [(
             header::LOCATION,
-            format!("/deployments/{}", response_body.id),
+            format!("deployments/{}", response_body.id),
         )],
         Json(
             restate_admin_rest_model::converters::convert_register_deployment_response(
@@ -257,4 +257,103 @@ pub async fn delete_deployment<V>(
     } else {
         Ok(StatusCode::NOT_IMPLEMENTED)
     }
+}
+
+/// Update a deployment
+#[openapi(
+    summary = "Update deployment",
+    description = "Update deployment. Invokes the endpoint and replaces the existing deployment metadata with the discovered information. This is a dangerous operation that should be used only when there are failing invocations on the deployment that cannot be resolved any other way. Sense checks are applied to test that the new deployment is sufficiently similar to the old one.",
+    operation_id = "update_deployment",
+    tags = "deployment",
+    parameters(path(
+        name = "deployment",
+        description = "Deployment identifier",
+        schema = "std::string::String"
+    ))
+)]
+pub async fn update_deployment<V>(
+    State(state): State<AdminServiceState<V>>,
+    Extension(version): Extension<AdminApiVersion>,
+    Path(deployment_id): Path<DeploymentId>,
+    #[request_body(required = true)] Json(payload): Json<UpdateDeploymentRequest>,
+) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
+    let (discover_endpoint, dry_run) = match payload {
+        UpdateDeploymentRequest::Http {
+            uri,
+            additional_headers,
+            use_http_11,
+            dry_run,
+        } => {
+            // Verify URI is absolute!
+            if uri.scheme().is_none() || uri.authority().is_none() {
+                return Err(MetaApiError::InvalidField(
+                    "uri",
+                    format!(
+                        "The provided uri {uri} is not absolute, only absolute URIs can be used."
+                    ),
+                ));
+            }
+
+            let is_using_https = uri.scheme().unwrap() == &Scheme::HTTPS;
+
+            (
+                DiscoverEndpoint::new(
+                    Endpoint::Http(
+                        uri,
+                        if use_http_11 {
+                            Some(http::Version::HTTP_11)
+                        } else if is_using_https {
+                            // ALPN will sort this out
+                            None
+                        } else {
+                            // By default, we use h2c on HTTP
+                            Some(http::Version::HTTP_2)
+                        },
+                    ),
+                    additional_headers.unwrap_or_default().into(),
+                ),
+                dry_run,
+            )
+        }
+        UpdateDeploymentRequest::Lambda {
+            arn,
+            assume_role_arn,
+            additional_headers,
+            dry_run,
+        } => (
+            DiscoverEndpoint::new(
+                Endpoint::Lambda(
+                    arn.parse().map_err(|e: InvalidLambdaARN| {
+                        MetaApiError::InvalidField("arn", e.to_string())
+                    })?,
+                    assume_role_arn.map(Into::into),
+                ),
+                additional_headers.unwrap_or_default().into(),
+            ),
+            dry_run,
+        ),
+    };
+
+    let apply_mode = if dry_run {
+        ApplyMode::DryRun
+    } else {
+        ApplyMode::Apply
+    };
+
+    let (deployment, services) = state
+        .schema_registry
+        .update_deployment(deployment_id, discover_endpoint, apply_mode)
+        .await
+        .inspect_err(|e| warn_it!(e))?;
+
+    Ok(Json(
+        restate_admin_rest_model::converters::convert_detailed_deployment_response(
+            version,
+            DetailedDeploymentResponse {
+                id: deployment.id,
+                deployment: deployment.metadata.into(),
+                services,
+            },
+        ),
+    ))
 }

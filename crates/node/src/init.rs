@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2024 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -15,7 +15,9 @@ use restate_core::{
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration};
+use restate_types::nodes_config::{
+    LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration,
+};
 use restate_types::retries::RetryPolicy;
 use restate_types::PlainNodeId;
 use std::sync::Arc;
@@ -154,7 +156,7 @@ impl<'a> NodeInit<'a> {
                     if join_start.elapsed() < Duration::from_secs(10) {
                         trace!("Failed joining the cluster: {err}; retrying");
                     } else if !printed_provision_message {
-                        info!("Still can't join the cluster, will retry. Did you forget to provision it?");
+                        info!("Can't join the cluster, yet. Did you forget to provision it? Still trying to join...");
                         printed_provision_message = true;
                     } else {
                         debug!("Failed joining cluster: {err}; retrying");
@@ -284,6 +286,7 @@ impl<'a> NodeInit<'a> {
                             common_opts.advertised_address.clone(),
                             common_opts.roles,
                             LogServerConfig::default(),
+                            MetadataServerConfig::default(),
                         )
                     };
 

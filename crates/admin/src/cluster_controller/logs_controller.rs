@@ -22,7 +22,6 @@ use rand::thread_rng;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, trace_span, Instrument};
-use xxhash_rust::xxh3::Xxh3Builder;
 
 use crate::cluster_controller::logs_controller::nodeset_selection::{
     NodeSelectionError, NodeSetSelector,
@@ -30,15 +29,15 @@ use crate::cluster_controller::logs_controller::nodeset_selection::{
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler;
 use restate_bifrost::{Bifrost, Error as BifrostError};
-use restate_core::metadata_store::{Precondition, ReadWriteError, WriteError};
+use restate_core::metadata_store::{Precondition, WriteError};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;
 use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{
-    Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, NodeSetSelectionStrategy,
-    ProviderConfiguration, ProviderKind, ReplicatedLogletConfig, SegmentIndex,
+    Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, ProviderConfiguration,
+    ProviderKind, ReplicatedLogletConfig, SegmentIndex,
 };
 use restate_types::logs::{LogId, LogletId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
@@ -54,8 +53,6 @@ const FALLBACK_MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
 pub enum LogsControllerError {
-    #[error("failed writing to the metadata store: {0}")]
-    MetadataStore(#[from] ReadWriteError),
     #[error("failed creating logs: {0}")]
     LogsBuilder(#[from] logs::builder::BuilderError),
     #[error("failed creating loglet params from loglet configuration: {0}")]
@@ -353,7 +350,6 @@ pub fn build_new_replicated_loglet_configuration(
     let mut rng = thread_rng();
 
     let replication = replicated_loglet_config.replication_property.clone();
-    let strategy = replicated_loglet_config.nodeset_selection_strategy;
 
     let preferred_nodes = previous_params
         .map(|p| p.nodeset.clone())
@@ -370,7 +366,6 @@ pub fn build_new_replicated_loglet_configuration(
         })?;
 
     let selection = NodeSetSelector::new(nodes_config, observed_cluster_state).select(
-        strategy,
         &replication,
         &mut rng,
         &preferred_nodes,
@@ -450,11 +445,8 @@ impl LogletConfiguration {
                 }
 
                 let nodeset_improvement_possible =
-                    NodeSetSelector::new(nodes_config, observed_cluster_state).can_improve(
-                        &params.nodeset,
-                        NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
-                        &config.replication_property,
-                    );
+                    NodeSetSelector::new(nodes_config, observed_cluster_state)
+                        .can_improve(&params.nodeset, &config.replication_property);
 
                 if nodeset_improvement_possible {
                     debug!(
@@ -631,7 +623,7 @@ enum Event {
 /// complexity of handling multiple in-flight logs writes, the controller waits until the
 /// in-flight write completes or a newer log is detected.
 struct LogsControllerInner {
-    logs_state: HashMap<LogId, LogState, Xxh3Builder>,
+    logs_state: HashMap<LogId, LogState>,
     logs_write_in_progress: Option<Version>,
 
     // We are storing the logs explicitly (not relying on Metadata::current()) because we need a fixed
@@ -645,7 +637,7 @@ impl LogsControllerInner {
         current_logs: Arc<Logs>,
         retry_policy: RetryPolicy,
     ) -> Result<Self, LogsControllerError> {
-        let mut logs_state = HashMap::with_hasher(Xxh3Builder::default());
+        let mut logs_state = HashMap::with_capacity(current_logs.num_logs());
         Self::update_logs_state(&mut logs_state, current_logs.as_ref())?;
 
         Ok(Self {
@@ -854,7 +846,7 @@ impl LogsControllerInner {
     }
 
     fn update_logs_state(
-        logs_state: &mut HashMap<LogId, LogState, Xxh3Builder>,
+        logs_state: &mut HashMap<LogId, LogState>,
         logs: &Logs,
     ) -> Result<(), LogsControllerError> {
         for (log_id, chain) in logs.iter() {
@@ -1280,11 +1272,11 @@ pub mod tests {
     use enumset::{enum_set, EnumSet};
     use restate_types::locality::NodeLocation;
     use restate_types::logs::metadata::{
-        LogsConfiguration, NodeSetSelectionStrategy, ProviderConfiguration, ReplicatedLogletConfig,
+        LogsConfiguration, ProviderConfiguration, ReplicatedLogletConfig,
     };
     use restate_types::logs::LogletId;
     use restate_types::nodes_config::{
-        LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
+        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
     use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
     use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
@@ -1418,7 +1410,7 @@ pub mod tests {
         pub fn with_dedicated_admin_node(self, id: u32) -> Self {
             self.with_nodes(
                 [id],
-                enum_set!(Role::Admin | Role::MetadataStore),
+                enum_set!(Role::Admin | Role::MetadataServer),
                 StorageState::Disabled,
             )
         }
@@ -1457,7 +1449,6 @@ pub mod tests {
                 replication_property: ReplicationProperty::new(
                     NonZeroU8::new(replication_factor).expect("must be non zero"),
                 ),
-                nodeset_selection_strategy: NodeSetSelectionStrategy::StrictFaultTolerantGreedy,
             }),
         }
     }
@@ -1470,6 +1461,7 @@ pub mod tests {
             format!("https://node-{id}").parse().unwrap(),
             roles,
             LogServerConfig { storage_state },
+            MetadataServerConfig::default(),
         )
     }
 

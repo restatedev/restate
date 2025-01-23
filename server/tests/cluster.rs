@@ -20,9 +20,8 @@ use restate_local_cluster_runner::{
     node::{BinarySource, Node},
 };
 use restate_types::config::MetadataStoreClient;
-use restate_types::logs::metadata::{
-    NodeSetSelectionStrategy, ProviderConfiguration, ReplicatedLogletConfig,
-};
+use restate_types::logs::metadata::{ProviderConfiguration, ReplicatedLogletConfig};
+use restate_types::partition_table::PartitionReplication;
 use restate_types::replicated_loglet::ReplicationProperty;
 use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
 use test_log::test;
@@ -64,7 +63,7 @@ async fn node_id_mismatch() -> googletest::Result<()> {
         .build();
 
     *mismatch_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-        address: cluster.nodes[0].node_address().clone(),
+        addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     cluster.push_node(mismatch_node).await?;
@@ -109,7 +108,7 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
     );
 
     *mismatch_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-        address: cluster.nodes[0].node_address().clone(),
+        addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     let mut mismatch_node = mismatch_node
@@ -155,13 +154,12 @@ async fn replicated_loglet() -> googletest::Result<()> {
 
     let replicated_loglet_config = ReplicatedLogletConfig {
         replication_property: ReplicationProperty::new(NonZeroU8::new(2).expect("to be non-zero")),
-        nodeset_selection_strategy: NodeSetSelectionStrategy::default(),
     };
 
     cluster.nodes[0]
         .provision_cluster(
             None,
-            None,
+            PartitionReplication::Everywhere,
             Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
         )
         .await

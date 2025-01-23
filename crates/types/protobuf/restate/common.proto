@@ -123,8 +123,10 @@ enum LogServerStatus {
 
 enum MetadataServerStatus {
   MetadataServerStatus_UNKNOWN = 0;
-  MetadataServerStatus_READY = 1;
-  MetadataServerStatus_STARTING_UP = 2;
+  MetadataServerStatus_STARTING_UP = 1;
+  MetadataServerStatus_AWAITING_PROVISIONING = 2;
+  MetadataServerStatus_ACTIVE = 3;
+  MetadataServerStatus_PASSIVE = 4;
 }
 
 enum IngressStatus {

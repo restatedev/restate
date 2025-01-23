@@ -16,11 +16,12 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use codederror::CodedError;
+use futures::never::Never;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use restate_metadata_store::ReadModifyWriteError;
 use restate_types::logs::metadata::{
@@ -28,7 +29,7 @@ use restate_types::logs::metadata::{
 };
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::partition_table::{
-    self, PartitionTable, PartitionTableBuilder, ReplicationStrategy,
+    self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
@@ -172,7 +173,7 @@ enum ClusterControllerCommand {
         response_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
     },
     UpdateClusterConfiguration {
-        replication_strategy: ReplicationStrategy,
+        partition_replication: PartitionReplication,
         default_provider: ProviderConfiguration,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
     },
@@ -237,7 +238,7 @@ impl ClusterControllerHandle {
 
     pub async fn update_cluster_configuration(
         &self,
-        replication_strategy: ReplicationStrategy,
+        partition_replication: PartitionReplication,
         default_provider: ProviderConfiguration,
     ) -> Result<anyhow::Result<()>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
@@ -245,7 +246,7 @@ impl ClusterControllerHandle {
         let _ = self
             .tx
             .send(ClusterControllerCommand::UpdateClusterConfiguration {
-                replication_strategy,
+                partition_replication,
                 default_provider,
                 response_tx,
             })
@@ -283,9 +284,9 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
-    pub async fn run(mut self) -> anyhow::Result<()> {
-        let mut config_watcher = Configuration::watcher();
-        let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
+    pub async fn run(self) -> anyhow::Result<()> {
+        let health_status = self.health_status.clone();
+        health_status.update(AdminStatus::Ready);
 
         TaskCenter::spawn_child(
             TaskKind::SystemService,
@@ -293,11 +294,22 @@ impl<T: TransportConnect> Service<T> {
             sync_cluster_controller_metadata(),
         )?;
 
-        let mut shutdown = std::pin::pin!(cancellation_watcher());
+        tokio::select! {
+            _ = self.run_inner() => {
+                unreachable!("Cluster controller service has terminated unexpectedly.");
+            }
+            _ = cancellation_watcher() => {
+                health_status.update(AdminStatus::Unknown);
+                Ok(())
+            }
+        }
+    }
+
+    async fn run_inner(mut self) -> Never {
+        let mut config_watcher = Configuration::watcher();
+        let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
 
         let mut state: ClusterControllerState<T> = ClusterControllerState::Follower;
-
-        self.health_status.update(AdminStatus::Ready);
 
         loop {
             tokio::select! {
@@ -307,9 +319,16 @@ impl<T: TransportConnect> Service<T> {
                 },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     self.observed_cluster_state.update(&cluster_state);
-                    state.update(&self).await?;
+                    // todo quarantine this cluster controller if errors re-occur too often so that
+                    //  another cluster controller can take over
+                    if let Err(err) = state.update(&self).await {
+                        warn!("Failed to update cluster state. This can impair the overall cluster operations: {}", err);
+                        continue;
+                    }
 
-                    state.on_observed_cluster_state(&self.observed_cluster_state).await?;
+                    if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state).await {
+                        warn!("Failed to handle observed cluster state. This can impair the overall cluster operations: {}", err);
+                    }
                 }
                 Some(cmd) = self.command_rx.recv() => {
                     // it is still safe to handle cluster commands as a follower
@@ -322,12 +341,17 @@ impl<T: TransportConnect> Service<T> {
                     state.reconfigure(configuration);
                 }
                 result = state.run() => {
-                    let leader_event = result?;
-                    state.on_leader_event(&self.observed_cluster_state, leader_event).await?;
-                }
-                _ = &mut shutdown => {
-                    self.health_status.update(AdminStatus::Unknown);
-                    return Ok(());
+                    let leader_event = match result {
+                        Ok(leader_event) => leader_event,
+                        Err(err) => {
+                            warn!("Failed to run cluster controller operations. This can impair the overall cluster operations: {}", err);
+                            continue;
+                        }
+                    };
+
+                    if let Err(err) = state.on_leader_event(&self.observed_cluster_state, leader_event).await {
+                        warn!("Failed to handle leader event. This can impair the overall cluster operations: {}", err);
+                    }
                 }
             }
         }
@@ -389,7 +413,7 @@ impl<T: TransportConnect> Service<T> {
 
     async fn update_cluster_configuration(
         &self,
-        replication_strategy: ReplicationStrategy,
+        partition_replication: PartitionReplication,
         default_provider: ProviderConfiguration,
     ) -> anyhow::Result<()> {
         let logs = self
@@ -446,8 +470,8 @@ impl<T: TransportConnect> Service<T> {
 
                     let mut builder: PartitionTableBuilder = partition_table.into();
 
-                    if builder.replication_strategy() != replication_strategy {
-                        builder.set_replication_strategy(replication_strategy);
+                    if builder.partition_replication() != &partition_replication {
+                        builder.set_partition_replication(partition_replication.clone());
                     }
 
                     builder
@@ -522,7 +546,7 @@ impl<T: TransportConnect> Service<T> {
                     .await;
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
-                replication_strategy,
+                partition_replication: replication_strategy,
                 default_provider,
                 response_tx,
             } => {
@@ -761,7 +785,9 @@ mod tests {
     use restate_types::net::node::{GetNodeState, NodeStateResponse};
     use restate_types::net::partition_processor_manager::ControlProcessors;
     use restate_types::net::AdvertisedAddress;
-    use restate_types::nodes_config::{LogServerConfig, NodeConfig, NodesConfiguration, Role};
+    use restate_types::nodes_config::{
+        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
+    };
     use restate_types::{GenerationalNodeId, Version};
 
     #[test(restate_core::test)]
@@ -1075,6 +1101,7 @@ mod tests {
             AdvertisedAddress::Uds("foobar".into()),
             Role::Worker.into(),
             LogServerConfig::default(),
+            MetadataServerConfig::default(),
         ));
         nodes_config.upsert_node(NodeConfig::new(
             "node-2".to_owned(),
@@ -1083,6 +1110,7 @@ mod tests {
             AdvertisedAddress::Uds("bar".into()),
             Role::Worker.into(),
             LogServerConfig::default(),
+            MetadataServerConfig::default(),
         ));
         let builder = modify_builder(builder.set_nodes_config(nodes_config));
 

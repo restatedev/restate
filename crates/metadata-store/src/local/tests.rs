@@ -27,9 +27,11 @@ use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::protobuf::common::NodeRpcStatus;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
-use crate::local::grpc::client::LocalMetadataStoreClient;
-use crate::local::service::LocalMetadataStoreService;
-use crate::{MetadataStoreClient, Precondition, WriteError};
+use crate::grpc::client::GrpcMetadataStoreClient;
+use crate::local::LocalMetadataStore;
+use crate::{
+    MetadataStoreClient, MetadataStoreRunner, MetadataStoreService, Precondition, WriteError,
+};
 
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
 struct Value {
@@ -268,7 +270,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Creates a test environment with the [`RocksDBMetadataStore`] and a [`MetadataStoreClient`]
+/// Creates a test environment with the [`RocksDBMetadataStore`] and a [`GrpcMetadataStoreClient`]
 /// connected to it.
 async fn create_test_environment(
     opts: &MetadataStoreOptions,
@@ -303,18 +305,15 @@ async fn start_metadata_store(
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
 ) -> anyhow::Result<MetadataStoreClient> {
     let mut server_builder = NetworkServerBuilder::default();
-    let service = LocalMetadataStoreService::create(
-        HealthStatus::default(),
-        opts,
-        updateables_rocksdb_options,
-        &mut server_builder,
-    )
-    .await?;
+    let store =
+        LocalMetadataStore::create(opts, updateables_rocksdb_options, HealthStatus::default())
+            .await?;
+    let service = MetadataStoreRunner::new(store, &mut server_builder);
 
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
     metadata_store_client_options.metadata_store_client = config::MetadataStoreClient::Embedded {
-        address: AdvertisedAddress::Uds(uds),
+        addresses: vec![AdvertisedAddress::Uds(uds)],
     };
 
     let rpc_server_health_status = HealthStatus::default();
@@ -337,7 +336,7 @@ async fn start_metadata_store(
     )?;
 
     assert2::let_assert!(
-        config::MetadataStoreClient::Embedded { address } =
+        config::MetadataStoreClient::Embedded { addresses } =
             metadata_store_client_options.metadata_store_client.clone()
     );
 
@@ -345,9 +344,10 @@ async fn start_metadata_store(
         .wait_for_value(NodeRpcStatus::Ready)
         .await;
 
-    let rocksdb_client = LocalMetadataStoreClient::new(address, &metadata_store_client_options);
+    let grpc_client =
+        GrpcMetadataStoreClient::new(addresses, metadata_store_client_options.clone());
     let client = MetadataStoreClient::new(
-        rocksdb_client,
+        grpc_client,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),
     );
 

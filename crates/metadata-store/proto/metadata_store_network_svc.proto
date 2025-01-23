@@ -1,0 +1,32 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package restate.metadata_store_network_svc;
+
+// Grpc service definition for the metadata store network implementation.
+service MetadataStoreNetworkSvc {
+  rpc ConnectTo(stream NetworkMessage) returns (stream NetworkMessage);
+
+  // Try to join an existing metadata store cluster
+  rpc JoinCluster(JoinClusterRequest) returns (google.protobuf.Empty);
+}
+
+message NetworkMessage {
+  bytes payload = 1;
+}
+
+message JoinClusterRequest {
+  uint32 node_id = 1;
+  uint64 storage_id = 2;
+}
+

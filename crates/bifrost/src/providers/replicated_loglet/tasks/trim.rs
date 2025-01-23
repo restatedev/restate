@@ -16,7 +16,7 @@ use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Status, Trim, Trimmed};
-use restate_types::replicated_loglet::{EffectiveNodeSet, NodeSet, ReplicatedLogletParams};
+use restate_types::replicated_loglet::{LogNodeSetExt, NodeSet, ReplicatedLogletParams};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::OperationError;
@@ -73,10 +73,10 @@ impl<'a> TrimTask<'a> {
         networking: Networking<T>,
     ) -> Result<(), OperationError> {
         // Use the entire nodeset except for StorageState::Disabled.
-        let effective_nodeset = EffectiveNodeSet::new(
-            &self.my_params.nodeset,
-            &networking.metadata().nodes_config_ref(),
-        );
+        let effective_nodeset = self
+            .my_params
+            .nodeset
+            .to_effective(&networking.metadata().nodes_config_ref());
         // caller might have already done this, but it's here for resilience against user error.
         let trim_point = trim_point.min(self.known_global_tail.latest_offset().prev_unchecked());
         if trim_point == LogletOffset::INVALID {

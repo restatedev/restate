@@ -10,13 +10,14 @@
 
 use std::time::Duration;
 
+use tokio::task::JoinSet;
+use tracing::{trace, warn};
+
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{ShutdownError, TaskCenterFutureExt};
 use restate_types::logs::{KeyFilter, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetDigest, LogServerRequestHeader};
-use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
-use tokio::task::JoinSet;
-use tracing::{trace, warn};
+use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::read_path::ReadStreamTask;
@@ -120,10 +121,10 @@ impl<T: TransportConnect> RepairTail<T> {
             return RepairTailResult::Completed;
         }
         let mut get_digest_requests = JoinSet::new();
-        let effective_nodeset = EffectiveNodeSet::new(
-            &self.my_params.nodeset,
-            &self.networking.metadata().nodes_config_ref(),
-        );
+        let effective_nodeset = self
+            .my_params
+            .nodeset
+            .to_effective(&self.networking.metadata().nodes_config_ref());
 
         // Dispatch GetDigest to all readable nodes
         for node in effective_nodeset.iter() {

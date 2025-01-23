@@ -53,6 +53,26 @@ pub struct MetadataStoreOptions {
     ///
     /// The RocksDB options which will be used to configure the metadata store's RocksDB instance.
     pub rocksdb: RocksDbOptions,
+
+    /// # Type of metadata store to start
+    ///
+    /// The type of metadata store to start when running the metadata store role.
+    #[serde(flatten)]
+    pub kind: MetadataStoreKind,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "kebab-case"
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum MetadataStoreKind {
+    #[default]
+    Local,
+    #[serde(alias = "embedded")]
+    Raft,
 }
 
 impl MetadataStoreOptions {
@@ -104,6 +124,7 @@ impl Default for MetadataStoreOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.01,
             rocksdb,
+            kind: MetadataStoreKind::default(),
         }
     }
 }

@@ -31,7 +31,6 @@ use restate_types::config::Configuration;
 use restate_types::health::Health;
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::nodes_config::Role;
-use restate_types::partition_table::ReplicationStrategy;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::node::Message;
 use restate_types::storage::StorageCodec;
@@ -79,20 +78,16 @@ impl NodeCtlSvcHandler {
             })
             .transpose()?
             .unwrap_or(config.common.bootstrap_num_partitions);
-        let replication_strategy = request
-            .placement_strategy
-            .map(ReplicationStrategy::try_from)
-            .transpose()?
-            .unwrap_or_default();
-        let default_provider = request
+        let partition_replication = request.partition_replication.try_into()?;
+        let bifrost_provider = request
             .log_provider
             .map(ProviderConfiguration::try_from)
             .unwrap_or_else(|| Ok(ProviderConfiguration::from_configuration(config)))?;
 
         Ok(ClusterConfiguration {
             num_partitions,
-            replication_strategy,
-            default_provider,
+            partition_replication,
+            bifrost_provider,
         })
     }
 }
@@ -103,7 +98,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let node_status = self.health.current_node_status();
         let admin_status = self.health.current_admin_status();
         let worker_status = self.health.current_worker_status();
-        let metadata_server_status = self.health.current_metadata_server_status();
+        let metadata_server_status = self.health.current_metadata_store_status();
         let log_server_status = self.health.current_log_server_status();
         let age_s = self.task_center.age().as_secs();
         let metadata = Metadata::current();

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
-use xxhash_rust::xxh3::Xxh3Builder;
+use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use crate::locality::NodeLocation;
 use crate::net::AdvertisedAddress;
@@ -45,7 +45,12 @@ pub enum Role {
     /// Admin runs cluster controller and user-facing admin APIs
     Admin,
     /// Serves the metadata store
-    MetadataStore,
+    // For backwards-compatibility also accept the old name
+    #[serde(alias = "metadata-store")]
+    #[cfg_attr(feature = "clap", clap(alias = "metadata-store"))]
+    // todo switch to serializing as "metadata-server" in version 1.3
+    #[serde(rename(serialize = "metadata-store"))]
+    MetadataServer,
     /// [IN DEVELOPMENT] Serves a log server for replicated loglets
     LogServer,
     HttpIngress,
@@ -58,8 +63,8 @@ pub struct NodesConfiguration {
     cluster_name: String,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    nodes: HashMap<PlainNodeId, MaybeNode, Xxh3Builder>,
-    name_lookup: HashMap<String, PlainNodeId, Xxh3Builder>,
+    nodes: HashMap<PlainNodeId, MaybeNode>,
+    name_lookup: HashMap<String, PlainNodeId, Xxh3DefaultBuilder>,
 }
 
 impl Default for NodesConfiguration {
@@ -89,6 +94,8 @@ pub struct NodeConfig {
     pub log_server_config: LogServerConfig,
     #[serde(default)]
     pub location: NodeLocation,
+    #[serde(default)]
+    pub metadata_server_config: MetadataServerConfig,
 }
 
 impl NodeConfig {
@@ -99,6 +106,7 @@ impl NodeConfig {
         address: AdvertisedAddress,
         roles: EnumSet<Role>,
         log_server_config: LogServerConfig,
+        metadata_server_config: MetadataServerConfig,
     ) -> Self {
         Self {
             name,
@@ -107,6 +115,7 @@ impl NodeConfig {
             roles,
             log_server_config,
             location,
+            metadata_server_config,
         }
     }
 
@@ -207,6 +216,23 @@ impl NodesConfiguration {
         }
     }
 
+    pub fn get_metadata_server_state(&self, node_id: &PlainNodeId) -> MetadataServerState {
+        let maybe = self.nodes.get(node_id);
+        let Some(maybe) = maybe else {
+            return MetadataServerState::Outsider;
+        };
+        match maybe {
+            MaybeNode::Tombstone => MetadataServerState::Outsider,
+            MaybeNode::Node(found) => {
+                if found.roles.contains(Role::MetadataServer) {
+                    found.metadata_server_config.metadata_server_state
+                } else {
+                    MetadataServerState::Outsider
+                }
+            }
+        }
+    }
+
     /// Returns _an_ admin node.
     pub fn get_admin_node(&self) -> Option<&NodeConfig> {
         self.nodes.values().find_map(|maybe| match maybe {
@@ -240,6 +266,16 @@ impl NodesConfiguration {
     /// Iterate over all non-tombstone nodes
     pub fn iter(&self) -> impl Iterator<Item = (PlainNodeId, &'_ NodeConfig)> {
         self.nodes.iter().filter_map(|(k, v)| {
+            if let MaybeNode::Node(node) = v {
+                Some((*k, node))
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (PlainNodeId, &'_ mut NodeConfig)> {
+        self.nodes.iter_mut().filter_map(|(k, v)| {
             if let MaybeNode::Node(node) = v {
                 Some((*k, node))
             } else {
@@ -343,9 +379,39 @@ impl StorageState {
     }
 }
 
+#[derive(
+    Clone,
+    Debug,
+    Copy,
+    Default,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    derive_more::IsVariant,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum MetadataServerState {
+    /// The server is not considered as part of the metadata store cluster. Node can be safely
+    /// decommissioned.
+    #[default]
+    Outsider,
+    /// The server is an active member of the metadata store cluster.
+    Member,
+}
+
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LogServerConfig {
     pub storage_state: StorageState,
+}
+
+#[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MetadataServerConfig {
+    pub metadata_server_state: MetadataServerState,
 }
 
 flexbuffers_storage_encode_decode!(NodesConfiguration);
@@ -369,6 +435,7 @@ mod tests {
             address.clone(),
             roles,
             LogServerConfig::default(),
+            MetadataServerConfig::default(),
         );
         config.upsert_node(node.clone());
 
@@ -417,6 +484,7 @@ mod tests {
             address,
             roles,
             LogServerConfig::default(),
+            MetadataServerConfig::default(),
         );
         config.upsert_node(node.clone());
 

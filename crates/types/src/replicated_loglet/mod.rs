@@ -8,10 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod log_nodeset;
 mod params;
 mod replication_property;
 mod spread;
 
+pub use log_nodeset::*;
 pub use params::*;
 pub use replication_property::*;
 pub use spread::*;
+
+// re-export to avoid mass-refactoring
+pub use super::replication::NodeSet;

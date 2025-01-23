@@ -114,7 +114,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
         let mut wave = 0;
         // initial wave has 0 replicated and 0 gray listed node
         let mut state = SequencerAppenderState::Wave {
-            graylist: NodeSet::empty(),
+            graylist: NodeSet::default(),
         };
 
         let cancellation = cancellation_token();
@@ -164,7 +164,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     };
 
                     SequencerAppenderState::Wave {
-                        graylist: NodeSet::empty(),
+                        graylist: NodeSet::default(),
                     }
                 }
             }
@@ -298,12 +298,10 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
         let timeout_at = MillisSinceEpoch::after(store_timeout);
         // track the in flight server ids
-        let mut pending_servers = NodeSet::empty();
+        let mut pending_servers = NodeSet::from_iter(spread.iter().copied());
         let mut store_tasks = FuturesUnordered::new();
 
         for node_id in &spread {
-            pending_servers.insert(*node_id);
-
             store_tasks.push(
                 LogServerStoreTask {
                     node_id: *node_id,
@@ -374,7 +372,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     // only if status is okay that we remove this node
                     // from the gray list, and move to replicated list
                     checker.set_attribute(peer, NodeAttributes::committed());
-                    pending_servers.remove(&peer);
+                    pending_servers.remove(peer);
                 }
                 Status::Sealed | Status::Sealing => {
                     checker.set_attribute(peer, NodeAttributes::sealed());
