@@ -732,6 +732,7 @@ impl SealAndExtendTask {
             #[cfg(feature = "replicated-loglet")]
             ProviderConfiguration::Replicated(config) => {
                 let loglet_params = logs_controller::build_new_replicated_loglet_configuration(
+                    self.log_id,
                     config,
                     loglet_id.next(),
                     &Metadata::with_current(|m| m.nodes_config_ref()),
