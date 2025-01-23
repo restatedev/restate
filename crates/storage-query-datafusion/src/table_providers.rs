@@ -23,8 +23,9 @@ use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
 use restate_types::identifiers::{PartitionId, PartitionKey};
@@ -39,6 +40,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
     ) -> anyhow::Result<SendableRecordBatchStream>;
 }
 
+#[derive(Debug)]
 pub(crate) struct PartitionedTableProvider<T, S> {
     partition_selector: S,
     schema: SchemaRef,
@@ -136,7 +138,8 @@ where
         let plan = PlanProperties::new(
             eq_properties,
             Partitioning::UnknownPartitioning(required_partitions.len()),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         );
 
         Ok(Arc::new(PartitionedExecutionPlan {
@@ -248,6 +251,8 @@ pub(crate) trait Scan: Debug + Send + Sync + 'static {
 }
 
 pub(crate) type ScannerRef = Arc<dyn Scan>;
+
+#[derive(Debug)]
 pub(crate) struct GenericTableProvider {
     schema: SchemaRef,
     scanner: ScannerRef,
@@ -327,7 +332,8 @@ impl GenericExecutionPlan {
         let plan_properties = PlanProperties::new(
             eq_properties,
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         );
 
         Self {

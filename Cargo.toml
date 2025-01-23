@@ -100,13 +100,13 @@ cling = { version = "0.1", default-features = false, features = ["derive"] }
 criterion = "0.5"
 crossterm = { version = "0.27.0" }
 dashmap = { version = "6" }
-datafusion = { version = "42.0.0", default-features = false, features = [
+datafusion = { version = "44.0.0", default-features = false, features = [
     "crypto_expressions",
     "encoding_expressions",
     "regex_expressions",
     "unicode_expressions",
 ] }
-datafusion-expr = { version = "42.0.0" }
+datafusion-expr = { version = "44.0.0" }
 derive_builder = "0.20.0"
 derive_more = { version = "1", features = ["full"] }
 dialoguer = { version = "0.11.0" }
@@ -236,3 +236,8 @@ strip = true    # Automatically strip symbols from the binary.
 [profile.bench]
 # Should be enabled for benchmarking runs; increases binary size
 debug = true
+
+[profile.dev.package.tikv-jemalloc-sys]
+opt-level = 2
+
+

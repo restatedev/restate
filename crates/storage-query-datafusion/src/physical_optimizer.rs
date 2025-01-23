@@ -19,6 +19,7 @@ use datafusion::physical_plan::joins::{
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
+#[derive(Debug)]
 pub(crate) struct JoinRewrite;
 
 impl JoinRewrite {
@@ -60,16 +61,8 @@ impl PhysicalOptimizerRule for JoinRewrite {
                 hash_join.filter().cloned(),
                 hash_join.join_type(),
                 hash_join.null_equals_null(),
-                hash_join
-                    .left()
-                    .properties()
-                    .output_ordering()
-                    .map(|s| s.to_vec()),
-                hash_join
-                    .right()
-                    .properties()
-                    .output_ordering()
-                    .map(|s| s.to_vec()),
+                hash_join.left().properties().output_ordering().cloned(),
+                hash_join.right().properties().output_ordering().cloned(),
                 StreamJoinPartitionMode::Partitioned,
             ) else {
                 return Ok(Transformed::no(plan));
