@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::app::ConnectionInfo;
+use crate::commands::metadata::retrieve_nodes_configuration_from_node;
 use crate::util::grpc_channel;
 use clap::Parser;
 use cling::{Collect, Run};
@@ -16,14 +17,10 @@ use itertools::Itertools;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
-use restate_core::protobuf::node_ctl_svc::GetMetadataRequest;
 use restate_metadata_store::grpc::metadata_store_svc_client::MetadataStoreSvcClient;
 use restate_metadata_store::MemberId;
-use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::{NodesConfiguration, Role};
+use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::MetadataServerStatus;
-use restate_types::storage::StorageCodec;
 use std::collections::BTreeMap;
 use tonic::codec::CompressionEncoding;
 use tonic::IntoRequest;
@@ -34,14 +31,8 @@ use tonic::IntoRequest;
 pub struct StatusOpts {}
 
 async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
-    let mut client = NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
-    let req = GetMetadataRequest {
-        kind: MetadataKind::NodesConfiguration.into(),
-        sync: false,
-    };
-    let mut response = client.get_metadata(req).await?.into_inner();
-    let nodes_configuration = StorageCodec::decode::<NodesConfiguration, _>(&mut response.encoded)?;
+    let nodes_configuration =
+        retrieve_nodes_configuration_from_node(connection.cluster_controller.clone()).await?;
 
     let mut metadata_nodes_table = Table::new_styled();
     let header = vec!["NODE", "STATUS", "CONFIG-ID", "LEADER", "MEMBERS"];
