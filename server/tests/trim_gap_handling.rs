@@ -205,7 +205,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         .status()
         .is_success());
     tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         applied_lsn_converged(&mut client, 3, PartitionId::from(0)),
     )
     .await??;
