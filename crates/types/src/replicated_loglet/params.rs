@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::ReplicationProperty;
 use crate::logs::LogletId;
-use crate::replication::NodeSet;
+use crate::replication::{NodeSet, ReplicationProperty};
 use crate::GenerationalNodeId;
 
 /// Configuration parameters of a replicated loglet segment

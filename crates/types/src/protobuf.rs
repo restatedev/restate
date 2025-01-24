@@ -72,15 +72,15 @@ pub mod cluster {
         }
     }
 
-    impl From<crate::replicated_loglet::ReplicationProperty> for ReplicationProperty {
-        fn from(value: crate::replicated_loglet::ReplicationProperty) -> Self {
+    impl From<crate::replication::ReplicationProperty> for ReplicationProperty {
+        fn from(value: crate::replication::ReplicationProperty) -> Self {
             ReplicationProperty {
                 replication_property: value.to_string(),
             }
         }
     }
 
-    impl TryFrom<ReplicationProperty> for crate::replicated_loglet::ReplicationProperty {
+    impl TryFrom<ReplicationProperty> for crate::replication::ReplicationProperty {
         type Error = anyhow::Error;
 
         fn try_from(value: ReplicationProperty) -> Result<Self, Self::Error> {

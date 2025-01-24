@@ -15,7 +15,8 @@ use cling::prelude::*;
 use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{Chain, LogletParams, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, LogletId};
-use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
+use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]

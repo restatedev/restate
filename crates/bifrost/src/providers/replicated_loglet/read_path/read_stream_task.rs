@@ -19,9 +19,8 @@ use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_types::config::Configuration;
 use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetRecords, LogServerRequestHeader, MaybeRecord};
-use restate_types::replicated_loglet::{
-    EffectiveNodeSet, LogNodeSetExt, NodeSet, ReplicatedLogletParams,
-};
+use restate_types::replicated_loglet::{EffectiveNodeSet, LogNodeSetExt, ReplicatedLogletParams};
+use restate_types::replication::NodeSet;
 use restate_types::PlainNodeId;
 
 use crate::loglet::util::TailOffsetWatch;

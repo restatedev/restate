@@ -21,7 +21,7 @@ use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
 use restate_cli_util::{c_println, c_warn};
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
-use restate_types::replicated_loglet::ReplicationProperty;
+use restate_types::replication::ReplicationProperty;
 
 use crate::commands::cluster::config::cluster_config_string;
 use crate::commands::cluster::provision::extract_default_provider;

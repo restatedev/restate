@@ -16,8 +16,7 @@ use serde_with::{serde_as, DisplayFromStr};
 
 use crate::identifiers::{PartitionId, PartitionKey};
 use crate::logs::LogId;
-use crate::replicated_loglet::ReplicationProperty;
-use crate::replication::NodeSet;
+use crate::replication::{NodeSet, ReplicationProperty};
 use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
 
 const DB_NAME: &str = "db";

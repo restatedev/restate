@@ -24,7 +24,8 @@ use super::builder::LogsBuilder;
 use super::LogletId;
 use crate::config::Configuration;
 use crate::logs::{LogId, Lsn, SequenceNumber};
-use crate::replicated_loglet::{ReplicatedLogletParams, ReplicationProperty};
+use crate::replicated_loglet::ReplicatedLogletParams;
+use crate::replication::ReplicationProperty;
 use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 // Starts with 0 being the oldest loglet in the chain.

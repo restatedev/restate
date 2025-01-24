@@ -1363,7 +1363,8 @@ pub mod tests {
     use restate_types::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
-    use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
+    use restate_types::replicated_loglet::ReplicatedLogletParams;
+    use restate_types::replication::{NodeSet, ReplicationProperty};
     use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
     use crate::cluster_controller::logs_controller::{

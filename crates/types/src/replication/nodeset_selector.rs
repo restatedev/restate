@@ -15,7 +15,7 @@ use std::hash::Hasher;
 use tracing::{debug, error};
 use xxhash_rust::xxh3::Xxh3;
 
-use crate::locality::{NodeLocation, NodeLocationScope};
+use crate::locality::{LocationScope, NodeLocation};
 use crate::nodes_config::{NodeConfig, NodesConfiguration};
 use crate::replication::{NodeSet, ReplicationProperty};
 use crate::PlainNodeId;
@@ -43,7 +43,7 @@ pub enum NodeSelectorError {
     IncompleteNodeLocation {
         node_id: PlainNodeId,
         location: NodeLocation,
-        missing_scope: NodeLocationScope,
+        missing_scope: LocationScope,
         replication: ReplicationProperty,
     },
 }
@@ -249,9 +249,9 @@ impl DomainAwareNodeSetSelector {
         //    it's valid to replicate 4 copies in one zone + 1 copy in another zone.
         let (replicate_across_scope, min_nodes_per_domain) = {
             let (replicate_across_scope, factor) = replication_factors.first().unwrap();
-            if let NodeLocationScope::Node = *replicate_across_scope {
+            if let LocationScope::Node = *replicate_across_scope {
                 // no locality affinity
-                (NodeLocationScope::Root, *factor as u32)
+                (LocationScope::Root, *factor as u32)
             } else {
                 let min_nodes_per_domain: u32 =
                     replication_factors.last().unwrap().1 as u32 - (*factor as u32) + 1;
@@ -282,7 +282,7 @@ impl DomainAwareNodeSetSelector {
             if !is_candidate(node_id, node_config) {
                 continue;
             }
-            let domain_path = if let NodeLocationScope::Root = replicate_across_scope {
+            let domain_path = if let LocationScope::Root = replicate_across_scope {
                 // flat replication, don't spend the energy
                 DomainPath::Root
             } else {
@@ -580,10 +580,11 @@ impl<'a> Ord for OrdDomain<'a> {
 #[cfg(test)]
 pub mod tests {
 
+    use crate::locality::LocationScope;
     use crate::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodesConfiguration, Role, StorageState,
     };
-    use crate::replicated_loglet::{LocationScope, NodeSet, ReplicationProperty};
+    use crate::replication::{NodeSet, ReplicationProperty};
     use crate::{GenerationalNodeId, PlainNodeId};
 
     use super::*;

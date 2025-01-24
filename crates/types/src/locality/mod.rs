@@ -11,5 +11,5 @@
 mod location_scope;
 mod node_location;
 
-pub use location_scope::NodeLocationScope;
+pub use location_scope::LocationScope;
 pub use node_location::NodeLocation;

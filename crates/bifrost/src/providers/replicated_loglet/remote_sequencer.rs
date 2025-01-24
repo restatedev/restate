@@ -477,7 +477,8 @@ mod test {
     use restate_types::{
         logs::{LogId, LogletOffset, Record, SequenceNumber, TailState},
         net::replicated_loglet::{Append, Appended, CommonResponseHeader, SequencerStatus},
-        replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty},
+        replicated_loglet::ReplicatedLogletParams,
+        replication::{NodeSet, ReplicationProperty},
         GenerationalNodeId,
     };
 

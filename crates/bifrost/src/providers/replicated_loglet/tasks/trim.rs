@@ -16,7 +16,8 @@ use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Status, Trim, Trimmed};
-use restate_types::replicated_loglet::{LogNodeSetExt, NodeSet, ReplicatedLogletParams};
+use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
+use restate_types::replication::NodeSet;
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::OperationError;

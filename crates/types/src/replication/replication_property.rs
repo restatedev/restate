@@ -17,7 +17,7 @@ use std::sync::LazyLock;
 use anyhow::Context;
 use regex::Regex;
 
-use crate::locality::NodeLocationScope;
+use crate::locality::LocationScope;
 
 static REPLICATION_PROPERTY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -35,17 +35,17 @@ pub struct ReplicationPropertyError(String);
 
 /// The replication policy for appends
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq)]
-pub struct ReplicationProperty(BTreeMap<NodeLocationScope, u8>);
+pub struct ReplicationProperty(BTreeMap<LocationScope, u8>);
 
 impl ReplicationProperty {
     pub fn new(replication_factor: NonZeroU8) -> Self {
         let mut map = BTreeMap::default();
-        map.insert(NodeLocationScope::Node, replication_factor.into());
+        map.insert(LocationScope::Node, replication_factor.into());
         Self(map)
     }
 
-    pub fn with_scope(scope: NodeLocationScope, replication_factor: NonZeroU8) -> Self {
-        assert!(scope < NodeLocationScope::Root);
+    pub fn with_scope(scope: LocationScope, replication_factor: NonZeroU8) -> Self {
+        assert!(scope < LocationScope::Root);
         let mut map = BTreeMap::default();
         map.insert(scope, replication_factor.into());
         Self(map)
@@ -63,8 +63,8 @@ impl ReplicationProperty {
     /// for locality preference. For instance, they might try and locate all copies on the
     /// same region where the sequencer is (or partition) instead of spreading to three zones
     /// across all available regions.
-    pub fn distinct_replication_factors(&self) -> Vec<(NodeLocationScope, u8)> {
-        let mut scope = NodeLocationScope::Root;
+    pub fn distinct_replication_factors(&self) -> Vec<(LocationScope, u8)> {
+        let mut scope = LocationScope::Root;
         let mut res = Vec::new();
         let mut prev_factor = 0;
 
@@ -86,17 +86,17 @@ impl ReplicationProperty {
         res
     }
 
-    pub fn iter(&self) -> btree_map::Iter<'_, NodeLocationScope, u8> {
+    pub fn iter(&self) -> btree_map::Iter<'_, LocationScope, u8> {
         self.0.iter()
     }
 
-    /// Panics if scope is [`NodeLocationScope::Root`]
+    /// Panics if scope is [`LocationScope::Root`]
     pub fn set_scope(
         &mut self,
-        scope: NodeLocationScope,
+        scope: LocationScope,
         replication_factor: NonZeroU8,
     ) -> Result<&mut Self, ReplicationPropertyError> {
-        assert!(scope < NodeLocationScope::Root);
+        assert!(scope < LocationScope::Root);
         // Replication factor for a scope cannot be higher lower scopes or lower than higher
         // scopes, and if it's equal, it will be ignored.
 
@@ -131,22 +131,22 @@ impl ReplicationProperty {
     /// For instance {zone: 2, node: 3} replication will return None at region scope.
     ///
     /// Note that it's guaranteed to get a value for replication at node-level scope.
-    pub fn copies_at_scope(&self, scope: impl Into<NodeLocationScope>) -> Option<u8> {
+    pub fn copies_at_scope(&self, scope: impl Into<LocationScope>) -> Option<u8> {
         let scope = scope.into();
-        if scope == NodeLocationScope::Node {
+        if scope == LocationScope::Node {
             Some(self.num_copies())
         } else {
             self.0.get(&scope).copied()
         }
     }
 
-    pub fn greatest_defined_scope(&self) -> NodeLocationScope {
+    pub fn greatest_defined_scope(&self) -> LocationScope {
         let scope = *self
             .0
             .last_key_value()
             .expect("must have at least one scope")
             .0;
-        debug_assert!(scope < NodeLocationScope::Root);
+        debug_assert!(scope < LocationScope::Root);
         scope
     }
 }
@@ -198,7 +198,7 @@ impl FromStr for ReplicationProperty {
 
         let mut replication_property = None;
         for group in REPLICATION_PROPERTY_EXTRACTOR.captures_iter(&scopes["scopes"]) {
-            let scope: NodeLocationScope = group["scope"].parse().expect("is valid scope");
+            let scope: LocationScope = group["scope"].parse().expect("is valid scope");
             let factor: NonZeroU8 = group["factor"]
                 .parse()
                 .with_context(|| format!("Replication factor for scope {scope} cannot be zero"))?;
@@ -227,25 +227,25 @@ mod tests {
     fn test_replication_property() -> Result<()> {
         let mut r = ReplicationProperty::new(NonZeroU8::new(4).unwrap());
         assert_that!(r.num_copies(), eq(4));
-        assert_that!(r.greatest_defined_scope(), eq(NodeLocationScope::Node));
+        assert_that!(r.greatest_defined_scope(), eq(LocationScope::Node));
 
-        assert_that!(r.copies_at_scope(NodeLocationScope::Node), some(eq(4)));
-        assert_that!(r.copies_at_scope(NodeLocationScope::Zone), none());
-        assert_that!(r.copies_at_scope(NodeLocationScope::Region), none());
+        assert_that!(r.copies_at_scope(LocationScope::Node), some(eq(4)));
+        assert_that!(r.copies_at_scope(LocationScope::Zone), none());
+        assert_that!(r.copies_at_scope(LocationScope::Region), none());
 
-        r.set_scope(NodeLocationScope::Region, NonZeroU8::new(2).unwrap())?;
+        r.set_scope(LocationScope::Region, NonZeroU8::new(2).unwrap())?;
         assert_that!(r.num_copies(), eq(4));
 
-        assert_that!(r.copies_at_scope(NodeLocationScope::Node), some(eq(4)));
-        assert_that!(r.copies_at_scope(NodeLocationScope::Zone), none());
-        assert_that!(r.copies_at_scope(NodeLocationScope::Region), some(eq(2)));
+        assert_that!(r.copies_at_scope(LocationScope::Node), some(eq(4)));
+        assert_that!(r.copies_at_scope(LocationScope::Zone), none());
+        assert_that!(r.copies_at_scope(LocationScope::Region), some(eq(2)));
 
-        r.set_scope(NodeLocationScope::Zone, NonZeroU8::new(2).unwrap())?;
+        r.set_scope(LocationScope::Zone, NonZeroU8::new(2).unwrap())?;
         assert_that!(r.num_copies(), eq(4));
 
-        assert_that!(r.copies_at_scope(NodeLocationScope::Node), some(eq(4)));
-        assert_that!(r.copies_at_scope(NodeLocationScope::Zone), some(eq(2)));
-        assert_that!(r.copies_at_scope(NodeLocationScope::Region), some(eq(2)));
+        assert_that!(r.copies_at_scope(LocationScope::Node), some(eq(4)));
+        assert_that!(r.copies_at_scope(LocationScope::Zone), some(eq(2)));
+        assert_that!(r.copies_at_scope(LocationScope::Region), some(eq(2)));
 
         Ok(())
     }
@@ -261,16 +261,16 @@ mod tests {
         let r = r"{node: 5,  ZONE: 2}".parse::<ReplicationProperty>();
         let mut expected = ReplicationProperty::new(NonZeroU8::new(5).unwrap());
         expected
-            .set_scope(NodeLocationScope::Zone, NonZeroU8::new(2).unwrap())
+            .set_scope(LocationScope::Zone, NonZeroU8::new(2).unwrap())
             .unwrap();
         assert_that!(r, ok(eq(expected)));
 
         let r: ReplicationProperty = "{zone: 2}".parse().unwrap();
         assert_that!(r.num_copies(), eq(2));
 
-        assert_that!(r.copies_at_scope(NodeLocationScope::Node), some(eq(2)));
-        assert_that!(r.copies_at_scope(NodeLocationScope::Zone), some(eq(2)));
-        assert_that!(r.copies_at_scope(NodeLocationScope::Region), none());
+        assert_that!(r.copies_at_scope(LocationScope::Node), some(eq(2)));
+        assert_that!(r.copies_at_scope(LocationScope::Zone), some(eq(2)));
+        assert_that!(r.copies_at_scope(LocationScope::Region), none());
         Ok(())
     }
 }
